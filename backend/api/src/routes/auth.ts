@@ -2,21 +2,38 @@
 // OTP stored as HASH ONLY; expiry 5 min; max 3 attempts.
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
+import { randomInt } from 'crypto';
 import { getSmsProvider } from '@voiid/common-utils';
 import { query } from '../db';
+import { redis } from '../redis';
 import { issueToken } from '../auth';
+import { logSecurityEvent } from '../security';
 
 const router = Router();
 const sms = getSmsProvider();
 
+// Crypto-safe 6-digit OTP (never Math.random for security codes — Section 4.7).
 function randomOtp(): string {
-  return Math.floor(100000 + Math.random() * 900000).toString();
+  return randomInt(0, 1_000_000).toString().padStart(6, '0');
 }
+
+// Rate limit (Section 4.9): max OTP requests per phone in a sliding window.
+const OTP_MAX_PER_WINDOW = 3;
+const OTP_WINDOW_SECONDS = 15 * 60;
 
 // POST /auth/request-otp  { phone_number }
 router.post('/request-otp', async (req, res) => {
   const { phone_number } = req.body ?? {};
   if (!phone_number) return res.status(400).json({ error: 'phone_number required' });
+
+  // Rate-limit per phone number (Section 4.9 abuse protection).
+  const rlKey = `ratelimit:otp:${phone_number}`;
+  const count = await redis.incr(rlKey);
+  if (count === 1) await redis.expire(rlKey, OTP_WINDOW_SECONDS);
+  if (count > OTP_MAX_PER_WINDOW) {
+    await logSecurityEvent('otp_abuse', { phone_number, metadata: { count } });
+    return res.status(429).json({ error: 'too many OTP requests; try again later' });
+  }
 
   const code = randomOtp();
   const otp_hash = await bcrypt.hash(code, 10);
@@ -49,6 +66,7 @@ router.post('/verify-otp', async (req, res) => {
   const ok = await bcrypt.compare(code, session.otp_hash);
   if (!ok) {
     await query(`update otp_sessions set attempts = attempts + 1 where id = $1`, [session.id]);
+    await logSecurityEvent('failed_login', { phone_number, metadata: { reason: 'bad_otp' } });
     return res.status(401).json({ error: 'invalid code' });
   }
   await query(`update otp_sessions set verified_at = now() where id = $1`, [session.id]);

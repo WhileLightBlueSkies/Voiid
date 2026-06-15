@@ -1,0 +1,74 @@
+//
+//  Models.swift
+//  Voiid
+//
+//  App models. For the dummy frontend phase these are populated with sample data
+//  (DummyData.swift). Later they're hydrated from the backend via APIClient + decrypted
+//  locally via the crypto seam. UI always reads these models, never the network directly
+//  (local-first, Master Spec Section 11).
+//
+
+import Foundation
+
+struct VUser: Identifiable, Hashable {
+    let id: String
+    var fullName: String
+    var phoneNumber: String
+    var photoName: String?       // local asset name for dummy phase
+    var bio: String?
+    var statusText: String?
+    var isOnline: Bool = false
+}
+
+enum MessageStatus: String { case sending, sent, delivered, read, failed }
+enum MessageKind: String { case text, image, voice, document, system }
+
+struct VMessage: Identifiable, Hashable {
+    let id: String
+    var conversationId: String
+    var senderId: String
+    var kind: MessageKind = .text
+    /// Decrypted text for display. On the wire this is opaque ciphertext (crypto seam).
+    var text: String
+    var createdAt: Date
+    var status: MessageStatus = .sent
+    var isMine: Bool = false
+}
+
+enum ConversationType: String { case direct, group }
+
+struct VConversation: Identifiable, Hashable {
+    let id: String
+    var type: ConversationType
+    var title: String
+    var photoName: String?
+    var lastMessagePreview: String?
+    var lastMessageAt: Date?
+    var unreadCount: Int = 0
+    var memberCount: Int = 2
+    var isOnline: Bool = false
+}
+
+struct VClip: Identifiable, Hashable {
+    let id: String
+    var authorName: String
+    var authorPhoto: String?
+    var heading: String
+    var caption: String
+    var likes: Int
+    var comments: Int
+    var thumbnailName: String?
+}
+
+struct VClipComment: Identifiable, Hashable {
+    let id: String
+    var authorName: String
+    var authorPhoto: String?
+    var text: String
+}
+
+struct VAIMessage: Identifiable, Hashable {
+    let id: String
+    var text: String
+    var isUser: Bool
+}

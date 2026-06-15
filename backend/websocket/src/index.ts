@@ -15,6 +15,8 @@ const socketMap = new Map<string, Set<WebSocket>>();
 // Subscriber connection: one shared sub, pattern-subscribe to user channels routed here.
 const sub = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
 const presence = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
+// Publisher for typing/presence fan-out originating from WS frames.
+const pub = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
 
 sub.psubscribe('channel:user:*');
 sub.on('pmessage', (_pattern, channel, payload) => {
@@ -47,11 +49,34 @@ wss.on('connection', (ws, req) => {
   presence.set(`user:${userId}:online`, '1', 'EX', 60);
 
   ws.on('message', (raw) => {
-    // typing indicators / heartbeats / read receipts arrive here (handled in Phase 2 layer 2)
+    // Realtime control frames: heartbeat (presence) and typing (Section 10 Redis keys).
     try {
       const msg = JSON.parse(raw.toString());
+
       if (msg.type === 'heartbeat') {
         presence.set(`user:${userId}:online`, '1', 'EX', 60);
+        return;
+      }
+
+      // typing: { type:'typing', conversation_id, recipient_ids:[...], state:'start'|'stop' }
+      // Client supplies recipient_ids (it knows members from its local DB); WS has no DB.
+      if (msg.type === 'typing' && msg.conversation_id && Array.isArray(msg.recipient_ids)) {
+        const typingKey = `conversation:${msg.conversation_id}:typing:${userId}`;
+        if (msg.state === 'stop') {
+          presence.del(typingKey);
+        } else {
+          presence.set(typingKey, '1', 'EX', 5); // TTL 5s per Section 10
+        }
+        const out = JSON.stringify({
+          type: 'typing',
+          conversation_id: msg.conversation_id,
+          user_id: userId,
+          state: msg.state === 'stop' ? 'stop' : 'start',
+        });
+        for (const rid of msg.recipient_ids) {
+          if (rid !== userId) pub.publish(`channel:user:${rid}`, out);
+        }
+        return;
       }
     } catch { /* ignore malformed frames */ }
   });

@@ -21,3 +21,13 @@ DerivedData/
 # Android / Gradle build artifacts
 .gradle/
 apps/android/local.properties
+
+# Firebase config (contains API keys — never commit; add locally / via CI secrets)
+GoogleService-Info.plist
+google-services.json
+
+# Signing / keystores
+*.keystore
+*.jks
+*.p12
+*.mobileprovision

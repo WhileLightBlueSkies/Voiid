@@ -9,16 +9,16 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 ---
 
 ## 🔴 Blocking pre-conditions
-- [!] **#1 libsignal AGPL licensing cleared** (BEFORE PHASE 2)
-- [!] **#2 Design tokens "derived → confirm" + Figma link** (BEFORE PHASE 1 client)
-- [!] **#3 Firebase India OTP pricing confirmed + MSG91 swap lined up** (BEFORE PHASE 1)
+- [!] **#1 E2E crypto licensing** (BEFORE PHASE 2) — `libsignal` confirmed **AGPL-3.0, no commercial exception** in repo. Closed-source VOIID CANNOT link it without open-sourcing the apps. WhatsApp model = implement the *protocol* (free spec) in own closed code, NOT the AGPL library. **Decision pending:** permissive Signal-Protocol library (recommended) vs commercial license from Signal Foundation. Server is crypto-agnostic; clients gated until cleared.
+- [!] **#2 Design tokens "derived → confirm" + Figma link** (BEFORE PHASE 1 client) — design is in Figma (per owner); need the file URL + confirmed token values.
+- [x] **#3 OTP provider = Firebase** (confirmed by owner). MSG91 stays as swappable fallback via SMS interface. Real Firebase send still to be wired (currently stub).
 - [!] **#4 SF Pro font licensing confirmed (Android/Web) + fallback chosen** (BEFORE PHASE 1 client)
 
 ---
 
 ## Cross-cutting (must hold at ALL times)
-- [ ] Server **never** stores plaintext messages (ciphertext only) — verified
-- [ ] Server **never** stores private keys (public keys only)
+- [x] Server **never** stores plaintext messages (ciphertext only) — verified (smoke test: no plaintext column; ciphertext round-trips)
+- [x] Server **never** stores private keys (public keys only) — devices/prekeys store public keys only
 - [ ] No custom crypto; all crypto via libsignal (once wired)
 - [ ] Contact books never uploaded (local match only)
 - [ ] Media always encrypted before upload to R2
@@ -30,29 +30,29 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 
 ## Phase 0 — Backend Foundation
 **Build**
-- [ ] Monorepo structure created
-- [ ] Docker Compose: api + websocket + redis run locally
-- [ ] Env strategy: dev/staging/prod configs, separate secrets, `.env.example`
+- [x] Monorepo structure created
+- [ ] Docker Compose: api + websocket + redis run locally  *(services run via npm; Docker compose not yet exercised)*
+- [x] Env strategy: dev/staging/prod configs, separate secrets, `.env.example`  *(`.env` live; staging/prod values pending infra)*
 - [x] Migrations 001–009 authored, run via Supabase CLI
-- [ ] SMS/OTP behind swappable interface (Firebase impl; MSG91/Twilio swappable)
-- [ ] OTP stored as **hash only**; expiry 5 min; max 3 attempts; rate-limited
-- [ ] Auth flow: Firebase OTP → verified phone → our user upsert (Supabase) → our JWT
-- [ ] Device register + public prekey bundle upload + distribution (consume one-time prekey) + refresh
-- [ ] Message relay: store ciphertext → Redis pub/sub → WS push; offline → `GET /messages/pending`
-- [ ] Redis: presence (TTL+heartbeat), last_seen, typing (TTL 5s), pub/sub channels, rate-limit/cache keys
-- [ ] Health endpoints + Sentry + Uptime Kuma
+- [~] SMS/OTP behind swappable interface (Firebase impl; MSG91/Twilio swappable)  *(interface done; real provider stubbed — blocker #3)*
+- [x] OTP stored as **hash only**; expiry 5 min; max 3 attempts; rate-limited  *(crypto-safe RNG + Redis rate-limit verified)*
+- [x] Auth flow: ~~Firebase OTP~~ OTP → verified phone → our user upsert (Supabase) → our JWT  *(our-JWT verified; Firebase send still stubbed)*
+- [x] Device register + public prekey bundle upload + distribution (consume one-time prekey) + refresh  *(atomic consumption verified)*
+- [x] Message relay: store ciphertext → Redis pub/sub → WS push; offline → `GET /messages/pending`  *(end-to-end verified)*
+- [~] Redis: presence (TTL+heartbeat), last_seen, typing (TTL 5s), pub/sub channels, rate-limit/cache keys  *(pub/sub + presence + rate-limit verified; typing = Phase 2)*
+- [ ] Health endpoints + Sentry + Uptime Kuma  *(health live; Sentry + Uptime Kuma pending)*
 
 **Review gate (Section 10)**
 - [x] Supabase Postgres live, all tables created; migrations run via deploy
-- [ ] Redis live, pub-sub verified
-- [ ] Vultr API + WebSocket deployed; WS authenticates + routes via Redis
-- [ ] OTP verify end-to-end (Firebase → verified phone → our user → our JWT)
-- [ ] SMS provider swappable; Supabase Auth/Realtime NOT used
-- [ ] Device registration, prekey upload/distribution work
-- [ ] Message store + relay + offline fetch work (placeholder payloads)
-- [ ] Single instance handles 100+ concurrent WS connections
-- [ ] Health + Sentry + Uptime Kuma live
-- [ ] Dev environment separate from staging/prod
+- [x] Redis live, pub-sub verified  *(Upstash; relay delivery verified)*
+- [ ] Vultr API + WebSocket deployed; WS authenticates + routes via Redis  *(WS auth+routing verified locally; Vultr deploy pending — infra)*
+- [~] OTP verify end-to-end (Firebase → verified phone → our user → our JWT)  *(our-JWT path verified; Firebase SMS stubbed — blocker #3)*
+- [x] SMS provider swappable; Supabase Auth/Realtime NOT used  *(own JWT; only Postgres used)*
+- [x] Device registration, prekey upload/distribution work  *(atomic one-time-prekey consumption verified)*
+- [x] Message store + relay + offline fetch work (placeholder payloads)
+- [ ] Single instance handles 100+ concurrent WS connections  *(load test pending)*
+- [ ] Health + Sentry + Uptime Kuma live  *(health live; Sentry + Uptime Kuma pending)*
+- [ ] Dev environment separate from staging/prod  *(dev live; staging/prod pending — infra)*
 - [ ] ✅ **Human approval to proceed to Phase 1**
 
 ---

@@ -1,6 +1,7 @@
 // Messaging relay (Section 10 realtime flow). Server stores CIPHERTEXT ONLY, then publishes to the
 // recipient's Redis channel; the WS instance holding the socket pushes it down. Offline -> DB -> pending fetch.
 import { Router } from 'express';
+import { assertOpaque } from '@voiid/common-utils';
 import { query } from '../db';
 import { publisher } from '../redis';
 import { requireAuth } from '../auth';
@@ -13,6 +14,10 @@ router.post('/send', requireAuth, async (req, res) => {
   const { conversation_id, ciphertext, content_type, media_url, media_mime } = req.body ?? {};
   if (!conversation_id || !ciphertext) {
     return res.status(400).json({ error: 'conversation_id and ciphertext required' });
+  }
+  // Golden rule (Section 4.14): the server only ever relays opaque ciphertext — reject plaintext-ish payloads.
+  try { assertOpaque(req.body ?? {}); } catch (e) {
+    return res.status(400).json({ error: (e as Error).message });
   }
 
   const rows = await query<{ id: string; created_at: string }>(

@@ -2,20 +2,31 @@
 //  ContentView.swift
 //  Voiid
 //
-//  Created by Bask Creative on 15/06/26.
+//  Root view — routes between the onboarding flow and the main tab app.
 //
 
 import SwiftUI
 
 struct ContentView: View {
+    @StateObject private var session = AppSession()
+    @StateObject private var chat = ChatStore()
+    @StateObject private var ai = AIStore()
+    @StateObject private var clips = ClipsStore()
+
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
+        Group {
+            switch session.route {
+            case .onboarding:
+                OnboardingFlow()
+            case .main:
+                RootTabView()
+            }
         }
-        .padding()
+        .environmentObject(session)
+        .environmentObject(chat)
+        .environmentObject(ai)
+        .environmentObject(clips)
+        .tint(VoiidColor.primary)
     }
 }
 
