@@ -7,6 +7,19 @@
 
 import SwiftUI
 
+// MARK: - Dismiss keyboard on tap outside any text field
+
+extension View {
+    /// Taps outside a text field resign first responder (close the keyboard).
+    func dismissKeyboardOnTap() -> some View {
+        self.contentShape(Rectangle())
+            .onTapGesture {
+                UIApplication.shared.sendAction(
+                    #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+            }
+    }
+}
+
 // MARK: - Soft press style (Apple-grade tactile feedback: scale + dim + haptic on press)
 
 struct SoftPressStyle: ButtonStyle {

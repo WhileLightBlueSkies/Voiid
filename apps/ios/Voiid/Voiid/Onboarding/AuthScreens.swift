@@ -41,8 +41,9 @@ struct PhoneScreen: View {
     var body: some View {
         ZStack {
             VoiidBackground()
+                .dismissKeyboardOnTap()   // tap outside fields closes the keyboard
             VStack(alignment: .leading, spacing: 0) {
-                Spacer().frame(height: 44)   // title sits higher up (per design)
+                Spacer().frame(height: 24)   // title sits higher up (per design)
 
                 Text("Your phone number")
                     .font(VoiidFont.rounded(22, .bold))
