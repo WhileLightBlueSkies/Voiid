@@ -46,11 +46,11 @@ struct PhoneScreen: View {
                         Text(country.flag).font(.system(size: 22))
                         Text(country.name)
                             .font(VoiidFont.rounded(17, .regular))
-                            .foregroundColor(VoiidColor.textPrimary)
+                            .foregroundColor(VoiidColor.adaptiveText)
                         Spacer()
                         Image(systemName: "chevron.down")
                             .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(VoiidColor.textSecondary)
+                            .foregroundColor(VoiidColor.adaptiveText.opacity(0.6))
                     }
                     .padding(.horizontal, VoiidSpacing.lg)
                     .frame(height: pillHeight)
@@ -67,7 +67,7 @@ struct PhoneScreen: View {
                 HStack(spacing: VoiidSpacing.md) {
                     Text(country.dialCode)
                         .font(VoiidFont.rounded(17, .regular))
-                        .foregroundColor(VoiidColor.textPrimary)
+                        .foregroundColor(VoiidColor.adaptiveText)
                         .frame(width: 84, height: pillHeight)
                         .background(VoiidColor.fieldFill)
                         .clipShape(RoundedRectangle(cornerRadius: pillRadius, style: .continuous))
@@ -76,7 +76,7 @@ struct PhoneScreen: View {
                     TextField("", text: $phone, prompt:
                         Text("91234567890").foregroundColor(VoiidColor.placeholder))
                         .font(VoiidFont.rounded(17, .regular))
-                        .foregroundColor(VoiidColor.textPrimary)
+                        .foregroundColor(VoiidColor.adaptiveText)
                         .keyboardType(.numberPad)
                         .padding(.horizontal, VoiidSpacing.lg)
                         .frame(height: pillHeight)
@@ -267,40 +267,74 @@ struct SignupScreen: View {
     @State private var name = ""
     @State private var email = ""
 
+    private let pillHeight: CGFloat = 64
+    private let pillRadius: CGFloat = VoiidRadius.pill
+    private var valid: Bool { !name.trimmingCharacters(in: .whitespaces).isEmpty && email.contains("@") && email.contains(".") }
+
     var body: some View {
         ZStack {
-            VoiidBackground()
+            VoiidBackground().dismissKeyboardOnTap()
             VStack(alignment: .leading, spacing: VoiidSpacing.md) {
-                Spacer().frame(height: 80)
+                Spacer().frame(height: 40)
                 Text("Let's get started")
-                    .font(VoiidFont.display).foregroundColor(VoiidColor.textPrimary)
+                    .font(VoiidFont.rounded(34, .bold))
+                    .foregroundColor(VoiidColor.textPrimary)
                     .padding(.horizontal, VoiidSpacing.lg)
+                    .padding(.bottom, VoiidSpacing.sm)
 
-                VoiidTextField(placeholder: "Full name", text: $name)
-                    .padding(.horizontal, VoiidSpacing.lg).padding(.top, VoiidSpacing.lg)
-                VoiidTextField(placeholder: "Email Address", text: $email, keyboard: .emailAddress)
-                    .padding(.horizontal, VoiidSpacing.lg)
+                // Full name (pill)
+                pillField(placeholder: "Full name", text: $name)
+                // Email (pill)
+                pillField(placeholder: "Email Address", text: $email, keyboard: .emailAddress)
 
-                HStack {
-                    Text("+91").font(VoiidFont.body).foregroundColor(VoiidColor.textPrimary)
-                    Text("91234567890").font(VoiidFont.body).foregroundColor(VoiidColor.textSecondary)
+                // Verified phone — grey-filled, read-only, with green check
+                HStack(spacing: VoiidSpacing.sm) {
+                    Text("+91").font(VoiidFont.rounded(17, .regular)).foregroundColor(VoiidColor.textPrimary)
+                    Text("91234567890").font(VoiidFont.rounded(17, .regular)).foregroundColor(VoiidColor.textPrimary)
                     Spacer()
-                    Image(systemName: "checkmark.circle.fill").foregroundColor(VoiidColor.success)
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 24))
+                        .foregroundColor(VoiidColor.success)
                 }
-                .padding(.horizontal, VoiidSpacing.md).frame(height: 65)
-                .background(VoiidColor.fieldFill)
-                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md).stroke(VoiidColor.fieldBorder))
+                .padding(.horizontal, VoiidSpacing.lg)
+                .frame(height: pillHeight)
+                .frame(maxWidth: .infinity)
+                .background(VoiidColor.bubbleSent)   // grey fill (#C8C8C8) = verified/locked
+                .clipShape(RoundedRectangle(cornerRadius: pillRadius, style: .continuous))
                 .padding(.horizontal, VoiidSpacing.lg)
 
                 Spacer()
-                VoiidPrimaryButton(title: "Continue", enabled: !name.isEmpty && email.contains("@")) {
-                    session.profile.fullName = name
-                    Haptics.tap(); onContinue()
+
+                Button(action: {
+                    session.profile.fullName = name; Haptics.tap(); onContinue()
+                }) {
+                    Text("Continue")
+                        .font(VoiidFont.rounded(18, .medium))
+                        .foregroundColor(VoiidColor.textPrimary)
+                        .frame(maxWidth: .infinity).frame(height: pillHeight)
+                        .background(VoiidColor.accent)
+                        .clipShape(RoundedRectangle(cornerRadius: pillRadius, style: .continuous))
+                        .opacity(valid ? 1 : 0.55)
                 }
+                .buttonStyle(SoftPressStyle())
+                .disabled(!valid)
                 .padding(.horizontal, VoiidSpacing.lg).padding(.bottom, VoiidSpacing.xl)
             }
         }
+    }
+
+    private func pillField(placeholder: String, text: Binding<String>, keyboard: UIKeyboardType = .default) -> some View {
+        TextField("", text: text, prompt: Text(placeholder).foregroundColor(VoiidColor.placeholder))
+            .font(VoiidFont.rounded(17, .regular))
+            .foregroundColor(VoiidColor.textPrimary)
+            .keyboardType(keyboard)
+            .autocapitalization(keyboard == .emailAddress ? .none : .words)
+            .padding(.horizontal, VoiidSpacing.lg)
+            .frame(height: pillHeight)
+            .background(VoiidColor.fieldFill)
+            .clipShape(RoundedRectangle(cornerRadius: pillRadius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: pillRadius).stroke(VoiidColor.fieldBorder, lineWidth: 1))
+            .padding(.horizontal, VoiidSpacing.lg)
     }
 }
 

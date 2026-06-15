@@ -35,6 +35,14 @@ enum VoiidColor {
     static let divider        = Color(hex: 0xE3BED8)
     static let accent         = Color(hex: 0xE3BED8)
 
+    /// Theme-aware text — ONLY for the country selector / verified-number field
+    /// (dark plum in light mode, light #FCF4F8 in dark mode). Everything else stays fixed.
+    static let adaptiveText = Color(UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(Color(hex: 0xFCF4F8))
+            : UIColor(Color(hex: 0x4D3E47))
+    })
+
     // Status
     static let success = Color(hex: 0x3E9E6E)
     static let error   = Color(hex: 0xC0556B)
