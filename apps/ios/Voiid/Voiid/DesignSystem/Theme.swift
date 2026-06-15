@@ -15,37 +15,25 @@ import SwiftUI
 // MARK: - Colors (Section 6.1)
 
 enum VoiidColor {
-    // Locked tokens
+    // Locked tokens — fixed in BOTH light & dark (background stays #DFDFDF always).
     static let primary      = Color(hex: 0x4D3E47)   // brand plum
-    // Background: #DFDFDF (light) / deep plum-charcoal (dark)
-    static let background   = adaptive(light: 0xDFDFDF, dark: 0x1C1820)
+    static let background   = Color(hex: 0xDFDFDF)   // app base surface — same light/dark
     static let fieldBorder  = Color(hex: 0xE3BED8)
-    // Field fill: light pink (light) / muted dark plum (dark) so placeholder/text stay readable
-    static let fieldFill    = adaptive(light: 0xFCF4F8, dark: 0x2A2430)
+    static let fieldFill    = Color(hex: 0xFCF4F8)   // light pink — same light/dark
     static let bubbleSent   = Color(hex: 0xC8C8C8)
 
     // Derived tokens (Section 6.1 "derived — confirm")
     static let bubbleReceived = Color(hex: 0xFCF4F8)
     static let surfaceCard    = Color(hex: 0xFFFFFF)
 
-    // Adaptive text colors: plum (#4D3E47) in light mode, #FCF4F8 in dark mode.
-    static let textPrimary    = adaptive(light: 0x4D3E47, dark: 0xFCF4F8)
-    // Muted text: lightened plum in light mode, dimmed light in dark mode.
-    static let textSecondary  = adaptive(light: 0x7A6E74, dark: 0xCBBFC7)
+    // Fixed text colors (background is fixed light, so text stays dark in both modes).
+    static let textPrimary    = Color(hex: 0x4D3E47)   // brand plum
+    static let textSecondary  = Color(hex: 0x7A6E74)   // muted plum
     static let textOnPrimary  = Color(hex: 0xFCF4F8)
     // Placeholder: clearly muted on the light pink field (NOT white).
-    static let placeholder    = adaptive(light: 0x9B8F95, dark: 0xCBBFC7)
+    static let placeholder    = Color(hex: 0x9B8F95)
     static let divider        = Color(hex: 0xE3BED8)
     static let accent         = Color(hex: 0xE3BED8)
-
-    /// Builds a color that switches between two hex values by light/dark appearance.
-    static func adaptive(light: UInt, dark: UInt) -> Color {
-        Color(UIColor { trait in
-            trait.userInterfaceStyle == .dark
-                ? UIColor(Color(hex: dark))
-                : UIColor(Color(hex: light))
-        })
-    }
 
     // Status
     static let success = Color(hex: 0x3E9E6E)
