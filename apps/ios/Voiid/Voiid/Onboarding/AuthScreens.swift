@@ -338,8 +338,9 @@ struct CreateProfileScreen: View {
                     }
                 }
 
-                TextField("", text: $about, axis: .vertical,
-                          prompt: Text("About you").foregroundColor(VoiidColor.placeholder))
+                TextField("", text: $about,
+                          prompt: Text("About you").foregroundColor(VoiidColor.placeholder),
+                          axis: .vertical)
                     .font(VoiidFont.body).lineLimit(3...5)
                     .foregroundColor(VoiidColor.textPrimary)
                     .padding(VoiidSpacing.md)
