@@ -45,10 +45,13 @@ struct OnboardingFlow: View {
 
 struct SplashScreen: View {
     @State private var appear = false
+    // Ellipse = 325/402 of screen width (design ref), scales per device.
+    private var ellipse: CGFloat { UIScreen.main.bounds.width * (325.0 / 402.0) }
+    private var logoSize: CGFloat { UIScreen.main.bounds.width * (80.0 / 402.0) }
     var body: some View {
         ZStack {
             VoiidBackground()
-            LogoMark(size: 325, fontSize: 80)
+            LogoMark(size: ellipse, fontSize: logoSize)
                 .scaleEffect(appear ? 1 : 0.92)
                 .opacity(appear ? 1 : 0)
                 .animation(.spring(response: 0.8, dampingFraction: 0.7), value: appear)
@@ -68,7 +71,8 @@ struct TermsScreen: View {
             VoiidBackground()
             VStack(spacing: 0) {
                 Spacer().frame(height: 60)
-                LogoMark(size: 300, fontSize: 72)
+                LogoMark(size: UIScreen.main.bounds.width * (300.0 / 402.0),
+                         fontSize: UIScreen.main.bounds.width * (72.0 / 402.0))
 
                 VStack(spacing: VoiidSpacing.sm) {
                     RoundedRectangle(cornerRadius: VoiidRadius.md)
@@ -133,29 +137,52 @@ struct TermsScreen: View {
 // MARK: - The embossed "voiid" logo mark (Urbanist) shared by Splash + Terms
 
 struct LogoMark: View {
+    /// `size` = ellipse diameter (defaults scale with device width at call sites).
     var size: CGFloat
     var fontSize: CGFloat
+
     var body: some View {
         ZStack {
-            // Soft neumorphic ring embossed into the #DFDFDF surface (subtle, like the design).
+            // Ellipse: a #DFDFDF circle on a #DFDFDF background — invisible except for its
+            // drop shadow + layer blur, which together produce the soft embossed halo (per design).
             Circle()
-                .stroke(VoiidColor.background, lineWidth: 26)
+                .fill(VoiidColor.background)            // #DFDFDF (matches background)
                 .frame(width: size, height: size)
-                .shadow(color: .black.opacity(0.10), radius: 16, x: 8, y: 8)
-                .shadow(color: .white.opacity(0.85), radius: 16, x: -8, y: -8)
-                .blur(radius: 1)
-                .opacity(0.9)
+                .shadow(color: .black.opacity(0.18), radius: 24, x: 0, y: 12)  // drop shadow
+                .blur(radius: 12)                       // layer blur (softens into a glow)
 
-            // Glassy / chrome "voiid" wordmark — white→silver→lavender gradient with a soft emboss.
-            Text("voiid")
-                .font(.custom("Urbanist-Bold", size: fontSize))
-                .foregroundStyle(
-                    LinearGradient(
-                        colors: [Color.white, Color(hex: 0xF2EAF0), Color(hex: 0xCFC3D0), Color.white],
-                        startPoint: .top, endPoint: .bottom)
-                )
-                .shadow(color: .white.opacity(0.9), radius: 1, x: -1, y: -1)
-                .shadow(color: VoiidColor.primary.opacity(0.18), radius: 2, x: 1, y: 2)
+            // "voiid" wordmark — exact Figma spec.
+            // Fill #FFFFFF, inside stroke #E8E0E0 2.6, inner shadow x-4 y-4 blur4 #222B59@63%.
+            VoiidWordmark(fontSize: fontSize)
         }
+    }
+}
+
+/// The "voiid" wordmark with the exact Figma fill/stroke/inner-shadow treatment.
+/// Inner shadow is faked via a masked, offset dark copy (SwiftUI Text has no inner shadow).
+struct VoiidWordmark: View {
+    var fontSize: CGFloat
+    private let stroke = Color(hex: 0xE8E0E0)
+    private let innerShadow = Color(hex: 0x222B59).opacity(0.63)
+
+    var body: some View {
+        ZStack {
+            // Base white fill
+            text(.white)
+            // Inner-shadow effect: dark text offset by (-4,-4), blurred, clipped to the glyphs
+            text(innerShadow)
+                .offset(x: -4, y: -4)
+                .blur(radius: 4)
+                .mask(text(.white))
+            // Inside stroke ~2.6 via a subtle outline overlay
+            text(.white)
+                .overlay(text(stroke).blur(radius: 0.6).mask(text(.white)).opacity(0.8))
+        }
+    }
+
+    private func text(_ color: Color) -> some View {
+        Text("voiid")
+            .font(.custom("Urbanist-Bold", size: fontSize))
+            .foregroundColor(color)
     }
 }
