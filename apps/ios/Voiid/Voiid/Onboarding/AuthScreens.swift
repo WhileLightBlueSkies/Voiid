@@ -158,17 +158,20 @@ struct CountryPickerSheet: View {
 struct OTPScreen: View {
     let onContinue: () -> Void
     var phoneNumber: String = "+91 91234567890"
-    @State private var code: [String] = Array(repeating: "", count: 6)
-    @FocusState private var focusedIndex: Int?
+
+    // Single source of truth: one hidden field holds all 6 digits; circles display them.
+    @State private var code = ""
+    @FocusState private var keyboardUp: Bool
 
     private let pillHeight: CGFloat = 64
-    private var complete: Bool { code.allSatisfy { !$0.isEmpty } }
+    private let length = 6
+    private var complete: Bool { code.count == length }
 
     var body: some View {
         ZStack {
             VoiidBackground()
                 .contentShape(Rectangle())
-                .onTapGesture { focusedIndex = nil }   // clears @FocusState -> keyboard closes
+                .onTapGesture { keyboardUp = false }   // tap outside closes keyboard
             VStack(alignment: .leading, spacing: 0) {
                 Spacer().frame(height: 24)
                 Text("Verify your number")
@@ -180,14 +183,32 @@ struct OTPScreen: View {
                     .foregroundColor(VoiidColor.textSecondary)
                     .padding(.horizontal, VoiidSpacing.lg).padding(.top, 6)
 
-                // 6 circular OTP fields
-                HStack(spacing: 10) {
-                    ForEach(0..<6, id: \.self) { i in otpCircle(i) }
+                // Display circles overlaid on one hidden text field that captures all input.
+                ZStack {
+                    // Hidden field — does the actual typing/paste; tapping the circles focuses it.
+                    TextField("", text: $code)
+                        .keyboardType(.numberPad)
+                        .textContentType(.oneTimeCode)   // SMS autofill
+                        .focused($keyboardUp)
+                        .foregroundColor(.clear)
+                        .accentColor(.clear)
+                        .onChange(of: code) { _, newVal in
+                            let digits = String(newVal.filter(\.isNumber).prefix(length))
+                            if digits != code { code = digits }
+                            if !digits.isEmpty { Haptics.selection() }
+                            if digits.count == length { keyboardUp = false }
+                        }
+
+                    HStack(spacing: 10) {
+                        ForEach(0..<length, id: \.self) { i in otpCircle(i) }
+                    }
+                    .allowsHitTesting(false)   // taps pass through to the hidden field
                 }
                 .padding(.horizontal, VoiidSpacing.lg)
                 .padding(.top, VoiidSpacing.xl)
+                .contentShape(Rectangle())
+                .onTapGesture { keyboardUp = true }   // tap the row -> focus
 
-                // Resend row
                 Button("Resend code") { Haptics.tap() }
                     .font(VoiidFont.rounded(14, .medium))
                     .foregroundColor(VoiidColor.primary)
@@ -210,37 +231,31 @@ struct OTPScreen: View {
                 .padding(.horizontal, VoiidSpacing.lg).padding(.bottom, VoiidSpacing.xl)
             }
         }
-        .onAppear { focusedIndex = 0 }
+        .onAppear { keyboardUp = true }
     }
 
+    private func digit(_ i: Int) -> String {
+        let chars = Array(code)
+        return i < chars.count ? String(chars[i]) : ""
+    }
+    private var activeIndex: Int { min(code.count, length - 1) }
+
     private func otpCircle(_ i: Int) -> some View {
-        TextField("", text: Binding(
-            get: { code[i] },
-            set: { newVal in
-                let filtered = String(newVal.prefix(1)).filter(\.isNumber)
-                code[i] = filtered
-                if !filtered.isEmpty {
-                    Haptics.selection()
-                    if i < 5 { focusedIndex = i + 1 } else { focusedIndex = nil }
-                } else if newVal.isEmpty, i > 0 {
-                    focusedIndex = i - 1   // backspace moves back
-                }
-            })
-        )
-        .multilineTextAlignment(.center)
-        .font(VoiidFont.rounded(22, .semibold))
-        .foregroundColor(VoiidColor.textPrimary)
-        .keyboardType(.numberPad)
-        .focused($focusedIndex, equals: i)
-        .frame(maxWidth: .infinity)
-        .frame(height: 52)
-        .background(VoiidColor.fieldFill)
-        .clipShape(Circle())
-        .overlay(Circle().stroke(
-            focusedIndex == i ? VoiidColor.primary : VoiidColor.fieldBorder,
-            lineWidth: focusedIndex == i ? 2 : 1))
-        .scaleEffect(focusedIndex == i ? 1.06 : 1)
-        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: focusedIndex)
+        let isActive = keyboardUp && i == activeIndex && code.count < length
+        let filled = i < code.count
+        return Text(digit(i))
+            .font(VoiidFont.rounded(22, .semibold))
+            .foregroundColor(VoiidColor.textPrimary)
+            .frame(maxWidth: .infinity)
+            .frame(height: 52)
+            .background(VoiidColor.fieldFill)
+            .clipShape(Circle())
+            .overlay(Circle().stroke(
+                (isActive || filled) ? VoiidColor.primary : VoiidColor.fieldBorder,
+                lineWidth: isActive ? 2 : 1))
+            .scaleEffect(isActive ? 1.06 : 1)
+            .animation(.spring(response: 0.3, dampingFraction: 0.6), value: keyboardUp)
+            .animation(.spring(response: 0.3, dampingFraction: 0.6), value: code)
     }
 }
 
