@@ -2,8 +2,8 @@
 //  ChatsHomeView.swift
 //  Voiid
 //
-//  Chat home (Figma Screen-6/7): search bar, Chats | Groups segmented tabs,
-//  grid of avatar cards. Tapping a card opens the chat.
+//  Chat home (Figma Screen-6/7): hamburger header, search, Chats | Groups tabs
+//  with animated underline, 3-column grid of avatar cards. Tap a card -> chat.
 //
 
 import SwiftUI
@@ -13,29 +13,30 @@ struct ChatsHomeView: View {
     @State private var search = ""
     @State private var tab: Tab = .chats
     @State private var openConversation: VConversation?
+    @Namespace private var underline
 
-    enum Tab { case chats, groups }
+    enum Tab: String { case chats = "Chats", groups = "Groups" }
 
-    private let columns = [GridItem(.flexible(), spacing: VoiidSpacing.lg),
-                           GridItem(.flexible(), spacing: VoiidSpacing.lg),
-                           GridItem(.flexible(), spacing: VoiidSpacing.lg)]
+    private let columns = [GridItem(.flexible(), spacing: VoiidSpacing.md),
+                           GridItem(.flexible(), spacing: VoiidSpacing.md),
+                           GridItem(.flexible(), spacing: VoiidSpacing.md)]
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                header
                 searchBar
                 tabs
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: VoiidSpacing.lg) {
                         ForEach(items) { conv in
-                            Button {
-                                Haptics.tap(); openConversation = conv
-                            } label: { gridCard(conv) }
+                            Button { Haptics.tap(); openConversation = conv } label: { gridCard(conv) }
+                                .buttonStyle(SoftPressStyle(scale: 0.94))
                         }
                     }
                     .padding(.horizontal, VoiidSpacing.lg)
-                    .padding(.top, VoiidSpacing.md)
-                    .padding(.bottom, 100)
+                    .padding(.top, VoiidSpacing.lg)
+                    .padding(.bottom, 110)
                 }
             }
             .background(VoiidColor.background.ignoresSafeArea())
@@ -49,38 +50,68 @@ struct ChatsHomeView: View {
         return base.filter { $0.title.localizedCaseInsensitiveContains(search) }
     }
 
-    private var searchBar: some View {
+    // Top bar — hamburger menu on the right
+    private var header: some View {
         HStack {
-            Image(systemName: "magnifyingglass").foregroundColor(VoiidColor.textSecondary)
-            TextField("Search", text: $search).font(VoiidFont.body)
+            Spacer()
+            Button { Haptics.tap() } label: {
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundColor(VoiidColor.textPrimary)
+            }
+        }
+        .padding(.horizontal, VoiidSpacing.lg)
+        .padding(.top, VoiidSpacing.sm)
+    }
+
+    private var searchBar: some View {
+        HStack(spacing: VoiidSpacing.sm) {
+            Image(systemName: "magnifyingglass").foregroundColor(VoiidColor.placeholder)
+            TextField("", text: $search,
+                      prompt: Text("Search").foregroundColor(VoiidColor.placeholder))
+                .font(VoiidFont.body).foregroundColor(VoiidColor.textPrimary)
         }
         .padding(.horizontal, VoiidSpacing.md)
         .frame(height: 52)
         .background(VoiidColor.fieldFill)
-        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
-        .padding(.horizontal, VoiidSpacing.sm)
+        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.pill, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: VoiidRadius.pill).stroke(VoiidColor.fieldBorder, lineWidth: 1))
+        .padding(.horizontal, VoiidSpacing.lg)
         .padding(.top, VoiidSpacing.md)
     }
 
     private var tabs: some View {
-        HStack(spacing: VoiidSpacing.xl) {
-            tabButton("Chats", .chats)
-            tabButton("Groups", .groups)
-            Spacer()
+        HStack(spacing: 0) {
+            tabButton(.chats)
+            tabButton(.groups)
         }
-        .padding(.horizontal, VoiidSpacing.lg)
-        .padding(.top, VoiidSpacing.md)
-        .overlay(Divider(), alignment: .bottom)
+        .padding(.top, VoiidSpacing.lg)
+        .overlay(VoiidColor.divider.opacity(0.5).frame(height: 1), alignment: .bottom)
     }
 
-    private func tabButton(_ label: String, _ t: Tab) -> some View {
-        VStack(spacing: 6) {
-            Text(label)
-                .font(VoiidFont.headline)
-                .foregroundColor(tab == t ? VoiidColor.primary : VoiidColor.textSecondary)
-            Rectangle().fill(tab == t ? VoiidColor.primary : .clear).frame(height: 2)
+    private func tabButton(_ t: Tab) -> some View {
+        Button {
+            Haptics.selection()
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { tab = t }
+        } label: {
+            VStack(spacing: 8) {
+                Text(t.rawValue)
+                    .font(VoiidFont.rounded(17, .semibold))
+                    .foregroundColor(tab == t ? VoiidColor.primary : VoiidColor.textSecondary)
+                ZStack {
+                    Capsule().fill(.clear).frame(height: 3)
+                    if tab == t {
+                        Capsule()
+                            .fill(LinearGradient(colors: [VoiidColor.primary, VoiidColor.accent],
+                                                 startPoint: .leading, endPoint: .trailing))
+                            .frame(height: 3)
+                            .matchedGeometryEffect(id: "tabUnderline", in: underline)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity)
         }
-        .onTapGesture { withAnimation(.spring(response: 0.3)) { tab = t } }
+        .buttonStyle(.plain)
     }
 
     private func gridCard(_ conv: VConversation) -> some View {
@@ -95,13 +126,14 @@ struct ChatsHomeView: View {
                 }
                 if conv.unreadCount > 0 {
                     Text("\(conv.unreadCount)")
-                        .font(VoiidFont.caption).foregroundColor(.white)
-                        .padding(6).background(VoiidColor.error).clipShape(Circle())
+                        .font(VoiidFont.rounded(11, .bold)).foregroundColor(.white)
+                        .frame(minWidth: 20, minHeight: 20)
+                        .background(VoiidColor.error).clipShape(Circle())
                         .offset(x: 6, y: -6)
                 }
             }
             Text(conv.title)
-                .font(VoiidFont.subhead).foregroundColor(VoiidColor.textPrimary)
+                .font(VoiidFont.rounded(15, .regular)).foregroundColor(VoiidColor.textPrimary)
                 .lineLimit(1)
         }
     }

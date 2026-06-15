@@ -28,18 +28,16 @@ struct RootTabView: View {
     }
 
     private var tabBar: some View {
-        HStack {
+        HStack(spacing: 0) {
             tabItem(.ai, "sparkles", "AI")
-            Spacer()
-            tabItem(.chat, "bubble.left.fill", "CHAT")
-            Spacer()
-            tabItem(.clips, "play.rectangle.fill", "FILM")
+            tabItem(.chat, "bubble.left.fill", "Chats")
+            tabItem(.clips, "play.rectangle.fill", "Clips")
         }
-        .padding(.horizontal, VoiidSpacing.xl)
-        .padding(.top, VoiidSpacing.md)
-        .padding(.bottom, VoiidSpacing.sm)
-        .background(.ultraThinMaterial)
-        .overlay(Divider(), alignment: .top)
+        .padding(.horizontal, VoiidSpacing.lg)
+        .padding(.top, VoiidSpacing.sm)
+        .padding(.bottom, VoiidSpacing.xs)
+        .background(VoiidColor.background.opacity(0.98))
+        .overlay(VoiidColor.divider.opacity(0.5).frame(height: 1), alignment: .top)
     }
 
     private func tabItem(_ t: Tab, _ icon: String, _ label: String) -> some View {
@@ -47,14 +45,23 @@ struct RootTabView: View {
             Haptics.selection()
             withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { tab = t }
         } label: {
-            VStack(spacing: 4) {
-                Image(systemName: icon)
-                    .font(.system(size: 22))
-                    .scaleEffect(tab == t ? 1.1 : 1)
-                Text(label).font(VoiidFont.rounded(11, .semibold))
+            VStack(spacing: 5) {
+                // rounded-square icon tile (active = pink fill)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(tab == t ? VoiidColor.accent : Color.clear)
+                    .frame(width: 46, height: 40)
+                    .overlay(
+                        Image(systemName: icon)
+                            .font(.system(size: 20, weight: .medium))
+                            .foregroundColor(tab == t ? VoiidColor.primary : VoiidColor.textSecondary)
+                            .scaleEffect(tab == t ? 1.05 : 1)
+                    )
+                Text(label)
+                    .font(VoiidFont.rounded(11, .medium))
+                    .foregroundColor(tab == t ? VoiidColor.primary : VoiidColor.textSecondary)
             }
-            .foregroundColor(tab == t ? VoiidColor.primary : VoiidColor.textSecondary)
-            .frame(width: 70)
+            .frame(maxWidth: .infinity)
         }
+        .buttonStyle(.plain)
     }
 }
