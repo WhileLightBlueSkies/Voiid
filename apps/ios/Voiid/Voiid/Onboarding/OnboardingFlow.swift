@@ -85,37 +85,43 @@ struct TermsScreen: View {
 
                 HStack(spacing: VoiidSpacing.sm) {
                     Button { withAnimation(.spring(response: 0.25)) { agreed.toggle() } } label: {
-                        RoundedRectangle(cornerRadius: 2)
-                            .stroke(VoiidColor.primary, lineWidth: 1)
-                            .background(agreed ? VoiidColor.primary : Color(hex: 0xD9D9D9))
-                            .frame(width: 15, height: 15)
-                            .overlay(agreed ? Image(systemName: "checkmark").font(.system(size: 9, weight: .bold)).foregroundColor(.white) : nil)
-                            .clipShape(RoundedRectangle(cornerRadius: 2))
+                        RoundedRectangle(cornerRadius: 3)
+                            .stroke(VoiidColor.textSecondary, lineWidth: 1)
+                            .background(agreed ? VoiidColor.primary : Color.clear)
+                            .frame(width: 16, height: 16)
+                            .overlay(agreed ? Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundColor(.white) : nil)
+                            .clipShape(RoundedRectangle(cornerRadius: 3))
                     }
-                    Text("I agree to the Terms & Conditions and Privacy Policy")
-                        .font(VoiidFont.rounded(11, .regular)).foregroundColor(VoiidColor.textPrimary)
+                    // SF Pro Rounded; "Terms & Conditions" emphasized like the design
+                    (Text("I accept the ")
+                        + Text("Terms & Conditions").fontWeight(.semibold)
+                        + Text(" and ")
+                        + Text("Privacy Policy").foregroundColor(VoiidColor.textSecondary))
+                        .font(VoiidFont.rounded(13, .regular))
+                        .foregroundColor(VoiidColor.textPrimary)
                 }
-                .padding(.bottom, VoiidSpacing.lg)
+                .padding(.horizontal, VoiidSpacing.lg)
+                .padding(.bottom, VoiidSpacing.md)
 
                 Button(action: { if agreed { Haptics.tap(); onContinue() } }) {
                     Text("Continue")
-                        .font(VoiidFont.rounded(20, .medium))
+                        .font(VoiidFont.rounded(18, .medium))
                         .foregroundColor(VoiidColor.textPrimary)
                         .frame(width: 300, height: 64)
                         .background(VoiidColor.accent)
-                        .clipShape(RoundedRectangle(cornerRadius: 40, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.pill, style: .continuous))
                         .opacity(agreed ? 1 : 0.5)
                 }
                 .disabled(!agreed)
 
                 Button("I already have an account") { onContinue() }
-                    .font(VoiidFont.rounded(13, .regular))
+                    .font(VoiidFont.rounded(14, .regular))
                     .foregroundColor(VoiidColor.textPrimary)
                     .padding(.top, VoiidSpacing.md)
 
                 Text("v1.0.0 (15)")
-                    .font(VoiidFont.rounded(12, .light))
-                    .foregroundColor(VoiidColor.textPrimary)
+                    .font(VoiidFont.rounded(12, .regular))
+                    .foregroundColor(VoiidColor.textSecondary)
                     .padding(.top, VoiidSpacing.md)
                     .padding(.bottom, VoiidSpacing.lg)
             }
@@ -131,18 +137,25 @@ struct LogoMark: View {
     var fontSize: CGFloat
     var body: some View {
         ZStack {
+            // Soft neumorphic ring embossed into the #DFDFDF surface (subtle, like the design).
             Circle()
-                .fill(VoiidColor.background)
+                .stroke(VoiidColor.background, lineWidth: 26)
                 .frame(width: size, height: size)
-                .shadow(color: .black.opacity(0.12), radius: 20, x: 10, y: 10)
-                .shadow(color: .white.opacity(0.7), radius: 20, x: -10, y: -10)
+                .shadow(color: .black.opacity(0.10), radius: 16, x: 8, y: 8)
+                .shadow(color: .white.opacity(0.85), radius: 16, x: -8, y: -8)
+                .blur(radius: 1)
+                .opacity(0.9)
+
+            // Glassy / chrome "voiid" wordmark — white→silver→lavender gradient with a soft emboss.
             Text("voiid")
                 .font(.custom("Urbanist-Bold", size: fontSize))
                 .foregroundStyle(
-                    LinearGradient(colors: [.white, Color(hex: 0xE3BED8), .white],
-                                   startPoint: .topLeading, endPoint: .bottomTrailing)
+                    LinearGradient(
+                        colors: [Color.white, Color(hex: 0xF2EAF0), Color(hex: 0xCFC3D0), Color.white],
+                        startPoint: .top, endPoint: .bottom)
                 )
-                .shadow(color: .black.opacity(0.15), radius: 2, x: 1, y: 2)
+                .shadow(color: .white.opacity(0.9), radius: 1, x: -1, y: -1)
+                .shadow(color: VoiidColor.primary.opacity(0.18), radius: 2, x: 1, y: 2)
         }
     }
 }
