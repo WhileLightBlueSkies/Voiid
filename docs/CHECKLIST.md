@@ -9,6 +9,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 ---
 
 ## 🔴 Blocking pre-conditions
+> Lawyer questions for all of these are tracked in [LEGAL_QUESTIONS.md](LEGAL_QUESTIONS.md).
 - [!] **#1 E2E crypto licensing** (BEFORE PHASE 2) — `libsignal` confirmed **AGPL-3.0, no commercial exception** in repo. Closed-source VOIID CANNOT link it without open-sourcing the apps. WhatsApp model = implement the *protocol* (free spec) in own closed code, NOT the AGPL library. **Decision pending:** permissive Signal-Protocol library (recommended) vs commercial license from Signal Foundation. Server is crypto-agnostic; clients gated until cleared.
 - [!] **#2 Design tokens "derived → confirm" + Figma link** (BEFORE PHASE 1 client) — design is in Figma (per owner); need the file URL + confirmed token values.
 - [x] **#3 OTP provider = Firebase** (confirmed by owner). MSG91 stays as swappable fallback via SMS interface. Real Firebase send still to be wired (currently stub).
