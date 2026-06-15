@@ -9,14 +9,31 @@
 2. Select the **Voiid** scheme + an iPhone simulator (e.g. iPhone 15) or your device.
 3. **Run (⌘R).** That's it — files are auto-included (see "Project structure" below).
 
-## ⚠️ Required: add the Urbanist font (for the "voiid" logo on Splash + Terms)
-The logo wordmark uses **Urbanist Bold**. Without it, those two screens fall back to system bold.
-1. Download Urbanist from Google Fonts (https://fonts.google.com/specimen/Urbanist) — free, OFL.
-2. Drag **`Urbanist-Bold.ttf`** into the `Voiid/` folder in Xcode (check "Copy items if needed").
-3. Add to Info: since this project uses `GENERATE_INFOPLIST_FILE = YES`, add the font via
-   **Target → Info → Custom iOS Target Properties →** add `Fonts provided by application` (UIAppFonts)
-   → item 0 = `Urbanist-Bold.ttf`.
-4. The code references the PostScript name `Urbanist-Bold` (see `LogoMark` / `VoiidFont.logo`).
+## 🔴 REQUIRED: add the Urbanist font — the logo lettering depends on it
+The "voiid" wordmark uses **Urbanist Bold**. The font is **NOT bundled** (binary), so you must add it.
+Without it iOS falls back to the system font and **the lettering will look wrong** (this is the #1
+cause of "logo doesn't match Figma").
+
+**`UIAppFonts` is already registered in the project** (`= "Urbanist-Bold.ttf"`), so you only need to
+add the file:
+
+1. Download **Urbanist** from Google Fonts → https://fonts.google.com/specimen/Urbanist (free, OFL).
+2. Drag **`Urbanist-Bold.ttf`** into the `Voiid/` folder in Xcode → check **"Copy items if needed"**
+   and the **Voiid target**. (Filename must be exactly `Urbanist-Bold.ttf`.)
+3. Build & run. The wordmark should now render in Urbanist.
+
+**Verify it loaded** (if the lettering still looks off): add this temporarily in `VoiidApp.init()`:
+```swift
+for f in UIFont.familyNames where f.contains("Urbanist") { print("✅", UIFont.fontNames(forFamilyName: f)) }
+```
+You should see `Urbanist-Bold`. If nothing prints, the file wasn't added to the target.
+
+**If `UIAppFonts` build-setting doesn't take** (varies by Xcode): create a real `Info.plist`, add
+`Fonts provided by application → item 0 = Urbanist-Bold.ttf`, set `INFOPLIST_FILE` to it, and set
+`GENERATE_INFOPLIST_FILE = NO`. (The build-setting form works on most Xcode 16+ setups.)
+
+> The code references the PostScript name **`Urbanist-Bold`** (see `VoiidWordmark` in OnboardingFlow.swift).
+> If your file's PostScript name differs, update the string there.
 
 Everything else uses **SF Pro Rounded** (system `.rounded` design — no font files needed).
 
