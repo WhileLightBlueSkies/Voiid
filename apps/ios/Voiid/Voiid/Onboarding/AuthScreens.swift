@@ -411,24 +411,15 @@ struct CreateProfileScreen: View {
     var body: some View {
         ZStack {
             VoiidBackground().dismissKeyboardOnTap()
-            VStack(spacing: 0) {
-                // Header: back + CREATE PROFILE
-                HStack(spacing: VoiidSpacing.sm) {
-                    Button { Haptics.tap(); dismiss() } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundColor(VoiidColor.textPrimary)
-                    }
-                    Text("CREATE PROFILE")
-                        .font(VoiidFont.rounded(15, .medium))
-                        .tracking(0.5)
-                        .foregroundColor(VoiidColor.textPrimary)
-                    Spacer()
-                }
-                .padding(.horizontal, VoiidSpacing.lg)
-                .padding(.top, VoiidSpacing.md)
+            VStack(alignment: .leading, spacing: 0) {
+                Spacer().frame(height: 8)
+                // Title matches the Phone/OTP screens (22 bold), left-aligned
+                Text("Create profile")
+                    .font(VoiidFont.rounded(22, .bold))
+                    .foregroundColor(VoiidColor.textPrimary)
+                    .padding(.horizontal, VoiidSpacing.lg)
 
-                // Avatar with pink camera badge
+                // Avatar with pink camera badge (centered)
                 PhotosPicker(selection: $photoItem, matching: .images) {
                     ZStack(alignment: .bottomTrailing) {
                         ZStack {
@@ -453,7 +444,8 @@ struct CreateProfileScreen: View {
                             .overlay(Circle().stroke(VoiidColor.background, lineWidth: 2))
                     }
                 }
-                .padding(.top, VoiidSpacing.xxl)
+                .frame(maxWidth: .infinity)   // center the avatar
+                .padding(.top, VoiidSpacing.xl)
                 .onChange(of: photoItem) { _, item in
                     Task {
                         if let data = try? await item?.loadTransferable(type: Data.self),
@@ -493,6 +485,9 @@ struct CreateProfileScreen: View {
                 .padding(.horizontal, VoiidSpacing.lg).padding(.bottom, VoiidSpacing.xl)
             }
         }
-        .navigationBarBackButtonHidden(true)
+        // Native back button (system chevron) — nav bar shown, transparent over our bg.
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(.hidden, for: .navigationBar)
+        .tint(VoiidColor.primary)   // native back chevron color
     }
 }
