@@ -66,9 +66,10 @@ struct VoiidTextField: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        TextField(placeholder, text: $text)
+        TextField("", text: $text, prompt:
+            Text(placeholder).foregroundColor(VoiidColor.placeholder))
             .font(VoiidFont.body)
-            .foregroundColor(VoiidColor.textPrimary)
+            .foregroundColor(VoiidColor.textPrimary)   // adaptive: plum (light) / #FCF4F8 (dark)
             .keyboardType(keyboard)
             .focused($focused)
             .padding(.horizontal, VoiidSpacing.md)

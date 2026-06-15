@@ -73,7 +73,8 @@ struct PhoneScreen: View {
                         .clipShape(RoundedRectangle(cornerRadius: pillRadius, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: pillRadius).stroke(VoiidColor.fieldBorder, lineWidth: 1))
 
-                    TextField("91234567890", text: $phone)
+                    TextField("", text: $phone, prompt:
+                        Text("91234567890").foregroundColor(VoiidColor.placeholder))
                         .font(VoiidFont.rounded(17, .regular))
                         .foregroundColor(VoiidColor.textPrimary)
                         .keyboardType(.numberPad)
@@ -321,8 +322,10 @@ struct CreateProfileScreen: View {
                     }
                 }
 
-                TextField("About you", text: $about, axis: .vertical)
+                TextField("", text: $about, axis: .vertical,
+                          prompt: Text("About you").foregroundColor(VoiidColor.placeholder))
                     .font(VoiidFont.body).lineLimit(3...5)
+                    .foregroundColor(VoiidColor.textPrimary)
                     .padding(VoiidSpacing.md)
                     .frame(maxWidth: .infinity, minHeight: 119, alignment: .topLeading)
                     .background(VoiidColor.fieldFill)
