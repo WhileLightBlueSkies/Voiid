@@ -319,7 +319,13 @@ struct SignupScreen: View {
 
     private let pillHeight: CGFloat = 64
     private let pillRadius: CGFloat = VoiidRadius.pill
-    private var valid: Bool { !name.trimmingCharacters(in: .whitespaces).isEmpty && email.contains("@") && email.contains(".") }
+    private var valid: Bool {
+        let n = name.trimmingCharacters(in: .whitespaces)
+        let e = email.trimmingCharacters(in: .whitespaces)
+        // basic email: something@something.something
+        let emailOK = e.range(of: #"^[^@\s]+@[^@\s]+\.[^@\s]+$"#, options: .regularExpression) != nil
+        return !n.isEmpty && emailOK
+    }
 
     var body: some View {
         ZStack {
