@@ -167,7 +167,8 @@ struct OTPScreen: View {
     var body: some View {
         ZStack {
             VoiidBackground()
-                .dismissKeyboardOnTap()
+                .contentShape(Rectangle())
+                .onTapGesture { focusedIndex = nil }   // clears @FocusState -> keyboard closes
             VStack(alignment: .leading, spacing: 0) {
                 Spacer().frame(height: 24)
                 Text("Verify your number")
