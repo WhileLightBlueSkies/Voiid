@@ -45,17 +45,14 @@ struct RootTabView: View {
             Haptics.selection()
             withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { tab = t }
         } label: {
-            VStack(spacing: 5) {
-                // rounded-square icon tile (active = pink fill)
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(tab == t ? VoiidColor.accent : Color.clear)
-                    .frame(width: 46, height: 40)
-                    .overlay(
-                        Image(systemName: icon)
-                            .font(.system(size: 20, weight: .medium))
-                            .foregroundColor(tab == t ? VoiidColor.primary : VoiidColor.textSecondary)
-                            .scaleEffect(tab == t ? 1.05 : 1)
-                    )
+            VStack(spacing: 6) {
+                // Icon + label (active = primary, inactive = muted). PNG icons swap in later;
+                // elastic select bounce.
+                Image(systemName: icon)
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundColor(tab == t ? VoiidColor.primary : VoiidColor.textSecondary)
+                    .scaleEffect(tab == t ? 1.12 : 1)
+                    .animation(.spring(response: 0.35, dampingFraction: 0.5), value: tab)
                 Text(label)
                     .font(VoiidFont.rounded(11, .medium))
                     .foregroundColor(tab == t ? VoiidColor.primary : VoiidColor.textSecondary)

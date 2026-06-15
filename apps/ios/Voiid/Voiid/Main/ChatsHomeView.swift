@@ -50,9 +50,12 @@ struct ChatsHomeView: View {
         return base.filter { $0.title.localizedCaseInsensitiveContains(search) }
     }
 
-    // Top bar — hamburger menu on the right
+    // Top bar — "Chats" title left, hamburger menu right
     private var header: some View {
         HStack {
+            Text("Chats")
+                .font(VoiidFont.rounded(28, .bold))
+                .foregroundColor(VoiidColor.textPrimary)
             Spacer()
             Button { Haptics.tap() } label: {
                 Image(systemName: "line.3.horizontal")
@@ -117,10 +120,23 @@ struct ChatsHomeView: View {
     private func gridCard(_ conv: VConversation) -> some View {
         VStack(spacing: VoiidSpacing.sm) {
             ZStack(alignment: .topTrailing) {
-                VoiidAvatar(size: 100, imageName: conv.photoName)
+                // Avatar fills the column width as a square (scales per device).
+                ZStack {
+                    RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
+                        .fill(VoiidColor.fieldFill)
+                    if let name = conv.photoName, let ui = UIImage(named: name) {
+                        Image(uiImage: ui).resizable().scaledToFill()
+                    } else {
+                        Image("VoiidWordmark").resizable().scaledToFit()
+                            .frame(width: 56).opacity(0.22)
+                    }
+                }
+                .aspectRatio(1, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
+
                 if conv.isOnline {
                     Circle().fill(VoiidColor.success)
-                        .frame(width: 14, height: 14)
+                        .frame(width: 13, height: 13)
                         .overlay(Circle().stroke(VoiidColor.background, lineWidth: 2))
                         .offset(x: -6, y: 6)
                 }
@@ -133,7 +149,7 @@ struct ChatsHomeView: View {
                 }
             }
             Text(conv.title)
-                .font(VoiidFont.rounded(15, .regular)).foregroundColor(VoiidColor.textPrimary)
+                .font(VoiidFont.rounded(14, .regular)).foregroundColor(VoiidColor.textPrimary)
                 .lineLimit(1)
         }
     }
