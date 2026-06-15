@@ -156,41 +156,62 @@ struct CountryPickerSheet: View {
 
 struct OTPScreen: View {
     let onContinue: () -> Void
+    var phoneNumber: String = "+91 91234567890"
     @State private var code: [String] = Array(repeating: "", count: 6)
     @FocusState private var focusedIndex: Int?
+
+    private let pillHeight: CGFloat = 64
+    private var complete: Bool { code.allSatisfy { !$0.isEmpty } }
 
     var body: some View {
         ZStack {
             VoiidBackground()
+                .dismissKeyboardOnTap()
             VStack(alignment: .leading, spacing: 0) {
-                Spacer().frame(height: 80)
+                Spacer().frame(height: 24)
                 Text("Verify your number")
-                    .font(VoiidFont.title).foregroundColor(VoiidColor.textPrimary)
+                    .font(VoiidFont.rounded(22, .bold))
+                    .foregroundColor(VoiidColor.textPrimary)
                     .padding(.horizontal, VoiidSpacing.lg)
-                Text("We sent a 6-digit code to +91 91234567890")
-                    .font(VoiidFont.subhead).foregroundColor(VoiidColor.textSecondary)
-                    .padding(.horizontal, VoiidSpacing.lg).padding(.top, VoiidSpacing.sm)
+                Text("We sent a 6-digit code to \(phoneNumber)")
+                    .font(VoiidFont.rounded(14, .regular))
+                    .foregroundColor(VoiidColor.textSecondary)
+                    .padding(.horizontal, VoiidSpacing.lg).padding(.top, 6)
 
-                HStack(spacing: VoiidSpacing.sm) {
-                    ForEach(0..<6, id: \.self) { i in
-                        otpBox(i)
-                    }
+                // 6 circular OTP fields
+                HStack(spacing: 10) {
+                    ForEach(0..<6, id: \.self) { i in otpCircle(i) }
                 }
                 .padding(.horizontal, VoiidSpacing.lg)
                 .padding(.top, VoiidSpacing.xl)
 
+                // Resend row
+                Button("Resend code") { Haptics.tap() }
+                    .font(VoiidFont.rounded(14, .medium))
+                    .foregroundColor(VoiidColor.primary)
+                    .padding(.horizontal, VoiidSpacing.lg)
+                    .padding(.top, VoiidSpacing.md)
+
                 Spacer()
 
-                VoiidPrimaryButton(title: "Continue", enabled: code.allSatisfy { !$0.isEmpty }) {
-                    Haptics.success(); onContinue()
+                Button(action: { Haptics.success(); onContinue() }) {
+                    Text("Continue")
+                        .font(VoiidFont.rounded(18, .medium))
+                        .foregroundColor(VoiidColor.textPrimary)
+                        .frame(maxWidth: .infinity).frame(height: pillHeight)
+                        .background(VoiidColor.accent)
+                        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.pill, style: .continuous))
+                        .opacity(complete ? 1 : 0.55)
                 }
+                .buttonStyle(SoftPressStyle())
+                .disabled(!complete)
                 .padding(.horizontal, VoiidSpacing.lg).padding(.bottom, VoiidSpacing.xl)
             }
         }
         .onAppear { focusedIndex = 0 }
     }
 
-    private func otpBox(_ i: Int) -> some View {
+    private func otpCircle(_ i: Int) -> some View {
         TextField("", text: Binding(
             get: { code[i] },
             set: { newVal in
@@ -199,18 +220,25 @@ struct OTPScreen: View {
                 if !filtered.isEmpty {
                     Haptics.selection()
                     if i < 5 { focusedIndex = i + 1 } else { focusedIndex = nil }
+                } else if newVal.isEmpty, i > 0 {
+                    focusedIndex = i - 1   // backspace moves back
                 }
             })
         )
         .multilineTextAlignment(.center)
-        .font(VoiidFont.title)
+        .font(VoiidFont.rounded(22, .semibold))
+        .foregroundColor(VoiidColor.textPrimary)
         .keyboardType(.numberPad)
         .focused($focusedIndex, equals: i)
-        .frame(width: 50, height: 50)
+        .frame(maxWidth: .infinity)
+        .frame(height: 52)
         .background(VoiidColor.fieldFill)
-        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md)
-            .stroke(focusedIndex == i ? VoiidColor.primary : VoiidColor.fieldBorder, lineWidth: focusedIndex == i ? 2 : 1))
+        .clipShape(Circle())
+        .overlay(Circle().stroke(
+            focusedIndex == i ? VoiidColor.primary : VoiidColor.fieldBorder,
+            lineWidth: focusedIndex == i ? 2 : 1))
+        .scaleEffect(focusedIndex == i ? 1.06 : 1)
+        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: focusedIndex)
     }
 }
 
