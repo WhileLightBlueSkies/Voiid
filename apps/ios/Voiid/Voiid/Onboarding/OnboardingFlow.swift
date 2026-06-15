@@ -15,18 +15,24 @@ struct OnboardingFlow: View {
 
     enum Step: Hashable { case phone, otp, signup, profile }
 
+    @Namespace private var logoNS
+
     var body: some View {
         ZStack {
             if showSplash {
-                SplashScreen()
+                SplashScreen(logoNS: logoNS)
                     .transition(.opacity)
+                    .zIndex(1)
                     .task {
-                        try? await Task.sleep(nanoseconds: 2_200_000_000)
-                        withAnimation(.easeInOut(duration: 0.5)) { showSplash = false }
+                        try? await Task.sleep(nanoseconds: 1_900_000_000)
+                        // Elastic, connected move: logo glides from splash center up to Terms.
+                        withAnimation(.spring(response: 0.75, dampingFraction: 0.82)) {
+                            showSplash = false
+                        }
                     }
             } else {
                 NavigationStack(path: $path) {
-                    TermsScreen(onContinue: { path.append(.phone) })
+                    TermsScreen(logoNS: logoNS, onContinue: { path.append(.phone) })
                         .navigationDestination(for: Step.self) { step in
                             switch step {
                             case .phone:   PhoneScreen(onContinue: { path.append(.otp) })
@@ -36,6 +42,7 @@ struct OnboardingFlow: View {
                             }
                         }
                 }
+                .transition(.opacity)
             }
         }
     }
@@ -44,6 +51,7 @@ struct OnboardingFlow: View {
 // MARK: - Splash (exact Figma — Urbanist logo, embossed on #DFDFDF)
 
 struct SplashScreen: View {
+    var logoNS: Namespace.ID
     @State private var appear = false
     // Ellipse scales per device (design ref 325 on 402). Wordmark stays fixed 80 per spec.
     private var ellipse: CGFloat { UIScreen.main.bounds.width * (325.0 / 402.0) }
@@ -51,6 +59,7 @@ struct SplashScreen: View {
         ZStack {
             VoiidBackground()
             LogoMark(size: ellipse, fontSize: 80)
+                .matchedGeometryEffect(id: "voiidLogo", in: logoNS)
                 .scaleEffect(appear ? 1 : 0.92)
                 .opacity(appear ? 1 : 0)
                 .animation(.spring(response: 0.8, dampingFraction: 0.7), value: appear)
@@ -62,8 +71,10 @@ struct SplashScreen: View {
 // MARK: - Terms & Conditions (exact Figma)
 
 struct TermsScreen: View {
+    var logoNS: Namespace.ID
     let onContinue: () -> Void
     @State private var agreed = false
+    @State private var contentIn = false
 
     var body: some View {
         ZStack {
@@ -71,9 +82,11 @@ struct TermsScreen: View {
             VStack(spacing: 0) {
                 Spacer().frame(height: 60)
                 LogoMark(size: UIScreen.main.bounds.width * (300.0 / 402.0), fontSize: 80)
+                    .matchedGeometryEffect(id: "voiidLogo", in: logoNS)
 
                 Spacer()
 
+                Group {
                 HStack(spacing: VoiidSpacing.sm) {
                     Button { withAnimation(.spring(response: 0.25)) { agreed.toggle() } } label: {
                         RoundedRectangle(cornerRadius: 3)
@@ -115,9 +128,16 @@ struct TermsScreen: View {
                     .foregroundColor(VoiidColor.textSecondary)
                     .padding(.top, VoiidSpacing.md)
                     .padding(.bottom, VoiidSpacing.lg)
+                }
+                // Content fades + slides up after the logo settles (staggered reveal).
+                .opacity(contentIn ? 1 : 0)
+                .offset(y: contentIn ? 0 : 16)
             }
         }
         .navigationBarBackButtonHidden(true)
+        .onAppear {
+            withAnimation(.easeOut(duration: 0.45).delay(0.25)) { contentIn = true }
+        }
     }
 }
 
