@@ -1,0 +1,25 @@
+{
+  "name": "voiid",
+  "private": true,
+  "version": "0.1.0",
+  "description": "VOIID — privacy-first, E2E-encrypted messaging super-app (monorepo).",
+  "workspaces": [
+    "backend/*",
+    "packages/*",
+    "apps/web",
+    "apps/admin-web"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev:api": "npm run dev -w @voiid/api",
+    "dev:ws": "npm run dev -w @voiid/websocket",
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "dependencies": {
+    "@supabase/ssr": "^0.12.0",
+    "@supabase/supabase-js": "^2.108.2"
+  }
+}

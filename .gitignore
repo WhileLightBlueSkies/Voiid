@@ -1,0 +1,23 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+build/
+.turbo/
+coverage/
+
+# Supabase local artifacts (keep config.toml + migrations symlink tracked)
+supabase/.temp/
+supabase/.branches/
+
+# Xcode per-user state (not source)
+xcuserdata/
+*.xcuserstate
+DerivedData/
+
+# Android / Gradle build artifacts
+.gradle/
+apps/android/local.properties

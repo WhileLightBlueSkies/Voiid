@@ -1,0 +1,49 @@
+# VOIID local dev stack (Phase 0). Everything Dockerized (Section 7.4); host swappable.
+# Postgres here is for LOCAL dev only — staging/prod use Supabase Postgres via DATABASE_URL.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: voiid
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # migrations applied via Supabase CLI; this auto-loads them on first boot for local convenience
+      - ../../database/migrations:/docker-entrypoint-initdb.d:ro
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  api:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/api.Dockerfile
+    env_file: ../../.env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/voiid
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "4000:4000"
+    depends_on:
+      - postgres
+      - redis
+
+  websocket:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/websocket.Dockerfile
+    env_file: ../../.env
+    environment:
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "4001:4001"
+    depends_on:
+      - redis
+
+volumes:
+  pgdata:
