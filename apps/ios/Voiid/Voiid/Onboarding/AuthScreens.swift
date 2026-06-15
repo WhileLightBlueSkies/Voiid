@@ -11,67 +11,121 @@ import PhotosUI
 
 // MARK: - Phone number (Figma Screen-2)
 
+// A small country model for the picker.
+struct Country: Identifiable, Hashable {
+    let id = UUID()
+    let name: String
+    let dialCode: String
+    let flag: String
+}
+
+private let countries: [Country] = [
+    Country(name: "India", dialCode: "+91", flag: "🇮🇳"),
+    Country(name: "United States", dialCode: "+1", flag: "🇺🇸"),
+    Country(name: "United Kingdom", dialCode: "+44", flag: "🇬🇧"),
+    Country(name: "United Arab Emirates", dialCode: "+971", flag: "🇦🇪"),
+    Country(name: "Singapore", dialCode: "+65", flag: "🇸🇬"),
+    Country(name: "Australia", dialCode: "+61", flag: "🇦🇺"),
+    Country(name: "Canada", dialCode: "+1", flag: "🇨🇦"),
+]
+
 struct PhoneScreen: View {
     let onContinue: () -> Void
     @State private var phone = ""
+    @State private var country = countries[0]   // India default
+
+    // pill metrics matched to the design
+    private let pillHeight: CGFloat = 64
+    private let pillRadius: CGFloat = VoiidRadius.pill
 
     var body: some View {
         ZStack {
             VoiidBackground()
             VStack(alignment: .leading, spacing: 0) {
-                Spacer().frame(height: 80)
+                Spacer().frame(height: 44)   // title sits higher up (per design)
 
                 Text("Your phone number")
-                    .font(VoiidFont.title).foregroundColor(VoiidColor.textPrimary)
+                    .font(VoiidFont.rounded(22, .bold))
+                    .foregroundColor(VoiidColor.textPrimary)
                     .padding(.horizontal, VoiidSpacing.lg)
-                Text("Voiid will send a one-time code via SMS to verify your number")
-                    .font(VoiidFont.subhead).foregroundColor(VoiidColor.textSecondary)
+                Text("Voiid will send a one-time code via SMS\nto verify your number")
+                    .font(VoiidFont.rounded(14, .regular))
+                    .foregroundColor(VoiidColor.textSecondary)
                     .padding(.horizontal, VoiidSpacing.lg)
-                    .padding(.top, VoiidSpacing.sm)
+                    .padding(.top, 6)
 
-                // Country row
-                HStack {
-                    Text("🇮🇳").font(.system(size: 22))
-                    Text("India").font(VoiidFont.body).foregroundColor(VoiidColor.textPrimary)
-                    Spacer()
-                    Image(systemName: "chevron.down").foregroundColor(VoiidColor.textSecondary)
+                // Country selector — native menu (most reliable + accessible).
+                Menu {
+                    ForEach(countries) { c in
+                        Button {
+                            Haptics.selection(); country = c
+                        } label: {
+                            Text("\(c.flag)  \(c.name)  \(c.dialCode)")
+                        }
+                    }
+                } label: {
+                    HStack {
+                        Text(country.name)
+                            .font(VoiidFont.rounded(17, .regular))
+                            .foregroundColor(VoiidColor.textPrimary)
+                        Spacer()
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(VoiidColor.textSecondary)
+                    }
+                    .padding(.horizontal, VoiidSpacing.lg)
+                    .frame(height: pillHeight)
+                    .frame(maxWidth: .infinity)
+                    .background(VoiidColor.fieldFill)
+                    .clipShape(RoundedRectangle(cornerRadius: pillRadius, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: pillRadius).stroke(VoiidColor.fieldBorder, lineWidth: 1))
                 }
-                .padding(.horizontal, VoiidSpacing.md)
-                .frame(height: 65)
-                .background(VoiidColor.fieldFill)
-                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md).stroke(VoiidColor.fieldBorder))
                 .padding(.horizontal, VoiidSpacing.lg)
                 .padding(.top, VoiidSpacing.xl)
 
-                // Code + number
+                // Dial code pill + number pill
                 HStack(spacing: VoiidSpacing.md) {
-                    Text("+91").font(VoiidFont.body).foregroundColor(VoiidColor.textPrimary)
-                        .frame(width: 85, height: 65)
+                    Text(country.dialCode)
+                        .font(VoiidFont.rounded(17, .regular))
+                        .foregroundColor(VoiidColor.textPrimary)
+                        .frame(width: 84, height: pillHeight)
                         .background(VoiidColor.fieldFill)
-                        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md).stroke(VoiidColor.fieldBorder))
+                        .clipShape(RoundedRectangle(cornerRadius: pillRadius, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: pillRadius).stroke(VoiidColor.fieldBorder, lineWidth: 1))
+
                     TextField("91234567890", text: $phone)
-                        .font(VoiidFont.body).keyboardType(.numberPad)
-                        .padding(.horizontal, VoiidSpacing.md)
-                        .frame(height: 65)
+                        .font(VoiidFont.rounded(17, .regular))
+                        .foregroundColor(VoiidColor.textPrimary)
+                        .keyboardType(.numberPad)
+                        .padding(.horizontal, VoiidSpacing.lg)
+                        .frame(height: pillHeight)
+                        .frame(maxWidth: .infinity)
                         .background(VoiidColor.fieldFill)
-                        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md).stroke(VoiidColor.fieldBorder))
+                        .clipShape(RoundedRectangle(cornerRadius: pillRadius, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: pillRadius).stroke(VoiidColor.fieldBorder, lineWidth: 1))
                 }
                 .padding(.horizontal, VoiidSpacing.lg)
                 .padding(.top, VoiidSpacing.md)
 
                 Spacer()
 
-                VoiidPrimaryButton(title: "Continue", enabled: phone.count >= 10) {
-                    Haptics.tap(); onContinue()
+                // Continue — pink pill with soft touch feedback.
+                Button(action: { Haptics.tap(); onContinue() }) {
+                    Text("Continue")
+                        .font(VoiidFont.rounded(18, .medium))
+                        .foregroundColor(VoiidColor.textPrimary)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: pillHeight)
+                        .background(VoiidColor.accent)
+                        .clipShape(RoundedRectangle(cornerRadius: pillRadius, style: .continuous))
+                        .opacity(phone.count >= 10 ? 1 : 0.55)
                 }
+                .buttonStyle(SoftPressStyle())
+                .disabled(phone.count < 10)
                 .padding(.horizontal, VoiidSpacing.lg)
                 .padding(.bottom, VoiidSpacing.xl)
             }
         }
-        .navigationBarBackButtonHidden(false)
     }
 }
 

@@ -7,6 +7,21 @@
 
 import SwiftUI
 
+// MARK: - Soft press style (Apple-grade tactile feedback: scale + dim + haptic on press)
+
+struct SoftPressStyle: ButtonStyle {
+    var scale: CGFloat = 0.96
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? scale : 1)
+            .opacity(configuration.isPressed ? 0.9 : 1)
+            .animation(.spring(response: 0.3, dampingFraction: 0.6), value: configuration.isPressed)
+            .onChange(of: configuration.isPressed) { _, pressed in
+                if pressed { Haptics.soft() }
+            }
+    }
+}
+
 // MARK: - Primary button (the dark plum pill seen on every onboarding screen)
 
 struct VoiidPrimaryButton: View {
