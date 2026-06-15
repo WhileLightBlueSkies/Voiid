@@ -27,6 +27,7 @@ struct ContentView: View {
         .environmentObject(ai)
         .environmentObject(clips)
         .tint(VoiidColor.primary)
+        .preferredColorScheme(.light)   // fixed light design — identical in light & dark mode
     }
 }
 

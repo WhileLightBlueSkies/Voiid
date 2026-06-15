@@ -128,28 +128,78 @@ struct CountryPickerSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
-            List(results) { c in
-                Button {
-                    Haptics.selection(); selected = c; dismiss()
-                } label: {
-                    HStack(spacing: VoiidSpacing.md) {
-                        Text(c.flag).font(.system(size: 24))
-                        Text(c.name).font(VoiidFont.rounded(17, .regular)).foregroundColor(VoiidColor.textPrimary)
-                        Spacer()
-                        Text(c.dialCode).font(VoiidFont.rounded(16, .regular)).foregroundColor(VoiidColor.textSecondary)
-                        if c.id == selected.id {
-                            Image(systemName: "checkmark").foregroundColor(VoiidColor.primary)
-                        }
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Text("Select country")
+                    .font(VoiidFont.rounded(18, .semibold))
+                    .foregroundColor(VoiidColor.textPrimary)
+                Spacer()
+                Button { dismiss() } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 26))
+                        .foregroundColor(VoiidColor.textSecondary.opacity(0.6))
+                }
+            }
+            .padding(.horizontal, VoiidSpacing.lg)
+            .padding(.top, VoiidSpacing.lg)
+            .padding(.bottom, VoiidSpacing.md)
+
+            // Custom search field (brand colors, not system)
+            HStack(spacing: VoiidSpacing.sm) {
+                Image(systemName: "magnifyingglass").foregroundColor(VoiidColor.placeholder)
+                TextField("", text: $query,
+                          prompt: Text("Search country or code").foregroundColor(VoiidColor.placeholder))
+                    .font(VoiidFont.rounded(16, .regular))
+                    .foregroundColor(VoiidColor.textPrimary)
+                    .autocorrectionDisabled()
+                if !query.isEmpty {
+                    Button { query = "" } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundColor(VoiidColor.placeholder)
                     }
                 }
             }
-            .listStyle(.plain)
-            .searchable(text: $query, prompt: "Search country or code")
-            .navigationTitle("Select country")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } } }
+            .padding(.horizontal, VoiidSpacing.md)
+            .frame(height: 48)
+            .background(VoiidColor.fieldFill)
+            .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md).stroke(VoiidColor.fieldBorder, lineWidth: 1))
+            .padding(.horizontal, VoiidSpacing.lg)
+            .padding(.bottom, VoiidSpacing.sm)
+
+            // List (custom scroll, brand background)
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(results) { c in
+                        Button {
+                            Haptics.selection(); selected = c; dismiss()
+                        } label: {
+                            HStack(spacing: VoiidSpacing.md) {
+                                Text(c.flag).font(.system(size: 24))
+                                Text(c.name).font(VoiidFont.rounded(17, .regular))
+                                    .foregroundColor(VoiidColor.textPrimary)
+                                Spacer()
+                                Text(c.dialCode).font(VoiidFont.rounded(16, .regular))
+                                    .foregroundColor(VoiidColor.textSecondary)
+                                if c.id == selected.id {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .foregroundColor(VoiidColor.primary)
+                                }
+                            }
+                            .padding(.horizontal, VoiidSpacing.lg)
+                            .frame(height: 56)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        Divider().background(VoiidColor.divider.opacity(0.4))
+                            .padding(.leading, VoiidSpacing.lg)
+                    }
+                }
+            }
         }
+        .background(VoiidColor.background.ignoresSafeArea())
+        .preferredColorScheme(.light)   // fixed appearance — looks the same in light & dark
     }
 }
 
