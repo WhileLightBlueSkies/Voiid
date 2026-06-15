@@ -45,13 +45,12 @@ struct OnboardingFlow: View {
 
 struct SplashScreen: View {
     @State private var appear = false
-    // Ellipse = 325/402 of screen width (design ref), scales per device.
+    // Ellipse scales per device (design ref 325 on 402). Wordmark stays fixed 80 per spec.
     private var ellipse: CGFloat { UIScreen.main.bounds.width * (325.0 / 402.0) }
-    private var logoSize: CGFloat { UIScreen.main.bounds.width * (80.0 / 402.0) }
     var body: some View {
         ZStack {
             VoiidBackground()
-            LogoMark(size: ellipse, fontSize: logoSize)
+            LogoMark(size: ellipse, fontSize: 80)
                 .scaleEffect(appear ? 1 : 0.92)
                 .opacity(appear ? 1 : 0)
                 .animation(.spring(response: 0.8, dampingFraction: 0.7), value: appear)
@@ -71,19 +70,7 @@ struct TermsScreen: View {
             VoiidBackground()
             VStack(spacing: 0) {
                 Spacer().frame(height: 60)
-                LogoMark(size: UIScreen.main.bounds.width * (300.0 / 402.0),
-                         fontSize: UIScreen.main.bounds.width * (72.0 / 402.0))
-
-                VStack(spacing: VoiidSpacing.sm) {
-                    RoundedRectangle(cornerRadius: VoiidRadius.md)
-                        .fill(VoiidColor.fieldFill)
-                        .frame(width: 120, height: 120)
-                        .overlay(Image(systemName: "bubble.left.and.bubble.right.fill")
-                            .font(.system(size: 44)).foregroundColor(VoiidColor.accent))
-                    Text("Talk. See. Share")
-                        .font(VoiidFont.subhead).foregroundColor(VoiidColor.textPrimary)
-                }
-                .padding(.top, VoiidSpacing.lg)
+                LogoMark(size: UIScreen.main.bounds.width * (300.0 / 402.0), fontSize: 80)
 
                 Spacer()
 
@@ -151,38 +138,14 @@ struct LogoMark: View {
                 .shadow(color: .black.opacity(0.18), radius: 24, x: 0, y: 12)  // drop shadow
                 .blur(radius: 12)                       // layer blur (softens into a glow)
 
-            // "voiid" wordmark — exact Figma spec.
-            // Fill #FFFFFF, inside stroke #E8E0E0 2.6, inner shadow x-4 y-4 blur4 #222B59@63%.
-            VoiidWordmark(fontSize: fontSize)
+            // "voiid" wordmark — the EXACT Figma vector (fill + stroke + inner shadow baked in).
+            // Asset: Assets.xcassets/VoiidWordmark (SVG, preserves vector data). Native 167x62.
+            Image("VoiidWordmark")
+                .renderingMode(.original)
+                .resizable()
+                .scaledToFit()
+                .frame(width: size * 0.62)   // ~ wordmark width relative to the ellipse
         }
     }
 }
 
-/// The "voiid" wordmark with the exact Figma fill/stroke/inner-shadow treatment.
-/// Inner shadow is faked via a masked, offset dark copy (SwiftUI Text has no inner shadow).
-struct VoiidWordmark: View {
-    var fontSize: CGFloat
-    private let stroke = Color(hex: 0xE8E0E0)
-    private let innerShadow = Color(hex: 0x222B59).opacity(0.63)
-
-    var body: some View {
-        ZStack {
-            // Base white fill
-            text(.white)
-            // Inner-shadow effect: dark text offset by (-4,-4), blurred, clipped to the glyphs
-            text(innerShadow)
-                .offset(x: -4, y: -4)
-                .blur(radius: 4)
-                .mask(text(.white))
-            // Inside stroke ~2.6 via a subtle outline overlay
-            text(.white)
-                .overlay(text(stroke).blur(radius: 0.6).mask(text(.white)).opacity(0.8))
-        }
-    }
-
-    private func text(_ color: Color) -> some View {
-        Text("voiid")
-            .font(.custom("Urbanist-Bold", size: fontSize))
-            .foregroundColor(color)
-    }
-}
