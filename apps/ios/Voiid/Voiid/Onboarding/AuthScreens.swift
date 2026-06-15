@@ -393,28 +393,61 @@ struct SignupScreen: View {
 struct CreateProfileScreen: View {
     let onFinish: () -> Void
     @EnvironmentObject var session: AppSession
+    @Environment(\.dismiss) private var dismiss
     @State private var about = ""
     @State private var photoItem: PhotosPickerItem?
     @State private var photo: Image?
 
+    private let pillHeight: CGFloat = 64
+    private let pillRadius: CGFloat = VoiidRadius.pill
+    private let avatar: CGFloat = 110
+
     var body: some View {
         ZStack {
-            VoiidBackground()
-            VStack(spacing: VoiidSpacing.lg) {
-                Spacer().frame(height: 60)
-                Text("CREATE PROFILE")
-                    .font(VoiidFont.headline).foregroundColor(VoiidColor.textPrimary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, VoiidSpacing.lg)
-
-                PhotosPicker(selection: $photoItem, matching: .images) {
-                    ZStack {
-                        Circle().fill(VoiidColor.fieldFill).frame(width: 120, height: 120)
-                        if let photo { photo.resizable().scaledToFill().frame(width: 120, height: 120).clipShape(Circle()) }
-                        else { Image(systemName: "camera.fill").font(.system(size: 36)).foregroundColor(VoiidColor.accent) }
+            VoiidBackground().dismissKeyboardOnTap()
+            VStack(spacing: 0) {
+                // Header: back + CREATE PROFILE
+                HStack(spacing: VoiidSpacing.sm) {
+                    Button { Haptics.tap(); dismiss() } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(VoiidColor.textPrimary)
                     }
-                    .overlay(Circle().stroke(VoiidColor.fieldBorder, lineWidth: 1))
+                    Text("CREATE PROFILE")
+                        .font(VoiidFont.rounded(15, .medium))
+                        .tracking(0.5)
+                        .foregroundColor(VoiidColor.textPrimary)
+                    Spacer()
                 }
+                .padding(.horizontal, VoiidSpacing.lg)
+                .padding(.top, VoiidSpacing.md)
+
+                // Avatar with pink camera badge
+                PhotosPicker(selection: $photoItem, matching: .images) {
+                    ZStack(alignment: .bottomTrailing) {
+                        ZStack {
+                            Circle().fill(VoiidColor.fieldFill)
+                            if let photo {
+                                photo.resizable().scaledToFill()
+                                    .frame(width: avatar, height: avatar).clipShape(Circle())
+                            } else {
+                                Image("VoiidWordmark")   // faint logo mark placeholder
+                                    .resizable().scaledToFit()
+                                    .frame(width: avatar * 0.5)
+                                    .opacity(0.25)
+                            }
+                        }
+                        .frame(width: avatar, height: avatar)
+
+                        // pink camera badge
+                        Circle().fill(VoiidColor.accent)
+                            .frame(width: 32, height: 32)
+                            .overlay(Image(systemName: "camera.fill")
+                                .font(.system(size: 14)).foregroundColor(VoiidColor.primary))
+                            .overlay(Circle().stroke(VoiidColor.background, lineWidth: 2))
+                    }
+                }
+                .padding(.top, VoiidSpacing.xxl)
                 .onChange(of: photoItem) { _, item in
                     Task {
                         if let data = try? await item?.loadTransferable(type: Data.self),
@@ -422,25 +455,38 @@ struct CreateProfileScreen: View {
                     }
                 }
 
+                // About you pill text area
                 TextField("", text: $about,
                           prompt: Text("About you").foregroundColor(VoiidColor.placeholder),
                           axis: .vertical)
-                    .font(VoiidFont.body).lineLimit(3...5)
+                    .font(VoiidFont.rounded(17, .regular)).lineLimit(4...7)
                     .foregroundColor(VoiidColor.textPrimary)
-                    .padding(VoiidSpacing.md)
-                    .frame(maxWidth: .infinity, minHeight: 119, alignment: .topLeading)
-                    .background(VoiidColor.fieldFill)
-                    .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md).stroke(VoiidColor.fieldBorder))
                     .padding(.horizontal, VoiidSpacing.lg)
+                    .padding(.vertical, VoiidSpacing.md)
+                    .frame(maxWidth: .infinity, minHeight: 130, alignment: .topLeading)
+                    .background(VoiidColor.fieldFill)
+                    .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 28).stroke(VoiidColor.fieldBorder, lineWidth: 1))
+                    .padding(.horizontal, VoiidSpacing.lg)
+                    .padding(.top, VoiidSpacing.xxl)
 
                 Spacer()
-                VoiidPrimaryButton(title: "Sign up") {
+
+                Button(action: {
                     session.profile.bio = about
                     Haptics.success(); onFinish()
+                }) {
+                    Text("Sign up")
+                        .font(VoiidFont.rounded(18, .medium))
+                        .foregroundColor(VoiidColor.textPrimary)
+                        .frame(maxWidth: .infinity).frame(height: pillHeight)
+                        .background(VoiidColor.accent)
+                        .clipShape(RoundedRectangle(cornerRadius: pillRadius, style: .continuous))
                 }
+                .buttonStyle(SoftPressStyle())
                 .padding(.horizontal, VoiidSpacing.lg).padding(.bottom, VoiidSpacing.xl)
             }
         }
+        .navigationBarBackButtonHidden(true)
     }
 }
