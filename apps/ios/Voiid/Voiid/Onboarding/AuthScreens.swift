@@ -11,28 +11,11 @@ import PhotosUI
 
 // MARK: - Phone number (Figma Screen-2)
 
-// A small country model for the picker.
-struct Country: Identifiable, Hashable {
-    let id = UUID()
-    let name: String
-    let dialCode: String
-    let flag: String
-}
-
-private let countries: [Country] = [
-    Country(name: "India", dialCode: "+91", flag: "🇮🇳"),
-    Country(name: "United States", dialCode: "+1", flag: "🇺🇸"),
-    Country(name: "United Kingdom", dialCode: "+44", flag: "🇬🇧"),
-    Country(name: "United Arab Emirates", dialCode: "+971", flag: "🇦🇪"),
-    Country(name: "Singapore", dialCode: "+65", flag: "🇸🇬"),
-    Country(name: "Australia", dialCode: "+61", flag: "🇦🇺"),
-    Country(name: "Canada", dialCode: "+1", flag: "🇨🇦"),
-]
-
 struct PhoneScreen: View {
     let onContinue: () -> Void
     @State private var phone = ""
-    @State private var country = countries[0]   // India default
+    @State private var country = Country.default   // India default
+    @State private var showPicker = false
 
     // pill metrics matched to the design
     private let pillHeight: CGFloat = 64
@@ -55,17 +38,12 @@ struct PhoneScreen: View {
                     .padding(.horizontal, VoiidSpacing.lg)
                     .padding(.top, 6)
 
-                // Country selector — native menu (most reliable + accessible).
-                Menu {
-                    ForEach(countries) { c in
-                        Button {
-                            Haptics.selection(); country = c
-                        } label: {
-                            Text("\(c.flag)  \(c.name)  \(c.dialCode)")
-                        }
-                    }
+                // Country selector — opens a searchable full-list sheet (best UX for ~200 countries).
+                Button {
+                    Haptics.tap(); showPicker = true
                 } label: {
-                    HStack {
+                    HStack(spacing: VoiidSpacing.sm) {
+                        Text(country.flag).font(.system(size: 22))
                         Text(country.name)
                             .font(VoiidFont.rounded(17, .regular))
                             .foregroundColor(VoiidColor.textPrimary)
@@ -81,6 +59,7 @@ struct PhoneScreen: View {
                     .clipShape(RoundedRectangle(cornerRadius: pillRadius, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: pillRadius).stroke(VoiidColor.fieldBorder, lineWidth: 1))
                 }
+                .buttonStyle(SoftPressStyle(scale: 0.985))
                 .padding(.horizontal, VoiidSpacing.lg)
                 .padding(.top, VoiidSpacing.xl)
 
@@ -126,6 +105,49 @@ struct PhoneScreen: View {
                 .padding(.horizontal, VoiidSpacing.lg)
                 .padding(.bottom, VoiidSpacing.xl)
             }
+        }
+        .sheet(isPresented: $showPicker) {
+            CountryPickerSheet(selected: $country)
+        }
+    }
+}
+
+// MARK: - Searchable country picker (full list)
+
+struct CountryPickerSheet: View {
+    @Binding var selected: Country
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+
+    private var results: [Country] {
+        guard !query.isEmpty else { return CountryStore.all }
+        return CountryStore.all.filter {
+            $0.name.localizedCaseInsensitiveContains(query) || $0.dialCode.contains(query)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List(results) { c in
+                Button {
+                    Haptics.selection(); selected = c; dismiss()
+                } label: {
+                    HStack(spacing: VoiidSpacing.md) {
+                        Text(c.flag).font(.system(size: 24))
+                        Text(c.name).font(VoiidFont.rounded(17, .regular)).foregroundColor(VoiidColor.textPrimary)
+                        Spacer()
+                        Text(c.dialCode).font(VoiidFont.rounded(16, .regular)).foregroundColor(VoiidColor.textSecondary)
+                        if c.id == selected.id {
+                            Image(systemName: "checkmark").foregroundColor(VoiidColor.primary)
+                        }
+                    }
+                }
+            }
+            .listStyle(.plain)
+            .searchable(text: $query, prompt: "Search country or code")
+            .navigationTitle("Select country")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } } }
         }
     }
 }
