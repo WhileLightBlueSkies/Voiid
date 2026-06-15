@@ -124,28 +124,17 @@ struct TermsScreen: View {
 // MARK: - The embossed "voiid" logo mark (Urbanist) shared by Splash + Terms
 
 struct LogoMark: View {
-    /// `size` = ellipse diameter (defaults scale with device width at call sites).
+    /// `size` = rendered diameter of the full logo mark (wordmark + halo).
     var size: CGFloat
-    var fontSize: CGFloat
+    var fontSize: CGFloat   // kept for call-site compatibility; unused (logo is a baked image)
 
     var body: some View {
-        ZStack {
-            // Ellipse: a #DFDFDF circle on a #DFDFDF background — invisible except for its
-            // drop shadow + layer blur, which together produce the soft embossed halo (per design).
-            Circle()
-                .fill(VoiidColor.background)            // #DFDFDF (matches background)
-                .frame(width: size, height: size)
-                .shadow(color: .black.opacity(0.18), radius: 24, x: 0, y: 12)  // drop shadow
-                .blur(radius: 12)                       // layer blur (softens into a glow)
-
-            // "voiid" wordmark — the EXACT Figma vector (fill + stroke + inner shadow baked in).
-            // Asset: Assets.xcassets/VoiidWordmark (SVG, preserves vector data). Native 167x62.
-            Image("VoiidWordmark")
-                .renderingMode(.original)
-                .resizable()
-                .scaledToFit()
-                .frame(width: size * 0.62)   // ~ wordmark width relative to the ellipse
-        }
+        // Full Figma logo mark exported as one image: the "voiid" wordmark + soft halo together.
+        // Asset: Assets.xcassets/VoiidLogoMark (drop voiid-logomark.png into that imageset).
+        Image("VoiidLogoMark")
+            .resizable()
+            .scaledToFit()
+            .frame(width: size)
     }
 }
 
