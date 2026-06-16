@@ -211,30 +211,7 @@ struct ChatDetailView: View {
                     ForEach(groupedByDay, id: \.0) { day, msgs in
                         DateSeparator(text: day)
                         ForEach(msgs) { msg in
-                            HStack(spacing: VoiidSpacing.sm) {
-                                if selectionMode {
-                                    Image(systemName: selectedIDs.contains(msg.id) ? "checkmark.circle.fill" : "circle")
-                                        .font(.system(size: 22))
-                                        .foregroundColor(selectedIDs.contains(msg.id) ? VoiidColor.primary : VoiidColor.textSecondary.opacity(0.5))
-                                        .transition(.move(edge: .leading).combined(with: .opacity))
-                                }
-                                MessageBubble(message: msg,
-                                              isGroup: conversation.type == .group,
-                                              isLastMine: msg.id == lastMineID,
-                                              selectionMode: selectionMode,
-                                              onTapImage: { img in fullscreenImage = img },
-                                              onVote: { optId in
-                                                  chat.vote(messageId: msg.id, optionId: optId, in: conversation.id)
-                                              },
-                                              onReply: { withAnimation { replyingTo = msg } },
-                                              onForward: { forwardMessage = msg },
-                                              onReact: { e in chat.react(messageId: msg.id, emoji: e, in: conversation.id) },
-                                              onCopy: { UIPasteboard.general.string = msg.text },
-                                              onInfo: { infoMessage = msg },
-                                              onDelete: { deleteMessage = msg },
-                                              onSelectTap: { toggleSelect(msg.id) })
-                            }
-                            .id(msg.id)
+                            messageRow(msg).id(msg.id)
                         }
                     }
                     if chat.typingConversations.contains(conversation.id) {
@@ -251,6 +228,31 @@ struct ChatDetailView: View {
                 withAnimation { proxy.scrollTo("typing", anchor: .bottom) }
             }
             .onAppear { proxy.scrollTo(lastID, anchor: .bottom) }
+        }
+    }
+
+    // Extracted per-message row (keeps messageList small enough for the type-checker).
+    @ViewBuilder private func messageRow(_ msg: VMessage) -> some View {
+        HStack(spacing: VoiidSpacing.sm) {
+            if selectionMode {
+                Image(systemName: selectedIDs.contains(msg.id) ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 22))
+                    .foregroundColor(selectedIDs.contains(msg.id) ? VoiidColor.primary : VoiidColor.textSecondary.opacity(0.5))
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+            }
+            MessageBubble(message: msg,
+                          isGroup: conversation.type == .group,
+                          isLastMine: msg.id == lastMineID,
+                          selectionMode: selectionMode,
+                          onTapImage: { img in fullscreenImage = img },
+                          onVote: { optId in chat.vote(messageId: msg.id, optionId: optId, in: conversation.id) },
+                          onReply: { withAnimation { replyingTo = msg } },
+                          onForward: { forwardMessage = msg },
+                          onReact: { e in chat.react(messageId: msg.id, emoji: e, in: conversation.id) },
+                          onCopy: { UIPasteboard.general.string = msg.text },
+                          onInfo: { infoMessage = msg },
+                          onDelete: { deleteMessage = msg },
+                          onSelectTap: { toggleSelect(msg.id) })
         }
     }
 
