@@ -24,11 +24,29 @@ enum DummyData {
         VConversation(id: "c2", type: .direct, title: "Nehal", lastMessagePreview: "Whats good?", lastMessageAt: .now, isOnline: true),
         VConversation(id: "c3", type: .direct, title: "Sampath", lastMessagePreview: "See you tomorrow", lastMessageAt: .now),
         VConversation(id: "c4", type: .direct, title: "Michael Lingston", lastMessagePreview: "YooYooooo", lastMessageAt: .now, isOnline: true),
+        VConversation(id: "c5", type: .direct, title: "Aarav", lastMessagePreview: "Call me later", lastMessageAt: .now, unreadCount: 1),
+        VConversation(id: "c6", type: .direct, title: "Diya", lastMessagePreview: "😂😂", lastMessageAt: .now, isOnline: true),
+        VConversation(id: "c7", type: .direct, title: "Kabir", lastMessagePreview: "Sent the files", lastMessageAt: .now),
+        VConversation(id: "c8", type: .direct, title: "Ananya", lastMessagePreview: "Thank you!", lastMessageAt: .now, unreadCount: 5),
+        VConversation(id: "c9", type: .direct, title: "Vivaan", lastMessagePreview: "👍", lastMessageAt: .now),
+        VConversation(id: "c10", type: .direct, title: "Ishaan", lastMessagePreview: "On my way", lastMessageAt: .now, isOnline: true),
+        VConversation(id: "c11", type: .direct, title: "Saanvi", lastMessagePreview: "Let's catch up", lastMessageAt: .now),
+        VConversation(id: "c12", type: .direct, title: "Reyansh", lastMessagePreview: "Done ✅", lastMessageAt: .now, unreadCount: 3),
+        VConversation(id: "c13", type: .direct, title: "Aadhya", lastMessagePreview: "Where are you?", lastMessageAt: .now, isOnline: true),
+        VConversation(id: "c14", type: .direct, title: "Arjun", lastMessagePreview: "Haha true", lastMessageAt: .now),
+        VConversation(id: "c15", type: .direct, title: "Myra", lastMessagePreview: "See you soon", lastMessageAt: .now),
+        VConversation(id: "c16", type: .direct, title: "Aditya", lastMessagePreview: "📷 Photo", lastMessageAt: .now, isOnline: true),
+        VConversation(id: "c17", type: .direct, title: "Kiara", lastMessagePreview: "Good night 🌙", lastMessageAt: .now),
+        VConversation(id: "c18", type: .direct, title: "Rohan", lastMessagePreview: "Let me check", lastMessageAt: .now, unreadCount: 1),
     ]
 
     static let groupConversations: [VConversation] = [
         VConversation(id: "g1", type: .group, title: "Group Name", lastMessagePreview: "Heyyyyy", lastMessageAt: .now, memberCount: 4),
         VConversation(id: "g2", type: .group, title: "Team Voiid", lastMessagePreview: "Ship it", lastMessageAt: .now, memberCount: 6),
+        VConversation(id: "g3", type: .group, title: "Family", lastMessagePreview: "Dinner at 8?", lastMessageAt: .now, unreadCount: 4, memberCount: 5),
+        VConversation(id: "g4", type: .group, title: "College Buddies", lastMessagePreview: "Reunion plans 🎉", lastMessageAt: .now, memberCount: 12),
+        VConversation(id: "g5", type: .group, title: "Weekend Trip", lastMessagePreview: "Booked the cab", lastMessageAt: .now, unreadCount: 2, memberCount: 7),
+        VConversation(id: "g6", type: .group, title: "Project Alpha", lastMessagePreview: "Standup at 10", lastMessageAt: .now, memberCount: 9),
     ]
 
     static func messages(for conversationId: String) -> [VMessage] {

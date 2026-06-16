@@ -37,6 +37,8 @@ struct ChatDetailView: View {
     @State private var selectedIDs = Set<String>()
     @State private var showBulkDelete = false
     @State private var forwardBulk = false
+    @State private var showCallPicker = false
+    @State private var activeCall: CallRequest?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -115,6 +117,17 @@ struct ChatDetailView: View {
         ) { wrapper in
             ImageViewer(image: wrapper.image) { fullscreenImage = nil }
         }
+        .sheet(isPresented: $showCallPicker) {
+            CallTypeSheet(title: conversation.title) { kind in
+                activeCall = CallRequest(
+                    title: conversation.title,
+                    isGroup: conversation.type == .group,
+                    members: conversation.type == .group ? DummyData.groupMembers : [],
+                    photoName: conversation.photoName,
+                    kind: kind)
+            }
+        }
+        .fullScreenCover(item: $activeCall) { CallScreen(request: $0) }
     }
 
     // MARK: header — normal, or selection bar in multi-select
@@ -175,7 +188,9 @@ struct ChatDetailView: View {
             Spacer()
             HStack(spacing: VoiidSpacing.lg) {
                 Image(systemName: "camera").font(.system(size: 19)).foregroundColor(VoiidColor.textPrimary)
-                Image(systemName: "phone.fill").font(.system(size: 18)).foregroundColor(VoiidColor.textPrimary)
+                Button { Haptics.tap(); showCallPicker = true } label: {
+                    Image(systemName: "phone.fill").font(.system(size: 18)).foregroundColor(VoiidColor.textPrimary)
+                }
                 Menu {
                     Button { showInfo = true } label: {
                         Label(conversation.type == .group ? "Group info" : "View profile", systemImage: "info.circle")

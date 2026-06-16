@@ -15,6 +15,8 @@ struct ChatsHomeView: View {
     @State private var tab: Tab = .chats
     @State private var openConversation: VConversation?
     @State private var deleteTarget: VConversation?
+    @State private var callTarget: VConversation?
+    @State private var activeCall: CallRequest?
     @Namespace private var underline
 
     enum Tab: String { case chats = "Chats", groups = "Groups" }
@@ -34,7 +36,7 @@ struct ChatsHomeView: View {
                     DraggableChatGrid(
                         items: tab == .chats ? $chat.directConversations : $chat.groupConversations,
                         onOpen: { openConversation = $0 },
-                        onCall: { _ in /* dummy: start call */ },
+                        onCall: { callTarget = $0 },
                         onDelete: { deleteTarget = $0 }
                     )
                 } else {
@@ -64,6 +66,17 @@ struct ChatsHomeView: View {
             } message: {
                 Text("This chat will be deleted from your list.")
             }
+            .sheet(item: $callTarget) { conv in
+                CallTypeSheet(title: conv.title) { kind in
+                    activeCall = CallRequest(
+                        title: conv.title,
+                        isGroup: conv.type == .group,
+                        members: conv.type == .group ? DummyData.groupMembers : [],
+                        photoName: conv.photoName,
+                        kind: kind)
+                }
+            }
+            .fullScreenCover(item: $activeCall) { CallScreen(request: $0) }
         }
     }
 
