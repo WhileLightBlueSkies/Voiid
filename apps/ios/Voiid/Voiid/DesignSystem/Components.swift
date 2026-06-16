@@ -70,6 +70,16 @@ struct ProfilePhotoViewer: View {
     }
 }
 
+// MARK: - Bouncy emoji button (reaction pill)
+
+struct BouncyEmojiStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 1.4 : 1)
+            .animation(.spring(response: 0.25, dampingFraction: 0.5), value: configuration.isPressed)
+    }
+}
+
 // MARK: - Soft press style (Apple-grade tactile feedback: scale + dim + haptic on press)
 
 struct SoftPressStyle: ButtonStyle {

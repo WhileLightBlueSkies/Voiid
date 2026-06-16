@@ -313,6 +313,7 @@ struct MessageBubble: View {
     var onInfo: () -> Void = {}
 
     @State private var swipeX: CGFloat = 0
+    @State private var showReactions = false
 
     static let reactionSet = ["👍", "❤️", "😂", "😮", "😢", "🙏"]
 
@@ -384,15 +385,32 @@ struct MessageBubble: View {
                         .transition(.scale.combined(with: .opacity))
                 }
             }
-            // Native long-press menu (system look)
-            .contextMenu {
-                Button { onReply() } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
-                Button { onForward() } label: { Label("Forward", systemImage: "arrowshape.turn.up.right") }
-                Button { onCopy() } label: { Label("Copy", systemImage: "doc.on.doc") }
-                if message.isMine { Button { onInfo() } label: { Label("Info", systemImage: "info.circle") } }
-                Menu {
-                    ForEach(Self.reactionSet, id: \.self) { e in Button(e) { onReact(e) } }
-                } label: { Label("React", systemImage: "face.smiling") }
+            // Long-press → floating reaction pill + actions (popover, no heavy blur)
+            .onLongPressGesture(minimumDuration: 0.3) {
+                Haptics.rigid(); showReactions = true
+            }
+            .popover(isPresented: $showReactions, arrowEdge: .top) {
+                VStack(spacing: 8) {
+                    // reaction row
+                    HStack(spacing: 8) {
+                        ForEach(Self.reactionSet, id: \.self) { e in
+                            Button { onReact(e); showReactions = false } label: {
+                                Text(e).font(.system(size: 28))
+                            }
+                            .buttonStyle(BouncyEmojiStyle())
+                        }
+                    }
+                    Divider()
+                    // actions
+                    HStack(spacing: 0) {
+                        actionBtn("Reply", "arrowshape.turn.up.left") { showReactions = false; onReply() }
+                        actionBtn("Forward", "arrowshape.turn.up.right") { showReactions = false; onForward() }
+                        actionBtn("Copy", "doc.on.doc") { showReactions = false; onCopy() }
+                        if message.isMine { actionBtn("Info", "info.circle") { showReactions = false; onInfo() } }
+                    }
+                }
+                .padding(.horizontal, 12).padding(.vertical, 10)
+                .presentationCompactAdaptation(.popover)
             }
             if !message.isMine { Spacer(minLength: 56) }
         }
@@ -421,6 +439,17 @@ struct MessageBubble: View {
         .transition(.asymmetric(
             insertion: .scale(scale: 0.9, anchor: message.isMine ? .bottomTrailing : .bottomLeading).combined(with: .opacity),
             removal: .opacity))
+    }
+
+    private func actionBtn(_ title: String, _ icon: String, _ tap: @escaping () -> Void) -> some View {
+        Button(action: tap) {
+            VStack(spacing: 4) {
+                Image(systemName: icon).font(.system(size: 18)).foregroundColor(VoiidColor.primary)
+                Text(title).font(VoiidFont.rounded(11, .regular)).foregroundColor(VoiidColor.textPrimary)
+            }
+            .frame(width: 64)
+        }
+        .buttonStyle(.plain)
     }
 
     // Text bubble: message + (time · tick) flowing at the end, compact like WhatsApp.
