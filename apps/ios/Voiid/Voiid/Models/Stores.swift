@@ -49,7 +49,7 @@ final class ChatStore: ObservableObject {
     /// then a typing indicator and an auto-reply — so ticks, timestamps and typing all animate.
     func send(_ text: String, kind: MessageKind = .text, to conversationId: String) {
         let id = UUID().uuidString
-        var msg = VMessage(id: id, conversationId: conversationId, senderId: "me",
+        let msg = VMessage(id: id, conversationId: conversationId, senderId: "me",
                            kind: kind, text: text, createdAt: .now, status: .sending, isMine: true)
         messagesByConversation[conversationId, default: messages(for: conversationId)].append(msg)
         bumpPreview(conversationId, preview: kind == .text ? text : previewFor(kind))
@@ -61,7 +61,6 @@ final class ChatStore: ObservableObject {
 
         // simulated reply with a typing indicator
         Task { await simulateReply(in: conversationId) }
-        _ = msg
     }
 
     private func previewFor(_ kind: MessageKind) -> String {

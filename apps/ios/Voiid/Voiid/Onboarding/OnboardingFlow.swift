@@ -54,7 +54,7 @@ struct SplashScreen: View {
     var logoNS: Namespace.ID
     @State private var appear = false
     // Ellipse scales per device (design ref 325 on 402). Wordmark stays fixed 80 per spec.
-    private var ellipse: CGFloat { UIScreen.main.bounds.width * (325.0 / 402.0) }
+    private var ellipse: CGFloat { VoiidScreen.width * (325.0 / 402.0) }
     var body: some View {
         ZStack {
             VoiidBackground()
@@ -81,7 +81,7 @@ struct TermsScreen: View {
             VoiidBackground()
             VStack(spacing: 0) {
                 Spacer().frame(height: 60)
-                LogoMark(size: UIScreen.main.bounds.width * (300.0 / 402.0), fontSize: 80)
+                LogoMark(size: VoiidScreen.width * (300.0 / 402.0), fontSize: 80)
                     .matchedGeometryEffect(id: "voiidLogo", in: logoNS)
 
                 Spacer()

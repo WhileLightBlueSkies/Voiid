@@ -11,6 +11,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 // MARK: - Colors (Section 6.1)
 
@@ -94,6 +95,16 @@ enum VoiidFont {
     /// Falls back to rounded bold if the font isn't registered yet.
     static func logo(_ size: CGFloat) -> Font {
         .custom("Urbanist-Bold", size: size)
+    }
+}
+
+// MARK: - Screen width (non-deprecated; avoids UIScreen.main)
+
+enum VoiidScreen {
+    static var width: CGFloat {
+        (UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first?.screen.bounds.width) ?? 402
     }
 }
 
