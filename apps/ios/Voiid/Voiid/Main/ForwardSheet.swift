@@ -52,6 +52,7 @@ struct ForwardSheet: View {
                         }
                     }
                 }
+                .scrollDismissesKeyboard(.immediately)
             }
             .background(VoiidColor.background.ignoresSafeArea())
             .navigationTitle("Forward to").navigationBarTitleDisplayMode(.inline)

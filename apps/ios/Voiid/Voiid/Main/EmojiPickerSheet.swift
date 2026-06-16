@@ -56,6 +56,7 @@ struct EmojiPickerSheet: View {
                     .padding(.horizontal, VoiidSpacing.lg)
                     .padding(.bottom, VoiidSpacing.xl)
                 }
+                .scrollDismissesKeyboard(.immediately)
             }
             .background(VoiidColor.background.ignoresSafeArea())
             .navigationTitle("Choose emoji").navigationBarTitleDisplayMode(.inline)
@@ -65,8 +66,12 @@ struct EmojiPickerSheet: View {
 
     private func filtered(_ cat: EmojiData.Category) -> [String] {
         guard !query.isEmpty else { return cat.emojis }
-        // simple keyword: match the category name; otherwise show all (emoji names aren't indexed)
-        return cat.name.localizedCaseInsensitiveContains(query) ? cat.emojis : []
+        let q = query.lowercased()
+        // match by category name OR by curated per-emoji keywords
+        return cat.emojis.filter { e in
+            cat.name.lowercased().contains(q) ||
+            (EmojiData.keywords[e]?.contains { $0.contains(q) } ?? false)
+        }
     }
 }
 
@@ -84,6 +89,26 @@ enum EmojiData {
         Category(name: "Travel & Places", emojis: scalars(0x1F680...0x1F6C0)),
         Category(name: "Objects", emojis: scalars(0x1F4A1...0x1F4FF)),
         Category(name: "Symbols", emojis: scalars(0x2764...0x2764) + scalars(0x1F500...0x1F53F)),
+    ]
+
+    /// Curated keyword search for common emojis (iOS doesn't expose emoji names).
+    static let keywords: [String: [String]] = [
+        "😀": ["smile", "happy"], "😂": ["laugh", "lol", "funny"], "🤣": ["rofl", "laugh"],
+        "😊": ["smile", "blush"], "😍": ["love", "heart eyes"], "😘": ["kiss"],
+        "😎": ["cool", "sunglasses"], "🤔": ["think"], "😢": ["sad", "cry"], "😭": ["cry", "sob"],
+        "😡": ["angry", "mad"], "🥳": ["party", "celebrate"], "😴": ["sleep", "tired"],
+        "👍": ["thumbs up", "like", "yes", "ok"], "👎": ["thumbs down", "dislike", "no"],
+        "👏": ["clap", "applause"], "🙏": ["pray", "thanks", "please"], "🙌": ["celebrate", "praise"],
+        "💪": ["strong", "muscle"], "👋": ["wave", "hi", "bye"], "✌️": ["peace"], "🤝": ["handshake", "deal"],
+        "❤️": ["heart", "love", "red"], "🧡": ["heart", "orange"], "💛": ["heart", "yellow"],
+        "💚": ["heart", "green"], "💙": ["heart", "blue"], "💜": ["heart", "purple"], "🖤": ["heart", "black"],
+        "🔥": ["fire", "lit", "hot"], "✨": ["sparkle", "stars"], "⭐": ["star"], "🎉": ["party", "celebrate", "tada"],
+        "🐶": ["dog", "puppy"], "🐱": ["cat"], "🦁": ["lion"], "🐼": ["panda"], "🐵": ["monkey"],
+        "🍕": ["pizza", "food"], "🍔": ["burger", "food"], "🍟": ["fries"], "🍗": ["chicken"],
+        "🍦": ["icecream"], "🍩": ["donut"], "☕": ["coffee"], "🍺": ["beer"], "🍷": ["wine"],
+        "⚽": ["football", "soccer"], "🏀": ["basketball"], "🎮": ["game", "gaming"], "🎵": ["music", "note"],
+        "🚗": ["car"], "✈️": ["plane", "flight", "travel"], "🚀": ["rocket", "launch"], "🏠": ["home", "house"],
+        "📱": ["phone", "mobile"], "💻": ["laptop", "computer"], "💰": ["money", "cash"], "🎁": ["gift", "present"],
     ]
 
     /// Build emoji strings from a scalar range, skipping anything that isn't a real emoji.

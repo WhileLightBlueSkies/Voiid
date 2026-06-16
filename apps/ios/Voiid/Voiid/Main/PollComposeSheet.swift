@@ -39,6 +39,7 @@ struct PollComposeSheet: View {
                 }
                 .padding(VoiidSpacing.lg)
             }
+            .scrollDismissesKeyboard(.interactively)
             .background(VoiidColor.background.ignoresSafeArea())
             .navigationTitle("New Poll").navigationBarTitleDisplayMode(.inline)
             .toolbar {

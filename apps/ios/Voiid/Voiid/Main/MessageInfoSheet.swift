@@ -46,7 +46,16 @@ struct MessageInfoSheet: View {
             .padding(VoiidSpacing.lg)
             .background(VoiidColor.background.ignoresSafeArea())
             .navigationTitle("Message info").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { Haptics.tap(); dismiss() } label: {
+                        Text("Done").fontWeight(.semibold)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(VoiidColor.primary)
+                    .controlSize(.small)
+                }
+            }
         }
     }
 
