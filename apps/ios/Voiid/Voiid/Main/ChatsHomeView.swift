@@ -54,7 +54,7 @@ struct ChatsHomeView: View {
     private var header: some View {
         HStack {
             Text("Chats")
-                .font(VoiidFont.rounded(28, .bold))
+                .font(VoiidFont.rounded(24, .bold))
                 .foregroundColor(VoiidColor.textPrimary)
             Spacer()
             Button { Haptics.tap() } label: {
@@ -99,7 +99,7 @@ struct ChatsHomeView: View {
         } label: {
             VStack(spacing: 8) {
                 Text(t.rawValue)
-                    .font(VoiidFont.rounded(17, .semibold))
+                    .font(VoiidFont.rounded(15, .semibold))
                     .foregroundColor(tab == t ? VoiidColor.primary : VoiidColor.textSecondary)
                 ZStack {
                     Capsule().fill(.clear).frame(height: 3)
@@ -149,7 +149,7 @@ struct ChatsHomeView: View {
                 }
             }
             Text(conv.title)
-                .font(VoiidFont.rounded(14, .regular)).foregroundColor(VoiidColor.textPrimary)
+                .font(VoiidFont.rounded(13, .regular)).foregroundColor(VoiidColor.textPrimary)
                 .lineLimit(1)
         }
     }
