@@ -35,9 +35,12 @@ enum DummyData {
         [
             VMessage(id: "m1", conversationId: conversationId, senderId: "u4", text: "Whats good? How can i Help you today?", createdAt: .now, isMine: false),
             VMessage(id: "m2", conversationId: conversationId, senderId: "me", text: "Yoooo", createdAt: .now, status: .read, isMine: true),
-            VMessage(id: "m3", conversationId: conversationId, senderId: "u4", text: "Whats good? How can i Help you today?", createdAt: .now, isMine: false),
-            VMessage(id: "m4", conversationId: conversationId, senderId: "me", text: "YooYooooo", createdAt: .now, status: .read, isMine: true),
-            VMessage(id: "m5", conversationId: conversationId, senderId: "u4", text: "Whats good? How can i Help you today?", createdAt: .now, isMine: false),
+            VMessage(id: "m3", conversationId: conversationId, senderId: "u4", text: "Did you get a chance to look at the designs?", createdAt: .now, isMine: false),
+            VMessage(id: "m4", conversationId: conversationId, senderId: "me", text: "Yep! Looks 🔥 honestly", createdAt: .now, status: .read, isMine: true),
+            VMessage(id: "m5", conversationId: conversationId, senderId: "me", text: "Just the spacing on the cards felt a bit tight", createdAt: .now, status: .read, isMine: true),
+            VMessage(id: "m6", conversationId: conversationId, senderId: "u4", text: "Good catch, fixing that now", createdAt: .now, isMine: false),
+            VMessage(id: "m7", conversationId: conversationId, senderId: "u4", kind: .voice, text: "🎤 Voice message · 8s", createdAt: .now, isMine: false),
+            VMessage(id: "m8", conversationId: conversationId, senderId: "me", text: "Perfect, ship it 🚀", createdAt: .now, status: .delivered, isMine: true),
         ]
     }
 
@@ -51,9 +54,15 @@ enum DummyData {
             VMessage(id: "gm2", conversationId: conversationId, senderId: "u2", senderName: "Nehal",
                      text: "Whats good? How can i Help you today?", createdAt: .now, isMine: false),
             VMessage(id: "gm3", conversationId: conversationId, senderId: "me",
-                     text: "Yoooo", createdAt: .now, status: .read, isMine: true),
+                     text: "Hey all 👋 welcome!", createdAt: .now, status: .read, isMine: true),
             VMessage(id: "gm4", conversationId: conversationId, senderId: "u3", senderName: "Sampath",
-                     text: "On my way", createdAt: .now, isMine: false),
+                     text: "Excited to be here", createdAt: .now, isMine: false),
+            VMessage(id: "gm5", conversationId: conversationId, senderId: "u1", senderName: "Priyanshu",
+                     text: "When are we meeting this weekend?", createdAt: .now, isMine: false),
+            VMessage(id: "gm6", conversationId: conversationId, senderId: "me",
+                     text: "Let's do Saturday evening", createdAt: .now, status: .delivered, isMine: true),
+            VMessage(id: "gm7", conversationId: conversationId, senderId: "u2", senderName: "Nehal",
+                     text: "Works for me 👍", createdAt: .now, isMine: false),
         ]
     }
 

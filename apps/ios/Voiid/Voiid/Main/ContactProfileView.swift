@@ -13,6 +13,7 @@ struct ContactProfileView: View {
     let conversation: VConversation
     @Environment(\.dismiss) private var dismiss
     @State private var muted = false
+    @State private var viewPhoto = false
 
     var body: some View {
         ScrollView {
@@ -30,12 +31,18 @@ struct ContactProfileView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
         .tint(VoiidColor.primary)
+        .fullScreenCover(isPresented: $viewPhoto) {
+            ProfilePhotoViewer(title: conversation.title, imageName: conversation.photoName) { viewPhoto = false }
+        }
     }
 
     // Header: photo, name, phone, quick actions (message / call / video)
     private var headerCard: some View {
         VStack(spacing: VoiidSpacing.sm) {
-            VoiidAvatar(size: 110, imageName: conversation.photoName).clipShape(Circle())
+            Button { Haptics.tap(); viewPhoto = true } label: {
+                VoiidAvatar(size: 110, imageName: conversation.photoName).clipShape(Circle())
+            }
+            .buttonStyle(.plain)
             Text(conversation.title).font(VoiidFont.rounded(22, .bold)).foregroundColor(VoiidColor.textPrimary)
             Text("+91 91234 56789").font(VoiidFont.rounded(14, .regular)).foregroundColor(VoiidColor.textSecondary)
 

@@ -202,9 +202,8 @@ struct ChatDetailView: View {
 struct MessageBubble: View {
     let message: VMessage
     let isGroup: Bool
-    var isLastMine: Bool = false      // show the receipt line only under the last sent msg
+    var isLastMine: Bool = false      // (kept for call-site compatibility)
     var onTapImage: (UIImage) -> Void
-    @State private var showMeta = false   // tap a bubble to reveal its exact time
 
     var body: some View {
         // System message — centered pill (e.g. "You added Priyanshu").
@@ -223,58 +222,68 @@ struct MessageBubble: View {
     }
 
     private var bubble: some View {
-        VStack(alignment: message.isMine ? .trailing : .leading, spacing: 3) {
-            HStack {
-                if message.isMine { Spacer(minLength: 48) }
-                VStack(alignment: .leading, spacing: 2) {
-                    // Sender name (group, incoming only) — colored per sender
-                    if isGroup && !message.isMine && !message.senderName.isEmpty {
-                        Text(message.senderName)
-                            .font(VoiidFont.rounded(12, .semibold))
-                            .foregroundColor(message.senderColor)
-                    }
+        HStack {
+            if message.isMine { Spacer(minLength: 56) }
+            VStack(alignment: .leading, spacing: 1) {
+                // Sender name (group, incoming only) — colored per sender
+                if isGroup && !message.isMine && !message.senderName.isEmpty {
+                    Text(message.senderName)
+                        .font(VoiidFont.rounded(12, .semibold))
+                        .foregroundColor(message.senderColor)
+                }
+                // Text + inline time/tick on the same trailing edge (WhatsApp-tight)
+                if message.kind == .text {
+                    textWithMeta
+                } else {
                     content
+                    metaRow.padding(.top, 2)
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(message.isMine ? VoiidColor.bubbleReceived : VoiidColor.surfaceCard)
-                .clipShape(BubbleShape(isMine: message.isMine))
-                .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { showMeta.toggle() } }
-                if !message.isMine { Spacer(minLength: 48) }
             }
-
-            // Refined receipt: time appears on tap; "Read/Delivered" only under the last sent msg.
-            if showMeta || (message.isMine && isLastMine) {
-                HStack(spacing: 4) {
-                    if showMeta {
-                        Text(VoiidDate.bubbleTime(message.createdAt))
-                            .font(VoiidFont.rounded(11, .regular))
-                            .foregroundColor(VoiidColor.textSecondary)
-                    }
-                    if message.isMine && isLastMine {
-                        Text(receiptLabel)
-                            .font(VoiidFont.rounded(11, .medium))
-                            .foregroundColor(message.status == .read ? VoiidColor.primary : VoiidColor.textSecondary)
-                    }
-                }
-                .padding(message.isMine ? .trailing : .leading, 6)
-                .transition(.opacity)
-            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(message.isMine ? VoiidColor.bubbleReceived : VoiidColor.surfaceCard)
+            .clipShape(BubbleShape(isMine: message.isMine))
+            if !message.isMine { Spacer(minLength: 56) }
         }
-        .frame(maxWidth: .infinity, alignment: message.isMine ? .trailing : .leading)
+        .padding(.vertical, 1)
         .transition(.asymmetric(
-            insertion: .scale(scale: 0.88, anchor: message.isMine ? .bottomTrailing : .bottomLeading).combined(with: .opacity),
+            insertion: .scale(scale: 0.9, anchor: message.isMine ? .bottomTrailing : .bottomLeading).combined(with: .opacity),
             removal: .opacity))
     }
 
-    private var receiptLabel: String {
-        switch message.status {
-        case .sending: return "Sending…"
-        case .sent:    return "Sent"
-        case .delivered: return "Delivered"
-        case .read:    return "Read"
-        case .failed:  return "Failed"
+    // Text bubble: message + (time · tick) flowing at the end, compact like WhatsApp.
+    private var textWithMeta: some View {
+        HStack(alignment: .bottom, spacing: 6) {
+            Text(message.text)
+                .font(VoiidFont.rounded(15, .regular))
+                .foregroundColor(VoiidColor.textPrimary)
+            metaRow
         }
+    }
+
+    private var metaRow: some View {
+        HStack(spacing: 3) {
+            Text(VoiidDate.bubbleTime(message.createdAt))
+                .font(VoiidFont.rounded(10, .regular))
+                .foregroundColor(VoiidColor.textSecondary.opacity(0.8))
+            if message.isMine { tick }
+        }
+    }
+
+    @ViewBuilder private var tick: some View {
+        switch message.status {
+        case .sending: Image(systemName: "clock").font(.system(size: 9)).foregroundColor(VoiidColor.textSecondary)
+        case .sent:    Image(systemName: "checkmark").font(.system(size: 9, weight: .semibold)).foregroundColor(VoiidColor.textSecondary)
+        case .delivered: doubleTick(VoiidColor.textSecondary)
+        case .read:    doubleTick(VoiidColor.primary)
+        case .failed:  Image(systemName: "exclamationmark.circle").font(.system(size: 9)).foregroundColor(VoiidColor.error)
+        }
+    }
+    private func doubleTick(_ c: Color) -> some View {
+        ZStack {
+            Image(systemName: "checkmark").font(.system(size: 9, weight: .semibold)).offset(x: -2.5)
+            Image(systemName: "checkmark").font(.system(size: 9, weight: .semibold)).offset(x: 1.5)
+        }.foregroundColor(c)
     }
 
     @ViewBuilder private var content: some View {
@@ -282,14 +291,12 @@ struct MessageBubble: View {
         case .image:
             RoundedRectangle(cornerRadius: VoiidRadius.md)
                 .fill(VoiidColor.accent.opacity(0.4))
-                .frame(width: 180, height: 180)
+                .frame(width: 200, height: 200)
                 .overlay(Image(systemName: "photo").font(.system(size: 40)).foregroundColor(VoiidColor.primary))
         case .voice:
             VoiceNotePlayer(label: message.text)
         default:
-            Text(message.text)
-                .font(VoiidFont.rounded(16, .regular))
-                .foregroundColor(VoiidColor.textPrimary)
+            Text(message.text).font(VoiidFont.rounded(15, .regular)).foregroundColor(VoiidColor.textPrimary)
         }
     }
 }
