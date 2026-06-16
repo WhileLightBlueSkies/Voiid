@@ -29,29 +29,13 @@ struct ChatDetailView: View {
     @State private var pickPhoto = false
     @State private var replyingTo: VMessage?  // reply preview above input
     @State private var infoMessage: VMessage? // Message Info sheet
-    @State private var activeMessage: VMessage? // premium long-press overlay
+    @State private var forwardMessage: VMessage? // forward chat-picker
 
     var body: some View {
-        ZStack {
-            VStack(spacing: 0) {
-                header
-                messageList
-                inputBar
-            }
-            // Premium long-press overlay
-            if let m = activeMessage {
-                MessageActionsOverlay(
-                    isMine: m.isMine,
-                    reactions: MessageBubble.reactionSet,
-                    onReact: { e in chat.react(messageId: m.id, emoji: e, in: conversation.id) },
-                    actions: overlayActions(for: m),
-                    onDismiss: { activeMessage = nil }
-                ) {
-                    MessageBubble(message: m, isGroup: conversation.type == .group) { _ in }
-                        .allowsHitTesting(false)
-                }
-                .zIndex(10)
-            }
+        VStack(spacing: 0) {
+            header
+            messageList
+            inputBar
         }
         .background(VoiidColor.background.ignoresSafeArea())
         .navigationBarBackButtonHidden(true)
@@ -75,6 +59,11 @@ struct ChatDetailView: View {
         .sheet(item: $infoMessage) { msg in
             MessageInfoSheet(message: msg, isGroup: conversation.type == .group)
                 .presentationDetents([.medium])
+        }
+        .sheet(item: $forwardMessage) { msg in
+            ForwardSheet(message: msg) { targets in
+                chat.forward(msg, to: targets)
+            }
         }
         .fullScreenCover(item: Binding(
             get: { fullscreenImage.map { ImageWrapper(image: $0) } },
@@ -142,9 +131,12 @@ struct ChatDetailView: View {
                                           onVote: { optId in
                                               chat.vote(messageId: msg.id, optionId: optId, in: conversation.id)
                                           },
-                                          onLongPress: { activeMessage = msg })
+                                          onReply: { withAnimation { replyingTo = msg } },
+                                          onForward: { forwardMessage = msg },
+                                          onReact: { e in chat.react(messageId: msg.id, emoji: e, in: conversation.id) },
+                                          onCopy: { UIPasteboard.general.string = msg.text },
+                                          onInfo: { infoMessage = msg })
                             .id(msg.id)
-                            .opacity(activeMessage?.id == msg.id ? 0 : 1)  // hide original while lifted
                         }
                     }
                     if chat.typingConversations.contains(conversation.id) {
@@ -166,18 +158,6 @@ struct ChatDetailView: View {
 
     private var lastID: String { chat.messages(for: conversation.id).last?.id ?? "" }
     private var lastMineID: String { chat.messages(for: conversation.id).last(where: { $0.isMine })?.id ?? "" }
-
-    private func overlayActions(for m: VMessage) -> [MessageAction] {
-        var a: [MessageAction] = [
-            MessageAction(title: "Reply", icon: "arrowshape.turn.up.left") { withAnimation { replyingTo = m } },
-            MessageAction(title: "Forward", icon: "arrowshape.turn.up.right") {},
-            MessageAction(title: "Copy", icon: "doc.on.doc") { UIPasteboard.general.string = m.text },
-            MessageAction(title: "Share", icon: "square.and.arrow.up") {},
-        ]
-        if m.isMine { a.append(MessageAction(title: "Info", icon: "info.circle") { infoMessage = m }) }
-        a.append(MessageAction(title: "Delete", icon: "trash", destructive: true) {})
-        return a
-    }
 
     /// Group messages by calendar day for separators.
     private var groupedByDay: [(String, [VMessage])] {
@@ -288,7 +268,7 @@ struct ChatDetailView: View {
             if hasText {
                 Button {
                     Haptics.tap()
-                    chat.send(draft.trimmingCharacters(in: .whitespaces), to: conversation.id)
+                    chat.send(draft.trimmingCharacters(in: .whitespaces), to: conversation.id, replyTo: replyingTo)
                     draft = ""
                     withAnimation { replyingTo = nil }
                 } label: {
@@ -326,7 +306,13 @@ struct MessageBubble: View {
     var isLastMine: Bool = false      // (kept for call-site compatibility)
     var onTapImage: (UIImage) -> Void
     var onVote: (String) -> Void = { _ in }      // optionId
-    var onLongPress: () -> Void = {}
+    var onReply: () -> Void = {}
+    var onForward: () -> Void = {}
+    var onReact: (String) -> Void = { _ in }
+    var onCopy: () -> Void = {}
+    var onInfo: () -> Void = {}
+
+    @State private var swipeX: CGFloat = 0
 
     static let reactionSet = ["👍", "❤️", "😂", "😮", "😢", "🙏"]
 
@@ -349,14 +335,35 @@ struct MessageBubble: View {
     private var bubble: some View {
         HStack {
             if message.isMine { Spacer(minLength: 56) }
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 3) {
+                // "Forwarded" tag
+                if message.forwarded {
+                    Label("Forwarded", systemImage: "arrowshape.turn.up.right")
+                        .font(VoiidFont.rounded(11, .regular).italic())
+                        .foregroundColor(VoiidColor.textSecondary)
+                }
+                // Quoted reply
+                if let rt = message.replyToText {
+                    HStack(spacing: 6) {
+                        RoundedRectangle(cornerRadius: 2).fill(VoiidColor.primary).frame(width: 3)
+                        VStack(alignment: .leading, spacing: 1) {
+                            if let s = message.replyToSender, !s.isEmpty {
+                                Text(s).font(VoiidFont.rounded(11, .semibold)).foregroundColor(VoiidColor.primary)
+                            }
+                            Text(rt).font(VoiidFont.rounded(12, .regular)).foregroundColor(VoiidColor.textSecondary).lineLimit(2)
+                        }
+                    }
+                    .padding(6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(VoiidColor.fieldFill.opacity(0.7))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
                 // Sender name (group, incoming only) — colored per sender
                 if isGroup && !message.isMine && !message.senderName.isEmpty {
                     Text(message.senderName)
                         .font(VoiidFont.rounded(12, .semibold))
                         .foregroundColor(message.senderColor)
                 }
-                // Text + inline time/tick on the same trailing edge (WhatsApp-tight)
                 if message.kind == .text {
                     textWithMeta
                 } else {
@@ -368,7 +375,6 @@ struct MessageBubble: View {
             .padding(.vertical, 6)
             .background(message.isMine ? VoiidColor.bubbleReceived : VoiidColor.surfaceCard)
             .clipShape(BubbleShape(isMine: message.isMine))
-            // Reaction badge overlapping the bubble corner
             .overlay(alignment: message.isMine ? .bottomLeading : .bottomTrailing) {
                 if let r = message.reaction {
                     Text(r).font(.system(size: 15))
@@ -378,10 +384,40 @@ struct MessageBubble: View {
                         .transition(.scale.combined(with: .opacity))
                 }
             }
-            .onLongPressGesture(minimumDuration: 0.3) { onLongPress() }
+            // Native long-press menu (system look)
+            .contextMenu {
+                Button { onReply() } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
+                Button { onForward() } label: { Label("Forward", systemImage: "arrowshape.turn.up.right") }
+                Button { onCopy() } label: { Label("Copy", systemImage: "doc.on.doc") }
+                if message.isMine { Button { onInfo() } label: { Label("Info", systemImage: "info.circle") } }
+                Menu {
+                    ForEach(Self.reactionSet, id: \.self) { e in Button(e) { onReact(e) } }
+                } label: { Label("React", systemImage: "face.smiling") }
+            }
             if !message.isMine { Spacer(minLength: 56) }
         }
-        .padding(.vertical, message.reaction != nil ? 8 : 1)   // room for reaction badge
+        .padding(.vertical, message.reaction != nil ? 8 : 1)
+        // Swipe-to-reply
+        .overlay(alignment: message.isMine ? .trailing : .leading) {
+            Image(systemName: "arrowshape.turn.up.left.fill")
+                .foregroundColor(VoiidColor.primary)
+                .opacity(Double(min(abs(swipeX) / 60, 1)))
+                .padding(.horizontal, VoiidSpacing.lg)
+        }
+        .offset(x: swipeX)
+        .gesture(
+            DragGesture(minimumDistance: 20)
+                .onChanged { v in
+                    // received: swipe right (+), sent: swipe left (-)
+                    let dx = v.translation.width
+                    if message.isMine { swipeX = min(0, max(dx, -80)) }
+                    else { swipeX = max(0, min(dx, 80)) }
+                }
+                .onEnded { _ in
+                    if abs(swipeX) > 50 { Haptics.tap(); onReply() }
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { swipeX = 0 }
+                }
+        )
         .transition(.asymmetric(
             insertion: .scale(scale: 0.9, anchor: message.isMine ? .bottomTrailing : .bottomLeading).combined(with: .opacity),
             removal: .opacity))

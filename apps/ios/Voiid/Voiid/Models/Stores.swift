@@ -47,10 +47,16 @@ final class ChatStore: ObservableObject {
 
     /// Send a message. Simulates the full lifecycle locally: sent → delivered → read,
     /// then a typing indicator and an auto-reply — so ticks, timestamps and typing all animate.
-    func send(_ text: String, kind: MessageKind = .text, to conversationId: String) {
+    func send(_ text: String, kind: MessageKind = .text, to conversationId: String,
+              replyTo: VMessage? = nil, forwarded: Bool = false) {
         let id = UUID().uuidString
-        let msg = VMessage(id: id, conversationId: conversationId, senderId: "me",
+        var msg = VMessage(id: id, conversationId: conversationId, senderId: "me",
                            kind: kind, text: text, createdAt: .now, status: .sending, isMine: true)
+        msg.forwarded = forwarded
+        if let r = replyTo {
+            msg.replyToSender = r.isMine ? "You" : (r.senderName.isEmpty ? "" : r.senderName)
+            msg.replyToText = r.kind == .text ? r.text : "Attachment"
+        }
         messagesByConversation[conversationId, default: messages(for: conversationId)].append(msg)
         bumpPreview(conversationId, preview: kind == .text ? text : previewFor(kind))
 
@@ -83,6 +89,15 @@ final class ChatStore: ObservableObject {
                 if status == .read { arr[idx].readAt = .now; if arr[idx].deliveredAt == nil { arr[idx].deliveredAt = .now } }
                 self.messagesByConversation[convId] = arr
             }
+        }
+    }
+
+    /// Forward a message to one or more conversations (with a Forwarded tag).
+    func forward(_ message: VMessage, to conversationIds: [String]) {
+        for cid in conversationIds {
+            send(message.kind == .text ? message.text : message.text,
+                 kind: message.kind == .poll ? .text : message.kind,
+                 to: cid, forwarded: true)
         }
     }
 

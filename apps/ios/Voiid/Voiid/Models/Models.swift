@@ -39,6 +39,10 @@ struct VMessage: Identifiable, Hashable {
     var reaction: String? = nil     // single emoji reaction on this message
     var deliveredAt: Date? = nil    // for Message Info
     var readAt: Date? = nil         // for Message Info
+    var forwarded: Bool = false     // "Forwarded" tag
+    // Quoted reply: snapshot of the replied-to message
+    var replyToSender: String? = nil
+    var replyToText: String? = nil
 
     /// Stable per-sender accent color for group sender names (WhatsApp-style).
     var senderColor: Color {
