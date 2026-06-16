@@ -314,6 +314,7 @@ struct MessageBubble: View {
 
     @State private var swipeX: CGFloat = 0
     @State private var showReactions = false
+    @State private var showEmojiPicker = false
 
     static let reactionSet = ["👍", "❤️", "😂", "😮", "😢", "🙏"]
 
@@ -391,13 +392,23 @@ struct MessageBubble: View {
             }
             .popover(isPresented: $showReactions, arrowEdge: .top) {
                 VStack(spacing: 8) {
-                    // reaction row
+                    // reaction row + "+" for the full emoji picker
                     HStack(spacing: 8) {
                         ForEach(Self.reactionSet, id: \.self) { e in
                             Button { onReact(e); showReactions = false } label: {
                                 Text(e).font(.system(size: 28))
                             }
                             .buttonStyle(BouncyEmojiStyle())
+                        }
+                        Button {
+                            showReactions = false
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { showEmojiPicker = true }
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundColor(VoiidColor.textSecondary)
+                                .frame(width: 34, height: 34)
+                                .background(VoiidColor.fieldFill).clipShape(Circle())
                         }
                     }
                     Divider()
@@ -411,6 +422,9 @@ struct MessageBubble: View {
                 }
                 .padding(.horizontal, 12).padding(.vertical, 10)
                 .presentationCompactAdaptation(.popover)
+            }
+            .sheet(isPresented: $showEmojiPicker) {
+                EmojiPickerSheet { e in onReact(e) }
             }
             if !message.isMine { Spacer(minLength: 56) }
         }
