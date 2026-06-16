@@ -45,15 +45,15 @@ struct DraggableChatGrid: View {
             .scrollDisabled(dragItem != nil)   // lock scroll while dragging a card
             .coordinateSpace(name: "grid")
 
-            // Side drop zones (only while dragging)
+            // Side drop zones (only while dragging) — round icons, brand palette
             if dragItem != nil {
                 HStack {
-                    dropZone(.call, "phone.fill", "Call", VoiidColor.success)
+                    dropZone(.call, "phone.fill", "Call", VoiidColor.primary)
                     Spacer()
                     dropZone(.delete, "trash.fill", "Delete", VoiidColor.error)
                 }
-                .padding(.horizontal, VoiidSpacing.sm)
-                .transition(.opacity)
+                .padding(.horizontal, VoiidSpacing.md)
+                .transition(.scale.combined(with: .opacity))
                 .allowsHitTesting(false)
             }
 
@@ -124,15 +124,22 @@ struct DraggableChatGrid: View {
     }
 
     private func dropZone(_ zone: Zone, _ icon: String, _ label: String, _ color: Color) -> some View {
-        VStack(spacing: 6) {
-            Image(systemName: icon).font(.system(size: 24))
-            Text(label).font(VoiidFont.rounded(11, .semibold))
+        let active = hoverZone == zone
+        return VStack(spacing: 8) {
+            ZStack {
+                Circle()
+                    .fill(color)
+                    .frame(width: 60, height: 60)
+                    .overlay(Circle().stroke(VoiidColor.textOnPrimary.opacity(active ? 0.9 : 0), lineWidth: 2))
+                    .shadow(color: color.opacity(active ? 0.5 : 0.25), radius: active ? 14 : 8, y: 4)
+                Image(systemName: icon).font(.system(size: 24)).foregroundColor(VoiidColor.textOnPrimary)
+            }
+            Text(label)
+                .font(VoiidFont.rounded(12, .semibold))
+                .foregroundColor(color)
         }
-        .foregroundColor(.white)
-        .frame(width: 64, height: 80)
-        .background(color.opacity(hoverZone == zone ? 1 : 0.65))
-        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
-        .scaleEffect(hoverZone == zone ? 1.15 : 1)
+        .opacity(active ? 1 : 0.85)
+        .scaleEffect(active ? 1.2 : 1)
     }
 
     // MARK: card visual (shared by grid cell + floating drag)
