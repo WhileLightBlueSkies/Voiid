@@ -17,6 +17,8 @@ final class AppSession: ObservableObject {
     enum Route { case onboarding, main }
     @Published var route: Route = .onboarding
     @Published var profile = DummyData.me
+    /// Hides the bottom tab bar when a full-screen child (e.g. a chat) is open.
+    @Published var hideTabBar = false
 
     func completeOnboarding() {
         withAnimation(.easeInOut) { route = .main }

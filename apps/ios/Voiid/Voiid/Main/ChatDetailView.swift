@@ -2,13 +2,12 @@
 //  ChatDetailView.swift
 //  Voiid
 //
-//  1:1 / group chat (Figma Screen-11/12). Full experience on dummy data:
-//   • message bubbles (sent = #C8C8C8, received = #FCF4F8)
-//   • status ticks (sending → sent → delivered → read)
-//   • per-bubble timestamps + date separators (Today / Yesterday / date)
-//   • typing indicator
-//   • voice notes (record + send + playback)  — see VoiceNote.swift
-//   • images (pick + send + fullscreen view)
+//  1:1 / group chat. Full experience on dummy data:
+//   • bubbles: sent = light pink (#FCF4F8), received = white (#FFFFFF)
+//   • refined receipts: tap a bubble for its time; Sent/Delivered/Read only under last sent msg
+//   • date separators (Today / Yesterday / date) + typing indicator
+//   • voice notes (record + send + playback), images (pick + send + fullscreen)
+//   • no bottom tab bar here (hidden via session.hideTabBar)
 //
 
 import SwiftUI
@@ -17,6 +16,7 @@ import PhotosUI
 struct ChatDetailView: View {
     let conversation: VConversation
     @EnvironmentObject var chat: ChatStore
+    @EnvironmentObject var session: AppSession
     @Environment(\.dismiss) private var dismiss
 
     @State private var draft = ""
@@ -32,6 +32,9 @@ struct ChatDetailView: View {
         .background(VoiidColor.background.ignoresSafeArea())
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)
+        // Hide the bottom tab bar while a chat is open; restore on leave.
+        .onAppear { session.hideTabBar = true }
+        .onDisappear { session.hideTabBar = false }
         .fullScreenCover(item: Binding(
             get: { fullscreenImage.map { ImageWrapper(image: $0) } },
             set: { fullscreenImage = $0?.image })
@@ -40,28 +43,33 @@ struct ChatDetailView: View {
         }
     }
 
-    // MARK: header (Figma: back, avatar, name, presence, camera/call/menu)
+    // MARK: header — back, avatar, name/presence, camera · phone · ⋮
 
     private var header: some View {
         HStack(spacing: VoiidSpacing.sm) {
             Button { Haptics.tap(); dismiss() } label: {
                 Image(systemName: "chevron.left").font(.system(size: 20, weight: .semibold))
-                    .foregroundColor(VoiidColor.primary)
+                    .foregroundColor(VoiidColor.textPrimary)
             }
-            VoiidAvatar(size: 35, imageName: conversation.photoName)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(conversation.title).font(VoiidFont.headline).foregroundColor(VoiidColor.textPrimary)
-                Text(presenceText).font(VoiidFont.caption).foregroundColor(VoiidColor.textSecondary)
+            VoiidAvatar(size: 36, imageName: conversation.photoName)
+                .clipShape(Circle())
+            VStack(alignment: .leading, spacing: 1) {
+                Text(conversation.title)
+                    .font(VoiidFont.rounded(17, .semibold)).foregroundColor(VoiidColor.textPrimary)
+                Text(presenceText)
+                    .font(VoiidFont.rounded(11, .regular))
+                    .foregroundColor(chat.typingConversations.contains(conversation.id) ? VoiidColor.primary : VoiidColor.textSecondary)
             }
             Spacer()
-            Image(systemName: "camera").foregroundColor(VoiidColor.primary)
-            Image(systemName: "phone").foregroundColor(VoiidColor.primary).padding(.horizontal, VoiidSpacing.sm)
-            Image(systemName: "ellipsis").foregroundColor(VoiidColor.primary)
+            HStack(spacing: VoiidSpacing.lg) {
+                Image(systemName: "camera").font(.system(size: 19)).foregroundColor(VoiidColor.textPrimary)
+                Image(systemName: "phone.fill").font(.system(size: 18)).foregroundColor(VoiidColor.textPrimary)
+                Image(systemName: "ellipsis").font(.system(size: 18, weight: .semibold)).foregroundColor(VoiidColor.textPrimary)
+            }
         }
         .padding(.horizontal, VoiidSpacing.md)
         .padding(.vertical, VoiidSpacing.sm)
-        .background(.ultraThinMaterial)
-        .overlay(Divider(), alignment: .bottom)
+        .background(VoiidColor.background)
     }
 
     private var presenceText: String {
@@ -79,7 +87,9 @@ struct ChatDetailView: View {
                     ForEach(groupedByDay, id: \.0) { day, msgs in
                         DateSeparator(text: day)
                         ForEach(msgs) { msg in
-                            MessageBubble(message: msg, isGroup: conversation.type == .group) { img in
+                            MessageBubble(message: msg,
+                                          isGroup: conversation.type == .group,
+                                          isLastMine: msg.id == lastMineID) { img in
                                 fullscreenImage = img
                             }
                             .id(msg.id)
@@ -103,6 +113,7 @@ struct ChatDetailView: View {
     }
 
     private var lastID: String { chat.messages(for: conversation.id).last?.id ?? "" }
+    private var lastMineID: String { chat.messages(for: conversation.id).last(where: { $0.isMine })?.id ?? "" }
 
     /// Group messages by calendar day for separators.
     private var groupedByDay: [(String, [VMessage])] {
@@ -113,57 +124,61 @@ struct ChatDetailView: View {
 
     // MARK: input bar (text + attach image + voice note)
 
+    private var hasText: Bool { !draft.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    // Input bar — ⊕ · pink pill field · send/voice (matches design)
     private var inputBar: some View {
-        VStack(spacing: 0) {
-            Divider()
-            HStack(spacing: VoiidSpacing.sm) {
-                PhotosPicker(selection: $photoItem, matching: .images) {
-                    Image(systemName: "plus.circle.fill").font(.system(size: 28)).foregroundColor(VoiidColor.primary)
-                }
-                .onChange(of: photoItem) { _, item in
-                    Task {
-                        if let data = try? await item?.loadTransferable(type: Data.self) {
-                            chat.send("📷 Photo", kind: .image, to: conversation.id)
-                            photoItem = nil
-                            _ = data
-                        }
+        HStack(spacing: VoiidSpacing.sm) {
+            PhotosPicker(selection: $photoItem, matching: .images) {
+                Image(systemName: "plus.circle")
+                    .font(.system(size: 26, weight: .regular))
+                    .foregroundColor(VoiidColor.textPrimary)
+            }
+            .onChange(of: photoItem) { _, item in
+                Task {
+                    if let data = try? await item?.loadTransferable(type: Data.self) {
+                        chat.send("📷 Photo", kind: .image, to: conversation.id)
+                        photoItem = nil; _ = data
                     }
-                }
-
-                HStack {
-                    TextField("Message", text: $draft, axis: .vertical)
-                        .font(VoiidFont.body).lineLimit(1...4)
-                    if draft.isEmpty {
-                        Image(systemName: "camera.fill").foregroundColor(VoiidColor.textSecondary)
-                    }
-                }
-                .padding(.horizontal, VoiidSpacing.md)
-                .frame(minHeight: 44)
-                .background(VoiidColor.fieldFill)
-                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.pill, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: VoiidRadius.pill).stroke(VoiidColor.fieldBorder))
-
-                if draft.trimmingCharacters(in: .whitespaces).isEmpty {
-                    VoiceRecordButton { duration in
-                        chat.send("🎤 Voice message · \(Int(duration))s", kind: .voice, to: conversation.id)
-                    }
-                } else {
-                    Button {
-                        Haptics.tap()
-                        chat.send(draft.trimmingCharacters(in: .whitespaces), to: conversation.id)
-                        draft = ""
-                    } label: {
-                        Image(systemName: "arrow.up.circle.fill").font(.system(size: 32)).foregroundColor(VoiidColor.primary)
-                    }
-                    .transition(.scale)
                 }
             }
-            .padding(.horizontal, VoiidSpacing.sm)
-            .padding(.vertical, VoiidSpacing.sm)
-            .padding(.bottom, 80) // clears the custom tab bar
-            .background(.ultraThinMaterial)
-            .animation(.spring(response: 0.3), value: draft.isEmpty)
+
+            TextField("", text: $draft, axis: .vertical)
+                .font(VoiidFont.rounded(16, .regular))
+                .foregroundColor(VoiidColor.textPrimary)
+                .lineLimit(1...5)
+                .padding(.horizontal, VoiidSpacing.md)
+                .frame(minHeight: 46)
+
+            if hasText {
+                Button {
+                    Haptics.tap()
+                    chat.send(draft.trimmingCharacters(in: .whitespaces), to: conversation.id)
+                    draft = ""
+                } label: {
+                    Image(systemName: "paperplane.fill")
+                        .font(.system(size: 20)).foregroundColor(VoiidColor.primary)
+                        .padding(.trailing, VoiidSpacing.sm)
+                }
+                .transition(.scale.combined(with: .opacity))
+            } else {
+                VoiceRecordButton { duration in
+                    chat.send("🎤 Voice message · \(Int(duration))s", kind: .voice, to: conversation.id)
+                }
+                .padding(.trailing, VoiidSpacing.sm)
+                .transition(.scale.combined(with: .opacity))
+            }
         }
+        .padding(.vertical, VoiidSpacing.xs)
+        .padding(.leading, VoiidSpacing.sm)
+        .background(VoiidColor.fieldFill)
+        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.pill, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: VoiidRadius.pill).stroke(VoiidColor.fieldBorder, lineWidth: 1))
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.top, VoiidSpacing.sm)
+        .padding(.bottom, VoiidSpacing.sm)
+        .background(VoiidColor.background)
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: hasText)
     }
 }
 
@@ -172,29 +187,55 @@ struct ChatDetailView: View {
 struct MessageBubble: View {
     let message: VMessage
     let isGroup: Bool
+    var isLastMine: Bool = false      // show the receipt line only under the last sent msg
     var onTapImage: (UIImage) -> Void
+    @State private var showMeta = false   // tap a bubble to reveal its exact time
 
     var body: some View {
-        HStack {
-            if message.isMine { Spacer(minLength: 40) }
-            VStack(alignment: message.isMine ? .trailing : .leading, spacing: 2) {
+        VStack(alignment: message.isMine ? .trailing : .leading, spacing: 3) {
+            HStack {
+                if message.isMine { Spacer(minLength: 48) }
                 content
-                HStack(spacing: 4) {
-                    Text(VoiidDate.bubbleTime(message.createdAt))
-                        .font(VoiidFont.rounded(10, .regular))
-                        .foregroundColor(VoiidColor.textSecondary)
-                    if message.isMine { StatusTicks(status: message.status) }
-                }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(message.isMine ? VoiidColor.bubbleReceived : VoiidColor.surfaceCard)
+                    .clipShape(BubbleShape(isMine: message.isMine))
+                    .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { showMeta.toggle() } }
+                if !message.isMine { Spacer(minLength: 48) }
             }
-            .padding(.horizontal, VoiidSpacing.md)
-            .padding(.vertical, VoiidSpacing.sm)
-            .background(message.isMine ? VoiidColor.bubbleSent : VoiidColor.bubbleReceived)
-            .clipShape(BubbleShape(isMine: message.isMine))
-            if !message.isMine { Spacer(minLength: 40) }
+
+            // Refined receipt: time appears on tap; "Read/Delivered" only under the last sent msg.
+            if showMeta || (message.isMine && isLastMine) {
+                HStack(spacing: 4) {
+                    if showMeta {
+                        Text(VoiidDate.bubbleTime(message.createdAt))
+                            .font(VoiidFont.rounded(11, .regular))
+                            .foregroundColor(VoiidColor.textSecondary)
+                    }
+                    if message.isMine && isLastMine {
+                        Text(receiptLabel)
+                            .font(VoiidFont.rounded(11, .medium))
+                            .foregroundColor(message.status == .read ? VoiidColor.primary : VoiidColor.textSecondary)
+                    }
+                }
+                .padding(message.isMine ? .trailing : .leading, 6)
+                .transition(.opacity)
+            }
         }
+        .frame(maxWidth: .infinity, alignment: message.isMine ? .trailing : .leading)
         .transition(.asymmetric(
-            insertion: .scale(scale: 0.85, anchor: message.isMine ? .bottomTrailing : .bottomLeading).combined(with: .opacity),
+            insertion: .scale(scale: 0.88, anchor: message.isMine ? .bottomTrailing : .bottomLeading).combined(with: .opacity),
             removal: .opacity))
+    }
+
+    private var receiptLabel: String {
+        switch message.status {
+        case .sending: return "Sending…"
+        case .sent:    return "Sent"
+        case .delivered: return "Delivered"
+        case .read:    return "Read"
+        case .failed:  return "Failed"
+        }
     }
 
     @ViewBuilder private var content: some View {
@@ -207,34 +248,10 @@ struct MessageBubble: View {
         case .voice:
             VoiceNotePlayer(label: message.text)
         default:
-            Text(message.text).font(VoiidFont.body).foregroundColor(VoiidColor.textPrimary)
+            Text(message.text)
+                .font(VoiidFont.rounded(16, .regular))
+                .foregroundColor(VoiidColor.textPrimary)
         }
-    }
-}
-
-// MARK: - Status ticks (sending → sent → delivered → read)
-
-struct StatusTicks: View {
-    let status: MessageStatus
-    var body: some View {
-        switch status {
-        case .sending:
-            Image(systemName: "clock").font(.system(size: 10)).foregroundColor(VoiidColor.textSecondary)
-        case .sent:
-            Image(systemName: "checkmark").font(.system(size: 10)).foregroundColor(VoiidColor.textSecondary)
-        case .delivered:
-            doubleTick(VoiidColor.textSecondary)
-        case .read:
-            doubleTick(VoiidColor.success)
-        case .failed:
-            Image(systemName: "exclamationmark.circle").font(.system(size: 10)).foregroundColor(VoiidColor.error)
-        }
-    }
-    private func doubleTick(_ color: Color) -> some View {
-        ZStack {
-            Image(systemName: "checkmark").font(.system(size: 10, weight: .semibold)).offset(x: -3)
-            Image(systemName: "checkmark").font(.system(size: 10, weight: .semibold)).offset(x: 1)
-        }.foregroundColor(color)
     }
 }
 
