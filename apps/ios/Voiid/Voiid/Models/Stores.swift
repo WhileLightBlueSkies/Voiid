@@ -101,6 +101,42 @@ final class ChatStore: ObservableObject {
         }
     }
 
+    /// Delete a message. forEveryone=true leaves a "deleted" tombstone; otherwise removes it.
+    func deleteMessage(_ messageId: String, in convId: String, forEveryone: Bool) {
+        guard var arr = messagesByConversation[convId] else { return }
+        if forEveryone {
+            if let i = arr.firstIndex(where: { $0.id == messageId }) {
+                arr[i].deletedForEveryone = true
+                arr[i].reaction = nil
+                withAnimation { messagesByConversation[convId] = arr }
+            }
+        } else {
+            withAnimation { arr.removeAll { $0.id == messageId }; messagesByConversation[convId] = arr }
+        }
+        Haptics.rigid()
+    }
+
+    /// Delete an entire conversation from the list.
+    func deleteConversation(_ convId: String) {
+        withAnimation {
+            directConversations.removeAll { $0.id == convId }
+            groupConversations.removeAll { $0.id == convId }
+            messagesByConversation[convId] = nil
+        }
+        Haptics.rigid()
+    }
+
+    /// Clear all messages in a conversation but keep it in the list.
+    func clearChat(_ convId: String) {
+        withAnimation { messagesByConversation[convId] = [] }
+        if let i = directConversations.firstIndex(where: { $0.id == convId }) {
+            directConversations[i].lastMessagePreview = nil
+        } else if let i = groupConversations.firstIndex(where: { $0.id == convId }) {
+            groupConversations[i].lastMessagePreview = nil
+        }
+        Haptics.rigid()
+    }
+
     /// Toggle an emoji reaction on a message.
     func react(messageId: String, emoji: String, in convId: String) {
         guard var arr = messagesByConversation[convId],

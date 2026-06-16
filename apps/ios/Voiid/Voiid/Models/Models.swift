@@ -40,6 +40,7 @@ struct VMessage: Identifiable, Hashable {
     var deliveredAt: Date? = nil    // for Message Info
     var readAt: Date? = nil         // for Message Info
     var forwarded: Bool = false     // "Forwarded" tag
+    var deletedForEveryone: Bool = false  // tombstone: "This message was deleted"
     // Quoted reply: snapshot of the replied-to message
     var replyToSender: String? = nil
     var replyToText: String? = nil

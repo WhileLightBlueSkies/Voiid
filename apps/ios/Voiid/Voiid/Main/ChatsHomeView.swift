@@ -14,6 +14,7 @@ struct ChatsHomeView: View {
     @State private var search = ""
     @State private var tab: Tab = .chats
     @State private var openConversation: VConversation?
+    @State private var deleteTarget: VConversation?
     @Namespace private var underline
 
     enum Tab: String { case chats = "Chats", groups = "Groups" }
@@ -33,6 +34,12 @@ struct ChatsHomeView: View {
                         ForEach(items) { conv in
                             Button { Haptics.tap(); openConversation = conv } label: { gridCard(conv) }
                                 .buttonStyle(SoftPressStyle(scale: 0.94))
+                                .contextMenu {
+                                    Button { openConversation = conv } label: { Label("Open", systemImage: "bubble.left") }
+                                    Button(role: .destructive) { deleteTarget = conv } label: {
+                                        Label("Delete chat", systemImage: "trash")
+                                    }
+                                }
                         }
                     }
                     .padding(.horizontal, VoiidSpacing.lg)
@@ -43,6 +50,14 @@ struct ChatsHomeView: View {
             .background(VoiidColor.background.ignoresSafeArea())
             .onAppear { session.hideTabBar = false }   // root screen always shows the bar
             .navigationDestination(item: $openConversation) { ChatDetailView(conversation: $0) }
+            .confirmationDialog("Delete this chat?", isPresented: Binding(
+                get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } }),
+                titleVisibility: .visible) {
+                if let c = deleteTarget {
+                    Button("Delete chat", role: .destructive) { chat.deleteConversation(c.id) }
+                    Button("Cancel", role: .cancel) {}
+                }
+            }
         }
     }
 

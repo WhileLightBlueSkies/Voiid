@@ -30,6 +30,8 @@ struct ChatDetailView: View {
     @State private var replyingTo: VMessage?  // reply preview above input
     @State private var infoMessage: VMessage? // Message Info sheet
     @State private var forwardMessage: VMessage? // forward chat-picker
+    @State private var deleteMessage: VMessage?   // delete confirm
+    @State private var showClearChat = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -64,6 +66,25 @@ struct ChatDetailView: View {
             ForwardSheet(message: msg) { targets in
                 chat.forward(msg, to: targets)
             }
+        }
+        .confirmationDialog("Delete message?", isPresented: Binding(
+            get: { deleteMessage != nil }, set: { if !$0 { deleteMessage = nil } }),
+            titleVisibility: .visible) {
+            if let m = deleteMessage {
+                if m.isMine {
+                    Button("Delete for everyone", role: .destructive) {
+                        chat.deleteMessage(m.id, in: conversation.id, forEveryone: true)
+                    }
+                }
+                Button("Delete for me", role: .destructive) {
+                    chat.deleteMessage(m.id, in: conversation.id, forEveryone: false)
+                }
+                Button("Cancel", role: .cancel) {}
+            }
+        }
+        .confirmationDialog("Clear this chat?", isPresented: $showClearChat, titleVisibility: .visible) {
+            Button("Clear chat", role: .destructive) { chat.clearChat(conversation.id) }
+            Button("Cancel", role: .cancel) {}
         }
         .fullScreenCover(item: Binding(
             get: { fullscreenImage.map { ImageWrapper(image: $0) } },
@@ -101,7 +122,16 @@ struct ChatDetailView: View {
             HStack(spacing: VoiidSpacing.lg) {
                 Image(systemName: "camera").font(.system(size: 19)).foregroundColor(VoiidColor.textPrimary)
                 Image(systemName: "phone.fill").font(.system(size: 18)).foregroundColor(VoiidColor.textPrimary)
-                Image(systemName: "ellipsis").font(.system(size: 18, weight: .semibold)).foregroundColor(VoiidColor.textPrimary)
+                Menu {
+                    Button { showInfo = true } label: {
+                        Label(conversation.type == .group ? "Group info" : "View profile", systemImage: "info.circle")
+                    }
+                    Button(role: .destructive) { showClearChat = true } label: {
+                        Label("Clear chat", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis").font(.system(size: 18, weight: .semibold)).foregroundColor(VoiidColor.textPrimary)
+                }
             }
         }
         .padding(.horizontal, VoiidSpacing.md)
@@ -135,7 +165,8 @@ struct ChatDetailView: View {
                                           onForward: { forwardMessage = msg },
                                           onReact: { e in chat.react(messageId: msg.id, emoji: e, in: conversation.id) },
                                           onCopy: { UIPasteboard.general.string = msg.text },
-                                          onInfo: { infoMessage = msg })
+                                          onInfo: { infoMessage = msg },
+                                          onDelete: { deleteMessage = msg })
                             .id(msg.id)
                         }
                     }
@@ -311,6 +342,7 @@ struct MessageBubble: View {
     var onReact: (String) -> Void = { _ in }
     var onCopy: () -> Void = {}
     var onInfo: () -> Void = {}
+    var onDelete: () -> Void = {}
 
     @State private var swipeX: CGFloat = 0
     @State private var showReactions = false
@@ -366,7 +398,13 @@ struct MessageBubble: View {
                         .font(VoiidFont.rounded(12, .semibold))
                         .foregroundColor(message.senderColor)
                 }
-                if message.kind == .text {
+                if message.deletedForEveryone {
+                    HStack(spacing: 5) {
+                        Image(systemName: "slash.circle").font(.system(size: 13))
+                        Text("This message was deleted").italic()
+                    }
+                    .font(VoiidFont.rounded(14, .regular)).foregroundColor(VoiidColor.textSecondary)
+                } else if message.kind == .text {
                     textWithMeta
                 } else {
                     content
@@ -418,6 +456,7 @@ struct MessageBubble: View {
                         actionBtn("Forward", "arrowshape.turn.up.right") { showReactions = false; onForward() }
                         actionBtn("Copy", "doc.on.doc") { showReactions = false; onCopy() }
                         if message.isMine { actionBtn("Info", "info.circle") { showReactions = false; onInfo() } }
+                        actionBtn("Delete", "trash", tint: VoiidColor.error) { showReactions = false; onDelete() }
                     }
                 }
                 .padding(.horizontal, 12).padding(.vertical, 10)
@@ -455,13 +494,13 @@ struct MessageBubble: View {
             removal: .opacity))
     }
 
-    private func actionBtn(_ title: String, _ icon: String, _ tap: @escaping () -> Void) -> some View {
+    private func actionBtn(_ title: String, _ icon: String, tint: Color = VoiidColor.primary, _ tap: @escaping () -> Void) -> some View {
         Button(action: tap) {
             VStack(spacing: 4) {
-                Image(systemName: icon).font(.system(size: 18)).foregroundColor(VoiidColor.primary)
+                Image(systemName: icon).font(.system(size: 18)).foregroundColor(tint)
                 Text(title).font(VoiidFont.rounded(11, .regular)).foregroundColor(VoiidColor.textPrimary)
             }
-            .frame(width: 64)
+            .frame(width: 60)
         }
         .buttonStyle(.plain)
     }
