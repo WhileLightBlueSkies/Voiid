@@ -22,7 +22,7 @@ struct VUser: Identifiable, Hashable {
 }
 
 enum MessageStatus: String { case sending, sent, delivered, read, failed }
-enum MessageKind: String { case text, image, voice, document, system }
+enum MessageKind: String { case text, image, voice, document, system, poll }
 
 struct VMessage: Identifiable, Hashable {
     let id: String
@@ -35,6 +35,7 @@ struct VMessage: Identifiable, Hashable {
     var createdAt: Date
     var status: MessageStatus = .sent
     var isMine: Bool = false
+    var poll: VPoll? = nil          // set when kind == .poll
 
     /// Stable per-sender accent color for group sender names (WhatsApp-style).
     var senderColor: Color {

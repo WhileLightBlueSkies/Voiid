@@ -99,6 +99,30 @@ final class ChatStore: ObservableObject {
         bumpPreview(convId, preview: reply.text)
     }
 
+    /// Send a poll into a conversation.
+    func sendPoll(_ question: String, options: [String], to conversationId: String) {
+        let poll = VPoll(id: UUID().uuidString, question: question,
+                         options: options.map { .init(id: UUID().uuidString, text: $0, votes: 0) })
+        let msg = VMessage(id: UUID().uuidString, conversationId: conversationId, senderId: "me",
+                           kind: .poll, text: "Poll", createdAt: .now, status: .sent, isMine: true, poll: poll)
+        messagesByConversation[conversationId, default: messages(for: conversationId)].append(msg)
+        bumpPreview(conversationId, preview: "📊 Poll: \(question)")
+    }
+
+    /// Register a vote on a poll option (single choice; toggles).
+    func vote(messageId: String, optionId: String, in conversationId: String) {
+        guard var arr = messagesByConversation[conversationId],
+              let mi = arr.firstIndex(where: { $0.id == messageId }),
+              var poll = arr[mi].poll else { return }
+        for oi in poll.options.indices {
+            if poll.options[oi].id == optionId { poll.options[oi].votes += 1 }
+        }
+        arr[mi].poll = poll
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+            messagesByConversation[conversationId] = arr
+        }
+    }
+
     private func bumpPreview(_ convId: String, preview: String) {
         if let i = directConversations.firstIndex(where: { $0.id == convId }) {
             directConversations[i].lastMessagePreview = preview

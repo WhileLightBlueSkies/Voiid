@@ -63,6 +63,8 @@ enum DummyData {
                      text: "Let's do Saturday evening", createdAt: .now, status: .delivered, isMine: true),
             VMessage(id: "gm7", conversationId: conversationId, senderId: "u2", senderName: "Nehal",
                      text: "Works for me 👍", createdAt: .now, isMine: false),
+            VMessage(id: "gm8", conversationId: conversationId, senderId: "u1", senderName: "Priyanshu",
+                     kind: .poll, text: "Poll", createdAt: .now, isMine: false, poll: groupPoll),
         ]
     }
 

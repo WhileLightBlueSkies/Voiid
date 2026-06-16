@@ -23,6 +23,9 @@ struct ChatDetailView: View {
     @State private var photoItem: PhotosPickerItem?
     @State private var fullscreenImage: UIImage?
     @State private var showInfo = false       // group info / contact profile
+    @State private var showAttach = false     // attach menu (photo / poll)
+    @State private var showPollCompose = false
+    @State private var pickPhoto = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -42,6 +45,12 @@ struct ChatDetailView: View {
             } else {
                 ContactProfileView(conversation: conversation)
             }
+        }
+        .sheet(isPresented: $showPollCompose) {
+            PollComposeSheet { q, opts in
+                chat.sendPoll(q, options: opts, to: conversation.id)
+            }
+            .presentationDetents([.medium, .large])
         }
         .fullScreenCover(item: Binding(
             get: { fullscreenImage.map { ImageWrapper(image: $0) } },
@@ -104,9 +113,11 @@ struct ChatDetailView: View {
                         ForEach(msgs) { msg in
                             MessageBubble(message: msg,
                                           isGroup: conversation.type == .group,
-                                          isLastMine: msg.id == lastMineID) { img in
-                                fullscreenImage = img
-                            }
+                                          isLastMine: msg.id == lastMineID,
+                                          onTapImage: { img in fullscreenImage = img },
+                                          onVote: { optId in
+                                              chat.vote(messageId: msg.id, optionId: optId, in: conversation.id)
+                                          })
                             .id(msg.id)
                         }
                     }
@@ -141,14 +152,66 @@ struct ChatDetailView: View {
 
     private var hasText: Bool { !draft.trimmingCharacters(in: .whitespaces).isEmpty }
 
+    // @mentions — suggest members when the draft's current token starts with "@" (group only).
+    private var mentionQuery: String? {
+        guard conversation.type == .group,
+              let at = draft.lastIndex(of: "@") else { return nil }
+        let after = draft[draft.index(after: at)...]
+        // only active if the @token has no space yet
+        return after.contains(" ") ? nil : String(after)
+    }
+    private var mentionSuggestions: [VMember] {
+        guard let q = mentionQuery else { return [] }
+        return DummyData.groupMembers.filter { !$0.isYou &&
+            (q.isEmpty || $0.name.localizedCaseInsensitiveContains(q)) }
+    }
+    private func insertMention(_ m: VMember) {
+        if let at = draft.lastIndex(of: "@") {
+            draft = String(draft[..<at]) + "@\(m.name) "
+        }
+        Haptics.selection()
+    }
+
     // Input bar — ⊕ · pink pill field · send/voice (matches design)
     private var inputBar: some View {
+        VStack(spacing: 0) {
+            // @mention suggestions strip (group only)
+            if !mentionSuggestions.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: VoiidSpacing.sm) {
+                        ForEach(mentionSuggestions) { m in
+                            Button { insertMention(m) } label: {
+                                HStack(spacing: 6) {
+                                    VoiidAvatar(size: 26, imageName: m.photoName).clipShape(Circle())
+                                    Text(m.name).font(VoiidFont.rounded(13, .medium)).foregroundColor(VoiidColor.textPrimary)
+                                }
+                                .padding(.horizontal, 10).padding(.vertical, 6)
+                                .background(VoiidColor.surfaceCard).clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, VoiidSpacing.md).padding(.vertical, VoiidSpacing.sm)
+                }
+                .background(VoiidColor.background)
+            }
+            inputRow
+        }
+    }
+
+    private var inputRow: some View {
         HStack(spacing: VoiidSpacing.sm) {
-            PhotosPicker(selection: $photoItem, matching: .images) {
+            Menu {
+                Button { pickPhoto = true } label: { Label("Photo", systemImage: "photo") }
+                if conversation.type == .group {
+                    Button { showPollCompose = true } label: { Label("Poll", systemImage: "chart.bar") }
+                }
+            } label: {
                 Image(systemName: "plus.circle")
                     .font(.system(size: 26, weight: .regular))
                     .foregroundColor(VoiidColor.textPrimary)
             }
+            .photosPicker(isPresented: $pickPhoto, selection: $photoItem, matching: .images)
             .onChange(of: photoItem) { _, item in
                 Task {
                     if let data = try? await item?.loadTransferable(type: Data.self) {
@@ -204,6 +267,7 @@ struct MessageBubble: View {
     let isGroup: Bool
     var isLastMine: Bool = false      // (kept for call-site compatibility)
     var onTapImage: (UIImage) -> Void
+    var onVote: (String) -> Void = { _ in }   // optionId
 
     var body: some View {
         // System message — centered pill (e.g. "You added Priyanshu").
@@ -254,10 +318,21 @@ struct MessageBubble: View {
     // Text bubble: message + (time · tick) flowing at the end, compact like WhatsApp.
     private var textWithMeta: some View {
         HStack(alignment: .bottom, spacing: 6) {
-            Text(message.text)
-                .font(VoiidFont.rounded(15, .regular))
-                .foregroundColor(VoiidColor.textPrimary)
+            styledText(message.text)
             metaRow
+        }
+    }
+
+    /// Renders text with @mentions highlighted in the brand primary color.
+    private func styledText(_ text: String) -> Text {
+        text.split(separator: " ", omittingEmptySubsequences: false).enumerated().reduce(Text("")) { acc, pair in
+            let (i, word) = pair
+            let space = i == 0 ? "" : " "
+            let isMention = word.hasPrefix("@") && word.count > 1
+            let piece = Text(space + String(word))
+                .font(VoiidFont.rounded(15, isMention ? .semibold : .regular))
+                .foregroundColor(isMention ? VoiidColor.primary : VoiidColor.textPrimary)
+            return acc + piece
         }
     }
 
@@ -295,9 +370,62 @@ struct MessageBubble: View {
                 .overlay(Image(systemName: "photo").font(.system(size: 40)).foregroundColor(VoiidColor.primary))
         case .voice:
             VoiceNotePlayer(label: message.text)
+        case .poll:
+            if let poll = message.poll { PollBubble(poll: poll, onVote: onVote) }
         default:
-            Text(message.text).font(VoiidFont.rounded(15, .regular)).foregroundColor(VoiidColor.textPrimary)
+            styledText(message.text)
         }
+    }
+}
+
+// MARK: - Poll bubble (vote + live results)
+
+struct PollBubble: View {
+    let poll: VPoll
+    var onVote: (String) -> Void
+    @State private var votedOption: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+            HStack(spacing: 6) {
+                Image(systemName: "chart.bar.fill").font(.system(size: 12)).foregroundColor(VoiidColor.primary)
+                Text("Poll").font(VoiidFont.rounded(11, .semibold)).foregroundColor(VoiidColor.textSecondary)
+            }
+            Text(poll.question).font(VoiidFont.rounded(15, .semibold)).foregroundColor(VoiidColor.textPrimary)
+
+            ForEach(poll.options) { opt in
+                let total = max(poll.totalVotes, 1)
+                let pct = CGFloat(opt.votes) / CGFloat(total)
+                Button {
+                    guard votedOption == nil else { return }
+                    Haptics.tap(); votedOption = opt.id; onVote(opt.id)
+                } label: {
+                    ZStack(alignment: .leading) {
+                        // result fill bar
+                        GeometryReader { g in
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(votedOption == opt.id ? VoiidColor.accent : VoiidColor.fieldFill)
+                                .frame(width: votedOption != nil ? g.size.width * pct : g.size.width)
+                        }
+                        HStack {
+                            Text(opt.text).font(VoiidFont.rounded(14, .regular)).foregroundColor(VoiidColor.textPrimary)
+                            Spacer()
+                            if votedOption != nil {
+                                Text("\(Int(pct * 100))%").font(VoiidFont.rounded(12, .medium)).foregroundColor(VoiidColor.textSecondary)
+                            }
+                        }
+                        .padding(.horizontal, VoiidSpacing.md)
+                    }
+                    .frame(height: 38)
+                    .background(RoundedRectangle(cornerRadius: 10).stroke(VoiidColor.fieldBorder, lineWidth: 1))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+            }
+
+            Text("\(poll.totalVotes) votes").font(VoiidFont.rounded(11, .regular)).foregroundColor(VoiidColor.textSecondary)
+        }
+        .frame(width: 240)
     }
 }
 
