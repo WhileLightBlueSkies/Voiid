@@ -39,7 +39,8 @@ final class ChatStore: ObservableObject {
 
     func messages(for id: String) -> [VMessage] {
         if let m = messagesByConversation[id] { return m }
-        let seed = DummyData.messages(for: id)
+        let isGroup = groupConversations.contains { $0.id == id }
+        let seed = isGroup ? DummyData.groupMessages(for: id) : DummyData.messages(for: id)
         messagesByConversation[id] = seed
         return seed
     }
