@@ -9,6 +9,7 @@
 //
 
 import Foundation
+import SwiftUI
 
 struct VUser: Identifiable, Hashable {
     let id: String
@@ -27,12 +28,20 @@ struct VMessage: Identifiable, Hashable {
     let id: String
     var conversationId: String
     var senderId: String
+    var senderName: String = ""      // shown above incoming group bubbles
     var kind: MessageKind = .text
     /// Decrypted text for display. On the wire this is opaque ciphertext (crypto seam).
     var text: String
     var createdAt: Date
     var status: MessageStatus = .sent
     var isMine: Bool = false
+
+    /// Stable per-sender accent color for group sender names (WhatsApp-style).
+    var senderColor: Color {
+        let palette: [UInt] = [0xC0556B, 0x3E9E6E, 0x4D7EA8, 0xD8A24A, 0x8E5BA6, 0xBA6B3D, 0x2A9D8F]
+        let idx = abs(senderId.hashValue) % palette.count
+        return Color(hex: palette[idx])
+    }
 }
 
 enum ConversationType: String { case direct, group }

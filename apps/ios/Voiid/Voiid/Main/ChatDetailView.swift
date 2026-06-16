@@ -22,6 +22,7 @@ struct ChatDetailView: View {
     @State private var draft = ""
     @State private var photoItem: PhotosPickerItem?
     @State private var fullscreenImage: UIImage?
+    @State private var showInfo = false       // group info / contact profile
 
     var body: some View {
         VStack(spacing: 0) {
@@ -35,6 +36,13 @@ struct ChatDetailView: View {
         // Hide the bottom tab bar while a chat is open; restore on leave.
         .onAppear { session.hideTabBar = true }
         .onDisappear { session.hideTabBar = false }
+        .navigationDestination(isPresented: $showInfo) {
+            if conversation.type == .group {
+                GroupInfoView(conversation: conversation)
+            } else {
+                ContactProfileView(conversation: conversation)
+            }
+        }
         .fullScreenCover(item: Binding(
             get: { fullscreenImage.map { ImageWrapper(image: $0) } },
             set: { fullscreenImage = $0?.image })
@@ -51,15 +59,22 @@ struct ChatDetailView: View {
                 Image(systemName: "chevron.left").font(.system(size: 20, weight: .semibold))
                     .foregroundColor(VoiidColor.textPrimary)
             }
-            VoiidAvatar(size: 36, imageName: conversation.photoName)
-                .clipShape(Circle())
-            VStack(alignment: .leading, spacing: 1) {
-                Text(conversation.title)
-                    .font(VoiidFont.rounded(17, .semibold)).foregroundColor(VoiidColor.textPrimary)
-                Text(presenceText)
-                    .font(VoiidFont.rounded(11, .regular))
-                    .foregroundColor(chat.typingConversations.contains(conversation.id) ? VoiidColor.primary : VoiidColor.textSecondary)
+            Button {
+                Haptics.tap(); showInfo = true
+            } label: {
+                HStack(spacing: VoiidSpacing.sm) {
+                    VoiidAvatar(size: 36, imageName: conversation.photoName)
+                        .clipShape(Circle())
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(conversation.title)
+                            .font(VoiidFont.rounded(17, .semibold)).foregroundColor(VoiidColor.textPrimary)
+                        Text(presenceText)
+                            .font(VoiidFont.rounded(11, .regular))
+                            .foregroundColor(chat.typingConversations.contains(conversation.id) ? VoiidColor.primary : VoiidColor.textSecondary)
+                    }
+                }
             }
+            .buttonStyle(.plain)
             Spacer()
             HStack(spacing: VoiidSpacing.lg) {
                 Image(systemName: "camera").font(.system(size: 19)).foregroundColor(VoiidColor.textPrimary)
@@ -192,15 +207,39 @@ struct MessageBubble: View {
     @State private var showMeta = false   // tap a bubble to reveal its exact time
 
     var body: some View {
+        // System message — centered pill (e.g. "You added Priyanshu").
+        if message.kind == .system {
+            Text(message.text)
+                .font(VoiidFont.rounded(11, .medium))
+                .foregroundColor(VoiidColor.textSecondary)
+                .padding(.horizontal, VoiidSpacing.md).padding(.vertical, 5)
+                .background(VoiidColor.surfaceCard.opacity(0.7))
+                .clipShape(Capsule())
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 2)
+        } else {
+            bubble
+        }
+    }
+
+    private var bubble: some View {
         VStack(alignment: message.isMine ? .trailing : .leading, spacing: 3) {
             HStack {
                 if message.isMine { Spacer(minLength: 48) }
-                content
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(message.isMine ? VoiidColor.bubbleReceived : VoiidColor.surfaceCard)
-                    .clipShape(BubbleShape(isMine: message.isMine))
-                    .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { showMeta.toggle() } }
+                VStack(alignment: .leading, spacing: 2) {
+                    // Sender name (group, incoming only) — colored per sender
+                    if isGroup && !message.isMine && !message.senderName.isEmpty {
+                        Text(message.senderName)
+                            .font(VoiidFont.rounded(12, .semibold))
+                            .foregroundColor(message.senderColor)
+                    }
+                    content
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(message.isMine ? VoiidColor.bubbleReceived : VoiidColor.surfaceCard)
+                .clipShape(BubbleShape(isMine: message.isMine))
+                .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { showMeta.toggle() } }
                 if !message.isMine { Spacer(minLength: 48) }
             }
 

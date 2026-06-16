@@ -41,6 +41,39 @@ enum DummyData {
         ]
     }
 
+    // Group conversation messages — sender names + a system message.
+    static func groupMessages(for conversationId: String) -> [VMessage] {
+        [
+            VMessage(id: "gm0", conversationId: conversationId, senderId: "system",
+                     kind: .system, text: "You added Priyanshu, Nehal and Sampath", createdAt: .now, isMine: false),
+            VMessage(id: "gm1", conversationId: conversationId, senderId: "u1", senderName: "Priyanshu",
+                     text: "Hey team 👋", createdAt: .now, isMine: false),
+            VMessage(id: "gm2", conversationId: conversationId, senderId: "u2", senderName: "Nehal",
+                     text: "Whats good? How can i Help you today?", createdAt: .now, isMine: false),
+            VMessage(id: "gm3", conversationId: conversationId, senderId: "me",
+                     text: "Yoooo", createdAt: .now, status: .read, isMine: true),
+            VMessage(id: "gm4", conversationId: conversationId, senderId: "u3", senderName: "Sampath",
+                     text: "On my way", createdAt: .now, isMine: false),
+        ]
+    }
+
+    static let groupMembers: [VMember] = [
+        VMember(id: "me", name: "You", phone: "+91 91234 56789", role: .admin, isYou: true),
+        VMember(id: "u1", name: "Priyanshu", phone: "+91 90000 00001", role: .admin),
+        VMember(id: "u2", name: "Nehal", phone: "+91 90000 00002", statusText: "Available"),
+        VMember(id: "u3", name: "Sampath", phone: "+91 90000 00003", statusText: "Busy"),
+    ]
+
+    static let sharedMedia: [VMediaItem] = (1...9).map {
+        VMediaItem(id: "media\($0)", kind: .photo, title: "")
+    }
+
+    static let groupPoll = VPoll(id: "poll1", question: "Where to meet this weekend?", options: [
+        .init(id: "o1", text: "Cafe", votes: 3),
+        .init(id: "o2", text: "Beach", votes: 5),
+        .init(id: "o3", text: "Home", votes: 1),
+    ])
+
     static let clips: [VClip] = [
         VClip(id: "cl1", authorName: "Michael Lingston", heading: "Clip's Heading or main caption", caption: "Clip's sub caption or descriptions........", likes: 50000, comments: 1000),
         VClip(id: "cl2", authorName: "Priyanshu", heading: "Another great clip", caption: "Short form vibes", likes: 1200, comments: 45),
