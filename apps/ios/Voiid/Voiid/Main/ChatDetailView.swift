@@ -29,12 +29,29 @@ struct ChatDetailView: View {
     @State private var pickPhoto = false
     @State private var replyingTo: VMessage?  // reply preview above input
     @State private var infoMessage: VMessage? // Message Info sheet
+    @State private var activeMessage: VMessage? // premium long-press overlay
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            messageList
-            inputBar
+        ZStack {
+            VStack(spacing: 0) {
+                header
+                messageList
+                inputBar
+            }
+            // Premium long-press overlay
+            if let m = activeMessage {
+                MessageActionsOverlay(
+                    isMine: m.isMine,
+                    reactions: MessageBubble.reactionSet,
+                    onReact: { e in chat.react(messageId: m.id, emoji: e, in: conversation.id) },
+                    actions: overlayActions(for: m),
+                    onDismiss: { activeMessage = nil }
+                ) {
+                    MessageBubble(message: m, isGroup: conversation.type == .group) { _ in }
+                        .allowsHitTesting(false)
+                }
+                .zIndex(10)
+            }
         }
         .background(VoiidColor.background.ignoresSafeArea())
         .navigationBarBackButtonHidden(true)
@@ -125,13 +142,9 @@ struct ChatDetailView: View {
                                           onVote: { optId in
                                               chat.vote(messageId: msg.id, optionId: optId, in: conversation.id)
                                           },
-                                          onReply: { withAnimation { replyingTo = msg } },
-                                          onForward: {},
-                                          onReact: { e in chat.react(messageId: msg.id, emoji: e, in: conversation.id) },
-                                          onShare: {},
-                                          onCopy: { UIPasteboard.general.string = msg.text },
-                                          onInfo: { infoMessage = msg })
+                                          onLongPress: { activeMessage = msg })
                             .id(msg.id)
+                            .opacity(activeMessage?.id == msg.id ? 0 : 1)  // hide original while lifted
                         }
                     }
                     if chat.typingConversations.contains(conversation.id) {
@@ -153,6 +166,18 @@ struct ChatDetailView: View {
 
     private var lastID: String { chat.messages(for: conversation.id).last?.id ?? "" }
     private var lastMineID: String { chat.messages(for: conversation.id).last(where: { $0.isMine })?.id ?? "" }
+
+    private func overlayActions(for m: VMessage) -> [MessageAction] {
+        var a: [MessageAction] = [
+            MessageAction(title: "Reply", icon: "arrowshape.turn.up.left") { withAnimation { replyingTo = m } },
+            MessageAction(title: "Forward", icon: "arrowshape.turn.up.right") {},
+            MessageAction(title: "Copy", icon: "doc.on.doc") { UIPasteboard.general.string = m.text },
+            MessageAction(title: "Share", icon: "square.and.arrow.up") {},
+        ]
+        if m.isMine { a.append(MessageAction(title: "Info", icon: "info.circle") { infoMessage = m }) }
+        a.append(MessageAction(title: "Delete", icon: "trash", destructive: true) {})
+        return a
+    }
 
     /// Group messages by calendar day for separators.
     private var groupedByDay: [(String, [VMessage])] {
@@ -301,14 +326,9 @@ struct MessageBubble: View {
     var isLastMine: Bool = false      // (kept for call-site compatibility)
     var onTapImage: (UIImage) -> Void
     var onVote: (String) -> Void = { _ in }      // optionId
-    var onReply: () -> Void = {}
-    var onForward: () -> Void = {}
-    var onReact: (String) -> Void = { _ in }     // emoji
-    var onShare: () -> Void = {}
-    var onCopy: () -> Void = {}
-    var onInfo: () -> Void = {}
+    var onLongPress: () -> Void = {}
 
-    private let reactions = ["👍", "❤️", "😂", "😮", "😢", "🙏"]
+    static let reactionSet = ["👍", "❤️", "😂", "😮", "😢", "🙏"]
 
     var body: some View {
         // System message — centered pill (e.g. "You added Priyanshu").
@@ -358,21 +378,7 @@ struct MessageBubble: View {
                         .transition(.scale.combined(with: .opacity))
                 }
             }
-            // Long-press: reactions row + actions (Apple-native context menu)
-            .contextMenu {
-                Button { onReply() } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
-                Button { onForward() } label: { Label("Forward", systemImage: "arrowshape.turn.up.right") }
-                Button { onCopy() } label: { Label("Copy", systemImage: "doc.on.doc") }
-                Button { onShare() } label: { Label("Share", systemImage: "square.and.arrow.up") }
-                if message.isMine {
-                    Button { onInfo() } label: { Label("Info", systemImage: "info.circle") }
-                }
-                Menu {
-                    ForEach(reactions, id: \.self) { e in
-                        Button(e) { onReact(e) }
-                    }
-                } label: { Label("React", systemImage: "face.smiling") }
-            }
+            .onLongPressGesture(minimumDuration: 0.3) { onLongPress() }
             if !message.isMine { Spacer(minLength: 56) }
         }
         .padding(.vertical, message.reaction != nil ? 8 : 1)   // room for reaction badge
