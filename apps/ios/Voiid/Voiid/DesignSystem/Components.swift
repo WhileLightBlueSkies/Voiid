@@ -20,6 +20,66 @@ extension View {
     }
 }
 
+// MARK: - Zoomable profile photo viewer (tap avatar -> fullscreen, pinch to zoom)
+
+struct ProfilePhotoViewer: View {
+    let title: String
+    var imageName: String? = nil
+    let onClose: () -> Void
+    @State private var scale: CGFloat = 1
+    @State private var lastScale: CGFloat = 1
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            Group {
+                if let imageName, let ui = UIImage(named: imageName) {
+                    Image(uiImage: ui).resizable().scaledToFit()
+                } else {
+                    // placeholder avatar (no photo set)
+                    ZStack {
+                        Circle().fill(VoiidColor.fieldFill)
+                        Image("VoiidWordmark").resizable().scaledToFit().frame(width: 120).opacity(0.3)
+                    }
+                    .frame(width: 280, height: 280)
+                }
+            }
+            .scaleEffect(scale)
+            .gesture(
+                MagnificationGesture()
+                    .onChanged { v in scale = max(1, lastScale * v) }
+                    .onEnded { _ in lastScale = scale
+                        if scale < 1.05 { withAnimation(.spring()) { scale = 1; lastScale = 1 } } }
+            )
+            .onTapGesture(count: 2) {
+                withAnimation(.spring()) { scale = scale > 1 ? 1 : 2.5; lastScale = scale }
+            }
+
+            VStack {
+                HStack {
+                    Text(title).font(VoiidFont.rounded(17, .semibold)).foregroundColor(.white)
+                    Spacer()
+                    Button { onClose() } label: {
+                        Image(systemName: "xmark").font(.title3).foregroundColor(.white).padding(8)
+                    }
+                }
+                .padding()
+                Spacer()
+            }
+        }
+    }
+}
+
+// MARK: - Bouncy emoji button (reaction pill)
+
+struct BouncyEmojiStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 1.4 : 1)
+            .animation(.spring(response: 0.25, dampingFraction: 0.5), value: configuration.isPressed)
+    }
+}
+
 // MARK: - Soft press style (Apple-grade tactile feedback: scale + dim + haptic on press)
 
 struct SoftPressStyle: ButtonStyle {

@@ -47,10 +47,16 @@ final class ChatStore: ObservableObject {
 
     /// Send a message. Simulates the full lifecycle locally: sent → delivered → read,
     /// then a typing indicator and an auto-reply — so ticks, timestamps and typing all animate.
-    func send(_ text: String, kind: MessageKind = .text, to conversationId: String) {
+    func send(_ text: String, kind: MessageKind = .text, to conversationId: String,
+              replyTo: VMessage? = nil, forwarded: Bool = false) {
         let id = UUID().uuidString
         var msg = VMessage(id: id, conversationId: conversationId, senderId: "me",
                            kind: kind, text: text, createdAt: .now, status: .sending, isMine: true)
+        msg.forwarded = forwarded
+        if let r = replyTo {
+            msg.replyToSender = r.isMine ? "You" : (r.senderName.isEmpty ? "" : r.senderName)
+            msg.replyToText = r.kind == .text ? r.text : "Attachment"
+        }
         messagesByConversation[conversationId, default: messages(for: conversationId)].append(msg)
         bumpPreview(conversationId, preview: kind == .text ? text : previewFor(kind))
 
@@ -61,7 +67,6 @@ final class ChatStore: ObservableObject {
 
         // simulated reply with a typing indicator
         Task { await simulateReply(in: conversationId) }
-        _ = msg
     }
 
     private func previewFor(_ kind: MessageKind) -> String {
@@ -80,9 +85,67 @@ final class ChatStore: ObservableObject {
                   let idx = arr.firstIndex(where: { $0.id == messageId }) else { return }
             withAnimation(.easeInOut(duration: 0.2)) {
                 arr[idx].status = status
+                if status == .delivered { arr[idx].deliveredAt = .now }
+                if status == .read { arr[idx].readAt = .now; if arr[idx].deliveredAt == nil { arr[idx].deliveredAt = .now } }
                 self.messagesByConversation[convId] = arr
             }
         }
+    }
+
+    /// Forward a message to one or more conversations (with a Forwarded tag).
+    func forward(_ message: VMessage, to conversationIds: [String]) {
+        for cid in conversationIds {
+            send(message.kind == .text ? message.text : message.text,
+                 kind: message.kind == .poll ? .text : message.kind,
+                 to: cid, forwarded: true)
+        }
+    }
+
+    /// Delete a message. forEveryone=true leaves a "deleted" tombstone; otherwise removes it.
+    func deleteMessage(_ messageId: String, in convId: String, forEveryone: Bool) {
+        guard var arr = messagesByConversation[convId] else { return }
+        if forEveryone {
+            if let i = arr.firstIndex(where: { $0.id == messageId }) {
+                arr[i].deletedForEveryone = true
+                arr[i].reaction = nil
+                withAnimation { messagesByConversation[convId] = arr }
+            }
+        } else {
+            withAnimation { arr.removeAll { $0.id == messageId }; messagesByConversation[convId] = arr }
+        }
+        Haptics.rigid()
+    }
+
+    /// Delete an entire conversation from the list.
+    func deleteConversation(_ convId: String) {
+        withAnimation {
+            directConversations.removeAll { $0.id == convId }
+            groupConversations.removeAll { $0.id == convId }
+            messagesByConversation[convId] = nil
+        }
+        Haptics.rigid()
+    }
+
+    /// Clear all messages in a conversation but keep it in the list.
+    func clearChat(_ convId: String) {
+        withAnimation { messagesByConversation[convId] = [] }
+        if let i = directConversations.firstIndex(where: { $0.id == convId }) {
+            directConversations[i].lastMessagePreview = nil
+        } else if let i = groupConversations.firstIndex(where: { $0.id == convId }) {
+            groupConversations[i].lastMessagePreview = nil
+        }
+        Haptics.rigid()
+    }
+
+    /// Toggle an emoji reaction on a message.
+    func react(messageId: String, emoji: String, in convId: String) {
+        guard var arr = messagesByConversation[convId],
+              let idx = arr.firstIndex(where: { $0.id == messageId }) else { return }
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+            arr[idx].reaction = (arr[idx].reaction == emoji) ? nil : emoji
+            messagesByConversation[convId] = arr
+        }
+        Haptics.tap()
     }
 
     private func simulateReply(in convId: String) async {
@@ -97,6 +160,30 @@ final class ChatStore: ObservableObject {
             messagesByConversation[convId, default: []].append(reply)
         }
         bumpPreview(convId, preview: reply.text)
+    }
+
+    /// Send a poll into a conversation.
+    func sendPoll(_ question: String, options: [String], to conversationId: String) {
+        let poll = VPoll(id: UUID().uuidString, question: question,
+                         options: options.map { .init(id: UUID().uuidString, text: $0, votes: 0) })
+        let msg = VMessage(id: UUID().uuidString, conversationId: conversationId, senderId: "me",
+                           kind: .poll, text: "Poll", createdAt: .now, status: .sent, isMine: true, poll: poll)
+        messagesByConversation[conversationId, default: messages(for: conversationId)].append(msg)
+        bumpPreview(conversationId, preview: "📊 Poll: \(question)")
+    }
+
+    /// Register a vote on a poll option (single choice; toggles).
+    func vote(messageId: String, optionId: String, in conversationId: String) {
+        guard var arr = messagesByConversation[conversationId],
+              let mi = arr.firstIndex(where: { $0.id == messageId }),
+              var poll = arr[mi].poll else { return }
+        for oi in poll.options.indices {
+            if poll.options[oi].id == optionId { poll.options[oi].votes += 1 }
+        }
+        arr[mi].poll = poll
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+            messagesByConversation[conversationId] = arr
+        }
     }
 
     private func bumpPreview(_ convId: String, preview: String) {

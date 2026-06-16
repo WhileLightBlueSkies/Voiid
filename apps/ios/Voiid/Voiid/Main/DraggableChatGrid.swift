@@ -1,0 +1,190 @@
+//
+//  DraggableChatGrid.swift
+//  Voiid
+//
+//  Home-screen-style chat grid: tap a card opens the chat; touch-and-drag
+//  (immediate, no long-press) picks it up to reorder. Two side drop zones
+//  appear while dragging — left = Call, right = Delete. Drop on a zone to fire.
+//
+
+import SwiftUI
+
+struct DraggableChatGrid: View {
+    @Binding var items: [VConversation]
+    var onOpen: (VConversation) -> Void
+    var onCall: (VConversation) -> Void
+    var onDelete: (VConversation) -> Void
+
+    @State private var dragItem: VConversation?
+    @State private var dragOffset: CGSize = .zero
+    @State private var dragStart: CGPoint = .zero      // touch start in grid space
+    @State private var hoverZone: Zone? = nil
+    @State private var cellCenters: [String: CGPoint] = [:]   // id -> center in grid space
+    @State private var armed: VConversation? = nil     // long-press has "picked up" this card
+
+    enum Zone { case call, delete }
+
+    // Smaller squares: cap card width so the avatars are a bit smaller with more spacing.
+    private let columns = [GridItem(.adaptive(minimum: 88, maximum: 104), spacing: VoiidSpacing.lg)]
+
+    var body: some View {
+        ZStack {
+            // The grid
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: VoiidSpacing.lg) {
+                    ForEach(items) { conv in
+                        cell(conv)
+                            .opacity(dragItem?.id == conv.id ? 0.001 : 1)   // hide original while dragging
+                            .background(centerReader(conv))
+                    }
+                }
+                .padding(.horizontal, VoiidSpacing.lg)
+                .padding(.top, VoiidSpacing.lg)
+                .padding(.bottom, 110)
+            }
+            .scrollDisabled(dragItem != nil)   // lock scroll while dragging a card
+            .coordinateSpace(name: "grid")
+
+            // Side drop zones (only while dragging) — round icons, brand palette
+            if dragItem != nil {
+                HStack {
+                    dropZone(.call, "phone.fill", "Call", VoiidColor.primary)
+                    Spacer()
+                    dropZone(.delete, "trash.fill", "Delete", VoiidColor.error)
+                }
+                .padding(.horizontal, VoiidSpacing.md)
+                .transition(.scale.combined(with: .opacity))
+                .allowsHitTesting(false)
+            }
+
+            // The floating dragged card
+            if let d = dragItem {
+                cardView(d)
+                    .frame(width: 96)
+                    .scaleEffect(1.12)
+                    .shadow(color: .black.opacity(0.2), radius: 14, y: 8)
+                    .position(x: dragStart.x + dragOffset.width, y: dragStart.y + dragOffset.height)
+                    .allowsHitTesting(false)
+            }
+        }
+        .coordinateSpace(name: "grid")
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: items)
+        .animation(.easeInOut(duration: 0.15), value: hoverZone)
+    }
+
+    // MARK: a cell — tap opens; long-press picks up, THEN drag reorders/zones.
+    // (Vertical scroll keeps working because we only grab after the long-press fires.)
+    private func cell(_ conv: VConversation) -> some View {
+        cardView(conv)
+            .contentShape(Rectangle())
+            .scaleEffect(armed?.id == conv.id ? 1.08 : 1)
+            .animation(.spring(response: 0.25, dampingFraction: 0.6), value: armed?.id)
+            .onTapGesture { if dragItem == nil { Haptics.tap(); onOpen(conv) } }
+            .gesture(pickAndDrag(conv))
+    }
+
+    private func pickAndDrag(_ conv: VConversation) -> some Gesture {
+        LongPressGesture(minimumDuration: 0.4)
+            .onEnded { _ in
+                Haptics.rigid(); armed = conv          // picked up
+            }
+            .sequenced(before:
+                DragGesture(minimumDistance: 0, coordinateSpace: .named("grid"))
+                    .onChanged { v in
+                        guard armed?.id == conv.id else { return }
+                        if dragItem == nil {
+                            dragItem = conv
+                            dragStart = cellCenters[conv.id] ?? v.startLocation
+                        }
+                        dragOffset = v.translation
+                        let p = CGPoint(x: dragStart.x + v.translation.width, y: dragStart.y + v.translation.height)
+                        updateHoverAndReorder(p, dragging: conv)
+                    }
+                    .onEnded { _ in
+                        defer { dragItem = nil; dragOffset = .zero; hoverZone = nil; armed = nil }
+                        guard let d = dragItem else { return }
+                        switch hoverZone {
+                        case .call:   Haptics.success(); onCall(d)
+                        case .delete: Haptics.rigid();  onDelete(d)
+                        case .none:   break
+                        }
+                    }
+            )
+    }
+
+    // Hover detection for zones + live reorder
+    private func updateHoverAndReorder(_ p: CGPoint, dragging conv: VConversation) {
+        // zones: left/right 70pt gutters
+        let w = VoiidScreen.width
+        if p.x < 70 { hoverZone = .call; return }
+        if p.x > w - 70 { hoverZone = .delete; return }
+        hoverZone = nil
+        // reorder: find nearest other cell center, swap order
+        if let target = cellCenters
+            .filter({ $0.key != conv.id })
+            .min(by: { hypot($0.value.x - p.x, $0.value.y - p.y) < hypot($1.value.x - p.x, $1.value.y - p.y) }),
+           hypot(target.value.x - p.x, target.value.y - p.y) < 60,
+           let from = items.firstIndex(where: { $0.id == conv.id }),
+           let to = items.firstIndex(where: { $0.id == target.key }), from != to {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                let m = items.remove(at: from); items.insert(m, at: to)
+            }
+        }
+    }
+
+    private func dropZone(_ zone: Zone, _ icon: String, _ label: String, _ color: Color) -> some View {
+        let active = hoverZone == zone
+        return VStack(spacing: 8) {
+            ZStack {
+                Circle()
+                    .fill(color)
+                    .frame(width: 60, height: 60)
+                    .overlay(Circle().stroke(VoiidColor.textOnPrimary.opacity(active ? 0.9 : 0), lineWidth: 2))
+                    .shadow(color: color.opacity(active ? 0.5 : 0.25), radius: active ? 14 : 8, y: 4)
+                Image(systemName: icon).font(.system(size: 24)).foregroundColor(VoiidColor.textOnPrimary)
+            }
+            Text(label)
+                .font(VoiidFont.rounded(12, .semibold))
+                .foregroundColor(color)
+        }
+        .opacity(active ? 1 : 0.85)
+        .scaleEffect(active ? 1.2 : 1)
+    }
+
+    // MARK: card visual (shared by grid cell + floating drag)
+    private func cardView(_ conv: VConversation) -> some View {
+        VStack(spacing: VoiidSpacing.sm) {
+            ZStack(alignment: .topTrailing) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous).fill(VoiidColor.fieldFill)
+                    if let name = conv.photoName, let ui = UIImage(named: name) {
+                        Image(uiImage: ui).resizable().scaledToFill()
+                    } else {
+                        Image("VoiidWordmark").resizable().scaledToFit().frame(width: 56).opacity(0.22)
+                    }
+                }
+                .aspectRatio(1, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
+                if conv.isOnline {
+                    Circle().fill(VoiidColor.success).frame(width: 13, height: 13)
+                        .overlay(Circle().stroke(VoiidColor.background, lineWidth: 2)).offset(x: -6, y: 6)
+                }
+                if conv.unreadCount > 0 {
+                    Text("\(conv.unreadCount)").font(VoiidFont.rounded(11, .bold)).foregroundColor(.white)
+                        .frame(minWidth: 20, minHeight: 20).background(VoiidColor.error).clipShape(Circle())
+                        .offset(x: 6, y: -6)
+                }
+            }
+            Text(conv.title).font(VoiidFont.rounded(13, .regular)).foregroundColor(VoiidColor.textPrimary).lineLimit(1)
+        }
+    }
+
+    // record each cell's center in grid space
+    private func centerReader(_ conv: VConversation) -> some View {
+        GeometryReader { g in
+            Color.clear
+                .onAppear { cellCenters[conv.id] = CGPoint(x: g.frame(in: .named("grid")).midX, y: g.frame(in: .named("grid")).midY) }
+                .onChange(of: g.frame(in: .named("grid"))) { _, f in cellCenters[conv.id] = CGPoint(x: f.midX, y: f.midY) }
+        }
+    }
+}

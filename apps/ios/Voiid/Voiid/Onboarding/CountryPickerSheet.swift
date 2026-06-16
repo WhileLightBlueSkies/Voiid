@@ -90,6 +90,7 @@ struct CountryPickerSheet: View {
                     }
                 }
             }
+            .scrollDismissesKeyboard(.immediately)
         }
         .background(VoiidColor.background.ignoresSafeArea())
         .preferredColorScheme(.light)   // fixed appearance — looks the same in light & dark

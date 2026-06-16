@@ -10,9 +10,13 @@ import SwiftUI
 
 struct ChatsHomeView: View {
     @EnvironmentObject var chat: ChatStore
+    @EnvironmentObject var session: AppSession
     @State private var search = ""
     @State private var tab: Tab = .chats
     @State private var openConversation: VConversation?
+    @State private var deleteTarget: VConversation?
+    @State private var callTarget: VConversation?
+    @State private var activeCall: CallRequest?
     @Namespace private var underline
 
     enum Tab: String { case chats = "Chats", groups = "Groups" }
@@ -27,20 +31,52 @@ struct ChatsHomeView: View {
                 header
                 searchBar
                 tabs
-                ScrollView {
-                    LazyVGrid(columns: columns, spacing: VoiidSpacing.lg) {
-                        ForEach(items) { conv in
-                            Button { Haptics.tap(); openConversation = conv } label: { gridCard(conv) }
-                                .buttonStyle(SoftPressStyle(scale: 0.94))
+                if search.isEmpty {
+                    // Home-screen-style draggable grid (reorder + drag to Call/Delete zones)
+                    DraggableChatGrid(
+                        items: tab == .chats ? $chat.directConversations : $chat.groupConversations,
+                        onOpen: { openConversation = $0 },
+                        onCall: { callTarget = $0 },
+                        onDelete: { deleteTarget = $0 }
+                    )
+                } else {
+                    // Search results — simple grid
+                    ScrollView {
+                        LazyVGrid(columns: columns, spacing: VoiidSpacing.lg) {
+                            ForEach(items) { conv in
+                                Button { Haptics.tap(); openConversation = conv } label: { gridCard(conv) }
+                                    .buttonStyle(SoftPressStyle(scale: 0.94))
+                            }
                         }
+                        .padding(.horizontal, VoiidSpacing.lg)
+                        .padding(.top, VoiidSpacing.lg)
+                        .padding(.bottom, 110)
                     }
-                    .padding(.horizontal, VoiidSpacing.lg)
-                    .padding(.top, VoiidSpacing.lg)
-                    .padding(.bottom, 110)
                 }
             }
             .background(VoiidColor.background.ignoresSafeArea())
+            .onAppear { session.hideTabBar = false }   // root screen always shows the bar
             .navigationDestination(item: $openConversation) { ChatDetailView(conversation: $0) }
+            .alert("Delete chat?", isPresented: Binding(
+                get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } })) {
+                Button("Delete", role: .destructive) {
+                    if let c = deleteTarget { chat.deleteConversation(c.id) }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This chat will be deleted from your list.")
+            }
+            .sheet(item: $callTarget) { conv in
+                CallTypeSheet(title: conv.title) { kind in
+                    activeCall = CallRequest(
+                        title: conv.title,
+                        isGroup: conv.type == .group,
+                        members: conv.type == .group ? DummyData.groupMembers : [],
+                        photoName: conv.photoName,
+                        kind: kind)
+                }
+            }
+            .fullScreenCover(item: $activeCall) { CallScreen(request: $0) }
         }
     }
 

@@ -11,10 +11,13 @@ import SwiftUI
 
 struct GroupInfoView: View {
     let conversation: VConversation
+    @EnvironmentObject var session: AppSession
     @Environment(\.dismiss) private var dismiss
     @State private var muted = false
     @State private var members = DummyData.groupMembers
     @State private var memberAction: VMember?
+    @State private var viewPhoto = false
+    @State private var showAllMedia = false
 
     var body: some View {
         ScrollView {
@@ -31,6 +34,11 @@ struct GroupInfoView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
         .tint(VoiidColor.primary)
+        .onAppear { session.hideTabBar = true }
+        .fullScreenCover(isPresented: $viewPhoto) {
+            ProfilePhotoViewer(title: conversation.title, imageName: conversation.photoName) { viewPhoto = false }
+        }
+        .sheet(isPresented: $showAllMedia) { SharedMediaSheet(title: conversation.title) }
         .confirmationDialog(memberAction?.name ?? "", isPresented: Binding(
             get: { memberAction != nil }, set: { if !$0 { memberAction = nil } }),
             titleVisibility: .visible) {
@@ -45,13 +53,16 @@ struct GroupInfoView: View {
     // Header: big photo, editable name, "Group · N members"
     private var headerCard: some View {
         VStack(spacing: VoiidSpacing.sm) {
-            ZStack(alignment: .bottomTrailing) {
-                Circle().fill(VoiidColor.fieldFill).frame(width: 110, height: 110)
-                    .overlay(Image("VoiidWordmark").resizable().scaledToFit().frame(width: 56).opacity(0.25))
-                Circle().fill(VoiidColor.accent).frame(width: 32, height: 32)
-                    .overlay(Image(systemName: "camera.fill").font(.system(size: 13)).foregroundColor(VoiidColor.primary))
-                    .overlay(Circle().stroke(VoiidColor.background, lineWidth: 2))
+            Button { Haptics.tap(); viewPhoto = true } label: {
+                ZStack(alignment: .bottomTrailing) {
+                    Circle().fill(VoiidColor.fieldFill).frame(width: 110, height: 110)
+                        .overlay(Image("VoiidWordmark").resizable().scaledToFit().frame(width: 56).opacity(0.25))
+                    Circle().fill(VoiidColor.accent).frame(width: 32, height: 32)
+                        .overlay(Image(systemName: "camera.fill").font(.system(size: 13)).foregroundColor(VoiidColor.primary))
+                        .overlay(Circle().stroke(VoiidColor.background, lineWidth: 2))
+                }
             }
+            .buttonStyle(.plain)
             HStack(spacing: 6) {
                 Text(conversation.title).font(VoiidFont.rounded(22, .bold)).foregroundColor(VoiidColor.textPrimary)
                 Image(systemName: "pencil").font(.system(size: 14)).foregroundColor(VoiidColor.textSecondary)
@@ -69,7 +80,8 @@ struct GroupInfoView: View {
             HStack {
                 Text("Media, links & docs").font(VoiidFont.rounded(15, .semibold)).foregroundColor(VoiidColor.textPrimary)
                 Spacer()
-                Button("See all") {}.font(VoiidFont.rounded(13, .regular)).foregroundColor(VoiidColor.primary)
+                Button("See all") { Haptics.tap(); showAllMedia = true }
+                    .font(VoiidFont.rounded(13, .regular)).foregroundColor(VoiidColor.primary)
             }
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: VoiidSpacing.sm) {
