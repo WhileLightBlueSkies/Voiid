@@ -20,12 +20,12 @@ struct DraggableChatGrid: View {
     @State private var dragStart: CGPoint = .zero      // touch start in grid space
     @State private var hoverZone: Zone? = nil
     @State private var cellCenters: [String: CGPoint] = [:]   // id -> center in grid space
+    @State private var armed: VConversation? = nil     // long-press has "picked up" this card
 
     enum Zone { case call, delete }
 
-    private let columns = [GridItem(.flexible(), spacing: VoiidSpacing.md),
-                           GridItem(.flexible(), spacing: VoiidSpacing.md),
-                           GridItem(.flexible(), spacing: VoiidSpacing.md)]
+    // Smaller squares: cap card width so the avatars are a bit smaller with more spacing.
+    private let columns = [GridItem(.adaptive(minimum: 88, maximum: 104), spacing: VoiidSpacing.lg)]
 
     var body: some View {
         ZStack {
@@ -72,35 +72,44 @@ struct DraggableChatGrid: View {
         .animation(.easeInOut(duration: 0.15), value: hoverZone)
     }
 
-    // MARK: a normal cell with the immediate drag gesture
+    // MARK: a cell — tap opens; long-press picks up, THEN drag reorders/zones.
+    // (Vertical scroll keeps working because we only grab after the long-press fires.)
     private func cell(_ conv: VConversation) -> some View {
         cardView(conv)
             .contentShape(Rectangle())
+            .scaleEffect(armed?.id == conv.id ? 1.08 : 1)
+            .animation(.spring(response: 0.25, dampingFraction: 0.6), value: armed?.id)
             .onTapGesture { if dragItem == nil { Haptics.tap(); onOpen(conv) } }
-            .gesture(dragGesture(conv))
+            .gesture(pickAndDrag(conv))
     }
 
-    private func dragGesture(_ conv: VConversation) -> some Gesture {
-        DragGesture(minimumDistance: 8, coordinateSpace: .named("grid"))
-            .onChanged { v in
-                if dragItem == nil {
-                    Haptics.soft()
-                    dragItem = conv
-                    dragStart = cellCenters[conv.id] ?? v.startLocation
-                }
-                dragOffset = v.translation
-                let p = CGPoint(x: dragStart.x + v.translation.width, y: dragStart.y + v.translation.height)
-                updateHoverAndReorder(p, dragging: conv)
-            }
+    private func pickAndDrag(_ conv: VConversation) -> some Gesture {
+        LongPressGesture(minimumDuration: 0.4)
             .onEnded { _ in
-                defer { dragItem = nil; dragOffset = .zero; hoverZone = nil }
-                guard let d = dragItem else { return }
-                switch hoverZone {
-                case .call:   Haptics.success(); onCall(d)
-                case .delete: Haptics.rigid();  onDelete(d)
-                case .none:   break   // reorder already applied live
-                }
+                Haptics.rigid(); armed = conv          // picked up
             }
+            .sequenced(before:
+                DragGesture(minimumDistance: 0, coordinateSpace: .named("grid"))
+                    .onChanged { v in
+                        guard armed?.id == conv.id else { return }
+                        if dragItem == nil {
+                            dragItem = conv
+                            dragStart = cellCenters[conv.id] ?? v.startLocation
+                        }
+                        dragOffset = v.translation
+                        let p = CGPoint(x: dragStart.x + v.translation.width, y: dragStart.y + v.translation.height)
+                        updateHoverAndReorder(p, dragging: conv)
+                    }
+                    .onEnded { _ in
+                        defer { dragItem = nil; dragOffset = .zero; hoverZone = nil; armed = nil }
+                        guard let d = dragItem else { return }
+                        switch hoverZone {
+                        case .call:   Haptics.success(); onCall(d)
+                        case .delete: Haptics.rigid();  onDelete(d)
+                        case .none:   break
+                        }
+                    }
+            )
     }
 
     // Hover detection for zones + live reorder

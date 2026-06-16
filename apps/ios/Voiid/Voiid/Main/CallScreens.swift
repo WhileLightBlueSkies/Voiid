@@ -87,6 +87,26 @@ struct CallScreen: View {
             background
             VStack(spacing: 0) {
                 Spacer().frame(height: 60)
+                // Group call banner card
+                if request.isGroup {
+                    HStack(spacing: VoiidSpacing.sm) {
+                        Image(systemName: request.kind == .video ? "video.fill" : "phone.fill")
+                            .font(.system(size: 14)).foregroundColor(VoiidColor.textOnPrimary)
+                            .frame(width: 30, height: 30).background(VoiidColor.primary).clipShape(Circle())
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(request.kind == .video ? "Group video call" : "Group voice call")
+                                .font(VoiidFont.rounded(13, .semibold))
+                                .foregroundColor(request.kind == .video ? .white : VoiidColor.textPrimary)
+                            Text("\(request.members.count) participants")
+                                .font(VoiidFont.rounded(11, .regular))
+                                .foregroundColor(request.kind == .video ? .white.opacity(0.8) : VoiidColor.textSecondary)
+                        }
+                    }
+                    .padding(.horizontal, VoiidSpacing.md).padding(.vertical, VoiidSpacing.sm)
+                    .background((request.kind == .video ? Color.white.opacity(0.15) : VoiidColor.surfaceCard))
+                    .clipShape(Capsule())
+                    .padding(.bottom, VoiidSpacing.md)
+                }
                 // Title + status
                 VStack(spacing: 6) {
                     Text(request.title)
