@@ -173,7 +173,15 @@ fun TermsScreen(onContinue: () -> Unit) {
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 16.dp),
+                    // Left edge aligns with the centered 300dp Continue button (same inset),
+                    // but the row extends wider so the agree text stays on ONE line like the design.
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(
+                            start = ((cfg.screenWidthDp - 300) / 2f).coerceAtLeast(16f).dp,
+                            end = 16.dp,
+                            bottom = 16.dp,
+                        ),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
@@ -181,8 +189,8 @@ fun TermsScreen(onContinue: () -> Unit) {
                         modifier = Modifier
                             .size(16.dp)
                             .clip(RoundedCornerShape(3.dp))
-                            .background(if (agreed) VoiidColor.primary else Color.Transparent)
-                            .border(1.dp, VoiidColor.textSecondary, RoundedCornerShape(3.dp))
+                            .background(if (agreed) VoiidColor.textPrimary else Color.Transparent)
+                            .border(1.dp, VoiidColor.textPrimary, RoundedCornerShape(3.dp))
                             .softClickable(scale = 0.9f) { agreed = !agreed },
                         contentAlignment = Alignment.Center,
                     ) {

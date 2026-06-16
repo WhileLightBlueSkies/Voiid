@@ -96,7 +96,7 @@ private fun Header(haptics: com.voiid.app.ui.components.VoiidHaptics) {
         Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(top = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text("Chats", style = VoiidFont.rounded(28, FontWeight.Bold), color = VoiidColor.textPrimary)
+        Text("Chats", style = VoiidFont.rounded(24, FontWeight.Bold), color = VoiidColor.textPrimary)
         Spacer(Modifier.weight(1f))
         Icon(
             Icons.Default.Menu, "Menu", tint = VoiidColor.textPrimary,
@@ -163,7 +163,7 @@ private fun Tabs(selected: ChatTab, onSelect: (ChatTab) -> Unit) {
                     ) {
                         Text(
                             t.label,
-                            style = VoiidFont.rounded(17, FontWeight.SemiBold),
+                            style = VoiidFont.rounded(15, FontWeight.SemiBold),
                             color = if (selected == t) VoiidColor.primary else VoiidColor.textSecondary,
                         )
                     }
@@ -225,6 +225,6 @@ private fun GridCard(conv: VConversation, modifier: Modifier) {
             }
         }
         Spacer(Modifier.height(8.dp))
-        Text(conv.title, style = VoiidFont.rounded(14), color = VoiidColor.textPrimary, maxLines = 1)
+        Text(conv.title, style = VoiidFont.rounded(13), color = VoiidColor.textPrimary, maxLines = 1)
     }
 }

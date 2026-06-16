@@ -62,7 +62,7 @@ fun AIChatView(ai: AIStore) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .background(VoiidColor.fieldFill.copy(alpha = 0.6f))
+                .background(VoiidColor.background)
                 .statusBarsPadding()
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -89,7 +89,7 @@ fun AIChatView(ai: AIStore) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .background(VoiidColor.fieldFill.copy(alpha = 0.6f))
+                .background(VoiidColor.background)
                 .padding(horizontal = 8.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),

@@ -1,9 +1,11 @@
 package com.voiid.app.ui.theme
 
 import androidx.compose.material3.Typography
+import androidx.compose.ui.text.ExperimentalTextApi
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontVariation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import com.voiid.app.R
@@ -16,17 +18,26 @@ import com.voiid.app.R
  *    friendly geometry. (Both shipped as bundled variable fonts in res/font.)
  */
 
-// Variable fonts: the wght axis is driven automatically from each declared FontWeight.
+// Variable fonts: force the `wght` axis explicitly per weight so SemiBold/Bold render with the
+// exact same heaviness as iOS (not flattened to the font's default Regular instance on some devices).
+@OptIn(ExperimentalTextApi::class)
+private fun nunito(weight: FontWeight, wght: Int) =
+    Font(R.font.nunito_variable, weight, variationSettings = FontVariation.Settings(FontVariation.weight(wght)))
+
+@OptIn(ExperimentalTextApi::class)
+private fun urbanist(weight: FontWeight, wght: Int) =
+    Font(R.font.urbanist_variable, weight, variationSettings = FontVariation.Settings(FontVariation.weight(wght)))
+
 val Nunito = FontFamily(
-    Font(R.font.nunito_variable, FontWeight.Normal),
-    Font(R.font.nunito_variable, FontWeight.Medium),
-    Font(R.font.nunito_variable, FontWeight.SemiBold),
-    Font(R.font.nunito_variable, FontWeight.Bold),
+    nunito(FontWeight.Normal, 400),
+    nunito(FontWeight.Medium, 500),
+    nunito(FontWeight.SemiBold, 600),
+    nunito(FontWeight.Bold, 700),
 )
 
 val Urbanist = FontFamily(
-    Font(R.font.urbanist_variable, FontWeight.Bold),
-    Font(R.font.urbanist_variable, FontWeight.SemiBold),
+    urbanist(FontWeight.SemiBold, 600),
+    urbanist(FontWeight.Bold, 700),
 )
 
 object VoiidFont {
