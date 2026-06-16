@@ -29,22 +29,27 @@ struct ChatsHomeView: View {
                 header
                 searchBar
                 tabs
-                ScrollView {
-                    LazyVGrid(columns: columns, spacing: VoiidSpacing.lg) {
-                        ForEach(items) { conv in
-                            Button { Haptics.tap(); openConversation = conv } label: { gridCard(conv) }
-                                .buttonStyle(SoftPressStyle(scale: 0.94))
-                                .contextMenu {
-                                    Button { openConversation = conv } label: { Label("Open", systemImage: "bubble.left") }
-                                    Button(role: .destructive) { deleteTarget = conv } label: {
-                                        Label("Delete chat", systemImage: "trash")
-                                    }
-                                }
+                if search.isEmpty {
+                    // Home-screen-style draggable grid (reorder + drag to Call/Delete zones)
+                    DraggableChatGrid(
+                        items: tab == .chats ? $chat.directConversations : $chat.groupConversations,
+                        onOpen: { openConversation = $0 },
+                        onCall: { _ in /* dummy: start call */ },
+                        onDelete: { deleteTarget = $0 }
+                    )
+                } else {
+                    // Search results — simple grid
+                    ScrollView {
+                        LazyVGrid(columns: columns, spacing: VoiidSpacing.lg) {
+                            ForEach(items) { conv in
+                                Button { Haptics.tap(); openConversation = conv } label: { gridCard(conv) }
+                                    .buttonStyle(SoftPressStyle(scale: 0.94))
+                            }
                         }
+                        .padding(.horizontal, VoiidSpacing.lg)
+                        .padding(.top, VoiidSpacing.lg)
+                        .padding(.bottom, 110)
                     }
-                    .padding(.horizontal, VoiidSpacing.lg)
-                    .padding(.top, VoiidSpacing.lg)
-                    .padding(.bottom, 110)
                 }
             }
             .background(VoiidColor.background.ignoresSafeArea())
