@@ -243,7 +243,6 @@ struct ChatDetailView: View {
             MessageBubble(message: msg,
                           isGroup: conversation.type == .group,
                           isLastMine: msg.id == lastMineID,
-                          selectionMode: selectionMode,
                           onTapImage: { img in fullscreenImage = img },
                           onVote: { optId in chat.vote(messageId: msg.id, optionId: optId, in: conversation.id) },
                           onReply: { withAnimation { replyingTo = msg } },
@@ -252,6 +251,7 @@ struct ChatDetailView: View {
                           onCopy: { UIPasteboard.general.string = msg.text },
                           onInfo: { infoMessage = msg },
                           onDelete: { deleteMessage = msg },
+                          selectionMode: selectionMode,
                           onSelectTap: { toggleSelect(msg.id) })
         }
     }
