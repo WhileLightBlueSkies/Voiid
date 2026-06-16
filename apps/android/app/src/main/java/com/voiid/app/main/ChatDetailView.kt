@@ -143,7 +143,7 @@ fun ChatDetailView(conversation: VConversation, chat: ChatStore, onBack: () -> U
             sortedDays.forEach { day ->
                 item(key = "sep-$day") { DateSeparator(VoiidDate.separator(day)) }
                 items(grouped[day].orEmpty(), key = { it.id }) { msg ->
-                    MessageBubble(msg, isLastMine = msg.id == lastMineId)
+                    MessageBubble(msg, isLastMine = msg.id == lastMineId, isGroup = conversation.type == ConversationType.GROUP)
                 }
             }
             if (typing) item(key = "typing") { TypingBubble() }
@@ -205,7 +205,11 @@ fun ChatDetailView(conversation: VConversation, chat: ChatStore, onBack: () -> U
             enter = slideInHorizontally { it } + fadeIn(),
             exit = slideOutHorizontally { it } + fadeOut(),
         ) {
-            ChatDetailsView(conversation = conversation, onBack = { showDetails = false })
+            if (conversation.type == ConversationType.GROUP) {
+                GroupInfoView(conversation = conversation, onBack = { showDetails = false })
+            } else {
+                ContactProfileView(conversation = conversation, onBack = { showDetails = false })
+            }
         }
     }
 }

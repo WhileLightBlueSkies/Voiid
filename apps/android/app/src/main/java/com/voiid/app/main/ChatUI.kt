@@ -54,13 +54,36 @@ fun bubbleShape(isMine: Boolean): Shape = RoundedCornerShape(
     bottomStart = if (isMine) 16.dp else 0.dp,
 )
 
+/** Stable per-sender accent color for group sender names (WhatsApp-style). */
+fun senderColor(senderId: String): androidx.compose.ui.graphics.Color {
+    val palette = listOf(0xFFC0556B, 0xFF3E9E6E, 0xFF4D7EA8, 0xFFD8A24A, 0xFF8E5BA6, 0xFFBA6B3D, 0xFF2A9D8F)
+    val idx = kotlin.math.abs(senderId.hashCode()) % palette.size
+    return androidx.compose.ui.graphics.Color(palette[idx])
+}
+
 /**
  * Message bubble — mine = light pink (#FCF4F8), received = white (#FFFFFF).
- * Refined receipts: tap a bubble to reveal its time; the Sent/Delivered/Read label shows only
- * under the last sent message (no per-bubble tick icons).
+ * System messages render as a centered pill. In groups, incoming bubbles show a colored
+ * sender name. Refined receipts: tap to reveal time; "Read" only under the last sent message.
  */
 @Composable
-fun MessageBubble(message: VMessage, isLastMine: Boolean) {
+fun MessageBubble(message: VMessage, isLastMine: Boolean, isGroup: Boolean = false) {
+    // System message — centered pill (e.g. "You added Priyanshu").
+    if (message.kind == MessageKind.SYSTEM) {
+        Box(Modifier.fillMaxWidth().padding(vertical = 2.dp), contentAlignment = Alignment.Center) {
+            Text(
+                message.text,
+                style = VoiidFont.rounded(11, FontWeight.Medium),
+                color = VoiidColor.textSecondary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(VoiidColor.surfaceCard.copy(alpha = 0.7f))
+                    .padding(horizontal = 16.dp, vertical = 5.dp),
+            )
+        }
+        return
+    }
+
     var showMeta by remember { mutableStateOf(false) }
     val mine = message.isMine
 
@@ -75,7 +98,7 @@ fun MessageBubble(message: VMessage, isLastMine: Boolean) {
                 modifier = Modifier.weight(1f),
                 contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart,
             ) {
-                Box(
+                Column(
                     modifier = Modifier
                         .clip(bubbleShape(mine))
                         .background(if (mine) VoiidColor.bubbleReceived else VoiidColor.surfaceCard)
@@ -84,7 +107,11 @@ fun MessageBubble(message: VMessage, isLastMine: Boolean) {
                             indication = null,
                         ) { showMeta = !showMeta }
                         .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
+                    if (isGroup && !mine && message.senderName.isNotEmpty()) {
+                        Text(message.senderName, style = VoiidFont.rounded(12, FontWeight.SemiBold), color = senderColor(message.senderId))
+                    }
                     BubbleContent(message)
                 }
             }

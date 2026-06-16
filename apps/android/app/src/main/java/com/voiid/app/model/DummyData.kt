@@ -38,6 +38,33 @@ object DummyData {
         VMessage(id = "m5", conversationId = conversationId, senderId = "u4", text = "Whats good? How can i Help you today?", createdAt = now(), isMine = false),
     )
 
+    // Group conversation messages — sender names + a system message.
+    fun groupMessages(conversationId: String): List<VMessage> = listOf(
+        VMessage(id = "gm0", conversationId = conversationId, senderId = "system", kind = MessageKind.SYSTEM, text = "You added Priyanshu, Nehal and Sampath", createdAt = now(), isMine = false),
+        VMessage(id = "gm1", conversationId = conversationId, senderId = "u1", senderName = "Priyanshu", text = "Hey team 👋", createdAt = now(), isMine = false),
+        VMessage(id = "gm2", conversationId = conversationId, senderId = "u2", senderName = "Nehal", text = "Whats good? How can i Help you today?", createdAt = now(), isMine = false),
+        VMessage(id = "gm3", conversationId = conversationId, senderId = "me", text = "Yoooo", createdAt = now(), status = MessageStatus.READ, isMine = true),
+        VMessage(id = "gm4", conversationId = conversationId, senderId = "u3", senderName = "Sampath", text = "On my way", createdAt = now(), isMine = false),
+    )
+
+    val groupMembers: List<VMember> = listOf(
+        VMember(id = "me", name = "You", phone = "+91 91234 56789", role = MemberRole.ADMIN, isYou = true),
+        VMember(id = "u1", name = "Priyanshu", phone = "+91 90000 00001", role = MemberRole.ADMIN),
+        VMember(id = "u2", name = "Nehal", phone = "+91 90000 00002", statusText = "Available"),
+        VMember(id = "u3", name = "Sampath", phone = "+91 90000 00003", statusText = "Busy"),
+    )
+
+    val sharedMedia: List<VMediaItem> = (1..9).map { VMediaItem(id = "media$it", kind = VMediaItem.Kind.PHOTO) }
+
+    val groupPoll = VPoll(
+        id = "poll1", question = "Where to meet this weekend?",
+        options = listOf(
+            VPoll.Option("o1", "Cafe", 3),
+            VPoll.Option("o2", "Beach", 5),
+            VPoll.Option("o3", "Home", 1),
+        ),
+    )
+
     val clips: List<VClip> = listOf(
         VClip(id = "cl1", authorName = "Michael Lingston", heading = "Clip's Heading or main caption", caption = "Clip's sub caption or descriptions........", likes = 50000, comments = 1000),
         VClip(id = "cl2", authorName = "Priyanshu", heading = "Another great clip", caption = "Short form vibes", likes = 1200, comments = 45),

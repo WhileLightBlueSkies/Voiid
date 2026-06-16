@@ -40,14 +40,17 @@ class ChatStore : ViewModel() {
 
     init {
         (directConversations + groupConversations).forEach { conv ->
-            messagesByConversation[conv.id] = mutableStateListOf<VMessage>().apply { addAll(DummyData.messages(conv.id)) }
+            messagesByConversation[conv.id] = mutableStateListOf<VMessage>().apply { addAll(seed(conv.id)) }
         }
     }
+
+    private fun seed(id: String): List<VMessage> =
+        if (groupConversations.any { it.id == id }) DummyData.groupMessages(id) else DummyData.messages(id)
 
     fun messages(id: String): List<VMessage> = messagesByConversation[id] ?: emptyList()
 
     private fun list(id: String) = messagesByConversation.getOrPut(id) {
-        mutableStateListOf<VMessage>().apply { addAll(DummyData.messages(id)) }
+        mutableStateListOf<VMessage>().apply { addAll(seed(id)) }
     }
 
     /** Send a message — simulates the full lifecycle locally: sent → delivered → read, then a

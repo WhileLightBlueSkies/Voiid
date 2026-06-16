@@ -25,6 +25,7 @@ data class VMessage(
     val id: String,
     val conversationId: String,
     val senderId: String,
+    val senderName: String = "",      // shown above incoming group bubbles
     val kind: MessageKind = MessageKind.TEXT,
     /** Decrypted text for display. On the wire this is opaque ciphertext (crypto seam). */
     val text: String,

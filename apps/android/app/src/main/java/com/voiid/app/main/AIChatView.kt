@@ -35,6 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
@@ -71,7 +72,7 @@ fun AIChatView(ai: AIStore) {
             Icon(Icons.Default.AutoAwesome, null, tint = VoiidColor.primary, modifier = Modifier.size(20.dp))
             Text("Voiid AI", style = VoiidFont.headline, color = VoiidColor.textPrimary)
         }
-        Box(Modifier.fillMaxWidth().height(1.dp).background(VoiidColor.divider.copy(alpha = 0.5f)))
+        Box(Modifier.fillMaxWidth().height(0.5.dp).background(Color(0xFF3C3C43).copy(alpha = 0.29f)))  // iOS system Divider (.separator)
 
         // Messages
         LazyColumn(
@@ -85,7 +86,7 @@ fun AIChatView(ai: AIStore) {
         }
 
         // Input bar
-        Box(Modifier.fillMaxWidth().height(1.dp).background(VoiidColor.divider.copy(alpha = 0.5f)))
+        Box(Modifier.fillMaxWidth().height(0.5.dp).background(Color(0xFF3C3C43).copy(alpha = 0.29f)))  // iOS system Divider (.separator)
         Row(
             Modifier
                 .fillMaxWidth()
