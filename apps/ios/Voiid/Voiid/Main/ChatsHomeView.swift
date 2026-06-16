@@ -50,13 +50,14 @@ struct ChatsHomeView: View {
             .background(VoiidColor.background.ignoresSafeArea())
             .onAppear { session.hideTabBar = false }   // root screen always shows the bar
             .navigationDestination(item: $openConversation) { ChatDetailView(conversation: $0) }
-            .confirmationDialog("Delete this chat?", isPresented: Binding(
-                get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } }),
-                titleVisibility: .visible) {
-                if let c = deleteTarget {
-                    Button("Delete chat", role: .destructive) { chat.deleteConversation(c.id) }
-                    Button("Cancel", role: .cancel) {}
+            .alert("Delete chat?", isPresented: Binding(
+                get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } })) {
+                Button("Delete", role: .destructive) {
+                    if let c = deleteTarget { chat.deleteConversation(c.id) }
                 }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This chat will be deleted from your list.")
             }
         }
     }

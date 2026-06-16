@@ -30,8 +30,13 @@ struct ChatDetailView: View {
     @State private var replyingTo: VMessage?  // reply preview above input
     @State private var infoMessage: VMessage? // Message Info sheet
     @State private var forwardMessage: VMessage? // forward chat-picker
-    @State private var deleteMessage: VMessage?   // delete confirm
+    @State private var deleteMessage: VMessage?   // single delete confirm
     @State private var showClearChat = false
+    // Multi-select
+    @State private var selectionMode = false
+    @State private var selectedIDs = Set<String>()
+    @State private var showBulkDelete = false
+    @State private var forwardBulk = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -67,6 +72,7 @@ struct ChatDetailView: View {
                 chat.forward(msg, to: targets)
             }
         }
+        // Single message delete — confirmation modal
         .confirmationDialog("Delete message?", isPresented: Binding(
             get: { deleteMessage != nil }, set: { if !$0 { deleteMessage = nil } }),
             titleVisibility: .visible) {
@@ -82,9 +88,26 @@ struct ChatDetailView: View {
                 Button("Cancel", role: .cancel) {}
             }
         }
-        .confirmationDialog("Clear this chat?", isPresented: $showClearChat, titleVisibility: .visible) {
+        // Clear chat — alert modal
+        .alert("Clear this chat?", isPresented: $showClearChat) {
             Button("Clear chat", role: .destructive) { chat.clearChat(conversation.id) }
             Button("Cancel", role: .cancel) {}
+        } message: { Text("All messages will be removed from this chat.") }
+        // Bulk delete — alert modal
+        .alert("Delete \(selectedIDs.count) message\(selectedIDs.count == 1 ? "" : "s")?", isPresented: $showBulkDelete) {
+            Button("Delete", role: .destructive) {
+                for id in selectedIDs { chat.deleteMessage(id, in: conversation.id, forEveryone: false) }
+                exitSelection()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { Text("This will delete the selected messages.") }
+        // Bulk forward
+        .sheet(isPresented: $forwardBulk) {
+            ForwardSheet(message: chat.messages(for: conversation.id).first(where: { selectedIDs.contains($0.id) }) ?? VMessage(id: "", conversationId: "", senderId: "", text: "", createdAt: .now)) { targets in
+                let msgs = chat.messages(for: conversation.id).filter { selectedIDs.contains($0.id) }
+                for m in msgs { chat.forward(m, to: targets) }
+                exitSelection()
+            }
         }
         .fullScreenCover(item: Binding(
             get: { fullscreenImage.map { ImageWrapper(image: $0) } },
@@ -94,9 +117,40 @@ struct ChatDetailView: View {
         }
     }
 
-    // MARK: header — back, avatar, name/presence, camera · phone · ⋮
+    // MARK: header — normal, or selection bar in multi-select
 
-    private var header: some View {
+    @ViewBuilder private var header: some View {
+        if selectionMode { selectionHeader } else { normalHeader }
+    }
+
+    private var selectionHeader: some View {
+        HStack(spacing: VoiidSpacing.md) {
+            Button { exitSelection() } label: {
+                Text("Cancel").font(VoiidFont.rounded(16, .regular)).foregroundColor(VoiidColor.primary)
+            }
+            Text("\(selectedIDs.count) selected")
+                .font(VoiidFont.rounded(16, .semibold)).foregroundColor(VoiidColor.textPrimary)
+            Spacer()
+            Button { if !selectedIDs.isEmpty { forwardBulk = true } } label: {
+                Image(systemName: "arrowshape.turn.up.right").font(.system(size: 18)).foregroundColor(VoiidColor.primary)
+            }.disabled(selectedIDs.isEmpty)
+            Button { if !selectedIDs.isEmpty { showBulkDelete = true } } label: {
+                Image(systemName: "trash").font(.system(size: 18)).foregroundColor(VoiidColor.error)
+            }.disabled(selectedIDs.isEmpty)
+        }
+        .padding(.horizontal, VoiidSpacing.md).padding(.vertical, VoiidSpacing.sm)
+        .background(VoiidColor.background)
+    }
+
+    private func exitSelection() {
+        withAnimation { selectionMode = false; selectedIDs.removeAll() }
+    }
+    private func toggleSelect(_ id: String) {
+        Haptics.selection()
+        if selectedIDs.contains(id) { selectedIDs.remove(id) } else { selectedIDs.insert(id) }
+    }
+
+    private var normalHeader: some View {
         HStack(spacing: VoiidSpacing.sm) {
             Button { Haptics.tap(); dismiss() } label: {
                 Image(systemName: "chevron.left").font(.system(size: 20, weight: .semibold))
@@ -126,6 +180,9 @@ struct ChatDetailView: View {
                     Button { showInfo = true } label: {
                         Label(conversation.type == .group ? "Group info" : "View profile", systemImage: "info.circle")
                     }
+                    Button { withAnimation { selectionMode = true } } label: {
+                        Label("Select messages", systemImage: "checkmark.circle")
+                    }
                     Button(role: .destructive) { showClearChat = true } label: {
                         Label("Clear chat", systemImage: "trash")
                     }
@@ -154,19 +211,29 @@ struct ChatDetailView: View {
                     ForEach(groupedByDay, id: \.0) { day, msgs in
                         DateSeparator(text: day)
                         ForEach(msgs) { msg in
-                            MessageBubble(message: msg,
-                                          isGroup: conversation.type == .group,
-                                          isLastMine: msg.id == lastMineID,
-                                          onTapImage: { img in fullscreenImage = img },
-                                          onVote: { optId in
-                                              chat.vote(messageId: msg.id, optionId: optId, in: conversation.id)
-                                          },
-                                          onReply: { withAnimation { replyingTo = msg } },
-                                          onForward: { forwardMessage = msg },
-                                          onReact: { e in chat.react(messageId: msg.id, emoji: e, in: conversation.id) },
-                                          onCopy: { UIPasteboard.general.string = msg.text },
-                                          onInfo: { infoMessage = msg },
-                                          onDelete: { deleteMessage = msg })
+                            HStack(spacing: VoiidSpacing.sm) {
+                                if selectionMode {
+                                    Image(systemName: selectedIDs.contains(msg.id) ? "checkmark.circle.fill" : "circle")
+                                        .font(.system(size: 22))
+                                        .foregroundColor(selectedIDs.contains(msg.id) ? VoiidColor.primary : VoiidColor.textSecondary.opacity(0.5))
+                                        .transition(.move(edge: .leading).combined(with: .opacity))
+                                }
+                                MessageBubble(message: msg,
+                                              isGroup: conversation.type == .group,
+                                              isLastMine: msg.id == lastMineID,
+                                              selectionMode: selectionMode,
+                                              onTapImage: { img in fullscreenImage = img },
+                                              onVote: { optId in
+                                                  chat.vote(messageId: msg.id, optionId: optId, in: conversation.id)
+                                              },
+                                              onReply: { withAnimation { replyingTo = msg } },
+                                              onForward: { forwardMessage = msg },
+                                              onReact: { e in chat.react(messageId: msg.id, emoji: e, in: conversation.id) },
+                                              onCopy: { UIPasteboard.general.string = msg.text },
+                                              onInfo: { infoMessage = msg },
+                                              onDelete: { deleteMessage = msg },
+                                              onSelectTap: { toggleSelect(msg.id) })
+                            }
                             .id(msg.id)
                         }
                     }
@@ -343,6 +410,8 @@ struct MessageBubble: View {
     var onCopy: () -> Void = {}
     var onInfo: () -> Void = {}
     var onDelete: () -> Void = {}
+    var selectionMode: Bool = false
+    var onSelectTap: () -> Void = {}
 
     @State private var swipeX: CGFloat = 0
     @State private var showReactions = false
@@ -424,8 +493,10 @@ struct MessageBubble: View {
                         .transition(.scale.combined(with: .opacity))
                 }
             }
-            // Long-press → floating reaction pill + actions (popover, no heavy blur)
+            // In selection mode, a tap selects; otherwise long-press opens the reaction/actions pill.
+            .onTapGesture { if selectionMode { onSelectTap() } }
             .onLongPressGesture(minimumDuration: 0.3) {
+                guard !selectionMode else { return }
                 Haptics.rigid(); showReactions = true
             }
             .popover(isPresented: $showReactions, arrowEdge: .top) {
@@ -476,7 +547,7 @@ struct MessageBubble: View {
                 .padding(.horizontal, VoiidSpacing.lg)
         }
         .offset(x: swipeX)
-        .gesture(
+        .gesture(selectionMode ? nil :
             DragGesture(minimumDistance: 20)
                 .onChanged { v in
                     // received: swipe right (+), sent: swipe left (-)
