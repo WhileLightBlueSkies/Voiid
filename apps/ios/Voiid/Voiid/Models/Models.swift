@@ -36,6 +36,9 @@ struct VMessage: Identifiable, Hashable {
     var status: MessageStatus = .sent
     var isMine: Bool = false
     var poll: VPoll? = nil          // set when kind == .poll
+    var reaction: String? = nil     // single emoji reaction on this message
+    var deliveredAt: Date? = nil    // for Message Info
+    var readAt: Date? = nil         // for Message Info
 
     /// Stable per-sender accent color for group sender names (WhatsApp-style).
     var senderColor: Color {

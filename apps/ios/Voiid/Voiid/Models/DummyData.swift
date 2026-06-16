@@ -79,6 +79,16 @@ enum DummyData {
         VMediaItem(id: "media\($0)", kind: .photo, title: "")
     }
 
+    // Full shared-media set split by type (for the "See all" sheet).
+    static let sharedPhotos: [VMediaItem]  = (1...12).map { VMediaItem(id: "p\($0)", kind: .photo, title: "") }
+    static let sharedVideos: [VMediaItem]  = (1...5).map  { VMediaItem(id: "v\($0)", kind: .video, title: "0:\(10 + $0)") }
+    static let sharedVoice:  [VMediaItem]  = (1...4).map  { VMediaItem(id: "a\($0)", kind: .link, title: "Voice · 0:\(8 + $0)") }
+    static let sharedDocs:   [VMediaItem]  = [
+        VMediaItem(id: "d1", kind: .doc, title: "Design Spec.pdf"),
+        VMediaItem(id: "d2", kind: .doc, title: "Budget.xlsx"),
+        VMediaItem(id: "d3", kind: .doc, title: "Notes.txt"),
+    ]
+
     static let groupPoll = VPoll(id: "poll1", question: "Where to meet this weekend?", options: [
         .init(id: "o1", text: "Cafe", votes: 3),
         .init(id: "o2", text: "Beach", votes: 5),

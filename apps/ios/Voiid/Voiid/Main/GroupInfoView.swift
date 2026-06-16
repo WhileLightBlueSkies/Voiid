@@ -11,11 +11,13 @@ import SwiftUI
 
 struct GroupInfoView: View {
     let conversation: VConversation
+    @EnvironmentObject var session: AppSession
     @Environment(\.dismiss) private var dismiss
     @State private var muted = false
     @State private var members = DummyData.groupMembers
     @State private var memberAction: VMember?
     @State private var viewPhoto = false
+    @State private var showAllMedia = false
 
     var body: some View {
         ScrollView {
@@ -32,9 +34,11 @@ struct GroupInfoView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
         .tint(VoiidColor.primary)
+        .onAppear { session.hideTabBar = true }
         .fullScreenCover(isPresented: $viewPhoto) {
             ProfilePhotoViewer(title: conversation.title, imageName: conversation.photoName) { viewPhoto = false }
         }
+        .sheet(isPresented: $showAllMedia) { SharedMediaSheet(title: conversation.title) }
         .confirmationDialog(memberAction?.name ?? "", isPresented: Binding(
             get: { memberAction != nil }, set: { if !$0 { memberAction = nil } }),
             titleVisibility: .visible) {
@@ -76,7 +80,8 @@ struct GroupInfoView: View {
             HStack {
                 Text("Media, links & docs").font(VoiidFont.rounded(15, .semibold)).foregroundColor(VoiidColor.textPrimary)
                 Spacer()
-                Button("See all") {}.font(VoiidFont.rounded(13, .regular)).foregroundColor(VoiidColor.primary)
+                Button("See all") { Haptics.tap(); showAllMedia = true }
+                    .font(VoiidFont.rounded(13, .regular)).foregroundColor(VoiidColor.primary)
             }
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: VoiidSpacing.sm) {

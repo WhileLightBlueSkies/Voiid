@@ -80,9 +80,22 @@ final class ChatStore: ObservableObject {
                   let idx = arr.firstIndex(where: { $0.id == messageId }) else { return }
             withAnimation(.easeInOut(duration: 0.2)) {
                 arr[idx].status = status
+                if status == .delivered { arr[idx].deliveredAt = .now }
+                if status == .read { arr[idx].readAt = .now; if arr[idx].deliveredAt == nil { arr[idx].deliveredAt = .now } }
                 self.messagesByConversation[convId] = arr
             }
         }
+    }
+
+    /// Toggle an emoji reaction on a message.
+    func react(messageId: String, emoji: String, in convId: String) {
+        guard var arr = messagesByConversation[convId],
+              let idx = arr.firstIndex(where: { $0.id == messageId }) else { return }
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+            arr[idx].reaction = (arr[idx].reaction == emoji) ? nil : emoji
+            messagesByConversation[convId] = arr
+        }
+        Haptics.tap()
     }
 
     private func simulateReply(in convId: String) async {

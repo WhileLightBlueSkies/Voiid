@@ -9,6 +9,7 @@ import SwiftUI
 
 struct ClipsFeedView: View {
     @EnvironmentObject var clips: ClipsStore
+    @EnvironmentObject var session: AppSession
     @State private var openFullscreen: VClip?
     @State private var showUpload = false
 
@@ -28,6 +29,7 @@ struct ClipsFeedView: View {
                 }
             }
             .background(VoiidColor.background.ignoresSafeArea())
+            .onAppear { session.hideTabBar = false }
             .fullScreenCover(item: $openFullscreen) { ClipFullscreenView(clip: $0) }
             .sheet(isPresented: $showUpload) { NewClipView() }
         }

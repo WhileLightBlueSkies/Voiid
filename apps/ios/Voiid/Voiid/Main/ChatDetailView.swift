@@ -12,6 +12,7 @@
 
 import SwiftUI
 import PhotosUI
+import UIKit
 
 struct ChatDetailView: View {
     let conversation: VConversation
@@ -26,6 +27,8 @@ struct ChatDetailView: View {
     @State private var showAttach = false     // attach menu (photo / poll)
     @State private var showPollCompose = false
     @State private var pickPhoto = false
+    @State private var replyingTo: VMessage?  // reply preview above input
+    @State private var infoMessage: VMessage? // Message Info sheet
 
     var body: some View {
         VStack(spacing: 0) {
@@ -51,6 +54,10 @@ struct ChatDetailView: View {
                 chat.sendPoll(q, options: opts, to: conversation.id)
             }
             .presentationDetents([.medium, .large])
+        }
+        .sheet(item: $infoMessage) { msg in
+            MessageInfoSheet(message: msg, isGroup: conversation.type == .group)
+                .presentationDetents([.medium])
         }
         .fullScreenCover(item: Binding(
             get: { fullscreenImage.map { ImageWrapper(image: $0) } },
@@ -117,7 +124,13 @@ struct ChatDetailView: View {
                                           onTapImage: { img in fullscreenImage = img },
                                           onVote: { optId in
                                               chat.vote(messageId: msg.id, optionId: optId, in: conversation.id)
-                                          })
+                                          },
+                                          onReply: { withAnimation { replyingTo = msg } },
+                                          onForward: {},
+                                          onReact: { e in chat.react(messageId: msg.id, emoji: e, in: conversation.id) },
+                                          onShare: {},
+                                          onCopy: { UIPasteboard.general.string = msg.text },
+                                          onInfo: { infoMessage = msg })
                             .id(msg.id)
                         }
                     }
@@ -175,6 +188,25 @@ struct ChatDetailView: View {
     // Input bar — ⊕ · pink pill field · send/voice (matches design)
     private var inputBar: some View {
         VStack(spacing: 0) {
+            // Reply preview
+            if let r = replyingTo {
+                HStack(spacing: VoiidSpacing.sm) {
+                    RoundedRectangle(cornerRadius: 2).fill(VoiidColor.primary).frame(width: 3, height: 32)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(r.isMine ? "You" : (r.senderName.isEmpty ? conversation.title : r.senderName))
+                            .font(VoiidFont.rounded(12, .semibold)).foregroundColor(VoiidColor.primary)
+                        Text(r.kind == .text ? r.text : "Attachment")
+                            .font(VoiidFont.rounded(12, .regular)).foregroundColor(VoiidColor.textSecondary).lineLimit(1)
+                    }
+                    Spacer()
+                    Button { withAnimation { replyingTo = nil } } label: {
+                        Image(systemName: "xmark").font(.system(size: 13)).foregroundColor(VoiidColor.textSecondary)
+                    }
+                }
+                .padding(.horizontal, VoiidSpacing.md).padding(.vertical, VoiidSpacing.sm)
+                .background(VoiidColor.surfaceCard)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             // @mention suggestions strip (group only)
             if !mentionSuggestions.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -233,6 +265,7 @@ struct ChatDetailView: View {
                     Haptics.tap()
                     chat.send(draft.trimmingCharacters(in: .whitespaces), to: conversation.id)
                     draft = ""
+                    withAnimation { replyingTo = nil }
                 } label: {
                     Image(systemName: "paperplane.fill")
                         .font(.system(size: 20)).foregroundColor(VoiidColor.primary)
@@ -267,7 +300,15 @@ struct MessageBubble: View {
     let isGroup: Bool
     var isLastMine: Bool = false      // (kept for call-site compatibility)
     var onTapImage: (UIImage) -> Void
-    var onVote: (String) -> Void = { _ in }   // optionId
+    var onVote: (String) -> Void = { _ in }      // optionId
+    var onReply: () -> Void = {}
+    var onForward: () -> Void = {}
+    var onReact: (String) -> Void = { _ in }     // emoji
+    var onShare: () -> Void = {}
+    var onCopy: () -> Void = {}
+    var onInfo: () -> Void = {}
+
+    private let reactions = ["👍", "❤️", "😂", "😮", "😢", "🙏"]
 
     var body: some View {
         // System message — centered pill (e.g. "You added Priyanshu").
@@ -307,9 +348,34 @@ struct MessageBubble: View {
             .padding(.vertical, 6)
             .background(message.isMine ? VoiidColor.bubbleReceived : VoiidColor.surfaceCard)
             .clipShape(BubbleShape(isMine: message.isMine))
+            // Reaction badge overlapping the bubble corner
+            .overlay(alignment: message.isMine ? .bottomLeading : .bottomTrailing) {
+                if let r = message.reaction {
+                    Text(r).font(.system(size: 15))
+                        .padding(3).background(VoiidColor.background).clipShape(Circle())
+                        .overlay(Circle().stroke(VoiidColor.divider.opacity(0.5), lineWidth: 0.5))
+                        .offset(x: message.isMine ? -8 : 8, y: 10)
+                        .transition(.scale.combined(with: .opacity))
+                }
+            }
+            // Long-press: reactions row + actions (Apple-native context menu)
+            .contextMenu {
+                Button { onReply() } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
+                Button { onForward() } label: { Label("Forward", systemImage: "arrowshape.turn.up.right") }
+                Button { onCopy() } label: { Label("Copy", systemImage: "doc.on.doc") }
+                Button { onShare() } label: { Label("Share", systemImage: "square.and.arrow.up") }
+                if message.isMine {
+                    Button { onInfo() } label: { Label("Info", systemImage: "info.circle") }
+                }
+                Menu {
+                    ForEach(reactions, id: \.self) { e in
+                        Button(e) { onReact(e) }
+                    }
+                } label: { Label("React", systemImage: "face.smiling") }
+            }
             if !message.isMine { Spacer(minLength: 56) }
         }
-        .padding(.vertical, 1)
+        .padding(.vertical, message.reaction != nil ? 8 : 1)   // room for reaction badge
         .transition(.asymmetric(
             insertion: .scale(scale: 0.9, anchor: message.isMine ? .bottomTrailing : .bottomLeading).combined(with: .opacity),
             removal: .opacity))

@@ -10,6 +10,7 @@ import SwiftUI
 
 struct ChatsHomeView: View {
     @EnvironmentObject var chat: ChatStore
+    @EnvironmentObject var session: AppSession
     @State private var search = ""
     @State private var tab: Tab = .chats
     @State private var openConversation: VConversation?
@@ -40,6 +41,7 @@ struct ChatsHomeView: View {
                 }
             }
             .background(VoiidColor.background.ignoresSafeArea())
+            .onAppear { session.hideTabBar = false }   // root screen always shows the bar
             .navigationDestination(item: $openConversation) { ChatDetailView(conversation: $0) }
         }
     }

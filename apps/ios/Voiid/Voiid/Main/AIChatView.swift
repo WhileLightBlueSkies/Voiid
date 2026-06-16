@@ -10,6 +10,7 @@ import SwiftUI
 
 struct AIChatView: View {
     @EnvironmentObject var ai: AIStore
+    @EnvironmentObject var session: AppSession
     @State private var draft = ""
 
     var body: some View {
@@ -32,6 +33,7 @@ struct AIChatView: View {
             inputBar
         }
         .background(VoiidColor.background.ignoresSafeArea())
+        .onAppear { session.hideTabBar = false }
     }
 
     private var header: some View {
