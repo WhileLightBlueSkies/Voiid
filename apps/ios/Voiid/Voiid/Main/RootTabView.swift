@@ -9,6 +9,7 @@
 import SwiftUI
 
 struct RootTabView: View {
+    @EnvironmentObject var session: AppSession
     @State private var tab: Tab = .chat
     @Namespace private var indicator
 
@@ -28,9 +29,13 @@ struct RootTabView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            tabBar
+            if !session.hideTabBar {
+                tabBar
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
         .ignoresSafeArea(.keyboard)
+        .animation(.easeInOut(duration: 0.2), value: session.hideTabBar)
     }
 
     private var tabBar: some View {
