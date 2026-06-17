@@ -12,7 +12,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 > Lawyer questions for all of these are tracked in [LEGAL_QUESTIONS.md](LEGAL_QUESTIONS.md).
 - [x] **#1 E2E crypto licensing** (BEFORE PHASE 2) — `libsignal` confirmed **AGPL-3.0, no commercial exception**; closed-source VOIID cannot link it. **Resolved:** built our own `packages/e2e-core` on **permissively-licensed** libraries (vodozemac Apache-2.0 for the 1:1 double ratchet, OpenMLS Apache-2.0 for groups, ml-kem/aes-gcm/hkdf — all Apache/MIT/BSD, **no AGPL, no libsignal code**). We implement the *protocol design* from public specs, not anyone's source. Closed-source is clean. ⚠️ Still requires the lawyer sign-off in [LEGAL_QUESTIONS.md](LEGAL_QUESTIONS.md) #1 to formally close, and an external crypto audit before launch (see Pre-production gate).
 - [!] **#2 Design tokens "derived → confirm" + Figma link** (BEFORE PHASE 1 client) — design is in Figma (per owner); need the file URL + confirmed token values.
-- [x] **#3 OTP provider = Firebase** (confirmed by owner). MSG91 stays as swappable fallback via SMS interface. Real Firebase send still to be wired (currently stub).
+- [x] **#3 OTP provider = Firebase Phone Auth (client-side)** (confirmed by owner). MSG91 dropped entirely. Firebase SDK sends+verifies OTP on the device → app gets a Firebase ID token → server `/auth/firebase` verifies it (Firebase Admin) and issues OUR JWT. Dev bypass (`AUTH_DEV_BYPASS=1`, token `dev:<phone>`) works now; real Firebase needs a service-account key (`FIREBASE_SERVICE_ACCOUNT`).
 - [!] **#4 SF Pro font licensing confirmed (Android/Web) + fallback chosen** (BEFORE PHASE 1 client)
 
 ---
@@ -35,9 +35,9 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocked
 - [ ] Docker Compose: api + websocket + redis run locally  *(services run via npm; Docker compose not yet exercised)*
 - [x] Env strategy: dev/staging/prod configs, separate secrets, `.env.example`  *(`.env` live; staging/prod values pending infra)*
 - [x] Migrations 001–009 authored, run via Supabase CLI
-- [~] SMS/OTP behind swappable interface (Firebase impl; MSG91/Twilio swappable)  *(interface done; real provider stubbed — blocker #3)*
+- [x] OTP via **Firebase Phone Auth on the client** (no server-side SMS provider; MSG91 removed). Server verifies the Firebase ID token.
 - [x] OTP stored as **hash only**; expiry 5 min; max 3 attempts; rate-limited  *(crypto-safe RNG + Redis rate-limit verified)*
-- [x] Auth flow: ~~Firebase OTP~~ OTP → verified phone → our user upsert (Supabase) → our JWT  *(our-JWT verified; Firebase send still stubbed)*
+- [x] Auth flow: Firebase Phone Auth (client) → Firebase ID token → `/auth/firebase` verifies → our user upsert (Supabase) → our JWT  *(verified end-to-end against live Supabase via dev bypass; real Firebase token verification pending service-account key)*
 - [x] Device register + public prekey bundle upload + distribution (consume one-time prekey) + refresh  *(atomic consumption verified)*
 - [x] Message relay: store ciphertext → Redis pub/sub → WS push; offline → `GET /messages/pending`  *(end-to-end verified)*
 - [~] Redis: presence (TTL+heartbeat), last_seen, typing (TTL 5s), pub/sub channels, rate-limit/cache keys  *(pub/sub + presence + rate-limit verified; typing = Phase 2)*

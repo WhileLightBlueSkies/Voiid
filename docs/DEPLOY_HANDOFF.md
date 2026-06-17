@@ -25,7 +25,8 @@ The code reads exactly these (verified against `process.env` usages). Set them p
 | `REDIS_URL` | api, websocket | presence, pub/sub, typing, **OTP rate-limit** |
 | `JWT_SECRET` | api, websocket | **must be identical** across api + websocket (WS verifies tokens api issues). Generate a strong random per env. |
 | `JWT_EXPIRY` | api | `30d` per spec §4.7 |
-| `SMS_PROVIDER` | sms | `firebase` \| `msg91` \| `twilio`. Currently **stub** — no real SMS sent yet (blocker #3). |
+| `FIREBASE_SERVICE_ACCOUNT` | api (auth) | Firebase Admin service-account JSON (stringified) — verifies the client's Firebase ID token. Or `FIREBASE_SERVICE_ACCOUNT_PATH` to a file. |
+| `AUTH_DEV_BYPASS` | api (auth) | dev only: `1` accepts `dev:<phone>` tokens at `/auth/firebase` without Firebase. MUST be unset/0 in prod. |
 | `FIREBASE_CONFIG` | sms (future) | empty until provider wired |
 | `R2_ACCOUNT_ID` / `R2_ACCESS_KEY` / `R2_SECRET_KEY` / `R2_BUCKET` | media (Phase 2) | not needed for Phase 0 |
 | `SENTRY_DSN` | ops | set when Sentry stood up |
