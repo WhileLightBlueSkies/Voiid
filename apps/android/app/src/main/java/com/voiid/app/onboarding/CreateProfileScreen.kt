@@ -49,8 +49,9 @@ fun CreateProfileScreen(session: AppSession, onBack: () -> Unit, onFinish: () ->
     var photoUri by remember { mutableStateOf<Uri?>(null) }
     val avatar = 110.dp
 
+    // iOS fires NO haptic on photo selection (only success() on Sign-up). Match that.
     val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri != null) { photoUri = uri; haptics.success() }
+        if (uri != null) photoUri = uri
     }
 
     OnbScaffold(showBack = true, onBack = onBack) {
@@ -74,7 +75,9 @@ fun CreateProfileScreen(session: AppSession, onBack: () -> Unit, onFinish: () ->
                             contentScale = ContentScale.Crop,
                         )
                     } else {
-                        VoiidWordmark(fontSize = 26, alpha = 0.25f)
+                        // iOS shows the wordmark mark at ~half the avatar width (≈55pt),
+                        // opacity 0.25. Size the Android wordmark up to read the same.
+                        VoiidWordmark(fontSize = 34, alpha = 0.25f)
                     }
                 }
                 // Pink camera badge
@@ -87,7 +90,7 @@ fun CreateProfileScreen(session: AppSession, onBack: () -> Unit, onFinish: () ->
                         .clickable { pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(Icons.Default.PhotoCamera, "Pick photo", tint = VoiidColor.primary, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Default.PhotoCamera, "Pick photo", tint = VoiidColor.primary, modifier = Modifier.size(14.dp))
                 }
             }
         }

@@ -2,7 +2,6 @@ package com.voiid.app.onboarding
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -44,6 +43,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.voiid.app.ui.components.LocalVoiidHaptics
+import com.voiid.app.ui.components.noRippleClickable
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
@@ -97,7 +97,7 @@ fun CountryPickerSheet(
                     modifier = Modifier
                         .size(26.dp)
                         .clip(RoundedCornerShape(VoiidRadius.pill))
-                        .clickable { scope.launch { sheetState.hide() }.invokeOnCompletion { onDismiss() } },
+                        .noRippleClickable { scope.launch { sheetState.hide() }.invokeOnCompletion { onDismiss() } },
                 )
             }
 
@@ -137,7 +137,7 @@ fun CountryPickerSheet(
                 if (query.isNotEmpty()) {
                     Icon(
                         Icons.Default.Cancel, "Clear", tint = VoiidColor.placeholder,
-                        modifier = Modifier.size(18.dp).clickable { query = "" },
+                        modifier = Modifier.size(18.dp).noRippleClickable { query = "" },
                     )
                 }
             }
@@ -149,7 +149,7 @@ fun CountryPickerSheet(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(56.dp)
-                            .clickable { choose(c) }
+                            .noRippleClickable { choose(c) }
                             .padding(horizontal = 24.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(16.dp),

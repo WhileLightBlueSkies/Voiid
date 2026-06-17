@@ -89,6 +89,22 @@ fun Modifier.softClickable(
         )
 }
 
+/**
+ * Tap with NO Material ripple and no press-scale — iOS plain `Button`/`Button(.plain)` behavior.
+ * Use for list rows, icon buttons, and links where iOS shows no ripple. (For the tactile
+ * scale+haptic press, use [softClickable] instead.)
+ */
+@Composable
+fun Modifier.noRippleClickable(enabled: Boolean = true, onClick: () -> Unit): Modifier {
+    val interaction = remember { MutableInteractionSource() }
+    return this.clickable(
+        interactionSource = interaction,
+        indication = null,
+        enabled = enabled,
+        onClick = onClick,
+    )
+}
+
 /** The dark-plum pill button seen on every onboarding screen — iOS `VoiidPrimaryButton`. */
 @Composable
 fun VoiidPrimaryButton(

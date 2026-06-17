@@ -5,6 +5,8 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -17,7 +19,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -95,9 +96,19 @@ fun OtpScreen(
         )
         LaunchedFocus(fr)
 
-        TextButton(onClick = { haptics.tap() }, modifier = Modifier.padding(horizontal = 16.dp, vertical = 0.dp).padding(top = 16.dp)) {
-            Text("Resend code", style = VoiidFont.rounded(14, FontWeight.Medium), color = VoiidColor.primary)
-        }
+        // iOS: plain Button at horizontal padding 24, no ripple. Match (no Material TextButton).
+        Text(
+            "Resend code",
+            style = VoiidFont.rounded(14, FontWeight.Medium),
+            color = VoiidColor.primary,
+            modifier = Modifier
+                .padding(horizontal = 24.dp)
+                .padding(top = 16.dp)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) { haptics.tap() },
+        )
 
         Spacer(Modifier.weight(1f))
 
@@ -116,7 +127,9 @@ private fun RowScope.OtpCircle(i: Int, code: String, keyboardUp: Boolean, length
     val filled = i < code.length
     val scale by animateFloatAsState(
         if (isActive) 1.06f else 1f,
-        spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMedium),
+        // Match iOS .spring(response: 0.3, dampingFraction: 0.6) — StiffnessMedium (1500)
+        // was too snappy; MediumLow (~400) matches the iOS feel.
+        spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMediumLow),
         label = "otpScale",
     )
     val digit = if (i < code.length) code[i].toString() else ""

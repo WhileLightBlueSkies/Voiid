@@ -3,6 +3,7 @@ package com.voiid.app.onboarding
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.Spring
@@ -11,10 +12,13 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -58,7 +62,6 @@ import androidx.compose.ui.unit.dp
 import com.voiid.app.R
 import com.voiid.app.model.AppSession
 import com.voiid.app.ui.components.LocalVoiidHaptics
-import com.voiid.app.ui.components.softClickable
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
@@ -106,11 +109,15 @@ fun OnboardingFlow(session: AppSession) {
             }
         }
 
-        // Splash overlays everything and fades away (elastic, connected feel).
+        // Splash overlays everything. As it leaves, the logo eases UPWARD toward the
+        // Terms logo position while fading — a "connected" handoff closer to iOS's
+        // matchedGeometry glide than a flat cross-fade. (Exact pixel-matching of the
+        // shared element needs Compose SharedTransitionLayout + on-device tuning;
+        // tracked as a follow-up — see ENGINEERING_HANDOFF.)
         AnimatedVisibility(
             visible = showSplash,
             enter = fadeIn(),
-            exit = fadeOut(tween(550)),
+            exit = slideOutVertically(tween(550)) { -(it * 0.12f).toInt() } + fadeOut(tween(550)),
         ) {
             SplashScreen()
         }
@@ -185,16 +192,28 @@ fun TermsScreen(onContinue: () -> Unit) {
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    // Matches iOS: a plain toggle (no soft-press scale/dim — that press
+                    // alpha is what made the box look like it "faded to white"), with the
+                    // plum fill springing in like the iOS `withAnimation(.spring(0.25))`.
+                    val boxShape = RoundedCornerShape(3.dp)
+                    val fill by animateColorAsState(
+                        targetValue = if (agreed) VoiidColor.primary else Color.Transparent,
+                        animationSpec = spring(dampingRatio = 0.7f, stiffness = Spring.StiffnessMediumLow),
+                        label = "termsCheckboxFill",
+                    )
                     Box(
                         modifier = Modifier
                             .size(16.dp)
-                            .clip(RoundedCornerShape(3.dp))
-                            .background(if (agreed) VoiidColor.primary else Color.Transparent)
-                            .border(1.dp, VoiidColor.textSecondary, RoundedCornerShape(3.dp))
-                            .softClickable(scale = 0.9f) { agreed = !agreed },
+                            .clip(boxShape)
+                            .background(fill)
+                            .border(1.dp, VoiidColor.textSecondary, boxShape)
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                            ) { agreed = !agreed },
                         contentAlignment = Alignment.Center,
                     ) {
-                        if (agreed) {
+                        AnimatedVisibility(visible = agreed, enter = fadeIn(), exit = fadeOut()) {
                             Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(10.dp))
                         }
                     }
@@ -210,6 +229,8 @@ fun TermsScreen(onContinue: () -> Unit) {
                     )
                 }
 
+                // iOS uses a plain Button here (no press scale/dim), with a tap haptic
+                // only when enabled — mirror that exactly.
                 Box(
                     modifier = Modifier
                         .width(300.dp)
@@ -217,7 +238,11 @@ fun TermsScreen(onContinue: () -> Unit) {
                         .alpha(if (agreed) 1f else 0.5f)
                         .clip(RoundedCornerShape(VoiidRadius.pill))
                         .background(VoiidColor.accent)
-                        .softClickable(enabled = agreed) { haptics.tap(); onContinue() },
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            enabled = agreed,
+                        ) { haptics.tap(); onContinue() },
                     contentAlignment = Alignment.Center,
                 ) {
                     Text("Continue", style = VoiidFont.rounded(18, FontWeight.Medium), color = VoiidColor.textPrimary)

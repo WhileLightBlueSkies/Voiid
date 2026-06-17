@@ -92,7 +92,8 @@ fun AIChatView(ai: AIStore) {
             Modifier
                 .fillMaxWidth()
                 .background(VoiidColor.background)
-                .padding(horizontal = 8.dp, vertical = 8.dp),
+                // iOS pads the input bar bottom by 80 to clear the floating tab bar.
+                .padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 80.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {

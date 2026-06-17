@@ -13,9 +13,11 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.fadeIn
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -107,6 +109,7 @@ fun senderColor(senderId: String): Color {
 }
 
 /** Full-featured message bubble — port of iOS `MessageBubble`. */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MessageBubble(
     message: VMessage,
@@ -198,13 +201,16 @@ fun MessageBubble(
                             modifier = Modifier
                                 .clip(bubbleShape(mine))
                                 .background(if (mine) VoiidColor.bubbleReceived else VoiidColor.surfaceCard)
-                                .clickable(
+                                // iOS opens the action menu on LONG-PRESS (0.3s) + rigid haptic;
+                                // a plain tap only toggles selection while in selection mode.
+                                .combinedClickable(
                                     interactionSource = remember { MutableInteractionSource() },
                                     indication = null,
-                                ) {
-                                    if (selectionMode) onSelectTap()
-                                    else { haptics.rigid(); showMenu = true }
-                                }
+                                    onLongClick = if (selectionMode) null else {
+                                        { haptics.rigid(); showMenu = true }
+                                    },
+                                    onClick = { if (selectionMode) onSelectTap() },
+                                )
                                 .padding(horizontal = 10.dp, vertical = 6.dp),
                             verticalArrangement = Arrangement.spacedBy(3.dp),
                         ) {
