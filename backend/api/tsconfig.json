@@ -2,7 +2,11 @@
   "compilerOptions": {
     "target": "ES2022",
     "module": "commonjs",
+    // CommonJS Node project (no "type":"module"); "node" resolution is correct
+    // but TS 6 flags its node10 alias as deprecated. We emit CommonJS for
+    // `node dist/index.js`, so keep it and silence the deprecation until TS 7.
     "moduleResolution": "node",
+    "ignoreDeprecations": "5.0",
     "outDir": "dist",
     "rootDir": "src",
     "esModuleInterop": true,

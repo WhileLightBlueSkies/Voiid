@@ -1,0 +1,8 @@
+{
+  // Use the project's pinned TypeScript (node_modules/typescript, 5.9.x) for IDE
+  // diagnostics so the editor matches what `npm run build` actually uses.
+  // Without this, a newer IDE-bundled TS disagrees on options like
+  // `ignoreDeprecations` (it wants "6.0" while the build TS wants "5.0").
+  "typescript.tsdk": "node_modules/typescript/lib",
+  "typescript.enablePromptUseWorkspaceTsdk": true
+}
