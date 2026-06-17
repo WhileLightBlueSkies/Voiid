@@ -23,7 +23,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -44,17 +46,39 @@ import com.voiid.app.ui.theme.VoiidFont
 /** Onboarding — 6-digit OTP verification (Figma Screen-3). Port of `OTPScreen.swift`. */
 @Composable
 fun OtpScreen(
+    session: com.voiid.app.model.AppSession,
+    phoneE164: String,
     onBack: () -> Unit,
     onContinue: () -> Unit,
-    phoneNumber: String = "+91 91234567890",
 ) {
     val haptics = LocalVoiidHaptics.current
     val focus = LocalFocusManager.current
+    val scope = rememberCoroutineScope()
     val length = 6
     var code by remember { mutableStateOf("") }
     var focused by remember { mutableStateOf(false) }
+    var verifying by remember { mutableStateOf(false) }
+    var errorText by remember { mutableStateOf<String?>(null) }
     val fr = remember { androidx.compose.ui.focus.FocusRequester() }
     val complete = code.length == length
+    val phoneNumber = phoneE164
+
+    // DEV: verify via backend dev bypass (creates a real session). PROD: replace
+    // with Firebase Phone Auth verify -> session.auth.loginWithFirebase(idToken).
+    fun verify() {
+        if (verifying) return
+        verifying = true; errorText = null
+        scope.launch {
+            try {
+                session.auth.devLogin(phoneE164)
+                haptics.success(); onContinue()
+            } catch (e: Exception) {
+                errorText = (e as? com.voiid.app.net.ApiError)?.message ?: "Verification failed."
+                haptics.tap()
+            }
+            verifying = false
+        }
+    }
 
     OnbScaffold(showBack = true, onBack = onBack) {
         Spacer(Modifier.height(24.dp))
@@ -110,13 +134,18 @@ fun OtpScreen(
                 ) { haptics.tap() },
         )
 
+        errorText?.let {
+            Text(it, style = VoiidFont.rounded(13), color = VoiidColor.error,
+                modifier = Modifier.padding(horizontal = 24.dp).padding(top = 8.dp))
+        }
+
         Spacer(Modifier.weight(1f))
 
         OnbAccentButton(
-            title = "Continue",
-            enabled = complete,
+            title = if (verifying) "Verifying…" else "Continue",
+            enabled = complete && !verifying,
             modifier = Modifier.padding(horizontal = 24.dp).padding(bottom = 32.dp),
-        ) { haptics.success(); onContinue() }
+        ) { verify() }
     }
 }
 

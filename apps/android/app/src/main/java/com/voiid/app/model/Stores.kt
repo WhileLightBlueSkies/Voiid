@@ -5,8 +5,11 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.voiid.app.net.AuthService
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.UUID
@@ -21,16 +24,27 @@ import java.util.UUID
 
 enum class AppRoute { ONBOARDING, MAIN }
 
-class AppSession : ViewModel() {
-    var route by mutableStateOf(AppRoute.ONBOARDING)
+class AppSession(app: Application) : AndroidViewModel(app) {
+    val auth = AuthService(app)
+
+    // Resume straight to the app if we already hold a session token.
+    var route by mutableStateOf(if (auth.isAuthenticated) AppRoute.MAIN else AppRoute.ONBOARDING)
         private set
     var profile by mutableStateOf(DummyData.me)
 
     /** Hides the bottom tab bar when a full-screen child (e.g. a chat) is open. */
     var hideTabBar by mutableStateOf(false)
 
+    /** The authenticated user's id (our backend id), once logged in. */
+    val userId: String? get() = auth.userId
+
+    /** Called at the end of onboarding once a real session token exists. */
     fun completeOnboarding() { route = AppRoute.MAIN }
-    fun signOut() { route = AppRoute.ONBOARDING }
+
+    fun signOut() {
+        auth.logout()
+        route = AppRoute.ONBOARDING
+    }
 }
 
 // MARK: - Chat store (the heart of the "feels real" experience)

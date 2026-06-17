@@ -35,7 +35,7 @@ import com.voiid.app.ui.theme.VoiidRadius
 
 /** Onboarding — phone number entry (Figma Screen-2). Port of `PhoneScreen.swift`. */
 @Composable
-fun PhoneScreen(onBack: () -> Unit, onContinue: () -> Unit) {
+fun PhoneScreen(onBack: () -> Unit, onContinue: (String) -> Unit) {
     val haptics = LocalVoiidHaptics.current
     var phone by remember { mutableStateOf("") }
     var country by remember { mutableStateOf(CountryStore.default) }
@@ -105,7 +105,7 @@ fun PhoneScreen(onBack: () -> Unit, onContinue: () -> Unit) {
             title = "Continue",
             enabled = phone.length >= 10,
             modifier = Modifier.padding(horizontal = 24.dp).padding(bottom = 32.dp),
-        ) { haptics.tap(); onContinue() }
+        ) { haptics.tap(); onContinue("${country.dialCode}$phone") }
     }
 
     if (showPicker) {

@@ -4,6 +4,9 @@
 
     <!-- Haptics: drive the vibration motor directly (iOS-style impact feedback). -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Networking to the VOIID backend (API + WebSocket). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <application
         android:allowBackup="true"
@@ -14,6 +17,7 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.Voiid"
+        android:usesCleartextTraffic="true"
         tools:targetApi="31">
 
         <activity
