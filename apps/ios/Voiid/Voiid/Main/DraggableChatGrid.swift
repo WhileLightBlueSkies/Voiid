@@ -84,7 +84,7 @@ struct DraggableChatGrid: View {
     }
 
     private func pickAndDrag(_ conv: VConversation) -> some Gesture {
-        LongPressGesture(minimumDuration: 0.4)
+        LongPressGesture(minimumDuration: 0.15)
             .onEnded { _ in
                 Haptics.rigid(); armed = conv          // picked up
             }
