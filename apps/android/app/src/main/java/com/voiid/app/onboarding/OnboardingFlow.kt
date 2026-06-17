@@ -162,7 +162,7 @@ fun TermsScreen(onContinue: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Spacer(Modifier.height(60.dp))
-            LogoMark(size = (cfg.screenWidthDp * 0.95f).dp)
+            LogoMark(size = (cfg.screenWidthDp * (300f / 402f)).dp)
 
             Spacer(Modifier.weight(1f))
 
@@ -189,18 +189,18 @@ fun TermsScreen(onContinue: () -> Unit) {
                         modifier = Modifier
                             .size(16.dp)
                             .clip(RoundedCornerShape(3.dp))
-                            .background(if (agreed) VoiidColor.textPrimary else Color.Transparent)
-                            .border(1.dp, VoiidColor.textPrimary, RoundedCornerShape(3.dp))
+                            .background(if (agreed) VoiidColor.primary else Color.Transparent)
+                            .border(1.dp, VoiidColor.textSecondary, RoundedCornerShape(3.dp))
                             .softClickable(scale = 0.9f) { agreed = !agreed },
                         contentAlignment = Alignment.Center,
                     ) {
                         if (agreed) {
-                            Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(11.dp))
+                            Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(10.dp))
                         }
                     }
                     Text(
                         text = buildAnnotatedString {
-                            append("I agree to the ")
+                            append("I accept the ")
                             withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) { append("Terms & Conditions") }
                             append(" and ")
                             withStyle(SpanStyle(color = VoiidColor.textSecondary)) { append("Privacy Policy") }

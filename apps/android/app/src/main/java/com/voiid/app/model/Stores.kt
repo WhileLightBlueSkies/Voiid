@@ -26,6 +26,9 @@ class AppSession : ViewModel() {
         private set
     var profile by mutableStateOf(DummyData.me)
 
+    /** Hides the bottom tab bar when a full-screen child (e.g. a chat) is open. */
+    var hideTabBar by mutableStateOf(false)
+
     fun completeOnboarding() { route = AppRoute.MAIN }
     fun signOut() { route = AppRoute.ONBOARDING }
 }
@@ -55,12 +58,21 @@ class ChatStore : ViewModel() {
 
     /** Send a message — simulates the full lifecycle locally: sent → delivered → read, then a
      *  typing indicator and an auto-reply, so ticks, timestamps and typing all animate. */
-    fun send(text: String, kind: MessageKind = MessageKind.TEXT, conversationId: String) {
+    fun send(
+        text: String,
+        kind: MessageKind = MessageKind.TEXT,
+        conversationId: String,
+        replyTo: VMessage? = null,
+        forwarded: Boolean = false,
+    ) {
         val id = UUID.randomUUID().toString()
         val msg = VMessage(
             id = id, conversationId = conversationId, senderId = "me",
             kind = kind, text = text, createdAt = System.currentTimeMillis(),
             status = MessageStatus.SENDING, isMine = true,
+            forwarded = forwarded,
+            replyToSender = replyTo?.let { if (it.isMine) "You" else it.senderName.ifEmpty { "" } },
+            replyToText = replyTo?.let { if (it.kind == MessageKind.TEXT) it.text else "Attachment" },
         )
         list(conversationId).add(msg)
         bumpPreview(conversationId, if (kind == MessageKind.TEXT) text else previewFor(kind))
@@ -84,8 +96,92 @@ class ChatStore : ViewModel() {
             delay(delayMs)
             val arr = messagesByConversation[convId] ?: return@launch
             val idx = arr.indexOfFirst { it.id == messageId }
-            if (idx >= 0) arr[idx] = arr[idx].copy(status = status)
+            if (idx < 0) return@launch
+            val now = System.currentTimeMillis()
+            arr[idx] = when (status) {
+                MessageStatus.DELIVERED -> arr[idx].copy(status = status, deliveredAt = now)
+                MessageStatus.READ -> arr[idx].copy(
+                    status = status, readAt = now,
+                    deliveredAt = arr[idx].deliveredAt ?: now,
+                )
+                else -> arr[idx].copy(status = status)
+            }
         }
+    }
+
+    /** Forward a message to one or more conversations (with a Forwarded tag). */
+    fun forward(message: VMessage, conversationIds: List<String>) {
+        for (cid in conversationIds) {
+            send(
+                text = message.text,
+                kind = if (message.kind == MessageKind.POLL) MessageKind.TEXT else message.kind,
+                conversationId = cid,
+                forwarded = true,
+            )
+        }
+    }
+
+    /** Delete a message. forEveryone=true leaves a "deleted" tombstone; otherwise removes it. */
+    fun deleteMessage(messageId: String, convId: String, forEveryone: Boolean) {
+        val arr = messagesByConversation[convId] ?: return
+        val idx = arr.indexOfFirst { it.id == messageId }
+        if (idx < 0) return
+        if (forEveryone) {
+            arr[idx] = arr[idx].copy(deletedForEveryone = true, reaction = null)
+        } else {
+            arr.removeAt(idx)
+        }
+    }
+
+    /** Delete an entire conversation from the list. */
+    fun deleteConversation(convId: String) {
+        directConversations.removeAll { it.id == convId }
+        groupConversations.removeAll { it.id == convId }
+        messagesByConversation.remove(convId)
+    }
+
+    /** Clear all messages in a conversation but keep it in the list. */
+    fun clearChat(convId: String) {
+        messagesByConversation[convId]?.clear()
+        val di = directConversations.indexOfFirst { it.id == convId }
+        if (di >= 0) { directConversations[di] = directConversations[di].copy(lastMessagePreview = null); return }
+        val gi = groupConversations.indexOfFirst { it.id == convId }
+        if (gi >= 0) groupConversations[gi] = groupConversations[gi].copy(lastMessagePreview = null)
+    }
+
+    /** Toggle an emoji reaction on a message. */
+    fun react(messageId: String, emoji: String, convId: String) {
+        val arr = messagesByConversation[convId] ?: return
+        val idx = arr.indexOfFirst { it.id == messageId }
+        if (idx < 0) return
+        arr[idx] = arr[idx].copy(reaction = if (arr[idx].reaction == emoji) null else emoji)
+    }
+
+    /** Send a poll into a conversation. */
+    fun sendPoll(question: String, options: List<String>, conversationId: String) {
+        val poll = VPoll(
+            id = UUID.randomUUID().toString(), question = question,
+            options = options.map { VPoll.Option(UUID.randomUUID().toString(), it, 0) },
+        )
+        val msg = VMessage(
+            id = UUID.randomUUID().toString(), conversationId = conversationId, senderId = "me",
+            kind = MessageKind.POLL, text = "Poll", createdAt = System.currentTimeMillis(),
+            status = MessageStatus.SENT, isMine = true, poll = poll,
+        )
+        list(conversationId).add(msg)
+        bumpPreview(conversationId, "📊 Poll: $question")
+    }
+
+    /** Register a vote on a poll option (single choice). */
+    fun vote(messageId: String, optionId: String, conversationId: String) {
+        val arr = messagesByConversation[conversationId] ?: return
+        val mi = arr.indexOfFirst { it.id == messageId }
+        if (mi < 0) return
+        val poll = arr[mi].poll ?: return
+        val updated = poll.copy(options = poll.options.map {
+            if (it.id == optionId) it.copy(votes = it.votes + 1) else it
+        })
+        arr[mi] = arr[mi].copy(poll = updated)
     }
 
     private suspend fun simulateReply(convId: String) {

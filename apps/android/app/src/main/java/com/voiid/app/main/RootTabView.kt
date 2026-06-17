@@ -70,13 +70,14 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore) {
     var openConversation by remember { mutableStateOf<VConversation?>(null) }
     var openClip by remember { mutableStateOf<VClip?>(null) }
     var showNewClip by remember { mutableStateOf(false) }
+    var activeCall by remember { mutableStateOf<CallRequest?>(null) }
 
     Box(Modifier.fillMaxSize().background(VoiidColor.background)) {
 
         Column(Modifier.fillMaxSize().imePadding()) {
             Box(Modifier.fillMaxWidth().weight(1f)) {
                 when (tab) {
-                    Tab.CHAT -> ChatsHomeView(chat) { openConversation = it }
+                    Tab.CHAT -> ChatsHomeView(chat, onOpenConversation = { openConversation = it }, onStartCall = { activeCall = it })
                     Tab.AI -> AIChatView(ai)
                     Tab.CLIPS -> ClipsFeedView(clips, onOpenClip = { openClip = it }, onNewClip = { showNewClip = true })
                 }
@@ -91,7 +92,11 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore) {
             exit = slideOutHorizontally { it } + fadeOut(),
         ) {
             openConversation?.let { conv ->
-                ChatDetailView(conversation = conv, chat = chat, onBack = { openConversation = null })
+                ChatDetailView(
+                    conversation = conv, chat = chat,
+                    onBack = { openConversation = null },
+                    onStartCall = { activeCall = it },
+                )
             }
         }
 
@@ -103,6 +108,17 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore) {
         ) {
             openClip?.let { clip ->
                 ClipFullscreenView(clip = clip, clips = clips, onClose = { openClip = null })
+            }
+        }
+
+        // Call screen — full-screen cover on top of everything.
+        AnimatedVisibility(
+            visible = activeCall != null,
+            enter = fadeIn(),
+            exit = fadeOut(),
+        ) {
+            activeCall?.let { req ->
+                CallScreen(request = req, onEnd = { activeCall = null })
             }
         }
     }
@@ -123,7 +139,7 @@ private fun TabBar(selected: Tab, onSelect: (Tab) -> Unit) {
     ) {
         Box(Modifier.fillMaxWidth().height(1.dp).background(VoiidColor.divider.copy(alpha = 0.5f)))
         BoxWithConstraints(
-            Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 4.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 8.dp, bottom = 4.dp),
         ) {
             val slot = maxWidth / 3
             val pillW = 54.dp

@@ -19,10 +19,11 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowCircleUp
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -116,13 +117,20 @@ fun AIChatView(ai: AIStore) {
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
-            Icon(
-                Icons.Default.ArrowCircleUp, "Send", tint = VoiidColor.primary,
-                modifier = Modifier.size(32.dp).clickable {
-                    val t = draft.trim()
-                    if (t.isNotEmpty()) { haptics.tap(); ai.send(t); draft = "" }
-                },
-            )
+            // iOS `arrow.up.circle.fill`: a filled plum circle with a light up-arrow.
+            Box(
+                Modifier
+                    .size(32.dp)
+                    .clip(CircleShape)
+                    .background(VoiidColor.primary)
+                    .clickable {
+                        val t = draft.trim()
+                        if (t.isNotEmpty()) { haptics.tap(); ai.send(t); draft = "" }
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Default.ArrowUpward, "Send", tint = VoiidColor.textOnPrimary, modifier = Modifier.size(18.dp))
+            }
         }
     }
 }

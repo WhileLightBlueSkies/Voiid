@@ -51,7 +51,9 @@ import com.voiid.app.model.MemberRole
 import com.voiid.app.model.VConversation
 import com.voiid.app.model.VMember
 import com.voiid.app.ui.components.LocalVoiidHaptics
+import com.voiid.app.ui.components.ProfilePhotoViewer
 import com.voiid.app.ui.components.VoiidAvatar
+import com.voiid.app.ui.components.VoiidCircleBack
 import com.voiid.app.ui.components.VoiidWordmark
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
@@ -65,12 +67,11 @@ fun GroupInfoView(conversation: VConversation, onBack: () -> Unit) {
     var muted by remember { mutableStateOf(false) }
     val members = remember { mutableStateListOf<VMember>().apply { addAll(DummyData.groupMembers) } }
     var memberAction by remember { mutableStateOf<VMember?>(null) }
+    var showAllMedia by remember { mutableStateOf(false) }
+    var viewPhoto by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding()) {
-        Box(Modifier.fillMaxWidth().height(44.dp).padding(horizontal = 8.dp), contentAlignment = Alignment.CenterStart) {
-            Icon(Icons.Default.ChevronLeft, "Back", tint = VoiidColor.primary,
-                modifier = Modifier.size(28.dp).clickable { haptics.tap(); onBack() })
-        }
+        VoiidCircleBack(onBack = onBack)
 
         Column(
             Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 24.dp),
@@ -79,7 +80,11 @@ fun GroupInfoView(conversation: VConversation, onBack: () -> Unit) {
             // Header: photo (+ camera badge), editable name, "Group · N members"
             Column(Modifier.fillMaxWidth().padding(vertical = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Box(contentAlignment = Alignment.BottomEnd) {
-                    Box(Modifier.size(110.dp).clip(CircleShape).background(VoiidColor.fieldFill), contentAlignment = Alignment.Center) {
+                    Box(
+                        Modifier.size(110.dp).clip(CircleShape).background(VoiidColor.fieldFill)
+                            .clickable { haptics.tap(); viewPhoto = true },
+                        contentAlignment = Alignment.Center,
+                    ) {
                         VoiidWordmark(fontSize = 26, alpha = 0.25f)
                     }
                     Box(
@@ -100,7 +105,7 @@ fun GroupInfoView(conversation: VConversation, onBack: () -> Unit) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Media, links & docs", style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.textPrimary)
                     Spacer(Modifier.weight(1f))
-                    Text("See all", style = VoiidFont.rounded(13), color = VoiidColor.primary, modifier = Modifier.clickable { haptics.tap() })
+                    Text("See all", style = VoiidFont.rounded(13), color = VoiidColor.primary, modifier = Modifier.clickable { haptics.tap(); showAllMedia = true })
                 }
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     DummyData.sharedMedia.take(6).forEach { _ ->
@@ -152,6 +157,13 @@ fun GroupInfoView(conversation: VConversation, onBack: () -> Unit) {
                 }
             },
         )
+    }
+
+    if (showAllMedia) {
+        SharedMediaSheet(onDismiss = { showAllMedia = false })
+    }
+    if (viewPhoto) {
+        ProfilePhotoViewer(title = conversation.title, onClose = { viewPhoto = false })
     }
 }
 

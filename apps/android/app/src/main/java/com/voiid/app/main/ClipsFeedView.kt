@@ -96,11 +96,12 @@ private fun ClipCard(clip: VClip, modifier: Modifier) {
         Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Icon(Icons.Outlined.FavoriteBorder, null, tint = VoiidColor.textSecondary, modifier = Modifier.size(18.dp))
-                Text("${clip.likes}", style = VoiidFont.subhead, color = VoiidColor.textSecondary)
+                // SwiftUI Text interpolation groups numbers by locale ("50,000") — match it.
+                Text("%,d".format(clip.likes), style = VoiidFont.subhead, color = VoiidColor.textSecondary)
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Icon(Icons.AutoMirrored.Outlined.Chat, null, tint = VoiidColor.textSecondary, modifier = Modifier.size(18.dp))
-                Text("${clip.comments}", style = VoiidFont.subhead, color = VoiidColor.textSecondary)
+                Text("%,d".format(clip.comments), style = VoiidFont.subhead, color = VoiidColor.textSecondary)
             }
         }
     }

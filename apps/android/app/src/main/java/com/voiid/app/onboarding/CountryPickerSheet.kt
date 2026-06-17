@@ -12,14 +12,15 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -80,21 +81,21 @@ fun CountryPickerSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = VoiidColor.background,
-        dragHandle = { androidx.compose.material3.BottomSheetDefaults.DragHandle() },
+        dragHandle = null,   // iOS `.sheet` shows no grabber — match it
     ) {
         Column(Modifier.fillMaxHeight(0.92f)) {
             // Header
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 16.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(top = 24.dp, bottom = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text("Select country", style = VoiidFont.rounded(18, FontWeight.SemiBold), color = VoiidColor.textPrimary)
                 Spacer(Modifier.weight(1f))
                 Icon(
-                    Icons.Default.Close, "Close",
+                    Icons.Default.Cancel, "Close",
                     tint = VoiidColor.textSecondary.copy(alpha = 0.6f),
                     modifier = Modifier
-                        .height(26.dp)
+                        .size(26.dp)
                         .clip(RoundedCornerShape(VoiidRadius.pill))
                         .clickable { scope.launch { sheetState.hide() }.invokeOnCompletion { onDismiss() } },
                 )
@@ -135,8 +136,8 @@ fun CountryPickerSheet(
                 )
                 if (query.isNotEmpty()) {
                     Icon(
-                        Icons.Default.Close, "Clear", tint = VoiidColor.placeholder,
-                        modifier = Modifier.height(18.dp).clickable { query = "" },
+                        Icons.Default.Cancel, "Clear", tint = VoiidColor.placeholder,
+                        modifier = Modifier.size(18.dp).clickable { query = "" },
                     )
                 }
             }

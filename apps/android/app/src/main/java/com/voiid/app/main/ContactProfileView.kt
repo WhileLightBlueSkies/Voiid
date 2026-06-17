@@ -51,7 +51,10 @@ import androidx.compose.ui.unit.dp
 import com.voiid.app.model.DummyData
 import com.voiid.app.model.VConversation
 import com.voiid.app.ui.components.LocalVoiidHaptics
+import com.voiid.app.ui.components.ProfilePhotoViewer
 import com.voiid.app.ui.components.VoiidAvatar
+import com.voiid.app.ui.components.VoiidCircleBack
+import com.voiid.app.ui.components.VoiidToggle
 import com.voiid.app.ui.components.softClickable
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
@@ -63,13 +66,12 @@ fun ContactProfileView(conversation: VConversation, onBack: () -> Unit) {
     BackHandler { onBack() }
     val haptics = LocalVoiidHaptics.current
     var muted by remember { mutableStateOf(false) }
+    var showAllMedia by remember { mutableStateOf(false) }
+    var viewPhoto by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding()) {
-        // Native-style back
-        Box(Modifier.fillMaxWidth().height(44.dp).padding(horizontal = 8.dp), contentAlignment = Alignment.CenterStart) {
-            Icon(Icons.Default.ChevronLeft, "Back", tint = VoiidColor.primary,
-                modifier = Modifier.size(28.dp).clickable { haptics.tap(); onBack() })
-        }
+        // Native iOS-26 circular back button
+        VoiidCircleBack(onBack = onBack)
 
         Column(
             Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 24.dp),
@@ -77,7 +79,7 @@ fun ContactProfileView(conversation: VConversation, onBack: () -> Unit) {
         ) {
             // Header
             Column(Modifier.fillMaxWidth().padding(vertical = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                VoiidAvatar(size = 110.dp, modifier = Modifier.clip(CircleShape))
+                VoiidAvatar(size = 110.dp, modifier = Modifier.clip(CircleShape).clickable { haptics.tap(); viewPhoto = true })
                 Spacer(Modifier.height(8.dp))
                 Text(conversation.title, style = VoiidFont.rounded(22, FontWeight.Bold), color = VoiidColor.textPrimary)
                 Text("+91 91234 56789", style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
@@ -100,7 +102,7 @@ fun ContactProfileView(conversation: VConversation, onBack: () -> Unit) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Media, links & docs", style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.textPrimary)
                     Spacer(Modifier.weight(1f))
-                    Text("See all", style = VoiidFont.rounded(13), color = VoiidColor.primary, modifier = Modifier.clickable { haptics.tap() })
+                    Text("See all", style = VoiidFont.rounded(13), color = VoiidColor.primary, modifier = Modifier.clickable { haptics.tap(); showAllMedia = true })
                 }
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     DummyData.sharedMedia.take(6).forEach { _ ->
@@ -128,6 +130,13 @@ fun ContactProfileView(conversation: VConversation, onBack: () -> Unit) {
                 ProfileRow(Icons.Default.Report, "Report ${conversation.title}", tint = VoiidColor.error) { haptics.rigid() }
             }
         }
+    }
+
+    if (showAllMedia) {
+        SharedMediaSheet(onDismiss = { showAllMedia = false })
+    }
+    if (viewPhoto) {
+        ProfilePhotoViewer(title = conversation.title, onClose = { viewPhoto = false })
     }
 }
 
@@ -169,12 +178,6 @@ fun ToggleRow(icon: ImageVector, text: String, checked: Boolean, onChange: (Bool
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
         Icon(icon, null, tint = VoiidColor.textPrimary, modifier = Modifier.size(22.dp))
         Text(text, style = VoiidFont.rounded(16), color = VoiidColor.textPrimary, modifier = Modifier.weight(1f))
-        Switch(
-            checked = checked, onCheckedChange = onChange,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = Color.White, checkedTrackColor = VoiidColor.primary,
-                uncheckedTrackColor = VoiidColor.fieldFill, uncheckedBorderColor = VoiidColor.fieldBorder,
-            ),
-        )
+        VoiidToggle(checked = checked, onCheckedChange = onChange)
     }
 }

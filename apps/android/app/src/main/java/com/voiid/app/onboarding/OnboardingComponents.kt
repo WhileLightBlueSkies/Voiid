@@ -13,11 +13,12 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -29,7 +30,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
@@ -78,15 +81,23 @@ fun OnbScaffold(
 @Composable
 fun OnbBackBar(onBack: () -> Unit) {
     val haptics = LocalVoiidHaptics.current
+    // iOS 26 renders the system back button as a circular "glass" chip (white circle + chevron +
+    // soft shadow). Match that instead of a bare Material arrow.
     Box(
-        modifier = Modifier.height(44.dp).padding(horizontal = 8.dp),
+        modifier = Modifier.height(52.dp).padding(start = 16.dp),
         contentAlignment = Alignment.CenterStart,
     ) {
         Box(
-            modifier = Modifier.size(40.dp).softClickable(scale = 0.9f) { haptics.tap(); onBack() },
+            modifier = Modifier
+                .size(38.dp)
+                .shadow(6.dp, CircleShape, clip = false)
+                .clip(CircleShape)
+                .background(Color.White)
+                .softClickable(scale = 0.9f) { haptics.tap(); onBack() },
             contentAlignment = Alignment.Center,
         ) {
-            Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = VoiidColor.primary, modifier = Modifier.size(24.dp))
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "Back",
+                tint = VoiidColor.textPrimary, modifier = Modifier.size(26.dp))
         }
     }
 }
@@ -123,7 +134,6 @@ fun OnbPillField(
     keyboardType: KeyboardType = KeyboardType.Text,
     textStyle: TextStyle = VoiidFont.rounded(17),
 ) {
-    var focused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(VoiidRadius.pill)
     BasicTextField(
         value = value,
@@ -132,12 +142,12 @@ fun OnbPillField(
         textStyle = textStyle.merge(TextStyle(color = VoiidColor.textPrimary)),
         cursorBrush = SolidColor(VoiidColor.primary),
         keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+        // iOS onboarding pill fields keep a static pink border (no focus ring) — match that.
         modifier = modifier
             .height(PILL_HEIGHT)
             .clip(shape)
             .background(VoiidColor.fieldFill)
-            .border(1.dp, if (focused) VoiidColor.primary else VoiidColor.fieldBorder, shape)
-            .onFocusChanged { focused = it.isFocused }
+            .border(1.dp, VoiidColor.fieldBorder, shape)
             .padding(horizontal = 24.dp),
         decorationBox = { inner ->
             Box(contentAlignment = Alignment.CenterStart) {

@@ -19,7 +19,7 @@ data class VUser(
 )
 
 enum class MessageStatus { SENDING, SENT, DELIVERED, READ, FAILED }
-enum class MessageKind { TEXT, IMAGE, VOICE, DOCUMENT, SYSTEM }
+enum class MessageKind { TEXT, IMAGE, VOICE, DOCUMENT, SYSTEM, POLL }
 
 data class VMessage(
     val id: String,
@@ -32,6 +32,15 @@ data class VMessage(
     val createdAt: Long,
     val status: MessageStatus = MessageStatus.SENT,
     val isMine: Boolean = false,
+    val poll: VPoll? = null,                  // set when kind == POLL
+    val reaction: String? = null,             // single emoji reaction on this message
+    val deliveredAt: Long? = null,            // for Message Info
+    val readAt: Long? = null,                 // for Message Info
+    val forwarded: Boolean = false,           // "Forwarded" tag
+    val deletedForEveryone: Boolean = false,  // tombstone: "This message was deleted"
+    // Quoted reply: snapshot of the replied-to message
+    val replyToSender: String? = null,
+    val replyToText: String? = null,
 )
 
 enum class ConversationType { DIRECT, GROUP }
