@@ -213,9 +213,18 @@ fun TermsScreen(onContinue: () -> Unit) {
                             ) { agreed = !agreed },
                         contentAlignment = Alignment.Center,
                     ) {
-                        AnimatedVisibility(visible = agreed, enter = fadeIn(), exit = fadeOut()) {
-                            Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(10.dp))
-                        }
+                        // Fade the check in/out with the box's plum fill (animateColorAsState
+                        // above drives the fill). Use alpha rather than AnimatedVisibility so
+                        // the call stays in BoxScope, not the enclosing RowScope.
+                        val checkAlpha by animateFloatAsState(
+                            targetValue = if (agreed) 1f else 0f,
+                            animationSpec = tween(150),
+                            label = "termsCheckAlpha",
+                        )
+                        Icon(
+                            Icons.Default.Check, null, tint = Color.White,
+                            modifier = Modifier.size(10.dp).alpha(checkAlpha),
+                        )
                     }
                     Text(
                         text = buildAnnotatedString {
