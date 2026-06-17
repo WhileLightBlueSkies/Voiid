@@ -11,14 +11,41 @@ import SwiftUI
 struct OTPScreen: View {
     let onContinue: () -> Void
     var phoneNumber: String = "+91 91234567890"
+    /// E.164 number (no spaces) used for login. Defaults from `phoneNumber`.
+    var e164: String? = nil
 
     // Single source of truth: one hidden field holds all 6 digits; circles display them.
     @State private var code = ""
+    @State private var verifying = false
+    @State private var errorText: String?
     @FocusState private var keyboardUp: Bool
 
     private let pillHeight: CGFloat = 64
     private let length = 6
     private var complete: Bool { code.count == length }
+
+    /// Normalized E.164 ("+" + digits) for the login call.
+    private var phoneE164: String {
+        if let e164 { return e164 }
+        let digits = phoneNumber.filter { $0.isNumber }
+        return "+\(digits)"
+    }
+
+    /// Verify the code. DEV: uses the backend dev bypass to create a real session.
+    /// PROD: replace with Firebase Phone Auth verify → AuthService.loginWithFirebase.
+    private func verify() async {
+        guard !verifying else { return }
+        verifying = true; errorText = nil
+        do {
+            try await AuthService.shared.devLogin(phone: phoneE164)
+            Haptics.success()
+            onContinue()
+        } catch {
+            errorText = (error as? APIError)?.errorDescription ?? "Verification failed."
+            Haptics.error()
+        }
+        verifying = false
+    }
 
     var body: some View {
         ZStack {
@@ -68,19 +95,32 @@ struct OTPScreen: View {
                     .padding(.horizontal, VoiidSpacing.lg)
                     .padding(.top, VoiidSpacing.md)
 
+                if let errorText {
+                    Text(errorText)
+                        .font(VoiidFont.rounded(13, .regular))
+                        .foregroundColor(VoiidColor.error)
+                        .padding(.horizontal, VoiidSpacing.lg)
+                        .padding(.top, VoiidSpacing.sm)
+                }
+
                 Spacer()
 
-                Button(action: { Haptics.success(); onContinue() }) {
-                    Text("Continue")
-                        .font(VoiidFont.rounded(18, .medium))
-                        .foregroundColor(VoiidColor.textPrimary)
-                        .frame(maxWidth: .infinity).frame(height: pillHeight)
-                        .background(VoiidColor.accent)
-                        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.pill, style: .continuous))
-                        .opacity(complete ? 1 : 0.55)
+                Button(action: { Task { await verify() } }) {
+                    Group {
+                        if verifying {
+                            ProgressView().tint(VoiidColor.textPrimary)
+                        } else {
+                            Text("Continue").font(VoiidFont.rounded(18, .medium))
+                        }
+                    }
+                    .foregroundColor(VoiidColor.textPrimary)
+                    .frame(maxWidth: .infinity).frame(height: pillHeight)
+                    .background(VoiidColor.accent)
+                    .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.pill, style: .continuous))
+                    .opacity(complete ? 1 : 0.55)
                 }
                 .buttonStyle(SoftPressStyle())
-                .disabled(!complete)
+                .disabled(!complete || verifying)
                 .padding(.horizontal, VoiidSpacing.lg).padding(.bottom, VoiidSpacing.xl)
             }
         }

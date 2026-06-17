@@ -8,7 +8,8 @@
 import SwiftUI
 
 struct PhoneScreen: View {
-    let onContinue: () -> Void
+    /// Passes the entered number in E.164 (e.g. "+9199...") to the next step.
+    let onContinue: (String) -> Void
     @State private var phone = ""
     @State private var country = Country.default   // India default
     @State private var showPicker = false
@@ -87,7 +88,11 @@ struct PhoneScreen: View {
                 Spacer()
 
                 // Continue — pink pill with soft touch feedback.
-                Button(action: { Haptics.tap(); onContinue() }) {
+                Button(action: {
+                    Haptics.tap()
+                    let digits = phone.filter { $0.isNumber }
+                    onContinue("\(country.dialCode)\(digits)")
+                }) {
                     Text("Continue")
                         .font(VoiidFont.rounded(18, .medium))
                         .foregroundColor(VoiidColor.textPrimary)

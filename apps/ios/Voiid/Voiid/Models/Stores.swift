@@ -15,15 +15,29 @@ import Combine
 @MainActor
 final class AppSession: ObservableObject {
     enum Route { case onboarding, main }
-    @Published var route: Route = .onboarding
+    @Published var route: Route
     @Published var profile = DummyData.me
     /// Hides the bottom tab bar when a full-screen child (e.g. a chat) is open.
     @Published var hideTabBar = false
 
+    private let auth = AuthService.shared
+
+    init() {
+        // Resume straight to the app if we already hold a valid session token.
+        route = AuthService.shared.isAuthenticated ? .main : .onboarding
+    }
+
+    /// The authenticated user's id (our backend id), once logged in.
+    var userId: String? { auth.userId }
+
+    /// Called at the end of onboarding once a real session token exists
+    /// (onboarding logs in via AuthService before calling this).
     func completeOnboarding() {
         withAnimation(.easeInOut) { route = .main }
     }
+
     func signOut() {
+        auth.logout()
         withAnimation(.easeInOut) { route = .onboarding }
     }
 }
