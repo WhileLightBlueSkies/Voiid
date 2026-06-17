@@ -33,6 +33,28 @@ Compute instances needed now: **1 (dev)**. Add the prod box only when going live
 
 ---
 
+## What actually runs (deploy the backend, but clone the whole repo)
+
+Only the **backend** runs on the server, but the API depends on a shared
+workspace package, so you must have these present for `npm ci` to resolve:
+
+| Path | On the server | Role |
+|---|---|---|
+| `backend/api`, `backend/websocket` | ✅ built + run | the two services |
+| `packages/common-utils` | ✅ built (not run) | dependency of the API (`@voiid/common-utils`) |
+| `package.json`, `package-lock.json` (root) | ✅ needed | defines the npm workspaces that link the above |
+| `apps/` (iOS/Android) | present, **not run** | client apps — ignored on the server |
+| `packages/e2e-core` | present, **not run** | client-side crypto — ignored on the server |
+| `docs/` | present, **not run** | docs |
+
+**Do NOT try to copy only `backend/`** — the API imports `@voiid/common-utils`
+through the workspace root, so `npm install` would fail without the root
+`package.json` + `packages/common-utils`. Just `git clone` the whole repo and
+build/run only the three backend pieces (steps below). The unused folders are
+harmless dead weight.
+
+---
+
 ## 1. Vultr instance spec (DEV)
 
 - **Type:** Cloud Compute (shared CPU is fine for dev)
@@ -158,6 +180,50 @@ so test data and tokens never touch real users. Same code, different env.
 | `FIREBASE_SERVICE_ACCOUNT` | empty | the prod service-account JSON |
 | App base URL | `http://<dev-ip>` | `https://api.<domain>` (TLS) |
 
+### How to MAINTAIN the two environments (the mental model)
+
+**One codebase, two boxes, two `.env` files.** The code is identical on dev and
+prod — the *only* difference is the `.env`/environment variables on each machine.
+You never fork the code per environment.
+
+```
+            git repo (one)
+                 │ git pull
+        ┌────────┴────────┐
+   DEV box                PROD box
+   /opt/voiid             /opt/voiid
+   .env (dev DB/Redis)    .env (prod DB/Redis)   ← the ONLY thing that differs
+   pm2: api + ws          pm2: api + ws
+```
+
+Day-to-day flow:
+1. You develop + commit to the repo (branch `0.0.2` now; later a `main`/release branch).
+2. **Deploy to DEV:** on the dev box, `git pull` → rebuild → `pm2 restart` (step 6
+   below). Test against dev DB/Redis with `AUTH_DEV_BYPASS`.
+3. **Promote to PROD:** when dev looks good, on the prod box `git pull` the SAME
+   commit/tag → rebuild → `pm2 restart`. It picks up prod's `.env` automatically,
+   so it hits the prod DB/Redis with real Firebase.
+
+Recommended branch discipline (simple, scales later):
+- `0.0.2` / `main` = what dev runs (latest).
+- Tag releases (e.g. `v0.3.0`) and have **prod check out the tag**, not the moving
+  branch — so prod only moves when you deliberately bump it.
+
+Golden rules so the two never bleed together:
+- **Secrets live on the box, never in git.** Each box has its own `.env`. The repo
+  only holds `.env.example`.
+- **Never copy dev's `JWT_SECRET` to prod** (a dev token must not work in prod).
+- **Separate DB + Redis projects** — migrations are applied to *each* DB
+  independently (see below); a migration run on dev does NOT touch prod.
+- **`AUTH_DEV_BYPASS=1` only on dev.** If it's ever set on prod, anyone can log in
+  as any phone number — treat that as a release blocker.
+- Keep the two boxes on the **same code version** when comparing behavior; a bug
+  that's "only on prod" is usually an env/data difference, not code.
+
+> Optional later: a CI/CD pipeline (GitHub Actions) that SSHes in and runs the
+> pull+build+restart on a push to a branch — but the manual flow above is the
+> source of truth and works fine to start.
+
 ### To create the PROD environment (when going live)
 1. **New Vultr instance** (same steps 1–4 above, `NODE_ENV=production`).
 2. **New Supabase project** → run the migrations there → use its pooler URL as the prod `DATABASE_URL`. Do NOT reuse the dev project.
@@ -196,3 +262,4 @@ Caddy auto-provisions Let's Encrypt certs. Point the DNS A records at the prod I
 - [ ] pm2 startup enabled (survives reboot); logs/monitoring (Sentry, uptime)
 - [ ] DB backups enabled on the prod Supabase project
 - [ ] (Pre-launch) the E2EE audit — see CHECKLIST pre-production gate
+
