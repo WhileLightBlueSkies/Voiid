@@ -6,6 +6,41 @@ import { requireAuth } from '../auth';
 
 const router = Router();
 
+// POST /contacts/discover — { phone_hashes: [sha256_hex_of_E164, ...] }
+// Privacy (Signal-lite contact discovery): the client normalizes each contact's
+// phone to E.164, hashes it (SHA-256 hex), and sends ONLY the hashes. The server
+// matches them against SHA-256(phone_number) of existing users and returns the
+// hits — so the request never carries raw numbers and the server never learns
+// the contacts that AREN'T on VOIID. (Full enclave-based CDS is a later step.)
+router.post('/discover', requireAuth, async (req, res) => {
+  const { phone_hashes } = req.body ?? {};
+  if (!Array.isArray(phone_hashes) || phone_hashes.length === 0) {
+    return res.status(400).json({ error: 'phone_hashes array required' });
+  }
+  // Bound the batch to avoid abuse / enumeration in one call.
+  if (phone_hashes.length > 2000) {
+    return res.status(400).json({ error: 'too many hashes; batch <= 2000' });
+  }
+  // Only accept well-formed lowercase sha256 hex; ignore anything else.
+  const hashes = phone_hashes.filter(
+    (h: unknown): h is string => typeof h === 'string' && /^[a-f0-9]{64}$/.test(h)
+  );
+  if (hashes.length === 0) return res.json({ matches: [] });
+
+  // Match client hashes against SHA-256 of stored E.164 numbers. encode() avoids
+  // returning the raw number; we only return the matched user_id + public profile.
+  const rows = await query(
+    `select u.id as user_id,
+            encode(digest(u.phone_number, 'sha256'), 'hex') as phone_hash,
+            u.full_name, u.photo_url
+       from users u
+      where u.deleted_at is null
+        and encode(digest(u.phone_number, 'sha256'), 'hex') = any($1::text[])`,
+    [hashes]
+  );
+  res.json({ matches: rows });
+});
+
 // POST /contacts/sync — { contacts: [{ contact_user_id, saved_name? }] }
 // Body must contain resolved VOIID user_ids only — never raw phone numbers from the address book.
 router.post('/sync', requireAuth, async (req, res) => {
