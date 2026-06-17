@@ -37,5 +37,22 @@ app.use('/contacts', contactRoutes);
 app.use('/receipts', receiptRoutes);
 app.use('/linking', linkingRoutes);
 
+// Global error handler — turns thrown errors (incl. malformed JSON and bad
+// base64 in inputs) into a clean 400/500 instead of crashing the socket. No
+// secrets in the response. (Express 4: this catches sync throws + next(err);
+// async route rejections are also surfaced here via the wrapper in security.ts.)
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  const status = err?.type === 'entity.parse.failed' || /base64|invalid input/i.test(err?.message ?? '')
+    ? 400
+    : 500;
+  if (status === 500) console.error('[voiid:api] unhandled error:', err?.message);
+  if (!res.headersSent) res.status(status).json({ error: status === 400 ? 'bad request' : 'internal error' });
+});
+
+// Surface unhandled async rejections instead of letting them tear down sockets.
+process.on('unhandledRejection', (reason) => {
+  console.error('[voiid:api] unhandledRejection:', (reason as Error)?.message ?? reason);
+});
+
 const port = Number(process.env.API_PORT) || 4000;
 app.listen(port, () => console.log(`[voiid:api] listening on :${port}`));

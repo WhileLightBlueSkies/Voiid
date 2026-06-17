@@ -50,13 +50,27 @@ voiid/
   Nothing to provision; it's self-contained dummy data.
 
 ### Android app (`apps/android`)
-- **Status:** scaffold only (manifest + theme). No screens. Not runnable as an app yet.
+- **Status:** full UI prototype (Kotlin/Compose) on dummy data — onboarding +
+  main screens. Not yet wired to backend/crypto.
 
 ### Backend (`backend/`)
-- **Status:** Phase 0 mostly done (auth, device/prekey, message relay). See
-  DEPLOY_HANDOFF.md for env vars + how to run locally.
-- **Run:** `npm run dev:api` and `npm run dev:ws` from repo root (needs `.env` —
-  see DEPLOY_HANDOFF.md).
+- **Status:** ✅ **runs and connects to live Supabase + Upstash.** Auth, device/
+  prekey, conversations, message relay all verified working against the live DB
+  (full chat path: login → device → conversation → send → fetch ciphertext).
+- **Auth = Firebase Phone Auth (client-side).** The app does Phone Auth with the
+  Firebase SDK, gets a Firebase ID token, and POSTs it to `/auth/firebase`; the
+  server verifies it and returns OUR JWT. There is no server-side OTP/SMS.
+- **Run locally:**
+  ```bash
+  # from repo root — .env is loaded automatically via --env-file in the scripts
+  npm run dev:api    # http://localhost:4000  (GET /health → db/redis up)
+  npm run dev:ws     # ws://localhost:4001
+  ```
+- **Dev login without Firebase:** set `AUTH_DEV_BYPASS=1` in `.env` (already set),
+  then POST `/auth/firebase` with `{"id_token":"dev:+91XXXXXXXXXX"}` → returns a
+  real JWT + creates the user in Supabase. Unset this in production.
+- **Real Firebase:** set `FIREBASE_SERVICE_ACCOUNT` (service-account JSON) so the
+  server can verify real Firebase ID tokens.
 
 ### E2E crypto core (`packages/e2e-core`)
 - **Status:** built & tested in Rust. NOT yet linked into either app.
@@ -119,6 +133,23 @@ Drops `.so`s under `apps/android/.../jniLibs/` + Kotlin glue. Add the JNA aar de
 
 > One entry per push. Newest on top. Format:
 > `### YYYY-MM-DD — <short title>` then **What changed** / **⚠️ Run / do this**.
+
+### 2026-06-17 — Backend running + Firebase auth + chat API verified
+**What changed**
+- Backend now boots and connects to **live Supabase + Upstash** (fixed: services
+  never loaded `.env`). `npm run dev:api` / `dev:ws` work; `/health` = db/redis up.
+- Auth switched to **Firebase Phone Auth (client-side)**; MSG91 + server-side OTP
+  removed. New `/auth/firebase` verifies the Firebase ID token → issues our JWT.
+- Full chat API path verified against the live DB (login→device→conversation→
+  send→fetch ciphertext). Server only ever stores/returns opaque ciphertext.
+- Added a global error handler so malformed input returns 400 instead of
+  resetting the socket. (Per-route async-error wrapping is a follow-up.)
+
+**⚠️ Run / do this**
+- `npm install` (added `firebase-admin`).
+- Backend now needs no extra setup to run in dev — `.env` is auto-loaded and
+  `AUTH_DEV_BYPASS=1` lets you log in with `dev:<phone>` tokens.
+- Next: client networking + auth layer, then wire chats.
 
 ### 2026-06-17 — E2E core complete; engineering handoff created
 **What changed**
