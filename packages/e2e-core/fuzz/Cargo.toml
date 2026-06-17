@@ -1,0 +1,42 @@
+[package]
+name = "voiid-e2e-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.voiid-e2e-core]
+path = ".."
+
+# Prevent this from being built as part of the workspace's normal `cargo build`.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "fuzz_session_decrypt"
+path = "fuzz_targets/fuzz_session_decrypt.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_accept_session"
+path = "fuzz_targets/fuzz_accept_session.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_group_decrypt"
+path = "fuzz_targets/fuzz_group_decrypt.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_media_decrypt"
+path = "fuzz_targets/fuzz_media_decrypt.rs"
+test = false
+doc = false
