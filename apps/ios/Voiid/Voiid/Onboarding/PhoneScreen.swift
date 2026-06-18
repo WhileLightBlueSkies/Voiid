@@ -8,15 +8,35 @@
 import SwiftUI
 
 struct PhoneScreen: View {
-    /// Passes the entered number in E.164 (e.g. "+9199...") to the next step.
-    let onContinue: (String) -> Void
+    /// Passes the E.164 number + Firebase verificationID to the OTP step.
+    let onContinue: (String, String) -> Void
     @State private var phone = ""
     @State private var country = Country.default   // India default
     @State private var showPicker = false
+    @State private var sending = false
+    @State private var errorText: String?
 
     // pill metrics matched to the design
     private let pillHeight: CGFloat = 64
     private let pillRadius: CGFloat = VoiidRadius.pill
+
+    /// Send the OTP via Firebase, then advance to the OTP screen with the
+    /// verificationID.
+    private func sendOtp() {
+        guard !sending else { return }
+        sending = true; errorText = nil
+        let e164 = "\(country.dialCode)\(phone.filter { $0.isNumber })"
+        Task {
+            do {
+                let verificationID = try await FirebasePhoneAuth.sendCode(to: e164)
+                Haptics.tap(); onContinue(e164, verificationID)
+            } catch {
+                errorText = error.localizedDescription
+                Haptics.error()
+            }
+            sending = false
+        }
+    }
 
     var body: some View {
         ZStack {
@@ -87,23 +107,28 @@ struct PhoneScreen: View {
 
                 Spacer()
 
+                if let errorText {
+                    Text(errorText)
+                        .font(VoiidFont.rounded(13, .regular))
+                        .foregroundColor(VoiidColor.error)
+                        .padding(.horizontal, VoiidSpacing.lg)
+                }
+
                 // Continue — pink pill with soft touch feedback.
-                Button(action: {
-                    Haptics.tap()
-                    let digits = phone.filter { $0.isNumber }
-                    onContinue("\(country.dialCode)\(digits)")
-                }) {
-                    Text("Continue")
-                        .font(VoiidFont.rounded(18, .medium))
-                        .foregroundColor(VoiidColor.textPrimary)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: pillHeight)
-                        .background(VoiidColor.accent)
-                        .clipShape(RoundedRectangle(cornerRadius: pillRadius, style: .continuous))
-                        .opacity(phone.count >= 10 ? 1 : 0.55)
+                Button(action: sendOtp) {
+                    Group {
+                        if sending { ProgressView().tint(VoiidColor.textPrimary) }
+                        else { Text("Continue").font(VoiidFont.rounded(18, .medium)) }
+                    }
+                    .foregroundColor(VoiidColor.textPrimary)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: pillHeight)
+                    .background(VoiidColor.accent)
+                    .clipShape(RoundedRectangle(cornerRadius: pillRadius, style: .continuous))
+                    .opacity(phone.count >= 10 ? 1 : 0.55)
                 }
                 .buttonStyle(SoftPressStyle())
-                .disabled(phone.count < 10)
+                .disabled(phone.count < 10 || sending)
                 .padding(.horizontal, VoiidSpacing.lg)
                 .padding(.bottom, VoiidSpacing.xl)
             }

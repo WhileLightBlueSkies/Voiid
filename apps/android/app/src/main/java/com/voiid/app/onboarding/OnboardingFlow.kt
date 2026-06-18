@@ -75,7 +75,8 @@ enum class OnbStep { TERMS, PHONE, OTP, SIGNUP, PROFILE }
 fun OnboardingFlow(session: AppSession) {
     var showSplash by remember { mutableStateOf(true) }
     var stack by remember { mutableStateOf(listOf(OnbStep.TERMS)) }
-    var phone by remember { mutableStateOf("") }   // E.164, set by PhoneScreen, used by OtpScreen
+    var phone by remember { mutableStateOf("") }            // E.164, set by PhoneScreen
+    var verificationId by remember { mutableStateOf("") }   // Firebase verificationId from sendCode
     val current = stack.last()
 
     fun push(step: OnbStep) { stack = stack + step }
@@ -103,8 +104,8 @@ fun OnboardingFlow(session: AppSession) {
         ) { step ->
             when (step) {
                 OnbStep.TERMS -> TermsScreen(onContinue = { push(OnbStep.PHONE) })
-                OnbStep.PHONE -> PhoneScreen(onBack = ::pop, onContinue = { e164 -> phone = e164; push(OnbStep.OTP) })
-                OnbStep.OTP -> OtpScreen(session = session, phoneE164 = phone, onBack = ::pop, onContinue = { push(OnbStep.SIGNUP) })
+                OnbStep.PHONE -> PhoneScreen(onBack = ::pop, onContinue = { e164, vid -> phone = e164; verificationId = vid; push(OnbStep.OTP) })
+                OnbStep.OTP -> OtpScreen(session = session, phoneE164 = phone, verificationId = verificationId, onBack = ::pop, onContinue = { push(OnbStep.SIGNUP) })
                 OnbStep.SIGNUP -> SignupScreen(session = session, onBack = ::pop, onContinue = { push(OnbStep.PROFILE) })
                 OnbStep.PROFILE -> CreateProfileScreen(session = session, onBack = ::pop, onFinish = { session.completeOnboarding() })
             }
