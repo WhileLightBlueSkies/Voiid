@@ -47,7 +47,15 @@ struct APIClient {
         auth: Bool = true,
         as: Response.Type = Response.self
     ) async throws -> Response {
-        var req = URLRequest(url: APIConfig.baseURL.appendingPathComponent(path))
+        // Build the URL from a string so query strings (e.g. "?username=foo")
+        // survive — appendingPathComponent would percent-encode the "?" and "="
+        // and break the request.
+        let base = APIConfig.baseURL.absoluteString
+        let full = base.hasSuffix("/") ? base + path : base + "/" + path
+        guard let url = URL(string: full) else {
+            throw APIError.http(status: 0, message: "Bad URL")
+        }
+        var req = URLRequest(url: url)
         req.httpMethod = method
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
