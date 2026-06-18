@@ -72,8 +72,11 @@ fun OtpScreen(
         scope.launch {
             try {
                 val idToken = com.voiid.app.net.FirebasePhoneAuth.verify(verificationId, code)
-                session.auth.loginWithFirebase(idToken)
-                haptics.success(); onContinue()
+                val profileComplete = session.auth.loginWithFirebase(idToken)
+                haptics.success()
+                // Returning user (profile already complete) → straight to the app;
+                // new user → continue to Signup/Profile.
+                if (profileComplete) session.completeOnboarding() else onContinue()
             } catch (e: Exception) {
                 errorText = (e as? com.voiid.app.net.ApiError)?.message ?: "Invalid or expired code."
                 haptics.tap()

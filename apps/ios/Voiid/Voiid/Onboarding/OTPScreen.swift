@@ -10,6 +10,9 @@ import SwiftUI
 
 struct OTPScreen: View {
     let onContinue: () -> Void
+    /// Called instead of onContinue when the user already has a complete profile
+    /// (returning user) — skip Signup/Profile and go straight to the app.
+    var onExistingUser: () -> Void = {}
     var phoneNumber: String = "+91 91234567890"
     /// E.164 number (no spaces) used for login. Defaults from `phoneNumber`.
     var e164: String? = nil
@@ -40,9 +43,9 @@ struct OTPScreen: View {
         verifying = true; errorText = nil
         do {
             let idToken = try await FirebasePhoneAuth.verify(verificationID: verificationID, code: code)
-            try await AuthService.shared.loginWithFirebase(idToken: idToken)
+            let profileComplete = try await AuthService.shared.loginWithFirebase(idToken: idToken)
             Haptics.success()
-            onContinue()
+            if profileComplete { onExistingUser() } else { onContinue() }
         } catch {
             errorText = (error as? APIError)?.errorDescription ?? error.localizedDescription
             Haptics.error()

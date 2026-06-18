@@ -39,6 +39,7 @@ struct OnboardingFlow: View {
                             case .phone:   PhoneScreen(onContinue: { phone, vid in path.append(.otp(phone: phone, verificationID: vid)) })
                             case .otp(let phone, let vid):
                                 OTPScreen(onContinue: { path.append(.signup(phone: phone)) },
+                                          onExistingUser: { session.completeOnboarding() },
                                           phoneNumber: phone, e164: phone, verificationID: vid)
                             case .signup(let phone):
                                 SignupScreen(onContinue: { path.append(.profile) }, phone: phone)
