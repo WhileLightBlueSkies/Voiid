@@ -58,6 +58,7 @@ struct ChatsHomeView: View {
             .onAppear { session.hideTabBar = false }   // root screen always shows the bar
             .task {
                 try? await E2EManager.shared.bootstrap()   // ensure identity/prekeys published (idempotent)
+                WebSocketClient.shared.connect()           // live realtime relay (messages/typing/presence)
                 await chat.loadConversations()              // load REAL conversations from backend
             }
             .navigationDestination(item: $openConversation) { ChatDetailView(conversation: $0) }
