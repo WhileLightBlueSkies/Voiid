@@ -48,6 +48,7 @@ import com.voiid.app.ui.theme.VoiidFont
 fun OtpScreen(
     session: com.voiid.app.model.AppSession,
     phoneE164: String,
+    verificationId: String,
     onBack: () -> Unit,
     onContinue: () -> Unit,
 ) {
@@ -63,17 +64,18 @@ fun OtpScreen(
     val complete = code.length == length
     val phoneNumber = phoneE164
 
-    // DEV: verify via backend dev bypass (creates a real session). PROD: replace
-    // with Firebase Phone Auth verify -> session.auth.loginWithFirebase(idToken).
+    // Verify the code with Firebase, then exchange the Firebase ID token for our
+    // JWT. (Firebase sent the SMS on the previous screen.)
     fun verify() {
         if (verifying) return
         verifying = true; errorText = null
         scope.launch {
             try {
-                session.auth.devLogin(phoneE164)
+                val idToken = com.voiid.app.net.FirebasePhoneAuth.verify(verificationId, code)
+                session.auth.loginWithFirebase(idToken)
                 haptics.success(); onContinue()
             } catch (e: Exception) {
-                errorText = (e as? com.voiid.app.net.ApiError)?.message ?: "Verification failed."
+                errorText = (e as? com.voiid.app.net.ApiError)?.message ?: "Invalid or expired code."
                 haptics.tap()
             }
             verifying = false

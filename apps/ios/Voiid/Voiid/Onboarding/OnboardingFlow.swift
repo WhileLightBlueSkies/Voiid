@@ -13,7 +13,7 @@ struct OnboardingFlow: View {
     @State private var path: [Step] = []
     @State private var showSplash = true
 
-    enum Step: Hashable { case phone, otp(phone: String), signup, profile }
+    enum Step: Hashable { case phone, otp(phone: String, verificationID: String), signup, profile }
 
     @Namespace private var logoNS
 
@@ -35,10 +35,10 @@ struct OnboardingFlow: View {
                     TermsScreen(logoNS: logoNS, onContinue: { path.append(.phone) })
                         .navigationDestination(for: Step.self) { step in
                             switch step {
-                            case .phone:   PhoneScreen(onContinue: { phone in path.append(.otp(phone: phone)) })
-                            case .otp(let phone):
+                            case .phone:   PhoneScreen(onContinue: { phone, vid in path.append(.otp(phone: phone, verificationID: vid)) })
+                            case .otp(let phone, let vid):
                                 OTPScreen(onContinue: { path.append(.signup) },
-                                          phoneNumber: phone, e164: phone)
+                                          phoneNumber: phone, e164: phone, verificationID: vid)
                             case .signup:  SignupScreen(onContinue: { path.append(.profile) })
                             case .profile: CreateProfileScreen(onFinish: { session.completeOnboarding() })
                             }

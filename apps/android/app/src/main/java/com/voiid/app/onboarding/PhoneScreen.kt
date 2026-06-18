@@ -32,15 +32,40 @@ import com.voiid.app.ui.components.softClickable
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
+import kotlinx.coroutines.launch
 
 /** Onboarding — phone number entry (Figma Screen-2). Port of `PhoneScreen.swift`. */
 @Composable
-fun PhoneScreen(onBack: () -> Unit, onContinue: (String) -> Unit) {
+fun PhoneScreen(onBack: () -> Unit, onContinue: (phone: String, verificationId: String) -> Unit) {
     val haptics = LocalVoiidHaptics.current
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     var phone by remember { mutableStateOf("") }
     var country by remember { mutableStateOf(CountryStore.default) }
     var showPicker by remember { mutableStateOf(false) }
+    var sending by remember { mutableStateOf(false) }
+    var errorText by remember { mutableStateOf<String?>(null) }
     val pillShape = RoundedCornerShape(VoiidRadius.pill)
+
+    // Send the OTP via Firebase, then advance to the OTP screen with the
+    // verificationId. (Firebase texts the code; we verify it on the next screen.)
+    fun sendOtp() {
+        if (sending) return
+        val activity = context as? android.app.Activity ?: run {
+            errorText = "Can’t start verification"; return
+        }
+        sending = true; errorText = null
+        scope.launch {
+            try {
+                val e164 = "${country.dialCode}$phone"
+                val verificationId = com.voiid.app.net.FirebasePhoneAuth.sendCode(activity, e164)
+                haptics.tap(); onContinue(e164, verificationId)
+            } catch (e: Exception) {
+                errorText = e.message ?: "Couldn’t send code"
+            }
+            sending = false
+        }
+    }
 
     OnbScaffold(showBack = true, onBack = onBack) {
         Spacer(Modifier.height(24.dp))
@@ -101,11 +126,16 @@ fun PhoneScreen(onBack: () -> Unit, onContinue: (String) -> Unit) {
 
         Spacer(Modifier.weight(1f))
 
+        errorText?.let {
+            Text(it, style = VoiidFont.rounded(12), color = VoiidColor.error,
+                modifier = Modifier.padding(horizontal = 24.dp).padding(top = 6.dp))
+        }
+
         OnbAccentButton(
-            title = "Continue",
-            enabled = phone.length >= 10,
+            title = if (sending) "Sending…" else "Continue",
+            enabled = phone.length >= 10 && !sending,
             modifier = Modifier.padding(horizontal = 24.dp).padding(bottom = 32.dp),
-        ) { haptics.tap(); onContinue("${country.dialCode}$phone") }
+        ) { sendOtp() }
     }
 
     if (showPicker) {

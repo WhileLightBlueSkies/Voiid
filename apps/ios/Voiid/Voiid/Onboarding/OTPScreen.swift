@@ -13,6 +13,8 @@ struct OTPScreen: View {
     var phoneNumber: String = "+91 91234567890"
     /// E.164 number (no spaces) used for login. Defaults from `phoneNumber`.
     var e164: String? = nil
+    /// Firebase verificationID from the Phone screen's sendCode.
+    var verificationID: String = ""
 
     // Single source of truth: one hidden field holds all 6 digits; circles display them.
     @State private var code = ""
@@ -31,17 +33,18 @@ struct OTPScreen: View {
         return "+\(digits)"
     }
 
-    /// Verify the code. DEV: uses the backend dev bypass to create a real session.
-    /// PROD: replace with Firebase Phone Auth verify → AuthService.loginWithFirebase.
+    /// Verify the code with Firebase, then exchange the Firebase ID token for our
+    /// JWT. (Firebase sent the SMS on the previous screen.)
     private func verify() async {
         guard !verifying else { return }
         verifying = true; errorText = nil
         do {
-            try await AuthService.shared.devLogin(phone: phoneE164)
+            let idToken = try await FirebasePhoneAuth.verify(verificationID: verificationID, code: code)
+            try await AuthService.shared.loginWithFirebase(idToken: idToken)
             Haptics.success()
             onContinue()
         } catch {
-            errorText = (error as? APIError)?.errorDescription ?? "Verification failed."
+            errorText = (error as? APIError)?.errorDescription ?? error.localizedDescription
             Haptics.error()
         }
         verifying = false
