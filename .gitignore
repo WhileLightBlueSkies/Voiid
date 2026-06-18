@@ -23,8 +23,8 @@ DerivedData/
 apps/android/local.properties
 
 # Firebase config (contains API keys — never commit; add locally / via CI secrets)
-GoogleService-Info.plist
-google-services.json
+GoogleService-Info*.plist
+google-services*.json
 # Firebase Admin service-account key (server token verification) — never commit
 *service-account*.json
 firebase-admin*.json
