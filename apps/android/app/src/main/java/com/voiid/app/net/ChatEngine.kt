@@ -105,6 +105,15 @@ class ChatEngine private constructor(context: Context) {
         return messages(conversationId)
     }
 
+    /** Mark all stored inbound messages in a conversation read → server fans out a
+     *  `receipt` WS event to the senders (blue ticks). */
+    suspend fun markRead(conversationId: String) {
+        val ids = (store[conversationId] ?: emptyList()).filter { !it.isMine }.map { it.id }
+        if (ids.isEmpty()) return
+        val body = ApiClient.json.encodeToString(MarkReadBody.serializer(), MarkReadBody(ids))
+        runCatching { api.request("POST", "receipts/mark", jsonBody = body) }
+    }
+
     private suspend fun decryptInbound(wire: WireMessage, conversationId: String, peerUserId: String): String {
         val live = sessions[conversationId] ?: restoreSession(conversationId)
         if (live != null) {
@@ -230,6 +239,7 @@ class ChatEngine private constructor(context: Context) {
 
     // MARK: - DTOs
 
+    @Serializable private data class MarkReadBody(val message_ids: List<String>, val status: String = "read")
     @Serializable private data class SendBody(val conversation_id: String, val ciphertext: String)
     @Serializable private data class SendResponse(val message_id: String, val created_at: String)
     @Serializable private data class MessageDTO(val id: String, val sender_id: String, val ciphertext: String, val created_at: String)

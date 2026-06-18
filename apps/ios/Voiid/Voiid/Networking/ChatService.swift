@@ -92,4 +92,12 @@ final class ChatService {
         let env: CreateConvEnvelope = try await api.request("POST", "conversations/create", body: Body(member_id: memberId))
         return env.conversation.id
     }
+
+    /// Peer presence (online + last_seen epoch millis) from Redis-backed status.
+    func status(userId: String) async throws -> (online: Bool, lastSeen: Date?) {
+        struct StatusDTO: Decodable { let online: Bool; let last_seen: Double? }
+        let env: StatusDTO = try await api.request("GET", "users/status/\(userId)")
+        let last = env.last_seen.map { Date(timeIntervalSince1970: $0 / 1000) }
+        return (env.online, last)
+    }
 }

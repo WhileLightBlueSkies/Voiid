@@ -96,8 +96,31 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
             val peer = peerUserId(conv)
             engine.sync(conv.id, peer)
             refresh(conv.id)
+            engine.markRead(conv.id)            // blue ticks for the sender
+            fetchPresence(conv.id, peer)
         } catch (e: Exception) {
             loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t load messages."
+        }
+    }
+
+    /** Fetch + apply the peer's online/last-seen presence to the conversation. */
+    suspend fun fetchPresence(convId: String, peerUserId: String) {
+        val st = runCatching { chatService.status(peerUserId) }.getOrNull() ?: return
+        val i = directConversations.indexOfFirst { it.id == convId }
+        if (i >= 0) directConversations[i] = directConversations[i].copy(isOnline = st.online, lastSeenAt = st.lastSeen)
+    }
+
+    /** Apply a delivery/read receipt (WS) to one of our sent messages → tick color. */
+    private fun applyReceipt(messageId: String, status: String) {
+        val newStatus = if (status == "read") MessageStatus.READ else MessageStatus.DELIVERED
+        for ((_, arr) in messagesByConversation) {
+            val idx = arr.indexOfFirst { it.id == messageId && it.isMine }
+            if (idx >= 0) {
+                if (!(arr[idx].status == MessageStatus.READ && newStatus == MessageStatus.DELIVERED)) {
+                    arr[idx] = arr[idx].copy(status = newStatus)
+                }
+                return
+            }
         }
     }
 
@@ -195,6 +218,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
             if (isTyping) { if (!typingConversations.contains(cid)) typingConversations.add(cid) }
             else typingConversations.remove(cid)
         }
+        ws.onReceipt = { mid, status -> applyReceipt(mid, status) }
         ws.connect()
     }
 

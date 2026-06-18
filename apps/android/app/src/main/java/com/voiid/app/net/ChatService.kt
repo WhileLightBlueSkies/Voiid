@@ -82,4 +82,13 @@ class ChatService(context: Context) {
         val env: CreateConvEnvelope = api.requestAs("POST", "conversations/create", jsonBody = body)
         return env.conversation.id
     }
+
+    /** Peer presence (online + last_seen epoch millis) from Redis-backed status. */
+    suspend fun status(userId: String): PeerStatus {
+        val env: StatusDTO = api.requestAs("GET", "users/status/$userId")
+        return PeerStatus(env.online, env.last_seen?.toLong())
+    }
 }
+
+@Serializable private data class StatusDTO(val online: Boolean = false, val last_seen: Double? = null)
+data class PeerStatus(val online: Boolean, val lastSeen: Long?)

@@ -217,7 +217,7 @@ fun ChatDetailView(
                         Column(Modifier.weight(1f)) {
                             Text(conversation.title, style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary, maxLines = 1)
                             Text(
-                                presenceText(conversation, typing), style = VoiidFont.rounded(11),
+                                presenceText(chat.directConversations.firstOrNull { it.id == conversation.id } ?: conversation, typing), style = VoiidFont.rounded(11),
                                 color = if (typing) VoiidColor.primary else VoiidColor.textSecondary, maxLines = 1,
                             )
                         }
@@ -484,5 +484,6 @@ private fun presenceText(conversation: VConversation, typing: Boolean): String =
     typing -> "typing…"
     conversation.type == ConversationType.GROUP -> "${conversation.memberCount} members"
     conversation.isOnline -> "Online"
+    conversation.lastSeenAt != null -> "last seen ${VoiidDate.relative(conversation.lastSeenAt!!)}"
     else -> "last seen recently"
 }

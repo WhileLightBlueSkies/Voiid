@@ -23,6 +23,16 @@ object VoiidDate {
         return full.format(Date(millis))
     }
 
+    /** Relative "last seen" phrasing: "just now", "5m ago", "today at 9:41 AM", "yesterday", else date. */
+    fun relative(millis: Long): String {
+        val secs = (System.currentTimeMillis() - millis) / 1000
+        if (secs < 60) return "just now"
+        if (secs < 3600) return "${secs / 60}m ago"
+        if (isToday(millis)) return "today at ${time.format(Date(millis))}"
+        if (isYesterday(millis)) return "yesterday"
+        return full.format(Date(millis))
+    }
+
     /** Chat-list preview time: time if today, "Yesterday", else date. */
     fun listPreview(millis: Long?): String {
         if (millis == null) return ""

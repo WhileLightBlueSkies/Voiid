@@ -110,8 +110,34 @@ final class ChatStore: ObservableObject {
             let peer = try await peerUserId(for: conv)
             _ = try await ChatEngine.shared.sync(conversationId: conv.id, peerUserId: peer)
             refresh(conv.id)
+            await ChatEngine.shared.markRead(conversationId: conv.id)   // blue ticks for the sender
+            await fetchPresence(conv.id, peerUserId: peer)
         } catch {
             loadError = (error as? APIError)?.errorDescription ?? "Couldn’t load messages."
+        }
+    }
+
+    /// Fetch + apply the peer's online/last-seen presence to the conversation.
+    func fetchPresence(_ convId: String, peerUserId: String) async {
+        guard let st = try? await ChatService.shared.status(userId: peerUserId),
+              let i = directConversations.firstIndex(where: { $0.id == convId }) else { return }
+        directConversations[i].isOnline = st.online
+        directConversations[i].lastSeenAt = st.lastSeen
+    }
+
+    /// Apply a delivery/read receipt (WS) to one of our sent messages → tick color.
+    private func applyReceipt(messageId: String, status: String) {
+        let newStatus: MessageStatus = status == "read" ? .read : .delivered
+        for (cid, arr) in messagesByConversation {
+            if let i = arr.firstIndex(where: { $0.id == messageId && $0.isMine }) {
+                var copy = arr
+                // Don't downgrade read→delivered.
+                if !(copy[i].status == .read && newStatus == .delivered) {
+                    copy[i].status = newStatus
+                    messagesByConversation[cid] = copy
+                }
+                return
+            }
         }
     }
 
@@ -189,6 +215,9 @@ final class ChatStore: ObservableObject {
         WebSocketClient.shared.onTyping = { [weak self] cid, _, isTyping in
             guard let self else { return }
             if isTyping { self.typingConversations.insert(cid) } else { self.typingConversations.remove(cid) }
+        }
+        WebSocketClient.shared.onReceipt = { [weak self] mid, status in
+            self?.applyReceipt(messageId: mid, status: status)
         }
     }
 

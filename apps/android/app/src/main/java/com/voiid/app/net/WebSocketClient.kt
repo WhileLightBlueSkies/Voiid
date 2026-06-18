@@ -49,6 +49,8 @@ class WebSocketClient private constructor(context: Context) {
     var onMessageRef: ((conversationId: String) -> Unit)? = null
     /** Typing updates: conversationId, fromUserId, isTyping. */
     var onTyping: ((conversationId: String, userId: String, isTyping: Boolean) -> Unit)? = null
+    /** Receipt for one of OUR sent messages: messageId, status ("delivered"|"read"). */
+    var onReceipt: ((messageId: String, status: String) -> Unit)? = null
 
     fun connect() {
         if (connected) return
@@ -96,6 +98,11 @@ class WebSocketClient private constructor(context: Context) {
                 val uid = obj["user_id"]?.jsonPrimitive?.contentOrNull ?: ""
                 val state = obj["state"]?.jsonPrimitive?.contentOrNull
                 onTyping?.invoke(cid, uid, state == "start")
+            }
+            "receipt" -> {
+                val mid = obj["message_id"]?.jsonPrimitive?.contentOrNull ?: return
+                val status = obj["status"]?.jsonPrimitive?.contentOrNull ?: return
+                onReceipt?.invoke(mid, status)
             }
             else -> Unit   // "connected" etc.
         }

@@ -60,6 +60,8 @@ data class VConversation(
     var peerUserId: String? = null,
     /** Direct chats: peer avatar URL from members. */
     var photoURL: String? = null,
+    /** Direct chats: peer's last-seen epoch millis (from presence), null if unknown/online. */
+    var lastSeenAt: Long? = null,
 )
 
 data class VClip(

@@ -87,6 +87,15 @@ final class ChatEngine {
         return messages(conversationId: conversationId)
     }
 
+    /// Mark all locally-stored inbound messages in a conversation as read. The
+    /// server fans out a `receipt` WS event to the original senders (blue ticks).
+    func markRead(conversationId: String) async {
+        let ids = (store[conversationId] ?? []).filter { !$0.isMine }.map { $0.id }
+        guard !ids.isEmpty else { return }
+        struct Body: Encodable { let message_ids: [String]; let status = "read" }
+        _ = try? await api.request("POST", "receipts/mark", body: Body(message_ids: ids)) as EmptyResponse
+    }
+
     /// Decrypt a single inbound message and advance the session. Caller persists.
     private func decryptInbound(_ wire: WireMessage, conversationId: String, peerUserId: String) async throws -> String {
         if let s = sessions[conversationId] ?? restoreSession(conversationId) {

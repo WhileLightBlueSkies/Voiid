@@ -228,7 +228,10 @@ struct ChatDetailView: View {
     private var presenceText: String {
         if chat.typingConversations.contains(conversation.id) { return "typing…" }
         if conversation.type == .group { return "\(conversation.memberCount) members" }
-        return conversation.isOnline ? "Online" : "last seen recently"
+        let live = chat.directConversations.first(where: { $0.id == conversation.id })
+        if live?.isOnline == true { return "Online" }
+        if let seen = live?.lastSeenAt { return "last seen \(VoiidDate.relative(seen))" }
+        return "last seen recently"
     }
 
     // MARK: message list with date separators + auto-scroll

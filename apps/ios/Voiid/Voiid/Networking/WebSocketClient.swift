@@ -24,6 +24,8 @@ final class WebSocketClient: ObservableObject {
     var onMessageRef: ((_ conversationId: String) -> Void)?
     /// Typing updates: conversationId, fromUserId, isTyping.
     var onTyping: ((_ conversationId: String, _ userId: String, _ isTyping: Bool) -> Void)?
+    /// Receipt for one of OUR sent messages: messageId, status ("delivered"|"read").
+    var onReceipt: ((_ messageId: String, _ status: String) -> Void)?
 
     func connect() {
         guard !connected, let jwt = TokenStore.shared.jwt else { return }
@@ -84,6 +86,11 @@ final class WebSocketClient: ObservableObject {
             if let cid = obj["conversation_id"] as? String,
                let uid = obj["user_id"] as? String {
                 onTyping?(cid, uid, (obj["state"] as? String) == "start")
+            }
+        case "receipt":
+            if let mid = obj["message_id"] as? String,
+               let status = obj["status"] as? String {
+                onReceipt?(mid, status)
             }
         default: break   // "connected" etc.
         }

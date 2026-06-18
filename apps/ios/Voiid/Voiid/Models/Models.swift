@@ -71,6 +71,8 @@ struct VConversation: Identifiable, Hashable {
     var peerUserId: String? = nil
     /// For direct chats: avatar URL of the peer (from members), used by the UI.
     var photoURL: String? = nil
+    /// For direct chats: peer's last-seen time (from presence), nil if unknown/online.
+    var lastSeenAt: Date? = nil
 }
 
 struct VClip: Identifiable, Hashable {
