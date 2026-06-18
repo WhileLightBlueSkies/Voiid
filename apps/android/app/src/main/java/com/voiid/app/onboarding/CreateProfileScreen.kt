@@ -39,6 +39,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.voiid.app.model.AppSession
+import com.voiid.app.net.ProfileService
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.VoiidWordmark
 import com.voiid.app.ui.theme.VoiidColor
