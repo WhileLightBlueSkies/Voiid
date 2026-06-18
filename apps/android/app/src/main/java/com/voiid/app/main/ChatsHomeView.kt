@@ -38,6 +38,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Menu
@@ -92,6 +93,8 @@ fun ChatsHomeView(
     onStartCall: (CallRequest) -> Unit,
 ) {
     val haptics = LocalVoiidHaptics.current
+    // Same activity-scoped AppSession as VoiidRoot — signOut() flips route to onboarding.
+    val session: com.voiid.app.model.AppSession = androidx.lifecycle.viewmodel.compose.viewModel()
     var search by remember { mutableStateOf("") }
     var tab by remember { mutableStateOf(ChatTab.CHATS) }
     var deleteTarget by remember { mutableStateOf<VConversation?>(null) }
@@ -103,7 +106,7 @@ fun ChatsHomeView(
     Column(
         Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding(),
     ) {
-        Header(haptics)
+        Header(haptics, onLogout = { haptics.tap(); session.signOut() })
         SearchBar(search) { search = it }
         Tabs(tab) { haptics.selection(); tab = it }
         if (search.isBlank()) {
@@ -354,17 +357,33 @@ private fun DropZoneView(zone: DropZone, icon: androidx.compose.ui.graphics.vect
 }
 
 @Composable
-private fun Header(haptics: com.voiid.app.ui.components.VoiidHaptics) {
+private fun Header(haptics: com.voiid.app.ui.components.VoiidHaptics, onLogout: () -> Unit) {
+    var menuOpen by remember { mutableStateOf(false) }
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(top = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text("Chats", style = VoiidFont.rounded(24, FontWeight.Bold), color = VoiidColor.textPrimary)
         Spacer(Modifier.weight(1f))
-        Icon(
-            Icons.Default.Menu, "Menu", tint = VoiidColor.textPrimary,
-            modifier = Modifier.size(24.dp).clip(CircleShape).clickable { haptics.tap() },
-        )
+        Box {
+            Icon(
+                Icons.Default.Menu, "Menu", tint = VoiidColor.textPrimary,
+                modifier = Modifier.size(24.dp).clip(CircleShape)
+                    .clickable { haptics.tap(); menuOpen = true },
+            )
+            androidx.compose.material3.DropdownMenu(
+                expanded = menuOpen,
+                onDismissRequest = { menuOpen = false },
+            ) {
+                androidx.compose.material3.DropdownMenuItem(
+                    text = { Text("Log out", color = VoiidColor.error) },
+                    leadingIcon = {
+                        Icon(Icons.AutoMirrored.Filled.Logout, null, tint = VoiidColor.error)
+                    },
+                    onClick = { menuOpen = false; onLogout() },
+                )
+            }
+        }
     }
 }
 
