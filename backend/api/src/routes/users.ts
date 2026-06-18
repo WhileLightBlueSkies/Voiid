@@ -44,6 +44,12 @@ router.post('/profile/update', requireAuth, async (req, res) => {
   const { user_id } = (req as any).auth;
   const { full_name, email, photo_url, bio, status_text, username } = req.body ?? {};
 
+  // Diagnostic (presence only, no values) — shows whether the client actually
+  // sends each field. Helps catch "email not saving" = app not sending it.
+  console.log('[profile/update] fields present:',
+    { name: full_name !== undefined, email: email !== undefined, username: username !== undefined,
+      bio: bio !== undefined, photo: photo_url !== undefined });
+
   // Build a partial update from only provided fields.
   const fields: string[] = [];
   const vals: unknown[] = [];
