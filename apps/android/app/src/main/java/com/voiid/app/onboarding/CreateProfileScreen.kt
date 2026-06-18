@@ -92,6 +92,7 @@ fun CreateProfileScreen(session: AppSession, onBack: () -> Unit, onFinish: () ->
             try {
                 profileService.updateProfile(
                     fullName = session.profile.fullName.trim(),
+                    email = session.profile.email,
                     bio = about.ifBlank { null },
                     username = username,
                 )

@@ -63,6 +63,7 @@ struct CreateProfileScreen: View {
             do {
                 _ = try await ProfileService.shared.updateProfile(
                     fullName: session.profile.fullName.trimmingCharacters(in: .whitespaces),
+                    email: session.profile.email,
                     bio: about.isEmpty ? nil : about,
                     username: username
                 )

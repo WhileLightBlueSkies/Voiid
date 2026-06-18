@@ -15,6 +15,7 @@ struct VUser: Identifiable, Hashable {
     let id: String
     var fullName: String
     var phoneNumber: String
+    var email: String?
     var photoName: String?       // local asset name for dummy phase
     var bio: String?
     var statusText: String?

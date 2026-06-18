@@ -74,7 +74,7 @@ fun SignupScreen(session: AppSession, phone: String = "", onBack: () -> Unit, on
             enabled = valid,
             modifier = Modifier.padding(horizontal = 24.dp).padding(bottom = 32.dp),
         ) {
-            session.profile = session.profile.copy(fullName = name)
+            session.profile = session.profile.copy(fullName = name, email = email.trim())
             haptics.tap(); onContinue()
         }
     }

@@ -12,6 +12,7 @@ data class VUser(
     val id: String,
     var fullName: String,
     var phoneNumber: String,
+    var email: String? = null,
     var photoName: String? = null,
     var bio: String? = null,
     var statusText: String? = null,
