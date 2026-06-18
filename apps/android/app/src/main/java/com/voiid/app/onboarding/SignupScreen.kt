@@ -32,7 +32,7 @@ import com.voiid.app.ui.theme.VoiidRadius
 
 /** Onboarding — full name + email (Figma Screen-4). Port of `SignupScreen.swift`. */
 @Composable
-fun SignupScreen(session: AppSession, onBack: () -> Unit, onContinue: () -> Unit) {
+fun SignupScreen(session: AppSession, phone: String = "", onBack: () -> Unit, onContinue: () -> Unit) {
     val haptics = LocalVoiidHaptics.current
     var name by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
@@ -62,8 +62,7 @@ fun SignupScreen(session: AppSession, onBack: () -> Unit, onContinue: () -> Unit
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text("+91", style = VoiidFont.rounded(17), color = VoiidColor.textPrimary)
-            Text("91234567890", style = VoiidFont.rounded(17), color = VoiidColor.textPrimary)
+            Text(phone.ifEmpty { "Verified number" }, style = VoiidFont.rounded(17), color = VoiidColor.textPrimary)
             Spacer(Modifier.weight(1f))
             Icon(Icons.Default.CheckCircle, "Verified", tint = VoiidColor.success, modifier = Modifier.width(24.dp))
         }

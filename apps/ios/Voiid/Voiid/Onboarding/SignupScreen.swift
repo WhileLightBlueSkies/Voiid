@@ -9,6 +9,8 @@ import SwiftUI
 
 struct SignupScreen: View {
     let onContinue: () -> Void
+    /// The real verified phone in E.164 (e.g. "+9199..."), shown read-only.
+    var phone: String = ""
     @EnvironmentObject var session: AppSession
     @State private var name = ""
     @State private var email = ""
@@ -41,8 +43,9 @@ struct SignupScreen: View {
 
                 // Verified phone — grey-filled, read-only, with green check
                 HStack(spacing: VoiidSpacing.sm) {
-                    Text("+91").font(VoiidFont.rounded(17, .regular)).foregroundColor(VoiidColor.textPrimary)
-                    Text("91234567890").font(VoiidFont.rounded(17, .regular)).foregroundColor(VoiidColor.textPrimary)
+                    Text(phone.isEmpty ? "Verified number" : phone)
+                        .font(VoiidFont.rounded(17, .regular))
+                        .foregroundColor(VoiidColor.textPrimary)
                     Spacer()
                     Image(systemName: "checkmark.circle.fill")
                         .font(.system(size: 24))
