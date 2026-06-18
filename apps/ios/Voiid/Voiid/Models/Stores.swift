@@ -46,10 +46,26 @@ final class AppSession: ObservableObject {
 
 @MainActor
 final class ChatStore: ObservableObject {
-    @Published var directConversations: [VConversation] = DummyData.directConversations
-    @Published var groupConversations: [VConversation] = DummyData.groupConversations
+    // REAL backend data — starts empty, loaded via `loadConversations()`. A new
+    // account shows an empty list, which confirms we're reading the live server
+    // (not mock). Message content is still E2EE/not-yet-decrypted (placeholder).
+    @Published var directConversations: [VConversation] = []
+    @Published var groupConversations: [VConversation] = []
     @Published var messagesByConversation: [String: [VMessage]] = [:]
     @Published var typingConversations: Set<String> = []
+    @Published var loadError: String?
+
+    /// Fetch real conversations from the backend. Call after login / on appear.
+    func loadConversations() async {
+        do {
+            let convs = try await ChatService.shared.fetchConversations()
+            directConversations = convs.filter { $0.type == .direct }
+            groupConversations = convs.filter { $0.type == .group }
+            loadError = nil
+        } catch {
+            loadError = (error as? APIError)?.errorDescription ?? "Couldn’t load chats."
+        }
+    }
 
     func messages(for id: String) -> [VMessage] {
         if let m = messagesByConversation[id] { return m }

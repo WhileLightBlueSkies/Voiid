@@ -49,15 +49,29 @@ class AppSession(app: Application) : AndroidViewModel(app) {
 
 // MARK: - Chat store (the heart of the "feels real" experience)
 
-class ChatStore : ViewModel() {
-    val directConversations = mutableStateListOf<VConversation>().apply { addAll(DummyData.directConversations) }
-    val groupConversations = mutableStateListOf<VConversation>().apply { addAll(DummyData.groupConversations) }
+class ChatStore(app: Application) : AndroidViewModel(app) {
+    // REAL backend data — starts empty, loaded via loadConversations(). A new
+    // account shows an empty list, confirming we read the live server (not mock).
+    val directConversations = mutableStateListOf<VConversation>()
+    val groupConversations = mutableStateListOf<VConversation>()
     private val messagesByConversation = mutableStateMapOf<String, androidx.compose.runtime.snapshots.SnapshotStateList<VMessage>>()
     val typingConversations = mutableStateListOf<String>()
+    var loadError by mutableStateOf<String?>(null)
 
-    init {
-        (directConversations + groupConversations).forEach { conv ->
-            messagesByConversation[conv.id] = mutableStateListOf<VMessage>().apply { addAll(seed(conv.id)) }
+    private val chatService = com.voiid.app.net.ChatService(app)
+
+    /** Fetch real conversations from the backend. Call from the chat-home screen. */
+    fun loadConversations() {
+        viewModelScope.launch {
+            try {
+                val convs = chatService.fetchConversations()
+                directConversations.clear(); groupConversations.clear()
+                directConversations.addAll(convs.filter { it.type == ConversationType.DIRECT })
+                groupConversations.addAll(convs.filter { it.type == ConversationType.GROUP })
+                loadError = null
+            } catch (e: Exception) {
+                loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t load chats."
+            }
         }
     }
 

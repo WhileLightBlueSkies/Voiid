@@ -95,6 +95,8 @@ fun ChatsHomeView(
     val haptics = LocalVoiidHaptics.current
     // Same activity-scoped AppSession as VoiidRoot — signOut() flips route to onboarding.
     val session: com.voiid.app.model.AppSession = androidx.lifecycle.viewmodel.compose.viewModel()
+    // Load REAL conversations from the backend on first show.
+    androidx.compose.runtime.LaunchedEffect(Unit) { chat.loadConversations() }
     var search by remember { mutableStateOf("") }
     var tab by remember { mutableStateOf(ChatTab.CHATS) }
     var deleteTarget by remember { mutableStateOf<VConversation?>(null) }
