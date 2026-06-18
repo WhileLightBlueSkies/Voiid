@@ -156,7 +156,7 @@ fun CreateProfileScreen(session: AppSession, onBack: () -> Unit, onFinish: () ->
 
         // Username field (Clips handle) + live availability
         // (Name was collected on the previous Signup screen.)
-        val fieldShape = RoundedCornerShape(com.voiid.app.ui.theme.VoiidRadius.md)
+        val fieldShape = RoundedCornerShape(com.voiid.app.ui.theme.VoiidRadius.pill)
         val uBorder = when (uStatus) {
             is UStatus.Available -> VoiidColor.success
             is UStatus.Taken -> VoiidColor.error

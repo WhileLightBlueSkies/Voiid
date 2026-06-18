@@ -141,8 +141,8 @@ struct CreateProfileScreen: View {
                     .padding(.horizontal, VoiidSpacing.md)
                     .frame(height: 61)
                     .background(VoiidColor.fieldFill)
-                    .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md)
+                    .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.pill, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: VoiidRadius.pill)
                         .stroke(usernameBorderColor, lineWidth: 1))
 
                     if case .taken(let why) = uStatus {
