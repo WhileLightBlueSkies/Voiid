@@ -20,6 +20,10 @@ router.post('/firebase', async (req, res) => {
   try {
     ({ phone_number } = await verifyFirebaseToken(id_token));
   } catch (e) {
+    // Log the REAL reason to the server console (pm2 logs) — e.g. wrong project
+    // (audience mismatch), expired token, or missing phone_number. Not returned
+    // to the client.
+    console.error('[auth/firebase] verify failed:', (e as Error).message);
     await logSecurityEvent('failed_login', { metadata: { reason: 'firebase_verify_failed' } });
     return res.status(401).json({ error: 'invalid or expired token' });
   }
