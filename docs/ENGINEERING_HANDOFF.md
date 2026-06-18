@@ -126,6 +126,13 @@ Drops `.so`s under `apps/android/.../jniLibs/` + Kotlin glue. Add the JNA aar de
   open to MITM.
 - **PQXDH 1:1 is gated:** do NOT enable the `pq-1to1-activate` feature — it
   `compile_error!`s on purpose until a cryptographer reviews the combiner.
+- **Clips privacy wall (enforce when Clips is built):** the Clips identity is a
+  separate world from messaging. Clips surfaces expose ONLY `username`, display
+  name, avatar, and clips — NEVER `phone_number` or `user_id`, and NO "message/
+  call this person" action. The only outbound action is **share** (clip/profile
+  link via the share sheet). You cannot start a chat from a username; chats start
+  only from a phone-matched contact. (`username` is the Clips handle only — not
+  auth, not contact matching.)
 
 ---
 
