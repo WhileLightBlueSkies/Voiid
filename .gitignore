@@ -28,6 +28,8 @@ google-services*.json
 # Firebase Admin service-account key (server token verification) — never commit
 *service-account*.json
 firebase-admin*.json
+firebase-sa*.json
+*firebase*adminsdk*.json
 
 # Signing / keystores
 *.keystore
