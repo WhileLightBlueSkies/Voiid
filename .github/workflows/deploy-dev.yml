@@ -1,0 +1,41 @@
+name: Deploy DEV (Vultr)
+
+# Auto-deploy the backend (api + websocket) to the Vultr DEV box on every push
+# to `dev`. The box pulls the code itself via a read-only deploy key and runs
+# infrastructure/deployment/deploy-dev.sh (pull -> npm ci -> build -> pm2 restart).
+#
+# Required repo secrets (Settings -> Secrets and variables -> Actions):
+#   VULTR_HOST   139.84.209.49
+#   VULTR_USER   root
+#   VULTR_SSH_KEY  the PRIVATE key whose public half is in the box's
+#                  ~/.ssh/authorized_keys (the "voiid_actions" key)
+#
+# `main` is intentionally NOT wired here — prod instances aren't live yet. When
+# they are, add a separate deploy-prod.yml gated on `main` + a prod host secret.
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch: {}   # allow manual "Run workflow" from the Actions tab
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false   # never interrupt a deploy mid-build
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VULTR_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${{ secrets.VULTR_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy over SSH
+        run: |
+          ssh -i ~/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=yes \
+            "${{ secrets.VULTR_USER }}@${{ secrets.VULTR_HOST }}" \
+            'bash /opt/voiid/infrastructure/deployment/deploy-dev.sh'

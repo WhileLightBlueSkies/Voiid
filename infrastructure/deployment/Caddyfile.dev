@@ -1,0 +1,19 @@
+# VOIID — DEV Caddyfile (reference copy; the live file is /etc/caddy/Caddyfile on the box).
+#
+# Terminates TLS for the dev API behind a real domain and reverse-proxies to the
+# local Node services. Caddy auto-provisions + renews Let's Encrypt certs (the
+# api-dev.voiid.app A record must point at the box and ports 80/443 must be open).
+#
+# api-dev.voiid.app  -> REST API   (:4000)
+# /ws path           -> WebSocket  (:4001), upgrade handled by Caddy automatically
+
+api-dev.voiid.app {
+	# WebSocket relay — apps connect to wss://api-dev.voiid.app/ws
+	@ws path /ws /ws/*
+	reverse_proxy @ws localhost:4001
+
+	# Everything else -> REST API
+	reverse_proxy localhost:4000
+
+	encode gzip
+}
