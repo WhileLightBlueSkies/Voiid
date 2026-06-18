@@ -1,8 +1,12 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
+    // CommonJS so the api/websocket (also CommonJS, run via plain `node`) can
+    // `require('@voiid/common-utils')`. NodeNext here emitted ESM with .js import
+    // specifiers, which broke `node dist/index.js` in production.
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "ignoreDeprecations": "5.0",
     "declaration": true,
     "outDir": "dist",
     "rootDir": "src",
