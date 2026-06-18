@@ -61,7 +61,6 @@ fun CreateProfileScreen(session: AppSession, onBack: () -> Unit, onFinish: () ->
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val profileService = remember { ProfileService(context) }
 
-    var name by remember { mutableStateOf("") }
     var username by remember { mutableStateOf("") }
     var about by remember { mutableStateOf("") }
     var photoUri by remember { mutableStateOf<Uri?>(null) }
@@ -70,7 +69,8 @@ fun CreateProfileScreen(session: AppSession, onBack: () -> Unit, onFinish: () ->
     var errorText by remember { mutableStateOf<String?>(null) }
     val avatar = 110.dp
 
-    val canSubmit = name.isNotBlank() && uStatus is UStatus.Available && !saving
+    // Name was already collected on the Signup screen (session.profile.fullName).
+    val canSubmit = session.profile.fullName.isNotBlank() && uStatus is UStatus.Available && !saving
 
     // Debounced availability check whenever the (normalized) username changes.
     androidx.compose.runtime.LaunchedEffect(username) {
@@ -91,7 +91,7 @@ fun CreateProfileScreen(session: AppSession, onBack: () -> Unit, onFinish: () ->
         scope.launch {
             try {
                 profileService.updateProfile(
-                    fullName = name.trim(),
+                    fullName = session.profile.fullName.trim(),
                     bio = about.ifBlank { null },
                     username = username,
                 )
@@ -154,32 +154,15 @@ fun CreateProfileScreen(session: AppSession, onBack: () -> Unit, onFinish: () ->
             }
         }
 
-        // Name field
-        val fieldShape = RoundedCornerShape(com.voiid.app.ui.theme.VoiidRadius.md)
-        BasicTextField(
-            value = name,
-            onValueChange = { name = it },
-            singleLine = true,
-            textStyle = VoiidFont.rounded(17).merge(TextStyle(color = VoiidColor.textPrimary)),
-            cursorBrush = SolidColor(VoiidColor.primary),
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(top = 32.dp)
-                .height(61.dp).clip(fieldShape).background(VoiidColor.fieldFill)
-                .border(1.dp, VoiidColor.fieldBorder, fieldShape).padding(horizontal = 16.dp),
-            decorationBox = { inner ->
-                Box(contentAlignment = Alignment.CenterStart) {
-                    if (name.isEmpty()) Text("Your name", style = VoiidFont.rounded(17), color = VoiidColor.placeholder)
-                    inner()
-                }
-            },
-        )
-
         // Username field (Clips handle) + live availability
+        // (Name was collected on the previous Signup screen.)
+        val fieldShape = RoundedCornerShape(com.voiid.app.ui.theme.VoiidRadius.md)
         val uBorder = when (uStatus) {
             is UStatus.Available -> VoiidColor.success
             is UStatus.Taken -> VoiidColor.error
             else -> VoiidColor.fieldBorder
         }
-        androidx.compose.foundation.layout.Column(Modifier.padding(horizontal = 24.dp).padding(top = 16.dp)) {
+        androidx.compose.foundation.layout.Column(Modifier.padding(horizontal = 24.dp).padding(top = 32.dp)) {
             androidx.compose.foundation.layout.Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth().height(61.dp).clip(fieldShape)

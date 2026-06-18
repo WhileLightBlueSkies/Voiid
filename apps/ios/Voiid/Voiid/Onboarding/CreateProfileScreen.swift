@@ -12,7 +12,6 @@ struct CreateProfileScreen: View {
     let onFinish: () -> Void
     @EnvironmentObject var session: AppSession
     @Environment(\.dismiss) private var dismiss
-    @State private var name = ""
     @State private var username = ""
     @State private var about = ""
     @State private var photoItem: PhotosPickerItem?
@@ -29,8 +28,9 @@ struct CreateProfileScreen: View {
     private let pillRadius: CGFloat = VoiidRadius.pill
     private let avatar: CGFloat = 110
 
+    // Name was already collected on the Signup screen (session.profile.fullName).
     private var canSubmit: Bool {
-        !name.trimmingCharacters(in: .whitespaces).isEmpty
+        !session.profile.fullName.trimmingCharacters(in: .whitespaces).isEmpty
             && uStatus == .available && !saving
     }
 
@@ -62,7 +62,7 @@ struct CreateProfileScreen: View {
         Task {
             do {
                 _ = try await ProfileService.shared.updateProfile(
-                    fullName: name.trimmingCharacters(in: .whitespaces),
+                    fullName: session.profile.fullName.trimmingCharacters(in: .whitespaces),
                     bio: about.isEmpty ? nil : about,
                     username: username
                 )
@@ -125,12 +125,8 @@ struct CreateProfileScreen: View {
                     }
                 }
 
-                // Name field
-                VoiidTextField(placeholder: "Your name", text: $name)
-                    .padding(.horizontal, VoiidSpacing.lg)
-                    .padding(.top, VoiidSpacing.xl)
-
                 // Username field (Clips handle) + live availability indicator
+                // (Name was collected on the previous Signup screen.)
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 8) {
                         Text("@").font(VoiidFont.body).foregroundColor(VoiidColor.placeholder)
@@ -157,7 +153,7 @@ struct CreateProfileScreen: View {
                     }
                 }
                 .padding(.horizontal, VoiidSpacing.lg)
-                .padding(.top, VoiidSpacing.md)
+                .padding(.top, VoiidSpacing.xl)
 
                 // About you pill text area
                 TextField("", text: $about,

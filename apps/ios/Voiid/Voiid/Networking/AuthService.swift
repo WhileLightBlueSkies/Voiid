@@ -21,7 +21,7 @@ struct AuthResponse: Decodable {
 }
 
 @MainActor
-final class AuthService: ObservableObject {
+final class AuthService {
     static let shared = AuthService()
     private let api = APIClient()
     private let tokens = TokenStore.shared
