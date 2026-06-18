@@ -93,11 +93,18 @@ struct ChatsHomeView: View {
                 .font(VoiidFont.rounded(24, .bold))
                 .foregroundColor(VoiidColor.textPrimary)
             Spacer()
-            Button { Haptics.tap() } label: {
+            Menu {
+                Button(role: .destructive) {
+                    Haptics.tap(); session.signOut()
+                } label: {
+                    Label("Log out", systemImage: "rectangle.portrait.and.arrow.right")
+                }
+            } label: {
                 Image(systemName: "line.3.horizontal")
                     .font(.system(size: 22, weight: .medium))
                     .foregroundColor(VoiidColor.textPrimary)
             }
+            .simultaneousGesture(TapGesture().onEnded { Haptics.tap() })
         }
         .padding(.horizontal, VoiidSpacing.lg)
         .padding(.top, VoiidSpacing.sm)
