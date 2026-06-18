@@ -106,7 +106,7 @@ fun OnboardingFlow(session: AppSession) {
                 OnbStep.TERMS -> TermsScreen(onContinue = { push(OnbStep.PHONE) })
                 OnbStep.PHONE -> PhoneScreen(onBack = ::pop, onContinue = { e164, vid -> phone = e164; verificationId = vid; push(OnbStep.OTP) })
                 OnbStep.OTP -> OtpScreen(session = session, phoneE164 = phone, verificationId = verificationId, onBack = ::pop, onContinue = { push(OnbStep.SIGNUP) })
-                OnbStep.SIGNUP -> SignupScreen(session = session, onBack = ::pop, onContinue = { push(OnbStep.PROFILE) })
+                OnbStep.SIGNUP -> SignupScreen(session = session, phone = phone, onBack = ::pop, onContinue = { push(OnbStep.PROFILE) })
                 OnbStep.PROFILE -> CreateProfileScreen(session = session, onBack = ::pop, onFinish = { session.completeOnboarding() })
             }
         }
