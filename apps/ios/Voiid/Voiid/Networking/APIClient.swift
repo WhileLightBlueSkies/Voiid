@@ -10,10 +10,11 @@ import Foundation
 
 /// Backend configuration. Override `baseURL` per environment (dev/staging/prod).
 enum APIConfig {
-    /// Dev default. On a real device, localhost won't resolve — set this to your
-    /// machine's LAN IP or the hosted backend URL.
-    static var baseURL = URL(string: "http://localhost:4000")!
-    static var wsURL = URL(string: "ws://localhost:4001")!
+    /// Hosted DEV backend (Vultr + Caddy TLS). WebSocket is proxied on the /ws
+    /// path of the same host. For local-only work, swap to http://localhost:4000
+    /// + ws://localhost:4001.
+    static var baseURL = URL(string: "https://api-dev.voiid.app")!
+    static var wsURL = URL(string: "wss://api-dev.voiid.app/ws")!
 }
 
 enum APIError: Error, LocalizedError {

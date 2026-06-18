@@ -15,10 +15,11 @@ import java.util.concurrent.TimeUnit
  * clean errors. See docs/API_CONTRACT.md.
  */
 object ApiConfig {
-    // Dev default. On a real device/emulator, localhost won't reach your machine:
-    // use 10.0.2.2 (Android emulator -> host) or your LAN IP / hosted backend.
-    @Volatile var baseUrl: String = "http://10.0.2.2:4000"
-    @Volatile var wsUrl: String = "ws://10.0.2.2:4001"
+    // Hosted DEV backend (Vultr + Caddy TLS). WebSocket is proxied on the /ws
+    // path of the same host. For local-only work, swap to http://10.0.2.2:4000
+    // + ws://10.0.2.2:4001 (emulator -> host).
+    @Volatile var baseUrl: String = "https://api-dev.voiid.app"
+    @Volatile var wsUrl: String = "wss://api-dev.voiid.app/ws"
 }
 
 sealed class ApiError(message: String) : Exception(message) {
