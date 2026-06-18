@@ -49,8 +49,16 @@ struct ChatDetailView: View {
         .navigationBarBackButtonHidden(true)
         .toolbar(.hidden, for: .navigationBar)
         // Hide the bottom tab bar while a chat is open; restore on leave.
-        .onAppear { session.hideTabBar = true }
-        .onDisappear { session.hideTabBar = false }
+        .onAppear {
+            session.hideTabBar = true
+            chat.openConversation(conversation)   // load cached + sync (fetch+decrypt) real messages
+        }
+        .onDisappear {
+            session.hideTabBar = false
+            if let peer = livePeerUserId {
+                WebSocketClient.shared.sendTyping(conversationId: conversation.id, recipientIds: [peer], isStart: false)
+            }
+        }
         .navigationDestination(isPresented: $showInfo) {
             if conversation.type == .group {
                 GroupInfoView(conversation: conversation)
@@ -211,10 +219,19 @@ struct ChatDetailView: View {
         .background(VoiidColor.background)
     }
 
+    /// Peer user_id read from the live store (resolved lazily after open), not the
+    /// value-copied `conversation` which never updates.
+    private var livePeerUserId: String? {
+        chat.directConversations.first(where: { $0.id == conversation.id })?.peerUserId ?? conversation.peerUserId
+    }
+
     private var presenceText: String {
         if chat.typingConversations.contains(conversation.id) { return "typing…" }
         if conversation.type == .group { return "\(conversation.memberCount) members" }
-        return conversation.isOnline ? "Online" : "last seen recently"
+        let live = chat.directConversations.first(where: { $0.id == conversation.id })
+        if live?.isOnline == true { return "Online" }
+        if let seen = live?.lastSeenAt { return "last seen \(VoiidDate.relative(seen))" }
+        return "last seen recently"
     }
 
     // MARK: message list with date separators + auto-scroll
@@ -379,6 +396,12 @@ struct ChatDetailView: View {
                 .lineLimit(1...5)
                 .padding(.horizontal, VoiidSpacing.md)
                 .frame(minHeight: 46)
+                .onChange(of: draft) { _, newValue in
+                    guard let peer = livePeerUserId else { return }
+                    WebSocketClient.shared.sendTyping(conversationId: conversation.id,
+                                                      recipientIds: [peer],
+                                                      isStart: !newValue.isEmpty)
+                }
 
             if hasText {
                 Button {

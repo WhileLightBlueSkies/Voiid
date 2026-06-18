@@ -3,14 +3,15 @@ package com.voiid.app.net
 import android.content.Context
 import com.voiid.app.model.ConversationType
 import com.voiid.app.model.VConversation
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.serialization.Serializable
 
 /**
  * Real conversation data from the backend (replaces DummyData for the chat
- * list). Message content is E2EE — the server only stores ciphertext, so the
- * last-message preview is a placeholder until the message layer (decrypt via
- * e2e-core) is wired. Direct-chat titles need contact resolution (contacts
- * feature); until then we fall back gracefully. Mirrors iOS ChatService.
+ * list). Message content is E2EE — the server only stores ciphertext. Direct
+ * chats are enriched (peer user_id + name + photo) from /conversations/:id so
+ * the list shows the contact, not "Direct chat". Mirrors iOS ChatService.
  */
 @Serializable
 private data class ConvDTO(
@@ -25,22 +26,69 @@ private data class ConvDTO(
 @Serializable
 private data class ConversationsEnvelope(val conversations: List<ConvDTO>)
 
-class ChatService(context: Context) {
-    private val api = ApiClient(TokenStore.get(context))
+@Serializable private data class ConvDetailDTO(val id: String, val type: String, val name: String? = null)
+@Serializable private data class MemberDTO(val user_id: String, val full_name: String? = null, val photo_url: String? = null)
+@Serializable private data class ConvDetailEnvelope(val conversation: ConvDetailDTO, val members: List<MemberDTO>)
+@Serializable private data class CreatedConvDTO(val id: String, val type: String, val name: String? = null)
+@Serializable private data class CreateConvEnvelope(val conversation: CreatedConvDTO)
 
-    /** Fetch the user's real conversations. Empty for a new account — that empty
-     *  state confirms the list is reading the live backend (not mock). */
-    suspend fun fetchConversations(): List<VConversation> {
+/** Resolved peer of a direct conversation. */
+data class PeerInfo(val peerUserId: String?, val title: String?, val photoURL: String?)
+
+class ChatService(context: Context) {
+    private val tokens = TokenStore.get(context)
+    private val api = ApiClient(tokens)
+
+    /** Fetch the user's real conversations, then enrich direct chats (peer) concurrently. */
+    suspend fun fetchConversations(): List<VConversation> = coroutineScope {
         val env: ConversationsEnvelope = api.requestAs("GET", "conversations")
-        return env.conversations.map { c ->
+        val convs = env.conversations.map { c ->
             VConversation(
                 id = c.id,
                 type = if (c.type == "group") ConversationType.GROUP else ConversationType.DIRECT,
-                title = c.name ?: "Direct chat",   // TODO: resolve from contact (contacts feature)
+                title = c.name ?: "Direct chat",
                 lastMessagePreview = if (c.last_ciphertext == null) null else "Encrypted message",
-                lastMessageAt = null,              // TODO: parse ISO8601 when previews are wired
+                lastMessageAt = null,
                 unreadCount = c.unread_count,
             )
         }
+        // Resolve peers for direct chats concurrently.
+        val jobs = convs.map { conv ->
+            async {
+                if (conv.type != ConversationType.DIRECT) return@async conv
+                val peer = runCatching { resolvePeer(conv.id) }.getOrNull() ?: return@async conv
+                conv.copy(
+                    title = peer.title?.takeIf { it.isNotEmpty() } ?: conv.title,
+                    peerUserId = peer.peerUserId,
+                    photoURL = peer.photoURL,
+                )
+            }
+        }
+        jobs.map { it.await() }
+    }
+
+    /** Resolve a direct conversation's peer (the other member). */
+    suspend fun resolvePeer(conversationId: String): PeerInfo {
+        val env: ConvDetailEnvelope = api.requestAs("GET", "conversations/$conversationId")
+        val myId = tokens.userId
+        val peer = env.members.firstOrNull { it.user_id != myId }
+            ?: return PeerInfo(null, env.conversation.name, null)
+        return PeerInfo(peer.user_id, peer.full_name ?: env.conversation.name, peer.photo_url)
+    }
+
+    /** Create (or fetch existing) a 1:1 conversation with [memberId]. Returns its id. */
+    suspend fun createDirect(memberId: String): String {
+        val body = """{"type":"direct","member_id":"$memberId"}"""
+        val env: CreateConvEnvelope = api.requestAs("POST", "conversations/create", jsonBody = body)
+        return env.conversation.id
+    }
+
+    /** Peer presence (online + last_seen epoch millis) from Redis-backed status. */
+    suspend fun status(userId: String): PeerStatus {
+        val env: StatusDTO = api.requestAs("GET", "users/status/$userId")
+        return PeerStatus(env.online, env.last_seen?.toLong())
     }
 }
+
+@Serializable private data class StatusDTO(val online: Boolean = false, val last_seen: Double? = null)
+data class PeerStatus(val online: Boolean, val lastSeen: Long?)

@@ -44,3 +44,6 @@ apps/android/app/src/main/java/uniffi/
 *.jks
 *.p12
 *.mobileprovision
+
+# Local editor workspace (do not commit — references external repos)
+*.code-workspace

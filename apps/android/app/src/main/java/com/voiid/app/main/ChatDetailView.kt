@@ -152,6 +152,12 @@ fun ChatDetailView(
         if (itemCount > 0) listState.animateScrollToItem(itemCount - 1)
     }
 
+    // Load cached + sync (fetch + decrypt) the real E2EE messages on open.
+    LaunchedEffect(conversation.id) { chat.openConversation(conversation) }
+
+    // Emit typing start/stop on the empty<->non-empty transition (debounced).
+    LaunchedEffect(draft.isNotEmpty()) { chat.sendTyping(conversation.id, draft.isNotEmpty()) }
+
     // @mention support (group only)
     val mentionQuery: String? = if (isGroup) {
         val at = draft.lastIndexOf('@')
@@ -211,7 +217,7 @@ fun ChatDetailView(
                         Column(Modifier.weight(1f)) {
                             Text(conversation.title, style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary, maxLines = 1)
                             Text(
-                                presenceText(conversation, typing), style = VoiidFont.rounded(11),
+                                presenceText(chat.directConversations.firstOrNull { it.id == conversation.id } ?: conversation, typing), style = VoiidFont.rounded(11),
                                 color = if (typing) VoiidColor.primary else VoiidColor.textSecondary, maxLines = 1,
                             )
                         }
@@ -478,5 +484,6 @@ private fun presenceText(conversation: VConversation, typing: Boolean): String =
     typing -> "typing…"
     conversation.type == ConversationType.GROUP -> "${conversation.memberCount} members"
     conversation.isOnline -> "Online"
+    conversation.lastSeenAt != null -> "last seen ${VoiidDate.relative(conversation.lastSeenAt!!)}"
     else -> "last seen recently"
 }

@@ -59,15 +59,20 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
     var loadError by mutableStateOf<String?>(null)
 
     private val chatService = com.voiid.app.net.ChatService(app)
+    private val engine = com.voiid.app.net.ChatEngine.get(app)
+    private val ws = com.voiid.app.net.WebSocketClient.get(app)
+    private var realtimeInstalled = false
 
-    /** Fetch real conversations from the backend. Call from the chat-home screen. */
+    /** Fetch real conversations from the backend + install realtime handlers. */
     fun loadConversations() {
+        startRealtime()
         viewModelScope.launch {
             try {
                 val convs = chatService.fetchConversations()
                 directConversations.clear(); groupConversations.clear()
                 directConversations.addAll(convs.filter { it.type == ConversationType.DIRECT })
                 groupConversations.addAll(convs.filter { it.type == ConversationType.GROUP })
+                convs.forEach { refresh(it.id) }   // show cached (already-decrypted) messages
                 loadError = null
             } catch (e: Exception) {
                 loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t load chats."
@@ -75,17 +80,97 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun seed(id: String): List<VMessage> =
-        if (groupConversations.any { it.id == id }) DummyData.groupMessages(id) else DummyData.messages(id)
-
     fun messages(id: String): List<VMessage> = messagesByConversation[id] ?: emptyList()
 
-    private fun list(id: String) = messagesByConversation.getOrPut(id) {
-        mutableStateListOf<VMessage>().apply { addAll(seed(id)) }
+    private fun list(id: String) = messagesByConversation.getOrPut(id) { mutableStateListOf() }
+
+    /** Open a conversation: show cached, then sync (fetch + decrypt-new) from server. */
+    fun openConversation(conv: VConversation) {
+        refresh(conv.id)
+        viewModelScope.launch { syncMessages(conv) }
     }
 
-    /** Send a message — simulates the full lifecycle locally: sent → delivered → read, then a
-     *  typing indicator and an auto-reply, so ticks, timestamps and typing all animate. */
+    private suspend fun syncMessages(conv: VConversation) {
+        if (conv.type != ConversationType.DIRECT) return   // group E2E (MLS) is a later increment
+        try {
+            val peer = peerUserId(conv)
+            engine.sync(conv.id, peer)
+            refresh(conv.id)
+            engine.markRead(conv.id)            // blue ticks for the sender
+            fetchPresence(conv.id, peer)
+        } catch (e: Exception) {
+            loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t load messages."
+        }
+    }
+
+    /** Fetch + apply the peer's online/last-seen presence to the conversation. */
+    suspend fun fetchPresence(convId: String, peerUserId: String) {
+        val st = runCatching { chatService.status(peerUserId) }.getOrNull() ?: return
+        val i = directConversations.indexOfFirst { it.id == convId }
+        if (i >= 0) directConversations[i] = directConversations[i].copy(isOnline = st.online, lastSeenAt = st.lastSeen)
+    }
+
+    /** Apply a delivery/read receipt (WS) to one of our sent messages → tick color. */
+    private fun applyReceipt(messageId: String, status: String) {
+        val newStatus = if (status == "read") MessageStatus.READ else MessageStatus.DELIVERED
+        for ((_, arr) in messagesByConversation) {
+            val idx = arr.indexOfFirst { it.id == messageId && it.isMine }
+            if (idx >= 0) {
+                if (!(arr[idx].status == MessageStatus.READ && newStatus == MessageStatus.DELIVERED)) {
+                    arr[idx] = arr[idx].copy(status = newStatus)
+                }
+                return
+            }
+        }
+    }
+
+    /** Rebuild a conversation's UI messages from the local (decrypted) store. */
+    private fun refresh(convId: String) {
+        val mapped = engine.messages(convId).map { d ->
+            VMessage(
+                id = d.id, conversationId = convId,
+                senderId = if (d.isMine) "me" else d.senderId,
+                kind = MessageKind.TEXT, text = d.text, createdAt = d.createdAt,
+                status = if (d.isMine) MessageStatus.SENT else MessageStatus.READ,
+                isMine = d.isMine,
+            )
+        }
+        if (mapped.isNotEmpty() || messagesByConversation.containsKey(convId)) {
+            val arr = list(convId)
+            arr.clear(); arr.addAll(mapped)
+        }
+        mapped.lastOrNull()?.let { bumpPreview(convId, it.text) }
+    }
+
+    /** Resolve + cache the peer user_id for a direct conversation. */
+    private suspend fun peerUserId(conv: VConversation): String {
+        conv.peerUserId?.let { return it }
+        val di = directConversations.indexOfFirst { it.id == conv.id }
+        if (di >= 0) directConversations[di].peerUserId?.let { return it }
+        val resolved = chatService.resolvePeer(conv.id)
+        val peer = resolved.peerUserId ?: throw com.voiid.app.net.ApiError.Http(404, "no peer")
+        if (di >= 0) directConversations[di] = directConversations[di].copy(peerUserId = peer)
+        return peer
+    }
+
+    /** Start (or reopen) a 1:1 chat with a discovered contact; returns it for navigation. */
+    suspend fun startDirectChat(contact: com.voiid.app.net.VContact): VConversation? {
+        return try {
+            val convId = chatService.createDirect(contact.userId)
+            directConversations.firstOrNull { it.id == convId }?.let { return it }
+            val conv = VConversation(
+                id = convId, type = ConversationType.DIRECT, title = contact.displayName,
+                peerUserId = contact.userId, photoURL = contact.photoURL,
+            )
+            directConversations.add(0, conv)
+            conv
+        } catch (e: Exception) {
+            loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t start chat."
+            null
+        }
+    }
+
+    /** Send a real E2EE message in a direct chat. Groups keep a local echo for now. */
     fun send(
         text: String,
         kind: MessageKind = MessageKind.TEXT,
@@ -93,9 +178,9 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         replyTo: VMessage? = null,
         forwarded: Boolean = false,
     ) {
-        val id = UUID.randomUUID().toString()
+        val tempId = UUID.randomUUID().toString()
         val msg = VMessage(
-            id = id, conversationId = conversationId, senderId = "me",
+            id = tempId, conversationId = conversationId, senderId = "me",
             kind = kind, text = text, createdAt = System.currentTimeMillis(),
             status = MessageStatus.SENDING, isMine = true,
             forwarded = forwarded,
@@ -105,11 +190,58 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         list(conversationId).add(msg)
         bumpPreview(conversationId, if (kind == MessageKind.TEXT) text else previewFor(kind))
 
-        advance(id, conversationId, MessageStatus.SENT, 300)
-        advance(id, conversationId, MessageStatus.DELIVERED, 1000)
-        advance(id, conversationId, MessageStatus.READ, 2200)
+        val conv = directConversations.firstOrNull { it.id == conversationId }
+        if (conv == null) {
+            markStatus(tempId, conversationId, MessageStatus.SENT)   // group/unknown: local echo only
+            return
+        }
+        viewModelScope.launch {
+            try {
+                val peer = peerUserId(conv)
+                engine.sendText(text, conversationId, peer)
+                removeMessage(tempId, conversationId)
+                refresh(conversationId)
+            } catch (e: Exception) {
+                markStatus(tempId, conversationId, MessageStatus.FAILED)
+                loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t send message."
+            }
+        }
+    }
 
-        viewModelScope.launch { simulateReply(conversationId) }
+    // MARK: - Realtime (WebSocket) glue
+
+    private fun startRealtime() {
+        if (realtimeInstalled) return
+        realtimeInstalled = true
+        ws.onMessageRef = { cid -> viewModelScope.launch { handleIncoming(cid) } }
+        ws.onTyping = { cid, _, isTyping ->
+            if (isTyping) { if (!typingConversations.contains(cid)) typingConversations.add(cid) }
+            else typingConversations.remove(cid)
+        }
+        ws.onReceipt = { mid, status -> applyReceipt(mid, status) }
+        ws.connect()
+    }
+
+    /** Send a typing frame for a direct chat (best-effort). */
+    fun sendTyping(conversationId: String, isStart: Boolean) {
+        val peer = directConversations.firstOrNull { it.id == conversationId }?.peerUserId ?: return
+        ws.sendTyping(conversationId, listOf(peer), isStart)
+    }
+
+    private suspend fun handleIncoming(conversationId: String) {
+        val conv = directConversations.firstOrNull { it.id == conversationId }
+        if (conv == null) { loadConversations(); return }
+        syncMessages(conv)
+    }
+
+    private fun markStatus(id: String, convId: String, status: MessageStatus) {
+        val arr = messagesByConversation[convId] ?: return
+        val idx = arr.indexOfFirst { it.id == id }
+        if (idx >= 0) arr[idx] = arr[idx].copy(status = status)
+    }
+
+    private fun removeMessage(id: String, convId: String) {
+        messagesByConversation[convId]?.removeAll { it.id == id }
     }
 
     private fun previewFor(kind: MessageKind): String = when (kind) {
@@ -117,24 +249,6 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         MessageKind.VOICE -> "🎤 Voice message"
         MessageKind.DOCUMENT -> "📄 Document"
         else -> "Message"
-    }
-
-    private fun advance(messageId: String, convId: String, status: MessageStatus, delayMs: Long) {
-        viewModelScope.launch {
-            delay(delayMs)
-            val arr = messagesByConversation[convId] ?: return@launch
-            val idx = arr.indexOfFirst { it.id == messageId }
-            if (idx < 0) return@launch
-            val now = System.currentTimeMillis()
-            arr[idx] = when (status) {
-                MessageStatus.DELIVERED -> arr[idx].copy(status = status, deliveredAt = now)
-                MessageStatus.READ -> arr[idx].copy(
-                    status = status, readAt = now,
-                    deliveredAt = arr[idx].deliveredAt ?: now,
-                )
-                else -> arr[idx].copy(status = status)
-            }
-        }
     }
 
     /** Forward a message to one or more conversations (with a Forwarded tag). */
@@ -210,20 +324,6 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
             if (it.id == optionId) it.copy(votes = it.votes + 1) else it
         })
         arr[mi] = arr[mi].copy(poll = updated)
-    }
-
-    private suspend fun simulateReply(convId: String) {
-        delay(1400)
-        if (!typingConversations.contains(convId)) typingConversations.add(convId)
-        delay(1600)
-        typingConversations.remove(convId)
-        val replies = listOf("Yoooo", "Haha nice", "Whats good?", "On my way", "👍", "Let's do it")
-        val reply = VMessage(
-            id = UUID.randomUUID().toString(), conversationId = convId, senderId = "u4",
-            text = replies.random(), createdAt = System.currentTimeMillis(), isMine = false,
-        )
-        list(convId).add(reply)
-        bumpPreview(convId, reply.text)
     }
 
     private fun bumpPreview(convId: String, preview: String) {

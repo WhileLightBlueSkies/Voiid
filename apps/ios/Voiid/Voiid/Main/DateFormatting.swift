@@ -32,6 +32,18 @@ enum VoiidDate {
         return full.string(from: date)
     }
 
+    /// Relative "last seen" phrasing: "just now", "5m ago", "today at 9:41 AM",
+    /// "yesterday", else a date.
+    static func relative(_ date: Date) -> String {
+        let secs = Date().timeIntervalSince(date)
+        if secs < 60 { return "just now" }
+        if secs < 3600 { return "\(Int(secs / 60))m ago" }
+        let cal = Calendar.current
+        if cal.isDateInToday(date) { return "today at \(time.string(from: date))" }
+        if cal.isDateInYesterday(date) { return "yesterday" }
+        return full.string(from: date)
+    }
+
     /// Chat-list preview time: time if today, "Yesterday", else date.
     static func listPreview(_ date: Date?) -> String {
         guard let date else { return "" }

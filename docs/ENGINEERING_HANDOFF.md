@@ -8,7 +8,7 @@
 > For backend/infra (secrets, deploy, provisioning) see [DEPLOY_HANDOFF.md](DEPLOY_HANDOFF.md).
 > For the build plan and gates see [PHASE_PLAN.md](PHASE_PLAN.md) / [CHECKLIST.md](CHECKLIST.md).
 >
-> Last updated: 2026-06-17
+> Last updated: 2026-06-18
 
 ---
 
@@ -42,16 +42,45 @@ voiid/
 ## Current state — what's built & runnable
 
 ### iOS app (`apps/ios/Voiid`)
-- **Status:** UI prototype, ~4.3k lines SwiftUI. Onboarding + most main screens
-  exist (chats, chat detail, groups, clips, AI, call screens).
-- **Data:** 100% `DummyData` (see `Models/DummyData.swift` + `Models/Stores.swift`).
-  **No networking, no crypto wired yet.**
-- **Run:** open `apps/ios/Voiid/Voiid.xcodeproj` in Xcode → run on simulator.
-  Nothing to provision; it's self-contained dummy data.
+- **Status:** UI prototype, ~4.3k lines SwiftUI. Onboarding + most main screens.
+- **Data:** auth, conversations, and **real E2EE 1:1 messaging are wired to the
+  live backend + e2e-core** (see "Messaging / E2EE" below). Groups, clips, AI,
+  calls are still `DummyData`.
+- **Run:** open `apps/ios/Voiid/Voiid.xcodeproj` in Xcode → run on device/simulator.
+  ⚠️ Needs a real device build to verify the messaging layer (it was authored
+  without an iOS toolchain in the loop — parse-clean only).
 
 ### Android app (`apps/android`)
-- **Status:** full UI prototype (Kotlin/Compose) on dummy data — onboarding +
-  main screens. Not yet wired to backend/crypto.
+- **Status:** full UI prototype (Kotlin/Compose). Auth, conversations, and **real
+  E2EE 1:1 messaging wired** (mirror of iOS). Groups/clips/AI/calls still dummy.
+- ⚠️ Needs a Gradle build to verify the messaging layer.
+
+### Messaging / E2EE — current state (1:1)
+**Done & wired (both platforms):**
+- **Identity/prekeys:** `E2EManager` publishes the device identity + 100 one-time
+  prekeys on login (idempotent).
+- **Sessions:** lazy — sender `startSession` from the peer's prekey bundle;
+  receiver `acceptSession` on the first PreKey message. Pickled per conversation
+  (Keychain / EncryptedSharedPreferences).
+- **Send/receive:** `ChatEngine` encrypts → `POST /messages/send` (server stores
+  only ciphertext); `WebSocketClient` delivers refs → fetch + decrypt.
+- **Decrypt-once + local store:** each inbound message is decrypted exactly once
+  and persisted (plaintext at rest, file-protected iOS / EncryptedSharedPreferences
+  Android) — ratchet ciphertext is never re-decrypted.
+- **Anti-MITM:** peer identity key is pinned on first contact (TOFU); a changed
+  key is refused (basis for safety numbers).
+- **Contacts:** `ContactsService` discovers VOIID users by **hashing phone numbers
+  on-device** (raw numbers never uploaded) → new-chat picker + invite share-sheet.
+- **Receipts:** mark-read on open → `receipt` WS event flips the sender's ticks.
+- **Typing + presence:** typing over WS; online/last-seen via `GET /users/status/:id`.
+
+**Not done yet:**
+- **Group messaging (MLS):** group sends are local-echo only; OpenMLS path not wired.
+- **Media + voice notes:** ⚠️ **blocked on R2/S3 config** (object-store env vars
+  empty). e2e-core already exposes `encryptMedia`/`decryptMedia`; the plan is
+  encrypt blob on-device → upload ciphertext to R2 → send the media ref + key in
+  the E2EE message. Cannot build until the bucket + creds exist.
+- **Safety-number UI:** the pin exists; a user-facing verification screen does not.
 
 ### Backend (`backend/`)
 - **Status:** ✅ **runs and connects to live Supabase + Upstash.** Auth, device/
@@ -140,6 +169,27 @@ Drops `.so`s under `apps/android/.../jniLibs/` + Kotlin glue. Add the JNA aar de
 
 > One entry per push. Newest on top. Format:
 > `### YYYY-MM-DD — <short title>` then **What changed** / **⚠️ Run / do this**.
+
+### 2026-06-18 — Real E2EE 1:1 messaging wired end-to-end (iOS + Android)
+**What changed**
+- `ChatEngine` (both platforms): session handshake, encrypt→send, fetch→decrypt,
+  **decrypt-once + persistent local store**, **TOFU identity pinning** (anti-MITM).
+- `WebSocketClient` (both): live relay — message refs, typing, **receipts**.
+- `ChatStore` (both): replaced the simulated send/auto-reply with the real path;
+  optimistic echo, sync-on-open, WS-driven receive; group sends are local-echo only.
+- **Contacts:** `ContactsService` (on-device phone hashing) + new-chat picker +
+  invite share-sheet; compose button in the chats header.
+- **Receipts** (read/delivered ticks) + **presence** (online/last-seen) wired.
+- No backend changes — all endpoints/WS events already existed.
+
+**⚠️ Run / do this**
+- **iOS:** build `apps/ios/Voiid/Voiid.xcodeproj` on a device and report any
+  compile errors — the messaging layer was authored without an iOS toolchain in
+  the loop (parse-clean only). Two test accounts needed to exercise send/receive.
+- **Android:** Gradle build + report errors. Same two-account test.
+- **Media/voice + groups are NOT in this drop.** Media/voice is **blocked on R2/S3
+  config** — provision the bucket + creds, then it can be built (see "Messaging /
+  E2EE" above).
 
 ### 2026-06-17 — Backend running + Firebase auth + chat API verified
 **What changed**
