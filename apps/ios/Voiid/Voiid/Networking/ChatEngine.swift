@@ -11,12 +11,20 @@
 //
 //  Wire format on the server's `ciphertext`: base64( JSON {"t": msgType, "b": body} ).
 //
+//  Decrypt-once + local store:
+//   Double-ratchet ciphertext can't be safely re-decrypted on every reload (the
+//   message-key cache is bounded). So each inbound message is decrypted EXACTLY
+//   ONCE and its plaintext is persisted to a local, file-protected store keyed by
+//   message id. Our own sent messages are also stored (we can't decrypt our own
+//   ratchet output). `messages(...)` reads the store; `sync(...)` fetches the
+//   server, decrypts only message ids we haven't seen, appends, and returns all.
+//
 
 import Foundation
 import Security
 
-/// A decrypted message ready for the UI.
-struct DecryptedMessage {
+/// A decrypted message ready for the UI (and the on-disk store record).
+struct DecryptedMessage: Codable {
     let id: String
     let senderId: String
     let text: String
@@ -30,46 +38,57 @@ final class ChatEngine {
     private let api = APIClient()
     private let kc = KeychainData(service: "com.voiid.sessions")
     private let sessionPickleKeyName = "session_pickle_key"
-    private var sessions: [String: Session] = [:]   // conversationId -> live Session
-    private init() {}
+    private var sessions: [String: Session] = [:]          // conversationId -> live Session
+    private var store: [String: [DecryptedMessage]] = [:]   // conversationId -> messages (asc)
+    private init() { loadStore() }
 
     // MARK: - Public API
 
+    /// Locally-stored (already decrypted) messages for a conversation, oldest-first.
+    func messages(conversationId: String) -> [DecryptedMessage] {
+        (store[conversationId] ?? []).sorted { $0.createdAt < $1.createdAt }
+    }
+
     /// Encrypt + send a text message in a direct conversation with `peerUserId`.
-    func sendText(_ text: String, conversationId: String, peerUserId: String) async throws {
+    /// Returns the stored echo (so the UI can show it immediately).
+    @discardableResult
+    func sendText(_ text: String, conversationId: String, peerUserId: String) async throws -> DecryptedMessage {
         let session = try await ensureOutboundSession(conversationId: conversationId, peerUserId: peerUserId)
         let wire = try session.encrypt(plaintext: Array(text.utf8))
         saveSession(session, conversationId: conversationId)
         let ciphertext = encodeWire(wire)
-        let _: SendResponse = try await api.request(
+        let res: SendResponse = try await api.request(
             "POST", "messages/send",
             body: SendBody(conversation_id: conversationId, ciphertext: ciphertext))
+        let echo = DecryptedMessage(id: res.message_id, senderId: TokenStore.shared.userId ?? "me",
+                                    text: text, createdAt: parseDate(res.created_at), isMine: true)
+        append(echo, to: conversationId)
+        return echo
     }
 
-    /// Fetch + decrypt a conversation's messages (newest-first from server; returned oldest-first).
-    func loadMessages(conversationId: String, peerUserId: String) async throws -> [DecryptedMessage] {
+    /// Fetch the server's message list, decrypt ONLY ids we haven't seen, persist,
+    /// and return the full conversation (oldest-first).
+    @discardableResult
+    func sync(conversationId: String, peerUserId: String) async throws -> [DecryptedMessage] {
         let env: MessagesResponse = try await api.request("GET", "messages/conversation/\(conversationId)")
         let myId = TokenStore.shared.userId
-        var out: [DecryptedMessage] = []
-        for m in env.messages.reversed() {   // server returns DESC; show ASC
-            let mine = (m.sender_id == myId)
-            if mine {
-                // We can't decrypt our own ratchet messages; the UI shows our plaintext
-                // from the local echo at send time. Skip server copies of our own.
-                continue
-            }
+        let seen = Set((store[conversationId] ?? []).map { $0.id })
+        for m in env.messages.reversed() where !seen.contains(m.id) {   // server DESC → process ASC
+            if m.sender_id == myId { continue }   // our own echo is stored at send time
             guard let wire = decodeWire(m.ciphertext) else { continue }
             do {
                 let plain = try await decryptInbound(wire, conversationId: conversationId, peerUserId: peerUserId)
-                out.append(DecryptedMessage(id: m.id, senderId: m.sender_id,
-                                            text: plain, createdAt: parseDate(m.created_at), isMine: false))
+                append(DecryptedMessage(id: m.id, senderId: m.sender_id, text: plain,
+                                        createdAt: parseDate(m.created_at), isMine: false),
+                       to: conversationId, persist: false)
             } catch { /* undecryptable (replay/old) — skip */ }
         }
-        return out
+        persist()
+        return messages(conversationId: conversationId)
     }
 
-    /// Decrypt a single inbound message (used by the WS receive path).
-    func decryptInbound(_ wire: WireMessage, conversationId: String, peerUserId: String) async throws -> String {
+    /// Decrypt a single inbound message and advance the session. Caller persists.
+    private func decryptInbound(_ wire: WireMessage, conversationId: String, peerUserId: String) async throws -> String {
         if let s = sessions[conversationId] ?? restoreSession(conversationId) {
             sessions[conversationId] = s
             let data = try s.decrypt(message: wire)
@@ -79,6 +98,7 @@ final class ChatEngine {
         // No session yet → must be a PreKey message; accept it to create the session.
         guard let id = E2EManager.shared.identity else { throw APIError.notAuthenticated }
         let peerIdentityKey = try await peerIdentityKey(peerUserId)
+        try verifyAndPinIdentity(peerIdentityKey, peerUserId: peerUserId)   // anti-MITM (TOFU)
         let accepted = try id.acceptSession(theirIdentityKey: peerIdentityKey, firstMessage: wire)
         sessions[conversationId] = accepted.session
         saveSession(accepted.session, conversationId: conversationId)
@@ -94,10 +114,28 @@ final class ChatEngine {
         }
         guard let id = E2EManager.shared.identity else { throw APIError.notAuthenticated }
         let bundle = try await peerPrekeyBundle(peerUserId)
+        try verifyAndPinIdentity(bundle.identityKey, peerUserId: peerUserId)   // anti-MITM (TOFU)
         let s = try id.startSession(theirIdentityKey: bundle.identityKey, theirOneTimeKey: bundle.oneTimeKey)
         sessions[conversationId] = s
         saveSession(s, conversationId: conversationId)
         return s
+    }
+
+    // MARK: - Identity pinning (anti-MITM / "safety numbers", trust-on-first-use)
+
+    /// On first contact we PIN the peer's identity public key. On every later use we
+    /// require it to match — a changed key means a possible server-side key-swap
+    /// (MITM) and we refuse rather than silently re-keying. This is the core
+    /// protection that makes the E2EE meaningful against a hostile server.
+    private func verifyAndPinIdentity(_ identityKey: String, peerUserId: String) throws {
+        let pinName = "idpin_\(peerUserId)"
+        if let pinned = kc.string(pinName) {
+            guard pinned == identityKey else {
+                throw APIError.http(status: 495, message: "peer identity key changed — possible MITM; verify safety number before continuing")
+            }
+        } else {
+            kc.set(identityKey, pinName)
+        }
     }
 
     // MARK: - Peer key resolution
@@ -125,6 +163,33 @@ final class ChatEngine {
             throw APIError.http(status: 409, message: "peer has no available prekeys")
         }
         return (b.identity_public_key, otk.public_key)
+    }
+
+    // MARK: - Local message store (decrypt-once; plaintext at rest, file-protected)
+
+    private func append(_ m: DecryptedMessage, to convId: String, persist doPersist: Bool = true) {
+        var arr = store[convId] ?? []
+        guard !arr.contains(where: { $0.id == m.id }) else { return }
+        arr.append(m)
+        store[convId] = arr
+        if doPersist { persist() }
+    }
+
+    private var storeURL: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("voiid_messages.json")
+    }
+
+    private func loadStore() {
+        guard let data = try? Data(contentsOf: storeURL),
+              let decoded = try? JSONDecoder().decode([String: [DecryptedMessage]].self, from: data) else { return }
+        store = decoded
+    }
+
+    private func persist() {
+        guard let data = try? JSONEncoder().encode(store) else { return }
+        try? data.write(to: storeURL, options: [.atomic, .completeFileProtection])
     }
 
     // MARK: - Session persistence (pickled in Keychain)

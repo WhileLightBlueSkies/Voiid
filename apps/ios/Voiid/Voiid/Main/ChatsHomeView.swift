@@ -17,6 +17,7 @@ struct ChatsHomeView: View {
     @State private var deleteTarget: VConversation?
     @State private var callTarget: VConversation?
     @State private var activeCall: CallRequest?
+    @State private var showNewChat = false
     @Namespace private var underline
 
     enum Tab: String { case chats = "Chats", groups = "Groups" }
@@ -62,6 +63,13 @@ struct ChatsHomeView: View {
                 await chat.loadConversations()              // load REAL conversations from backend
             }
             .navigationDestination(item: $openConversation) { ChatDetailView(conversation: $0) }
+            .sheet(isPresented: $showNewChat) {
+                NewChatView { conv in
+                    // Open the freshly-started chat after the sheet dismisses.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { openConversation = conv }
+                }
+                .environmentObject(chat)
+            }
             .alert("Delete chat?", isPresented: Binding(
                 get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } })) {
                 Button("Delete", role: .destructive) {
@@ -98,6 +106,13 @@ struct ChatsHomeView: View {
                 .font(VoiidFont.rounded(24, .bold))
                 .foregroundColor(VoiidColor.textPrimary)
             Spacer()
+            Button {
+                Haptics.tap(); showNewChat = true
+            } label: {
+                Image(systemName: "square.and.pencil")
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundColor(VoiidColor.textPrimary)
+            }
             Menu {
                 Button(role: .destructive) {
                     Haptics.tap(); session.signOut()
