@@ -18,9 +18,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Cancel
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -41,13 +44,68 @@ import com.voiid.app.ui.components.VoiidWordmark
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 
+/** Username availability state (Clips handle). */
+private sealed interface UStatus {
+    data object Idle : UStatus
+    data object Checking : UStatus
+    data object Available : UStatus
+    data class Taken(val reason: String) : UStatus
+}
+
 /** Onboarding — profile photo + about (Figma Screen-5). Port of `CreateProfileScreen.swift`. */
 @Composable
 fun CreateProfileScreen(session: AppSession, onBack: () -> Unit, onFinish: () -> Unit) {
     val haptics = LocalVoiidHaptics.current
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val profileService = remember { ProfileService(context) }
+
+    var name by remember { mutableStateOf("") }
+    var username by remember { mutableStateOf("") }
     var about by remember { mutableStateOf("") }
     var photoUri by remember { mutableStateOf<Uri?>(null) }
+    var uStatus by remember { mutableStateOf<UStatus>(UStatus.Idle) }
+    var saving by remember { mutableStateOf(false) }
+    var errorText by remember { mutableStateOf<String?>(null) }
     val avatar = 110.dp
+
+    val canSubmit = name.isNotBlank() && uStatus is UStatus.Available && !saving
+
+    // Debounced availability check whenever the (normalized) username changes.
+    androidx.compose.runtime.LaunchedEffect(username) {
+        if (username.length < 3) { uStatus = UStatus.Idle; return@LaunchedEffect }
+        uStatus = UStatus.Checking
+        kotlinx.coroutines.delay(400)   // debounce
+        uStatus = try {
+            val r = profileService.checkUsername(username)
+            if (r.available) UStatus.Available else UStatus.Taken(r.reason ?: "Username taken")
+        } catch (e: Exception) {
+            UStatus.Taken("Couldn’t check — try again")
+        }
+    }
+
+    fun submit() {
+        if (!canSubmit) return
+        saving = true; errorText = null
+        scope.launch {
+            try {
+                profileService.updateProfile(
+                    fullName = name.trim(),
+                    bio = about.ifBlank { null },
+                    username = username,
+                )
+                session.profile = session.profile.copy(bio = about)
+                haptics.success(); onFinish()
+            } catch (e: com.voiid.app.net.ApiError.Http) {
+                if (e.status == 409) { uStatus = UStatus.Taken("Just taken — pick another"); errorText = "That username was just taken." }
+                else errorText = e.message
+                haptics.tap()
+            } catch (e: Exception) {
+                errorText = e.message ?: "Couldn’t save profile."; haptics.tap()
+            }
+            saving = false
+        }
+    }
 
     // iOS fires NO haptic on photo selection (only success() on Sign-up). Match that.
     val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
@@ -95,6 +153,67 @@ fun CreateProfileScreen(session: AppSession, onBack: () -> Unit, onFinish: () ->
             }
         }
 
+        // Name field
+        val fieldShape = RoundedCornerShape(com.voiid.app.ui.theme.VoiidRadius.md)
+        BasicTextField(
+            value = name,
+            onValueChange = { name = it },
+            singleLine = true,
+            textStyle = VoiidFont.rounded(17).merge(TextStyle(color = VoiidColor.textPrimary)),
+            cursorBrush = SolidColor(VoiidColor.primary),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(top = 32.dp)
+                .height(61.dp).clip(fieldShape).background(VoiidColor.fieldFill)
+                .border(1.dp, VoiidColor.fieldBorder, fieldShape).padding(horizontal = 16.dp),
+            decorationBox = { inner ->
+                Box(contentAlignment = Alignment.CenterStart) {
+                    if (name.isEmpty()) Text("Your name", style = VoiidFont.rounded(17), color = VoiidColor.placeholder)
+                    inner()
+                }
+            },
+        )
+
+        // Username field (Clips handle) + live availability
+        val uBorder = when (uStatus) {
+            is UStatus.Available -> VoiidColor.success
+            is UStatus.Taken -> VoiidColor.error
+            else -> VoiidColor.fieldBorder
+        }
+        androidx.compose.foundation.layout.Column(Modifier.padding(horizontal = 24.dp).padding(top = 16.dp)) {
+            androidx.compose.foundation.layout.Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().height(61.dp).clip(fieldShape)
+                    .background(VoiidColor.fieldFill).border(1.dp, uBorder, fieldShape)
+                    .padding(horizontal = 16.dp),
+            ) {
+                Text("@", style = VoiidFont.rounded(17), color = VoiidColor.placeholder)
+                Spacer(Modifier.size(6.dp))
+                BasicTextField(
+                    value = username,
+                    onValueChange = { raw -> username = raw.lowercase().filter { it.isLetterOrDigit() || it == '_' } },
+                    singleLine = true,
+                    textStyle = VoiidFont.rounded(17).merge(TextStyle(color = VoiidColor.textPrimary)),
+                    cursorBrush = SolidColor(VoiidColor.primary),
+                    modifier = Modifier.weight(1f),
+                    decorationBox = { inner ->
+                        Box(contentAlignment = Alignment.CenterStart) {
+                            if (username.isEmpty()) Text("username", style = VoiidFont.rounded(17), color = VoiidColor.placeholder)
+                            inner()
+                        }
+                    },
+                )
+                when (uStatus) {
+                    is UStatus.Checking -> androidx.compose.material3.CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = VoiidColor.textSecondary)
+                    is UStatus.Available -> Icon(Icons.Default.CheckCircle, null, tint = VoiidColor.success, modifier = Modifier.size(20.dp))
+                    is UStatus.Taken -> Icon(Icons.Default.Cancel, null, tint = VoiidColor.error, modifier = Modifier.size(20.dp))
+                    else -> {}
+                }
+            }
+            val hint = (uStatus as? UStatus.Taken)?.reason ?: "Used only in Clips. Letters, digits, underscore."
+            val hintColor = if (uStatus is UStatus.Taken) VoiidColor.error else VoiidColor.textSecondary
+            Text(hint, style = VoiidFont.rounded(12), color = hintColor, modifier = Modifier.padding(top = 4.dp))
+        }
+
         // About you text area
         val aboutShape = RoundedCornerShape(28.dp)
         BasicTextField(
@@ -105,13 +224,13 @@ fun CreateProfileScreen(session: AppSession, onBack: () -> Unit, onFinish: () ->
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 24.dp)
-                .padding(top = 48.dp)
-                .heightIn(min = 130.dp)
+                .padding(top = 16.dp)
+                .heightIn(min = 96.dp)
                 .clip(aboutShape)
                 .background(VoiidColor.fieldFill)
                 .border(1.dp, VoiidColor.fieldBorder, aboutShape)
                 .padding(horizontal = 24.dp, vertical = 16.dp),
-            maxLines = 7,
+            maxLines = 6,
             decorationBox = { inner ->
                 Box(contentAlignment = Alignment.TopStart) {
                     if (about.isEmpty()) Text("About you", style = VoiidFont.rounded(17), color = VoiidColor.placeholder)
@@ -120,15 +239,17 @@ fun CreateProfileScreen(session: AppSession, onBack: () -> Unit, onFinish: () ->
             },
         )
 
+        errorText?.let {
+            Text(it, style = VoiidFont.rounded(12), color = VoiidColor.error,
+                modifier = Modifier.padding(horizontal = 24.dp).padding(top = 6.dp))
+        }
+
         Spacer(Modifier.weight(1f))
 
         OnbAccentButton(
-            title = "Sign up",
-            enabled = true,
+            title = if (saving) "Signing up…" else "Sign up",
+            enabled = canSubmit,
             modifier = Modifier.padding(horizontal = 24.dp).padding(bottom = 32.dp),
-        ) {
-            session.profile = session.profile.copy(bio = about)
-            haptics.success(); onFinish()
-        }
+        ) { submit() }
     }
 }
