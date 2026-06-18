@@ -23,12 +23,14 @@ Produces `target/apple/Voiid.xcframework` and regenerates `bindings/swift/voiid.
 - Drag `target/apple/Voiid.xcframework` into the project → add to the **Voiid** target
   (Frameworks, Libraries, and Embedded Content → Embed & Sign).
 - Add `packages/e2e-core/bindings/swift/voiid.swift` to the target.
-- `import voiid` where used.
+- No `import voiid` needed — `voiid.swift` is compiled into the app target, so
+  its `Identity`/`Session`/etc. are already in scope. (The file itself does
+  `import voiidFFI`, the Clang module the xcframework's `module.modulemap`
+  provides — that resolves once the framework is embedded. Do NOT write
+  `import voiid`; there is no such module and it won't compile.)
 
 ### 3. Smoke test (drop in anywhere, e.g. a button or `.task`)
 ```swift
-import voiid
-
 func e2eSmokeTest() {
     let alice = Identity.create()
     var bob = Identity.create()

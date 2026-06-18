@@ -68,6 +68,11 @@ dependencies {
     implementation(libs.firebase.auth)
     implementation(libs.kotlinx.coroutines.play.services)   // Task.await()
 
+    // E2E core (Rust via uniffi). The generated Kotlin in uniffi/voiid/voiid.kt
+    // uses JNA to call into jniLibs/<abi>/libvoiid_e2e_core.so. Must be the @aar
+    // (it ships the Android-native JNA dispatch library); the plain jar won't load.
+    implementation("net.java.dev.jna:jna:5.14.0@aar")
+
     debugImplementation(libs.androidx.ui.tooling)
 
     testImplementation(libs.junit)
