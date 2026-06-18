@@ -35,6 +35,9 @@ npm run build -w @voiid/common-utils
 npm run build -w @voiid/api
 npm run build -w @voiid/websocket
 
+echo "==> Applying DB migrations (idempotent; pending only)"
+node --env-file="$APP_DIR/.env" "$APP_DIR/infrastructure/deployment/migrate.mjs"
+
 echo "==> Restarting services under pm2 (start if not yet running)"
 if pm2 describe voiid-api >/dev/null 2>&1; then
   pm2 restart voiid-api voiid-ws --update-env
