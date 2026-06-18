@@ -13,7 +13,7 @@ import kotlinx.serialization.Serializable
  * ("dev:<phone>") so the flow is testable now.
  */
 @Serializable
-data class AuthResponse(val token: String, val user_id: String)
+data class AuthResponse(val token: String, val user_id: String, val profile_complete: Boolean = false)
 
 class AuthService(context: Context) {
     private val tokens = TokenStore.get(context)
@@ -23,14 +23,15 @@ class AuthService(context: Context) {
     val userId: String? get() = tokens.userId
 
     /** Exchange a Firebase ID token for our JWT and persist it. */
-    suspend fun loginWithFirebase(idToken: String): String {
+    /** Returns profile_complete (true = returning user; skip Signup/Profile). */
+    suspend fun loginWithFirebase(idToken: String): Boolean {
         val body = ApiClient.json.encodeToString(
             FirebaseLoginBody.serializer(), FirebaseLoginBody(idToken)
         )
         val res: AuthResponse = api.requestAs("POST", "auth/firebase", jsonBody = body, auth = false)
         tokens.jwt = res.token
         tokens.userId = res.user_id
-        return res.user_id
+        return res.profile_complete
     }
 
     /** DEV ONLY: log in via the backend dev bypass (needs AUTH_DEV_BYPASS=1). */

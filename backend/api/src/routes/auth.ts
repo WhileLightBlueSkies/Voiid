@@ -29,15 +29,19 @@ router.post('/firebase', async (req, res) => {
   }
 
   // Upsert OUR user record (identity is ours, on Supabase Postgres).
-  const userRows = await query<{ id: string }>(
+  const userRows = await query<{ id: string; full_name: string | null; username: string | null }>(
     `insert into users (phone_number) values ($1)
        on conflict (phone_number) do update set updated_at = now()
-       returning id`,
+       returning id, full_name, username`,
     [phone_number]
   );
-  const user_id = userRows[0].id;
+  const user = userRows[0];
 
-  res.json({ token: issueToken({ user_id }), user_id });
+  // profile_complete = the user has already finished signup (name + username), so
+  // the app can skip the Signup/Profile screens and go straight to the chats.
+  const profile_complete = !!(user.full_name && user.username);
+
+  res.json({ token: issueToken({ user_id: user.id }), user_id: user.id, profile_complete });
 });
 
 // POST /auth/logout — client discards token; server-side revocation is a later enhancement.
