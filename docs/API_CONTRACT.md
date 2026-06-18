@@ -42,11 +42,19 @@
 - `GET /receipts/:message_id` → `{ receipts: [...] }`
 
 ## Users
-- `GET /users/:id` → `{ user }`
-- `POST /users/profile/update` — `{ display_name?, email?, photo_url?, about? }` → `{ user }`
+- `GET /users/:id` → `{ user }` (id, full_name, photo_url, bio, status_text, username)
+- `GET /users/username-available?username=foo` → `{ available: bool, reason? }`
+  (format: 3–20 chars, starts with a letter, lowercase letters/digits/underscore)
+- `POST /users/profile/update` — `{ full_name?, email?, photo_url?, bio?, status_text?, username? }`
+  → `{ user }` · 400 invalid username · **409 username already taken**
 - `GET /users/status/:id` → presence/last-seen
 - `POST /users/consent` → `{ consent_recorded: true }`
 - `DELETE /users/me` → `{ deleted: true }` (DPDP soft-delete)
+
+> **username** is used by the **Clips** feature ONLY. It is NOT a messaging
+> identity and NOT used for auth or contact matching. Clips surfaces must never
+> expose `phone_number` or `user_id`, and provide no "message this person" path —
+> Clips is share-only (see Clips privacy rule in SPEC_NOTES/README).
 
 ## WebSocket
 - `ws://<host>:4001?token=<our-JWT>` (also accepts `Authorization` header). Unauthenticated sockets are closed (4401).
