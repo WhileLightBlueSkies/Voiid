@@ -42,6 +42,26 @@ function getAdmin() {
   }
 }
 
+/**
+ * Diagnostic for /health: reports whether the Firebase Admin SDK is configured
+ * and initializes successfully (i.e. the server CAN verify real tokens). No
+ * secrets are returned — just status + the project_id it loaded (handy to catch
+ * a service-account-from-wrong-project mismatch).
+ */
+export function firebaseStatus(): { configured: boolean; project_id: string | null; error?: string } {
+  const hasEnv = !!(process.env.FIREBASE_SERVICE_ACCOUNT || process.env.FIREBASE_SERVICE_ACCOUNT_PATH);
+  if (!hasEnv) return { configured: false, project_id: null, error: 'no FIREBASE_SERVICE_ACCOUNT(_PATH) set' };
+  try {
+    const app = getAdmin();
+    if (!app) return { configured: false, project_id: null, error: 'admin init failed (see logs)' };
+    const projectId = (app.options.credential as any)?.projectId
+      ?? (app.options as any)?.projectId ?? null;
+    return { configured: true, project_id: projectId };
+  } catch (e) {
+    return { configured: false, project_id: null, error: (e as Error).message };
+  }
+}
+
 export interface VerifiedPhone {
   phone_number: string;
   firebase_uid?: string;

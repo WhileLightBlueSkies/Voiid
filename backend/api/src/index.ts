@@ -3,6 +3,7 @@ import express from 'express';
 import { pool } from './db';
 import { redis } from './redis';
 import { rateLimit } from './security';
+import { firebaseStatus } from './firebase';
 import authRoutes from './routes/auth';
 import deviceRoutes from './routes/devices';
 import prekeyRoutes from './routes/prekeys';
@@ -18,9 +19,11 @@ app.use(express.json({ limit: '5mb' }));
 
 // Health (Section 8 minimal ops). Reports DB + Redis reachability for Uptime Kuma / load balancer.
 app.get('/health', async (_req, res) => {
-  const out: Record<string, string> = { service: 'api', status: 'ok' };
+  const out: Record<string, unknown> = { service: 'api', status: 'ok' };
   try { await pool.query('select 1'); out.db = 'up'; } catch { out.db = 'down'; out.status = 'degraded'; }
   try { await redis.ping(); out.redis = 'up'; } catch { out.redis = 'down'; out.status = 'degraded'; }
+  // Firebase Admin status (no secrets) — confirms the box CAN verify real tokens.
+  out.firebase = firebaseStatus();
   res.status(out.status === 'ok' ? 200 : 503).json(out);
 });
 
