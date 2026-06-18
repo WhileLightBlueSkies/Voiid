@@ -152,6 +152,12 @@ fun ChatDetailView(
         if (itemCount > 0) listState.animateScrollToItem(itemCount - 1)
     }
 
+    // Load cached + sync (fetch + decrypt) the real E2EE messages on open.
+    LaunchedEffect(conversation.id) { chat.openConversation(conversation) }
+
+    // Emit typing start/stop on the empty<->non-empty transition (debounced).
+    LaunchedEffect(draft.isNotEmpty()) { chat.sendTyping(conversation.id, draft.isNotEmpty()) }
+
     // @mention support (group only)
     val mentionQuery: String? = if (isGroup) {
         val at = draft.lastIndexOf('@')

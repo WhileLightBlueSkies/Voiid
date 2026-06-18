@@ -56,6 +56,10 @@ data class VConversation(
     var unreadCount: Int = 0,
     var memberCount: Int = 2,
     var isOnline: Boolean = false,
+    /** Direct chats: the peer's user_id (needed to establish the E2E session). */
+    var peerUserId: String? = null,
+    /** Direct chats: peer avatar URL from members. */
+    var photoURL: String? = null,
 )
 
 data class VClip(

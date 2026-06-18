@@ -40,6 +40,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Search
@@ -105,6 +106,7 @@ fun ChatsHomeView(
     var tab by remember { mutableStateOf(ChatTab.CHATS) }
     var deleteTarget by remember { mutableStateOf<VConversation?>(null) }
     var callTarget by remember { mutableStateOf<VConversation?>(null) }
+    var showNewChat by remember { mutableStateOf(false) }
 
     val list: SnapshotStateList<VConversation> = if (tab == ChatTab.CHATS) chat.directConversations else chat.groupConversations
     val filtered = if (search.isBlank()) list.toList() else list.filter { it.title.contains(search, ignoreCase = true) }
@@ -112,7 +114,7 @@ fun ChatsHomeView(
     Column(
         Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding(),
     ) {
-        Header(haptics, onLogout = { haptics.tap(); session.signOut() })
+        Header(haptics, onNewChat = { showNewChat = true }, onLogout = { haptics.tap(); session.signOut() })
         SearchBar(search) { search = it }
         Tabs(tab) { haptics.selection(); tab = it }
         if (search.isBlank()) {
@@ -136,6 +138,20 @@ fun ChatsHomeView(
                     GridCard(conv, Modifier.softClickable(scale = 0.94f) { haptics.tap(); onOpenConversation(conv) })
                 }
             }
+        }
+    }
+
+    // New chat (contact discovery) — fullscreen dialog
+    if (showNewChat) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showNewChat = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            NewChatScreen(
+                chat = chat,
+                onClose = { showNewChat = false },
+                onOpen = { conv -> showNewChat = false; onOpenConversation(conv) },
+            )
         }
     }
 
@@ -363,7 +379,7 @@ private fun DropZoneView(zone: DropZone, icon: androidx.compose.ui.graphics.vect
 }
 
 @Composable
-private fun Header(haptics: com.voiid.app.ui.components.VoiidHaptics, onLogout: () -> Unit) {
+private fun Header(haptics: com.voiid.app.ui.components.VoiidHaptics, onNewChat: () -> Unit, onLogout: () -> Unit) {
     var menuOpen by remember { mutableStateOf(false) }
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(top = 8.dp),
@@ -371,6 +387,12 @@ private fun Header(haptics: com.voiid.app.ui.components.VoiidHaptics, onLogout: 
     ) {
         Text("Chats", style = VoiidFont.rounded(24, FontWeight.Bold), color = VoiidColor.textPrimary)
         Spacer(Modifier.weight(1f))
+        Icon(
+            Icons.Default.Create, "New chat", tint = VoiidColor.textPrimary,
+            modifier = Modifier.size(24.dp).clip(CircleShape)
+                .clickable { haptics.tap(); onNewChat() }.padding(end = 0.dp),
+        )
+        Spacer(Modifier.width(16.dp))
         Box {
             Icon(
                 Icons.Default.Menu, "Menu", tint = VoiidColor.textPrimary,
