@@ -44,6 +44,8 @@ struct OTPScreen: View {
         do {
             let idToken = try await FirebasePhoneAuth.verify(verificationID: verificationID, code: code)
             let profileComplete = try await AuthService.shared.loginWithFirebase(idToken: idToken)
+            // Publish this device's E2E identity + prekeys (needed for encrypted chat).
+            try? await E2EManager.shared.bootstrap()
             Haptics.success()
             if profileComplete { onExistingUser() } else { onContinue() }
         } catch {

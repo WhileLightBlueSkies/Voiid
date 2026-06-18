@@ -56,7 +56,10 @@ struct ChatsHomeView: View {
             }
             .background(VoiidColor.background.ignoresSafeArea())
             .onAppear { session.hideTabBar = false }   // root screen always shows the bar
-            .task { await chat.loadConversations() }    // load REAL conversations from backend
+            .task {
+                try? await E2EManager.shared.bootstrap()   // ensure identity/prekeys published (idempotent)
+                await chat.loadConversations()              // load REAL conversations from backend
+            }
             .navigationDestination(item: $openConversation) { ChatDetailView(conversation: $0) }
             .alert("Delete chat?", isPresented: Binding(
                 get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } })) {

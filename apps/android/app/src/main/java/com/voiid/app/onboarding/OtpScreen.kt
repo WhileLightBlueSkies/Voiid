@@ -54,6 +54,7 @@ fun OtpScreen(
 ) {
     val haptics = LocalVoiidHaptics.current
     val focus = LocalFocusManager.current
+    val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
     val length = 6
     var code by remember { mutableStateOf("") }
@@ -73,6 +74,8 @@ fun OtpScreen(
             try {
                 val idToken = com.voiid.app.net.FirebasePhoneAuth.verify(verificationId, code)
                 val profileComplete = session.auth.loginWithFirebase(idToken)
+                // Publish this device's E2E identity + prekeys (needed for chat).
+                runCatching { com.voiid.app.net.E2EManager.get(context).bootstrap() }
                 haptics.success()
                 // Returning user (profile already complete) → straight to the app;
                 // new user → continue to Signup/Profile.

@@ -93,10 +93,14 @@ fun ChatsHomeView(
     onStartCall: (CallRequest) -> Unit,
 ) {
     val haptics = LocalVoiidHaptics.current
+    val context = androidx.compose.ui.platform.LocalContext.current
     // Same activity-scoped AppSession as VoiidRoot — signOut() flips route to onboarding.
     val session: com.voiid.app.model.AppSession = androidx.lifecycle.viewmodel.compose.viewModel()
-    // Load REAL conversations from the backend on first show.
-    androidx.compose.runtime.LaunchedEffect(Unit) { chat.loadConversations() }
+    // Ensure E2E identity/prekeys are published (idempotent), then load conversations.
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        runCatching { com.voiid.app.net.E2EManager.get(context).bootstrap() }
+        chat.loadConversations()
+    }
     var search by remember { mutableStateOf("") }
     var tab by remember { mutableStateOf(ChatTab.CHATS) }
     var deleteTarget by remember { mutableStateOf<VConversation?>(null) }
