@@ -61,7 +61,9 @@ struct SignupScreen: View {
                 Spacer()
 
                 Button(action: {
-                    session.profile.fullName = name; Haptics.tap(); onContinue()
+                    session.profile.fullName = name
+                    session.profile.email = email.trimmingCharacters(in: .whitespaces)
+                    Haptics.tap(); onContinue()
                 }) {
                     Text("Continue")
                         .font(VoiidFont.rounded(18, .medium))
