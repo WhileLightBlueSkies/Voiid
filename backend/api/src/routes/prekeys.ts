@@ -5,17 +5,21 @@ import { requireAuth } from '../auth';
 
 const router = Router();
 
-// POST /prekeys/upload  { device_id, signed_prekey:{key_id,public_key(b64),signature(b64)}, one_time_prekeys:[{key_id,public_key(b64)}] }
+// POST /prekeys/upload  { device_id, one_time_prekeys:[{key_id,public_key(b64)}], signed_prekey?:{key_id,public_key,signature} }
+// signed_prekey is OPTIONAL — e2e-core (vodozemac) bundles don't include a
+// separate signed prekey; a session needs only identity_key + one one-time key.
 router.post('/upload', requireAuth, async (req, res) => {
   const { device_id, signed_prekey, one_time_prekeys } = req.body ?? {};
-  if (!device_id || !signed_prekey) return res.status(400).json({ error: 'device_id and signed_prekey required' });
+  if (!device_id) return res.status(400).json({ error: 'device_id required' });
 
-  await query(
-    `insert into signed_prekeys (device_id, key_id, public_key, signature)
-       values ($1, $2, decode($3,'base64'), decode($4,'base64'))
-       on conflict (device_id, key_id) do nothing`,
-    [device_id, signed_prekey.key_id, signed_prekey.public_key, signed_prekey.signature]
-  );
+  if (signed_prekey) {
+    await query(
+      `insert into signed_prekeys (device_id, key_id, public_key, signature)
+         values ($1, $2, decode($3,'base64'), decode($4,'base64'))
+         on conflict (device_id, key_id) do nothing`,
+      [device_id, signed_prekey.key_id, signed_prekey.public_key, signed_prekey.signature]
+    );
+  }
 
   for (const otp of (one_time_prekeys ?? [])) {
     await query(
