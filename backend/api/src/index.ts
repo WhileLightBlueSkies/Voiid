@@ -4,6 +4,7 @@ import { pool } from './db';
 import { redis } from './redis';
 import { rateLimit } from './security';
 import { firebaseStatus } from './firebase';
+import { r2Configured } from './r2';
 import authRoutes from './routes/auth';
 import deviceRoutes from './routes/devices';
 import prekeyRoutes from './routes/prekeys';
@@ -13,6 +14,7 @@ import userRoutes from './routes/users';
 import contactRoutes from './routes/contacts';
 import receiptRoutes from './routes/receipts';
 import linkingRoutes from './routes/linking';
+import mediaRoutes from './routes/media';
 
 const app = express();
 app.use(express.json({ limit: '5mb' }));
@@ -24,6 +26,8 @@ app.get('/health', async (_req, res) => {
   try { await redis.ping(); out.redis = 'up'; } catch { out.redis = 'down'; out.status = 'degraded'; }
   // Firebase Admin status (no secrets) — confirms the box CAN verify real tokens.
   out.firebase = firebaseStatus();
+  // R2 media storage configured? (no secrets) — confirms media uploads will work.
+  out.media = { configured: r2Configured() };
   res.status(out.status === 'ok' ? 200 : 503).json(out);
 });
 
@@ -39,6 +43,7 @@ app.use('/users', userRoutes);
 app.use('/contacts', contactRoutes);
 app.use('/receipts', receiptRoutes);
 app.use('/linking', linkingRoutes);
+app.use('/media', mediaRoutes);
 
 // Global error handler — turns thrown errors (incl. malformed JSON and bad
 // base64 in inputs) into a clean 400/500 instead of crashing the socket. No
