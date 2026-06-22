@@ -16,6 +16,10 @@ struct ContactProfileView: View {
     @State private var muted = false
     @State private var viewPhoto = false
     @State private var showAllMedia = false
+    @State private var profile: UserProfile?
+
+    /// Best display name: the live profile name if loaded, else the conversation title.
+    private var displayName: String { profile?.name ?? conversation.title }
 
     var body: some View {
         ScrollView {
@@ -34,8 +38,9 @@ struct ContactProfileView: View {
         .toolbarBackground(.hidden, for: .navigationBar)
         .tint(VoiidColor.primary)
         .onAppear { session.hideTabBar = true }
+        .task { await loadProfile() }
         .fullScreenCover(isPresented: $viewPhoto) {
-            ProfilePhotoViewer(title: conversation.title, imageName: conversation.photoName) { viewPhoto = false }
+            ProfilePhotoViewer(title: displayName, imageName: conversation.photoName) { viewPhoto = false }
         }
         .sheet(isPresented: $showAllMedia) { SharedMediaSheet(title: conversation.title) }
     }
@@ -47,8 +52,10 @@ struct ContactProfileView: View {
                 VoiidAvatar(size: 110, imageName: conversation.photoName).clipShape(Circle())
             }
             .buttonStyle(.plain)
-            Text(conversation.title).font(VoiidFont.rounded(22, .bold)).foregroundColor(VoiidColor.textPrimary)
-            Text("+91 91234 56789").font(VoiidFont.rounded(14, .regular)).foregroundColor(VoiidColor.textSecondary)
+            Text(displayName).font(VoiidFont.rounded(22, .bold)).foregroundColor(VoiidColor.textPrimary)
+            if let username = profile?.username, !username.isEmpty {
+                Text("@\(username)").font(VoiidFont.rounded(14, .regular)).foregroundColor(VoiidColor.textSecondary)
+            }
 
             HStack(spacing: VoiidSpacing.md) {
                 quickAction("message.fill", "Message") { dismiss() }
@@ -77,7 +84,7 @@ struct ContactProfileView: View {
     private var aboutCard: some View {
         card {
             Text("About").font(VoiidFont.rounded(13, .medium)).foregroundColor(VoiidColor.textSecondary)
-            Text("Hey there! I am using Voiid.")
+            Text(profile?.about?.isEmpty == false ? profile!.about! : "Hey there! I am using Voiid.")
                 .font(VoiidFont.rounded(16, .regular)).foregroundColor(VoiidColor.textPrimary)
         }
     }
@@ -118,10 +125,19 @@ struct ContactProfileView: View {
 
     private var dangerCard: some View {
         card {
-            actionRow("hand.raised.fill", "Block \(conversation.title)") {}
+            actionRow("hand.raised.fill", "Block \(displayName)") {}
             Divider().background(VoiidColor.divider.opacity(0.4))
-            actionRow("exclamationmark.bubble.fill", "Report \(conversation.title)") {}
+            actionRow("exclamationmark.bubble.fill", "Report \(displayName)") {}
         }
+    }
+
+    // MARK: data
+
+    /// Load the peer's public profile (name, about, username, photo). Phone is not
+    /// fetched — the backend doesn't expose it on the profile endpoint (privacy).
+    private func loadProfile() async {
+        guard let peerId = conversation.peerUserId else { return }
+        profile = try? await ChatService.shared.userProfile(userId: peerId)
     }
 
     // MARK: helpers

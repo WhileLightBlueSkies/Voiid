@@ -34,8 +34,9 @@ class AuthService(context: Context) {
         return res.profile_complete
     }
 
-    /** DEV ONLY: log in via the backend dev bypass (needs AUTH_DEV_BYPASS=1). */
-    suspend fun devLogin(phoneE164: String): String = loginWithFirebase("dev:$phoneE164")
+    /** DEV ONLY: log in via the backend dev bypass (needs AUTH_DEV_BYPASS=1).
+     *  Returns profile_complete (true = returning user; skip Signup/Profile). */
+    suspend fun devLogin(phoneE164: String): Boolean = loginWithFirebase("dev:$phoneE164")
 
     fun logout() = tokens.clear()
 }

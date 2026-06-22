@@ -22,14 +22,36 @@ private struct ConvDTO: Decodable {
     let unread_count: Int?
 }
 
-// /conversations/:id detail (members) — used to resolve the peer of a direct chat.
+// /conversations/:id detail (members) — used to resolve the peer of a direct chat
+// and to populate group info (member list + roles).
 private struct ConvDetailEnvelope: Decodable { let conversation: ConvDetailDTO; let members: [MemberDTO] }
 private struct ConvDetailDTO: Decodable { let id: String; let type: String; let name: String? }
-private struct MemberDTO: Decodable { let user_id: String; let full_name: String?; let photo_url: String? }
+private struct MemberDTO: Decodable {
+    let user_id: String
+    let full_name: String?
+    let photo_url: String?
+    let role: String?
+}
 
-// /conversations/create response.
-private struct CreateConvEnvelope: Decodable { let conversation: CreatedConvDTO }
-private struct CreatedConvDTO: Decodable { let id: String; let type: String; let name: String? }
+// /conversations/create response — the backend returns a FLAT body:
+//   direct: { conversation_id, existed }   group: { conversation_id }
+private struct CreateConvEnvelope: Decodable { let conversation_id: String; let existed: Bool? }
+
+/// A resolved member of a (group) conversation.
+struct ConvMember {
+    let userId: String
+    let name: String?
+    let photoURL: String?
+    let isAdmin: Bool
+}
+
+/// A user's public profile (no phone number — not exposed by the backend).
+struct UserProfile {
+    let name: String?
+    let photoURL: String?
+    let about: String?
+    let username: String?
+}
 
 @MainActor
 final class ChatService {
@@ -90,7 +112,42 @@ final class ChatService {
     func createDirect(memberId: String) async throws -> String {
         struct Body: Encodable { let type = "direct"; let member_id: String }
         let env: CreateConvEnvelope = try await api.request("POST", "conversations/create", body: Body(member_id: memberId))
-        return env.conversation.id
+        return env.conversation_id
+    }
+
+    /// Create a group conversation with `name` and the given member user_ids
+    /// (the creator is added + made admin server-side). Returns the conversation id.
+    func createGroup(name: String, memberIds: [String]) async throws -> String {
+        struct Body: Encodable { let type = "group"; let name: String; let member_ids: [String] }
+        let env: CreateConvEnvelope = try await api.request(
+            "POST", "conversations/create", body: Body(name: name, member_ids: memberIds))
+        return env.conversation_id
+    }
+
+    /// Active members of a conversation (used by group info). Caller must be a member.
+    func members(conversationId: String) async throws -> [ConvMember] {
+        let env: ConvDetailEnvelope = try await api.request("GET", "conversations/\(conversationId)")
+        return env.members.map {
+            ConvMember(userId: $0.user_id, name: $0.full_name,
+                       photoURL: $0.photo_url, isAdmin: ($0.role ?? "member") == "admin")
+        }
+    }
+
+    /// Public profile for a user (name, photo, bio/about). The backend does NOT
+    /// expose phone numbers here by design (privacy), so the profile screen shows
+    /// name + about, not a number.
+    func userProfile(userId: String) async throws -> UserProfile {
+        struct Envelope: Decodable { let user: ProfileDTO }
+        struct ProfileDTO: Decodable {
+            let full_name: String?
+            let photo_url: String?
+            let bio: String?
+            let status_text: String?
+            let username: String?
+        }
+        let env: Envelope = try await api.request("GET", "users/\(userId)")
+        return UserProfile(name: env.user.full_name, photoURL: env.user.photo_url,
+                           about: env.user.bio ?? env.user.status_text, username: env.user.username)
     }
 
     /// Peer presence (online + last_seen epoch millis) from Redis-backed status.

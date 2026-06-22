@@ -8,8 +8,11 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
+import uniffi.voiid.MediaKey
 import uniffi.voiid.Session
 import uniffi.voiid.WireMessage
+import uniffi.voiid.decryptMedia
+import uniffi.voiid.encryptMedia
 
 /**
  * Real E2EE 1:1 messaging on top of e2e-core + the backend. Mirrors iOS ChatEngine.
@@ -55,8 +58,24 @@ class ChatEngine private constructor(context: Context) {
 
     private val sessions = HashMap<String, Session>()                 // conversationId -> live Session
     private val store = HashMap<String, MutableList<DecryptedMessage>>() // conversationId -> messages (asc)
+    private val media = MediaService(tokens)
 
     init { loadStore() }
+
+    /**
+     * The media reference carried INSIDE an E2EE message. The bytes live in R2 as
+     * ciphertext at [mediaUrl] (opaque object key); [key]/[nonce]/[sha256] are the
+     * per-message media key. The whole struct is the plaintext of a ratchet
+     * message, so the media key never leaves E2E.
+     */
+    @Serializable
+    data class MediaRef(
+        val mediaUrl: String,
+        val mime: String,
+        val key: String,
+        val nonce: String,
+        val sha256: String,
+    )
 
     @Serializable
     data class DecryptedMessage(
@@ -65,7 +84,12 @@ class ChatEngine private constructor(context: Context) {
         val text: String,
         val createdAt: Long,
         val isMine: Boolean,
+        val media: MediaRef? = null,
     )
+
+    /** The E2EE plaintext of a media message: the reference + an optional caption. */
+    @Serializable
+    private data class MediaEnvelope(val v: Int = 1, val media: MediaRef, val caption: String)
 
     // MARK: - Public API
 
@@ -87,6 +111,43 @@ class ChatEngine private constructor(context: Context) {
         return echo
     }
 
+    /**
+     * Encrypt + send a MEDIA message. The blob is encrypted on-device, the
+     * ciphertext is uploaded to R2, and the media reference (object key + media
+     * key) is packed into the E2EE message plaintext as a JSON envelope — so the
+     * key stays end-to-end. [caption] is optional text shown with the media.
+     */
+    suspend fun sendMedia(
+        data: ByteArray, mime: String, caption: String = "",
+        conversationId: String, peerUserId: String,
+    ): DecryptedMessage {
+        // 1. Encrypt the blob (e2e-core) → ciphertext + media key.
+        val enc = encryptMedia(data)
+        // 2. Upload the CIPHERTEXT to R2; get back the opaque object key.
+        val key = media.upload(enc.ciphertext, mime)
+        val ref = MediaRef(key, mime, enc.mediaKey.key, enc.mediaKey.nonce, enc.mediaKey.ciphertextSha256)
+        // 3. The E2EE message plaintext is a media envelope (key never leaves E2E).
+        val envelopeJson = ApiClient.json.encodeToString(MediaEnvelope.serializer(), MediaEnvelope(media = ref, caption = caption))
+        val session = ensureOutboundSession(conversationId, peerUserId)
+        val wire = session.encrypt(envelopeJson.encodeToByteArray())
+        saveSession(session, conversationId)
+        val ciphertext = encodeWire(wire)
+        // 4. Send the message, tagging it as media + the opaque ref for the server.
+        val body = ApiClient.json.encodeToString(
+            SendBody.serializer(),
+            SendBody(conversationId, ciphertext, content_type = "media", media_url = key, media_mime = mime))
+        val res: SendResponse = api.requestAs("POST", "messages/send", jsonBody = body)
+        val echo = DecryptedMessage(res.message_id, tokens.userId ?: "me", caption, parseIso(res.created_at), true, ref)
+        append(conversationId, echo)
+        return echo
+    }
+
+    /** Fetch + decrypt a media blob referenced by a message → PLAINTEXT bytes. */
+    suspend fun fetchMedia(ref: MediaRef): ByteArray {
+        val ciphertext = media.download(ref.mediaUrl)
+        return decryptMedia(MediaKey(ref.key, ref.nonce, ref.sha256), ciphertext)
+    }
+
     /** Fetch the server list, decrypt only unseen ids, persist, return full convo (asc). */
     suspend fun sync(conversationId: String, peerUserId: String): List<DecryptedMessage> {
         val env: MessagesResponse = api.requestAs("GET", "messages/conversation/$conversationId")
@@ -98,11 +159,25 @@ class ChatEngine private constructor(context: Context) {
             val wire = decodeWire(m.ciphertext) ?: continue
             runCatching {
                 val plain = decryptInbound(wire, conversationId, peerUserId)
-                append(conversationId, DecryptedMessage(m.id, m.sender_id, plain, parseIso(m.created_at), false), persist = false)
+                // A media message's plaintext is a JSON MediaEnvelope; text is just
+                // the string. Detect via the server's content_type hint.
+                val (caption, ref) = decodeEnvelope(plain, m.content_type == "media")
+                append(conversationId, DecryptedMessage(m.id, m.sender_id, caption, parseIso(m.created_at), false, ref), persist = false)
             }
         }
         persist()
         return messages(conversationId)
+    }
+
+    /** Decode a decrypted plaintext into (caption, media?). */
+    private fun decodeEnvelope(plain: String, isMedia: Boolean): Pair<String, MediaRef?> {
+        if (isMedia) {
+            runCatching {
+                val env = ApiClient.json.decodeFromString(MediaEnvelope.serializer(), plain)
+                return env.caption to env.media
+            }
+        }
+        return plain to null
     }
 
     /** Mark all stored inbound messages in a conversation read → server fans out a
@@ -240,9 +315,21 @@ class ChatEngine private constructor(context: Context) {
     // MARK: - DTOs
 
     @Serializable private data class MarkReadBody(val message_ids: List<String>, val status: String = "read")
-    @Serializable private data class SendBody(val conversation_id: String, val ciphertext: String)
+    @Serializable private data class SendBody(
+        val conversation_id: String,
+        val ciphertext: String,
+        val content_type: String? = null,
+        val media_url: String? = null,
+        val media_mime: String? = null,
+    )
     @Serializable private data class SendResponse(val message_id: String, val created_at: String)
-    @Serializable private data class MessageDTO(val id: String, val sender_id: String, val ciphertext: String, val created_at: String)
+    @Serializable private data class MessageDTO(
+        val id: String,
+        val sender_id: String,
+        val ciphertext: String,
+        val created_at: String,
+        val content_type: String? = null,
+    )
     @Serializable private data class MessagesResponse(val messages: List<MessageDTO>)
     @Serializable private data class DeviceDTO(val identity_public_key: String)
     @Serializable private data class DevicesResponse(val devices: List<DeviceDTO>)

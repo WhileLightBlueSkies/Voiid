@@ -97,6 +97,27 @@ final class ChatStore: ObservableObject {
         }
     }
 
+    /// Create a group conversation with `name` and the chosen contacts, insert it
+    /// locally, and return it so the caller can navigate into it. Message E2E for
+    /// groups (MLS) is a later increment — this wires the create + membership only.
+    func createGroup(name: String, members: [VContact]) async -> VConversation? {
+        do {
+            let convId = try await ChatService.shared.createGroup(
+                name: name, memberIds: members.map { $0.userId })
+            if let existing = groupConversations.first(where: { $0.id == convId }) {
+                return existing
+            }
+            let conv = VConversation(id: convId, type: .group, title: name,
+                                     photoName: nil, lastMessagePreview: nil, lastMessageAt: nil,
+                                     unreadCount: 0, memberCount: members.count + 1)
+            groupConversations.insert(conv, at: 0)
+            return conv
+        } catch {
+            loadError = (error as? APIError)?.errorDescription ?? "Couldn’t create group."
+            return nil
+        }
+    }
+
     /// Open a conversation: show cached messages, then sync (fetch + decrypt-new) from server.
     func openConversation(_ conv: VConversation) {
         refresh(conv.id)

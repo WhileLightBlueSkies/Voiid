@@ -23,13 +23,29 @@
 import Foundation
 import Security
 
+/// The media reference carried INSIDE an E2EE message. The actual bytes live in
+/// R2 as ciphertext at `mediaUrl` (an opaque object key); `key`/`nonce`/`sha256`
+/// are the per-message media key needed to decrypt them. Because this whole
+/// struct is the plaintext of a Double-Ratchet message, the media key never
+/// leaves E2E — the server only ever sees the opaque key + ciphertext bytes.
+struct MediaRef: Codable, Equatable {
+    let mediaUrl: String      // R2 object key
+    let mime: String          // real media type (image/jpeg, audio/m4a, …)
+    let key: String           // base64 media key
+    let nonce: String         // base64 nonce
+    let sha256: String        // ciphertext integrity hash
+}
+
 /// A decrypted message ready for the UI (and the on-disk store record).
+/// For media messages `text` holds a caption (often empty) and `media` carries
+/// the reference needed to fetch + decrypt the blob on demand.
 struct DecryptedMessage: Codable {
     let id: String
     let senderId: String
     let text: String
     let createdAt: Date
     let isMine: Bool
+    var media: MediaRef? = nil
 }
 
 @MainActor
@@ -54,7 +70,7 @@ final class ChatEngine {
     @discardableResult
     func sendText(_ text: String, conversationId: String, peerUserId: String) async throws -> DecryptedMessage {
         let session = try await ensureOutboundSession(conversationId: conversationId, peerUserId: peerUserId)
-        let wire = try session.encrypt(plaintext: Array(text.utf8))
+        let wire = try session.encrypt(plaintext: Data(text.utf8))
         saveSession(session, conversationId: conversationId)
         let ciphertext = encodeWire(wire)
         let res: SendResponse = try await api.request(
@@ -64,6 +80,48 @@ final class ChatEngine {
                                     text: text, createdAt: parseDate(res.created_at), isMine: true)
         append(echo, to: conversationId)
         return echo
+    }
+
+    /// Encrypt + send a MEDIA message in a direct conversation. The blob is
+    /// encrypted on-device, the ciphertext is uploaded to R2, and the media
+    /// reference (object key + media key) is packed into the E2EE message
+    /// plaintext as a JSON envelope — so the key stays end-to-end. `caption` is
+    /// optional text shown alongside the media.
+    @discardableResult
+    func sendMedia(_ data: Data, mime: String, caption: String = "",
+                   conversationId: String, peerUserId: String) async throws -> DecryptedMessage {
+        // 1. Encrypt the blob (e2e-core) → ciphertext + media key.
+        let enc = try encryptMedia(plaintext: data)
+        // 2. Upload the CIPHERTEXT to R2; get back the opaque object key.
+        let key = try await MediaService.shared.upload(ciphertext: enc.ciphertext, mime: mime)
+        let ref = MediaRef(mediaUrl: key, mime: mime,
+                           key: enc.mediaKey.key, nonce: enc.mediaKey.nonce,
+                           sha256: enc.mediaKey.ciphertextSha256)
+        // 3. The E2EE message plaintext is a media envelope (key never leaves E2E).
+        let envelope = MediaEnvelope(media: ref, caption: caption)
+        let session = try await ensureOutboundSession(conversationId: conversationId, peerUserId: peerUserId)
+        let wire = try session.encrypt(plaintext: try JSONEncoder().encode(envelope))
+        saveSession(session, conversationId: conversationId)
+        let ciphertext = encodeWire(wire)
+        // 4. Send the message, tagging it as media + the opaque ref for the server.
+        let res: SendResponse = try await api.request(
+            "POST", "messages/send",
+            body: SendBody(conversation_id: conversationId, ciphertext: ciphertext,
+                           content_type: "media", media_url: key, media_mime: mime))
+        let echo = DecryptedMessage(id: res.message_id, senderId: TokenStore.shared.userId ?? "me",
+                                    text: caption, createdAt: parseDate(res.created_at),
+                                    isMine: true, media: ref)
+        append(echo, to: conversationId)
+        return echo
+    }
+
+    /// Fetch + decrypt a media blob referenced by a (received) message. Returns the
+    /// PLAINTEXT bytes (the caller renders them); decryption uses the per-message
+    /// media key carried in the E2EE envelope.
+    func fetchMedia(_ ref: MediaRef) async throws -> Data {
+        let ciphertext = try await MediaService.shared.download(key: ref.mediaUrl)
+        let mediaKey = MediaKey(key: ref.key, nonce: ref.nonce, ciphertextSha256: ref.sha256)
+        return try decryptMedia(mediaKey: mediaKey, ciphertext: ciphertext)
     }
 
     /// Fetch the server's message list, decrypt ONLY ids we haven't seen, persist,
@@ -78,8 +136,13 @@ final class ChatEngine {
             guard let wire = decodeWire(m.ciphertext) else { continue }
             do {
                 let plain = try await decryptInbound(wire, conversationId: conversationId, peerUserId: peerUserId)
-                append(DecryptedMessage(id: m.id, senderId: m.sender_id, text: plain,
-                                        createdAt: parseDate(m.created_at), isMine: false),
+                // A media message's plaintext is a JSON MediaEnvelope; a text
+                // message is just the string. Detect via the server's content_type
+                // hint, falling back to the decoded shape.
+                let parsed = decodeEnvelope(plain, isMedia: m.content_type == "media")
+                append(DecryptedMessage(id: m.id, senderId: m.sender_id, text: parsed.caption,
+                                        createdAt: parseDate(m.created_at), isMine: false,
+                                        media: parsed.media),
                        to: conversationId, persist: false)
             } catch { /* undecryptable (replay/old) — skip */ }
         }
@@ -233,9 +296,40 @@ final class ChatEngine {
 
     private func parseDate(_ s: String) -> Date { ISO8601DateFormatter().date(from: s) ?? Date() }
 
+    // MARK: - Media envelope (the E2EE plaintext of a media message)
+
+    /// The plaintext we encrypt for a media message: the media reference + an
+    /// optional caption. A marker field disambiguates it from a plain text body.
+    private struct MediaEnvelope: Codable {
+        let v: Int                // envelope version
+        let media: MediaRef
+        let caption: String
+        init(media: MediaRef, caption: String) { self.v = 1; self.media = media; self.caption = caption }
+    }
+
+    /// Decode a decrypted plaintext into (caption, media?). If the server flagged
+    /// it as media (or it parses as a MediaEnvelope), pull out the reference;
+    /// otherwise it's a plain text body.
+    private func decodeEnvelope(_ plain: String, isMedia: Bool) -> (caption: String, media: MediaRef?) {
+        if isMedia, let data = plain.data(using: .utf8),
+           let env = try? JSONDecoder().decode(MediaEnvelope.self, from: data) {
+            return (env.caption, env.media)
+        }
+        return (plain, nil)
+    }
+
     // DTOs for messages API
-    private struct SendBody: Encodable { let conversation_id: String; let ciphertext: String }
+    private struct SendBody: Encodable {
+        let conversation_id: String
+        let ciphertext: String
+        var content_type: String? = nil
+        var media_url: String? = nil
+        var media_mime: String? = nil
+    }
     private struct SendResponse: Decodable { let message_id: String; let created_at: String }
-    private struct MessageDTO: Decodable { let id: String; let sender_id: String; let ciphertext: String; let created_at: String }
+    private struct MessageDTO: Decodable {
+        let id: String; let sender_id: String; let ciphertext: String; let created_at: String
+        var content_type: String? = nil
+    }
     private struct MessagesResponse: Decodable { let messages: [MessageDTO] }
 }

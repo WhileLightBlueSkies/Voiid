@@ -78,7 +78,7 @@ enum VoiidRadius {
 
 enum VoiidFont {
     /// SF Pro Rounded at the spec's type scale.
-    static func rounded(_ size: CGFloat, _ weight: Font.Weight) -> Font {
+    static func rounded(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight, design: .rounded)
     }
 
