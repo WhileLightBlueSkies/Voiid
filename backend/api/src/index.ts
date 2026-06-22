@@ -15,6 +15,7 @@ import contactRoutes from './routes/contacts';
 import receiptRoutes from './routes/receipts';
 import linkingRoutes from './routes/linking';
 import mediaRoutes from './routes/media';
+import mlsRoutes from './routes/mls';
 
 const app = express();
 app.use(express.json({ limit: '5mb' }));
@@ -44,6 +45,7 @@ app.use('/contacts', contactRoutes);
 app.use('/receipts', receiptRoutes);
 app.use('/linking', linkingRoutes);
 app.use('/media', mediaRoutes);
+app.use('/mls', mlsRoutes);
 
 // Global error handler — turns thrown errors (incl. malformed JSON and bad
 // base64 in inputs) into a clean 400/500 instead of crashing the socket. No
