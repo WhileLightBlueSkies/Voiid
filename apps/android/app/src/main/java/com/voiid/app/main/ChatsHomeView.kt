@@ -32,6 +32,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import com.voiid.app.net.ContactsService
+import com.voiid.app.net.VContact
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -107,9 +115,23 @@ fun ChatsHomeView(
     var deleteTarget by remember { mutableStateOf<VConversation?>(null) }
     var callTarget by remember { mutableStateOf<VConversation?>(null) }
     var showNewChat by remember { mutableStateOf(false) }
+    var allContacts by remember { mutableStateOf<List<VContact>>(emptyList()) }
+    val scope = rememberCoroutineScope()
 
     val list: SnapshotStateList<VConversation> = if (tab == ChatTab.CHATS) chat.directConversations else chat.groupConversations
     val filtered = if (search.isBlank()) list.toList() else list.filter { it.title.contains(search, ignoreCase = true) }
+
+    // Load discovered VOIID contacts once when search starts, so "not started" chats
+    // (contacts you haven't messaged) also show in search.
+    androidx.compose.runtime.LaunchedEffect(search.isNotBlank()) {
+        if (search.isNotBlank() && allContacts.isEmpty()) {
+            runCatching { ContactsService(context).discover().matches }.getOrNull()?.let { allContacts = it }
+        }
+    }
+    val existingPeers = chat.directConversations.mapNotNull { it.peerUserId }.toHashSet()
+    val contactResults = if (tab == ChatTab.CHATS && search.isNotBlank()) {
+        allContacts.filter { it.userId !in existingPeers && it.displayName.contains(search, ignoreCase = true) }
+    } else emptyList()
 
     Column(
         Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding(),
@@ -126,16 +148,37 @@ fun ChatsHomeView(
                 modifier = Modifier.fillMaxWidth().weight(1f),
             )
         } else {
-            // Search results — simple grid
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(3),
+            // Search results — existing chats + contacts you can start a new chat with.
+            LazyColumn(
                 modifier = Modifier.fillMaxWidth().weight(1f),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(24.dp),
-                horizontalArrangement = Arrangement.spacedBy(24.dp),
-                verticalArrangement = Arrangement.spacedBy(24.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 24.dp, vertical = 16.dp),
             ) {
-                items(filtered, key = { it.id }) { conv ->
-                    GridCard(conv, Modifier.softClickable(scale = 0.94f) { haptics.tap(); onOpenConversation(conv) })
+                if (filtered.isNotEmpty()) {
+                    item { SearchSectionLabel("Chats") }
+                    items(filtered, key = { "c_" + it.id }) { conv ->
+                        SearchChatRow(conv) { haptics.tap(); onOpenConversation(conv) }
+                    }
+                }
+                if (contactResults.isNotEmpty()) {
+                    item { SearchSectionLabel("Start new chat") }
+                    items(contactResults, key = { "u_" + it.userId }) { c ->
+                        SearchContactRow(c) {
+                            haptics.tap()
+                            scope.launch {
+                                val conv = chat.startDirectChat(c)
+                                if (conv != null) { search = ""; onOpenConversation(conv) }
+                            }
+                        }
+                    }
+                }
+                if (filtered.isEmpty() && contactResults.isEmpty()) {
+                    item {
+                        Text(
+                            "No chats or contacts found.",
+                            style = VoiidFont.rounded(14), color = VoiidColor.textSecondary,
+                            modifier = Modifier.padding(top = 40.dp),
+                        )
+                    }
                 }
             }
         }
@@ -375,6 +418,45 @@ private fun DropZoneView(zone: DropZone, icon: androidx.compose.ui.graphics.vect
             contentAlignment = Alignment.Center,
         ) { Icon(icon, label, tint = VoiidColor.textOnPrimary, modifier = Modifier.size(24.dp)) }
         Text(label, style = VoiidFont.rounded(12, FontWeight.SemiBold), color = color)
+    }
+}
+
+@Composable
+private fun SearchSectionLabel(text: String) {
+    Text(
+        text, style = VoiidFont.rounded(13, FontWeight.SemiBold), color = VoiidColor.textSecondary,
+        modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 8.dp),
+    )
+}
+
+@Composable
+private fun SearchChatRow(conv: VConversation, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable { onClick() }.padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(44.dp).clip(CircleShape).background(VoiidColor.fieldFill), Alignment.Center) {
+            Text(conv.title.take(1).uppercase(), style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.primary)
+        }
+        Spacer(Modifier.width(12.dp))
+        Text(conv.title, style = VoiidFont.rounded(16, FontWeight.Medium), color = VoiidColor.textPrimary)
+    }
+}
+
+@Composable
+private fun SearchContactRow(c: VContact, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable { onClick() }.padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(44.dp).clip(CircleShape).background(VoiidColor.fieldFill), Alignment.Center) {
+            Text(c.displayName.take(1).uppercase(), style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.primary)
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(c.displayName, style = VoiidFont.rounded(16, FontWeight.Medium), color = VoiidColor.textPrimary)
+            Text("Tap to start chat", style = VoiidFont.rounded(12), color = VoiidColor.textSecondary)
+        }
     }
 }
 
