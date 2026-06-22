@@ -16,6 +16,8 @@ import receiptRoutes from './routes/receipts';
 import linkingRoutes from './routes/linking';
 import mediaRoutes from './routes/media';
 import mlsRoutes from './routes/mls';
+import configRoutes from './routes/config';
+import { forceUpdateGate } from './version';
 
 const app = express();
 app.use(express.json({ limit: '5mb' }));
@@ -32,20 +34,36 @@ app.get('/health', async (_req, res) => {
   res.status(out.status === 'ok' ? 200 : 503).json(out);
 });
 
+// Remote config / version negotiation — UNVERSIONED + UNGATED so the client can
+// always reach it on launch (even when it must update) to learn the version, flags
+// and force-update verdict. (/health stays open too.)
+app.use('/config', configRoutes);
+
 // Global API abuse guard (per-IP). Auth/OTP routes get tighter per-phone limits inside the route.
 app.use(rateLimit({ max: 300, windowSeconds: 60, bucket: 'api' }));
 
-app.use('/auth', rateLimit({ max: 30, windowSeconds: 60, bucket: 'auth' }), authRoutes);
-app.use('/devices', deviceRoutes);
-app.use('/prekeys', prekeyRoutes);
-app.use('/messages', messageRoutes);
-app.use('/conversations', conversationRoutes);
-app.use('/users', userRoutes);
-app.use('/contacts', contactRoutes);
-app.use('/receipts', receiptRoutes);
-app.use('/linking', linkingRoutes);
-app.use('/media', mediaRoutes);
-app.use('/mls', mlsRoutes);
+// Force-update gate: 426 any client below the minimum supported app version.
+app.use(forceUpdateGate);
+
+// All API routes live on a router mounted at BOTH /v1 (the stable, versioned
+// contract clients should use) and the legacy root (so already-deployed,
+// pre-versioning builds keep working during migration). /v1 is additive-only;
+// breaking changes ship as a future /v2 router.
+const api = express.Router();
+api.use('/auth', rateLimit({ max: 30, windowSeconds: 60, bucket: 'auth' }), authRoutes);
+api.use('/devices', deviceRoutes);
+api.use('/prekeys', prekeyRoutes);
+api.use('/messages', messageRoutes);
+api.use('/conversations', conversationRoutes);
+api.use('/users', userRoutes);
+api.use('/contacts', contactRoutes);
+api.use('/receipts', receiptRoutes);
+api.use('/linking', linkingRoutes);
+api.use('/media', mediaRoutes);
+api.use('/mls', mlsRoutes);
+
+app.use('/v1', api);
+app.use(api);   // legacy unversioned alias (migration safety) — remove once all clients send /v1
 
 // Global error handler — turns thrown errors (incl. malformed JSON and bad
 // base64 in inputs) into a clean 400/500 instead of crashing the socket. No

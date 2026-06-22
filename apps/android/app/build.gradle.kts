@@ -39,6 +39,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true   // exposes BuildConfig.VERSION_NAME for force-update gating
     }
 }
 
