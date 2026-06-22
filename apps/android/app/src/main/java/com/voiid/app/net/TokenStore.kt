@@ -2,8 +2,6 @@ package com.voiid.app.net
 
 import android.content.Context
 import android.content.SharedPreferences
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 
 /**
  * Secure storage for OUR JWT + user id, mirroring iOS TokenStore (Keychain).
@@ -17,22 +15,8 @@ class TokenStore private constructor(private val prefs: SharedPreferences) {
 
         fun get(context: Context): TokenStore =
             instance ?: synchronized(this) {
-                instance ?: create(context.applicationContext).also { instance = it }
+                instance ?: TokenStore(SecurePrefs.open(context, "voiid_auth")).also { instance = it }
             }
-
-        private fun create(ctx: Context): TokenStore {
-            val masterKey = MasterKey.Builder(ctx)
-                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                .build()
-            val prefs = EncryptedSharedPreferences.create(
-                ctx,
-                "voiid_auth",
-                masterKey,
-                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-            )
-            return TokenStore(prefs)
-        }
     }
 
     var jwt: String?
