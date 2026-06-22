@@ -19,6 +19,7 @@ struct ChatsHomeView: View {
     @State private var activeCall: CallRequest?
     @State private var showNewChat = false
     @State private var showNewGroup = false
+    @State private var allContacts: [VContact] = []   // discovered VOIID contacts (for search)
     @Namespace private var underline
 
     enum Tab: String { case chats = "Chats", groups = "Groups" }
@@ -42,18 +43,37 @@ struct ChatsHomeView: View {
                         onDelete: { deleteTarget = $0 }
                     )
                 } else {
-                    // Search results — simple grid
+                    // Search results — existing chats grid + contacts you can start a chat with.
                     ScrollView {
-                        LazyVGrid(columns: columns, spacing: VoiidSpacing.lg) {
-                            ForEach(items) { conv in
-                                Button { Haptics.tap(); openConversation = conv } label: { gridCard(conv) }
-                                    .buttonStyle(SoftPressStyle(scale: 0.94))
+                        if !items.isEmpty {
+                            sectionLabel("Chats")
+                            LazyVGrid(columns: columns, spacing: VoiidSpacing.lg) {
+                                ForEach(items) { conv in
+                                    Button { Haptics.tap(); openConversation = conv } label: { gridCard(conv) }
+                                        .buttonStyle(SoftPressStyle(scale: 0.94))
+                                }
                             }
+                            .padding(.horizontal, VoiidSpacing.lg)
                         }
-                        .padding(.horizontal, VoiidSpacing.lg)
-                        .padding(.top, VoiidSpacing.lg)
-                        .padding(.bottom, 110)
+                        if !contactResults.isEmpty {
+                            sectionLabel("Start new chat")
+                            VStack(spacing: 0) {
+                                ForEach(contactResults) { c in
+                                    Button { startChat(with: c) } label: { contactRow(c) }
+                                        .buttonStyle(.plain)
+                                }
+                            }
+                            .padding(.horizontal, VoiidSpacing.lg)
+                        }
+                        if items.isEmpty && contactResults.isEmpty {
+                            Text("No chats or contacts found.")
+                                .font(VoiidFont.rounded(14)).foregroundColor(VoiidColor.textSecondary)
+                                .padding(.top, 40)
+                        }
                     }
+                    .padding(.top, VoiidSpacing.lg)
+                    .padding(.bottom, 110)
+                    .task(id: search) { await loadContactsForSearch() }
                 }
             }
             .background(VoiidColor.background.ignoresSafeArea())
@@ -105,6 +125,32 @@ struct ChatsHomeView: View {
         let base = tab == .chats ? chat.directConversations : chat.groupConversations
         guard !search.isEmpty else { return base }
         return base.filter { $0.title.localizedCaseInsensitiveContains(search) }
+    }
+
+    /// Contacts matching the search that you DON'T already have a chat with — so
+    /// search surfaces "not started" chats too (tap to start). Chats tab only.
+    private var contactResults: [VContact] {
+        guard tab == .chats, !search.isEmpty else { return [] }
+        let existingPeers = Set(chat.directConversations.compactMap { $0.peerUserId })
+        return allContacts.filter {
+            !existingPeers.contains($0.userId) &&
+            $0.displayName.localizedCaseInsensitiveContains(search)
+        }
+    }
+
+    private func loadContactsForSearch() async {
+        guard allContacts.isEmpty else { return }   // cached (ContactsService also caches)
+        if let result = try? await ContactsService.shared.discover() { allContacts = result.matches }
+    }
+
+    private func startChat(with c: VContact) {
+        Haptics.tap()
+        Task {
+            if let conv = await chat.startDirectChat(with: c) {
+                search = ""
+                openConversation = conv
+            }
+        }
     }
 
     // Top bar — "Chats" title left, hamburger menu right
@@ -187,6 +233,30 @@ struct ChatsHomeView: View {
             .frame(maxWidth: .infinity)
         }
         .buttonStyle(.plain)
+    }
+
+    private func sectionLabel(_ text: String) -> some View {
+        HStack {
+            Text(text).font(VoiidFont.rounded(13, .semibold)).foregroundColor(VoiidColor.textSecondary)
+            Spacer()
+        }
+        .padding(.horizontal, VoiidSpacing.lg)
+        .padding(.top, VoiidSpacing.md).padding(.bottom, VoiidSpacing.sm)
+    }
+
+    // A contact you can start a NEW chat with (search surfaced it; no conversation yet).
+    private func contactRow(_ c: VContact) -> some View {
+        HStack(spacing: VoiidSpacing.md) {
+            VoiidAvatar(size: 44, imageName: nil).clipShape(Circle())
+            VStack(alignment: .leading, spacing: 2) {
+                Text(c.displayName).font(VoiidFont.rounded(16, .medium)).foregroundColor(VoiidColor.textPrimary)
+                Text("Tap to start chat").font(VoiidFont.rounded(12)).foregroundColor(VoiidColor.textSecondary)
+            }
+            Spacer()
+            Image(systemName: "square.and.pencil").foregroundColor(VoiidColor.primary)
+        }
+        .contentShape(Rectangle())
+        .padding(.vertical, VoiidSpacing.sm)
     }
 
     private func gridCard(_ conv: VConversation) -> some View {
