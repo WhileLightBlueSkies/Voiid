@@ -2,6 +2,7 @@ package com.voiid.app.main
 
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
+import kotlinx.coroutines.launch
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -96,6 +97,8 @@ fun ChatDetailView(
 ) {
     val haptics = LocalVoiidHaptics.current
     val clipboard = LocalClipboardManager.current
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     val isGroup = conversation.type == ConversationType.GROUP
     var draft by remember { mutableStateOf("") }
     val messages = chat.messages(conversation.id)
@@ -141,7 +144,15 @@ fun ChatDetailView(
     }
 
     val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri != null) chat.send("📷 Photo", MessageKind.IMAGE, conversation.id)
+        if (uri != null) {
+            // Read the real bytes off-thread, then encrypt + upload via sendMedia.
+            scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                val bytes = runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
+                if (bytes != null) kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    chat.sendMedia(bytes, "image/jpeg", conversationId = conversation.id)
+                }
+            }
+        }
     }
 
     val grouped = messages.sortedBy { it.createdAt }.groupBy { VoiidDate.startOfDay(it.createdAt) }
@@ -387,8 +398,8 @@ fun ChatDetailView(
                             },
                         )
                     } else {
-                        VoiceRecordButton { duration ->
-                            chat.send("🎤 Voice message · ${duration.toInt()}s", MessageKind.VOICE, conversation.id)
+                        VoiceRecordButton { bytes, duration ->
+                            chat.sendMedia(bytes, "audio/m4a", caption = "Voice · ${duration.toInt()}s", conversationId = conversation.id)
                         }
                     }
                     Spacer(Modifier.size(8.dp))

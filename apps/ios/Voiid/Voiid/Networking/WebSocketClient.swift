@@ -11,7 +11,7 @@
 import Foundation
 
 @MainActor
-final class WebSocketClient: ObservableObject {
+final class WebSocketClient {
     static let shared = WebSocketClient()
     private init() {}
 

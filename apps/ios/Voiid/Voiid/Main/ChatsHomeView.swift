@@ -18,6 +18,7 @@ struct ChatsHomeView: View {
     @State private var callTarget: VConversation?
     @State private var activeCall: CallRequest?
     @State private var showNewChat = false
+    @State private var showNewGroup = false
     @Namespace private var underline
 
     enum Tab: String { case chats = "Chats", groups = "Groups" }
@@ -70,6 +71,13 @@ struct ChatsHomeView: View {
                 }
                 .environmentObject(chat)
             }
+            .sheet(isPresented: $showNewGroup) {
+                NewGroupView { conv in
+                    // Open the freshly-created group after the sheet dismisses.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { openConversation = conv }
+                }
+                .environmentObject(chat)
+            }
             .alert("Delete chat?", isPresented: Binding(
                 get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } })) {
                 Button("Delete", role: .destructive) {
@@ -107,9 +115,10 @@ struct ChatsHomeView: View {
                 .foregroundColor(VoiidColor.textPrimary)
             Spacer()
             Button {
-                Haptics.tap(); showNewChat = true
+                Haptics.tap()
+                if tab == .groups { showNewGroup = true } else { showNewChat = true }
             } label: {
-                Image(systemName: "square.and.pencil")
+                Image(systemName: tab == .groups ? "person.3.fill" : "square.and.pencil")
                     .font(.system(size: 20, weight: .medium))
                     .foregroundColor(VoiidColor.textPrimary)
             }

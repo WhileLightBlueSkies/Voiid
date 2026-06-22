@@ -97,6 +97,27 @@ final class ChatStore: ObservableObject {
         }
     }
 
+    /// Create a group conversation with `name` and the chosen contacts, insert it
+    /// locally, and return it so the caller can navigate into it. Message E2E for
+    /// groups (MLS) is a later increment — this wires the create + membership only.
+    func createGroup(name: String, members: [VContact]) async -> VConversation? {
+        do {
+            let convId = try await ChatService.shared.createGroup(
+                name: name, memberIds: members.map { $0.userId })
+            if let existing = groupConversations.first(where: { $0.id == convId }) {
+                return existing
+            }
+            let conv = VConversation(id: convId, type: .group, title: name,
+                                     photoName: nil, lastMessagePreview: nil, lastMessageAt: nil,
+                                     unreadCount: 0, memberCount: members.count + 1)
+            groupConversations.insert(conv, at: 0)
+            return conv
+        } catch {
+            loadError = (error as? APIError)?.errorDescription ?? "Couldn’t create group."
+            return nil
+        }
+    }
+
     /// Open a conversation: show cached messages, then sync (fetch + decrypt-new) from server.
     func openConversation(_ conv: VConversation) {
         refresh(conv.id)
@@ -143,16 +164,48 @@ final class ChatStore: ObservableObject {
 
     /// Rebuild a conversation's UI messages from the local (decrypted) store.
     private func refresh(_ convId: String) {
-        let mapped = ChatEngine.shared.messages(conversationId: convId).map { d in
-            VMessage(id: d.id, conversationId: convId,
-                     senderId: d.isMine ? "me" : d.senderId,
-                     kind: .text, text: d.text, createdAt: d.createdAt,
-                     status: d.isMine ? .sent : .read, isMine: d.isMine)
+        let mapped = ChatEngine.shared.messages(conversationId: convId).map { d -> VMessage in
+            let kind: MessageKind = d.media.map { $0.mime.hasPrefix("audio/") ? .voice : .image } ?? .text
+            return VMessage(id: d.id, conversationId: convId,
+                            senderId: d.isMine ? "me" : d.senderId,
+                            kind: kind, text: d.text, createdAt: d.createdAt,
+                            status: d.isMine ? .sent : .read, isMine: d.isMine,
+                            mediaRef: d.media)
         }
         if !mapped.isEmpty || messagesByConversation[convId] != nil {
             messagesByConversation[convId] = mapped
         }
-        if let last = mapped.last { bumpPreview(convId, preview: last.text) }
+        if let last = mapped.last {
+            bumpPreview(convId, preview: last.kind == .text ? last.text : previewFor(last.kind))
+        }
+    }
+
+    /// Send a media (image/voice) message: encrypt the blob on-device, upload the
+    /// ciphertext to R2, and pack the key into the E2EE message (direct chats only).
+    func sendMedia(_ data: Data, mime: String, caption: String = "", to conversationId: String) {
+        let kind: MessageKind = mime.hasPrefix("audio/") ? .voice : .image
+        let tempId = UUID().uuidString
+        let msg = VMessage(id: tempId, conversationId: conversationId, senderId: "me",
+                           kind: kind, text: caption, createdAt: .now, status: .sending, isMine: true)
+        messagesByConversation[conversationId, default: messages(for: conversationId)].append(msg)
+        bumpPreview(conversationId, preview: previewFor(kind))
+
+        guard let conv = directConversations.first(where: { $0.id == conversationId }) else {
+            markStatus(tempId, in: conversationId, to: .sent)   // group: not supported yet
+            return
+        }
+        Task {
+            do {
+                let peer = try await peerUserId(for: conv)
+                _ = try await ChatEngine.shared.sendMedia(data, mime: mime, caption: caption,
+                                                          conversationId: conversationId, peerUserId: peer)
+                removeMessage(tempId, in: conversationId)
+                refresh(conversationId)
+            } catch {
+                markStatus(tempId, in: conversationId, to: .failed)
+                loadError = (error as? APIError)?.errorDescription ?? "Couldn’t send media."
+            }
+        }
     }
 
     /// Resolve (and cache) the peer user_id for a direct conversation.

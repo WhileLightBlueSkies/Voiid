@@ -14,7 +14,8 @@ struct GroupInfoView: View {
     @EnvironmentObject var session: AppSession
     @Environment(\.dismiss) private var dismiss
     @State private var muted = false
-    @State private var members = DummyData.groupMembers
+    @State private var members: [VMember] = []
+    @State private var loadingMembers = true
     @State private var memberAction: VMember?
     @State private var viewPhoto = false
     @State private var showAllMedia = false
@@ -35,6 +36,7 @@ struct GroupInfoView: View {
         .toolbarBackground(.hidden, for: .navigationBar)
         .tint(VoiidColor.primary)
         .onAppear { session.hideTabBar = true }
+        .task { await loadMembers() }
         .fullScreenCover(isPresented: $viewPhoto) {
             ProfilePhotoViewer(title: conversation.title, imageName: conversation.photoName) { viewPhoto = false }
         }
@@ -67,7 +69,7 @@ struct GroupInfoView: View {
                 Text(conversation.title).font(VoiidFont.rounded(22, .bold)).foregroundColor(VoiidColor.textPrimary)
                 Image(systemName: "pencil").font(.system(size: 14)).foregroundColor(VoiidColor.textSecondary)
             }
-            Text("Group · \(members.count) members")
+            Text(loadingMembers ? "Group" : "Group · \(members.count) members")
                 .font(VoiidFont.rounded(13, .regular)).foregroundColor(VoiidColor.textSecondary)
         }
         .frame(maxWidth: .infinity)
@@ -100,9 +102,11 @@ struct GroupInfoView: View {
     private var membersCard: some View {
         card {
             HStack {
-                Text("\(members.count) members").font(VoiidFont.rounded(15, .semibold)).foregroundColor(VoiidColor.textPrimary)
+                Text(loadingMembers ? "Members" : "\(members.count) members")
+                    .font(VoiidFont.rounded(15, .semibold)).foregroundColor(VoiidColor.textPrimary)
                 Spacer()
-                Image(systemName: "magnifyingglass").foregroundColor(VoiidColor.textSecondary)
+                if loadingMembers { ProgressView() }
+                else { Image(systemName: "magnifyingglass").foregroundColor(VoiidColor.textSecondary) }
             }
             // Add members + invite link
             actionRow(icon: "person.badge.plus", text: "Add members", tint: VoiidColor.primary) {}
@@ -147,6 +151,33 @@ struct GroupInfoView: View {
                 Haptics.rigid(); dismiss()
             }
             actionRow(icon: "hand.raised", text: "Report group", tint: VoiidColor.error) {}
+        }
+    }
+
+    // MARK: data
+
+    /// Load the real group membership from the backend (GET /conversations/:id).
+    /// The creator/you is flagged via the current user id; admins show a badge.
+    private func loadMembers() async {
+        loadingMembers = true
+        defer { loadingMembers = false }
+        guard let convMembers = try? await ChatService.shared.members(conversationId: conversation.id)
+        else { return }
+        let myId = TokenStore.shared.userId
+        members = convMembers.map { m in
+            VMember(id: m.userId,
+                    name: m.name ?? "VOIID user",
+                    phone: "",
+                    photoName: nil,
+                    role: m.isAdmin ? .admin : .member,
+                    statusText: nil,
+                    isYou: m.userId == myId)
+        }
+        // Put "You" first, then admins, then everyone else (alphabetical).
+        members.sort {
+            if $0.isYou != $1.isYou { return $0.isYou }
+            if ($0.role == .admin) != ($1.role == .admin) { return $0.role == .admin }
+            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
     }
 

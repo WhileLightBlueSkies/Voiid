@@ -49,7 +49,17 @@ final class ContactsService {
     }
 
     /// Request access, read contacts, discover VOIID users, and persist the links.
-    func discover() async throws -> DiscoveryResult {
+    // Cache the last discovery so NewChat + NewGroup (and quick reopens) reuse one
+    // network result instead of each hitting /contacts/discover — which could race,
+    // hit the rate limiter, or leave one screen empty while the other loaded.
+    private var cached: DiscoveryResult?
+    private var cachedAt: Date?
+    private let cacheTTL: TimeInterval = 120
+
+    func discover(forceRefresh: Bool = false) async throws -> DiscoveryResult {
+        if !forceRefresh, let c = cached, let t = cachedAt, Date().timeIntervalSince(t) < cacheTTL {
+            return c
+        }
         let store = CNContactStore()
         let granted = try await store.requestAccess(for: .contacts)
         guard granted else { throw APIError.http(status: 403, message: "Contacts permission denied") }
@@ -110,8 +120,11 @@ final class ContactsService {
         }
         invites.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 
-        return DiscoveryResult(matches: matches.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending },
-                               invites: invites)
+        let result = DiscoveryResult(
+            matches: matches.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending },
+            invites: invites)
+        cached = result; cachedAt = Date()
+        return result
     }
 
     // MARK: - Device read
