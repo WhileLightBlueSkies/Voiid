@@ -134,6 +134,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
             }
             val status = when {
                 !d.isMine -> MessageStatus.READ
+                d.failed -> MessageStatus.FAILED
                 d.pending -> MessageStatus.SENDING
                 else -> MessageStatus.SENT
             }

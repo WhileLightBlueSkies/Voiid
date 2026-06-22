@@ -21,7 +21,28 @@ router.post('/register', requireAuth, async (req, res) => {
        returning id`,
     [user_id, platform, registration_id, identity_public_key, device_name, push_token, push_provider]
   );
-  res.json({ device_id: rows[0].id });
+  const deviceId = rows[0].id;
+
+  // Single active device per (user, platform): a reinstall regenerates the
+  // registration_id, so the upsert above creates a NEW row and the OLD device
+  // lingers as "active" with a stale identity key + exhausted one-time prekeys.
+  // Peers fetch one bundle (firstOrNull) and could land on that dead device →
+  // "peer has no available prekeys". Revoke the superseded same-platform devices
+  // and drop their now-useless one-time prekeys so resolution is unambiguous.
+  const stale = await query<{ id: string }>(
+    `update devices set revoked_at = now()
+       where user_id = $1 and platform = $2 and id <> $3 and revoked_at is null
+       returning id`,
+    [user_id, platform, deviceId]
+  );
+  if (stale.length) {
+    await query(
+      `delete from one_time_prekeys where device_id = any($1::uuid[])`,
+      [stale.map((d) => d.id)]
+    );
+  }
+
+  res.json({ device_id: deviceId });
 });
 
 // GET /devices/:user_id — active devices (public info only).
@@ -30,7 +51,8 @@ router.post('/register', requireAuth, async (req, res) => {
 router.get('/:user_id', requireAuth, async (req, res) => {
   const rows = await query<{ id: string; identity_public_key: Buffer }>(
     `select id, platform, device_name, registration_id, last_seen_at, identity_public_key
-       from devices where user_id = $1 and revoked_at is null`,
+       from devices where user_id = $1 and revoked_at is null
+       order by last_seen_at desc nulls last, created_at desc`,
     [req.params.user_id]
   );
   const devices = rows.map((d: any) => ({

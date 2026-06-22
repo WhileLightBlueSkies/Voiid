@@ -31,11 +31,29 @@ router.post('/upload', requireAuth, async (req, res) => {
   res.json({ uploaded: true });
 });
 
+// GET /prekeys/count — how many UNCONSUMED one-time prekeys the caller has left
+// across their own active devices. The client polls this to decide when to
+// replenish (one-time keys are consumed as peers start sessions with us).
+// Registered BEFORE /:user_id so it isn't swallowed by the user-id route.
+router.get('/count', requireAuth, async (req, res) => {
+  const { user_id } = (req as any).auth;
+  const rows = await query<{ count: string }>(
+    `select count(*)::int as count from one_time_prekeys otp
+       join devices d on d.id = otp.device_id
+      where d.user_id = $1 and d.revoked_at is null and otp.consumed_at is null`,
+    [user_id]
+  );
+  res.json({ available: Number(rows[0]?.count ?? 0) });
+});
+
 // GET /prekeys/:user_id — returns a bundle per active device, consuming one one-time prekey transactionally.
 router.get('/:user_id', requireAuth, async (req, res) => {
+  // Freshest device first: a reinstall can leave a stale device row around, and
+  // the client takes the first bundle — so hand out the most recently active.
   const devices = await query<{ id: string; registration_id: number; identity_public_key: Buffer }>(
     `select id, registration_id, identity_public_key from devices
-       where user_id = $1 and revoked_at is null`,
+       where user_id = $1 and revoked_at is null
+       order by last_seen_at desc nulls last, created_at desc`,
     [req.params.user_id]
   );
 

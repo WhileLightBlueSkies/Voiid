@@ -20,12 +20,22 @@ data class ProfileUser(
     val email: String? = null,
     val photo_url: String? = null,
     val username: String? = null,
+    val bio: String? = null,
+    val status_text: String? = null,
 )
 @Serializable
 private data class ProfileEnvelope(val user: ProfileUser)
 
 class ProfileService(context: Context) {
     private val api = ApiClient(TokenStore.get(context))
+
+    /** Public profile of any user (full_name, username, bio…) — used by the
+     *  contact profile screen. Phone number is intentionally NOT returned by the
+     *  API (privacy); it comes from the on-device contact match instead. */
+    suspend fun fetchUser(userId: String): ProfileUser {
+        val env: ProfileEnvelope = api.requestAs("GET", "users/$userId")
+        return env.user
+    }
 
     /** Live availability check for a candidate username (Clips handle). */
     suspend fun checkUsername(username: String): UsernameAvailability {

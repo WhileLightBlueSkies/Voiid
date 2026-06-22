@@ -71,7 +71,11 @@ class ContactsService(context: Context) {
             if (m.user_id == myId) continue
             matchedHashes.add(m.phone_hash)
             if (!seenUsers.add(m.user_id)) continue
-            val savedName = hashToContact[m.phone_hash]?.first
+            val saved = hashToContact[m.phone_hash]
+            val savedName = saved?.first
+            // Remember the saved name + number so the contact profile can show the
+            // real number (the backend never returns it — privacy by design).
+            ContactDirectory.put(appContext, m.user_id, savedName, saved?.second)
             matches.add(VContact(m.user_id, savedName ?: m.full_name ?: "VOIID user", m.photo_url))
         }
 
