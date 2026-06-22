@@ -29,8 +29,8 @@ private data class ConversationsEnvelope(val conversations: List<ConvDTO>)
 @Serializable private data class ConvDetailDTO(val id: String, val type: String, val name: String? = null)
 @Serializable private data class MemberDTO(val user_id: String, val full_name: String? = null, val photo_url: String? = null)
 @Serializable private data class ConvDetailEnvelope(val conversation: ConvDetailDTO, val members: List<MemberDTO>)
-@Serializable private data class CreatedConvDTO(val id: String, val type: String, val name: String? = null)
-@Serializable private data class CreateConvEnvelope(val conversation: CreatedConvDTO)
+// Backend returns a FLAT shape: direct → { conversation_id, existed }, group → { conversation_id }.
+@Serializable private data class CreateConvEnvelope(val conversation_id: String, val existed: Boolean = false)
 
 /** Resolved peer of a direct conversation. */
 data class PeerInfo(val peerUserId: String?, val title: String?, val photoURL: String?)
@@ -80,7 +80,7 @@ class ChatService(context: Context) {
     suspend fun createDirect(memberId: String): String {
         val body = """{"type":"direct","member_id":"$memberId"}"""
         val env: CreateConvEnvelope = api.requestAs("POST", "conversations/create", jsonBody = body)
-        return env.conversation.id
+        return env.conversation_id
     }
 
     /** Peer presence (online + last_seen epoch millis) from Redis-backed status. */

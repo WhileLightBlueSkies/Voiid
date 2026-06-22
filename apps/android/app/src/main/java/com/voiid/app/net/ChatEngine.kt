@@ -79,12 +79,16 @@ class ChatEngine private constructor(context: Context) {
 
     @Serializable
     data class DecryptedMessage(
-        val id: String,
+        val id: String,                 // stable LOCAL id
         val senderId: String,
         val text: String,
         val createdAt: Long,
         val isMine: Boolean,
         val media: MediaRef? = null,
+        /** True until the server accepts it (offline/un-sent) — visible + retried. */
+        val pending: Boolean = false,
+        /** Server id once accepted (matches read/delivery receipts). */
+        val serverId: String? = null,
     )
 
     /** The E2EE plaintext of a media message: the reference + an optional caption. */
@@ -97,18 +101,51 @@ class ChatEngine private constructor(context: Context) {
     fun messages(conversationId: String): List<DecryptedMessage> =
         (store[conversationId] ?: emptyList()).sortedBy { it.createdAt }
 
-    /** Encrypt + send a text message; returns the stored echo for the UI. */
+    /** Queue a text message as PENDING locally (instant + offline + survives restart),
+     *  WITHOUT touching the network. Call [flushPending] to actually send. */
+    fun enqueueText(text: String, conversationId: String): DecryptedMessage {
+        val msg = DecryptedMessage(
+            id = java.util.UUID.randomUUID().toString(),
+            senderId = tokens.userId ?: "me", text = text,
+            createdAt = System.currentTimeMillis(), isMine = true, pending = true,
+        )
+        append(conversationId, msg)
+        return msg
+    }
+
+    /** Try to send every PENDING text message (offline retry). Failures are swallowed
+     *  — the message stays pending and is retried on the next flush. */
+    suspend fun flushPending(conversationId: String, peerUserId: String) {
+        val pendings = (store[conversationId] ?: emptyList()).filter { it.isMine && it.pending && it.media == null }
+        for (p in pendings) {
+            try {
+                val session = ensureOutboundSession(conversationId, peerUserId)
+                val wire = session.encrypt(p.text.encodeToByteArray())
+                saveSession(session, conversationId)
+                val ciphertext = encodeWire(wire)
+                val body = ApiClient.json.encodeToString(SendBody.serializer(), SendBody(conversationId, ciphertext))
+                val res: SendResponse = api.requestAs("POST", "messages/send", jsonBody = body)
+                markSent(p.id, conversationId, res.message_id)
+                android.util.Log.i("VOIID", "✅ sent text id=${res.message_id} conv=$conversationId")
+            } catch (e: Exception) {
+                android.util.Log.e("VOIID", "❌ sendText FAILED conv=$conversationId", e)
+            }
+        }
+    }
+
+    /** Backwards-compatible one-shot send (enqueue + flush). */
     suspend fun sendText(text: String, conversationId: String, peerUserId: String): DecryptedMessage {
-        val session = ensureOutboundSession(conversationId, peerUserId)
-        val wire = session.encrypt(text.encodeToByteArray())
-        saveSession(session, conversationId)
-        val ciphertext = encodeWire(wire)
-        val body = ApiClient.json.encodeToString(
-            SendBody.serializer(), SendBody(conversationId, ciphertext))
-        val res: SendResponse = api.requestAs("POST", "messages/send", jsonBody = body)
-        val echo = DecryptedMessage(res.message_id, tokens.userId ?: "me", text, parseIso(res.created_at), true)
-        append(conversationId, echo)
-        return echo
+        val msg = enqueueText(text, conversationId)
+        flushPending(conversationId, peerUserId)
+        return msg
+    }
+
+    private fun markSent(localId: String, conversationId: String, serverId: String) {
+        val arr = store[conversationId] ?: return
+        val i = arr.indexOfFirst { it.id == localId }
+        if (i < 0) return
+        arr[i] = arr[i].copy(pending = false, serverId = serverId)
+        persist()
     }
 
     /**
@@ -150,6 +187,7 @@ class ChatEngine private constructor(context: Context) {
 
     /** Fetch the server list, decrypt only unseen ids, persist, return full convo (asc). */
     suspend fun sync(conversationId: String, peerUserId: String): List<DecryptedMessage> {
+        flushPending(conversationId, peerUserId)   // push any queued sends first
         val env: MessagesResponse = api.requestAs("GET", "messages/conversation/$conversationId")
         val myId = tokens.userId
         val seen = (store[conversationId] ?: emptyList()).map { it.id }.toHashSet()
