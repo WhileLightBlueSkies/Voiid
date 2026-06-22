@@ -2,8 +2,6 @@ package com.voiid.app.net
 
 import android.content.Context
 import android.util.Base64
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
@@ -47,14 +45,7 @@ class ChatEngine private constructor(context: Context) {
     private val api = ApiClient(tokens)
     private val e2e = E2EManager.get(context)
 
-    private val prefs = run {
-        val mk = MasterKey.Builder(appContext).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
-        EncryptedSharedPreferences.create(
-            appContext, "voiid_chat", mk,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-        )
-    }
+    private val prefs = SecurePrefs.open(appContext, "voiid_chat")
 
     private val sessions = HashMap<String, Session>()                 // conversationId -> live Session
     private val store = HashMap<String, MutableList<DecryptedMessage>>() // conversationId -> messages (asc)

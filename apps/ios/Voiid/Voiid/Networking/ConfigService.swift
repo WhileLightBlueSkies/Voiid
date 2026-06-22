@@ -9,6 +9,7 @@
 //
 
 import SwiftUI
+import Combine
 
 @MainActor
 final class ConfigService: ObservableObject {

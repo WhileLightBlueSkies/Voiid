@@ -1,13 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?><!--
-   Sample backup rules file; uncomment and customize as necessary.
-   See https://developer.android.com/guide/topics/data/autobackup
-   for details.
-   Note: This file is ignored for devices older than API 31
-   See https://developer.android.com/about/versions/12/backup-restore
+   Backup rules (API < 31). Exclude EncryptedSharedPreferences-backed files:
+   the Android Keystore master key is never backed up, so restoring this
+   ciphertext onto a new install yields an undecryptable keyset and a launch
+   crash (AEADBadTagException). See TokenStore.kt.
 -->
 <full-backup-content>
-    <!--
-   <include domain="sharedpref" path="."/>
-   <exclude domain="sharedpref" path="device.xml"/>
--->
+    <exclude domain="sharedpref" path="voiid_auth.xml"/>
+    <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs_key_keyset__.xml"/>
+    <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs_value_keyset__.xml"/>
 </full-backup-content>

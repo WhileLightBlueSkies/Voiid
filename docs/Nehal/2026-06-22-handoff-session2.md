@@ -2,7 +2,7 @@
 
 Branch: `0.0.2` · Backend (dev): `https://api-dev.voiid.app`
 
-Follow-on to [2026-06-22-handoff.md](2026-06-22-handoff.md). This session implemented
+Follow-on to [Priyanshu's 2026-06-22-handoff.md](../Priyanshu/2026-06-22-handoff.md). This session implemented
 the **app-wiring fixes** from that doc's "Left to do" / "Known issues": media
 (image + voice) send/receive is now wired end-to-end in the app, and the
 contacts-in-search issue has a concrete fix. Group messaging (MLS) is still open.

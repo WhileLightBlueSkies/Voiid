@@ -1,19 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?><!--
-   Sample data extraction rules file; uncomment and customize as necessary.
-   See https://developer.android.com/about/versions/12/backup-restore#xml-changes
-   for details.
+   Data extraction rules (API 31+). Exclude EncryptedSharedPreferences-backed
+   files from both cloud backup and device transfer: the Android Keystore master
+   key never leaves the device, so restoring this ciphertext onto a new install
+   yields an undecryptable keyset and a launch crash. See TokenStore.kt.
 -->
 <data-extraction-rules>
     <cloud-backup>
-        <!-- TODO: Use <include> and <exclude> to control what is backed up.
-        <include .../>
-        <exclude .../>
-        -->
+        <exclude domain="sharedpref" path="voiid_auth.xml"/>
+        <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs_key_keyset__.xml"/>
+        <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs_value_keyset__.xml"/>
     </cloud-backup>
-    <!--
     <device-transfer>
-        <include .../>
-        <exclude .../>
+        <exclude domain="sharedpref" path="voiid_auth.xml"/>
+        <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs_key_keyset__.xml"/>
+        <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs_value_keyset__.xml"/>
     </device-transfer>
-    -->
 </data-extraction-rules>

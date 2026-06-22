@@ -2,8 +2,6 @@ package com.voiid.app.net
 
 import android.content.Context
 import android.util.Base64
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import kotlinx.serialization.Serializable
 import uniffi.voiid.Identity
 import uniffi.voiid.PublicBundle
@@ -27,14 +25,7 @@ class E2EManager private constructor(context: Context) {
     }
 
     private val api = ApiClient(TokenStore.get(context))
-    private val prefs = run {
-        val mk = MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
-        EncryptedSharedPreferences.create(
-            context, "voiid_e2e", mk,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-        )
-    }
+    private val prefs = SecurePrefs.open(context, "voiid_e2e")
 
     var identity: Identity? = null; private set
     var deviceId: String? = null; private set
