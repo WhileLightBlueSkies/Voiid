@@ -24,14 +24,20 @@ router.post('/register', requireAuth, async (req, res) => {
   res.json({ device_id: rows[0].id });
 });
 
-// GET /devices/:user_id — active devices (public info only)
+// GET /devices/:user_id — active devices (public info only).
+// identity_public_key (base64) is PUBLIC and required by peers to acceptSession
+// on an inbound PreKey message — without it the receive path can't decrypt.
 router.get('/:user_id', requireAuth, async (req, res) => {
-  const rows = await query(
-    `select id, platform, device_name, registration_id, last_seen_at
+  const rows = await query<{ id: string; identity_public_key: Buffer }>(
+    `select id, platform, device_name, registration_id, last_seen_at, identity_public_key
        from devices where user_id = $1 and revoked_at is null`,
     [req.params.user_id]
   );
-  res.json({ devices: rows });
+  const devices = rows.map((d: any) => ({
+    ...d,
+    identity_public_key: d.identity_public_key ? d.identity_public_key.toString('base64') : null,
+  }));
+  res.json({ devices });
 });
 
 // DELETE /devices/:device_id — revocation: invalidate immediately (Section 4.3)

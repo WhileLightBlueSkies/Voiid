@@ -40,12 +40,17 @@ struct MediaRef: Codable, Equatable, Hashable {
 /// For media messages `text` holds a caption (often empty) and `media` carries
 /// the reference needed to fetch + decrypt the blob on demand.
 struct DecryptedMessage: Codable {
-    let id: String
+    let id: String                 // stable LOCAL id (kept across send so the UI is stable)
     let senderId: String
     let text: String
     let createdAt: Date
     let isMine: Bool
     var media: MediaRef? = nil
+    /// True until the server has accepted this (offline / not-yet-sent). Persisted,
+    /// so a message typed offline is visible immediately + survives restart + retried.
+    var pending: Bool = false
+    /// Server message id once accepted (used to match read/delivery receipts).
+    var serverId: String? = nil
 }
 
 @MainActor
@@ -65,21 +70,54 @@ final class ChatEngine {
         (store[conversationId] ?? []).sorted { $0.createdAt < $1.createdAt }
     }
 
-    /// Encrypt + send a text message in a direct conversation with `peerUserId`.
-    /// Returns the stored echo (so the UI can show it immediately).
+    /// Queue a text message for sending. Stores it locally as PENDING immediately
+    /// (so it shows instantly + offline + survives restart) WITHOUT touching the
+    /// network. Call `flushPending` to actually send. Returns the stored echo.
+    @discardableResult
+    func enqueueText(_ text: String, conversationId: String) -> DecryptedMessage {
+        let msg = DecryptedMessage(id: UUID().uuidString, senderId: TokenStore.shared.userId ?? "me",
+                                   text: text, createdAt: Date(), isMine: true, pending: true)
+        append(msg, to: conversationId)
+        return msg
+    }
+
+    /// Try to send every PENDING text message in a conversation (offline retry).
+    /// Network failures are swallowed — the message stays pending and is retried
+    /// on the next flush (open / sync / reconnect).
+    func flushPending(conversationId: String, peerUserId: String) async {
+        let pendings = (store[conversationId] ?? []).filter { $0.isMine && $0.pending && $0.media == nil }
+        for p in pendings {
+            do {
+                let session = try await ensureOutboundSession(conversationId: conversationId, peerUserId: peerUserId)
+                let wire = try session.encrypt(plaintext: Data(p.text.utf8))
+                saveSession(session, conversationId: conversationId)
+                let ciphertext = encodeWire(wire)
+                let res: SendResponse = try await api.request(
+                    "POST", "messages/send",
+                    body: SendBody(conversation_id: conversationId, ciphertext: ciphertext))
+                markSent(localId: p.id, conversationId: conversationId, serverId: res.message_id)
+                NSLog("[VOIID] ✅ sent text id=\(res.message_id) conv=\(conversationId)")
+            } catch {
+                NSLog("[VOIID] ❌ sendText FAILED conv=\(conversationId): \(error)")
+                // stays pending → retried later
+            }
+        }
+    }
+
+    /// Backwards-compatible one-shot send (enqueue + flush).
     @discardableResult
     func sendText(_ text: String, conversationId: String, peerUserId: String) async throws -> DecryptedMessage {
-        let session = try await ensureOutboundSession(conversationId: conversationId, peerUserId: peerUserId)
-        let wire = try session.encrypt(plaintext: Data(text.utf8))
-        saveSession(session, conversationId: conversationId)
-        let ciphertext = encodeWire(wire)
-        let res: SendResponse = try await api.request(
-            "POST", "messages/send",
-            body: SendBody(conversation_id: conversationId, ciphertext: ciphertext))
-        let echo = DecryptedMessage(id: res.message_id, senderId: TokenStore.shared.userId ?? "me",
-                                    text: text, createdAt: parseDate(res.created_at), isMine: true)
-        append(echo, to: conversationId)
-        return echo
+        let msg = enqueueText(text, conversationId: conversationId)
+        await flushPending(conversationId: conversationId, peerUserId: peerUserId)
+        return msg
+    }
+
+    private func markSent(localId: String, conversationId: String, serverId: String) {
+        guard var arr = store[conversationId], let i = arr.firstIndex(where: { $0.id == localId }) else { return }
+        arr[i].pending = false
+        arr[i].serverId = serverId
+        store[conversationId] = arr
+        persist()
     }
 
     /// Encrypt + send a MEDIA message in a direct conversation. The blob is
@@ -128,6 +166,7 @@ final class ChatEngine {
     /// and return the full conversation (oldest-first).
     @discardableResult
     func sync(conversationId: String, peerUserId: String) async throws -> [DecryptedMessage] {
+        await flushPending(conversationId: conversationId, peerUserId: peerUserId)   // push any queued sends first
         let env: MessagesResponse = try await api.request("GET", "messages/conversation/\(conversationId)")
         let myId = TokenStore.shared.userId
         let seen = Set((store[conversationId] ?? []).map { $0.id })

@@ -132,12 +132,17 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                 d.media.mime.startsWith("audio/") -> MessageKind.VOICE
                 else -> MessageKind.IMAGE
             }
+            val status = when {
+                !d.isMine -> MessageStatus.READ
+                d.pending -> MessageStatus.SENDING
+                else -> MessageStatus.SENT
+            }
             VMessage(
-                id = d.id, conversationId = convId,
+                // Use the server id once known so receipts can match it.
+                id = d.serverId ?: d.id, conversationId = convId,
                 senderId = if (d.isMine) "me" else d.senderId,
                 kind = kind, text = d.text, createdAt = d.createdAt,
-                status = if (d.isMine) MessageStatus.SENT else MessageStatus.READ,
-                isMine = d.isMine, mediaRef = d.media,
+                status = status, isMine = d.isMine, mediaRef = d.media,
             )
         }
         if (mapped.isNotEmpty() || messagesByConversation.containsKey(convId)) {
@@ -215,32 +220,36 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         replyTo: VMessage? = null,
         forwarded: Boolean = false,
     ) {
-        val tempId = UUID.randomUUID().toString()
-        val msg = VMessage(
-            id = tempId, conversationId = conversationId, senderId = "me",
-            kind = kind, text = text, createdAt = System.currentTimeMillis(),
-            status = MessageStatus.SENDING, isMine = true,
-            forwarded = forwarded,
-            replyToSender = replyTo?.let { if (it.isMine) "You" else it.senderName.ifEmpty { "" } },
-            replyToText = replyTo?.let { if (it.kind == MessageKind.TEXT) it.text else "Attachment" },
-        )
-        list(conversationId).add(msg)
-        bumpPreview(conversationId, if (kind == MessageKind.TEXT) text else previewFor(kind))
-
         val conv = directConversations.firstOrNull { it.id == conversationId }
-        if (conv == null) {
-            markStatus(tempId, conversationId, MessageStatus.SENT)   // group/unknown: local echo only
+        if (conv == null || kind != MessageKind.TEXT) {
+            // Group / non-text (e.g. forwarded media) — transient local echo only.
+            val tempId = UUID.randomUUID().toString()
+            list(conversationId).add(
+                VMessage(
+                    id = tempId, conversationId = conversationId, senderId = "me",
+                    kind = kind, text = text, createdAt = System.currentTimeMillis(),
+                    status = MessageStatus.SENDING, isMine = true, forwarded = forwarded,
+                    replyToSender = replyTo?.let { if (it.isMine) "You" else it.senderName.ifEmpty { "" } },
+                    replyToText = replyTo?.let { if (it.kind == MessageKind.TEXT) it.text else "Attachment" },
+                ),
+            )
+            bumpPreview(conversationId, if (kind == MessageKind.TEXT) text else previewFor(kind))
+            markStatus(tempId, conversationId, MessageStatus.SENT)
             return
         }
+
+        // Text: persist as PENDING in the engine store now (instant + offline-visible),
+        // then flush (send) in the background. The store is the single source of truth.
+        engine.enqueueText(text, conversationId)
+        refresh(conversationId)
+        bumpPreview(conversationId, text)
         viewModelScope.launch {
             try {
                 val peer = peerUserId(conv)
-                engine.sendText(text, conversationId, peer)
-                removeMessage(tempId, conversationId)
+                engine.flushPending(conversationId, peer)
                 refresh(conversationId)
             } catch (e: Exception) {
-                markStatus(tempId, conversationId, MessageStatus.FAILED)
-                loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t send message."
+                loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t resolve the recipient."
             }
         }
     }

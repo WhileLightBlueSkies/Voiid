@@ -166,10 +166,13 @@ final class ChatStore: ObservableObject {
     private func refresh(_ convId: String) {
         let mapped = ChatEngine.shared.messages(conversationId: convId).map { d -> VMessage in
             let kind: MessageKind = d.media.map { $0.mime.hasPrefix("audio/") ? .voice : .image } ?? .text
-            return VMessage(id: d.id, conversationId: convId,
+            // Use the server id once known so read/delivery receipts can match it;
+            // pending (offline/un-sent) messages show the clock tick.
+            let status: MessageStatus = d.isMine ? (d.pending ? .sending : .sent) : .read
+            return VMessage(id: d.serverId ?? d.id, conversationId: convId,
                             senderId: d.isMine ? "me" : d.senderId,
                             kind: kind, text: d.text, createdAt: d.createdAt,
-                            status: d.isMine ? .sent : .read, isMine: d.isMine,
+                            status: status, isMine: d.isMine,
                             mediaRef: d.media)
         }
         if !mapped.isEmpty || messagesByConversation[convId] != nil {
@@ -233,26 +236,32 @@ final class ChatStore: ObservableObject {
             msg.replyToSender = r.isMine ? "You" : (r.senderName.isEmpty ? "" : r.senderName)
             msg.replyToText = r.kind == .text ? r.text : "Attachment"
         }
-        messagesByConversation[conversationId, default: messages(for: conversationId)].append(msg)
-        bumpPreview(conversationId, preview: kind == .text ? text : previewFor(kind))
-
         guard let conv = directConversations.first(where: { $0.id == conversationId }) else {
-            // Group (or unknown) — local echo only for now; mark sent.
+            // Group (or unknown) — transient local echo only (group E2E/MLS not wired).
+            messagesByConversation[conversationId, default: messages(for: conversationId)].append(msg)
+            bumpPreview(conversationId, preview: kind == .text ? text : previewFor(kind))
             markStatus(tempId, in: conversationId, to: .sent)
             return
         }
 
+        guard kind == .text else {
+            // Non-text via this path (rare, e.g. forwarded media) — transient echo.
+            messagesByConversation[conversationId, default: messages(for: conversationId)].append(msg)
+            bumpPreview(conversationId, preview: previewFor(kind))
+            return
+        }
+
+        // Text: persist as PENDING in the engine store NOW (instant + offline-visible),
+        // then flush (send) in the background. The store is the single source of truth.
+        _ = ChatEngine.shared.enqueueText(text, conversationId: conversationId)
+        refresh(conversationId)
+        bumpPreview(conversationId, preview: text)
         Task {
-            do {
-                let peer = try await peerUserId(for: conv)
-                _ = try await ChatEngine.shared.sendText(text, conversationId: conversationId, peerUserId: peer)
-                // Replace the optimistic echo with the persisted one (real id) from the store.
-                removeMessage(tempId, in: conversationId)
-                refresh(conversationId)
-            } catch {
-                markStatus(tempId, in: conversationId, to: .failed)
-                loadError = (error as? APIError)?.errorDescription ?? "Couldn’t send message."
+            guard let peer = try? await peerUserId(for: conv) else {
+                loadError = "Couldn’t resolve the recipient."; return
             }
+            await ChatEngine.shared.flushPending(conversationId: conversationId, peerUserId: peer)
+            refresh(conversationId)
         }
     }
 
