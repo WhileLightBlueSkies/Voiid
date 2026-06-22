@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -144,16 +145,25 @@ private fun TabBar(selected: Tab, onSelect: (Tab) -> Unit) {
             val slot = maxWidth / 3
             val pillW = 54.dp
             val activeIndex = selected.ordinal
-            val pillX by animateDpAsState(
-                targetValue = slot * activeIndex + (slot - pillW) / 2,
-                animationSpec = spring(dampingRatio = 0.55f, stiffness = Spring.StiffnessLow),
-                label = "tabPillX",
-            )
-            // Elastic pill indicator
+            val leftTarget = slot * activeIndex + (slot - pillW) / 2
+            val rightTarget = leftTarget + pillW
+
+            // Direction of travel (computed before SideEffect updates the previous index).
+            var prevIndex by remember { mutableStateOf(activeIndex) }
+            val movingRight = activeIndex >= prevIndex
+            SideEffect { prevIndex = activeIndex }
+
+            // Elastic pill: the LEADING edge springs faster than the trailing edge, so
+            // the pill STRETCHES in the direction of travel then snaps back — matching
+            // the iOS matchedGeometry capsule (RootTabView.swift).
+            val fast = spring<androidx.compose.ui.unit.Dp>(dampingRatio = 0.7f, stiffness = Spring.StiffnessMedium)
+            val slow = spring<androidx.compose.ui.unit.Dp>(dampingRatio = 0.7f, stiffness = Spring.StiffnessLow)
+            val leftX by animateDpAsState(leftTarget, if (movingRight) slow else fast, label = "tabPillLeft")
+            val rightX by animateDpAsState(rightTarget, if (movingRight) fast else slow, label = "tabPillRight")
             Box(
                 Modifier
-                    .offset(x = pillX)
-                    .size(width = pillW, height = 40.dp)
+                    .offset(x = leftX)
+                    .size(width = (rightX - leftX).coerceAtLeast(pillW), height = 40.dp)
                     .clip(RoundedCornerShape(999.dp))
                     .background(VoiidColor.accent.copy(alpha = 0.55f)),
             )
