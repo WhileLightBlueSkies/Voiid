@@ -62,6 +62,7 @@ struct VoiidApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .voiidForceUpdateGate()   // /config on launch + blocking update screen on 426
         }
     }
 }

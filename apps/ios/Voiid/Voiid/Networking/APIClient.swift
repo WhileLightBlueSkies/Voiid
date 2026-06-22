@@ -15,7 +15,15 @@ enum APIConfig {
     /// + ws://localhost:4001.
     static var baseURL = URL(string: "https://api-dev.voiid.app")!
     static var wsURL = URL(string: "wss://api-dev.voiid.app/ws")!
+    /// API version this build talks (path-versioned: /v1/...). Bumped per major contract.
+    static var apiVersion = "v1"
+    /// This build's app version (for force-update gating).
+    static var appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.0.0"
 }
+
+/// Posted when the backend returns 426 (client below minSupportedVersion). The
+/// root view observes this to show a blocking "update required" screen.
+extension Notification.Name { static let voiidUpdateRequired = Notification.Name("voiidUpdateRequired") }
 
 enum APIError: Error, LocalizedError {
     case http(status: Int, message: String)
@@ -45,19 +53,26 @@ struct APIClient {
         _ path: String,
         body: Encodable? = nil,
         auth: Bool = true,
+        versioned: Bool = true,
         as: Response.Type = Response.self
     ) async throws -> Response {
         // Build the URL from a string so query strings (e.g. "?username=foo")
         // survive — appendingPathComponent would percent-encode the "?" and "="
-        // and break the request.
+        // and break the request. Versioned calls go under /v1; pass versioned:false
+        // for unversioned endpoints (e.g. /config).
         let base = APIConfig.baseURL.absoluteString
-        let full = base.hasSuffix("/") ? base + path : base + "/" + path
+        let prefix = versioned ? "\(APIConfig.apiVersion)/" : ""
+        let full = (base.hasSuffix("/") ? base : base + "/") + prefix + path
         guard let url = URL(string: full) else {
             throw APIError.http(status: 0, message: "Bad URL")
         }
         var req = URLRequest(url: url)
         req.httpMethod = method
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // Version negotiation / force-update headers (read by the backend gate).
+        req.setValue("ios", forHTTPHeaderField: "X-Voiid-Platform")
+        req.setValue(APIConfig.appVersion, forHTTPHeaderField: "X-Voiid-App-Version")
+        req.setValue(APIConfig.apiVersion, forHTTPHeaderField: "X-Voiid-Api-Version")
 
         if auth {
             guard let token = tokenStore.jwt else { throw APIError.notAuthenticated }
@@ -76,6 +91,15 @@ struct APIClient {
         }
 
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        // 426 Upgrade Required → this build is below minSupportedVersion. Tell the
+        // app to show a blocking forced-update screen.
+        if status == 426 {
+            let storeURL = (try? JSONDecoder().decode(UpdateBody.self, from: data))?.update_url
+            await MainActor.run {
+                NotificationCenter.default.post(name: .voiidUpdateRequired, object: storeURL)
+            }
+            throw APIError.http(status: 426, message: "Update required")
+        }
         guard (200..<300).contains(status) else {
             let message = (try? JSONDecoder().decode(ErrorBody.self, from: data))?.error
                 ?? "Request failed (\(status))."
@@ -89,6 +113,7 @@ struct APIClient {
     }
 
     private struct ErrorBody: Decodable { let error: String }
+    private struct UpdateBody: Decodable { let update_url: String? }
 }
 
 /// For endpoints that return `{ ok: true }`-style bodies we don't need to read.

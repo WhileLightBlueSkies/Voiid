@@ -20,6 +20,18 @@ object ApiConfig {
     // + ws://10.0.2.2:4001 (emulator -> host).
     @Volatile var baseUrl: String = "https://api-dev.voiid.app"
     @Volatile var wsUrl: String = "wss://api-dev.voiid.app/ws"
+    // API version this build talks (path-versioned: /v1/...). Bumped per major contract.
+    @Volatile var apiVersion: String = "v1"
+    // This build's app version (for force-update gating).
+    val appVersion: String get() = com.voiid.app.BuildConfig.VERSION_NAME
+}
+
+/** Global signal raised when the backend returns 426 (build below minSupported).
+ *  The root composable observes [required] and shows a blocking update screen. */
+object UpdateGate {
+    val required = kotlinx.coroutines.flow.MutableStateFlow(false)
+    @Volatile var storeUrl: String? = null
+    fun trigger(url: String?) { storeUrl = url; required.value = true }
 }
 
 sealed class ApiError(message: String) : Exception(message) {
@@ -47,8 +59,15 @@ class ApiClient(
         path: String,
         jsonBody: String? = null,
         auth: Boolean = true,
+        versioned: Boolean = true,
     ): String = withContext(Dispatchers.IO) {
-        val builder = Request.Builder().url(ApiConfig.baseUrl.trimEnd('/') + "/" + path.trimStart('/'))
+        // Versioned calls go under /v1; pass versioned=false for /config etc.
+        val prefix = if (versioned) ApiConfig.apiVersion + "/" else ""
+        val builder = Request.Builder()
+            .url(ApiConfig.baseUrl.trimEnd('/') + "/" + prefix + path.trimStart('/'))
+            .header("X-Voiid-Platform", "android")
+            .header("X-Voiid-App-Version", ApiConfig.appVersion)
+            .header("X-Voiid-Api-Version", ApiConfig.apiVersion)
 
         if (auth) {
             val token = tokens.jwt ?: throw ApiError.NotAuthenticated
@@ -64,6 +83,12 @@ class ApiClient(
         }
         resp.use {
             val text = it.body?.string() ?: ""
+            // 426 → this build is below minSupportedVersion; raise the global gate.
+            if (it.code == 426) {
+                val url = runCatching { json.decodeFromString<UpdateBody>(text).update_url }.getOrNull()
+                UpdateGate.trigger(url)
+                throw ApiError.Http(426, "update required")
+            }
             if (!it.isSuccessful) {
                 if (it.code == 401) tokens.clear()
                 val msg = runCatching { json.decodeFromString<ErrorBody>(text).error }
@@ -80,8 +105,12 @@ class ApiClient(
         path: String,
         jsonBody: String? = null,
         auth: Boolean = true,
-    ): T = json.decodeFromString(request(method, path, jsonBody, auth))
+        versioned: Boolean = true,
+    ): T = json.decodeFromString(request(method, path, jsonBody, auth, versioned))
 }
 
 @kotlinx.serialization.Serializable
 private data class ErrorBody(val error: String = "error")
+
+@kotlinx.serialization.Serializable
+data class UpdateBody(val update_url: String? = null)
