@@ -78,6 +78,9 @@ class ChatEngine private constructor(context: Context) {
         val media: MediaRef? = null,
         /** True until the server accepts it (offline/un-sent) — visible + retried. */
         val pending: Boolean = false,
+        /** True if the last send attempt failed (e.g. peer has no prekeys). Still
+         *  pending (auto-retried on the next flush) but surfaced as an error in UI. */
+        val failed: Boolean = false,
         /** Server id once accepted (matches read/delivery receipts). */
         val serverId: String? = null,
     )
@@ -119,9 +122,19 @@ class ChatEngine private constructor(context: Context) {
                 markSent(p.id, conversationId, res.message_id)
                 android.util.Log.i("VOIID", "✅ sent text id=${res.message_id} conv=$conversationId")
             } catch (e: Exception) {
+                markFailed(p.id, conversationId)
                 android.util.Log.e("VOIID", "❌ sendText FAILED conv=$conversationId", e)
             }
         }
+    }
+
+    /** Flag a still-pending message as failed so the UI can show an error + retry. */
+    private fun markFailed(localId: String, conversationId: String) {
+        val arr = store[conversationId] ?: return
+        val i = arr.indexOfFirst { it.id == localId }
+        if (i < 0 || arr[i].failed) return
+        arr[i] = arr[i].copy(failed = true)
+        persist()
     }
 
     /** Backwards-compatible one-shot send (enqueue + flush). */
@@ -135,7 +148,7 @@ class ChatEngine private constructor(context: Context) {
         val arr = store[conversationId] ?: return
         val i = arr.indexOfFirst { it.id == localId }
         if (i < 0) return
-        arr[i] = arr[i].copy(pending = false, serverId = serverId)
+        arr[i] = arr[i].copy(pending = false, failed = false, serverId = serverId)
         persist()
     }
 
@@ -276,9 +289,11 @@ class ChatEngine private constructor(context: Context) {
 
     private suspend fun peerPrekeyBundle(userId: String): Pair<String, String> {
         val env: PrekeysResponse = api.requestAs("GET", "prekeys/$userId")
-        val b = env.bundles.firstOrNull()
-        val otk = b?.one_time_prekey
+        // Prefer a device that actually handed out a one-time key — a stale device
+        // (e.g. left over after the peer reinstalled) can return a null prekey.
+        val b = env.bundles.firstOrNull { it.one_time_prekey != null }
             ?: throw ApiError.Http(409, "peer has no available prekeys")
+        val otk = b.one_time_prekey!!
         return Pair(b.identity_public_key, otk.public_key)
     }
 

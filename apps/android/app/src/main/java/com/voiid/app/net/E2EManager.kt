@@ -22,6 +22,12 @@ class E2EManager private constructor(context: Context) {
             instance ?: synchronized(this) {
                 instance ?: E2EManager(context.applicationContext).also { instance = it }
             }
+
+        private const val TARGET_PREKEYS = 100   // refill toward this many available
+        private const val LOW_WATERMARK = 20     // replenish once we drop below this
+        // Start ids above the legacy 0..99 range a pre-replenishment build used,
+        // so upgrades never collide with already-stored key ids.
+        private const val PREKEY_ID_BASE = 100
     }
 
     private val api = ApiClient(TokenStore.get(context))
@@ -36,10 +42,31 @@ class E2EManager private constructor(context: Context) {
         if (bootstrapped) return
         val id = loadOrCreateIdentity()
         identity = id
-        val bundle = id.publishBundle(100u)
-        persist(id)
-        publish(bundle)
+        val devId = register(id)
+        deviceId = devId
+        ensurePrekeys(id, devId)
         bootstrapped = true
+    }
+
+    /**
+     * Top up our published one-time prekeys when the server says we're running
+     * low. Each inbound session a peer starts with us consumes one one-time key;
+     * if they all get consumed and we never replenish, NEW peers can't message us
+     * ("peer has no available prekeys"). Safe to call repeatedly (e.g. on resume).
+     */
+    suspend fun ensurePrekeys(id: Identity? = identity, devId: String? = deviceId) {
+        if (id == null || devId == null) return
+        val available = runCatching { availableCount() }.getOrDefault(0)
+        if (available >= LOW_WATERMARK) return
+        val max = runCatching { id.maxOneTimeKeys().toInt() }.getOrDefault(TARGET_PREKEYS)
+        val target = minOf(TARGET_PREKEYS, max)
+        val need = (target - available).coerceIn(0, max)
+        if (need <= 0) return
+        // Generate `need` NEW one-time keys (returns only the new ones), persist the
+        // identity BEFORE upload so a crash can't lose the private halves, then upload.
+        val bundle = id.replenishPrekeys(need.toUInt())
+        persist(id)
+        uploadPrekeys(devId, bundle.oneTimeKeys)
     }
 
     private fun loadOrCreateIdentity(): Identity {
@@ -76,18 +103,38 @@ class E2EManager private constructor(context: Context) {
     @Serializable private data class DeviceResp(val device_id: String)
     @Serializable private data class Otk(val key_id: Int, val public_key: String)
     @Serializable private data class PrekeysBody(val device_id: String, val one_time_prekeys: List<Otk>)
+    @Serializable private data class CountResp(val available: Int = 0)
 
-    private suspend fun publish(bundle: PublicBundle) {
+    /** Register (or refresh) this device server-side; returns the device id. */
+    private suspend fun register(id: Identity): String {
+        // publishBundle(0) yields the long-term identity key without generating
+        // any one-time keys (those are managed separately by [ensurePrekeys]).
+        val identityKey = id.publishBundle(0u).identityKey
+        persist(id)
         val regBody = ApiClient.json.encodeToString(
             RegisterBody.serializer(),
-            RegisterBody("android", registrationId(), bundle.identityKey))
+            RegisterBody("android", registrationId(), identityKey))
         val dev: DeviceResp = api.requestAs("POST", "devices/register", jsonBody = regBody)
-        deviceId = dev.device_id
         prefs.edit().putString("device_id", dev.device_id).apply()
+        return dev.device_id
+    }
 
-        val otks = bundle.oneTimeKeys.mapIndexed { i, k -> Otk(i, k) }
+    /** Our remaining unconsumed one-time prekeys on the server. */
+    private suspend fun availableCount(): Int {
+        val res: CountResp = api.requestAs("GET", "prekeys/count")
+        return res.available
+    }
+
+    /** Upload public one-time prekeys with MONOTONIC key ids (the server keys on
+     *  (device_id, key_id) with do-nothing-on-conflict, so ids must never repeat
+     *  across uploads or the replenished keys would be silently dropped). */
+    private suspend fun uploadPrekeys(devId: String, keys: List<String>) {
+        if (keys.isEmpty()) return
+        var nextId = prefs.getInt("prekey_next_id", PREKEY_ID_BASE)
+        val otks = keys.map { Otk(nextId++, it) }
+        prefs.edit().putInt("prekey_next_id", nextId).apply()
         val pkBody = ApiClient.json.encodeToString(
-            PrekeysBody.serializer(), PrekeysBody(dev.device_id, otks))
+            PrekeysBody.serializer(), PrekeysBody(devId, otks))
         api.request("POST", "prekeys/upload", jsonBody = pkBody)
     }
 }

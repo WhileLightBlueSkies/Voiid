@@ -37,6 +37,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -46,10 +47,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.voiid.app.model.DummyData
 import com.voiid.app.model.VConversation
+import com.voiid.app.net.ContactDirectory
+import com.voiid.app.net.ProfileService
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.ProfilePhotoViewer
 import com.voiid.app.ui.components.VoiidAvatar
@@ -64,10 +68,28 @@ import com.voiid.app.ui.theme.VoiidRadius
 @Composable
 fun ContactProfileView(conversation: VConversation, onBack: () -> Unit) {
     BackHandler { onBack() }
+    val context = LocalContext.current
     val haptics = LocalVoiidHaptics.current
     var muted by remember { mutableStateOf(false) }
     var showAllMedia by remember { mutableStateOf(false) }
     var viewPhoto by remember { mutableStateOf(false) }
+
+    // Real profile: full name + @username from the backend; the phone number from
+    // the on-device contact match (the API never returns a phone — privacy).
+    var fullName by remember { mutableStateOf<String?>(null) }
+    var username by remember { mutableStateOf<String?>(null) }
+    var bio by remember { mutableStateOf<String?>(null) }
+    val savedNumber = remember(conversation.peerUserId) {
+        conversation.peerUserId?.let { ContactDirectory.get(context, it).number }
+    }
+    LaunchedEffect(conversation.peerUserId) {
+        val peer = conversation.peerUserId ?: return@LaunchedEffect
+        runCatching { ProfileService(context).fetchUser(peer) }.getOrNull()?.let { u ->
+            fullName = u.full_name?.takeIf { it.isNotBlank() }
+            username = u.username?.takeIf { it.isNotBlank() }
+            bio = u.bio?.takeIf { it.isNotBlank() }
+        }
+    }
 
     Column(Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding()) {
         // Native iOS-26 circular back button
@@ -82,7 +104,17 @@ fun ContactProfileView(conversation: VConversation, onBack: () -> Unit) {
                 VoiidAvatar(size = 110.dp, modifier = Modifier.clip(CircleShape).clickable { haptics.tap(); viewPhoto = true })
                 Spacer(Modifier.height(8.dp))
                 Text(conversation.title, style = VoiidFont.rounded(22, FontWeight.Bold), color = VoiidColor.textPrimary)
-                Text("+91 91234 56789", style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
+                // Real name, @username and phone number — same secondary style, one per line.
+                // Each is shown only when known; the contact name above is the saved/display name.
+                fullName?.takeIf { it != conversation.title }?.let {
+                    Text(it, style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
+                }
+                username?.let {
+                    Text("@$it", style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
+                }
+                savedNumber?.let {
+                    Text(it, style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
+                }
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                     QuickAction(Icons.AutoMirrored.Filled.Message, "Message") { haptics.tap(); onBack() }
@@ -94,7 +126,7 @@ fun ContactProfileView(conversation: VConversation, onBack: () -> Unit) {
             // About
             ProfileCard {
                 Text("About", style = VoiidFont.rounded(13, FontWeight.Medium), color = VoiidColor.textSecondary)
-                Text("Hey there! I am using Voiid.", style = VoiidFont.rounded(16), color = VoiidColor.textPrimary)
+                Text(bio ?: "Hey there! I am using Voiid.", style = VoiidFont.rounded(16), color = VoiidColor.textPrimary)
             }
 
             // Shared media
