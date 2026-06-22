@@ -41,7 +41,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import android.media.MediaRecorder
+import android.os.Build
+import java.io.File
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
@@ -53,10 +57,35 @@ import kotlinx.coroutines.isActive
 // MARK: - Record button (press & hold)
 
 @Composable
-fun VoiceRecordButton(onSend: (Float) -> Unit) {
+fun VoiceRecordButton(onSend: (ByteArray, Float) -> Unit) {
     val haptics = LocalVoiidHaptics.current
+    val context = LocalContext.current
     var recording by remember { mutableStateOf(false) }
     var seconds by remember { mutableFloatStateOf(0f) }
+    var recorder by remember { mutableStateOf<MediaRecorder?>(null) }
+    var recFile by remember { mutableStateOf<File?>(null) }
+
+    fun startRec() {
+        runCatching {
+            val f = File.createTempFile("vn", ".m4a", context.cacheDir)
+            @Suppress("DEPRECATION")
+            val r = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(context) else MediaRecorder()
+            r.setAudioSource(MediaRecorder.AudioSource.MIC)
+            r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            r.setOutputFile(f.path)
+            r.prepare(); r.start()
+            recorder = r; recFile = f
+        }
+    }
+
+    fun stopRec(): ByteArray? {
+        val r = recorder ?: return null
+        val bytes = runCatching { r.stop(); r.release(); recFile?.readBytes() }.getOrNull()
+        recorder = null
+        recFile?.delete(); recFile = null
+        return bytes
+    }
 
     androidx.compose.runtime.LaunchedEffect(recording) {
         if (recording) {
@@ -98,6 +127,7 @@ fun VoiceRecordButton(onSend: (Float) -> Unit) {
                             awaitFirstDown(requireUnconsumed = false)
                             recording = true
                             haptics.rigid()
+                            startRec()
                             // wait for release / cancel
                             var released = false
                             while (!released) {
@@ -105,7 +135,9 @@ fun VoiceRecordButton(onSend: (Float) -> Unit) {
                                 if (event.changes.all { !it.pressed }) released = true
                             }
                             recording = false
-                            if (seconds >= 0.5f) { haptics.success(); onSend(seconds) }
+                            val dur = seconds
+                            val bytes = stopRec()
+                            if (dur >= 0.5f && bytes != null) { haptics.success(); onSend(bytes, dur) }
                         }
                     }
                 },

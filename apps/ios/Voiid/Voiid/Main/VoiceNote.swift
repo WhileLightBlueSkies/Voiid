@@ -9,16 +9,19 @@
 
 import SwiftUI
 import Combine
+import AVFoundation
 
 // MARK: - Record button (press & hold)
 
 struct VoiceRecordButton: View {
-    /// Called on release with the recorded duration (seconds).
-    var onSend: (TimeInterval) -> Void
+    /// Called on release with the recorded audio bytes (.m4a) + duration (seconds).
+    var onSend: (Data, TimeInterval) -> Void
 
     @State private var recording = false
     @State private var seconds: TimeInterval = 0
     @State private var timer: Timer?
+    @State private var recorder: AVAudioRecorder?
+    @State private var fileURL: URL?
 
     var body: some View {
         ZStack {
@@ -55,12 +58,40 @@ struct VoiceRecordButton: View {
         String(format: "%01d:%02d", Int(seconds) / 60, Int(seconds) % 60)
     }
     private func start() {
+        AVAudioApplication.requestRecordPermission { granted in
+            guard granted else { return }
+            DispatchQueue.main.async { beginRecording() }
+        }
+    }
+
+    private func beginRecording() {
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playAndRecord, mode: .default)
+        try? session.setActive(true)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voiid_vn_\(UUID().uuidString).m4a")
+        let settings: [String: Any] = [
+            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+            AVSampleRateKey: 44100,
+            AVNumberOfChannelsKey: 1,
+            AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue,
+        ]
+        guard let rec = try? AVAudioRecorder(url: url, settings: settings) else { return }
+        recorder = rec; fileURL = url
+        rec.record()
         Haptics.rigid(); recording = true; seconds = 0
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in seconds += 0.1 }
     }
+
     private func stop() {
         timer?.invalidate(); recording = false
-        if seconds >= 0.5 { Haptics.success(); onSend(seconds) }
+        recorder?.stop()
+        let dur = seconds
+        defer { recorder = nil }
+        guard dur >= 0.5, let url = fileURL, let data = try? Data(contentsOf: url) else { return }
+        Haptics.success()
+        onSend(data, dur)
+        try? FileManager.default.removeItem(at: url)
     }
 }
 

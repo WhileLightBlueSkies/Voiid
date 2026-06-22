@@ -28,7 +28,7 @@ import Security
 /// are the per-message media key needed to decrypt them. Because this whole
 /// struct is the plaintext of a Double-Ratchet message, the media key never
 /// leaves E2E — the server only ever sees the opaque key + ciphertext bytes.
-struct MediaRef: Codable, Equatable {
+struct MediaRef: Codable, Equatable, Hashable {
     let mediaUrl: String      // R2 object key
     let mime: String          // real media type (image/jpeg, audio/m4a, …)
     let key: String           // base64 media key

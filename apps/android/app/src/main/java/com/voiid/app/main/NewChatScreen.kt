@@ -69,11 +69,11 @@ fun NewChatScreen(
     var invites by remember { mutableStateOf<List<InviteContact>>(emptyList()) }
     var starting by remember { mutableStateOf(false) }
 
-    fun runDiscovery() {
+    fun runDiscovery(force: Boolean = false) {
         scope.launch {
             loading = true; error = null
             try {
-                val result = ContactsService(context).discover()
+                val result = ContactsService(context).discover(forceRefresh = force)
                 matches = result.matches
                 invites = result.invites
             } catch (e: Exception) {
@@ -125,7 +125,7 @@ fun NewChatScreen(
                     Text(error!!, style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
                     Spacer(Modifier.height(12.dp))
                     Text("Try again", style = VoiidFont.rounded(14, FontWeight.SemiBold),
-                        color = VoiidColor.primary, modifier = Modifier.clickable { runDiscovery() })
+                        color = VoiidColor.primary, modifier = Modifier.clickable { runDiscovery(force = true) })
                 }
             }
             else -> LazyColumn(Modifier.fillMaxSize()) {

@@ -42,6 +42,8 @@ data class VMessage(
     // Quoted reply: snapshot of the replied-to message
     val replyToSender: String? = null,
     val replyToText: String? = null,
+    /** For media messages (IMAGE/VOICE): the E2EE ref used to fetch + decrypt the blob. */
+    val mediaRef: com.voiid.app.net.ChatEngine.MediaRef? = null,
 )
 
 enum class ConversationType { DIRECT, GROUP }

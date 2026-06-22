@@ -27,8 +27,21 @@ class ContactsService(context: Context) {
     private val api = ApiClient(tokens)
     private val defaultCountryCode = "+91"
 
+    // Shared (process-wide) cache so NewChat + NewGroup reuse one /contacts/discover
+    // result instead of each hitting the network — avoids races / rate-limit / one
+    // screen showing empty while the other loaded. (Issue 3.)
+    companion object {
+        @Volatile private var cached: DiscoveryResult? = null
+        @Volatile private var cachedAt: Long = 0
+        private const val CACHE_TTL_MS = 120_000L
+    }
+
     /** Read contacts, discover VOIID users, persist links. Requires READ_CONTACTS granted. */
-    suspend fun discover(): DiscoveryResult {
+    suspend fun discover(forceRefresh: Boolean = false): DiscoveryResult {
+        if (!forceRefresh) {
+            val c = cached
+            if (c != null && System.currentTimeMillis() - cachedAt < CACHE_TTL_MS) return c
+        }
         val device = readDeviceContacts()
 
         // Normalize + hash locally; keep hash -> (name, number).
@@ -79,10 +92,12 @@ class ContactsService(context: Context) {
             invites.add(InviteContact(info.first, info.second))
         }
 
-        return DiscoveryResult(
+        val result = DiscoveryResult(
             matches.sortedBy { it.displayName.lowercase() },
             invites.sortedBy { it.name.lowercase() },
         )
+        cached = result; cachedAt = System.currentTimeMillis()
+        return result
     }
 
     private suspend fun readDeviceContacts(): List<Pair<String, List<String>>> = withContext(Dispatchers.IO) {

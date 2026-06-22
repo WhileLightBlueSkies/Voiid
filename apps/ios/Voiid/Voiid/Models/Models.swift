@@ -45,6 +45,9 @@ struct VMessage: Identifiable, Hashable {
     // Quoted reply: snapshot of the replied-to message
     var replyToSender: String? = nil
     var replyToText: String? = nil
+    /// For media messages (.image/.voice): the E2EE reference used to fetch +
+    /// decrypt the blob on demand. nil for text/local-echo messages.
+    var mediaRef: MediaRef? = nil
 
     /// Stable per-sender accent color for group sender names (WhatsApp-style).
     var senderColor: Color {

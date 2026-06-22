@@ -114,16 +114,16 @@ struct NewChatView: View {
                 .font(.system(size: 40)).foregroundColor(VoiidColor.textSecondary)
             Text(message).font(VoiidFont.rounded(14)).foregroundColor(VoiidColor.textSecondary)
                 .multilineTextAlignment(.center).padding(.horizontal, VoiidSpacing.xl)
-            Button("Try again") { Task { await load() } }
+            Button("Try again") { Task { await load(force: true) } }
                 .foregroundColor(VoiidColor.primary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func load() async {
+    private func load(force: Bool = false) async {
         loading = true; error = nil
         do {
-            let result = try await ContactsService.shared.discover()
+            let result = try await ContactsService.shared.discover(forceRefresh: force)
             matches = result.matches
             invites = result.invites
         } catch {

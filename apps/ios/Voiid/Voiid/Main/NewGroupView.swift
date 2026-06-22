@@ -128,7 +128,7 @@ struct NewGroupView: View {
                 .font(.system(size: 40)).foregroundColor(VoiidColor.textSecondary)
             Text(message).font(VoiidFont.rounded(14)).foregroundColor(VoiidColor.textSecondary)
                 .multilineTextAlignment(.center).padding(.horizontal, VoiidSpacing.xl)
-            Button("Try again") { Task { await load() } }.foregroundColor(VoiidColor.primary)
+            Button("Try again") { Task { await load(force: true) } }.foregroundColor(VoiidColor.primary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -138,10 +138,10 @@ struct NewGroupView: View {
         if selected.contains(c.userId) { selected.remove(c.userId) } else { selected.insert(c.userId) }
     }
 
-    private func load() async {
+    private func load(force: Bool = false) async {
         loading = true; error = nil
         do {
-            contacts = try await ContactsService.shared.discover().matches
+            contacts = try await ContactsService.shared.discover(forceRefresh: force).matches
         } catch {
             self.error = (error as? APIError)?.errorDescription
                 ?? "Couldn’t access contacts. Enable Contacts access in Settings."

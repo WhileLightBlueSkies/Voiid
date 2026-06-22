@@ -52,6 +52,7 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.outlined.Circle
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -317,14 +318,19 @@ private fun BubbleInner(message: VMessage, isGroup: Boolean, onVote: (String) ->
         }
         // Non-text: content, then the meta row beneath it (iOS `content; metaRow.padding(.top, 2)`).
         MessageKind.IMAGE -> {
-            Box(
-                modifier = Modifier.size(200.dp).clip(RoundedCornerShape(12.dp)).background(VoiidColor.accent.copy(alpha = 0.4f)),
-                contentAlignment = Alignment.Center,
-            ) { Icon(Icons.Default.Image, null, tint = VoiidColor.primary, modifier = Modifier.size(40.dp)) }
+            val ref = message.mediaRef
+            if (ref != null) {
+                AsyncMediaImage(ref)
+            } else {
+                Box(
+                    modifier = Modifier.size(200.dp).clip(RoundedCornerShape(12.dp)).background(VoiidColor.accent.copy(alpha = 0.4f)),
+                    contentAlignment = Alignment.Center,
+                ) { CircularProgressIndicator(color = VoiidColor.primary) }   // local echo before upload
+            }
             MetaRow(message, Modifier.padding(top = 2.dp))
         }
         MessageKind.VOICE -> {
-            VoiceNotePlayer(label = message.text)
+            AsyncVoiceNote(message.mediaRef, message.text)
             MetaRow(message, Modifier.padding(top = 2.dp))
         }
         MessageKind.POLL -> {

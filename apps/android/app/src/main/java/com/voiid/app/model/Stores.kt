@@ -127,19 +127,56 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
     /** Rebuild a conversation's UI messages from the local (decrypted) store. */
     private fun refresh(convId: String) {
         val mapped = engine.messages(convId).map { d ->
+            val kind = when {
+                d.media == null -> MessageKind.TEXT
+                d.media.mime.startsWith("audio/") -> MessageKind.VOICE
+                else -> MessageKind.IMAGE
+            }
             VMessage(
                 id = d.id, conversationId = convId,
                 senderId = if (d.isMine) "me" else d.senderId,
-                kind = MessageKind.TEXT, text = d.text, createdAt = d.createdAt,
+                kind = kind, text = d.text, createdAt = d.createdAt,
                 status = if (d.isMine) MessageStatus.SENT else MessageStatus.READ,
-                isMine = d.isMine,
+                isMine = d.isMine, mediaRef = d.media,
             )
         }
         if (mapped.isNotEmpty() || messagesByConversation.containsKey(convId)) {
             val arr = list(convId)
             arr.clear(); arr.addAll(mapped)
         }
-        mapped.lastOrNull()?.let { bumpPreview(convId, it.text) }
+        mapped.lastOrNull()?.let { bumpPreview(convId, if (it.kind == MessageKind.TEXT) it.text else previewFor(it.kind)) }
+    }
+
+    /** Send a media (image/voice) message: encrypt the blob on-device, upload the
+     *  ciphertext to R2, pack the key into the E2EE message (direct chats only). */
+    fun sendMedia(data: ByteArray, mime: String, caption: String = "", conversationId: String) {
+        val kind = if (mime.startsWith("audio/")) MessageKind.VOICE else MessageKind.IMAGE
+        val tempId = UUID.randomUUID().toString()
+        list(conversationId).add(
+            VMessage(
+                id = tempId, conversationId = conversationId, senderId = "me",
+                kind = kind, text = caption, createdAt = System.currentTimeMillis(),
+                status = MessageStatus.SENDING, isMine = true,
+            ),
+        )
+        bumpPreview(conversationId, previewFor(kind))
+
+        val conv = directConversations.firstOrNull { it.id == conversationId }
+        if (conv == null) {
+            markStatus(tempId, conversationId, MessageStatus.SENT)   // group: not supported yet
+            return
+        }
+        viewModelScope.launch {
+            try {
+                val peer = peerUserId(conv)
+                engine.sendMedia(data, mime, caption, conversationId, peer)
+                removeMessage(tempId, conversationId)
+                refresh(conversationId)
+            } catch (e: Exception) {
+                markStatus(tempId, conversationId, MessageStatus.FAILED)
+                loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t send media."
+            }
+        }
     }
 
     /** Resolve + cache the peer user_id for a direct conversation. */

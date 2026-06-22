@@ -13,6 +13,7 @@
 import SwiftUI
 import PhotosUI
 import UIKit
+import AVFoundation
 
 struct ChatDetailView: View {
     let conversation: VConversation
@@ -384,9 +385,10 @@ struct ChatDetailView: View {
             .onChange(of: photoItem) { _, item in
                 Task {
                     if let data = try? await item?.loadTransferable(type: Data.self) {
-                        chat.send("📷 Photo", kind: .image, to: conversation.id)
-                        photoItem = nil; _ = data
+                        // Encrypt + upload the real bytes (E2EE), not a placeholder.
+                        chat.sendMedia(data, mime: "image/jpeg", to: conversation.id)
                     }
+                    photoItem = nil
                 }
             }
 
@@ -416,8 +418,8 @@ struct ChatDetailView: View {
                 }
                 .transition(.scale.combined(with: .opacity))
             } else {
-                VoiceRecordButton { duration in
-                    chat.send("🎤 Voice message · \(Int(duration))s", kind: .voice, to: conversation.id)
+                VoiceRecordButton { data, duration in
+                    chat.sendMedia(data, mime: "audio/m4a", caption: "Voice · \(Int(duration))s", to: conversation.id)
                 }
                 .padding(.trailing, VoiidSpacing.sm)
                 .transition(.scale.combined(with: .opacity))
@@ -665,12 +667,17 @@ struct MessageBubble: View {
     @ViewBuilder private var content: some View {
         switch message.kind {
         case .image:
-            RoundedRectangle(cornerRadius: VoiidRadius.md)
-                .fill(VoiidColor.accent.opacity(0.4))
-                .frame(width: 200, height: 200)
-                .overlay(Image(systemName: "photo").font(.system(size: 40)).foregroundColor(VoiidColor.primary))
+            if let ref = message.mediaRef {
+                AsyncMediaImage(ref: ref, onTap: onTapImage)
+            } else {
+                // Local optimistic echo before upload completes (no ref yet).
+                RoundedRectangle(cornerRadius: VoiidRadius.md)
+                    .fill(VoiidColor.accent.opacity(0.4))
+                    .frame(width: 200, height: 200)
+                    .overlay(ProgressView())
+            }
         case .voice:
-            VoiceNotePlayer(label: message.text)
+            AsyncVoiceNote(ref: message.mediaRef, label: message.text)
         case .poll:
             if let poll = message.poll { PollBubble(poll: poll, onVote: onVote) }
         default:
@@ -780,6 +787,110 @@ struct BubbleShape: Shape {
             : [.topLeft, .topRight, .bottomRight]
         return Path(UIBezierPath(roundedRect: rect, byRoundingCorners: corners,
                                  cornerRadii: CGSize(width: r, height: r)).cgPath)
+    }
+}
+
+// MARK: - Encrypted media rendering (fetch + decrypt on demand)
+
+/// In-memory cache of decrypted media keyed by the R2 object key, so reopening a
+/// chat doesn't re-download/re-decrypt.
+@MainActor final class MediaCache {
+    static let shared = MediaCache()
+    private var images: [String: UIImage] = [:]
+    private var datas: [String: Data] = [:]
+    func image(_ k: String) -> UIImage? { images[k] }
+    func set(_ img: UIImage, _ k: String) { images[k] = img }
+    func data(_ k: String) -> Data? { datas[k] }
+    func setData(_ d: Data, _ k: String) { datas[k] = d }
+}
+
+/// An image bubble that fetches + decrypts its blob via ChatEngine on appear.
+struct AsyncMediaImage: View {
+    let ref: MediaRef
+    var onTap: (UIImage) -> Void
+    @State private var image: UIImage?
+    @State private var failed = false
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image).resizable().scaledToFill()
+                    .frame(width: 220, height: 220).clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md))
+                    .onTapGesture { onTap(image) }
+            } else {
+                RoundedRectangle(cornerRadius: VoiidRadius.md)
+                    .fill(VoiidColor.accent.opacity(0.3))
+                    .frame(width: 220, height: 220)
+                    .overlay {
+                        if failed { Image(systemName: "exclamationmark.triangle").font(.system(size: 30)).foregroundColor(VoiidColor.primary) }
+                        else { ProgressView() }
+                    }
+            }
+        }
+        .task(id: ref.mediaUrl) { await load() }
+    }
+
+    private func load() async {
+        if let cached = MediaCache.shared.image(ref.mediaUrl) { image = cached; return }
+        do {
+            let data = try await ChatEngine.shared.fetchMedia(ref)
+            if let ui = UIImage(data: data) { MediaCache.shared.set(ui, ref.mediaUrl); image = ui }
+            else { failed = true }
+        } catch { failed = true }
+    }
+}
+
+/// A voice-note bubble that fetches + decrypts its audio and plays it back.
+struct AsyncVoiceNote: View {
+    let ref: MediaRef?
+    let label: String
+    @State private var data: Data?
+    @State private var player: AVAudioPlayer?
+    @State private var playing = false
+
+    var body: some View {
+        HStack(spacing: VoiidSpacing.sm) {
+            Button { toggle() } label: {
+                Image(systemName: playing ? "pause.circle.fill" : "play.circle.fill")
+                    .font(.system(size: 30)).foregroundColor(VoiidColor.primary)
+            }
+            .buttonStyle(.plain)
+            .disabled(data == nil)
+            HStack(spacing: 2) {
+                ForEach(0..<18, id: \.self) { i in
+                    Capsule().fill(VoiidColor.primary.opacity(0.5))
+                        .frame(width: 2.5, height: CGFloat(6 + (i * 7) % 18))
+                }
+            }
+            if data == nil { ProgressView().scaleEffect(0.7) }
+        }
+        .frame(minWidth: 160)
+        .task(id: ref?.mediaUrl) { await load() }
+    }
+
+    private func load() async {
+        guard let ref else { return }
+        if let cached = MediaCache.shared.data(ref.mediaUrl) { data = cached; return }
+        if let d = try? await ChatEngine.shared.fetchMedia(ref) {
+            MediaCache.shared.setData(d, ref.mediaUrl); data = d
+        }
+    }
+
+    private func toggle() {
+        if playing { player?.pause(); playing = false; return }
+        guard let data else { return }
+        if player == nil {
+            try? AVAudioSession.sharedInstance().setCategory(.playback)
+            try? AVAudioSession.sharedInstance().setActive(true)
+            player = try? AVAudioPlayer(data: data)
+        }
+        player?.play(); playing = true
+        // Reset the button when playback finishes.
+        let dur = player?.duration ?? 0
+        if dur > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + dur) { playing = false }
+        }
     }
 }
 
