@@ -279,6 +279,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun handleIncoming(conversationId: String) {
+        android.util.Log.i("VOIID", "handleIncoming conv=$conversationId known=${directConversations.any { it.id == conversationId }}")
         directConversations.firstOrNull { it.id == conversationId }?.let { syncMessages(it); return }
         // Unknown conversation (first message from a new contact) — reload the list,
         // THEN sync it so the message actually appears (not just on manual open).

@@ -293,6 +293,7 @@ final class ChatStore: ObservableObject {
 
     /// A message arrived (WS ref) — fetch + decrypt that conversation.
     private func handleIncoming(_ conversationId: String) async {
+        NSLog("[VOIID] handleIncoming conv=\(conversationId) known=\(directConversations.contains { $0.id == conversationId })")
         if let conv = directConversations.first(where: { $0.id == conversationId }) {
             await syncMessages(conv); return
         }

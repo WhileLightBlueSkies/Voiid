@@ -196,6 +196,7 @@ class ChatEngine private constructor(context: Context) {
     suspend fun sync(conversationId: String, peerUserId: String): List<DecryptedMessage> {
         flushPending(conversationId, peerUserId)   // push any queued sends first
         val env: MessagesResponse = api.requestAs("GET", "messages/conversation/$conversationId")
+        android.util.Log.i("VOIID", "sync conv=$conversationId: server has ${env.messages.size} msgs")
         val myId = tokens.userId
         val seen = (store[conversationId] ?: emptyList()).map { it.id }.toHashSet()
         val newlyReceived = mutableListOf<String>()
