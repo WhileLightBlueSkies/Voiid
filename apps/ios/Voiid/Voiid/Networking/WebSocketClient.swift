@@ -28,7 +28,10 @@ final class WebSocketClient {
     var onReceipt: ((_ messageId: String, _ status: String) -> Void)?
 
     func connect() {
-        guard !connected, let jwt = TokenStore.shared.jwt else { return }
+        guard !connected, let jwt = TokenStore.shared.jwt else {
+            NSLog("[VOIID] WS connect skipped (connected=\(connected) hasJWT=\(TokenStore.shared.jwt != nil))")
+            return
+        }
         var comps = URLComponents(url: APIConfig.wsURL, resolvingAgainstBaseURL: false)
         comps?.queryItems = [URLQueryItem(name: "token", value: jwt)]
         guard let url = comps?.url else { return }
@@ -37,6 +40,7 @@ final class WebSocketClient {
         task = t
         t.resume()
         connected = true
+        NSLog("[VOIID] WS connecting → \(url.host ?? "")")
         receiveLoop()
         startHeartbeat()
     }
@@ -62,7 +66,8 @@ final class WebSocketClient {
             Task { @MainActor in
                 guard let self else { return }
                 switch result {
-                case .failure:
+                case .failure(let err):
+                    NSLog("[VOIID] WS disconnected: \(err.localizedDescription) — reconnecting")
                     self.connected = false
                     // simple reconnect after a short delay
                     try? await Task.sleep(nanoseconds: 2_000_000_000)
@@ -79,6 +84,7 @@ final class WebSocketClient {
         guard let data = text.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let type = obj["type"] as? String else { return }
+        NSLog("[VOIID] WS recv type=\(type)")
         switch type {
         case "message":
             if let cid = obj["conversation_id"] as? String { onMessageRef?(cid) }

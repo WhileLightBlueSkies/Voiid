@@ -173,6 +173,7 @@ final class ChatEngine {
     func sync(conversationId: String, peerUserId: String) async throws -> [DecryptedMessage] {
         await flushPending(conversationId: conversationId, peerUserId: peerUserId)   // push any queued sends first
         let env: MessagesResponse = try await api.request("GET", "messages/conversation/\(conversationId)")
+        NSLog("[VOIID] sync conv=\(conversationId): server has \(env.messages.count) msgs")
         let myId = TokenStore.shared.userId
         let seen = Set((store[conversationId] ?? []).map { $0.id })
         var newlyReceived: [String] = []

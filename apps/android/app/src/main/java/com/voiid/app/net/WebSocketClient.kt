@@ -55,12 +55,13 @@ class WebSocketClient private constructor(context: Context) {
 
     fun connect() {
         if (connected) return
-        val jwt = tokens.jwt ?: return
+        val jwt = tokens.jwt ?: run { android.util.Log.w("VOIID", "WS connect skipped (no JWT)"); return }
         closedByUs = false
         val url = ApiConfig.wsUrl.trimEnd('/') + "?token=" + jwt
         val req = Request.Builder().url(url).build()
         socket = client.newWebSocket(req, listener)
         connected = true
+        android.util.Log.i("VOIID", "WS connecting")
         startHeartbeat()
     }
 
@@ -95,6 +96,7 @@ class WebSocketClient private constructor(context: Context) {
             scope.launch { handle(text) }
         }
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            android.util.Log.w("VOIID", "WS disconnected: ${t.message} — reconnecting")
             connected = false
             if (!closedByUs) scope.launch { delay(2000); connect() }
         }
@@ -106,7 +108,9 @@ class WebSocketClient private constructor(context: Context) {
 
     private fun handle(text: String) {
         val obj: JsonObject = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return
-        when ((obj["type"] as? JsonPrimitive)?.contentOrNull) {
+        val t = (obj["type"] as? JsonPrimitive)?.contentOrNull
+        android.util.Log.i("VOIID", "WS recv type=$t")
+        when (t) {
             "message" -> obj["conversation_id"]?.jsonPrimitive?.contentOrNull?.let { onMessageRef?.invoke(it) }
             "typing" -> {
                 val cid = obj["conversation_id"]?.jsonPrimitive?.contentOrNull ?: return
