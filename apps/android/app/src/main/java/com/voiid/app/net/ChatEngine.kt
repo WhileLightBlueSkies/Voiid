@@ -83,6 +83,9 @@ class ChatEngine private constructor(context: Context) {
         val failed: Boolean = false,
         /** Server id once accepted (matches read/delivery receipts). */
         val serverId: String? = null,
+        /** Delivery state of OUR sent message: "sent"/"delivered"/"read". Persisted
+         *  so it never regresses when the message list is rebuilt. */
+        val deliveryStatus: String? = null,
     )
 
     /** The E2EE plaintext of a media message: the reference + an optional caption. */
@@ -224,6 +227,24 @@ class ChatEngine private constructor(context: Context) {
         // even if the chat isn't open. Read is marked separately when it's opened.
         if (newlyReceived.isNotEmpty()) markReceipts(newlyReceived, "delivered")
         return messages(conversationId)
+    }
+
+    /** Apply a delivery/read receipt to one of OUR sent messages (persisted, never
+     *  downgraded). Returns the conversation id so the UI can refresh just that chat. */
+    fun applyReceipt(messageId: String, status: String): String? {
+        val rank = mapOf("sent" to 0, "delivered" to 1, "read" to 2)
+        for ((cid, arr) in store) {
+            val i = arr.indexOfFirst { it.isMine && (it.serverId == messageId || it.id == messageId) }
+            if (i >= 0) {
+                val cur = arr[i].deliveryStatus ?: "sent"
+                if ((rank[status] ?: 0) > (rank[cur] ?: 0)) {
+                    arr[i] = arr[i].copy(deliveryStatus = status)
+                    persist()
+                }
+                return cid
+            }
+        }
+        return null
     }
 
     private suspend fun markReceipts(ids: List<String>, status: String) {

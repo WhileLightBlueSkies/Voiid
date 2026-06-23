@@ -647,28 +647,28 @@ struct MessageBubble: View {
     }
 
     private var metaRow: some View {
-        HStack(spacing: 3) {
+        HStack(spacing: 4) {
             Text(VoiidDate.bubbleTime(message.createdAt))
                 .font(VoiidFont.rounded(10, .regular))
                 .foregroundColor(VoiidColor.textSecondary.opacity(0.8))
-            if message.isMine { tick }
+            // Clean text status (Sent / Delivered / Seen) — shown only under the
+            // LAST outgoing message (iMessage-style), so older ones don't change.
+            if message.isMine && isLastMine, let label = statusLabel {
+                Text("· \(label)")
+                    .font(VoiidFont.rounded(10, .regular))
+                    .foregroundColor(message.status == .read ? VoiidColor.primary : VoiidColor.textSecondary.opacity(0.8))
+            }
         }
     }
 
-    @ViewBuilder private var tick: some View {
+    private var statusLabel: String? {
         switch message.status {
-        case .sending: Image(systemName: "clock").font(.system(size: 9)).foregroundColor(VoiidColor.textSecondary)
-        case .sent:    Image(systemName: "checkmark").font(.system(size: 9, weight: .semibold)).foregroundColor(VoiidColor.textSecondary)
-        case .delivered: doubleTick(VoiidColor.textSecondary)
-        case .read:    doubleTick(VoiidColor.primary)
-        case .failed:  Image(systemName: "exclamationmark.circle").font(.system(size: 9)).foregroundColor(VoiidColor.error)
+        case .sending:   return "Sending…"
+        case .sent:      return "Sent"
+        case .delivered: return "Delivered"
+        case .read:      return "Seen"
+        case .failed:    return "Failed"
         }
-    }
-    private func doubleTick(_ c: Color) -> some View {
-        ZStack {
-            Image(systemName: "checkmark").font(.system(size: 9, weight: .semibold)).offset(x: -2.5)
-            Image(systemName: "checkmark").font(.system(size: 9, weight: .semibold)).offset(x: 1.5)
-        }.foregroundColor(c)
     }
 
     @ViewBuilder private var content: some View {

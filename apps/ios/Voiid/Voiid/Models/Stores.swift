@@ -152,19 +152,11 @@ final class ChatStore: ObservableObject {
         directConversations[i].lastSeenAt = st.lastSeen
     }
 
-    /// Apply a delivery/read receipt (WS) to one of our sent messages → tick color.
+    /// Apply a delivery/read receipt (WS) — persist it in the engine (no regression)
+    /// then refresh that conversation.
     private func applyReceipt(messageId: String, status: String) {
-        let newStatus: MessageStatus = status == "read" ? .read : .delivered
-        for (cid, arr) in messagesByConversation {
-            if let i = arr.firstIndex(where: { $0.id == messageId && $0.isMine }) {
-                var copy = arr
-                // Don't downgrade read→delivered.
-                if !(copy[i].status == .read && newStatus == .delivered) {
-                    copy[i].status = newStatus
-                    messagesByConversation[cid] = copy
-                }
-                return
-            }
+        if let cid = ChatEngine.shared.applyReceipt(messageId: messageId, status: status) {
+            refresh(cid)
         }
     }
 
@@ -172,9 +164,19 @@ final class ChatStore: ObservableObject {
     private func refresh(_ convId: String) {
         let mapped = ChatEngine.shared.messages(conversationId: convId).map { d -> VMessage in
             let kind: MessageKind = d.media.map { $0.mime.hasPrefix("audio/") ? .voice : .image } ?? .text
-            // Use the server id once known so read/delivery receipts can match it;
-            // pending (offline/un-sent) messages show the clock tick.
-            let status: MessageStatus = d.isMine ? (d.pending ? .sending : .sent) : .read
+            // Mine: sending (offline) / sent / delivered / read — from the PERSISTED
+            // delivery status so it never regresses on rebuild. Inbound: shown as read.
+            let status: MessageStatus
+            if d.isMine {
+                if d.pending { status = .sending }
+                else {
+                    switch d.deliveryStatus {
+                    case "read": status = .read
+                    case "delivered": status = .delivered
+                    default: status = .sent
+                    }
+                }
+            } else { status = .read }
             return VMessage(id: d.serverId ?? d.id, conversationId: convId,
                             senderId: d.isMine ? "me" : d.senderId,
                             kind: kind, text: d.text, createdAt: d.createdAt,

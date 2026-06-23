@@ -215,7 +215,7 @@ fun MessageBubble(
                                 .padding(horizontal = 10.dp, vertical = 6.dp),
                             verticalArrangement = Arrangement.spacedBy(3.dp),
                         ) {
-                            BubbleInner(message, isGroup, onVote)
+                            BubbleInner(message, isGroup, isLastMine, onVote)
                         }
 
                         // Long-press reaction + actions popover
@@ -264,7 +264,7 @@ fun MessageBubble(
 }
 
 @Composable
-private fun BubbleInner(message: VMessage, isGroup: Boolean, onVote: (String) -> Unit) {
+private fun BubbleInner(message: VMessage, isGroup: Boolean, isLastMine: Boolean, onVote: (String) -> Unit) {
     val mine = message.isMine
     // "Forwarded" tag
     if (message.forwarded) {
@@ -314,7 +314,7 @@ private fun BubbleInner(message: VMessage, isGroup: Boolean, onVote: (String) ->
                 styledText(message.text), style = VoiidFont.rounded(15), color = VoiidColor.textPrimary,
                 modifier = Modifier.weight(1f, fill = false),
             )
-            MetaRow(message)
+            MetaRow(message, isLastMine)
         }
         // Non-text: content, then the meta row beneath it (iOS `content; metaRow.padding(.top, 2)`).
         MessageKind.IMAGE -> {
@@ -327,15 +327,15 @@ private fun BubbleInner(message: VMessage, isGroup: Boolean, onVote: (String) ->
                     contentAlignment = Alignment.Center,
                 ) { CircularProgressIndicator(color = VoiidColor.primary) }   // local echo before upload
             }
-            MetaRow(message, Modifier.padding(top = 2.dp))
+            MetaRow(message, isLastMine, Modifier.padding(top = 2.dp))
         }
         MessageKind.VOICE -> {
             AsyncVoiceNote(message.mediaRef, message.text)
-            MetaRow(message, Modifier.padding(top = 2.dp))
+            MetaRow(message, isLastMine, Modifier.padding(top = 2.dp))
         }
         MessageKind.POLL -> {
             message.poll?.let { PollBubble(it, onVote) }
-            MetaRow(message, Modifier.padding(top = 2.dp))
+            MetaRow(message, isLastMine, Modifier.padding(top = 2.dp))
         }
         else -> Row(
             verticalAlignment = Alignment.Bottom,
@@ -345,32 +345,35 @@ private fun BubbleInner(message: VMessage, isGroup: Boolean, onVote: (String) ->
                 styledText(message.text), style = VoiidFont.rounded(15), color = VoiidColor.textPrimary,
                 modifier = Modifier.weight(1f, fill = false),
             )
-            MetaRow(message)
+            MetaRow(message, isLastMine)
         }
     }
 }
 
 /** Time + delivery-tick row that flows inline after text (or beneath media) — iOS `metaRow`. */
 @Composable
-private fun MetaRow(message: VMessage, modifier: Modifier = Modifier) {
+private fun MetaRow(message: VMessage, isLastMine: Boolean, modifier: Modifier = Modifier) {
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Text(VoiidDate.bubbleTime(message.createdAt), style = VoiidFont.rounded(10), color = VoiidColor.textSecondary.copy(alpha = 0.8f))
-        if (message.isMine) Tick(message.status)
-    }
-}
-
-@Composable
-private fun Tick(status: MessageStatus) {
-    when (status) {
-        MessageStatus.SENDING -> Icon(Icons.Default.Schedule, null, tint = VoiidColor.textSecondary, modifier = Modifier.size(11.dp))
-        MessageStatus.SENT -> Icon(Icons.Default.Check, null, tint = VoiidColor.textSecondary, modifier = Modifier.size(12.dp))
-        MessageStatus.DELIVERED -> Icon(Icons.Default.DoneAll, null, tint = VoiidColor.textSecondary, modifier = Modifier.size(13.dp))
-        MessageStatus.READ -> Icon(Icons.Default.DoneAll, null, tint = VoiidColor.primary, modifier = Modifier.size(13.dp))
-        MessageStatus.FAILED -> Icon(Icons.Default.ErrorOutline, null, tint = VoiidColor.error, modifier = Modifier.size(11.dp))
+        // Clean text status (Sent / Delivered / Seen) under the LAST outgoing message
+        // only, so older messages never change.
+        if (message.isMine && isLastMine) {
+            val label = when (message.status) {
+                MessageStatus.SENDING -> "Sending…"
+                MessageStatus.SENT -> "Sent"
+                MessageStatus.DELIVERED -> "Delivered"
+                MessageStatus.READ -> "Seen"
+                MessageStatus.FAILED -> "Failed"
+            }
+            Text(
+                "· $label", style = VoiidFont.rounded(10),
+                color = if (message.status == MessageStatus.READ) VoiidColor.primary else VoiidColor.textSecondary.copy(alpha = 0.8f),
+            )
+        }
     }
 }
 

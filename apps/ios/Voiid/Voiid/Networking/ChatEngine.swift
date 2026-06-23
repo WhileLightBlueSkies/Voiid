@@ -51,6 +51,9 @@ struct DecryptedMessage: Codable {
     var pending: Bool = false
     /// Server message id once accepted (used to match read/delivery receipts).
     var serverId: String? = nil
+    /// Delivery state of OUR sent message: "sent" → "delivered" → "read". Persisted
+    /// so it never regresses when the message list is rebuilt.
+    var deliveryStatus: String? = nil
 }
 
 @MainActor
@@ -207,6 +210,25 @@ final class ChatEngine {
         // even if the chat isn't open. Read is marked separately when it's opened.
         if !newlyReceived.isEmpty { await markReceipts(newlyReceived, status: "delivered") }
         return messages(conversationId: conversationId)
+    }
+
+    /// Apply a delivery/read receipt to one of OUR sent messages (persisted, never
+    /// downgraded). Returns the conversation id so the UI can refresh just that chat.
+    @discardableResult
+    func applyReceipt(messageId: String, status: String) -> String? {
+        let rank = ["sent": 0, "delivered": 1, "read": 2]
+        for (cid, var arr) in store {
+            if let i = arr.firstIndex(where: { $0.isMine && ($0.serverId == messageId || $0.id == messageId) }) {
+                let cur = arr[i].deliveryStatus ?? "sent"
+                if (rank[status] ?? 0) > (rank[cur] ?? 0) {
+                    arr[i].deliveryStatus = status
+                    store[cid] = arr
+                    persist()
+                }
+                return cid
+            }
+        }
+        return nil
     }
 
     private func markReceipts(_ ids: [String], status: String) async {
