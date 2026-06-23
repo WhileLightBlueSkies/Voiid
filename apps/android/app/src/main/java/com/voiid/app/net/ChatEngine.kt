@@ -199,7 +199,9 @@ class ChatEngine private constructor(context: Context) {
         val env: MessagesResponse = api.requestAs("GET", "messages/conversation/$conversationId")
         android.util.Log.i("VOIID", "sync conv=$conversationId: server has ${env.messages.size} msgs")
         val myId = tokens.userId
-        val seen = (store[conversationId] ?: emptyList()).map { it.id }.toHashSet()
+        // "seen" = successfully-decrypted ids only. Tombstones (failed==true) are NOT
+        // seen, so they're retried every sync — once the session heals they decrypt.
+        val seen = (store[conversationId] ?: emptyList()).filter { !it.failed }.map { it.id }.toHashSet()
         val newlyReceived = mutableListOf<String>()
         for (m in env.messages.asReversed()) {        // server DESC -> process ASC
             if (seen.contains(m.id)) continue
@@ -207,21 +209,20 @@ class ChatEngine private constructor(context: Context) {
             val wire = decodeWire(m.ciphertext) ?: continue
             runCatching {
                 val plain = decryptInbound(wire, conversationId, peerUserId, m.sender_device_id)
+                android.util.Log.i("VOIID", "✅ decrypted inbound id=${m.id} senderDev=${m.sender_device_id}")
                 // A media message's plaintext is a JSON MediaEnvelope; text is just
                 // the string. Detect via the server's content_type hint.
                 val (caption, ref) = decodeEnvelope(plain, m.content_type == "media")
-                append(conversationId, DecryptedMessage(m.id, m.sender_id, caption, parseIso(m.created_at), false, ref), persist = false)
+                replace(conversationId, DecryptedMessage(m.id, m.sender_id, caption, parseIso(m.created_at), false, ref))
                 newlyReceived.add(m.id)
             }.onFailure {
                 android.util.Log.e("VOIID", "❌ inbound decrypt FAILED id=${m.id} senderDev=${m.sender_device_id}", it)
-                // If we have an identity (not a bootstrap race), this failure is
-                // permanent (message encrypted to an old/rotated key) — tombstone it
-                // so the chat shows a placeholder instead of staying blank and it
-                // isn't re-attempted (and re-logged) on every sync.
+                // Tombstone it (failed==true) so the chat shows a placeholder, asks the
+                // sender to re-establish the session, and RETRIES on the next sync.
                 if (e2e.identity != null) {
                     lastSyncHadDecryptFailure = true
-                    append(conversationId, DecryptedMessage(m.id, m.sender_id,
-                        "🔒 Message couldn’t be decrypted", parseIso(m.created_at), false), persist = false)
+                    replace(conversationId, DecryptedMessage(m.id, m.sender_id,
+                        "🔒 Message couldn’t be decrypted", parseIso(m.created_at), false, failed = true))
                 }
             }
         }
@@ -363,6 +364,14 @@ class ChatEngine private constructor(context: Context) {
         if (arr.any { it.id == m.id }) return
         arr.add(m)
         if (persist) persist()
+    }
+
+    /** Insert, or REPLACE an existing entry with the same id in place (keeps order).
+     *  Lets a tombstone that later decrypts be upgraded to the real message. */
+    private fun replace(convId: String, m: DecryptedMessage) {
+        val arr = store.getOrPut(convId) { mutableListOf() }
+        val i = arr.indexOfFirst { it.id == m.id }
+        if (i >= 0) arr[i] = m else arr.add(m)
     }
 
     private val storeSerializer = MapSerializer(String.serializer(), ListSerializer(DecryptedMessage.serializer()))
