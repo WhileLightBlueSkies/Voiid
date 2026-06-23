@@ -94,7 +94,8 @@ final class ChatEngine {
                 let ciphertext = encodeWire(wire)
                 let res: SendResponse = try await api.request(
                     "POST", "messages/send",
-                    body: SendBody(conversation_id: conversationId, ciphertext: ciphertext))
+                    body: SendBody(conversation_id: conversationId, ciphertext: ciphertext,
+                                   device_id: E2EManager.shared.deviceId))
                 markSent(localId: p.id, conversationId: conversationId, serverId: res.message_id)
                 NSLog("[VOIID] ✅ sent text id=\(res.message_id) conv=\(conversationId)")
             } catch {
@@ -145,6 +146,7 @@ final class ChatEngine {
         let res: SendResponse = try await api.request(
             "POST", "messages/send",
             body: SendBody(conversation_id: conversationId, ciphertext: ciphertext,
+                           device_id: E2EManager.shared.deviceId,
                            content_type: "media", media_url: key, media_mime: mime))
         let echo = DecryptedMessage(id: res.message_id, senderId: TokenStore.shared.userId ?? "me",
                                     text: caption, createdAt: parseDate(res.created_at),
@@ -174,7 +176,8 @@ final class ChatEngine {
             if m.sender_id == myId { continue }   // our own echo is stored at send time
             guard let wire = decodeWire(m.ciphertext) else { continue }
             do {
-                let plain = try await decryptInbound(wire, conversationId: conversationId, peerUserId: peerUserId)
+                let plain = try await decryptInbound(wire, conversationId: conversationId,
+                                                     peerUserId: peerUserId, senderDeviceId: m.sender_device_id)
                 // A media message's plaintext is a JSON MediaEnvelope; a text
                 // message is just the string. Detect via the server's content_type
                 // hint, falling back to the decoded shape.
@@ -183,7 +186,11 @@ final class ChatEngine {
                                         createdAt: parseDate(m.created_at), isMine: false,
                                         media: parsed.media),
                        to: conversationId, persist: false)
-            } catch { /* undecryptable (replay/old) — skip */ }
+            } catch {
+                // Surface the failure (was silent) — but do NOT persist a placeholder,
+                // so a transient failure is retried on the next sync.
+                NSLog("[VOIID] ❌ inbound decrypt FAILED id=\(m.id) senderDev=\(m.sender_device_id ?? "nil"): \(error)")
+            }
         }
         persist()
         return messages(conversationId: conversationId)
@@ -199,7 +206,11 @@ final class ChatEngine {
     }
 
     /// Decrypt a single inbound message and advance the session. Caller persists.
-    private func decryptInbound(_ wire: WireMessage, conversationId: String, peerUserId: String) async throws -> String {
+    /// `senderDeviceId` (from the message) selects the SENDER's device whose identity
+    /// key we accept with — a multi-device sender may have encrypted with a device
+    /// that isn't their "first", so resolving by it is what makes decrypt succeed.
+    private func decryptInbound(_ wire: WireMessage, conversationId: String,
+                               peerUserId: String, senderDeviceId: String?) async throws -> String {
         if let s = sessions[conversationId] ?? restoreSession(conversationId) {
             sessions[conversationId] = s
             let data = try s.decrypt(message: wire)
@@ -208,9 +219,9 @@ final class ChatEngine {
         }
         // No session yet → must be a PreKey message; accept it to create the session.
         guard let id = E2EManager.shared.identity else { throw APIError.notAuthenticated }
-        let peerIdentityKey = try await peerIdentityKey(peerUserId)
-        try verifyAndPinIdentity(peerIdentityKey, peerUserId: peerUserId)   // anti-MITM (TOFU)
-        let accepted = try id.acceptSession(theirIdentityKey: peerIdentityKey, firstMessage: wire)
+        let peer = try await peerIdentity(peerUserId, deviceId: senderDeviceId)
+        try verifyAndPinIdentity(peer.key, peerUserId: peerUserId, deviceId: peer.deviceId)   // anti-MITM (TOFU, per device)
+        let accepted = try id.acceptSession(theirIdentityKey: peer.key, firstMessage: wire)
         sessions[conversationId] = accepted.session
         saveSession(accepted.session, conversationId: conversationId)
         return String(decoding: accepted.plaintext, as: UTF8.self)
@@ -225,7 +236,7 @@ final class ChatEngine {
         }
         guard let id = E2EManager.shared.identity else { throw APIError.notAuthenticated }
         let bundle = try await peerPrekeyBundle(peerUserId)
-        try verifyAndPinIdentity(bundle.identityKey, peerUserId: peerUserId)   // anti-MITM (TOFU)
+        try verifyAndPinIdentity(bundle.identityKey, peerUserId: peerUserId, deviceId: bundle.deviceId)   // anti-MITM (TOFU, per device)
         let s = try id.startSession(theirIdentityKey: bundle.identityKey, theirOneTimeKey: bundle.oneTimeKey)
         sessions[conversationId] = s
         saveSession(s, conversationId: conversationId)
@@ -238,8 +249,11 @@ final class ChatEngine {
     /// require it to match — a changed key means a possible server-side key-swap
     /// (MITM) and we refuse rather than silently re-keying. This is the core
     /// protection that makes the E2EE meaningful against a hostile server.
-    private func verifyAndPinIdentity(_ identityKey: String, peerUserId: String) throws {
-        let pinName = "idpin_\(peerUserId)"
+    /// Pinned PER (peer, device): a multi-device peer legitimately has a different
+    /// identity key per device, so keying the pin by device avoids a false MITM
+    /// rejection while still catching a real key-swap on a given device.
+    private func verifyAndPinIdentity(_ identityKey: String, peerUserId: String, deviceId: String?) throws {
+        let pinName = "idpin_\(peerUserId)_\(deviceId ?? "default")"
         if let pinned = kc.string(pinName) {
             guard pinned == identityKey else {
                 throw APIError.http(status: 495, message: "peer identity key changed — possible MITM; verify safety number before continuing")
@@ -251,29 +265,33 @@ final class ChatEngine {
 
     // MARK: - Peer key resolution
 
-    private struct DeviceDTO: Decodable { let identity_public_key: String }
+    private struct DeviceDTO: Decodable { let id: String; let identity_public_key: String }
     private struct DevicesResponse: Decodable { let devices: [DeviceDTO] }
     private struct BundleDTO: Decodable {
+        let device_id: String?
         let identity_public_key: String
         let one_time_prekey: OTKDTO?
     }
     private struct OTKDTO: Decodable { let public_key: String }
     private struct PrekeysResponse: Decodable { let bundles: [BundleDTO] }
 
-    /// Peer's identity public key (for acceptSession) — from their device record.
-    private func peerIdentityKey(_ userId: String) async throws -> String {
+    /// Peer's identity public key + device id (for acceptSession). Resolves the
+    /// SPECIFIC device that sent the message (`deviceId`) so a multi-device sender
+    /// decrypts correctly; falls back to the first device if unknown/missing.
+    private func peerIdentity(_ userId: String, deviceId: String?) async throws -> (key: String, deviceId: String) {
         let env: DevicesResponse = try await api.request("GET", "devices/\(userId)")
-        guard let d = env.devices.first else { throw APIError.http(status: 404, message: "peer has no device") }
-        return d.identity_public_key
+        let d = (deviceId.flatMap { id in env.devices.first { $0.id == id } }) ?? env.devices.first
+        guard let dev = d else { throw APIError.http(status: 404, message: "peer has no device") }
+        return (dev.identity_public_key, dev.id)
     }
 
-    /// Peer's prekey bundle (identity + one consumed one-time key) for startSession.
-    private func peerPrekeyBundle(_ userId: String) async throws -> (identityKey: String, oneTimeKey: String) {
+    /// Peer's prekey bundle (identity + one consumed one-time key + device id) for startSession.
+    private func peerPrekeyBundle(_ userId: String) async throws -> (identityKey: String, oneTimeKey: String, deviceId: String?) {
         let env: PrekeysResponse = try await api.request("GET", "prekeys/\(userId)")
         guard let b = env.bundles.first, let otk = b.one_time_prekey else {
             throw APIError.http(status: 409, message: "peer has no available prekeys")
         }
-        return (b.identity_public_key, otk.public_key)
+        return (b.identity_public_key, otk.public_key, b.device_id)
     }
 
     // MARK: - Local message store (decrypt-once; plaintext at rest, file-protected)
@@ -361,6 +379,7 @@ final class ChatEngine {
     private struct SendBody: Encodable {
         let conversation_id: String
         let ciphertext: String
+        var device_id: String? = nil      // which of OUR devices encrypted this
         var content_type: String? = nil
         var media_url: String? = nil
         var media_mime: String? = nil
@@ -368,6 +387,7 @@ final class ChatEngine {
     private struct SendResponse: Decodable { let message_id: String; let created_at: String }
     private struct MessageDTO: Decodable {
         let id: String; let sender_id: String; let ciphertext: String; let created_at: String
+        var sender_device_id: String? = nil   // which of the SENDER's devices encrypted it
         var content_type: String? = nil
     }
     private struct MessagesResponse: Decodable { let messages: [MessageDTO] }
