@@ -96,7 +96,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { syncMessages(conv) }
     }
 
-    private suspend fun syncMessages(conv: VConversation) {
+    suspend fun syncMessages(conv: VConversation) {
         if (conv.type != ConversationType.DIRECT) return   // group E2E (MLS) is a later increment
         try {
             val peer = peerUserId(conv)

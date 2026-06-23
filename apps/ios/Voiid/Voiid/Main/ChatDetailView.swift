@@ -55,10 +55,12 @@ struct ChatDetailView: View {
             chat.openConversation(conversation)   // load cached + sync (fetch+decrypt) real messages
         }
         .task(id: conversation.id) {
-            // Live-refresh the peer's online/last-seen while the chat is open.
+            // Poll the conversation while it's open — fetch+decrypt new messages, send
+            // receipts, refresh presence — so delivery doesn't depend on the WS push
+            // (which can be silently dropped). Every 4s.
             while !Task.isCancelled {
-                await chat.refreshPresence(conversation)
-                try? await Task.sleep(nanoseconds: 20_000_000_000)
+                await chat.syncMessages(conversation)
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
             }
         }
         .onDisappear {
