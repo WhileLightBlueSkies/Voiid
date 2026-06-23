@@ -208,9 +208,15 @@ class ChatEngine private constructor(context: Context) {
                 append(conversationId, DecryptedMessage(m.id, m.sender_id, caption, parseIso(m.created_at), false, ref), persist = false)
                 newlyReceived.add(m.id)
             }.onFailure {
-                // Surface the failure (was silent) — don't persist a placeholder so a
-                // transient failure is retried on the next sync.
                 android.util.Log.e("VOIID", "❌ inbound decrypt FAILED id=${m.id} senderDev=${m.sender_device_id}", it)
+                // If we have an identity (not a bootstrap race), this failure is
+                // permanent (message encrypted to an old/rotated key) — tombstone it
+                // so the chat shows a placeholder instead of staying blank and it
+                // isn't re-attempted (and re-logged) on every sync.
+                if (e2e.identity != null) {
+                    append(conversationId, DecryptedMessage(m.id, m.sender_id,
+                        "🔒 Message couldn’t be decrypted", parseIso(m.created_at), false), persist = false)
+                }
             }
         }
         persist()
