@@ -7,11 +7,15 @@
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="sharedpref" path="voiid_auth.xml"/>
+        <exclude domain="sharedpref" path="voiid_e2e.xml"/>
+        <exclude domain="sharedpref" path="voiid_chat.xml"/>
         <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs_key_keyset__.xml"/>
         <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs_value_keyset__.xml"/>
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="voiid_auth.xml"/>
+        <exclude domain="sharedpref" path="voiid_e2e.xml"/>
+        <exclude domain="sharedpref" path="voiid_chat.xml"/>
         <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs_key_keyset__.xml"/>
         <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs_value_keyset__.xml"/>
     </device-transfer>

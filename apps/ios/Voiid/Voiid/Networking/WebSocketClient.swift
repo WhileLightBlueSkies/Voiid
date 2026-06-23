@@ -26,6 +26,8 @@ final class WebSocketClient {
     var onTyping: ((_ conversationId: String, _ userId: String, _ isTyping: Bool) -> Void)?
     /// Receipt for one of OUR sent messages: messageId, status ("delivered"|"read").
     var onReceipt: ((_ messageId: String, _ status: String) -> Void)?
+    /// Peer couldn't decrypt our message → reset (re-establish) the session for this conversation.
+    var onSessionReset: ((_ conversationId: String) -> Void)?
 
     func connect() {
         guard !connected, let jwt = TokenStore.shared.jwt else {
@@ -57,6 +59,11 @@ final class WebSocketClient {
             "recipient_ids": recipientIds, "state": isStart ? "start" : "stop",
         ]
         sendJSON(frame)
+    }
+
+    /// Ask the message's sender to re-establish the E2E session (we couldn't decrypt).
+    func sendSessionReset(conversationId: String, recipientIds: [String]) {
+        sendJSON(["type": "session_reset", "conversation_id": conversationId, "recipient_ids": recipientIds])
     }
 
     // MARK: - Internals
@@ -98,6 +105,8 @@ final class WebSocketClient {
                let status = obj["status"] as? String {
                 onReceipt?(mid, status)
             }
+        case "session_reset":
+            if let cid = obj["conversation_id"] as? String { onSessionReset?(cid) }
         default: break   // "connected" etc.
         }
     }

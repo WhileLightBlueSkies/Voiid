@@ -205,6 +205,7 @@ final class KeychainData {
         return out as? Data
     }
     func string(_ key: String) -> String? { data(key).flatMap { String(data: $0, encoding: .utf8) } }
+    func delete(_ key: String) { SecItemDelete(base(key) as CFDictionary) }
 
     private func base(_ key: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
