@@ -2,11 +2,12 @@
 import { Router } from 'express';
 import { query } from '../db';
 import { requireAuth } from '../auth';
+import { b64, asyncHandler } from '../util';
 
 const router = Router();
 
 // POST /devices/register  { platform, registration_id, identity_public_key(base64), device_name?, push_token?, push_provider? }
-router.post('/register', requireAuth, async (req, res) => {
+router.post('/register', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const { platform, registration_id, identity_public_key, device_name, push_token, push_provider } = req.body ?? {};
   if (!platform || registration_id == null || !identity_public_key) {
@@ -14,12 +15,12 @@ router.post('/register', requireAuth, async (req, res) => {
   }
   const rows = await query<{ id: string }>(
     `insert into devices (user_id, platform, registration_id, identity_public_key, device_name, push_token, push_provider)
-       values ($1, $2, $3, decode($4,'base64'), $5, $6, $7)
+       values ($1, $2, $3, $4, $5, $6, $7)
        on conflict (user_id, registration_id)
        do update set identity_public_key = excluded.identity_public_key,
                      push_token = excluded.push_token, revoked_at = null, updated_at = now()
        returning id`,
-    [user_id, platform, registration_id, identity_public_key, device_name, push_token, push_provider]
+    [user_id, platform, registration_id, b64(identity_public_key), device_name, push_token, push_provider]
   );
   const deviceId = rows[0].id;
 
@@ -43,7 +44,7 @@ router.post('/register', requireAuth, async (req, res) => {
   }
 
   res.json({ device_id: deviceId });
-});
+}));
 
 // GET /devices/:user_id — active devices (public info only).
 // identity_public_key (base64) is PUBLIC and required by peers to acceptSession

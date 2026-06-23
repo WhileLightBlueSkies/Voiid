@@ -5,12 +5,13 @@ import { Router } from 'express';
 import { query } from '../db';
 import { publisher } from '../redis';
 import { requireAuth } from '../auth';
+import { b64, asyncHandler } from '../util';
 
 const router = Router();
 
 // POST /mls/keypackages  { device_id, key_packages: [base64, ...] }
 // Publish a batch of one-time KeyPackages so peers can add this device to groups.
-router.post('/keypackages', requireAuth, async (req, res) => {
+router.post('/keypackages', requireAuth, asyncHandler(async (req, res) => {
   const { device_id, key_packages } = req.body ?? {};
   const { user_id } = (req as any).auth;
   if (!device_id || !Array.isArray(key_packages) || key_packages.length === 0) {
@@ -20,12 +21,12 @@ router.post('/keypackages', requireAuth, async (req, res) => {
     if (typeof kp !== 'string') continue;
     await query(
       `insert into mls_key_packages (user_id, device_id, key_package)
-         values ($1, $2, decode($3,'base64'))`,
-      [user_id, device_id, kp]
+         values ($1, $2, $3)`,
+      [user_id, device_id, b64(kp)]
     );
   }
   res.json({ uploaded: key_packages.length });
-});
+}));
 
 // GET /mls/keypackages/:user_id — consume one KeyPackage per active device of the
 // target user (so the caller can add them to a group). One-time: marked consumed.
@@ -52,7 +53,7 @@ router.get('/keypackages/:user_id', requireAuth, async (req, res) => {
 
 // POST /mls/group-events  { conversation_id, events: [{ recipient_user_id, kind, payload(b64), ratchet_tree?(b64) }] }
 // Store + push Welcome/Commit control messages to recipients (caller must be a member).
-router.post('/group-events', requireAuth, async (req, res) => {
+router.post('/group-events', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const { conversation_id, events } = req.body ?? {};
   if (!conversation_id || !Array.isArray(events)) {
@@ -69,9 +70,8 @@ router.post('/group-events', requireAuth, async (req, res) => {
     if (!e?.recipient_user_id || !['welcome', 'commit'].includes(e?.kind) || typeof e?.payload !== 'string') continue;
     await query(
       `insert into mls_group_events (conversation_id, sender_user_id, recipient_user_id, kind, payload, ratchet_tree)
-         values ($1,$2,$3,$4, decode($5,'base64'), $6)`,
-      [conversation_id, user_id, e.recipient_user_id, e.kind, e.payload,
-       e.ratchet_tree ? Buffer.from(e.ratchet_tree, 'base64') : null]
+         values ($1,$2,$3,$4, $5, $6)`,
+      [conversation_id, user_id, e.recipient_user_id, e.kind, b64(e.payload), b64(e.ratchet_tree)]
     );
     stored++;
     await publisher.publish(`channel:user:${e.recipient_user_id}`, JSON.stringify({
@@ -79,7 +79,7 @@ router.post('/group-events', requireAuth, async (req, res) => {
     }));
   }
   res.json({ stored });
-});
+}));
 
 // GET /mls/group-events — undelivered Welcome/Commit events for the caller; marks delivered.
 router.get('/group-events', requireAuth, async (req, res) => {
