@@ -43,7 +43,21 @@ for (const arg of args) {
     `delete from signed_prekeys where device_id in
        (select id from devices where user_id = $1) returning id`, [userId]).catch(() => ({ rowCount: 0 }));
   const dev = await pool.query(`delete from devices where user_id = $1 returning id`, [userId]);
-  console.log(`  ✅ removed ${dev.rowCount} device(s), ${otk.rowCount} one-time prekey(s), ${sp.rowCount} signed prekey(s)`);
+
+  // Also wipe the DEAD messages in this user's conversations. After many reinstalls
+  // the conversation is full of ciphertext encrypted to identities that no longer
+  // exist — it can never decrypt and re-fails on every sync. Clearing it lets a
+  // fresh exchange start from an empty, decryptable history.
+  let msgs = { rowCount: 0 };
+  if (process.env.WIPE_MESSAGES === '1') {
+    msgs = await pool.query(
+      `delete from messages where conversation_id in
+         (select conversation_id from conversation_members where user_id = $1) returning id`,
+      [userId]
+    );
+  }
+  console.log(`  ✅ removed ${dev.rowCount} device(s), ${otk.rowCount} one-time prekey(s), ${sp.rowCount} signed prekey(s)` +
+    (process.env.WIPE_MESSAGES === '1' ? `, ${msgs.rowCount} message(s)` : ' (messages kept; set WIPE_MESSAGES=1 to also clear the poisoned history)'));
 }
 
 await pool.end();
