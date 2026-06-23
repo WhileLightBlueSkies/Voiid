@@ -117,7 +117,7 @@ class ChatEngine private constructor(context: Context) {
                 val wire = session.encrypt(p.text.encodeToByteArray())
                 saveSession(session, conversationId)
                 val ciphertext = encodeWire(wire)
-                val body = ApiClient.json.encodeToString(SendBody.serializer(), SendBody(conversationId, ciphertext))
+                val body = ApiClient.json.encodeToString(SendBody.serializer(), SendBody(conversationId, ciphertext, device_id = e2e.deviceId))
                 val res: SendResponse = api.requestAs("POST", "messages/send", jsonBody = body)
                 markSent(p.id, conversationId, res.message_id)
                 android.util.Log.i("VOIID", "✅ sent text id=${res.message_id} conv=$conversationId")
@@ -176,7 +176,7 @@ class ChatEngine private constructor(context: Context) {
         // 4. Send the message, tagging it as media + the opaque ref for the server.
         val body = ApiClient.json.encodeToString(
             SendBody.serializer(),
-            SendBody(conversationId, ciphertext, content_type = "media", media_url = key, media_mime = mime))
+            SendBody(conversationId, ciphertext, device_id = e2e.deviceId, content_type = "media", media_url = key, media_mime = mime))
         val res: SendResponse = api.requestAs("POST", "messages/send", jsonBody = body)
         val echo = DecryptedMessage(res.message_id, tokens.userId ?: "me", caption, parseIso(res.created_at), true, ref)
         append(conversationId, echo)
@@ -200,11 +200,15 @@ class ChatEngine private constructor(context: Context) {
             if (m.sender_id == myId) continue          // our echo is stored at send time
             val wire = decodeWire(m.ciphertext) ?: continue
             runCatching {
-                val plain = decryptInbound(wire, conversationId, peerUserId)
+                val plain = decryptInbound(wire, conversationId, peerUserId, m.sender_device_id)
                 // A media message's plaintext is a JSON MediaEnvelope; text is just
                 // the string. Detect via the server's content_type hint.
                 val (caption, ref) = decodeEnvelope(plain, m.content_type == "media")
                 append(conversationId, DecryptedMessage(m.id, m.sender_id, caption, parseIso(m.created_at), false, ref), persist = false)
+            }.onFailure {
+                // Surface the failure (was silent) — don't persist a placeholder so a
+                // transient failure is retried on the next sync.
+                android.util.Log.e("VOIID", "❌ inbound decrypt FAILED id=${m.id} senderDev=${m.sender_device_id}", it)
             }
         }
         persist()
@@ -231,7 +235,7 @@ class ChatEngine private constructor(context: Context) {
         runCatching { api.request("POST", "receipts/mark", jsonBody = body) }
     }
 
-    private suspend fun decryptInbound(wire: WireMessage, conversationId: String, peerUserId: String): String {
+    private suspend fun decryptInbound(wire: WireMessage, conversationId: String, peerUserId: String, senderDeviceId: String?): String {
         val live = sessions[conversationId] ?: restoreSession(conversationId)
         if (live != null) {
             sessions[conversationId] = live
@@ -239,11 +243,12 @@ class ChatEngine private constructor(context: Context) {
             saveSession(live, conversationId)
             return data.decodeToString()
         }
-        // No session yet -> first (PreKey) message; accept it to create the session.
+        // No session yet -> first (PreKey) message; accept it with the SENDER's device
+        // (a multi-device sender may have encrypted with a non-first device).
         val id = e2e.identity ?: throw ApiError.NotAuthenticated
-        val peerIdentityKey = peerIdentityKey(peerUserId)
-        verifyAndPinIdentity(peerIdentityKey, peerUserId)         // anti-MITM (TOFU)
-        val accepted = id.acceptSession(peerIdentityKey, wire)
+        val (peerKey, devId) = peerIdentity(peerUserId, senderDeviceId)
+        verifyAndPinIdentity(peerKey, peerUserId, devId)         // anti-MITM (TOFU, per device)
+        val accepted = id.acceptSession(peerKey, wire)
         sessions[conversationId] = accepted.session
         saveSession(accepted.session, conversationId)
         return accepted.plaintext.decodeToString()
@@ -258,7 +263,7 @@ class ChatEngine private constructor(context: Context) {
         }
         val id = e2e.identity ?: throw ApiError.NotAuthenticated
         val bundle = peerPrekeyBundle(peerUserId)
-        verifyAndPinIdentity(bundle.first, peerUserId)            // anti-MITM (TOFU)
+        verifyAndPinIdentity(bundle.first, peerUserId, bundle.third)   // anti-MITM (TOFU, per device)
         val s = id.startSession(bundle.first, bundle.second)
         sessions[conversationId] = s
         saveSession(s, conversationId)
@@ -267,8 +272,11 @@ class ChatEngine private constructor(context: Context) {
 
     // MARK: - Identity pinning (anti-MITM / "safety numbers", trust-on-first-use)
 
-    private fun verifyAndPinIdentity(identityKey: String, peerUserId: String) {
-        val pinName = "idpin_$peerUserId"
+    /** Pinned PER (peer, device): a multi-device peer legitimately has a different
+     *  identity key per device, so keying the pin by device avoids a false MITM
+     *  rejection while still catching a real key-swap on a given device. */
+    private fun verifyAndPinIdentity(identityKey: String, peerUserId: String, deviceId: String?) {
+        val pinName = "idpin_${peerUserId}_${deviceId ?: "default"}"
         val pinned = prefs.getString(pinName, null)
         if (pinned != null) {
             if (pinned != identityKey) {
@@ -281,20 +289,23 @@ class ChatEngine private constructor(context: Context) {
 
     // MARK: - Peer key resolution
 
-    private suspend fun peerIdentityKey(userId: String): String {
+    /** Peer's identity key + device id, resolving the SPECIFIC device that sent the
+     *  message (a multi-device sender may use a non-first device); falls back to first. */
+    private suspend fun peerIdentity(userId: String, deviceId: String?): Pair<String, String> {
         val env: DevicesResponse = api.requestAs("GET", "devices/$userId")
-        return env.devices.firstOrNull()?.identity_public_key
+        val d = (deviceId?.let { id -> env.devices.firstOrNull { it.id == id } }) ?: env.devices.firstOrNull()
             ?: throw ApiError.Http(404, "peer has no device")
+        return Pair(d.identity_public_key, d.id)
     }
 
-    private suspend fun peerPrekeyBundle(userId: String): Pair<String, String> {
+    private suspend fun peerPrekeyBundle(userId: String): Triple<String, String, String?> {
         val env: PrekeysResponse = api.requestAs("GET", "prekeys/$userId")
         // Prefer a device that actually handed out a one-time key — a stale device
         // (e.g. left over after the peer reinstalled) can return a null prekey.
         val b = env.bundles.firstOrNull { it.one_time_prekey != null }
             ?: throw ApiError.Http(409, "peer has no available prekeys")
         val otk = b.one_time_prekey!!
-        return Pair(b.identity_public_key, otk.public_key)
+        return Triple(b.identity_public_key, otk.public_key, b.device_id)
     }
 
     // MARK: - Local message store (decrypt-once; encrypted at rest)
@@ -362,6 +373,7 @@ class ChatEngine private constructor(context: Context) {
     @Serializable private data class SendBody(
         val conversation_id: String,
         val ciphertext: String,
+        val device_id: String? = null,      // which of OUR devices encrypted this
         val content_type: String? = null,
         val media_url: String? = null,
         val media_mime: String? = null,
@@ -372,12 +384,13 @@ class ChatEngine private constructor(context: Context) {
         val sender_id: String,
         val ciphertext: String,
         val created_at: String,
+        val sender_device_id: String? = null,   // which of the SENDER's devices encrypted it
         val content_type: String? = null,
     )
     @Serializable private data class MessagesResponse(val messages: List<MessageDTO>)
-    @Serializable private data class DeviceDTO(val identity_public_key: String)
+    @Serializable private data class DeviceDTO(val id: String, val identity_public_key: String)
     @Serializable private data class DevicesResponse(val devices: List<DeviceDTO>)
     @Serializable private data class OtkDTO(val public_key: String)
-    @Serializable private data class BundleDTO(val identity_public_key: String, val one_time_prekey: OtkDTO? = null)
+    @Serializable private data class BundleDTO(val device_id: String? = null, val identity_public_key: String, val one_time_prekey: OtkDTO? = null)
     @Serializable private data class PrekeysResponse(val bundles: List<BundleDTO>)
 }

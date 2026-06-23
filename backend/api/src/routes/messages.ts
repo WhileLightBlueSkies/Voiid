@@ -11,8 +11,8 @@ const router = Router();
 
 // POST /messages/send  { conversation_id, ciphertext(b64), content_type?, media_url?, media_mime? }
 router.post('/send', requireAuth, asyncHandler(async (req, res) => {
-  const { user_id, device_id } = (req as any).auth;
-  const { conversation_id, ciphertext, content_type, media_url, media_mime } = req.body ?? {};
+  const { user_id, device_id: authDeviceId } = (req as any).auth;
+  const { conversation_id, ciphertext, content_type, media_url, media_mime, device_id: bodyDeviceId } = req.body ?? {};
   if (!conversation_id || !ciphertext) {
     return res.status(400).json({ error: 'conversation_id and ciphertext required' });
   }
@@ -20,12 +20,16 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
   try { assertOpaque(req.body ?? {}); } catch (e) {
     return res.status(400).json({ error: (e as Error).message });
   }
+  // Which of OUR devices encrypted this — so a multi-device recipient resolves the
+  // correct sender identity key on acceptSession (else decrypt fails). The JWT may
+  // not carry a device id, so the client sends it in the body.
+  const device_id = bodyDeviceId ?? authDeviceId ?? null;
 
   const rows = await query<{ id: string; created_at: string }>(
     `insert into messages (conversation_id, sender_id, sender_device_id, ciphertext, content_type, media_url, media_mime)
        values ($1, $2, $3, $4, coalesce($5,'text'), $6, $7)
        returning id, created_at`,
-    [conversation_id, user_id, device_id ?? null, b64(ciphertext), content_type, media_url, media_mime]
+    [conversation_id, user_id, device_id, b64(ciphertext), content_type, media_url, media_mime]
   );
   const message = rows[0];
 
@@ -51,7 +55,7 @@ router.get('/conversation/:id', requireAuth, async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 50, 100);
   const before = req.query.before as string | undefined;
   const rows = await query(
-    `select id, sender_id, encode(ciphertext,'base64') as ciphertext, content_type, media_url, media_mime, created_at
+    `select id, sender_id, sender_device_id, encode(ciphertext,'base64') as ciphertext, content_type, media_url, media_mime, created_at
        from messages
        where conversation_id = $1 ${before ? 'and created_at < $3' : ''}
        order by created_at desc limit $2`,
