@@ -78,7 +78,7 @@ class E2EManager private constructor(context: Context) {
      */
     suspend fun ensurePrekeys(id: Identity? = identity, devId: String? = deviceId) {
         if (id == null || devId == null) return
-        val available = runCatching { availableCount() }.getOrElse {
+        val available = runCatching { availableCount(devId) }.getOrElse {
             android.util.Log.e("VOIID", "availableCount failed", it); 0
         }
         android.util.Log.i("VOIID", "ensurePrekeys: available=$available")
@@ -145,9 +145,10 @@ class E2EManager private constructor(context: Context) {
         return dev.device_id
     }
 
-    /** Our remaining unconsumed one-time prekeys on the server. */
-    private suspend fun availableCount(): Int {
-        val res: CountResp = api.requestAs("GET", "prekeys/count")
+    /** Our remaining unconsumed one-time prekeys on the server — scoped to THIS
+     *  device (per-device, so a 2nd device doesn't see the 1st's keys and skip upload). */
+    private suspend fun availableCount(devId: String): Int {
+        val res: CountResp = api.requestAs("GET", "prekeys/count?device_id=$devId")
         return res.available
     }
 

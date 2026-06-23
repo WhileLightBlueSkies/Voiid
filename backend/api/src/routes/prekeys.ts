@@ -32,20 +32,28 @@ router.post('/upload', requireAuth, asyncHandler(async (req, res) => {
   res.json({ uploaded: true });
 }));
 
-// GET /prekeys/count — how many UNCONSUMED one-time prekeys the caller has left
-// across their own active devices. The client polls this to decide when to
-// replenish (one-time keys are consumed as peers start sessions with us).
+// GET /prekeys/count?device_id=… — how many UNCONSUMED one-time prekeys the caller
+// has left. The client polls this to decide when to replenish.
+//
+// IMPORTANT: pass `device_id` so the count is PER-DEVICE. Without it the count is
+// per-user across ALL the caller's devices, so a 2nd device (same number on
+// iOS+Android, or a web-linked companion) sees the 1st device's keys, thinks it's
+// full, uploads 0 of its own — and a peer who lands on that 0-key device gets a
+// null one_time_prekey → 409. The join still scopes to the caller's own devices,
+// so a foreign device_id simply counts 0. (device_id-less call kept for back-compat.)
 // Registered BEFORE /:user_id so it isn't swallowed by the user-id route.
-router.get('/count', requireAuth, async (req, res) => {
+router.get('/count', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
+  const deviceId = typeof req.query.device_id === 'string' ? req.query.device_id : undefined;
   const rows = await query<{ count: string }>(
     `select count(*)::int as count from one_time_prekeys otp
        join devices d on d.id = otp.device_id
-      where d.user_id = $1 and d.revoked_at is null and otp.consumed_at is null`,
-    [user_id]
+      where d.user_id = $1 and d.revoked_at is null and otp.consumed_at is null
+        ${deviceId ? 'and otp.device_id = $2' : ''}`,
+    deviceId ? [user_id, deviceId] : [user_id]
   );
   res.json({ available: Number(rows[0]?.count ?? 0) });
-});
+}));
 
 // GET /prekeys/:user_id — returns a bundle per active device, consuming one one-time prekey transactionally.
 router.get('/:user_id', requireAuth, async (req, res) => {

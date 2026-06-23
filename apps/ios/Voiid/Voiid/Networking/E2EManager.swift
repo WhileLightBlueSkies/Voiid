@@ -65,7 +65,7 @@ final class E2EManager {
     /// Safe to call repeatedly (e.g. on app resume). Mirrors Android.
     func ensurePrekeys(_ id: Identity? = nil, devId: String? = nil) async throws {
         guard let id = id ?? identity, let devId = devId ?? deviceId else { return }
-        let available = (try? await availableCount()) ?? 0
+        let available = (try? await availableCount(deviceId: devId)) ?? 0
         NSLog("[VOIID] ensurePrekeys: available=\(available)")
         if available >= Self.lowWatermark { return }
         let max = Int(id.maxOneTimeKeys())
@@ -160,9 +160,10 @@ final class E2EManager {
         return dev.device_id
     }
 
-    /// Our remaining unconsumed one-time prekeys on the server.
-    private func availableCount() async throws -> Int {
-        let res: CountResponse = try await api.request("GET", "prekeys/count")
+    /// Our remaining unconsumed one-time prekeys on the server — scoped to THIS
+    /// device (per-device, so a 2nd device doesn't see the 1st's keys and skip upload).
+    private func availableCount(deviceId: String) async throws -> Int {
+        let res: CountResponse = try await api.request("GET", "prekeys/count?device_id=\(deviceId)")
         return res.available
     }
 
