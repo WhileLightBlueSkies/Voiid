@@ -120,18 +120,9 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         if (i >= 0) directConversations[i] = directConversations[i].copy(isOnline = st.online, lastSeenAt = st.lastSeen)
     }
 
-    /** Apply a delivery/read receipt (WS) to one of our sent messages → tick color. */
+    /** Apply a delivery/read receipt (WS) — persist in the engine (no regression) then refresh. */
     private fun applyReceipt(messageId: String, status: String) {
-        val newStatus = if (status == "read") MessageStatus.READ else MessageStatus.DELIVERED
-        for ((_, arr) in messagesByConversation) {
-            val idx = arr.indexOfFirst { it.id == messageId && it.isMine }
-            if (idx >= 0) {
-                if (!(arr[idx].status == MessageStatus.READ && newStatus == MessageStatus.DELIVERED)) {
-                    arr[idx] = arr[idx].copy(status = newStatus)
-                }
-                return
-            }
-        }
+        engine.applyReceipt(messageId, status)?.let { refresh(it) }
     }
 
     /** Rebuild a conversation's UI messages from the local (decrypted) store. */
@@ -146,6 +137,8 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                 !d.isMine -> MessageStatus.READ
                 d.failed -> MessageStatus.FAILED
                 d.pending -> MessageStatus.SENDING
+                d.deliveryStatus == "read" -> MessageStatus.READ
+                d.deliveryStatus == "delivered" -> MessageStatus.DELIVERED
                 else -> MessageStatus.SENT
             }
             VMessage(
