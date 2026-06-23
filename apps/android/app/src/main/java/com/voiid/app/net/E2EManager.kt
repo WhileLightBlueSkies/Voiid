@@ -40,12 +40,20 @@ class E2EManager private constructor(context: Context) {
     /** Ensure this device has a published e2e-core identity. Idempotent per session. */
     suspend fun bootstrap() {
         if (bootstrapped) return
-        val id = loadOrCreateIdentity()
-        identity = id
-        val devId = register(id)
-        deviceId = devId
-        ensurePrekeys(id, devId)
-        bootstrapped = true
+        try {
+            val id = loadOrCreateIdentity()
+            identity = id
+            android.util.Log.i("VOIID", "bootstrap: identity ready")
+            val devId = register(id)
+            deviceId = devId
+            android.util.Log.i("VOIID", "bootstrap: registered device=$devId")
+            ensurePrekeys(id, devId)
+            android.util.Log.i("VOIID", "bootstrap: prekeys ensured")
+            bootstrapped = true
+        } catch (e: Exception) {
+            android.util.Log.e("VOIID", "bootstrap FAILED", e)
+            throw e
+        }
     }
 
     /**
@@ -56,7 +64,10 @@ class E2EManager private constructor(context: Context) {
      */
     suspend fun ensurePrekeys(id: Identity? = identity, devId: String? = deviceId) {
         if (id == null || devId == null) return
-        val available = runCatching { availableCount() }.getOrDefault(0)
+        val available = runCatching { availableCount() }.getOrElse {
+            android.util.Log.e("VOIID", "availableCount failed", it); 0
+        }
+        android.util.Log.i("VOIID", "ensurePrekeys: available=$available")
         if (available >= LOW_WATERMARK) return
         val max = runCatching { id.maxOneTimeKeys().toInt() }.getOrDefault(TARGET_PREKEYS)
         val target = minOf(TARGET_PREKEYS, max)
@@ -66,6 +77,7 @@ class E2EManager private constructor(context: Context) {
         // identity BEFORE upload so a crash can't lose the private halves, then upload.
         val bundle = id.replenishPrekeys(need.toUInt())
         persist(id)
+        android.util.Log.i("VOIID", "ensurePrekeys: uploading ${bundle.oneTimeKeys.size} keys (need=$need max=$max)")
         uploadPrekeys(devId, bundle.oneTimeKeys)
     }
 
