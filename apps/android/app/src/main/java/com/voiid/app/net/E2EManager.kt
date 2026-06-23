@@ -34,7 +34,10 @@ class E2EManager private constructor(context: Context) {
     private val prefs = SecurePrefs.open(context, "voiid_e2e")
 
     var identity: Identity? = null; private set
-    var deviceId: String? = null; private set
+    // In-memory device id, falling back to the persisted one from a prior bootstrap —
+    // so a send before bootstrap() finishes THIS session still carries our device_id.
+    private var _deviceId: String? = null
+    val deviceId: String? get() = _deviceId ?: prefs.getString("device_id", null)
     @Volatile private var bootstrapped = false
 
     /** Ensure this device has a published e2e-core identity. Idempotent per session. */
@@ -45,7 +48,7 @@ class E2EManager private constructor(context: Context) {
             identity = id
             android.util.Log.i("VOIID", "bootstrap: identity ready")
             val devId = withTransportRetry { register(id) }
-            deviceId = devId
+            _deviceId = devId
             android.util.Log.i("VOIID", "bootstrap: registered device=$devId")
             withTransportRetry { ensurePrekeys(id, devId) }
             android.util.Log.i("VOIID", "bootstrap: prekeys ensured")

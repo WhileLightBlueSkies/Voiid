@@ -138,6 +138,12 @@ final class ChatStore: ObservableObject {
         }
     }
 
+    /// Resolve the peer + refresh presence (for the periodic poll while a chat is open).
+    func refreshPresence(_ conv: VConversation) async {
+        guard conv.type == .direct, let peer = try? await peerUserId(for: conv) else { return }
+        await fetchPresence(conv.id, peerUserId: peer)
+    }
+
     /// Fetch + apply the peer's online/last-seen presence to the conversation.
     func fetchPresence(_ convId: String, peerUserId: String) async {
         guard let st = try? await ChatService.shared.status(userId: peerUserId),
@@ -285,11 +291,15 @@ final class ChatStore: ObservableObject {
 
     /// A message arrived (WS ref) — fetch + decrypt that conversation.
     private func handleIncoming(_ conversationId: String) async {
-        guard let conv = directConversations.first(where: { $0.id == conversationId }) else {
-            // Unknown conversation (e.g. first message from a new contact) — refresh list.
-            await loadConversations(); return
+        if let conv = directConversations.first(where: { $0.id == conversationId }) {
+            await syncMessages(conv); return
         }
-        await syncMessages(conv)
+        // Unknown conversation (first message from a new contact) — load the list,
+        // THEN sync that conversation so the message actually appears (not just on open).
+        await loadConversations()
+        if let conv = directConversations.first(where: { $0.id == conversationId }) {
+            await syncMessages(conv)
+        }
     }
 
     private func markStatus(_ id: String, in convId: String, to status: MessageStatus) {

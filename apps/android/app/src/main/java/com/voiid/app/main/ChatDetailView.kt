@@ -166,6 +166,14 @@ fun ChatDetailView(
     // Load cached + sync (fetch + decrypt) the real E2EE messages on open.
     LaunchedEffect(conversation.id) { chat.openConversation(conversation) }
 
+    // Live-refresh the peer's online/last-seen while the chat is open.
+    LaunchedEffect(conversation.id) {
+        while (true) {
+            chat.refreshPresence(conversation)
+            kotlinx.coroutines.delay(20_000)
+        }
+    }
+
     // Emit typing start/stop on the empty<->non-empty transition (debounced).
     LaunchedEffect(draft.isNotEmpty()) { chat.sendTyping(conversation.id, draft.isNotEmpty()) }
 

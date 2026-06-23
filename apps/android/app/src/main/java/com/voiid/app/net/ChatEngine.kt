@@ -195,6 +195,7 @@ class ChatEngine private constructor(context: Context) {
         val env: MessagesResponse = api.requestAs("GET", "messages/conversation/$conversationId")
         val myId = tokens.userId
         val seen = (store[conversationId] ?: emptyList()).map { it.id }.toHashSet()
+        val newlyReceived = mutableListOf<String>()
         for (m in env.messages.asReversed()) {        // server DESC -> process ASC
             if (seen.contains(m.id)) continue
             if (m.sender_id == myId) continue          // our echo is stored at send time
@@ -205,6 +206,7 @@ class ChatEngine private constructor(context: Context) {
                 // the string. Detect via the server's content_type hint.
                 val (caption, ref) = decodeEnvelope(plain, m.content_type == "media")
                 append(conversationId, DecryptedMessage(m.id, m.sender_id, caption, parseIso(m.created_at), false, ref), persist = false)
+                newlyReceived.add(m.id)
             }.onFailure {
                 // Surface the failure (was silent) — don't persist a placeholder so a
                 // transient failure is retried on the next sync.
@@ -212,7 +214,16 @@ class ChatEngine private constructor(context: Context) {
             }
         }
         persist()
+        // Mark just-received messages DELIVERED (double-grey tick on the sender) —
+        // even if the chat isn't open. Read is marked separately when it's opened.
+        if (newlyReceived.isNotEmpty()) markReceipts(newlyReceived, "delivered")
         return messages(conversationId)
+    }
+
+    private suspend fun markReceipts(ids: List<String>, status: String) {
+        if (ids.isEmpty()) return
+        val body = ApiClient.json.encodeToString(MarkReadBody.serializer(), MarkReadBody(ids, status))
+        runCatching { api.request("POST", "receipts/mark", jsonBody = body) }
     }
 
     /** Decode a decrypted plaintext into (caption, media?). */
@@ -230,9 +241,7 @@ class ChatEngine private constructor(context: Context) {
      *  `receipt` WS event to the senders (blue ticks). */
     suspend fun markRead(conversationId: String) {
         val ids = (store[conversationId] ?: emptyList()).filter { !it.isMine }.map { it.id }
-        if (ids.isEmpty()) return
-        val body = ApiClient.json.encodeToString(MarkReadBody.serializer(), MarkReadBody(ids))
-        runCatching { api.request("POST", "receipts/mark", jsonBody = body) }
+        markReceipts(ids, "read")
     }
 
     private suspend fun decryptInbound(wire: WireMessage, conversationId: String, peerUserId: String, senderDeviceId: String?): String {

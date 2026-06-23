@@ -172,12 +172,14 @@ final class ChatEngine {
         let env: MessagesResponse = try await api.request("GET", "messages/conversation/\(conversationId)")
         let myId = TokenStore.shared.userId
         let seen = Set((store[conversationId] ?? []).map { $0.id })
+        var newlyReceived: [String] = []
         for m in env.messages.reversed() where !seen.contains(m.id) {   // server DESC → process ASC
             if m.sender_id == myId { continue }   // our own echo is stored at send time
             guard let wire = decodeWire(m.ciphertext) else { continue }
             do {
                 let plain = try await decryptInbound(wire, conversationId: conversationId,
                                                      peerUserId: peerUserId, senderDeviceId: m.sender_device_id)
+                newlyReceived.append(m.id)
                 // A media message's plaintext is a JSON MediaEnvelope; a text
                 // message is just the string. Detect via the server's content_type
                 // hint, falling back to the decoded shape.
@@ -193,16 +195,23 @@ final class ChatEngine {
             }
         }
         persist()
+        // Mark just-received messages DELIVERED (double-grey tick on the sender) —
+        // even if the chat isn't open. Read is marked separately when it's opened.
+        if !newlyReceived.isEmpty { await markReceipts(newlyReceived, status: "delivered") }
         return messages(conversationId: conversationId)
+    }
+
+    private func markReceipts(_ ids: [String], status: String) async {
+        guard !ids.isEmpty else { return }
+        struct Body: Encodable { let message_ids: [String]; let status: String }
+        _ = try? await api.request("POST", "receipts/mark", body: Body(message_ids: ids, status: status)) as EmptyResponse
     }
 
     /// Mark all locally-stored inbound messages in a conversation as read. The
     /// server fans out a `receipt` WS event to the original senders (blue ticks).
     func markRead(conversationId: String) async {
         let ids = (store[conversationId] ?? []).filter { !$0.isMine }.map { $0.id }
-        guard !ids.isEmpty else { return }
-        struct Body: Encodable { let message_ids: [String]; let status = "read" }
-        _ = try? await api.request("POST", "receipts/mark", body: Body(message_ids: ids)) as EmptyResponse
+        await markReceipts(ids, status: "read")
     }
 
     /// Decrypt a single inbound message and advance the session. Caller persists.
