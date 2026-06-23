@@ -66,17 +66,20 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
     /** Fetch real conversations from the backend + install realtime handlers. */
     fun loadConversations() {
         startRealtime()
-        viewModelScope.launch {
-            try {
-                val convs = chatService.fetchConversations()
-                directConversations.clear(); groupConversations.clear()
-                directConversations.addAll(convs.filter { it.type == ConversationType.DIRECT })
-                groupConversations.addAll(convs.filter { it.type == ConversationType.GROUP })
-                convs.forEach { refresh(it.id) }   // show cached (already-decrypted) messages
-                loadError = null
-            } catch (e: Exception) {
-                loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t load chats."
-            }
+        viewModelScope.launch { reload() }
+    }
+
+    /** Suspend reload (so callers like handleIncoming can await it, then sync). */
+    private suspend fun reload() {
+        try {
+            val convs = chatService.fetchConversations()
+            directConversations.clear(); groupConversations.clear()
+            directConversations.addAll(convs.filter { it.type == ConversationType.DIRECT })
+            groupConversations.addAll(convs.filter { it.type == ConversationType.GROUP })
+            convs.forEach { refresh(it.id) }   // show cached (already-decrypted) messages
+            loadError = null
+        } catch (e: Exception) {
+            loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t load chats."
         }
     }
 
@@ -283,9 +286,11 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun handleIncoming(conversationId: String) {
-        val conv = directConversations.firstOrNull { it.id == conversationId }
-        if (conv == null) { loadConversations(); return }
-        syncMessages(conv)
+        directConversations.firstOrNull { it.id == conversationId }?.let { syncMessages(it); return }
+        // Unknown conversation (first message from a new contact) — reload the list,
+        // THEN sync it so the message actually appears (not just on manual open).
+        reload()
+        directConversations.firstOrNull { it.id == conversationId }?.let { syncMessages(it) }
     }
 
     private fun markStatus(id: String, convId: String, status: MessageStatus) {

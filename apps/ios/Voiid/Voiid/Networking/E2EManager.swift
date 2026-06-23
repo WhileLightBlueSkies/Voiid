@@ -22,7 +22,11 @@ final class E2EManager {
     private init() {}
 
     private(set) var identity: Identity?
-    private(set) var deviceId: String?
+    /// In-memory device id, falling back to the persisted one from a prior bootstrap —
+    /// so a message sent before `bootstrap()` finished THIS session still carries our
+    /// device_id (the recipient needs it to pick the right sender device on decrypt).
+    private var _deviceId: String?
+    var deviceId: String? { _deviceId ?? kc.string(deviceIdName) }
     private var bootstrapped = false
 
     private let kc = KeychainData(service: "com.voiid.e2e")
@@ -48,7 +52,7 @@ final class E2EManager {
             identity = id
             NSLog("[VOIID] bootstrap: identity ready")
             let devId = try await withTransportRetry { try await self.register(id) }
-            deviceId = devId
+            _deviceId = devId
             NSLog("[VOIID] bootstrap: registered device=\(devId)")
             try await withTransportRetry { try await self.ensurePrekeys(id, devId: devId) }
             NSLog("[VOIID] bootstrap: prekeys ensured")
@@ -155,7 +159,7 @@ final class E2EManager {
             body: RegisterDeviceBody(platform: "ios",
                                      registration_id: registrationId(),
                                      identity_public_key: identityKey))
-        deviceId = dev.device_id
+        _deviceId = dev.device_id
         kc.set(dev.device_id, deviceIdName)
         return dev.device_id
     }
