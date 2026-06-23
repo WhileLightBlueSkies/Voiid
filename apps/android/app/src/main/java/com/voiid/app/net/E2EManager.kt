@@ -44,16 +44,30 @@ class E2EManager private constructor(context: Context) {
             val id = loadOrCreateIdentity()
             identity = id
             android.util.Log.i("VOIID", "bootstrap: identity ready")
-            val devId = register(id)
+            val devId = withTransportRetry { register(id) }
             deviceId = devId
             android.util.Log.i("VOIID", "bootstrap: registered device=$devId")
-            ensurePrekeys(id, devId)
+            withTransportRetry { ensurePrekeys(id, devId) }
             android.util.Log.i("VOIID", "bootstrap: prekeys ensured")
             bootstrapped = true
         } catch (e: Exception) {
             android.util.Log.e("VOIID", "bootstrap FAILED", e)
             throw e
         }
+    }
+
+    /** Retry a network step a few times on transport errors (timeouts / flaky net)
+     *  instead of permanently failing bootstrap on the first hiccup. */
+    private suspend fun <T> withTransportRetry(op: suspend () -> T): T {
+        var last: Exception? = null
+        repeat(3) { attempt ->
+            try { return op() } catch (e: ApiError.Transport) {
+                last = e
+                android.util.Log.w("VOIID", "transport error (attempt ${attempt + 1}/3): ${e.message}")
+                kotlinx.coroutines.delay((attempt + 1) * 1500L)
+            }
+        }
+        throw last ?: ApiError.Http(0, "network")
     }
 
     /**
