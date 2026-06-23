@@ -1,8 +1,13 @@
+@file:OptIn(androidx.compose.animation.ExperimentalSharedTransitionApi::class)
+
 package com.voiid.app.onboarding
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.AnimatedVisibilityScope
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.SharedTransitionLayout
+import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -12,8 +17,9 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -71,6 +77,28 @@ import kotlinx.coroutines.delay
 
 enum class OnbStep { TERMS, PERMISSIONS, PHONE, OTP, SIGNUP, PROFILE }
 
+// Scopes for the splash→Terms shared-element logo glide, provided around the
+// outer (splash) AnimatedContent so the splash + Terms LogoMarks can be matched.
+private val LocalSharedTransitionScope = staticCompositionLocalOf<SharedTransitionScope?> { null }
+private val LocalOnbAnimatedScope = staticCompositionLocalOf<AnimatedVisibilityScope?> { null }
+
+/** Tag the logo as the shared "voiidLogo" element so it GLIDES from the splash
+ *  centre to its Terms position (Compose equivalent of iOS matchedGeometryEffect).
+ *  No-op when the scopes aren't present. */
+@OptIn(ExperimentalSharedTransitionApi::class)
+@Composable
+private fun Modifier.voiidSharedLogo(): Modifier {
+    val sts = LocalSharedTransitionScope.current ?: return this
+    val avs = LocalOnbAnimatedScope.current ?: return this
+    return with(sts) {
+        this@voiidSharedLogo.sharedElement(
+            rememberSharedContentState(key = "voiidLogo"),
+            animatedVisibilityScope = avs,
+        )
+    }
+}
+
+@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 fun OnboardingFlow(session: AppSession) {
     var showSplash by remember { mutableStateOf(true) }
@@ -89,40 +117,43 @@ fun OnboardingFlow(session: AppSession) {
         showSplash = false
     }
 
-    Box(Modifier.fillMaxSize().background(VoiidColor.background)) {
-
-        // Onboarding host (always composed under the splash so it cross-fades in).
+    SharedTransitionLayout(Modifier.fillMaxSize().background(VoiidColor.background)) {
+        // Splash ↔ onboarding cross-fade. The "voiidLogo" shared element glides the
+        // wordmark from the splash centre up to the Terms logo across this boundary.
         AnimatedContent(
-            targetState = current,
-            transitionSpec = {
-                val forward = targetState.ordinal > initialState.ordinal
-                val w = 300
-                (slideInHorizontally { if (forward) w else -w } + fadeIn()) togetherWith
-                    (slideOutHorizontally { if (forward) -w else w } + fadeOut())
-            },
-            label = "onboardingStep",
-        ) { step ->
-            when (step) {
-                OnbStep.TERMS -> TermsScreen(onContinue = { push(OnbStep.PERMISSIONS) })
-                OnbStep.PERMISSIONS -> PermissionsScreen(onContinue = { push(OnbStep.PHONE) })
-                OnbStep.PHONE -> PhoneScreen(onBack = ::pop, onContinue = { e164, vid -> phone = e164; verificationId = vid; push(OnbStep.OTP) })
-                OnbStep.OTP -> OtpScreen(session = session, phoneE164 = phone, verificationId = verificationId, onBack = ::pop, onContinue = { push(OnbStep.SIGNUP) })
-                OnbStep.SIGNUP -> SignupScreen(session = session, phone = phone, onBack = ::pop, onContinue = { push(OnbStep.PROFILE) })
-                OnbStep.PROFILE -> CreateProfileScreen(session = session, onBack = ::pop, onFinish = { session.completeOnboarding() })
+            targetState = showSplash,
+            transitionSpec = { fadeIn(tween(500)) togetherWith fadeOut(tween(500)) },
+            label = "splashToOnboarding",
+        ) { splash ->
+            CompositionLocalProvider(
+                LocalSharedTransitionScope provides this@SharedTransitionLayout,
+                LocalOnbAnimatedScope provides this@AnimatedContent,
+            ) {
+                if (splash) {
+                    SplashScreen()
+                } else {
+                    // Onboarding step host.
+                    AnimatedContent(
+                        targetState = current,
+                        transitionSpec = {
+                            val forward = targetState.ordinal > initialState.ordinal
+                            val w = 300
+                            (slideInHorizontally { if (forward) w else -w } + fadeIn()) togetherWith
+                                (slideOutHorizontally { if (forward) -w else w } + fadeOut())
+                        },
+                        label = "onboardingStep",
+                    ) { step ->
+                        when (step) {
+                            OnbStep.TERMS -> TermsScreen(onContinue = { push(OnbStep.PERMISSIONS) })
+                            OnbStep.PERMISSIONS -> PermissionsScreen(onContinue = { push(OnbStep.PHONE) })
+                            OnbStep.PHONE -> PhoneScreen(onBack = ::pop, onContinue = { e164, vid -> phone = e164; verificationId = vid; push(OnbStep.OTP) })
+                            OnbStep.OTP -> OtpScreen(session = session, phoneE164 = phone, verificationId = verificationId, onBack = ::pop, onContinue = { push(OnbStep.SIGNUP) })
+                            OnbStep.SIGNUP -> SignupScreen(session = session, phone = phone, onBack = ::pop, onContinue = { push(OnbStep.PROFILE) })
+                            OnbStep.PROFILE -> CreateProfileScreen(session = session, onBack = ::pop, onFinish = { session.completeOnboarding() })
+                        }
+                    }
+                }
             }
-        }
-
-        // Splash overlays everything. As it leaves, the logo eases UPWARD toward the
-        // Terms logo position while fading — a "connected" handoff closer to iOS's
-        // matchedGeometry glide than a flat cross-fade. (Exact pixel-matching of the
-        // shared element needs Compose SharedTransitionLayout + on-device tuning;
-        // tracked as a follow-up — see ENGINEERING_HANDOFF.)
-        AnimatedVisibility(
-            visible = showSplash,
-            enter = fadeIn(),
-            exit = slideOutVertically(tween(550)) { -(it * 0.12f).toInt() } + fadeOut(tween(550)),
-        ) {
-            SplashScreen()
         }
     }
 }
@@ -149,7 +180,9 @@ fun SplashScreen() {
     Box(Modifier.fillMaxSize().background(VoiidColor.background), contentAlignment = Alignment.Center) {
         LogoMark(
             size = ellipse,
-            modifier = Modifier.graphicsLayer { scaleX = scale; scaleY = scale; alpha = opacity },
+            modifier = Modifier
+                .voiidSharedLogo()
+                .graphicsLayer { scaleX = scale; scaleY = scale; alpha = opacity },
         )
     }
 }
@@ -172,7 +205,7 @@ fun TermsScreen(onContinue: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Spacer(Modifier.height(60.dp))
-            LogoMark(size = (cfg.screenWidthDp * (300f / 402f)).dp)
+            LogoMark(size = (cfg.screenWidthDp * (300f / 402f)).dp, modifier = Modifier.voiidSharedLogo())
 
             Spacer(Modifier.weight(1f))
 

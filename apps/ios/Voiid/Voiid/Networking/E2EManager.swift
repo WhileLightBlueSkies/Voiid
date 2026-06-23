@@ -30,17 +30,69 @@ final class E2EManager {
     private let pickleName = "identity_pickle"          // encrypted identity
     private let deviceIdName = "device_id"
     private let regIdName = "registration_id"
+    private let prekeyNextIdName = "prekey_next_id"     // monotonic one-time-key id counter
+
+    private static let targetPrekeys = 100   // refill toward this many available
+    private static let lowWatermark = 20     // replenish once we drop below this
+    // Start ids above the legacy 0..99 range an earlier one-shot build used, so an
+    // upgrade never collides with already-stored key ids (server keys on
+    // (device_id, key_id) with do-nothing-on-conflict → dupes are silently dropped).
+    private static let prekeyIdBase = 100
 
     /// Ensure this device has a published e2e-core identity. Call after login.
-    /// Safe to call repeatedly (restores existing identity, re-publishes prekeys).
+    /// Safe to call repeatedly (restores existing identity, tops up prekeys).
     func bootstrap() async throws {
         if bootstrapped { return }            // once per app session
-        let id = try loadOrCreateIdentity()
-        identity = id
-        let bundle = id.publishBundle(oneTimeKeyCount: 100)
-        try persist(id)                       // re-pickle (one-time keys advanced)
-        try await publish(bundle: bundle)
-        bootstrapped = true
+        do {
+            let id = try loadOrCreateIdentity()
+            identity = id
+            NSLog("[VOIID] bootstrap: identity ready")
+            let devId = try await withTransportRetry { try await self.register(id) }
+            deviceId = devId
+            NSLog("[VOIID] bootstrap: registered device=\(devId)")
+            try await withTransportRetry { try await self.ensurePrekeys(id, devId: devId) }
+            NSLog("[VOIID] bootstrap: prekeys ensured")
+            bootstrapped = true
+        } catch {
+            NSLog("[VOIID] bootstrap FAILED: \(error)")
+            throw error
+        }
+    }
+
+    /// Top up our published one-time prekeys when the server says we're low. Every
+    /// inbound session a peer starts consumes one; if they're all consumed and we
+    /// never replenish, NEW peers can't message us ("peer has no available prekeys").
+    /// Safe to call repeatedly (e.g. on app resume). Mirrors Android.
+    func ensurePrekeys(_ id: Identity? = nil, devId: String? = nil) async throws {
+        guard let id = id ?? identity, let devId = devId ?? deviceId else { return }
+        let available = (try? await availableCount()) ?? 0
+        NSLog("[VOIID] ensurePrekeys: available=\(available)")
+        if available >= Self.lowWatermark { return }
+        let max = Int(id.maxOneTimeKeys())
+        let target = min(Self.targetPrekeys, max)
+        let need = Swift.max(0, Swift.min(target - available, max))
+        if need == 0 { return }
+        // Generate `need` NEW one-time keys (returns only the new ones), persist the
+        // identity BEFORE upload so a crash can't lose the private halves, then upload.
+        let bundle = id.replenishPrekeys(count: UInt32(need))
+        try persist(id)
+        NSLog("[VOIID] ensurePrekeys: uploading \(bundle.oneTimeKeys.count) keys (need=\(need) max=\(max))")
+        try await uploadPrekeys(deviceId: devId, keys: bundle.oneTimeKeys)
+    }
+
+    /// Retry a network step a few times on transport errors (timeouts / flaky net)
+    /// instead of permanently failing bootstrap on the first hiccup.
+    private func withTransportRetry<T>(_ op: () async throws -> T) async throws -> T {
+        var lastError: Error?
+        for attempt in 0..<3 {
+            do { return try await op() }
+            catch let APIError.transport(e) {
+                lastError = APIError.transport(e)
+                NSLog("[VOIID] transport error (attempt \(attempt + 1)/3): \(e.localizedDescription)")
+                try? await Task.sleep(nanoseconds: UInt64((attempt + 1)) * 1_500_000_000)
+            }
+        }
+        throw lastError ?? APIError.http(status: 0, message: "network")
     }
 
     // MARK: - Identity lifecycle
@@ -90,19 +142,40 @@ final class E2EManager {
     private struct DeviceResponse: Decodable { let device_id: String }
     private struct OTK: Encodable { let key_id: Int; let public_key: String }
     private struct PrekeysBody: Encodable { let device_id: String; let one_time_prekeys: [OTK] }
+    private struct CountResponse: Decodable { let available: Int }
 
-    private func publish(bundle: PublicBundle) async throws {
+    /// Register (or refresh) this device server-side; returns the device id.
+    /// publishBundle(0) yields the long-term identity key WITHOUT generating any
+    /// one-time keys — those are managed separately by `ensurePrekeys`.
+    private func register(_ id: Identity) async throws -> String {
+        let identityKey = id.publishBundle(oneTimeKeyCount: 0).identityKey
+        try persist(id)
         let dev: DeviceResponse = try await api.request(
             "POST", "devices/register",
             body: RegisterDeviceBody(platform: "ios",
                                      registration_id: registrationId(),
-                                     identity_public_key: bundle.identityKey))
+                                     identity_public_key: identityKey))
         deviceId = dev.device_id
         kc.set(dev.device_id, deviceIdName)
+        return dev.device_id
+    }
 
-        let otks = bundle.oneTimeKeys.enumerated().map { OTK(key_id: $0.offset, public_key: $0.element) }
+    /// Our remaining unconsumed one-time prekeys on the server.
+    private func availableCount() async throws -> Int {
+        let res: CountResponse = try await api.request("GET", "prekeys/count")
+        return res.available
+    }
+
+    /// Upload public one-time prekeys with MONOTONIC key ids (the server keys on
+    /// (device_id, key_id) with do-nothing-on-conflict, so ids must never repeat
+    /// across uploads or replenished keys would be silently dropped).
+    private func uploadPrekeys(deviceId: String, keys: [String]) async throws {
+        guard !keys.isEmpty else { return }
+        var nextId = Int(kc.string(prekeyNextIdName) ?? "") ?? Self.prekeyIdBase
+        let otks = keys.map { k -> OTK in let o = OTK(key_id: nextId, public_key: k); nextId += 1; return o }
+        kc.set(String(nextId), prekeyNextIdName)
         let _: EmptyResponse = try await api.request(
-            "POST", "prekeys/upload", body: PrekeysBody(device_id: dev.device_id, one_time_prekeys: otks))
+            "POST", "prekeys/upload", body: PrekeysBody(device_id: deviceId, one_time_prekeys: otks))
     }
 }
 
