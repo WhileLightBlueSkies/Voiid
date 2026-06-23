@@ -251,15 +251,23 @@ class ChatEngine private constructor(context: Context) {
     }
 
     private suspend fun decryptInbound(wire: WireMessage, conversationId: String, peerUserId: String, senderDeviceId: String?): String {
+        // 1. Try the existing session.
         val live = sessions[conversationId] ?: restoreSession(conversationId)
         if (live != null) {
             sessions[conversationId] = live
-            val data = live.decrypt(wire)
-            saveSession(live, conversationId)
-            return data.decodeToString()
+            val data = runCatching { live.decrypt(wire) }.getOrNull()
+            if (data != null) {
+                saveSession(live, conversationId)
+                return data.decodeToString()
+            }
+            // Cached session couldn't decrypt. If this is a PreKey message the peer
+            // (re)started a session — e.g. reinstalled (new identity) — so fall through
+            // and acceptSession to RE-ESTABLISH, replacing the stale one. A normal
+            // message with no working session is genuinely undecryptable.
+            if (wire.msgType != 0uL) throw ApiError.Http(422, "no matching session for message")
         }
-        // No session yet -> first (PreKey) message; accept it with the SENDER's device
-        // (a multi-device sender may have encrypted with a non-first device).
+        // 2. PreKey message (or no session) → acceptSession to (re)establish with the
+        // SENDER's device (a multi-device sender may use a non-first device).
         val id = e2e.identity ?: throw ApiError.NotAuthenticated
         val (peerKey, devId) = peerIdentity(peerUserId, senderDeviceId)
         verifyAndPinIdentity(peerKey, peerUserId, devId)         // anti-MITM (TOFU, per device)

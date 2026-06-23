@@ -228,13 +228,22 @@ final class ChatEngine {
     /// that isn't their "first", so resolving by it is what makes decrypt succeed.
     private func decryptInbound(_ wire: WireMessage, conversationId: String,
                                peerUserId: String, senderDeviceId: String?) async throws -> String {
+        // 1. Try the existing session.
         if let s = sessions[conversationId] ?? restoreSession(conversationId) {
             sessions[conversationId] = s
-            let data = try s.decrypt(message: wire)
-            saveSession(s, conversationId: conversationId)
-            return String(decoding: data, as: UTF8.self)
+            if let data = try? s.decrypt(message: wire) {
+                saveSession(s, conversationId: conversationId)
+                return String(decoding: data, as: UTF8.self)
+            }
+            // The cached session couldn't decrypt. If this is a PreKey message the
+            // peer (re)started a session — e.g. they reinstalled (new identity) — so
+            // fall through and acceptSession to RE-ESTABLISH, replacing the stale one.
+            // For a normal message with no working session, it's genuinely undecryptable.
+            guard wire.msgType == 0 else {
+                throw APIError.http(status: 422, message: "no matching session for message")
+            }
         }
-        // No session yet → must be a PreKey message; accept it to create the session.
+        // 2. PreKey message (or no session) → acceptSession to (re)establish.
         guard let id = E2EManager.shared.identity else { throw APIError.notAuthenticated }
         let peer = try await peerIdentity(peerUserId, deviceId: senderDeviceId)
         try verifyAndPinIdentity(peer.key, peerUserId: peerUserId, deviceId: peer.deviceId)   // anti-MITM (TOFU, per device)
