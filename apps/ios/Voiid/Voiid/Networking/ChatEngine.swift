@@ -172,6 +172,7 @@ final class ChatEngine {
     @discardableResult
     func sync(conversationId: String, peerUserId: String) async throws -> [DecryptedMessage] {
         await flushPending(conversationId: conversationId, peerUserId: peerUserId)   // push any queued sends first
+        lastSyncHadDecryptFailure = false
         let env: MessagesResponse = try await api.request("GET", "messages/conversation/\(conversationId)")
         NSLog("[VOIID] sync conv=\(conversationId): server has \(env.messages.count) msgs")
         let myId = TokenStore.shared.userId
@@ -199,6 +200,7 @@ final class ChatEngine {
                 // so the chat shows a placeholder instead of staying blank and the
                 // message isn't re-attempted (and re-logged) on every sync.
                 if E2EManager.shared.identity != nil {
+                    lastSyncHadDecryptFailure = true
                     append(DecryptedMessage(id: m.id, senderId: m.sender_id,
                                             text: "🔒 Message couldn’t be decrypted",
                                             createdAt: parseDate(m.created_at), isMine: false),
@@ -371,6 +373,18 @@ final class ChatEngine {
     }
 
     // MARK: - Session persistence (pickled in Keychain)
+
+    /// Set true by `sync` when any inbound message failed to decrypt this run, so the
+    /// caller can ask the sender (over WS) to re-establish the session.
+    private(set) var lastSyncHadDecryptFailure = false
+
+    /// Drop the cached + persisted session for a conversation so the NEXT outbound
+    /// message starts a fresh one (peer asked us to reset / our session went stale).
+    func resetSession(_ conversationId: String) {
+        sessions[conversationId] = nil
+        kc.delete("sess_\(conversationId)")
+        NSLog("[VOIID] session reset for conv=\(conversationId)")
+    }
 
     private func restoreSession(_ conversationId: String) -> Session? {
         guard let pickle = kc.string("sess_\(conversationId)") else { return nil }

@@ -62,6 +62,8 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
     private val engine = com.voiid.app.net.ChatEngine.get(app)
     private val ws = com.voiid.app.net.WebSocketClient.get(app)
     private var realtimeInstalled = false
+    // Conversations we've already asked the peer to reset this session (avoid loops).
+    private val resetRequested = HashSet<String>()
 
     /** Fetch real conversations from the backend + install realtime handlers. */
     fun loadConversations() {
@@ -99,6 +101,11 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
             val peer = peerUserId(conv)
             engine.sync(conv.id, peer)
             refresh(conv.id)
+            // Couldn't decrypt inbound → our session is stale; ask the peer (once) to re-establish.
+            if (engine.lastSyncHadDecryptFailure && resetRequested.add(conv.id)) {
+                engine.resetSession(conv.id)
+                ws.sendSessionReset(conv.id, listOf(peer))
+            }
             engine.markRead(conv.id)            // blue ticks for the sender
             fetchPresence(conv.id, peer)
         } catch (e: Exception) {
@@ -269,6 +276,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
             else typingConversations.remove(cid)
         }
         ws.onReceipt = { mid, status -> applyReceipt(mid, status) }
+        ws.onSessionReset = { cid -> engine.resetSession(cid) }
         ws.connect()
     }
 

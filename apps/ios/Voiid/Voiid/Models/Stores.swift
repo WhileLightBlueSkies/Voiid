@@ -131,6 +131,13 @@ final class ChatStore: ObservableObject {
             let peer = try await peerUserId(for: conv)
             _ = try await ChatEngine.shared.sync(conversationId: conv.id, peerUserId: peer)
             refresh(conv.id)
+            // If we couldn't decrypt inbound messages, our session with the peer is
+            // stale — ask them (once) to re-establish so future messages work.
+            if ChatEngine.shared.lastSyncHadDecryptFailure, !resetRequested.contains(conv.id) {
+                resetRequested.insert(conv.id)
+                ChatEngine.shared.resetSession(conv.id)
+                WebSocketClient.shared.sendSessionReset(conversationId: conv.id, recipientIds: [peer])
+            }
             await ChatEngine.shared.markRead(conversationId: conv.id)   // blue ticks for the sender
             await fetchPresence(conv.id, peerUserId: peer)
         } catch {
@@ -289,7 +296,14 @@ final class ChatStore: ObservableObject {
         WebSocketClient.shared.onReceipt = { [weak self] mid, status in
             self?.applyReceipt(messageId: mid, status: status)
         }
+        WebSocketClient.shared.onSessionReset = { cid in
+            // Peer couldn't decrypt our messages → drop our session so the next send re-establishes.
+            ChatEngine.shared.resetSession(cid)
+        }
     }
+
+    // Conversations we've already asked the peer to reset this session (avoid loops).
+    private var resetRequested: Set<String> = []
 
     /// A message arrived (WS ref) — fetch + decrypt that conversation.
     private func handleIncoming(_ conversationId: String) async {

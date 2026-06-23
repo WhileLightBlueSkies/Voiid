@@ -82,6 +82,20 @@ wss.on('connection', (ws, req) => {
         }
         return;
       }
+
+      // session_reset: a recipient couldn't decrypt our message (stale/mismatched
+      // E2E session, e.g. after a reinstall). Relay to the original sender so they
+      // drop the stale session and re-establish a fresh one on the next message.
+      // { type:'session_reset', conversation_id, recipient_ids:[senderUserId] }
+      if (msg.type === 'session_reset' && msg.conversation_id && Array.isArray(msg.recipient_ids)) {
+        const out = JSON.stringify({
+          type: 'session_reset', conversation_id: msg.conversation_id, from_user: userId,
+        });
+        for (const rid of msg.recipient_ids) {
+          if (rid !== userId) pub.publish(`channel:user:${rid}`, out);
+        }
+        return;
+      }
     } catch { /* ignore malformed frames */ }
   });
 

@@ -52,6 +52,8 @@ class WebSocketClient private constructor(context: Context) {
     var onTyping: ((conversationId: String, userId: String, isTyping: Boolean) -> Unit)? = null
     /** Receipt for one of OUR sent messages: messageId, status ("delivered"|"read"). */
     var onReceipt: ((messageId: String, status: String) -> Unit)? = null
+    /** Peer couldn't decrypt our message → reset (re-establish) the session for this conversation. */
+    var onSessionReset: ((conversationId: String) -> Unit)? = null
 
     fun connect() {
         if (connected) return
@@ -91,6 +93,12 @@ class WebSocketClient private constructor(context: Context) {
         socket?.send(frame)
     }
 
+    /** Ask the message's sender to re-establish the E2E session (we couldn't decrypt). */
+    fun sendSessionReset(conversationId: String, recipientIds: List<String>) {
+        val recips = recipientIds.joinToString(",") { "\"" + it + "\"" }
+        socket?.send("""{"type":"session_reset","conversation_id":"$conversationId","recipient_ids":[$recips]}""")
+    }
+
     private val listener = object : WebSocketListener() {
         override fun onMessage(webSocket: WebSocket, text: String) {
             scope.launch { handle(text) }
@@ -123,6 +131,7 @@ class WebSocketClient private constructor(context: Context) {
                 val status = obj["status"]?.jsonPrimitive?.contentOrNull ?: return
                 onReceipt?.invoke(mid, status)
             }
+            "session_reset" -> obj["conversation_id"]?.jsonPrimitive?.contentOrNull?.let { onSessionReset?.invoke(it) }
             else -> Unit   // "connected" etc.
         }
     }

@@ -195,6 +195,7 @@ class ChatEngine private constructor(context: Context) {
     /** Fetch the server list, decrypt only unseen ids, persist, return full convo (asc). */
     suspend fun sync(conversationId: String, peerUserId: String): List<DecryptedMessage> {
         flushPending(conversationId, peerUserId)   // push any queued sends first
+        lastSyncHadDecryptFailure = false
         val env: MessagesResponse = api.requestAs("GET", "messages/conversation/$conversationId")
         android.util.Log.i("VOIID", "sync conv=$conversationId: server has ${env.messages.size} msgs")
         val myId = tokens.userId
@@ -218,6 +219,7 @@ class ChatEngine private constructor(context: Context) {
                 // so the chat shows a placeholder instead of staying blank and it
                 // isn't re-attempted (and re-logged) on every sync.
                 if (e2e.identity != null) {
+                    lastSyncHadDecryptFailure = true
                     append(conversationId, DecryptedMessage(m.id, m.sender_id,
                         "🔒 Message couldn’t be decrypted", parseIso(m.created_at), false), persist = false)
                 }
@@ -379,6 +381,17 @@ class ChatEngine private constructor(context: Context) {
     }
 
     // MARK: - Session persistence (pickled, encrypted at rest)
+
+    /** True when the last sync had an inbound decrypt failure (caller may ask the
+     *  sender to re-establish the session). */
+    var lastSyncHadDecryptFailure = false; private set
+
+    /** Drop the cached + persisted session so the NEXT outbound message starts fresh. */
+    fun resetSession(conversationId: String) {
+        sessions.remove(conversationId)
+        prefs.edit().remove("sess_$conversationId").apply()
+        android.util.Log.i("VOIID", "session reset for conv=$conversationId")
+    }
 
     private fun restoreSession(conversationId: String): Session? {
         val pickle = prefs.getString("sess_$conversationId", null) ?: return null
