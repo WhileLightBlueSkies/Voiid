@@ -45,8 +45,11 @@ wss.on('connection', (ws, req) => {
   if (!socketMap.has(userId)) socketMap.set(userId, new Set());
   socketMap.get(userId)!.add(ws);
 
-  // presence: user online with heartbeat TTL
+  // presence: user online with heartbeat TTL. Also stamp last_seen now, and on
+  // every heartbeat, so "last seen" stays fresh even on an UNCLEAN disconnect
+  // (app killed / network drop) — the close handler can't be relied on for that.
   presence.set(`user:${userId}:online`, '1', 'EX', 60);
+  presence.set(`user:${userId}:last_seen`, Date.now().toString());
 
   ws.on('message', (raw) => {
     // Realtime control frames: heartbeat (presence) and typing (Section 10 Redis keys).
@@ -55,6 +58,7 @@ wss.on('connection', (ws, req) => {
 
       if (msg.type === 'heartbeat') {
         presence.set(`user:${userId}:online`, '1', 'EX', 60);
+        presence.set(`user:${userId}:last_seen`, Date.now().toString());
         return;
       }
 

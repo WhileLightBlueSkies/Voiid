@@ -103,6 +103,13 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Resolve the peer + refresh presence (for the periodic poll while a chat is open). */
+    suspend fun refreshPresence(conv: VConversation) {
+        if (conv.type != ConversationType.DIRECT) return
+        val peer = runCatching { peerUserId(conv) }.getOrNull() ?: return
+        fetchPresence(conv.id, peer)
+    }
+
     /** Fetch + apply the peer's online/last-seen presence to the conversation. */
     suspend fun fetchPresence(convId: String, peerUserId: String) {
         val st = runCatching { chatService.status(peerUserId) }.getOrNull() ?: return

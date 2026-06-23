@@ -138,6 +138,12 @@ final class ChatStore: ObservableObject {
         }
     }
 
+    /// Resolve the peer + refresh presence (for the periodic poll while a chat is open).
+    func refreshPresence(_ conv: VConversation) async {
+        guard conv.type == .direct, let peer = try? await peerUserId(for: conv) else { return }
+        await fetchPresence(conv.id, peerUserId: peer)
+    }
+
     /// Fetch + apply the peer's online/last-seen presence to the conversation.
     func fetchPresence(_ convId: String, peerUserId: String) async {
         guard let st = try? await ChatService.shared.status(userId: peerUserId),

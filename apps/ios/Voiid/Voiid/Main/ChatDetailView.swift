@@ -54,6 +54,13 @@ struct ChatDetailView: View {
             session.hideTabBar = true
             chat.openConversation(conversation)   // load cached + sync (fetch+decrypt) real messages
         }
+        .task(id: conversation.id) {
+            // Live-refresh the peer's online/last-seen while the chat is open.
+            while !Task.isCancelled {
+                await chat.refreshPresence(conversation)
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
+            }
+        }
         .onDisappear {
             session.hideTabBar = false
             if let peer = livePeerUserId {

@@ -44,6 +44,7 @@ class WebSocketClient private constructor(context: Context) {
     private var socket: WebSocket? = null
     @Volatile private var connected = false
     @Volatile private var closedByUs = false
+    private var heartbeatJob: kotlinx.coroutines.Job? = null
 
     /** New message arrived for a conversation -> the app should fetch + decrypt it. */
     var onMessageRef: ((conversationId: String) -> Unit)? = null
@@ -60,13 +61,27 @@ class WebSocketClient private constructor(context: Context) {
         val req = Request.Builder().url(url).build()
         socket = client.newWebSocket(req, listener)
         connected = true
+        startHeartbeat()
     }
 
     fun disconnect() {
         closedByUs = true
+        heartbeatJob?.cancel(); heartbeatJob = null
         socket?.close(1000, "client closing")
         socket = null
         connected = false
+    }
+
+    /** App-level heartbeat the BACKEND understands (keeps `online` fresh + updates
+     *  last_seen). OkHttp's pingInterval is only a protocol PING the server ignores. */
+    private fun startHeartbeat() {
+        heartbeatJob?.cancel()
+        heartbeatJob = scope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(25_000)
+                socket?.send("""{"type":"heartbeat"}""")
+            }
+        }
     }
 
     fun sendTyping(conversationId: String, recipientIds: List<String>, isStart: Boolean) {
