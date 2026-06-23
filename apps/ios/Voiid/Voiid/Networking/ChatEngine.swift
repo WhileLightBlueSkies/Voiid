@@ -189,9 +189,17 @@ final class ChatEngine {
                                         media: parsed.media),
                        to: conversationId, persist: false)
             } catch {
-                // Surface the failure (was silent) — but do NOT persist a placeholder,
-                // so a transient failure is retried on the next sync.
                 NSLog("[VOIID] ❌ inbound decrypt FAILED id=\(m.id) senderDev=\(m.sender_device_id ?? "nil"): \(error)")
+                // If we have an identity (not a bootstrap race), this failure is
+                // permanent (message encrypted to an old/rotated key) — tombstone it
+                // so the chat shows a placeholder instead of staying blank and the
+                // message isn't re-attempted (and re-logged) on every sync.
+                if E2EManager.shared.identity != nil {
+                    append(DecryptedMessage(id: m.id, senderId: m.sender_id,
+                                            text: "🔒 Message couldn’t be decrypted",
+                                            createdAt: parseDate(m.created_at), isMine: false),
+                           to: conversationId, persist: false)
+                }
             }
         }
         persist()
