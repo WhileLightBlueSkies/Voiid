@@ -75,6 +75,13 @@ class WebSocketClient private constructor(context: Context) {
         connected = false
     }
 
+    /** Force a fresh socket — call when the chats screen appears, so a stale/dead
+     *  socket (that silently stopped receiving) is replaced and pushes aren't missed. */
+    fun reconnect() {
+        disconnect()
+        connect()
+    }
+
     /** App-level heartbeat the BACKEND understands (keeps `online` fresh + updates
      *  last_seen). OkHttp's pingInterval is only a protocol PING the server ignores. */
     private fun startHeartbeat() {

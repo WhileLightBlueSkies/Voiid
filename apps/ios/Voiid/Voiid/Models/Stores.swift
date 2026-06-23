@@ -162,9 +162,9 @@ final class ChatStore: ObservableObject {
     /// Apply a delivery/read receipt (WS) — persist it in the engine (no regression)
     /// then refresh that conversation.
     private func applyReceipt(messageId: String, status: String) {
-        if let cid = ChatEngine.shared.applyReceipt(messageId: messageId, status: status) {
-            refresh(cid)
-        }
+        let cid = ChatEngine.shared.applyReceipt(messageId: messageId, status: status)
+        NSLog("[VOIID] 📥 receipt \(status) for \(messageId) → \(cid == nil ? "no match" : "applied")")
+        if let cid { refresh(cid) }
     }
 
     /// Rebuild a conversation's UI messages from the local (decrypted) store.

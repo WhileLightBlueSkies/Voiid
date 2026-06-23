@@ -53,6 +53,15 @@ final class WebSocketClient {
         task = nil; connected = false
     }
 
+    /// Force a fresh socket — call when the chats screen appears / app foregrounds.
+    /// URLSessionWebSocketTask doesn't always fire its failure handler on a silent
+    /// network drop, so `connected` can be stuck true on a dead socket and we'd miss
+    /// pushes. Tearing down + reconnecting guarantees a live connection.
+    func reconnect() {
+        disconnect()
+        connect()
+    }
+
     func sendTyping(conversationId: String, recipientIds: [String], isStart: Bool) {
         let frame: [String: Any] = [
             "type": "typing", "conversation_id": conversationId,
