@@ -68,6 +68,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
     /** Fetch real conversations from the backend + install realtime handlers. */
     fun loadConversations() {
         startRealtime()
+        ws.reconnect()   // fresh socket on each chats-screen entry (avoid a dead one missing pushes)
         viewModelScope.launch { reload() }
     }
 
@@ -129,7 +130,9 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
 
     /** Apply a delivery/read receipt (WS) — persist in the engine (no regression) then refresh. */
     private fun applyReceipt(messageId: String, status: String) {
-        engine.applyReceipt(messageId, status)?.let { refresh(it) }
+        val cid = engine.applyReceipt(messageId, status)
+        android.util.Log.i("VOIID", "📥 receipt $status for $messageId → ${if (cid == null) "no match" else "applied"}")
+        cid?.let { refresh(it) }
     }
 
     /** Rebuild a conversation's UI messages from the local (decrypted) store. */
@@ -277,7 +280,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         }
         ws.onReceipt = { mid, status -> applyReceipt(mid, status) }
         ws.onSessionReset = { cid -> engine.resetSession(cid) }
-        ws.connect()
+        // connection is (re)established by loadConversations via ws.reconnect()
     }
 
     /** Send a typing frame for a direct chat (best-effort). */

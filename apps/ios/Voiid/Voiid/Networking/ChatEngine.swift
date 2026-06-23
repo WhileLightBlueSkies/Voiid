@@ -236,6 +236,7 @@ final class ChatEngine {
 
     private func markReceipts(_ ids: [String], status: String) async {
         guard !ids.isEmpty else { return }
+        NSLog("[VOIID] 📤 receipt \(status) x\(ids.count)")
         struct Body: Encodable { let message_ids: [String]; let status: String }
         _ = try? await api.request("POST", "receipts/mark", body: Body(message_ids: ids, status: status)) as EmptyResponse
     }

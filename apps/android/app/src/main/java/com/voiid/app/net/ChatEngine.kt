@@ -252,6 +252,7 @@ class ChatEngine private constructor(context: Context) {
 
     private suspend fun markReceipts(ids: List<String>, status: String) {
         if (ids.isEmpty()) return
+        android.util.Log.i("VOIID", "📤 receipt $status x${ids.size}")
         val body = ApiClient.json.encodeToString(MarkReadBody.serializer(), MarkReadBody(ids, status))
         runCatching { api.request("POST", "receipts/mark", jsonBody = body) }
     }
