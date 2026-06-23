@@ -5,11 +5,12 @@ import { assertOpaque } from '@voiid/common-utils';
 import { query } from '../db';
 import { publisher } from '../redis';
 import { requireAuth } from '../auth';
+import { b64, asyncHandler } from '../util';
 
 const router = Router();
 
 // POST /messages/send  { conversation_id, ciphertext(b64), content_type?, media_url?, media_mime? }
-router.post('/send', requireAuth, async (req, res) => {
+router.post('/send', requireAuth, asyncHandler(async (req, res) => {
   const { user_id, device_id } = (req as any).auth;
   const { conversation_id, ciphertext, content_type, media_url, media_mime } = req.body ?? {};
   if (!conversation_id || !ciphertext) {
@@ -22,9 +23,9 @@ router.post('/send', requireAuth, async (req, res) => {
 
   const rows = await query<{ id: string; created_at: string }>(
     `insert into messages (conversation_id, sender_id, sender_device_id, ciphertext, content_type, media_url, media_mime)
-       values ($1, $2, $3, decode($4,'base64'), coalesce($5,'text'), $6, $7)
+       values ($1, $2, $3, $4, coalesce($5,'text'), $6, $7)
        returning id, created_at`,
-    [conversation_id, user_id, device_id ?? null, ciphertext, content_type, media_url, media_mime]
+    [conversation_id, user_id, device_id ?? null, b64(ciphertext), content_type, media_url, media_mime]
   );
   const message = rows[0];
 
@@ -43,7 +44,7 @@ router.post('/send', requireAuth, async (req, res) => {
   }
 
   res.json({ message_id: message.id, created_at: message.created_at });
-});
+}));
 
 // GET /messages/conversation/:id?before=&limit= — paginated history (ciphertext; client decrypts)
 router.get('/conversation/:id', requireAuth, async (req, res) => {

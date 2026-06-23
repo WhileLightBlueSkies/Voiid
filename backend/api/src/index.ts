@@ -68,7 +68,7 @@ app.use(api);   // legacy unversioned alias (migration safety) — remove once a
 // Global error handler — turns thrown errors (incl. malformed JSON and bad
 // base64 in inputs) into a clean 400/500 instead of crashing the socket. No
 // secrets in the response. (Express 4: this catches sync throws + next(err);
-// async route rejections are also surfaced here via the wrapper in security.ts.)
+// async route rejections reach here via the asyncHandler wrapper in util.ts.)
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   const status = err?.type === 'entity.parse.failed' || /base64|invalid input/i.test(err?.message ?? '')
     ? 400

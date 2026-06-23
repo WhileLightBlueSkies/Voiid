@@ -2,34 +2,35 @@
 import { Router } from 'express';
 import { pool, query } from '../db';
 import { requireAuth } from '../auth';
+import { b64, asyncHandler } from '../util';
 
 const router = Router();
 
 // POST /prekeys/upload  { device_id, one_time_prekeys:[{key_id,public_key(b64)}], signed_prekey?:{key_id,public_key,signature} }
 // signed_prekey is OPTIONAL — e2e-core (vodozemac) bundles don't include a
 // separate signed prekey; a session needs only identity_key + one one-time key.
-router.post('/upload', requireAuth, async (req, res) => {
+router.post('/upload', requireAuth, asyncHandler(async (req, res) => {
   const { device_id, signed_prekey, one_time_prekeys } = req.body ?? {};
   if (!device_id) return res.status(400).json({ error: 'device_id required' });
 
   if (signed_prekey) {
     await query(
       `insert into signed_prekeys (device_id, key_id, public_key, signature)
-         values ($1, $2, decode($3,'base64'), decode($4,'base64'))
+         values ($1, $2, $3, $4)
          on conflict (device_id, key_id) do nothing`,
-      [device_id, signed_prekey.key_id, signed_prekey.public_key, signed_prekey.signature]
+      [device_id, signed_prekey.key_id, b64(signed_prekey.public_key), b64(signed_prekey.signature)]
     );
   }
 
   for (const otp of (one_time_prekeys ?? [])) {
     await query(
       `insert into one_time_prekeys (device_id, key_id, public_key)
-         values ($1, $2, decode($3,'base64')) on conflict (device_id, key_id) do nothing`,
-      [device_id, otp.key_id, otp.public_key]
+         values ($1, $2, $3) on conflict (device_id, key_id) do nothing`,
+      [device_id, otp.key_id, b64(otp.public_key)]
     );
   }
   res.json({ uploaded: true });
-});
+}));
 
 // GET /prekeys/count — how many UNCONSUMED one-time prekeys the caller has left
 // across their own active devices. The client polls this to decide when to
@@ -103,17 +104,17 @@ router.get('/:user_id', requireAuth, async (req, res) => {
 });
 
 // POST /prekeys/refresh — client replenishes one-time prekeys (same shape as upload's one_time_prekeys)
-router.post('/refresh', requireAuth, async (req, res) => {
+router.post('/refresh', requireAuth, asyncHandler(async (req, res) => {
   const { device_id, one_time_prekeys } = req.body ?? {};
   if (!device_id) return res.status(400).json({ error: 'device_id required' });
   for (const otp of (one_time_prekeys ?? [])) {
     await query(
       `insert into one_time_prekeys (device_id, key_id, public_key)
-         values ($1, $2, decode($3,'base64')) on conflict (device_id, key_id) do nothing`,
-      [device_id, otp.key_id, otp.public_key]
+         values ($1, $2, $3) on conflict (device_id, key_id) do nothing`,
+      [device_id, otp.key_id, b64(otp.public_key)]
     );
   }
   res.json({ refreshed: true });
-});
+}));
 
 export default router;

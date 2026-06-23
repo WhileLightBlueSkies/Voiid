@@ -14,6 +14,7 @@ import { randomBytes } from 'crypto';
 import { redis } from '../redis';
 import { query } from '../db';
 import { requireAuth, issueToken } from '../auth';
+import { b64, asyncHandler } from '../util';
 
 const router = Router();
 
@@ -38,7 +39,7 @@ router.post('/request', async (req, res) => {
 
 // POST /linking/approve — { link_token }  (authed by an existing trusted device)
 // Registers the pending device under the approving user and mints its session JWT.
-router.post('/approve', requireAuth, async (req, res) => {
+router.post('/approve', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const { link_token } = req.body ?? {};
   if (!link_token) return res.status(400).json({ error: 'link_token required' });
@@ -51,11 +52,11 @@ router.post('/approve', requireAuth, async (req, res) => {
   // Register the companion device under the approving user (public key only).
   const rows = await query<{ id: string }>(
     `insert into devices (user_id, platform, registration_id, identity_public_key, device_name)
-       values ($1, $2, $3, decode($4,'base64'), $5)
+       values ($1, $2, $3, $4, $5)
        on conflict (user_id, registration_id)
        do update set identity_public_key = excluded.identity_public_key, revoked_at = null, updated_at = now()
        returning id`,
-    [user_id, pending.platform, pending.registration_id, pending.identity_public_key, pending.device_name]
+    [user_id, pending.platform, pending.registration_id, b64(pending.identity_public_key), pending.device_name]
   );
   const device_id = rows[0].id;
   const token = issueToken({ user_id, device_id });
@@ -70,7 +71,7 @@ router.post('/approve', requireAuth, async (req, res) => {
   );
 
   res.json({ approved: true, device_id });
-});
+}));
 
 // GET /linking/poll/:link_token — the web device polls until approved, then receives its JWT.
 router.get('/poll/:link_token', async (req, res) => {
