@@ -225,9 +225,12 @@ final class ChatEngine {
         let env: MessagesResponse = try await api.request("GET", "messages/conversation/\(conversationId)")
         NSLog("[VOIID] sync conv=\(conversationId): server has \(env.messages.count) msgs")
         let myId = TokenStore.shared.userId
-        // "seen" = successfully-decrypted ids only. Tombstones (failed==true) are NOT
-        // seen, so they're retried every sync — once the session heals they decrypt.
-        let seen = Set((store[conversationId] ?? []).filter { !$0.failed }.map { $0.id })
+        // "seen" = ALL stored ids INCLUDING tombstones. A decrypt-once Olm message that
+        // failed can NEVER be re-decrypted (recovery comes from the peer RE-SENDING a new
+        // message, not retrying the dead id). Retrying tombstones every sync just re-fails
+        // and keeps re-triggering session_reset, which destroys the working session
+        // ("no matching session" cascade). So tombstone once, never retry.
+        let seen = Set((store[conversationId] ?? []).map { $0.id })
         var newlyReceived: [String] = []
         for m in env.messages.reversed() {   // server DESC → process ASC
             // Our OWN sent message: we can't decrypt our ratchet output, but the server

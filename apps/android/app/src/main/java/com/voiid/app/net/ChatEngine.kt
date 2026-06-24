@@ -226,9 +226,12 @@ class ChatEngine private constructor(context: Context) {
         val env: MessagesResponse = api.requestAs("GET", "messages/conversation/$conversationId")
         android.util.Log.i("VOIID", "sync conv=$conversationId: server has ${env.messages.size} msgs")
         val myId = tokens.userId
-        // "seen" = successfully-decrypted ids only. Tombstones (failed==true) are NOT
-        // seen, so they're retried every sync — once the session heals they decrypt.
-        val seen = (store[conversationId] ?: emptyList()).filter { !it.failed }.map { it.id }.toHashSet()
+        // "seen" = ALL stored ids INCLUDING tombstones. A decrypt-once Olm message that
+        // failed can NEVER be re-decrypted (recovery comes from the peer RE-SENDING a new
+        // message, not retrying the dead id). Retrying tombstones every sync just re-fails
+        // and keeps re-triggering session_reset, which destroys the working session
+        // ("no matching session" cascade). So tombstone once, never retry.
+        val seen = (store[conversationId] ?: emptyList()).map { it.id }.toHashSet()
         val newlyReceived = mutableListOf<String>()
         for (m in env.messages.asReversed()) {        // server DESC -> process ASC
             // Our OWN sent message: can't decrypt our ratchet output, but the server
