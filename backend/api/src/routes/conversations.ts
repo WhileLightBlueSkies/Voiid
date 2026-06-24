@@ -86,7 +86,7 @@ router.get('/', requireAuth, async (req, res) => {
   const rows = await query(
     `select c.id, c.type, c.name, c.photo_url, c.updated_at,
             lm.last_message_at,
-            encode(lm.ciphertext,'base64') as last_ciphertext,
+            translate(encode(lm.ciphertext,'base64'), E'\n', '') as last_ciphertext,
             lm.content_type as last_content_type,
             coalesce(uc.unread, 0)::int as unread_count
        from conversations c

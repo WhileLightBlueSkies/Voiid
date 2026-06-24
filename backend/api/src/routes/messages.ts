@@ -55,7 +55,7 @@ router.get('/conversation/:id', requireAuth, async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 50, 100);
   const before = req.query.before as string | undefined;
   const rows = await query(
-    `select m.id, m.sender_id, m.sender_device_id, encode(m.ciphertext,'base64') as ciphertext,
+    `select m.id, m.sender_id, m.sender_device_id, translate(encode(m.ciphertext,'base64'), E'\n', '') as ciphertext,
             m.content_type, m.media_url, m.media_mime, m.created_at,
             -- Highest receipt state any recipient has reached for this message, so the
             -- SENDER can advance Sent→Delivered→Seen on poll even if the live WS receipt
@@ -77,7 +77,7 @@ router.get('/conversation/:id', requireAuth, async (req, res) => {
 router.get('/pending/:user_id', requireAuth, async (req, res) => {
   const rows = await query(
     `select m.id, m.conversation_id, m.sender_id,
-            encode(m.ciphertext,'base64') as ciphertext, m.content_type, m.media_url, m.created_at
+            translate(encode(m.ciphertext,'base64'), E'\n', '') as ciphertext, m.content_type, m.media_url, m.created_at
        from messages m
        join conversation_members cm on cm.conversation_id = m.conversation_id
        where cm.user_id = $1 and cm.left_at is null and m.is_pending = true
