@@ -47,6 +47,16 @@ final class E2EManager {
     /// Safe to call repeatedly (restores existing identity, tops up prekeys).
     func bootstrap() async throws {
         if bootstrapped { return }            // once per app session
+        // iOS Keychain SURVIVES app uninstall, so a reinstall would silently reuse the
+        // old identity + sessions + identity pins — keyed to peers' now-dead identities,
+        // making the FIRST message to each peer undecryptable. UserDefaults IS cleared on
+        // uninstall, so its absence means "fresh install" → wipe all E2E Keychain state.
+        if !UserDefaults.standard.bool(forKey: "voiid_e2e_installed") {
+            kc.wipeService()                                  // identity, pickle key, device id, pins
+            KeychainData(service: "com.voiid.sessions").wipeService()   // cached Olm sessions
+            NSLog("[VOIID] fresh install detected — wiped stale Keychain E2E state")
+            UserDefaults.standard.set(true, forKey: "voiid_e2e_installed")
+        }
         do {
             let id = try loadOrCreateIdentity()
             identity = id
@@ -213,6 +223,14 @@ final class KeychainData {
     }
     func string(_ key: String) -> String? { data(key).flatMap { String(data: $0, encoding: .utf8) } }
     func delete(_ key: String) { SecItemDelete(base(key) as CFDictionary) }
+
+    /// Delete EVERY item in this Keychain service. iOS Keychain survives app
+    /// uninstall, so a reinstall would otherwise reuse a stale identity/sessions —
+    /// call on a detected fresh install to get a truly clean slate.
+    func wipeService() {
+        SecItemDelete([kSecClass as String: kSecClassGenericPassword,
+                       kSecAttrService as String: service] as CFDictionary)
+    }
 
     private func base(_ key: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
