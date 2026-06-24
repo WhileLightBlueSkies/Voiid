@@ -118,6 +118,13 @@ final class E2EManager {
         kc.set(pickle, pickleName)
     }
 
+    /// Re-persist the current identity. MUST be called after acceptSession, which
+    /// consumes a one-time prekey from the Account — without saving, that consumed
+    /// state is lost on restart and the first inbound message becomes undecryptable.
+    func persistIdentity() {
+        if let id = identity { try? persist(id) }
+    }
+
     /// Stable 32-byte pickle key (created once, kept in Keychain).
     private func pickleKey() -> Data {
         if let existing = kc.data(pickleKeyName), existing.count == 32 { return existing }

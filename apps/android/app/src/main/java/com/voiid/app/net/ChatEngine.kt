@@ -338,6 +338,8 @@ class ChatEngine private constructor(context: Context) {
         val accepted = id.acceptSession(peerKey, wire)
         list.add(accepted.session)
         saveSessions(conversationId)
+        e2e.persistIdentity()   // acceptSession consumed a one-time key — save it or the
+                                // first message is lost on restart (resurrected stale OTK).
         return accepted.plaintext.decodeToString()
     }
 

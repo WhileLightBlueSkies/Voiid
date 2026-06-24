@@ -112,6 +112,13 @@ class E2EManager private constructor(context: Context) {
         prefs.edit().putString("identity_pickle", id.toPickle(key)).apply()
     }
 
+    /** Re-persist the current identity. MUST be called after acceptSession, which
+     *  consumes a one-time prekey from the Account — without saving, that consumed
+     *  state is lost on restart and the first inbound message becomes undecryptable. */
+    fun persistIdentity() {
+        identity?.let { persist(it) }
+    }
+
     private fun pickleKey(): ByteArray {
         prefs.getString("pickle_key", null)?.let { return Base64.decode(it, Base64.NO_WRAP) }
         val bytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
