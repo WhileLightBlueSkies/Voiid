@@ -56,7 +56,12 @@ class ChatEngine private constructor(context: Context) {
 
     private val prefs = SecurePrefs.open(appContext, "voiid_chat")
 
-    private val sessions = HashMap<String, Session>()                 // conversationId -> live Session
+    // conversationId -> ALL candidate Olm sessions. During simultaneous initiation
+    // ("glare") both peers create their own session, so a conversation legitimately has
+    // MORE THAN ONE session. We must keep them all: try each on decrypt, and append
+    // (never overwrite) a newly-accepted one — overwriting strands the other side's
+    // early PreKey messages permanently.
+    private val sessions = HashMap<String, MutableList<Session>>()
     private val store = HashMap<String, MutableList<DecryptedMessage>>() // conversationId -> messages (asc)
     private val media = MediaService(tokens)
 
@@ -127,7 +132,7 @@ class ChatEngine private constructor(context: Context) {
             try {
                 val session = ensureOutboundSession(conversationId, peerUserId)
                 val wire = session.encrypt(p.text.encodeToByteArray())
-                saveSession(session, conversationId)
+                saveSessions(conversationId)
                 val ciphertext = encodeWire(wire)
                 val body = ApiClient.json.encodeToString(SendBody.serializer(), SendBody(conversationId, ciphertext, device_id = e2e.deviceId))
                 val res: SendResponse = api.requestAs("POST", "messages/send", jsonBody = body)
@@ -195,7 +200,7 @@ class ChatEngine private constructor(context: Context) {
         val envelopeJson = ApiClient.json.encodeToString(MediaEnvelope.serializer(), MediaEnvelope(media = ref, caption = caption))
         val session = ensureOutboundSession(conversationId, peerUserId)
         val wire = session.encrypt(envelopeJson.encodeToByteArray())
-        saveSession(session, conversationId)
+        saveSessions(conversationId)
         val ciphertext = encodeWire(wire)
         // 4. Send the message, tagging it as media + the opaque ref for the server.
         val body = ApiClient.json.encodeToString(
@@ -299,45 +304,43 @@ class ChatEngine private constructor(context: Context) {
     }
 
     private suspend fun decryptInbound(wire: WireMessage, conversationId: String, peerUserId: String, senderDeviceId: String?): String {
-        // 1. Try the existing session.
-        val live = sessions[conversationId] ?: restoreSession(conversationId)
-        if (live != null) {
-            sessions[conversationId] = live
-            val data = runCatching { live.decrypt(wire) }.getOrNull()
+        val list = candidateSessions(conversationId)
+        // 1. Try EVERY known session (glare → multiple). A non-matching session fails
+        //    cleanly; the matching one decrypts (including later PreKey msgs of an
+        //    already-accepted session, so no re-accept / no extra OTK consumed).
+        for (s in list) {
+            val data = runCatching { s.decrypt(wire) }.getOrNull()
             if (data != null) {
-                saveSession(live, conversationId)
+                saveSessions(conversationId)
                 return data.decodeToString()
             }
-            // Cached session couldn't decrypt. If this is a PreKey message the peer
-            // (re)started a session — e.g. reinstalled (new identity) — so fall through
-            // and acceptSession to RE-ESTABLISH, replacing the stale one. A normal
-            // message with no working session is genuinely undecryptable.
-            if (wire.msgType != 0uL) throw ApiError.Http(422, "no matching session for message")
         }
-        // 2. PreKey message (or no session) → acceptSession to (re)establish with the
-        // SENDER's device (a multi-device sender may use a non-first device).
+        // 2. No existing session matched. Only a PreKey message can establish one.
+        if (wire.msgType != 0uL) throw ApiError.Http(422, "no matching session for message")
+        // 3. Accept a NEW inbound session and APPEND it (do not discard the others).
+        //    vodozemac decrypts before consuming the OTK, so a failed accept is safe;
+        //    a successful one consumes exactly one OTK for this distinct PreKey.
         val id = e2e.identity ?: throw ApiError.NotAuthenticated
         val (peerKey, devId) = peerIdentity(peerUserId, senderDeviceId)
         verifyAndPinIdentity(peerKey, peerUserId, devId)         // anti-MITM (TOFU, per device)
         val accepted = id.acceptSession(peerKey, wire)
-        sessions[conversationId] = accepted.session
-        saveSession(accepted.session, conversationId)
+        list.add(accepted.session)
+        saveSessions(conversationId)
         return accepted.plaintext.decodeToString()
     }
 
     // MARK: - Session establishment
 
     private suspend fun ensureOutboundSession(conversationId: String, peerUserId: String): Session {
-        (sessions[conversationId] ?: restoreSession(conversationId))?.let {
-            sessions[conversationId] = it
-            return it
-        }
+        // Reuse an existing session for outbound (stable: the first/oldest) so we don't
+        // keep minting new ones; only create one when the conversation has none.
+        candidateSessions(conversationId).firstOrNull()?.let { return it }
         val id = e2e.identity ?: throw ApiError.NotAuthenticated
         val bundle = peerPrekeyBundle(peerUserId)
         verifyAndPinIdentity(bundle.first, peerUserId, bundle.third)   // anti-MITM (TOFU, per device)
         val s = id.startSession(bundle.first, bundle.second)
-        sessions[conversationId] = s
-        saveSession(s, conversationId)
+        candidateSessions(conversationId).add(s)
+        saveSessions(conversationId)
         return s
     }
 
@@ -418,20 +421,33 @@ class ChatEngine private constructor(context: Context) {
      *  sender to re-establish the session). */
     var lastSyncHadDecryptFailure = false; private set
 
-    /** Drop the cached + persisted session so the NEXT outbound message starts fresh. */
+    /** Drop the cached + persisted sessions so the NEXT outbound message starts fresh. */
     fun resetSession(conversationId: String) {
         sessions.remove(conversationId)
         prefs.edit().remove("sess_$conversationId").apply()
         android.util.Log.i("VOIID", "session reset for conv=$conversationId")
     }
 
-    private fun restoreSession(conversationId: String): Session? {
-        val pickle = prefs.getString("sess_$conversationId", null) ?: return null
-        return runCatching { Session.restore(pickle, sessionPickleKey()) }.getOrNull()
+    /** All candidate sessions for a conversation (loaded from disk on first access). */
+    private fun candidateSessions(conversationId: String): MutableList<Session> =
+        sessions.getOrPut(conversationId) { restoreSessions(conversationId) }
+
+    /** Restore the persisted session list (newline-separated pickles; back-compatible
+     *  with the old single-pickle format). */
+    private fun restoreSessions(conversationId: String): MutableList<Session> {
+        val raw = prefs.getString("sess_$conversationId", null) ?: return mutableListOf()
+        return raw.split("\n").filter { it.isNotBlank() }
+            .mapNotNull { runCatching { Session.restore(it, sessionPickleKey()) }.getOrNull() }
+            .toMutableList()
     }
 
-    private fun saveSession(s: Session, conversationId: String) {
-        runCatching { prefs.edit().putString("sess_$conversationId", s.toPickle(sessionPickleKey())).apply() }
+    /** Persist all sessions for a conversation as newline-separated pickles. */
+    private fun saveSessions(conversationId: String) {
+        val list = sessions[conversationId] ?: return
+        runCatching {
+            val blob = list.joinToString("\n") { it.toPickle(sessionPickleKey()) }
+            prefs.edit().putString("sess_$conversationId", blob).apply()
+        }
     }
 
     private fun sessionPickleKey(): ByteArray {

@@ -65,7 +65,11 @@ final class ChatEngine {
     private let api = APIClient()
     private let kc = KeychainData(service: "com.voiid.sessions")
     private let sessionPickleKeyName = "session_pickle_key"
-    private var sessions: [String: Session] = [:]          // conversationId -> live Session
+    // conversationId -> ALL candidate Olm sessions. During simultaneous initiation
+    // ("glare") both peers create their own session, so a conversation legitimately has
+    // more than one. Keep them all: try each on decrypt, append (never overwrite) a
+    // newly-accepted one — overwriting strands the peer's early PreKey messages forever.
+    private var sessions: [String: [Session]] = [:]
     private var store: [String: [DecryptedMessage]] = [:]   // conversationId -> messages (asc)
     /// Per-conversation async mutex. @MainActor does NOT prevent two sync() calls
     /// (4s poll + WS push) from interleaving at `await` points and BOTH acceptSession
@@ -121,7 +125,7 @@ final class ChatEngine {
             do {
                 let session = try await ensureOutboundSession(conversationId: conversationId, peerUserId: peerUserId)
                 let wire = try session.encrypt(plaintext: Data(p.text.utf8))
-                saveSession(session, conversationId: conversationId)
+                saveSessions(conversationId)
                 let ciphertext = encodeWire(wire)
                 let res: SendResponse = try await api.request(
                     "POST", "messages/send",
@@ -171,7 +175,7 @@ final class ChatEngine {
         let envelope = MediaEnvelope(media: ref, caption: caption)
         let session = try await ensureOutboundSession(conversationId: conversationId, peerUserId: peerUserId)
         let wire = try session.encrypt(plaintext: try JSONEncoder().encode(envelope))
-        saveSession(session, conversationId: conversationId)
+        saveSessions(conversationId)
         let ciphertext = encodeWire(wire)
         // 4. Send the message, tagging it as media + the opaque ref for the server.
         let res: SendResponse = try await api.request(
@@ -294,44 +298,41 @@ final class ChatEngine {
     /// that isn't their "first", so resolving by it is what makes decrypt succeed.
     private func decryptInbound(_ wire: WireMessage, conversationId: String,
                                peerUserId: String, senderDeviceId: String?) async throws -> String {
-        // 1. Try the existing session.
-        if let s = sessions[conversationId] ?? restoreSession(conversationId) {
-            sessions[conversationId] = s
+        // 1. Try EVERY known session (glare → multiple). A non-matching session fails
+        //    cleanly; the matching one decrypts (including later PreKey msgs of an
+        //    already-accepted session — no re-accept, no extra OTK consumed).
+        let list = candidateSessions(conversationId)
+        for s in list {
             if let data = try? s.decrypt(message: wire) {
-                saveSession(s, conversationId: conversationId)
+                saveSessions(conversationId)
                 return String(decoding: data, as: UTF8.self)
             }
-            // The cached session couldn't decrypt. If this is a PreKey message the
-            // peer (re)started a session — e.g. they reinstalled (new identity) — so
-            // fall through and acceptSession to RE-ESTABLISH, replacing the stale one.
-            // For a normal message with no working session, it's genuinely undecryptable.
-            guard wire.msgType == 0 else {
-                throw APIError.http(status: 422, message: "no matching session for message")
-            }
         }
-        // 2. PreKey message (or no session) → acceptSession to (re)establish.
+        // 2. No existing session matched. Only a PreKey message can establish one.
+        guard wire.msgType == 0 else {
+            throw APIError.http(status: 422, message: "no matching session for message")
+        }
+        // 3. Accept a NEW inbound session and APPEND it (don't discard the others).
         guard let id = E2EManager.shared.identity else { throw APIError.notAuthenticated }
         let peer = try await peerIdentity(peerUserId, deviceId: senderDeviceId)
         try verifyAndPinIdentity(peer.key, peerUserId: peerUserId, deviceId: peer.deviceId)   // anti-MITM (TOFU, per device)
         let accepted = try id.acceptSession(theirIdentityKey: peer.key, firstMessage: wire)
-        sessions[conversationId] = accepted.session
-        saveSession(accepted.session, conversationId: conversationId)
+        sessions[conversationId, default: []].append(accepted.session)
+        saveSessions(conversationId)
         return String(decoding: accepted.plaintext, as: UTF8.self)
     }
 
     // MARK: - Session establishment
 
     private func ensureOutboundSession(conversationId: String, peerUserId: String) async throws -> Session {
-        if let s = sessions[conversationId] ?? restoreSession(conversationId) {
-            sessions[conversationId] = s
-            return s
-        }
+        // Reuse a stable existing session for outbound; only create one if none exist.
+        if let s = candidateSessions(conversationId).first { return s }
         guard let id = E2EManager.shared.identity else { throw APIError.notAuthenticated }
         let bundle = try await peerPrekeyBundle(peerUserId)
         try verifyAndPinIdentity(bundle.identityKey, peerUserId: peerUserId, deviceId: bundle.deviceId)   // anti-MITM (TOFU, per device)
         let s = try id.startSession(theirIdentityKey: bundle.identityKey, theirOneTimeKey: bundle.oneTimeKey)
-        sessions[conversationId] = s
-        saveSession(s, conversationId: conversationId)
+        sessions[conversationId, default: []].append(s)
+        saveSessions(conversationId)
         return s
     }
 
@@ -435,14 +436,28 @@ final class ChatEngine {
         NSLog("[VOIID] session reset for conv=\(conversationId)")
     }
 
-    private func restoreSession(_ conversationId: String) -> Session? {
-        guard let pickle = kc.string("sess_\(conversationId)") else { return nil }
-        return try? Session.restore(pickle: pickle, pickleKey: sessionPickleKey())
+    /// All candidate sessions for a conversation (loaded from the Keychain on first access).
+    private func candidateSessions(_ conversationId: String) -> [Session] {
+        if let s = sessions[conversationId] { return s }
+        let restored = restoreSessions(conversationId)
+        sessions[conversationId] = restored
+        return restored
     }
-    private func saveSession(_ s: Session, conversationId: String) {
-        if let pickle = try? s.toPickle(pickleKey: sessionPickleKey()) {
-            kc.set(pickle, "sess_\(conversationId)")
+
+    /// Restore the persisted session list (newline-separated pickles; back-compatible
+    /// with the old single-pickle format).
+    private func restoreSessions(_ conversationId: String) -> [Session] {
+        guard let blob = kc.string("sess_\(conversationId)") else { return [] }
+        return blob.split(separator: "\n").compactMap {
+            try? Session.restore(pickle: String($0), pickleKey: sessionPickleKey())
         }
+    }
+
+    /// Persist all sessions for a conversation as newline-separated pickles.
+    private func saveSessions(_ conversationId: String) {
+        guard let list = sessions[conversationId] else { return }
+        let blob = list.compactMap { try? $0.toPickle(pickleKey: sessionPickleKey()) }.joined(separator: "\n")
+        kc.set(blob, "sess_\(conversationId)")
     }
     private func sessionPickleKey() -> Data {
         if let k = kc.data(sessionPickleKeyName), k.count == 32 { return k }
