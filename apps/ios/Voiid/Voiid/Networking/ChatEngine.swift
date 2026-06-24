@@ -220,8 +220,15 @@ final class ChatEngine {
         // seen, so they're retried every sync — once the session heals they decrypt.
         let seen = Set((store[conversationId] ?? []).filter { !$0.failed }.map { $0.id })
         var newlyReceived: [String] = []
-        for m in env.messages.reversed() where !seen.contains(m.id) {   // server DESC → process ASC
-            if m.sender_id == myId { continue }   // our own echo is stored at send time
+        for m in env.messages.reversed() {   // server DESC → process ASC
+            // Our OWN sent message: we can't decrypt our ratchet output, but the server
+            // tells us the recipient's receipt state — advance Sent→Delivered→Seen even
+            // if the live WS receipt push was missed (WS-independent status).
+            if m.sender_id == myId {
+                if let st = m.receipt_status { _ = applyReceipt(messageId: m.id, status: st) }
+                continue
+            }
+            if seen.contains(m.id) { continue }
             guard let wire = decodeWire(m.ciphertext) else { continue }
             do {
                 let plain = try await decryptInbound(wire, conversationId: conversationId,
@@ -528,6 +535,7 @@ final class ChatEngine {
         let id: String; let sender_id: String; let ciphertext: String; let created_at: String
         var sender_device_id: String? = nil   // which of the SENDER's devices encrypted it
         var content_type: String? = nil
+        var receipt_status: String? = nil      // "delivered"/"read" — recipient's state of OUR sent msg
     }
     private struct MessagesResponse: Decodable { let messages: [MessageDTO] }
 }

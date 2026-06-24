@@ -55,10 +55,19 @@ router.get('/conversation/:id', requireAuth, async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 50, 100);
   const before = req.query.before as string | undefined;
   const rows = await query(
-    `select id, sender_id, sender_device_id, encode(ciphertext,'base64') as ciphertext, content_type, media_url, media_mime, created_at
-       from messages
-       where conversation_id = $1 ${before ? 'and created_at < $3' : ''}
-       order by created_at desc limit $2`,
+    `select m.id, m.sender_id, m.sender_device_id, encode(m.ciphertext,'base64') as ciphertext,
+            m.content_type, m.media_url, m.media_mime, m.created_at,
+            -- Highest receipt state any recipient has reached for this message, so the
+            -- SENDER can advance Sent→Delivered→Seen on poll even if the live WS receipt
+            -- push was missed (delivery-independent status, mirrors Signal's receipt sync).
+            case when bool_or(r.status = 'read') then 'read'
+                 when bool_or(r.status = 'delivered') then 'delivered'
+                 else null end as receipt_status
+       from messages m
+       left join message_read_receipts r on r.message_id = m.id
+       where m.conversation_id = $1 ${before ? 'and m.created_at < $3' : ''}
+       group by m.id
+       order by m.created_at desc limit $2`,
     before ? [req.params.id, limit, before] : [req.params.id, limit]
   );
   res.json({ messages: rows });
