@@ -270,6 +270,13 @@ pub struct Session {
 
 #[uniffi::export]
 impl Session {
+    /// Globally-unique session id (equal on both peers; matches the establishing
+    /// PreKey message's `prekey_session_id`). Used by clients to dedup candidate
+    /// sessions and avoid re-accepting a PreKey for a session they already hold.
+    pub fn session_id(&self) -> String {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).session_id()
+    }
+
     pub fn encrypt(&self, plaintext: Vec<u8>) -> FfiResult<WireMessage> {
         Ok(self.inner.lock().unwrap_or_else(|e| e.into_inner()).encrypt(&plaintext)?.into())
     }
@@ -412,6 +419,17 @@ pub fn safety_number(
     their_fingerprint: String,
 ) -> String {
     api::safety_number(&our_id, &our_fingerprint, &their_id, &their_fingerprint)
+}
+
+/// The session id a PreKey (session-establishing) message would create, or `None`
+/// for a Normal message. Equals the `Session::session_id()` of the matching session,
+/// so a receiver can check "do I already have this session?" before accepting a new
+/// one — avoiding a redundant accept that would consume another one-time key. Mirrors
+/// libsignal's base-key dedup (`promote_matching_session`).
+#[uniffi::export]
+pub fn prekey_session_id(message: WireMessage) -> Option<String> {
+    let m: session::WireMessage = message.into();
+    m.prekey_session_id()
 }
 
 /// Encrypt an attachment. Upload `ciphertext`; send `media_key` over a message.

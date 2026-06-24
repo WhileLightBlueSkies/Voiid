@@ -312,6 +312,16 @@ final class ChatEngine {
         guard wire.msgType == 0 else {
             throw APIError.http(status: 422, message: "no matching session for message")
         }
+        // 2b. DEDUP (libsignal promote_matching_session equivalent): if we ALREADY hold
+        //     the session this PreKey would establish (same session id), it's a replay /
+        //     out-of-order PreKey for a known session — never re-accept (that would burn
+        //     another one-time key). Decrypt with the matching session instead.
+        if let incomingId = prekeySessionId(message: wire),
+           let s = list.first(where: { $0.sessionId() == incomingId }) {
+            let data = try s.decrypt(message: wire)   // throws if genuinely undecryptable
+            saveSessions(conversationId)
+            return String(decoding: data, as: UTF8.self)
+        }
         // 3. Accept a NEW inbound session and APPEND it (don't discard the others).
         guard let id = E2EManager.shared.identity else { throw APIError.notAuthenticated }
         let peer = try await peerIdentity(peerUserId, deviceId: senderDeviceId)

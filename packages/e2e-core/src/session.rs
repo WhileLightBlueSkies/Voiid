@@ -32,6 +32,20 @@ impl WireMessage {
         let bytes = vodozemac::base64_decode(&self.body).map_err(|_| E2eError::DecryptionFailed)?;
         OlmMessage::from_parts(self.msg_type, &bytes).map_err(|_| E2eError::DecryptionFailed)
     }
+
+    /// The globally-unique session id of a PreKey (session-establishing) message,
+    /// or `None` for a Normal message / on decode error. Derived from the message's
+    /// SessionKeys (identity + base + one-time key), this EQUALS the `session_id()` of
+    /// the `Session` it would establish — so the receiver can detect "I already have a
+    /// session for this PreKey" and reuse it instead of re-accepting (which would
+    /// consume another one-time key). This is the same dedup libsignal performs via
+    /// `promote_matching_session` keyed on the base key.
+    pub fn prekey_session_id(&self) -> Option<String> {
+        match self.to_olm().ok()? {
+            OlmMessage::PreKey(m) => Some(m.session_id()),
+            OlmMessage::Normal(_) => None,
+        }
+    }
 }
 
 /// An established 1:1 encrypted session with one peer device.
@@ -89,6 +103,13 @@ impl Session {
             },
             result.plaintext,
         ))
+    }
+
+    /// Globally-unique id of this session. Two devices that share a session compute
+    /// the SAME id, and it matches the `prekey_session_id()` of the PreKey message that
+    /// established it — used to dedup candidate sessions and avoid re-accepting.
+    pub fn session_id(&self) -> String {
+        self.inner.session_id()
     }
 
     /// Encrypt a plaintext message for the peer. The returned `WireMessage` is
