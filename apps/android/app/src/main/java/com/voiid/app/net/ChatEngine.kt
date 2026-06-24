@@ -231,8 +231,14 @@ class ChatEngine private constructor(context: Context) {
         val seen = (store[conversationId] ?: emptyList()).filter { !it.failed }.map { it.id }.toHashSet()
         val newlyReceived = mutableListOf<String>()
         for (m in env.messages.asReversed()) {        // server DESC -> process ASC
+            // Our OWN sent message: can't decrypt our ratchet output, but the server
+            // reports the recipient's receipt state — advance Sent→Delivered→Seen even
+            // if the live WS receipt push was missed (WS-independent status).
+            if (m.sender_id == myId) {
+                m.receipt_status?.let { applyReceipt(m.id, it) }
+                continue
+            }
             if (seen.contains(m.id)) continue
-            if (m.sender_id == myId) continue          // our echo is stored at send time
             val wire = decodeWire(m.ciphertext) ?: continue
             runCatching {
                 val plain = decryptInbound(wire, conversationId, peerUserId, m.sender_device_id)
@@ -506,6 +512,7 @@ class ChatEngine private constructor(context: Context) {
         val created_at: String,
         val sender_device_id: String? = null,   // which of the SENDER's devices encrypted it
         val content_type: String? = null,
+        val receipt_status: String? = null,      // "delivered"/"read" — recipient's state of OUR sent msg
     )
     @Serializable private data class MessagesResponse(val messages: List<MessageDTO>)
     @Serializable private data class DeviceDTO(val id: String, val identity_public_key: String)
