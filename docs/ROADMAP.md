@@ -23,8 +23,9 @@ The current focus. Core crypto + relay work; we are hardening real-device delive
 - [x] Decrypt success/failure logging (`✅ decrypted inbound` / `❌ inbound decrypt FAILED`)
 - [x] Keep send **pending+retry** when peer has no prekeys (not "failed")
 - [x] **Serialize sync per conversation** — fix concurrent `acceptSession` race (PR #39)
-- [ ] **Verify on a clean wipe+install:** every fresh message decrypts both directions (no `❌`)
-- [ ] **Read receipts round-trip:** sender shows Sent → Delivered → **Seen**
+- [x] **Verify on a clean wipe+install:** every fresh message decrypts both directions — first message fixed (iOS Keychain wipe on fresh install) + server base64 newline fix (Android→iOS)
+- [x] **Read receipts round-trip:** sender shows Sent → Delivered → **Seen** (server rank-guard — never downgrade read→delivered)
+- [ ] **Android: local message history must survive app restart** (decrypt-once plaintext store lost on kill/reopen → old sent gone, old incoming "can't decrypt"; suspect SecurePrefs wiping voiid_chat → move store to plain app-internal file)
 - [ ] Last-seen / online presence accurate on both platforms
 - [ ] Media (photo + voice note) E2E send/receive live-tested on device
 
