@@ -2,6 +2,8 @@ package com.voiid.app.net
 
 import android.content.Context
 import android.util.Base64
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
@@ -41,6 +43,13 @@ class ChatEngine private constructor(context: Context) {
     }
 
     private val appContext = context.applicationContext
+
+    /** Per-conversation lock so two concurrent syncs (4s poll + WS push) can't BOTH
+     *  acceptSession the same PreKey messages — that races the one-time key and leaves
+     *  the earliest messages permanently undecryptable (the Olm ratchet moves on). */
+    private val syncLocks = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
+    private fun syncLock(conversationId: String): Mutex =
+        syncLocks.getOrPut(conversationId) { Mutex() }
     private val tokens = TokenStore.get(context)
     private val api = ApiClient(tokens)
     private val e2e = E2EManager.get(context)
@@ -205,7 +214,8 @@ class ChatEngine private constructor(context: Context) {
     }
 
     /** Fetch the server list, decrypt only unseen ids, persist, return full convo (asc). */
-    suspend fun sync(conversationId: String, peerUserId: String): List<DecryptedMessage> {
+    suspend fun sync(conversationId: String, peerUserId: String): List<DecryptedMessage> =
+      syncLock(conversationId).withLock {
         flushPending(conversationId, peerUserId)   // push any queued sends first
         lastSyncHadDecryptFailure = false
         val env: MessagesResponse = api.requestAs("GET", "messages/conversation/$conversationId")
@@ -242,7 +252,7 @@ class ChatEngine private constructor(context: Context) {
         // Mark just-received messages DELIVERED (double-grey tick on the sender) —
         // even if the chat isn't open. Read is marked separately when it's opened.
         if (newlyReceived.isNotEmpty()) markReceipts(newlyReceived, "delivered")
-        return messages(conversationId)
+        messages(conversationId)
     }
 
     /** Apply a delivery/read receipt to one of OUR sent messages (persisted, never
