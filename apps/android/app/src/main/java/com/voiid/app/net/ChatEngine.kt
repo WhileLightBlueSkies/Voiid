@@ -317,6 +317,18 @@ class ChatEngine private constructor(context: Context) {
         }
         // 2. No existing session matched. Only a PreKey message can establish one.
         if (wire.msgType != 0uL) throw ApiError.Http(422, "no matching session for message")
+        // 2b. DEDUP (libsignal promote_matching_session equivalent): if we ALREADY hold
+        //     the session this PreKey would establish (same session id), it's a replay /
+        //     out-of-order PreKey for a known session — never re-accept (that would burn
+        //     another one-time key). Decrypt with the matching session instead.
+        val incomingId = uniffi.voiid.prekeySessionId(wire)
+        if (incomingId != null) {
+            list.firstOrNull { it.sessionId() == incomingId }?.let { s ->
+                val data = s.decrypt(wire)   // throws if genuinely undecryptable
+                saveSessions(conversationId)
+                return data.decodeToString()
+            }
+        }
         // 3. Accept a NEW inbound session and APPEND it (do not discard the others).
         //    vodozemac decrypts before consuming the OTK, so a failed accept is safe;
         //    a successful one consumes exactly one OTK for this distinct PreKey.

@@ -101,6 +101,18 @@ pub fn decrypt(session: &mut Session, message: &WireMessage) -> Result<Vec<u8>, 
     session.decrypt(message)
 }
 
+/// The session id of an existing session (equal on both peers).
+pub fn session_id(session: &Session) -> String {
+    session.session_id()
+}
+
+/// The session id a PreKey message would establish (`None` for a Normal message).
+/// Equals `session_id` of the matching session — clients use this to avoid
+/// re-accepting a PreKey for a session they already hold (libsignal-style dedup).
+pub fn prekey_session_id(message: &WireMessage) -> Option<String> {
+    message.prekey_session_id()
+}
+
 // --- Phase 2: media (images / video / audio files) ---
 
 /// Encrypt an attachment. Upload `ciphertext` to blob storage and send
