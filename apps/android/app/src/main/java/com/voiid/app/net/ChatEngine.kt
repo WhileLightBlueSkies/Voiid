@@ -424,10 +424,18 @@ class ChatEngine private constructor(context: Context) {
 
     private val storeSerializer = MapSerializer(String.serializer(), ListSerializer(DecryptedMessage.serializer()))
 
+    // The decrypt-once plaintext store lives in a PLAIN app-internal file (sandboxed,
+    // excluded from backup) — NOT EncryptedSharedPreferences, whose key can become
+    // unreadable and get wiped by SecurePrefs, destroying all message history on restart.
+    // A file can't be wiped by a key issue, so history survives reliably (mirrors iOS).
+    private val storeFile by lazy { java.io.File(appContext.filesDir, "voiid_messages.json") }
+
     private fun loadStore() {
-        val raw = prefs.getString("message_store", null)
-        if (raw == null) {
-            android.util.Log.w("VOIID", "📂 loadStore: EMPTY (no persisted messages — fresh or wiped)")
+        // Prefer the file; fall back ONCE to the old encrypted-prefs location to migrate.
+        val raw = runCatching { if (storeFile.exists()) storeFile.readText() else null }.getOrNull()
+            ?: prefs.getString("message_store", null)
+        if (raw.isNullOrBlank()) {
+            android.util.Log.w("VOIID", "📂 loadStore: EMPTY (no persisted messages — fresh install)")
             return
         }
         runCatching {
@@ -436,6 +444,7 @@ class ChatEngine private constructor(context: Context) {
             }
         }.onSuccess {
             android.util.Log.i("VOIID", "📂 loadStore: restored ${store.values.sumOf { it.size }} msgs across ${store.size} convs")
+            if (!storeFile.exists()) persist()   // migrate old prefs → file
         }.onFailure {
             android.util.Log.e("VOIID", "📂 loadStore FAILED to parse", it)
         }
@@ -443,7 +452,14 @@ class ChatEngine private constructor(context: Context) {
 
     private fun persist() {
         val raw = ApiClient.json.encodeToString(storeSerializer, store.mapValues { it.value.toList() })
-        prefs.edit().putString("message_store", raw).apply()
+        // Atomic write: tmp file then rename, so a crash mid-write can't corrupt the store.
+        runCatching {
+            val tmp = java.io.File(storeFile.parentFile, "voiid_messages.json.tmp")
+            tmp.writeText(raw)
+            if (!tmp.renameTo(storeFile)) { storeFile.writeText(raw); tmp.delete() }
+        }.onFailure {
+            android.util.Log.e("VOIID", "📂 persist FAILED to write store file", it)
+        }
     }
 
     // MARK: - Session persistence (pickled, encrypted at rest)
