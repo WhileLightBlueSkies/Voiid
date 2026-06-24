@@ -125,8 +125,20 @@ class ChatEngine private constructor(context: Context) {
                 markSent(p.id, conversationId, res.message_id)
                 android.util.Log.i("VOIID", "✅ sent text id=${res.message_id} conv=$conversationId")
             } catch (e: Exception) {
-                markFailed(p.id, conversationId)
-                android.util.Log.e("VOIID", "❌ sendText FAILED conv=$conversationId", e)
+                // "peer has no available prekeys" means the recipient hasn't published
+                // keys yet (not registered / logged out / momentary race). Olm REQUIRES
+                // a one-time key to start a session, so we genuinely can't send yet —
+                // keep the message PENDING (clock, not red "failed") so the 4s poll
+                // retries and it delivers the moment the peer publishes keys. Only
+                // surface a hard failure for unexpected errors.
+                val retryable = (e as? ApiError.Http)?.let { it.status == 409 || it.status == 404 } == true ||
+                    e is java.io.IOException
+                if (retryable) {
+                    android.util.Log.w("VOIID", "⏳ send pending (peer not ready) conv=$conversationId: ${e.message}")
+                } else {
+                    markFailed(p.id, conversationId)
+                    android.util.Log.e("VOIID", "❌ sendText FAILED conv=$conversationId", e)
+                }
             }
         }
     }
