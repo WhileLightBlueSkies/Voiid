@@ -67,7 +67,32 @@ final class ChatEngine {
     private let sessionPickleKeyName = "session_pickle_key"
     private var sessions: [String: Session] = [:]          // conversationId -> live Session
     private var store: [String: [DecryptedMessage]] = [:]   // conversationId -> messages (asc)
+    /// Per-conversation async mutex. @MainActor does NOT prevent two sync() calls
+    /// (4s poll + WS push) from interleaving at `await` points and BOTH acceptSession
+    /// the same PreKey messages — which races the one-time key and leaves the earliest
+    /// messages permanently undecryptable. lock()/unlock() serialize per conversation.
+    private var syncLocked: Set<String> = []
+    private var syncWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
     private init() { loadStore() }
+
+    /// Acquire the per-conversation lock (hand-off: a waiter is woken WITH the lock
+    /// held, so a new caller can't jump the queue).
+    private func lockSync(_ conv: String) async {
+        if syncLocked.contains(conv) {
+            await withCheckedContinuation { syncWaiters[conv, default: []].append($0) }
+        } else {
+            syncLocked.insert(conv)
+        }
+    }
+    private func unlockSync(_ conv: String) {
+        if var q = syncWaiters[conv], !q.isEmpty {
+            let next = q.removeFirst()
+            syncWaiters[conv] = q
+            next.resume()                 // hand off the lock; keep syncLocked = true
+        } else {
+            syncLocked.remove(conv)
+        }
+    }
 
     // MARK: - Public API
 
@@ -171,9 +196,17 @@ final class ChatEngine {
     }
 
     /// Fetch the server's message list, decrypt ONLY ids we haven't seen, persist,
-    /// and return the full conversation (oldest-first).
+    /// and return the full conversation (oldest-first). Serialized per conversation so
+    /// concurrent syncs can't double-acceptSession the same PreKey messages.
     @discardableResult
     func sync(conversationId: String, peerUserId: String) async throws -> [DecryptedMessage] {
+        await lockSync(conversationId)
+        defer { unlockSync(conversationId) }
+        return try await runSyncLocked(conversationId: conversationId, peerUserId: peerUserId)
+    }
+
+    @discardableResult
+    private func runSyncLocked(conversationId: String, peerUserId: String) async throws -> [DecryptedMessage] {
         await flushPending(conversationId: conversationId, peerUserId: peerUserId)   // push any queued sends first
         lastSyncHadDecryptFailure = false
         let env: MessagesResponse = try await api.request("GET", "messages/conversation/\(conversationId)")
