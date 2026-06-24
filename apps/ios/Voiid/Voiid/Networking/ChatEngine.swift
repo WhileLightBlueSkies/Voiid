@@ -234,9 +234,8 @@ final class ChatEngine {
             // tells us the recipient's receipt state — advance Sent→Delivered→Seen even
             // if the live WS receipt push was missed (WS-independent status).
             if m.sender_id == myId {
-                if let st = m.receipt_status, applyReceipt(messageId: m.id, status: st) != nil {
-                    NSLog("[VOIID] 🟦 poll receipt \(st) for \(m.id) → applied")
-                }
+                let applied = m.receipt_status.flatMap { applyReceipt(messageId: m.id, status: $0) } != nil
+                NSLog("[VOIID] 🟦 own msg \(m.id) receipt_status=\(m.receipt_status ?? "nil")\(applied ? " → applied" : "")")
                 continue
             }
             if seen.contains(m.id) { continue }
