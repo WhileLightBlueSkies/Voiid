@@ -65,6 +65,15 @@ class ChatEngine private constructor(context: Context) {
     private val store = HashMap<String, MutableList<DecryptedMessage>>() // conversationId -> messages (asc)
     private val media = MediaService(tokens)
 
+    // NOTE: these MUST be declared BEFORE `init { loadStore() }` — Kotlin initializes
+    // properties in source order, and loadStore() (run from init) uses both. If declared
+    // after init they are null during loadStore → NPE → store never loads.
+    private val storeSerializer = MapSerializer(String.serializer(), ListSerializer(DecryptedMessage.serializer()))
+    // Decrypt-once plaintext store: a PLAIN app-internal file (sandboxed, excluded from
+    // backup) — NOT EncryptedSharedPreferences, whose key can be wiped by SecurePrefs,
+    // destroying all history on restart. A file can't be wiped by a key issue.
+    private val storeFile = java.io.File(appContext.filesDir, "voiid_messages.json")
+
     init { loadStore() }
 
     /**
@@ -421,14 +430,6 @@ class ChatEngine private constructor(context: Context) {
         val i = arr.indexOfFirst { it.id == m.id }
         if (i >= 0) arr[i] = m else arr.add(m)
     }
-
-    private val storeSerializer = MapSerializer(String.serializer(), ListSerializer(DecryptedMessage.serializer()))
-
-    // The decrypt-once plaintext store lives in a PLAIN app-internal file (sandboxed,
-    // excluded from backup) — NOT EncryptedSharedPreferences, whose key can become
-    // unreadable and get wiped by SecurePrefs, destroying all message history on restart.
-    // A file can't be wiped by a key issue, so history survives reliably (mirrors iOS).
-    private val storeFile by lazy { java.io.File(appContext.filesDir, "voiid_messages.json") }
 
     private fun loadStore() {
         // Prefer the file; fall back ONCE to the old encrypted-prefs location to migrate.
