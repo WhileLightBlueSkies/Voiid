@@ -47,3 +47,7 @@ apps/android/app/src/main/java/uniffi/
 
 # Local editor workspace (do not commit — references external repos)
 *.code-workspace
+
+# Locally vendored SPM packages (firebase-ios-sdk cloned via git CLI to bypass
+# xcodebuild's libgit2 hang on its large history; not committed)
+apps/ios/vendor/
