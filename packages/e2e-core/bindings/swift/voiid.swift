@@ -1165,6 +1165,13 @@ public protocol SessionProtocol: AnyObject, Sendable {
     
     func encrypt(plaintext: Data) throws  -> WireMessage
     
+    /**
+     * Globally-unique session id (equal on both peers; matches the establishing
+     * PreKey message's `prekey_session_id`). Used by clients to dedup candidate
+     * sessions and avoid re-accepting a PreKey for a session they already hold.
+     */
+    func sessionId()  -> String
+    
     func toPickle(pickleKey: Data) throws  -> String
     
 }
@@ -1247,6 +1254,19 @@ open func encrypt(plaintext: Data)throws  -> WireMessage  {
     uniffi_voiid_e2e_core_fn_method_session_encrypt(
             self.uniffiCloneHandle(),
         FfiConverterData.lower(plaintext),$0
+    )
+})
+}
+    
+    /**
+     * Globally-unique session id (equal on both peers; matches the establishing
+     * PreKey message's `prekey_session_id`). Used by clients to dedup candidate
+     * sessions and avoid re-accepting a PreKey for a session they already hold.
+     */
+open func sessionId() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_voiid_e2e_core_fn_method_session_session_id(
+            self.uniffiCloneHandle(),$0
     )
 })
 }
@@ -1850,6 +1870,30 @@ public func FfiConverterTypeE2eFfiError_lower(_ value: E2eFfiError) -> RustBuffe
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
+    typealias SwiftType = String?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterString.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterString.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionData: FfiConverterRustBuffer {
     typealias SwiftType = Data?
 
@@ -1926,6 +1970,20 @@ public func newCallSecret() -> CallSecret  {
 })
 }
 /**
+ * The session id a PreKey (session-establishing) message would create, or `None`
+ * for a Normal message. Equals the `Session::session_id()` of the matching session,
+ * so a receiver can check "do I already have this session?" before accepting a new
+ * one — avoiding a redundant accept that would consume another one-time key. Mirrors
+ * libsignal's base-key dedup (`promote_matching_session`).
+ */
+public func prekeySessionId(message: WireMessage) -> String?  {
+    return try!  FfiConverterOptionString.lift(try! rustCall() {
+    uniffi_voiid_e2e_core_fn_func_prekey_session_id(
+        FfiConverterTypeWireMessage_lower(message),$0
+    )
+})
+}
+/**
  * Compute the safety number two users compare out-of-band (anti-MITM). Pass
  * each party's stable identifier plus their fingerprint.
  */
@@ -1972,6 +2030,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_voiid_e2e_core_checksum_func_new_call_secret() != 50736) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_voiid_e2e_core_checksum_func_prekey_session_id() != 3026) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_voiid_e2e_core_checksum_func_safety_number() != 42464) {
@@ -2032,6 +2093,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_voiid_e2e_core_checksum_method_session_encrypt() != 1186) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_voiid_e2e_core_checksum_method_session_session_id() != 32195) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_voiid_e2e_core_checksum_method_session_to_pickle() != 19437) {

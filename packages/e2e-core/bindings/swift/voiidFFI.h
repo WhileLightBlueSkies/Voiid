@@ -394,6 +394,11 @@ RustBuffer uniffi_voiid_e2e_core_fn_method_session_decrypt(uint64_t ptr, RustBuf
 RustBuffer uniffi_voiid_e2e_core_fn_method_session_encrypt(uint64_t ptr, RustBuffer plaintext, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_SESSION_SESSION_ID
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_SESSION_SESSION_ID
+RustBuffer uniffi_voiid_e2e_core_fn_method_session_session_id(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_SESSION_TO_PICKLE
 #define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_SESSION_TO_PICKLE
 RustBuffer uniffi_voiid_e2e_core_fn_method_session_to_pickle(uint64_t ptr, RustBuffer pickle_key, RustCallStatus *_Nonnull out_status
@@ -413,6 +418,11 @@ RustBuffer uniffi_voiid_e2e_core_fn_func_encrypt_media(RustBuffer plaintext, Rus
 #define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_NEW_CALL_SECRET
 RustBuffer uniffi_voiid_e2e_core_fn_func_new_call_secret(RustCallStatus *_Nonnull out_status
     
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_PREKEY_SESSION_ID
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_PREKEY_SESSION_ID
+RustBuffer uniffi_voiid_e2e_core_fn_func_prekey_session_id(RustBuffer message, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_SAFETY_NUMBER
@@ -703,6 +713,12 @@ uint16_t uniffi_voiid_e2e_core_checksum_func_new_call_secret(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_PREKEY_SESSION_ID
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_PREKEY_SESSION_ID
+uint16_t uniffi_voiid_e2e_core_checksum_func_prekey_session_id(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_SAFETY_NUMBER
 #define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_SAFETY_NUMBER
 uint16_t uniffi_voiid_e2e_core_checksum_func_safety_number(void
@@ -820,6 +836,12 @@ uint16_t uniffi_voiid_e2e_core_checksum_method_session_decrypt(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_SESSION_ENCRYPT
 #define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_SESSION_ENCRYPT
 uint16_t uniffi_voiid_e2e_core_checksum_method_session_encrypt(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_SESSION_SESSION_ID
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_SESSION_SESSION_ID
+uint16_t uniffi_voiid_e2e_core_checksum_method_session_session_id(void
     
 );
 #endif
