@@ -37,6 +37,10 @@ internal object SecurePrefs {
             build(app, name)
         } catch (e: Exception) {
             Log.w(TAG, "Encrypted prefs '$name' unreadable; wiping and rebuilding", e)
+            // Also log under VOIID so it surfaces in the app log filter — wiping
+            // 'voiid_chat' here destroys the local message history (the cause of
+            // "old messages gone / can't be decrypted" after a restart).
+            Log.e("VOIID", "🧨 WIPING encrypted prefs '$name' (${e.javaClass.simpleName}) — local data for this store is lost")
             app.deleteSharedPreferences(name)
             try {
                 build(app, name)

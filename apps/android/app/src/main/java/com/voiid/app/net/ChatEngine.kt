@@ -425,11 +425,19 @@ class ChatEngine private constructor(context: Context) {
     private val storeSerializer = MapSerializer(String.serializer(), ListSerializer(DecryptedMessage.serializer()))
 
     private fun loadStore() {
-        val raw = prefs.getString("message_store", null) ?: return
+        val raw = prefs.getString("message_store", null)
+        if (raw == null) {
+            android.util.Log.w("VOIID", "📂 loadStore: EMPTY (no persisted messages — fresh or wiped)")
+            return
+        }
         runCatching {
             ApiClient.json.decodeFromString(storeSerializer, raw).forEach { (k, v) ->
                 store[k] = v.toMutableList()
             }
+        }.onSuccess {
+            android.util.Log.i("VOIID", "📂 loadStore: restored ${store.values.sumOf { it.size }} msgs across ${store.size} convs")
+        }.onFailure {
+            android.util.Log.e("VOIID", "📂 loadStore FAILED to parse", it)
         }
     }
 
