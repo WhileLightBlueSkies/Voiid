@@ -400,7 +400,11 @@ final class ChatEngine {
     /// Peer's prekey bundle (identity + one consumed one-time key + device id) for startSession.
     private func peerPrekeyBundle(_ userId: String) async throws -> (identityKey: String, oneTimeKey: String, deviceId: String?) {
         let env: PrekeysResponse = try await api.request("GET", "prekeys/\(userId)")
-        guard let b = env.bundles.first, let otk = b.one_time_prekey else {
+        // Prefer a device that actually handed out a one-time key — a stale device
+        // (left over after the peer reinstalled) can be listed first with a null
+        // prekey. (Matches Android; iOS previously only checked the first bundle.)
+        guard let b = env.bundles.first(where: { $0.one_time_prekey != nil }),
+              let otk = b.one_time_prekey else {
             throw APIError.http(status: 409, message: "peer has no available prekeys")
         }
         return (b.identity_public_key, otk.public_key, b.device_id)
