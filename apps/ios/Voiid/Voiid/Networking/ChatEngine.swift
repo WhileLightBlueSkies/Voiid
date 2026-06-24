@@ -54,6 +54,9 @@ struct DecryptedMessage: Codable {
     /// Delivery state of OUR sent message: "sent" → "delivered" → "read". Persisted
     /// so it never regresses when the message list is rebuilt.
     var deliveryStatus: String? = nil
+    /// True for a tombstone (decrypt failed). NOT counted as "seen" so it's retried
+    /// on later syncs — once the session re-establishes it can finally decrypt.
+    var failed: Bool = false
 }
 
 @MainActor
@@ -176,7 +179,9 @@ final class ChatEngine {
         let env: MessagesResponse = try await api.request("GET", "messages/conversation/\(conversationId)")
         NSLog("[VOIID] sync conv=\(conversationId): server has \(env.messages.count) msgs")
         let myId = TokenStore.shared.userId
-        let seen = Set((store[conversationId] ?? []).map { $0.id })
+        // "seen" = successfully-decrypted ids only. Tombstones (failed==true) are NOT
+        // seen, so they're retried every sync — once the session heals they decrypt.
+        let seen = Set((store[conversationId] ?? []).filter { !$0.failed }.map { $0.id })
         var newlyReceived: [String] = []
         for m in env.messages.reversed() where !seen.contains(m.id) {   // server DESC → process ASC
             if m.sender_id == myId { continue }   // our own echo is stored at send time
@@ -185,26 +190,28 @@ final class ChatEngine {
                 let plain = try await decryptInbound(wire, conversationId: conversationId,
                                                      peerUserId: peerUserId, senderDeviceId: m.sender_device_id)
                 newlyReceived.append(m.id)
+                NSLog("[VOIID] ✅ decrypted inbound id=\(m.id) senderDev=\(m.sender_device_id ?? "nil")")
                 // A media message's plaintext is a JSON MediaEnvelope; a text
                 // message is just the string. Detect via the server's content_type
                 // hint, falling back to the decoded shape.
                 let parsed = decodeEnvelope(plain, isMedia: m.content_type == "media")
-                append(DecryptedMessage(id: m.id, senderId: m.sender_id, text: parsed.caption,
-                                        createdAt: parseDate(m.created_at), isMine: false,
-                                        media: parsed.media),
-                       to: conversationId, persist: false)
+                replace(id: m.id, with:
+                        DecryptedMessage(id: m.id, senderId: m.sender_id, text: parsed.caption,
+                                         createdAt: parseDate(m.created_at), isMine: false,
+                                         media: parsed.media),
+                       to: conversationId)
             } catch {
                 NSLog("[VOIID] ❌ inbound decrypt FAILED id=\(m.id) senderDev=\(m.sender_device_id ?? "nil"): \(error)")
-                // If we have an identity (not a bootstrap race), this failure is
-                // permanent (message encrypted to an old/rotated key) — tombstone it
-                // so the chat shows a placeholder instead of staying blank and the
-                // message isn't re-attempted (and re-logged) on every sync.
+                // Tombstone it (failed==true) so the chat shows a placeholder, asks the
+                // sender to re-establish the session, and RETRIES on the next sync.
                 if E2EManager.shared.identity != nil {
                     lastSyncHadDecryptFailure = true
-                    append(DecryptedMessage(id: m.id, senderId: m.sender_id,
-                                            text: "🔒 Message couldn’t be decrypted",
-                                            createdAt: parseDate(m.created_at), isMine: false),
-                           to: conversationId, persist: false)
+                    replace(id: m.id, with:
+                            DecryptedMessage(id: m.id, senderId: m.sender_id,
+                                             text: "🔒 Message couldn’t be decrypted",
+                                             createdAt: parseDate(m.created_at), isMine: false,
+                                             failed: true),
+                           to: conversationId)
                 }
             }
         }
@@ -354,6 +361,14 @@ final class ChatEngine {
         arr.append(m)
         store[convId] = arr
         if doPersist { persist() }
+    }
+
+    /// Insert `m`, or REPLACE an existing entry with the same id in place (keeps order).
+    /// Used by sync so a tombstone that later decrypts is upgraded to the real message.
+    private func replace(id: String, with m: DecryptedMessage, to convId: String) {
+        var arr = store[convId] ?? []
+        if let i = arr.firstIndex(where: { $0.id == id }) { arr[i] = m } else { arr.append(m) }
+        store[convId] = arr
     }
 
     private var storeURL: URL {
