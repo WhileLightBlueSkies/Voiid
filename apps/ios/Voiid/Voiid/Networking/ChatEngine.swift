@@ -23,6 +23,15 @@
 import Foundation
 import Security
 
+private extension String {
+    /// Add `=` padding to a base64 string whose length isn't a multiple of 4
+    /// (vodozemac/peers may emit unpadded standard base64).
+    var padded64: String {
+        let rem = count % 4
+        return rem == 0 ? self : self + String(repeating: "=", count: 4 - rem)
+    }
+}
+
 /// The media reference carried INSIDE an E2EE message. The actual bytes live in
 /// R2 as ciphertext at `mediaUrl` (an opaque object key); `key`/`nonce`/`sha256`
 /// are the per-message media key needed to decrypt them. Because this whole
@@ -225,7 +234,9 @@ final class ChatEngine {
             // tells us the recipient's receipt state — advance Sent→Delivered→Seen even
             // if the live WS receipt push was missed (WS-independent status).
             if m.sender_id == myId {
-                if let st = m.receipt_status { _ = applyReceipt(messageId: m.id, status: st) }
+                if let st = m.receipt_status, applyReceipt(messageId: m.id, status: st) != nil {
+                    NSLog("[VOIID] 🟦 poll receipt \(st) for \(m.id) → applied")
+                }
                 continue
             }
             if seen.contains(m.id) { continue }
@@ -496,8 +507,17 @@ final class ChatEngine {
         return json.base64EncodedString()
     }
     private func decodeWire(_ ciphertext: String) -> WireMessage? {
-        guard let data = Data(base64Encoded: ciphertext),
-              let p = try? JSONDecoder().decode(WirePayload.self, from: data) else { return nil }
+        // Be lenient: Data(base64Encoded:) is STRICT (rejects unpadded / whitespace).
+        // Try strict, then padded, then ignore-unknown-chars — so a peer/server that
+        // emits unpadded standard base64 never causes a silent drop.
+        let data = Data(base64Encoded: ciphertext)
+            ?? Data(base64Encoded: ciphertext.padded64)
+            ?? Data(base64Encoded: ciphertext, options: .ignoreUnknownCharacters)
+            ?? Data(base64Encoded: ciphertext.padded64, options: .ignoreUnknownCharacters)
+        guard let data, let p = try? JSONDecoder().decode(WirePayload.self, from: data) else {
+            NSLog("[VOIID] ⚠️ decodeWire FAILED (len=\(ciphertext.count)) — dropping inbound")
+            return nil
+        }
         return WireMessage(msgType: p.t, body: p.b)
     }
 
