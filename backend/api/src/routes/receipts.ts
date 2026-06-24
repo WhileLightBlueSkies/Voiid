@@ -25,7 +25,10 @@ router.post('/mark', requireAuth, async (req, res) => {
       `insert into message_read_receipts (message_id, user_id, device_id, status, ${tsCol})
          values ($1, $2, $3, $4, now())
          on conflict (message_id, user_id, device_id)
-         do update set status = excluded.status, ${tsCol} = now()`,
+         do update set status = excluded.status, ${tsCol} = now()
+         -- NEVER downgrade: once 'read', a later out-of-order 'delivered' must not
+         -- revert it (status only ever advances delivered → read).
+         where message_read_receipts.status is distinct from 'read'`,
       [mid, user_id, device_id ?? null, status]
     );
   }
