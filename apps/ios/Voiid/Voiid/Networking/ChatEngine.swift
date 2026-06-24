@@ -329,6 +329,8 @@ final class ChatEngine {
         let accepted = try id.acceptSession(theirIdentityKey: peer.key, firstMessage: wire)
         sessions[conversationId, default: []].append(accepted.session)
         saveSessions(conversationId)
+        E2EManager.shared.persistIdentity()   // acceptSession consumed a one-time key —
+                                              // save it or the first message is lost on restart.
         return String(decoding: accepted.plaintext, as: UTF8.self)
     }
 
