@@ -27,6 +27,13 @@ rand = "0.8"
 aes-gcm = "0.10"
 sha2 = "0.10"
 
+# Account recovery (src/recovery.rs): wrap the master backup secret under a PIN
+# and export/import it as a BIP39 recovery phrase. Standard primitives only —
+# Argon2id (PIN KDF) + AES-256-GCM (wrap) + BIP39 (phrase). See SECURITY note in
+# the module. `bip39` defaults give the English wordlist + unicode normalization.
+argon2 = "0.5"
+bip39 = "2"
+
 # Phase 3 groups: MLS (RFC 9420) via OpenMLS (Apache-2.0).
 # The libcrux provider supplies the formally-verified ML-KEM used by the hybrid
 # post-quantum X-Wing ciphersuite; the RustCrypto provider does NOT support it.
