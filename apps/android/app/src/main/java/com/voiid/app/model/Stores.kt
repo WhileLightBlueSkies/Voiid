@@ -104,7 +104,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
             refresh(conv.id)
             // Couldn't decrypt inbound → our session is stale; ask the peer (once) to re-establish.
             if (engine.lastSyncHadDecryptFailure && resetRequested.add(conv.id)) {
-                engine.resetSession(conv.id)
+                engine.resetSession(peer)
                 ws.sendSessionReset(conv.id, listOf(peer))
             }
             engine.markRead(conv.id)            // blue ticks for the sender
@@ -279,7 +279,10 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
             else typingConversations.remove(cid)
         }
         ws.onReceipt = { mid, status -> applyReceipt(mid, status) }
-        ws.onSessionReset = { cid -> engine.resetSession(cid) }
+        // Peer asked us to re-establish — drop our sessions with that peer (all devices).
+        ws.onSessionReset = { cid ->
+            directConversations.firstOrNull { it.id == cid }?.peerUserId?.let { engine.resetSession(it) }
+        }
         // connection is (re)established by loadConversations via ws.reconnect()
     }
 
