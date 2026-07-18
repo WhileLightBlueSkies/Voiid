@@ -80,9 +80,15 @@ router.post('/create', requireAuth, async (req, res) => {
   return res.status(400).json({ error: "type must be 'direct' or 'group'" });
 });
 
-// GET /conversations — list the caller's active conversations with last-message preview (ciphertext) + unread count.
+// GET /conversations?device_id= — list the caller's active conversations with last-message
+// preview (ciphertext) + unread count. The preview coalesces to THIS device's fan-out ciphertext
+// (message_ciphertexts) so multi-device previews decrypt; legacy single-ciphertext rows fall
+// through unchanged. device_id comes from the JWT claim or ?device_id= (matches prekeys.ts).
 router.get('/', requireAuth, async (req, res) => {
-  const { user_id } = (req as any).auth;
+  const { user_id, device_id: authDeviceId } = (req as any).auth;
+  const deviceId = (typeof authDeviceId === 'string' && authDeviceId)
+    ? authDeviceId
+    : (typeof req.query.device_id === 'string' && req.query.device_id ? req.query.device_id : null);
   const rows = await query(
     `select c.id, c.type, c.name, c.photo_url, c.updated_at,
             lm.last_message_at,
@@ -92,8 +98,10 @@ router.get('/', requireAuth, async (req, res) => {
        from conversations c
        join conversation_members me on me.conversation_id = c.id and me.user_id = $1 and me.left_at is null
        left join lateral (
-         select m.ciphertext, m.content_type, m.created_at as last_message_at
-           from messages m where m.conversation_id = c.id
+         select coalesce(mc.ciphertext, m.ciphertext) as ciphertext, m.content_type, m.created_at as last_message_at
+           from messages m
+           left join message_ciphertexts mc on mc.message_id = m.id and mc.recipient_device_id = $2::uuid
+           where m.conversation_id = c.id
            order by m.created_at desc limit 1
        ) lm on true
        left join lateral (
@@ -104,7 +112,7 @@ router.get('/', requireAuth, async (req, res) => {
           where m.conversation_id = c.id and m.sender_id <> $1 and r.id is null
        ) uc on true
       order by coalesce(lm.last_message_at, c.updated_at) desc`,
-    [user_id]
+    [user_id, deviceId]
   );
   res.json({ conversations: rows });
 });
