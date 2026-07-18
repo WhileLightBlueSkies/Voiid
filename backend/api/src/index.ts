@@ -16,6 +16,8 @@ import receiptRoutes from './routes/receipts';
 import linkingRoutes from './routes/linking';
 import mediaRoutes from './routes/media';
 import mlsRoutes from './routes/mls';
+import recoveryRoutes from './routes/recovery';
+import backupRoutes from './routes/backup';
 import configRoutes from './routes/config';
 import { forceUpdateGate } from './version';
 
@@ -61,6 +63,12 @@ api.use('/receipts', receiptRoutes);
 api.use('/linking', linkingRoutes);
 api.use('/media', mediaRoutes);
 api.use('/mls', mlsRoutes);
+// Recovery is a sensitive surface: add a tighter per-IP limit on top of the global
+// guard (the existing rateLimit middleware, redis-backed). This slows network-level
+// abuse; per-USER online PIN-guess limiting is enforced inside the route via the
+// recovery_keys.failed_attempts/locked_until lockout.
+api.use('/recovery', rateLimit({ max: 30, windowSeconds: 60, bucket: 'recovery' }), recoveryRoutes);
+api.use('/backup', backupRoutes);
 
 app.use('/v1', api);
 app.use(api);   // legacy unversioned alias (migration safety) — remove once all clients send /v1
