@@ -6,6 +6,7 @@ import { query } from '../db';
 import { publisher } from '../redis';
 import { requireAuth } from '../auth';
 import { b64, asyncHandler } from '../util';
+import { sendWakePush } from '../push';
 
 const router = Router();
 
@@ -45,6 +46,25 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
       message_id: message.id,
       conversation_id,
     }));
+  }
+
+  // Wake offline/backgrounded recipient devices with a CONTENT-FREE push. The Redis
+  // relay above only reaches devices holding a live socket; a silent, data-only "wake"
+  // push nudges the rest to fetch pending messages + decrypt locally (no ciphertext or
+  // content ever leaves in the push — Section 4.14). Fire-and-forget: the HTTP response
+  // must NOT wait on push delivery, so we schedule it without awaiting.
+  if (members.length) {
+    const memberIds = members.map((m) => m.user_id);
+    query<{ push_token: string; push_provider: string }>(
+      `select push_token, push_provider from devices
+         where user_id = any($1::uuid[]) and revoked_at is null
+           and push_token is not null and push_provider is not null`,
+      [memberIds]
+    )
+      .then((targets) => {
+        if (targets.length) void sendWakePush(targets);
+      })
+      .catch((e) => console.warn('[push] wake lookup failed:', (e as Error).message));
   }
 
   res.json({ message_id: message.id, created_at: message.created_at });
