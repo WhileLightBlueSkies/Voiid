@@ -367,6 +367,31 @@ impl GroupMember {
             inner: Mutex::new(self.inner.join_group(&welcome, &ratchet_tree)?),
         }))
     }
+
+    /// Serialize this member and ALL its MLS state (signer + KeyPackage privates +
+    /// every group it belongs to) to an opaque blob. Persist it encrypted
+    /// on-device and restore it on the next launch with `restore`. MLS state is
+    /// in-memory only, so WITHOUT persisting this, groups are lost on app restart.
+    /// Re-serialize after every state-changing call (create/join/add/remove/
+    /// encrypt/decrypt).
+    pub fn serialize(&self) -> FfiResult<Vec<u8>> {
+        Ok(self.inner.serialize()?)
+    }
+
+    /// Reconstruct a member (and its full MLS storage) from a `serialize` blob.
+    #[uniffi::constructor]
+    pub fn restore(blob: Vec<u8>) -> FfiResult<std::sync::Arc<Self>> {
+        Ok(std::sync::Arc::new(Self {
+            inner: group::GroupMember::restore(&blob)?,
+        }))
+    }
+
+    /// Re-open a group this member belongs to, by its `group_id`, after restoring.
+    pub fn load_group(&self, group_id: Vec<u8>) -> FfiResult<std::sync::Arc<GroupSession>> {
+        Ok(std::sync::Arc::new(GroupSession {
+            inner: Mutex::new(self.inner.load_group(&group_id)?),
+        }))
+    }
 }
 
 /// Membership in one MLS group (Phase 3).
@@ -412,6 +437,15 @@ impl GroupSession {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .member_count() as u32
+    }
+
+    /// This group's stable id — persist it and pass it to `GroupMember.load_group`
+    /// after a restart to re-open this exact group.
+    pub fn group_id(&self) -> Vec<u8> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .group_id()
     }
 
     pub fn encrypt(&self, member: &GroupMember, plaintext: Vec<u8>) -> FfiResult<Vec<u8>> {
