@@ -102,11 +102,14 @@ final class ChatStore: ObservableObject {
     /// groups (MLS) is a later increment — this wires the create + membership only.
     func createGroup(name: String, members: [VContact]) async -> VConversation? {
         do {
-            let convId = try await ChatService.shared.createGroup(
-                name: name, memberIds: members.map { $0.userId })
+            let memberIds = members.map { $0.userId }
+            let convId = try await ChatService.shared.createGroup(name: name, memberIds: memberIds)
             if let existing = groupConversations.first(where: { $0.id == convId }) {
                 return existing
             }
+            // Build the REAL MLS group on top of the server conversation: add each
+            // member's device by KeyPackage and distribute Welcome/Commit.
+            await GroupEngine.shared.createGroup(conversationId: convId, memberUserIds: memberIds)
             let conv = VConversation(id: convId, type: .group, title: name,
                                      photoName: nil, lastMessagePreview: nil, lastMessageAt: nil,
                                      unreadCount: 0, memberCount: members.count + 1)
@@ -126,7 +129,15 @@ final class ChatStore: ObservableObject {
 
     /// Pull from the server and decrypt any new messages, then refresh the UI.
     func syncMessages(_ conv: VConversation) async {
-        guard conv.type == .direct else { return }   // group E2E (MLS) is a later increment
+        if conv.type == .group {
+            // Groups: process MLS control events (Welcome/Commit) FIRST, then decrypt
+            // this device's copy of the group's app messages into the shared store.
+            await GroupEngine.shared.syncGroupEvents()
+            await GroupEngine.shared.syncGroupMessages(conversationId: conv.id)
+            await ChatEngine.shared.markRead(conversationId: conv.id)
+            refresh(conv.id)
+            return
+        }
         do {
             let peer = try await peerUserId(for: conv)
             _ = try await ChatEngine.shared.sync(conversationId: conv.id, peerUserId: peer)
@@ -253,7 +264,17 @@ final class ChatStore: ObservableObject {
             msg.replyToText = r.kind == .text ? r.text : "Attachment"
         }
         guard let conv = directConversations.first(where: { $0.id == conversationId }) else {
-            // Group (or unknown) — transient local echo only (group E2E/MLS not wired).
+            // Group conversation: real MLS end-to-end encryption.
+            if kind == .text,
+               groupConversations.contains(where: { $0.id == conversationId }) {
+                bumpPreview(conversationId, preview: text)
+                Task {
+                    await GroupEngine.shared.sendGroupMessage(conversationId: conversationId, text: text)
+                    refresh(conversationId)
+                }
+                return
+            }
+            // Unknown / non-text group payload — transient local echo only.
             messagesByConversation[conversationId, default: messages(for: conversationId)].append(msg)
             bumpPreview(conversationId, preview: kind == .text ? text : previewFor(kind))
             markStatus(tempId, in: conversationId, to: .sent)
@@ -297,6 +318,9 @@ final class ChatStore: ObservableObject {
         WebSocketClient.shared.onReceipt = { [weak self] mid, status in
             self?.applyReceipt(messageId: mid, status: status)
         }
+        WebSocketClient.shared.onGroupEvent = { [weak self] cid in
+            Task { await self?.handleGroupEvent(cid) }
+        }
         WebSocketClient.shared.onSessionReset = { [weak self] cid in
             // Peer couldn't decrypt our messages → drop our session so the next send
             // re-establishes. Sessions are keyed per (peerUserId, deviceId) now, so resolve
@@ -317,13 +341,28 @@ final class ChatStore: ObservableObject {
     /// A message arrived (WS ref) — fetch + decrypt that conversation.
     private func handleIncoming(_ conversationId: String) async {
         NSLog("[VOIID] handleIncoming conv=\(conversationId) known=\(directConversations.contains { $0.id == conversationId })")
-        if let conv = directConversations.first(where: { $0.id == conversationId }) {
+        if let conv = directConversations.first(where: { $0.id == conversationId })
+            ?? groupConversations.first(where: { $0.id == conversationId }) {
             await syncMessages(conv); return
         }
-        // Unknown conversation (first message from a new contact) — load the list,
-        // THEN sync that conversation so the message actually appears (not just on open).
+        // Unknown conversation (first message / a group we were just added to) — load the
+        // list, THEN sync that conversation so the message actually appears (not just on open).
         await loadConversations()
-        if let conv = directConversations.first(where: { $0.id == conversationId }) {
+        if let conv = directConversations.first(where: { $0.id == conversationId })
+            ?? groupConversations.first(where: { $0.id == conversationId }) {
+            await syncMessages(conv)
+        }
+    }
+
+    /// An MLS control event (Welcome/Commit) is waiting for us — process group events,
+    /// then refresh any group we may have just joined. Triggered by the `mls_event` WS push.
+    private func handleGroupEvent(_ conversationId: String) async {
+        await GroupEngine.shared.syncGroupEvents()
+        // A Welcome may have added us to a brand-new group not yet in our list.
+        if !groupConversations.contains(where: { $0.id == conversationId }) {
+            await loadConversations()
+        }
+        if let conv = groupConversations.first(where: { $0.id == conversationId }) {
             await syncMessages(conv)
         }
     }

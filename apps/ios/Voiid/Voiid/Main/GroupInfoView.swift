@@ -47,7 +47,16 @@ struct GroupInfoView: View {
             Button("Message") {}
             Button(memberAction?.role == .admin ? "Dismiss as admin" : "Make group admin") {}
             Button("Remove from group", role: .destructive) {
-                if let m = memberAction { members.removeAll { $0.id == m.id } }
+                if let m = memberAction {
+                    members.removeAll { $0.id == m.id }
+                    // Real MLS removal: rekeys the group + broadcasts the removal commit
+                    // to the remaining members so the removed user can't read new messages.
+                    let remaining = members.map { $0.id }
+                    let convId = conversation.id
+                    let removedId = m.id
+                    Task { await GroupEngine.shared.removeMember(
+                        conversationId: convId, userId: removedId, remainingMemberUserIds: remaining) }
+                }
             }
         }
     }

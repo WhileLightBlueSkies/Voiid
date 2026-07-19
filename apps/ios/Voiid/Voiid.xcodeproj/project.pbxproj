@@ -501,6 +501,7 @@
 		AA0000000000000000000014 /* E2EManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = E2EManager.swift; path = Voiid/Networking/E2EManager.swift; sourceTree = SOURCE_ROOT; };
 		AA0000000000000000000015 /* ChatEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ChatEngine.swift; path = Voiid/Networking/ChatEngine.swift; sourceTree = SOURCE_ROOT; };
 		AA0000000000000000000016 /* MediaService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MediaService.swift; path = Voiid/Networking/MediaService.swift; sourceTree = SOURCE_ROOT; };
+		AA00000000000000000000F1 /* GroupEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = GroupEngine.swift; path = Voiid/Networking/GroupEngine.swift; sourceTree = SOURCE_ROOT; };
 
 		AA0000000000000000000020 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000002 /* NotificationService.swift */; };
 		AA0000000000000000000021 /* voiid.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000010 /* voiid.swift */; };
@@ -510,6 +511,7 @@
 		AA0000000000000000000025 /* E2EManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000014 /* E2EManager.swift */; };
 		AA0000000000000000000026 /* ChatEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000015 /* ChatEngine.swift */; };
 		AA0000000000000000000027 /* MediaService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000016 /* MediaService.swift */; };
+		AA00000000000000000000F2 /* GroupEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000F1 /* GroupEngine.swift */; };
 		AA0000000000000000000030 /* Voiid.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E2EC04E000000000000000A0 /* Voiid.xcframework */; };
 		AA0000000000000000000031 /* VoiidNSE.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000001 /* VoiidNSE.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 
@@ -525,6 +527,7 @@
 				AA0000000000000000000025 /* E2EManager.swift in Sources */,
 				AA0000000000000000000026 /* ChatEngine.swift in Sources */,
 				AA0000000000000000000027 /* MediaService.swift in Sources */,
+				AA00000000000000000000F2 /* GroupEngine.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

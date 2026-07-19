@@ -28,6 +28,8 @@ final class WebSocketClient {
     var onReceipt: ((_ messageId: String, _ status: String) -> Void)?
     /// Peer couldn't decrypt our message → reset (re-establish) the session for this conversation.
     var onSessionReset: ((_ conversationId: String) -> Void)?
+    /// An MLS group control event (Welcome/Commit) is waiting → fetch + process group events.
+    var onGroupEvent: ((_ conversationId: String) -> Void)?
 
     func connect() {
         guard !connected, let jwt = TokenStore.shared.jwt else {
@@ -116,6 +118,8 @@ final class WebSocketClient {
             }
         case "session_reset":
             if let cid = obj["conversation_id"] as? String { onSessionReset?(cid) }
+        case "mls_event":
+            if let cid = obj["conversation_id"] as? String { onGroupEvent?(cid) }
         default: break   // "connected" etc.
         }
     }

@@ -119,6 +119,24 @@ final class ChatEngine {
         (store[conversationId] ?? []).sorted { $0.createdAt < $1.createdAt }
     }
 
+    // MARK: - Group (MLS) message store bridge
+    //
+    // Group messages are decrypted by GroupEngine (MLS), not the 1:1 ratchet, but they
+    // live in the SAME decrypted-message store so the chat UI renders them identically.
+    // These two hooks let GroupEngine dedup (decrypt-once) and append into that store.
+
+    /// All message ids currently stored for a conversation (used by GroupEngine to skip
+    /// already-decrypted MLS messages — MLS app messages can't be safely re-decrypted).
+    func storedMessageIds(conversationId: String) -> Set<String> {
+        Set((store[conversationId] ?? []).map { $0.id })
+    }
+
+    /// Append an already-decrypted group message into the shared store (dedup by id +
+    /// persist). No-op if an entry with the same id already exists.
+    func ingestGroupMessage(_ m: DecryptedMessage, conversationId: String) {
+        append(m, to: conversationId)
+    }
+
     // MARK: - Backup export / import (the plaintext payload of an encrypted backup)
 
     /// Serialize the entire decrypted-message store for an encrypted backup. The

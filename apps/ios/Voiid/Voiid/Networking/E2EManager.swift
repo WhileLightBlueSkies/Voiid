@@ -69,6 +69,7 @@ final class E2EManager {
         if !UserDefaults.standard.bool(forKey: "voiid_e2e_installed") {
             kc.wipeService()                                  // identity, pickle key, device id, pins
             KeychainData(service: "com.voiid.sessions").wipeService()   // cached Olm sessions
+            GroupEngine.shared.wipe()                          // MLS member blob + group map
             NSLog("[VOIID] fresh install detected — wiped stale Keychain E2E state")
             UserDefaults.standard.set(true, forKey: "voiid_e2e_installed")
         }
@@ -81,6 +82,11 @@ final class E2EManager {
             NSLog("[VOIID] bootstrap: registered device=\(devId)")
             try await withTransportRetry { try await self.ensurePrekeys(id, devId: devId) }
             NSLog("[VOIID] bootstrap: prekeys ensured")
+            // MLS (group messaging): create-or-restore this device's GroupMember and
+            // publish KeyPackages. Runs AFTER device registration (needs the device id).
+            // Best-effort — a group-key failure must not block 1:1 bootstrap.
+            await GroupEngine.shared.bootstrap()
+            NSLog("[VOIID] bootstrap: MLS ready")
             bootstrapped = true
         } catch {
             NSLog("[VOIID] bootstrap FAILED: \(error)")
