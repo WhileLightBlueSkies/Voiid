@@ -478,6 +478,46 @@ class ChatEngine private constructor(context: Context) {
         return Pair(d.identity_public_key, d.id)
     }
 
+    // MARK: - Group message store (MLS)
+    //
+    // Group messages are E2EE via MLS (see GroupEngine), but their DECRYPTED plaintext
+    // lives in the SAME on-disk store as 1:1 messages so the existing chat UI renders
+    // them unchanged. GroupEngine owns the crypto; these helpers only persist results.
+
+    /** True if this conversation already holds a message with [id] (decrypt-once dedup). */
+    fun hasMessage(conversationId: String, id: String): Boolean =
+        store[conversationId]?.any { it.id == id } == true
+
+    /** Persist a local echo of a group message WE just sent (we can't decrypt our own
+     *  MLS ratchet output, so we store the plaintext directly). Returns the stored row. */
+    fun storeGroupOutgoing(conversationId: String, text: String): DecryptedMessage {
+        val msg = DecryptedMessage(
+            id = java.util.UUID.randomUUID().toString(),
+            senderId = tokens.userId ?: "me", text = text,
+            createdAt = System.currentTimeMillis(), isMine = true,
+            // A group send is fire-and-forget over the fan-out relay; mark it delivered
+            // so the UI shows a sent state (no per-member receipts in this increment).
+            deliveryStatus = "sent",
+        )
+        append(conversationId, msg)
+        return msg
+    }
+
+    /** Persist a decrypted INBOUND group message (idempotent by [id]). */
+    fun storeGroupInbound(conversationId: String, id: String, senderId: String, text: String, createdAt: Long) {
+        if (hasMessage(conversationId, id)) return
+        replace(conversationId, DecryptedMessage(id, senderId, text, createdAt, isMine = false))
+        persist()
+    }
+
+    /** Tombstone a group message we couldn't decrypt so it isn't retried forever
+     *  (an MLS application message can't be safely re-decrypted). */
+    fun storeGroupTombstone(conversationId: String, id: String, senderId: String, createdAt: Long) {
+        if (hasMessage(conversationId, id)) return
+        replace(conversationId, DecryptedMessage(id, senderId, "🔒 Message couldn’t be decrypted", createdAt, isMine = false, failed = true))
+        persist()
+    }
+
     // MARK: - Local message store (decrypt-once; encrypted at rest)
 
     private fun append(convId: String, m: DecryptedMessage, persist: Boolean = true) {

@@ -30,6 +30,7 @@ class E2EManager private constructor(context: Context) {
         private const val PREKEY_ID_BASE = 100
     }
 
+    private val appContext = context.applicationContext
     private val api = ApiClient(TokenStore.get(context))
     private val prefs = SecurePrefs.open(context, "voiid_e2e")
 
@@ -52,6 +53,11 @@ class E2EManager private constructor(context: Context) {
             android.util.Log.i("VOIID", "bootstrap: registered device=$devId")
             withTransportRetry { ensurePrekeys(id, devId) }
             android.util.Log.i("VOIID", "bootstrap: prekeys ensured")
+            // MLS group messaging: create-or-restore this device's GroupMember and publish
+            // its KeyPackages. Never throws (swallowed + logged inside) so a group-crypto
+            // hiccup can't block 1:1 readiness.
+            GroupEngine.get(appContext).bootstrap()
+            android.util.Log.i("VOIID", "bootstrap: MLS ready")
             bootstrapped = true
         } catch (e: Exception) {
             android.util.Log.e("VOIID", "bootstrap FAILED", e)

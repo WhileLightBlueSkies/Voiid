@@ -5,6 +5,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -58,17 +60,33 @@ import com.voiid.app.ui.components.VoiidWordmark
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
+import kotlinx.coroutines.launch
 
-/** Group info (WhatsApp-style) — port of iOS `GroupInfoView.swift`. */
+/** Group info (WhatsApp-style) — port of iOS `GroupInfoView.swift`. Backed by REAL group
+ *  membership from the server; add/remove are wired to the MLS [GroupEngine] via ChatStore. */
 @Composable
-fun GroupInfoView(conversation: VConversation, onBack: () -> Unit) {
+fun GroupInfoView(conversation: VConversation, chat: com.voiid.app.model.ChatStore, onBack: () -> Unit) {
     BackHandler { onBack() }
     val haptics = LocalVoiidHaptics.current
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     var muted by remember { mutableStateOf(false) }
-    val members = remember { mutableStateListOf<VMember>().apply { addAll(DummyData.groupMembers) } }
+    val members = remember { mutableStateListOf<VMember>() }
     var memberAction by remember { mutableStateOf<VMember?>(null) }
     var showAllMedia by remember { mutableStateOf(false) }
     var viewPhoto by remember { mutableStateOf(false) }
+    var showAddMembers by remember { mutableStateOf(false) }
+
+    // Load REAL members from the server (user_id carried in VMember.id so admin ops target it).
+    fun reloadMembers() {
+        scope.launch {
+            runCatching { com.voiid.app.net.ChatService(context).fetchMembers(conversation.id) }.getOrNull()?.let { list ->
+                members.clear()
+                members.addAll(list.map { VMember(id = it.userId, name = it.name, phone = "", isYou = it.isYou) })
+            }
+        }
+    }
+    androidx.compose.runtime.LaunchedEffect(conversation.id) { reloadMembers() }
 
     Column(Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding()) {
         VoiidCircleBack(onBack = onBack)
@@ -122,7 +140,7 @@ fun GroupInfoView(conversation: VConversation, onBack: () -> Unit) {
                     Spacer(Modifier.weight(1f))
                     Icon(Icons.Default.Search, null, tint = VoiidColor.textSecondary, modifier = Modifier.size(20.dp))
                 }
-                ProfileRow(Icons.Default.PersonAddAlt, "Add members", tint = VoiidColor.primary) { haptics.tap() }
+                ProfileRow(Icons.Default.PersonAddAlt, "Add members", tint = VoiidColor.primary) { haptics.tap(); showAddMembers = true }
                 ProfileRow(Icons.Default.Link, "Invite via link", tint = VoiidColor.primary) { haptics.tap() }
                 HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.4f))
                 members.forEach { m ->
@@ -152,11 +170,29 @@ fun GroupInfoView(conversation: VConversation, onBack: () -> Unit) {
                 }
             },
             dismissButton = {
-                TextButton(onClick = { members.removeAll { it.id == m.id }; memberAction = null }) {
+                TextButton(onClick = {
+                    // Real MLS remove (rekeys the group so the removed member can't read on).
+                    chat.removeGroupMember(conversation.id, m.id) { reloadMembers() }
+                    members.removeAll { it.id == m.id }
+                    memberAction = null
+                }) {
                     Text("Remove from group", color = VoiidColor.error)
                 }
             },
         )
+    }
+
+    if (showAddMembers) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showAddMembers = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            AddGroupMembersScreen(
+                existingUserIds = members.map { it.id }.toSet(),
+                onClose = { showAddMembers = false },
+                onAdd = { userId -> chat.addGroupMember(conversation.id, userId) { reloadMembers() } },
+            )
+        }
     }
 
     if (showAllMedia) {
@@ -164,6 +200,63 @@ fun GroupInfoView(conversation: VConversation, onBack: () -> Unit) {
     }
     if (viewPhoto) {
         ProfilePhotoViewer(title = conversation.title, onClose = { viewPhoto = false })
+    }
+}
+
+/** Contact picker for adding members to an existing MLS group. Each tap adds that user
+ *  (all their devices) via the [GroupEngine] and marks them added. */
+@Composable
+private fun AddGroupMembersScreen(existingUserIds: Set<String>, onClose: () -> Unit, onAdd: (String) -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var loading by remember { mutableStateOf(true) }
+    var matches by remember { mutableStateOf<List<com.voiid.app.net.VContact>>(emptyList()) }
+    val added = remember { mutableStateListOf<String>() }
+
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        val granted = androidx.core.content.ContextCompat.checkSelfPermission(
+            context, android.Manifest.permission.READ_CONTACTS,
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            runCatching { com.voiid.app.net.ContactsService(context).discover().matches }.getOrNull()?.let { matches = it }
+        }
+        loading = false
+    }
+
+    Column(Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding()) {
+        Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Cancel", style = VoiidFont.rounded(16), color = VoiidColor.primary, modifier = Modifier.clickable { onClose() })
+            Spacer(Modifier.weight(1f))
+            Text("Add members", style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+            Spacer(Modifier.weight(1f))
+            Text("Done", style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.primary, modifier = Modifier.clickable { onClose() })
+        }
+        val selectable = matches.filter { it.userId !in existingUserIds }
+        LazyColumn(Modifier.fillMaxSize()) {
+            items(selectable, key = { it.userId }) { c ->
+                val isAdded = added.contains(c.userId)
+                Row(
+                    Modifier.fillMaxWidth().clickable(enabled = !isAdded) {
+                        added.add(c.userId); onAdd(c.userId)
+                    }.padding(horizontal = 20.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    VoiidAvatar(size = 40.dp, modifier = Modifier.clip(CircleShape))
+                    Spacer(Modifier.size(12.dp))
+                    Text(c.displayName, style = VoiidFont.rounded(16), color = VoiidColor.textPrimary, modifier = Modifier.weight(1f))
+                    Text(if (isAdded) "Added" else "Add",
+                        style = VoiidFont.rounded(14, FontWeight.SemiBold),
+                        color = if (isAdded) VoiidColor.textSecondary else VoiidColor.primary)
+                }
+            }
+            if (!loading && selectable.isEmpty()) {
+                item {
+                    Box(Modifier.fillMaxWidth().padding(32.dp), Alignment.Center) {
+                        Text("No contacts to add.", style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
+                    }
+                }
+            }
+        }
     }
 }
 

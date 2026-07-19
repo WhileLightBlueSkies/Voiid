@@ -31,9 +31,13 @@ private data class ConversationsEnvelope(val conversations: List<ConvDTO>)
 @Serializable private data class ConvDetailEnvelope(val conversation: ConvDetailDTO, val members: List<MemberDTO>)
 // Backend returns a FLAT shape: direct → { conversation_id, existed }, group → { conversation_id }.
 @Serializable private data class CreateConvEnvelope(val conversation_id: String, val existed: Boolean = false)
+@Serializable private data class CreateGroupBody(val type: String = "group", val name: String, val member_ids: List<String>)
 
 /** Resolved peer of a direct conversation. */
 data class PeerInfo(val peerUserId: String?, val title: String?, val photoURL: String?)
+
+/** One member of a group conversation (for GroupInfoView). */
+data class GroupMemberInfo(val userId: String, val name: String, val photoURL: String?, val isYou: Boolean)
 
 class ChatService(context: Context) {
     private val tokens = TokenStore.get(context)
@@ -81,6 +85,26 @@ class ChatService(context: Context) {
         val body = """{"type":"direct","member_id":"$memberId"}"""
         val env: CreateConvEnvelope = api.requestAs("POST", "conversations/create", jsonBody = body)
         return env.conversation_id
+    }
+
+    /** Create a GROUP conversation container (mirrors [createDirect]). The MLS crypto
+     *  group is built separately by GroupEngine.createGroup once this id exists. */
+    suspend fun createGroup(name: String, memberIds: List<String>): String {
+        val body = ApiClient.json.encodeToString(
+            CreateGroupBody.serializer(),
+            CreateGroupBody(name = name, member_ids = memberIds),
+        )
+        val env: CreateConvEnvelope = api.requestAs("POST", "conversations/create", jsonBody = body)
+        return env.conversation_id
+    }
+
+    /** All members of a (group) conversation: user_id + display name + photo. */
+    suspend fun fetchMembers(conversationId: String): List<GroupMemberInfo> {
+        val env: ConvDetailEnvelope = api.requestAs("GET", "conversations/$conversationId")
+        val myId = tokens.userId
+        return env.members.map {
+            GroupMemberInfo(it.user_id, it.full_name ?: "Member", it.photo_url, isYou = it.user_id == myId)
+        }
     }
 
     /** Peer presence (online + last_seen epoch millis) from Redis-backed status. */

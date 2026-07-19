@@ -92,13 +92,25 @@ class VoiidMessagingService : FirebaseMessagingService() {
         e2e.bootstrap()   // idempotent — guarantees identity is loaded for decrypt
 
         val chatService = ChatService(ctx)
-        val peer = runCatching { chatService.resolvePeer(conversationId) }.getOrNull()
         val engine = ChatEngine.get(ctx)
+        val groupEngine = GroupEngine.get(ctx)
+
+        // Always process MLS control events first — a wake may signify a Welcome (we were
+        // added to a group) or a Commit, and a group we're not yet tracking must join.
+        runCatching { groupEngine.syncGroupEvents() }
 
         // Snapshot before so we can identify what's NEW after the sync.
         val before = engine.messages(conversationId).map { it.id }.toHashSet()
 
-        peer?.peerUserId?.let { engine.sync(conversationId, it) }
+        // Group conversation: decrypt pending MLS app messages into the shared store.
+        val peer = if (groupEngine.hasGroup(conversationId)) {
+            runCatching { groupEngine.receiveGroupMessages(conversationId) }
+            null
+        } else {
+            val p = runCatching { chatService.resolvePeer(conversationId) }.getOrNull()
+            p?.peerUserId?.let { engine.sync(conversationId, it) }
+            p
+        }
 
         val after = engine.messages(conversationId)
         // Prefer the exact pushed message; else the newest new inbound; else newest inbound.

@@ -60,6 +60,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
 
     private val chatService = com.voiid.app.net.ChatService(app)
     private val engine = com.voiid.app.net.ChatEngine.get(app)
+    private val groupEngine = com.voiid.app.net.GroupEngine.get(app)
     private val ws = com.voiid.app.net.WebSocketClient.get(app)
     private var realtimeInstalled = false
     // Conversations we've already asked the peer to reset this session (avoid loops).
@@ -105,7 +106,19 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
     }
 
     suspend fun syncMessages(conv: VConversation) {
-        if (conv.type != ConversationType.DIRECT) return   // group E2E (MLS) is a later increment
+        if (conv.type == ConversationType.GROUP) {
+            // MLS: process Welcome/Commit events FIRST (join / advance epoch), then decrypt
+            // this device's pending group app messages into the shared store, then refresh.
+            try {
+                groupEngine.syncGroupEvents()
+                groupEngine.receiveGroupMessages(conv.id)
+                refresh(conv.id)
+                engine.markRead(conv.id)
+            } catch (e: Exception) {
+                loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t load messages."
+            }
+            return
+        }
         try {
             val peer = peerUserId(conv)
             engine.sync(conv.id, peer)
@@ -234,6 +247,43 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Create a real E2EE (MLS) group: create the server container, build the MLS group
+     *  (fetch members' KeyPackages, add each, distribute Welcome/Commit), then add it to
+     *  the list. Returns the new conversation for navigation, or null on failure. */
+    suspend fun createGroup(name: String, memberUserIds: List<String>): VConversation? {
+        return try {
+            val convId = chatService.createGroup(name, memberUserIds)
+            groupEngine.createGroup(convId, memberUserIds)
+            val conv = VConversation(
+                id = convId, type = ConversationType.GROUP, title = name,
+                memberCount = memberUserIds.size + 1,
+            )
+            if (groupConversations.none { it.id == convId }) groupConversations.add(0, conv)
+            conv
+        } catch (e: Exception) {
+            loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t create the group."
+            null
+        }
+    }
+
+    /** Admin: add a user to an existing MLS group, then refresh members. */
+    fun addGroupMember(conversationId: String, userId: String, onDone: () -> Unit = {}) {
+        viewModelScope.launch {
+            runCatching { groupEngine.addMember(conversationId, userId) }
+                .onFailure { loadError = (it as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t add member." }
+            onDone()
+        }
+    }
+
+    /** Admin: remove a user from an MLS group (rekeys), then refresh members. */
+    fun removeGroupMember(conversationId: String, userId: String, onDone: () -> Unit = {}) {
+        viewModelScope.launch {
+            runCatching { groupEngine.removeMember(conversationId, userId) }
+                .onFailure { loadError = (it as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t remove member." }
+            onDone()
+        }
+    }
+
     /** Send a real E2EE message in a direct chat. Groups keep a local echo for now. */
     fun send(
         text: String,
@@ -243,6 +293,23 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         forwarded: Boolean = false,
     ) {
         val conv = directConversations.firstOrNull { it.id == conversationId }
+        // Real E2EE group text over MLS: persist an echo in the shared store, then encrypt
+        // + fan out in the background. Non-text group content still falls through to echo.
+        val group = groupConversations.firstOrNull { it.id == conversationId }
+        if (group != null && kind == MessageKind.TEXT) {
+            viewModelScope.launch {
+                try {
+                    groupEngine.sendGroupMessage(conversationId, text)
+                    refresh(conversationId)
+                    bumpPreview(conversationId, text)
+                } catch (e: Exception) {
+                    loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t send group message."
+                }
+            }
+            refresh(conversationId)
+            bumpPreview(conversationId, text)
+            return
+        }
         if (conv == null || kind != MessageKind.TEXT) {
             // Group / non-text (e.g. forwarded media) — transient local echo only.
             val tempId = UUID.randomUUID().toString()
@@ -291,6 +358,8 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         ws.onSessionReset = { cid ->
             directConversations.firstOrNull { it.id == cid }?.peerUserId?.let { engine.resetSession(it) }
         }
+        // An MLS welcome/commit was relayed for one of our groups — process it.
+        ws.onMlsEvent = { viewModelScope.launch { handleMlsEvent() } }
         // connection is (re)established by loadConversations via ws.reconnect()
     }
 
@@ -302,11 +371,22 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
 
     private suspend fun handleIncoming(conversationId: String) {
         android.util.Log.i("VOIID", "handleIncoming conv=$conversationId known=${directConversations.any { it.id == conversationId }}")
-        directConversations.firstOrNull { it.id == conversationId }?.let { syncMessages(it); return }
-        // Unknown conversation (first message from a new contact) — reload the list,
-        // THEN sync it so the message actually appears (not just on manual open).
+        (directConversations + groupConversations).firstOrNull { it.id == conversationId }?.let { syncMessages(it); return }
+        // Unknown conversation (first message from a new contact / a group we were just
+        // added to) — reload the list, THEN sync it so the message actually appears.
         reload()
-        directConversations.firstOrNull { it.id == conversationId }?.let { syncMessages(it) }
+        (directConversations + groupConversations).firstOrNull { it.id == conversationId }?.let { syncMessages(it) }
+    }
+
+    /** An MLS control event (welcome/commit) landed — process group events across all our
+     *  groups so a just-received Welcome joins us + any group advances, then refresh. */
+    private suspend fun handleMlsEvent() {
+        runCatching {
+            groupEngine.syncGroupEvents()
+            // We may have just JOINED a group we don't yet list — reload to surface it.
+            reload()
+            groupConversations.forEach { runCatching { groupEngine.receiveGroupMessages(it.id); refresh(it.id) } }
+        }.onFailure { android.util.Log.e("VOIID", "handleMlsEvent failed", it) }
     }
 
     private fun markStatus(id: String, convId: String, status: MessageStatus) {

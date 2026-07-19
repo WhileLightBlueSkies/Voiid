@@ -423,7 +423,7 @@ fun ChatDetailView(
             exit = slideOutHorizontally { it } + fadeOut(),
         ) {
             if (isGroup) {
-                GroupInfoView(conversation = conversation, onBack = { showDetails = false })
+                GroupInfoView(conversation = conversation, chat = chat, onBack = { showDetails = false })
             } else {
                 ContactProfileView(conversation = conversation, onBack = { showDetails = false })
             }

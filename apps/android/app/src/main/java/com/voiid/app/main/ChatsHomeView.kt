@@ -214,11 +214,20 @@ fun ChatsHomeView(
             onDismissRequest = { showNewChat = false },
             properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
         ) {
-            NewChatScreen(
-                chat = chat,
-                onClose = { showNewChat = false },
-                onOpen = { conv -> showNewChat = false; onOpenConversation(conv) },
-            )
+            // On the GROUPS tab the "+" builds a real E2EE (MLS) group; on CHATS it starts a 1:1.
+            if (tab == ChatTab.GROUPS) {
+                NewGroupScreen(
+                    chat = chat,
+                    onClose = { showNewChat = false },
+                    onOpen = { conv -> showNewChat = false; onOpenConversation(conv) },
+                )
+            } else {
+                NewChatScreen(
+                    chat = chat,
+                    onClose = { showNewChat = false },
+                    onOpen = { conv -> showNewChat = false; onOpenConversation(conv) },
+                )
+            }
         }
     }
 

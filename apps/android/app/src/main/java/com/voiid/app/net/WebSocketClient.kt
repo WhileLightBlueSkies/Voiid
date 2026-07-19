@@ -54,6 +54,8 @@ class WebSocketClient private constructor(context: Context) {
     var onReceipt: ((messageId: String, status: String) -> Unit)? = null
     /** Peer couldn't decrypt our message → reset (re-establish) the session for this conversation. */
     var onSessionReset: ((conversationId: String) -> Unit)? = null
+    /** An MLS group control event (welcome/commit) was relayed for one of our groups. */
+    var onMlsEvent: ((conversationId: String?) -> Unit)? = null
 
     fun connect() {
         if (connected) return
@@ -139,6 +141,7 @@ class WebSocketClient private constructor(context: Context) {
                 onReceipt?.invoke(mid, status)
             }
             "session_reset" -> obj["conversation_id"]?.jsonPrimitive?.contentOrNull?.let { onSessionReset?.invoke(it) }
+            "mls_event" -> onMlsEvent?.invoke(obj["conversation_id"]?.jsonPrimitive?.contentOrNull)
             else -> Unit   // "connected" etc.
         }
     }
