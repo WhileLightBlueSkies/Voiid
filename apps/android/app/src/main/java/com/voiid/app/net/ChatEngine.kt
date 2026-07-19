@@ -527,6 +527,27 @@ class ChatEngine private constructor(context: Context) {
         }
     }
 
+    /** Serialize the ENTIRE decrypted message store to bytes (backup payload).
+     *  Same JSON shape [loadStore]/[persist] use, so [importStore] can round-trip it. */
+    fun exportStore(): ByteArray =
+        ApiClient.json.encodeToString(storeSerializer, store.mapValues { it.value.toList() }).toByteArray()
+
+    /** Replace the local message store with a restored backup blob, then persist to
+     *  the on-disk file. Bad/empty input is ignored (never crash a restore). */
+    fun importStore(bytes: ByteArray) {
+        if (bytes.isEmpty()) return
+        runCatching {
+            val decoded = ApiClient.json.decodeFromString(storeSerializer, String(bytes))
+            store.clear()
+            decoded.forEach { (k, v) -> store[k] = v.toMutableList() }
+        }.onSuccess {
+            persist()
+            android.util.Log.i("VOIID", "📥 importStore: restored ${store.values.sumOf { it.size }} msgs across ${store.size} convs")
+        }.onFailure {
+            android.util.Log.e("VOIID", "📥 importStore FAILED to parse backup blob", it)
+        }
+    }
+
     // MARK: - Session persistence (pickled, encrypted at rest)
 
     /** True when the last sync had an inbound decrypt failure (caller may ask the

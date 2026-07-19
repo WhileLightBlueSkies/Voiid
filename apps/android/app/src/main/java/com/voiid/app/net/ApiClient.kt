@@ -51,6 +51,12 @@ class ApiClient(
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .build()
+        // Longer timeouts for raw blob transfers (backup uploads up to 50 MiB).
+        private val rawClient = OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .writeTimeout(120, TimeUnit.SECONDS)
+            .readTimeout(120, TimeUnit.SECONDS)
+            .build()
     }
 
     /** Perform a request and return the raw JSON body string (caller deserializes). */
@@ -99,6 +105,45 @@ class ApiClient(
         }
     }
 
+    /**
+     * Raw request that does NOT throw on HTTP status — the caller inspects
+     * [RawResponse.code] + headers itself (needed for 404-is-a-value on GET /backup
+     * and 429 + Retry-After on GET /recovery/key). Attaches the same platform + bearer
+     * headers as [request]. Body may be arbitrary bytes (e.g. the octet-stream backup
+     * blob). Only transport failures throw ([ApiError.Transport]).
+     */
+    suspend fun requestRaw(
+        method: String,
+        path: String,
+        body: ByteArray? = null,
+        contentType: String = "application/octet-stream",
+        auth: Boolean = true,
+        versioned: Boolean = true,
+    ): RawResponse = withContext(Dispatchers.IO) {
+        val prefix = if (versioned) ApiConfig.apiVersion + "/" else ""
+        val builder = Request.Builder()
+            .url(ApiConfig.baseUrl.trimEnd('/') + "/" + prefix + path.trimStart('/'))
+            .header("X-Voiid-Platform", "android")
+            .header("X-Voiid-App-Version", ApiConfig.appVersion)
+            .header("X-Voiid-Api-Version", ApiConfig.apiVersion)
+        if (auth) {
+            val token = tokens.jwt ?: throw ApiError.NotAuthenticated
+            builder.header("Authorization", "Bearer $token")
+        }
+        val mediaType = contentType.toMediaType()
+        val reqBody = body?.toRequestBody(mediaType)
+        builder.method(method, reqBody ?: if (method == "GET") null else ByteArray(0).toRequestBody(mediaType))
+        val resp = try {
+            rawClient.newCall(builder.build()).execute()
+        } catch (e: Exception) {
+            throw ApiError.Transport(e)
+        }
+        resp.use {
+            if (it.code == 401) tokens.clear()
+            RawResponse(it.code, it.header("Retry-After"), it.body?.bytes() ?: ByteArray(0))
+        }
+    }
+
     /** Convenience: deserialize the response into [T]. */
     suspend inline fun <reified T> requestAs(
         method: String,
@@ -107,6 +152,13 @@ class ApiClient(
         auth: Boolean = true,
         versioned: Boolean = true,
     ): T = json.decodeFromString(request(method, path, jsonBody, auth, versioned))
+}
+
+/** Non-throwing raw HTTP result (see [ApiClient.requestRaw]). */
+data class RawResponse(val code: Int, val retryAfter: String?, val body: ByteArray) {
+    val isSuccessful: Boolean get() = code in 200..299
+    /** Retry-After parsed as whole seconds, if the server sent a numeric value. */
+    val retryAfterSeconds: Long? get() = retryAfter?.trim()?.toLongOrNull()
 }
 
 @kotlinx.serialization.Serializable

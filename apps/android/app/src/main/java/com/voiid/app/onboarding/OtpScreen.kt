@@ -61,6 +61,9 @@ fun OtpScreen(
     var focused by remember { mutableStateOf(false) }
     var verifying by remember { mutableStateOf(false) }
     var errorText by remember { mutableStateOf<String?>(null) }
+    // Non-null once a returning user logs in AND their account has a server backup:
+    // we show the restore flow instead of dropping straight into the app.
+    var restoreMeta by remember { mutableStateOf<com.voiid.app.net.BackupService.BackupMeta?>(null) }
     val fr = remember { androidx.compose.ui.focus.FocusRequester() }
     val complete = code.length == length
     val phoneNumber = phoneE164
@@ -77,15 +80,30 @@ fun OtpScreen(
                 // Publish this device's E2E identity + prekeys (needed for chat).
                 runCatching { com.voiid.app.net.E2EManager.get(context).bootstrap() }
                 haptics.success()
-                // Returning user (profile already complete) → straight to the app;
-                // new user → continue to Signup/Profile.
-                if (profileComplete) session.completeOnboarding() else onContinue()
+                // Returning user (profile already complete) → offer to restore chats
+                // if a server backup exists, else straight to the app.
+                // New user → continue to Signup/Profile.
+                if (profileComplete) {
+                    val meta = runCatching { com.voiid.app.net.BackupManager(context).fetchMeta() }.getOrNull()
+                    if (meta != null) restoreMeta = meta else session.completeOnboarding()
+                } else onContinue()
             } catch (e: Exception) {
                 errorText = (e as? com.voiid.app.net.ApiError)?.message ?: "Invalid or expired code."
                 haptics.tap()
             }
             verifying = false
         }
+    }
+
+    // A returning user with a server backup → show the restore flow (skippable).
+    restoreMeta?.let { m ->
+        RestoreFlow(
+            session = session,
+            meta = m,
+            onDone = { session.completeOnboarding() },
+            onSkip = { session.completeOnboarding() },
+        )
+        return
     }
 
     OnbScaffold(showBack = true, onBack = onBack) {

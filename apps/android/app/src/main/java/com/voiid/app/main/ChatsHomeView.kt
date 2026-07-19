@@ -51,6 +51,7 @@ import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
@@ -122,6 +123,7 @@ fun ChatsHomeView(
     var deleteTarget by remember { mutableStateOf<VConversation?>(null) }
     var callTarget by remember { mutableStateOf<VConversation?>(null) }
     var showNewChat by remember { mutableStateOf(false) }
+    var showBackup by remember { mutableStateOf(false) }
     var allContacts by remember { mutableStateOf<List<VContact>>(emptyList()) }
     val scope = rememberCoroutineScope()
 
@@ -143,7 +145,12 @@ fun ChatsHomeView(
     Column(
         Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding(),
     ) {
-        Header(haptics, onNewChat = { showNewChat = true }, onLogout = { haptics.tap(); session.signOut() })
+        Header(
+            haptics,
+            onNewChat = { showNewChat = true },
+            onBackupRecovery = { showBackup = true },
+            onLogout = { haptics.tap(); session.signOut() },
+        )
         SearchBar(search) { search = it }
         Tabs(tab) { haptics.selection(); tab = it }
         if (search.isBlank()) {
@@ -188,6 +195,16 @@ fun ChatsHomeView(
                     }
                 }
             }
+        }
+    }
+
+    // Backup & Recovery — fullscreen dialog
+    if (showBackup) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showBackup = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            BackupRecoveryScreen(onBack = { showBackup = false })
         }
     }
 
@@ -468,7 +485,7 @@ private fun SearchContactRow(c: VContact, onClick: () -> Unit) {
 }
 
 @Composable
-private fun Header(haptics: com.voiid.app.ui.components.VoiidHaptics, onNewChat: () -> Unit, onLogout: () -> Unit) {
+private fun Header(haptics: com.voiid.app.ui.components.VoiidHaptics, onNewChat: () -> Unit, onBackupRecovery: () -> Unit, onLogout: () -> Unit) {
     var menuOpen by remember { mutableStateOf(false) }
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(top = 8.dp),
@@ -492,6 +509,13 @@ private fun Header(haptics: com.voiid.app.ui.components.VoiidHaptics, onNewChat:
                 expanded = menuOpen,
                 onDismissRequest = { menuOpen = false },
             ) {
+                androidx.compose.material3.DropdownMenuItem(
+                    text = { Text("Backup & Recovery", color = VoiidColor.textPrimary) },
+                    leadingIcon = {
+                        Icon(Icons.Default.Lock, null, tint = VoiidColor.textPrimary)
+                    },
+                    onClick = { menuOpen = false; onBackupRecovery() },
+                )
                 androidx.compose.material3.DropdownMenuItem(
                     text = { Text("Log out", color = VoiidColor.error) },
                     leadingIcon = {
