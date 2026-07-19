@@ -8,7 +8,6 @@
 
 /* Begin PBXBuildFile section */
 		0B1613202FE4070E008FC346 /* FirebaseAnalytics in Frameworks */ = {isa = PBXBuildFile; productRef = 0B16131F2FE4070E008FC346 /* FirebaseAnalytics */; };
-		0B1613222FE4070E008FC346 /* FirebaseAnalyticsIdentitySupport in Frameworks */ = {isa = PBXBuildFile; productRef = 0B1613212FE4070E008FC346 /* FirebaseAnalyticsIdentitySupport */; };
 		0B1613242FE4070E008FC346 /* FirebaseAppCheck in Frameworks */ = {isa = PBXBuildFile; productRef = 0B1613232FE4070E008FC346 /* FirebaseAppCheck */; };
 		0B1613262FE4070E008FC346 /* FirebaseAppDistribution-Beta in Frameworks */ = {isa = PBXBuildFile; productRef = 0B1613252FE4070E008FC346 /* FirebaseAppDistribution-Beta */; };
 		0B1613282FE4070E008FC346 /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = 0B1613272FE4070E008FC346 /* FirebaseAuth */; };
@@ -55,7 +54,6 @@
 			files = (
 				E2EC04E000000000000000A1 /* Voiid.xcframework in Frameworks */,
 				0B1613302FE4070E008FC346 /* FirebaseMessaging in Frameworks */,
-				0B1613222FE4070E008FC346 /* FirebaseAnalyticsIdentitySupport in Frameworks */,
 				0B1613322FE4070E008FC346 /* FirebasePerformance in Frameworks */,
 				0B1613282FE4070E008FC346 /* FirebaseAuth in Frameworks */,
 				0B1613242FE4070E008FC346 /* FirebaseAppCheck in Frameworks */,
@@ -109,7 +107,6 @@
 			name = Voiid;
 			packageProductDependencies = (
 				0B16131F2FE4070E008FC346 /* FirebaseAnalytics */,
-				0B1613212FE4070E008FC346 /* FirebaseAnalyticsIdentitySupport */,
 				0B1613232FE4070E008FC346 /* FirebaseAppCheck */,
 				0B1613252FE4070E008FC346 /* FirebaseAppDistribution-Beta */,
 				0B1613272FE4070E008FC346 /* FirebaseAuth */,
@@ -441,11 +438,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 0B16131E2FE4070D008FC346 /* XCLocalSwiftPackageReference "firebase-ios-sdk" */;
 			productName = FirebaseAnalytics;
-		};
-		0B1613212FE4070E008FC346 /* FirebaseAnalyticsIdentitySupport */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 0B16131E2FE4070D008FC346 /* XCLocalSwiftPackageReference "firebase-ios-sdk" */;
-			productName = FirebaseAnalyticsIdentitySupport;
 		};
 		0B1613232FE4070E008FC346 /* FirebaseAppCheck */ = {
 			isa = XCSwiftPackageProductDependency;

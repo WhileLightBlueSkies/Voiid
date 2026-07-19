@@ -135,7 +135,8 @@ final class ChatStore: ObservableObject {
             // stale — ask them (once) to re-establish so future messages work.
             if ChatEngine.shared.lastSyncHadDecryptFailure, !resetRequested.contains(conv.id) {
                 resetRequested.insert(conv.id)
-                ChatEngine.shared.resetSession(conv.id)
+                // Sessions are keyed per (peerUserId, deviceId) now — reset by peer, not conv.
+                ChatEngine.shared.resetSession(peer)
                 WebSocketClient.shared.sendSessionReset(conversationId: conv.id, recipientIds: [peer])
             }
             await ChatEngine.shared.markRead(conversationId: conv.id)   // blue ticks for the sender
@@ -296,9 +297,17 @@ final class ChatStore: ObservableObject {
         WebSocketClient.shared.onReceipt = { [weak self] mid, status in
             self?.applyReceipt(messageId: mid, status: status)
         }
-        WebSocketClient.shared.onSessionReset = { cid in
-            // Peer couldn't decrypt our messages → drop our session so the next send re-establishes.
-            ChatEngine.shared.resetSession(cid)
+        WebSocketClient.shared.onSessionReset = { [weak self] cid in
+            // Peer couldn't decrypt our messages → drop our session so the next send
+            // re-establishes. Sessions are keyed per (peerUserId, deviceId) now, so resolve
+            // the conversation's peer and reset across all of that peer's devices.
+            guard let self else { return }
+            Task {
+                if let conv = self.directConversations.first(where: { $0.id == cid }),
+                   let peer = try? await self.peerUserId(for: conv) {
+                    ChatEngine.shared.resetSession(peer)
+                }
+            }
         }
     }
 

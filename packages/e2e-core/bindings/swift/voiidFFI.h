@@ -414,10 +414,26 @@ RustBuffer uniffi_voiid_e2e_core_fn_func_decrypt_media(RustBuffer media_key, Rus
 RustBuffer uniffi_voiid_e2e_core_fn_func_encrypt_media(RustBuffer plaintext, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_GENERATE_MASTER_SECRET
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_GENERATE_MASTER_SECRET
+RustBuffer uniffi_voiid_e2e_core_fn_func_generate_master_secret(RustCallStatus *_Nonnull out_status
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_MASTER_SECRET_TO_PHRASE
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_MASTER_SECRET_TO_PHRASE
+RustBuffer uniffi_voiid_e2e_core_fn_func_master_secret_to_phrase(RustBuffer secret, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_NEW_CALL_SECRET
 #define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_NEW_CALL_SECRET
 RustBuffer uniffi_voiid_e2e_core_fn_func_new_call_secret(RustCallStatus *_Nonnull out_status
     
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_PHRASE_TO_MASTER_SECRET
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_PHRASE_TO_MASTER_SECRET
+RustBuffer uniffi_voiid_e2e_core_fn_func_phrase_to_master_secret(RustBuffer phrase, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_PREKEY_SESSION_ID
@@ -433,6 +449,16 @@ RustBuffer uniffi_voiid_e2e_core_fn_func_safety_number(RustBuffer our_id, RustBu
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_SRTP_KEYS_FOR_1TO1
 #define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_SRTP_KEYS_FOR_1TO1
 RustBuffer uniffi_voiid_e2e_core_fn_func_srtp_keys_for_1to1(RustBuffer call_secret, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_UNWRAP_MASTER_SECRET_WITH_PIN
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_UNWRAP_MASTER_SECRET_WITH_PIN
+RustBuffer uniffi_voiid_e2e_core_fn_func_unwrap_master_secret_with_pin(RustBuffer wrapped, RustBuffer pin, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_WRAP_MASTER_SECRET_WITH_PIN
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_WRAP_MASTER_SECRET_WITH_PIN
+RustBuffer uniffi_voiid_e2e_core_fn_func_wrap_master_secret_with_pin(RustBuffer secret, RustBuffer pin, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_FFI_VOIID_E2E_CORE_RUSTBUFFER_ALLOC
@@ -707,9 +733,27 @@ uint16_t uniffi_voiid_e2e_core_checksum_func_encrypt_media(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_GENERATE_MASTER_SECRET
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_GENERATE_MASTER_SECRET
+uint16_t uniffi_voiid_e2e_core_checksum_func_generate_master_secret(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_MASTER_SECRET_TO_PHRASE
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_MASTER_SECRET_TO_PHRASE
+uint16_t uniffi_voiid_e2e_core_checksum_func_master_secret_to_phrase(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_NEW_CALL_SECRET
 #define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_NEW_CALL_SECRET
 uint16_t uniffi_voiid_e2e_core_checksum_func_new_call_secret(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_PHRASE_TO_MASTER_SECRET
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_PHRASE_TO_MASTER_SECRET
+uint16_t uniffi_voiid_e2e_core_checksum_func_phrase_to_master_secret(void
     
 );
 #endif
@@ -728,6 +772,18 @@ uint16_t uniffi_voiid_e2e_core_checksum_func_safety_number(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_SRTP_KEYS_FOR_1TO1
 #define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_SRTP_KEYS_FOR_1TO1
 uint16_t uniffi_voiid_e2e_core_checksum_func_srtp_keys_for_1to1(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_UNWRAP_MASTER_SECRET_WITH_PIN
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_UNWRAP_MASTER_SECRET_WITH_PIN
+uint16_t uniffi_voiid_e2e_core_checksum_func_unwrap_master_secret_with_pin(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_WRAP_MASTER_SECRET_WITH_PIN
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_WRAP_MASTER_SECRET_WITH_PIN
+uint16_t uniffi_voiid_e2e_core_checksum_func_wrap_master_secret_with_pin(void
     
 );
 #endif

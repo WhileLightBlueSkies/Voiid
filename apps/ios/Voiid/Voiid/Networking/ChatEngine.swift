@@ -74,11 +74,16 @@ final class ChatEngine {
     private let api = APIClient()
     private let kc = KeychainData(service: "com.voiid.sessions")
     private let sessionPickleKeyName = "session_pickle_key"
-    // conversationId -> ALL candidate Olm sessions. During simultaneous initiation
-    // ("glare") both peers create their own session, so a conversation legitimately has
-    // more than one. Keep them all: try each on decrypt, append (never overwrite) a
-    // newly-accepted one — overwriting strands the peer's early PreKey messages forever.
-    private var sessions: [String: [Session]] = [:]
+    // (peerUserId, deviceId) -> ALL candidate Olm sessions for THAT specific remote
+    // device. Multi-device fan-out: E2EE gives every device its own vodozemac session,
+    // so sessions MUST be keyed per remote device (not per conversation/user) — a peer's
+    // 2nd device can't decrypt the 1st device's ratchet output. The "remote" is either a
+    // conversation peer's device OR one of the sender's own other (linked) devices.
+    // During simultaneous initiation ("glare") both peers create their own session, so a
+    // single device pair legitimately has more than one. Keep them all: try each on
+    // decrypt, append (never overwrite) a newly-accepted one — overwriting strands the
+    // peer's early PreKey messages forever.
+    private var sessions: [String: [Session]] = [:]   // key = sessionKey(userId, deviceId)
     private var store: [String: [DecryptedMessage]] = [:]   // conversationId -> messages (asc)
     /// Per-conversation async mutex. @MainActor does NOT prevent two sync() calls
     /// (4s poll + WS push) from interleaving at `await` points and BOTH acceptSession
@@ -132,21 +137,46 @@ final class ChatEngine {
         let pendings = (store[conversationId] ?? []).filter { $0.isMine && $0.pending && $0.media == nil }
         for p in pendings {
             do {
-                let session = try await ensureOutboundSession(conversationId: conversationId, peerUserId: peerUserId)
-                let wire = try session.encrypt(plaintext: Data(p.text.utf8))
-                saveSessions(conversationId)
-                let ciphertext = encodeWire(wire)
+                // Fan-out: encrypt ONCE PER TARGET DEVICE (peer's devices + our own other
+                // devices), build the per-device bundle, and POST it in one send.
+                let messages = try await encryptFanout(Data(p.text.utf8), peerUserId: peerUserId)
                 let res: SendResponse = try await api.request(
                     "POST", "messages/send",
-                    body: SendBody(conversation_id: conversationId, ciphertext: ciphertext,
-                                   device_id: E2EManager.shared.deviceId))
+                    body: SendBundleBody(conversation_id: conversationId,
+                                         sender_device_id: E2EManager.shared.deviceId,
+                                         messages: messages, content_type: "text"))
                 markSent(localId: p.id, conversationId: conversationId, serverId: res.message_id)
-                NSLog("[VOIID] ✅ sent text id=\(res.message_id) conv=\(conversationId)")
+                NSLog("[VOIID] ✅ sent text id=\(res.message_id) conv=\(conversationId) devices=\(messages.count)")
             } catch {
-                NSLog("[VOIID] ❌ sendText FAILED conv=\(conversationId): \(error)")
-                // stays pending → retried later
+                // "peer has no available prekeys" means the recipient hasn't published keys
+                // yet (not registered / logged out / momentary race). Olm REQUIRES a
+                // one-time key to start a session, so we genuinely can't send yet — keep the
+                // message PENDING (clock, not red "failed") so the 4s poll retries and it
+                // delivers the moment the peer publishes keys. Only surface a hard failure
+                // for unexpected errors.
+                let retryable: Bool
+                switch error {
+                case APIError.http(let status, _): retryable = (status == 409 || status == 404)
+                case APIError.transport: retryable = true
+                default: retryable = false
+                }
+                if retryable {
+                    NSLog("[VOIID] ⏳ send pending (peer not ready) conv=\(conversationId): \(error)")
+                } else {
+                    markFailed(localId: p.id, conversationId: conversationId)
+                    NSLog("[VOIID] ❌ sendText FAILED conv=\(conversationId): \(error)")
+                }
             }
         }
+    }
+
+    /// Flag a still-pending message as failed so the UI can show an error + retry.
+    private func markFailed(localId: String, conversationId: String) {
+        guard var arr = store[conversationId],
+              let i = arr.firstIndex(where: { $0.id == localId }), !arr[i].failed else { return }
+        arr[i].failed = true
+        store[conversationId] = arr
+        persist()
     }
 
     /// Backwards-compatible one-shot send (enqueue + flush).
@@ -160,6 +190,7 @@ final class ChatEngine {
     private func markSent(localId: String, conversationId: String, serverId: String) {
         guard var arr = store[conversationId], let i = arr.firstIndex(where: { $0.id == localId }) else { return }
         arr[i].pending = false
+        arr[i].failed = false
         arr[i].serverId = serverId
         store[conversationId] = arr
         persist()
@@ -180,20 +211,21 @@ final class ChatEngine {
         let ref = MediaRef(mediaUrl: key, mime: mime,
                            key: enc.mediaKey.key, nonce: enc.mediaKey.nonce,
                            sha256: enc.mediaKey.ciphertextSha256)
-        // 3. The E2EE message plaintext is a media envelope (key never leaves E2E).
+        // 3. The E2EE message plaintext is a media envelope (key never leaves E2E). The
+        //    SAME envelope is encrypted per target device (fan-out); every device's copy
+        //    references the one shared R2 blob via `key`, so the media key stays E2E.
         let envelope = MediaEnvelope(media: ref, caption: caption)
-        let session = try await ensureOutboundSession(conversationId: conversationId, peerUserId: peerUserId)
-        let wire = try session.encrypt(plaintext: try JSONEncoder().encode(envelope))
-        saveSessions(conversationId)
-        let ciphertext = encodeWire(wire)
-        // 4. Send the message, tagging it as media + the opaque ref for the server.
+        let envelopeData = try JSONEncoder().encode(envelope)
+        let messages = try await encryptFanout(envelopeData, peerUserId: peerUserId)
+        // 4. Send the per-device bundle, tagging it as media + the opaque ref for the server.
         let res: SendResponse = try await api.request(
             "POST", "messages/send",
-            body: SendBody(conversation_id: conversationId, ciphertext: ciphertext,
-                           device_id: E2EManager.shared.deviceId,
-                           content_type: "media", media_url: key, media_mime: mime))
+            body: SendBundleBody(conversation_id: conversationId,
+                                 sender_device_id: E2EManager.shared.deviceId,
+                                 messages: messages, content_type: "media",
+                                 media_url: key, media_mime: mime))
         let echo = DecryptedMessage(id: res.message_id, senderId: TokenStore.shared.userId ?? "me",
-                                    text: caption, createdAt: parseDate(res.created_at),
+                                    text: caption, createdAt: res.created_at.map(parseDate) ?? Date(),
                                     isMine: true, media: ref)
         append(echo, to: conversationId)
         return echo
@@ -222,7 +254,10 @@ final class ChatEngine {
     private func runSyncLocked(conversationId: String, peerUserId: String) async throws -> [DecryptedMessage] {
         await flushPending(conversationId: conversationId, peerUserId: peerUserId)   // push any queued sends first
         lastSyncHadDecryptFailure = false
-        let env: MessagesResponse = try await api.request("GET", "messages/conversation/\(conversationId)")
+        // Pass our own device_id so the server hands back only THIS device's per-device
+        // ciphertext (each device has its own session, hence its own ciphertext).
+        let devParam = E2EManager.shared.deviceId.map { "?device_id=\($0)" } ?? ""
+        let env: MessagesResponse = try await api.request("GET", "messages/conversation/\(conversationId)\(devParam)")
         NSLog("[VOIID] sync conv=\(conversationId): server has \(env.messages.count) msgs")
         let myId = TokenStore.shared.userId
         // "seen" = ALL stored ids INCLUDING tombstones. A decrypt-once Olm message that
@@ -244,8 +279,8 @@ final class ChatEngine {
             if seen.contains(m.id) { continue }
             guard let wire = decodeWire(m.ciphertext) else { continue }
             do {
-                let plain = try await decryptInbound(wire, conversationId: conversationId,
-                                                     peerUserId: peerUserId, senderDeviceId: m.sender_device_id)
+                let plain = try await decryptInbound(wire, peerUserId: peerUserId,
+                                                     senderDeviceId: m.sender_device_id)
                 newlyReceived.append(m.id)
                 NSLog("[VOIID] ✅ decrypted inbound id=\(m.id) senderDev=\(m.sender_device_id ?? "nil")")
                 // A media message's plaintext is a JSON MediaEnvelope; a text
@@ -316,15 +351,19 @@ final class ChatEngine {
     /// `senderDeviceId` (from the message) selects the SENDER's device whose identity
     /// key we accept with — a multi-device sender may have encrypted with a device
     /// that isn't their "first", so resolving by it is what makes decrypt succeed.
-    private func decryptInbound(_ wire: WireMessage, conversationId: String,
+    private func decryptInbound(_ wire: WireMessage,
                                peerUserId: String, senderDeviceId: String?) async throws -> String {
-        // 1. Try EVERY known session (glare → multiple). A non-matching session fails
-        //    cleanly; the matching one decrypts (including later PreKey msgs of an
-        //    already-accepted session — no re-accept, no extra OTK consumed).
-        let list = candidateSessions(conversationId)
+        // Decrypt with the session for the SPECIFIC (peer, sending device) that produced
+        // this ciphertext — the server already handed us only our device's copy, and the
+        // message names which of the sender's devices encrypted it.
+        let devId = senderDeviceId ?? "default"
+        // 1. Try EVERY known session for that device pair (glare → multiple). A non-matching
+        //    session fails cleanly; the matching one decrypts (including later PreKey msgs of
+        //    an already-accepted session — no re-accept, no extra OTK consumed).
+        let list = candidateSessions(peerUserId, devId)
         for s in list {
             if let data = try? s.decrypt(message: wire) {
-                saveSessions(conversationId)
+                saveSessions(peerUserId, devId)
                 return String(decoding: data, as: UTF8.self)
             }
         }
@@ -339,7 +378,7 @@ final class ChatEngine {
         if let incomingId = prekeySessionId(message: wire),
            let s = list.first(where: { $0.sessionId() == incomingId }) {
             let data = try s.decrypt(message: wire)   // throws if genuinely undecryptable
-            saveSessions(conversationId)
+            saveSessions(peerUserId, devId)
             return String(decoding: data, as: UTF8.self)
         }
         // 3. Accept a NEW inbound session and APPEND it (don't discard the others).
@@ -347,25 +386,91 @@ final class ChatEngine {
         let peer = try await peerIdentity(peerUserId, deviceId: senderDeviceId)
         try verifyAndPinIdentity(peer.key, peerUserId: peerUserId, deviceId: peer.deviceId)   // anti-MITM (TOFU, per device)
         let accepted = try id.acceptSession(theirIdentityKey: peer.key, firstMessage: wire)
-        sessions[conversationId, default: []].append(accepted.session)
-        saveSessions(conversationId)
+        sessions[sessionKey(peerUserId, devId), default: []].append(accepted.session)
+        saveSessions(peerUserId, devId)
         E2EManager.shared.persistIdentity()   // acceptSession consumed a one-time key —
                                               // save it or the first message is lost on restart.
         return String(decoding: accepted.plaintext, as: UTF8.self)
     }
 
-    // MARK: - Session establishment
+    // MARK: - Multi-device fan-out (encrypt once per target device)
 
-    private func ensureOutboundSession(conversationId: String, peerUserId: String) async throws -> Session {
-        // Reuse a stable existing session for outbound; only create one if none exist.
-        if let s = candidateSessions(conversationId).first { return s }
+    /// A remote device we must deliver to: a conversation peer's device, or one of our
+    /// own OTHER (linked) devices. `userId` owns `deviceId`.
+    private struct TargetDevice { let userId: String; let deviceId: String }
+
+    /// One target device's ciphertext in a fan-out bundle.
+    private struct DeviceCiphertext: Encodable { let recipient_device_id: String; let ciphertext: String }
+
+    /// Encrypt `plaintext` ONCE PER TARGET DEVICE and return the per-device bundle
+    /// (`[{recipient_device_id, ciphertext}]`). Targets = every active device of the
+    /// conversation peer PLUS our own OTHER devices, EXCLUDING this sending device.
+    /// Devices we can't build a session for (no published prekey) are skipped + logged so
+    /// the rest still deliver; if NOTHING is deliverable we throw a retryable (409) error
+    /// so the message stays pending and re-sends once prekeys appear.
+    private func encryptFanout(_ plaintext: Data, peerUserId: String) async throws -> [DeviceCiphertext] {
+        let targets = try await resolveTargets(peerUserId)
+        if targets.isEmpty { throw APIError.http(status: 409, message: "no target devices for peer") }
+        var out: [DeviceCiphertext] = []
+        // Group by owning user so we fetch each user's prekey bundles at most once per send
+        // (each GET consumes a one-time key per device — don't call it per device).
+        let byUser = Dictionary(grouping: targets, by: { $0.userId })
+        for (userId, devs) in byUser {
+            let needBundles = devs.contains { candidateSessions(userId, $0.deviceId).isEmpty }
+            let bundles = needBundles ? ((try? await fetchBundles(userId)) ?? [:]) : [:]
+            for t in devs {
+                guard let session = try outboundSessionFor(t, bundles: bundles) else {
+                    NSLog("[VOIID] ⏭️ fan-out skip device=\(t.deviceId) user=\(t.userId) (no session/prekey)")
+                    continue
+                }
+                let wire = try session.encrypt(plaintext: plaintext)
+                saveSessions(t.userId, t.deviceId)
+                out.append(DeviceCiphertext(recipient_device_id: t.deviceId, ciphertext: encodeWire(wire)))
+            }
+        }
+        // Nothing deliverable (e.g. peer hasn't published prekeys yet) — retryable, like the
+        // legacy single-device path, so the 4s poll re-sends when keys appear.
+        if out.isEmpty { throw APIError.http(status: 409, message: "peer has no available prekeys") }
+        return out
+    }
+
+    /// All target devices for a send: peer's active devices + our OWN other devices,
+    /// minus this sending device.
+    private func resolveTargets(_ peerUserId: String) async throws -> [TargetDevice] {
+        var targets: [TargetDevice] = []
+        let peerDevs: DevicesResponse = try await api.request("GET", "devices/\(peerUserId)")
+        peerDevs.devices.forEach { targets.append(TargetDevice(userId: peerUserId, deviceId: $0.id)) }
+        // Our own OTHER devices (linked-device sync of sent messages), excluding this one.
+        let myDev = E2EManager.shared.deviceId
+        if let myId = TokenStore.shared.userId {
+            let mine: DevicesResponse = try await api.request("GET", "devices/\(myId)")
+            mine.devices.filter { $0.id != myDev }.forEach { targets.append(TargetDevice(userId: myId, deviceId: $0.id)) }
+        }
+        return targets
+    }
+
+    /// Get (reuse) or establish the outbound session for one target device. Returns nil
+    /// — skip this device — when it has no bundle / no available one-time prekey.
+    private func outboundSessionFor(_ t: TargetDevice, bundles: [String: BundleDTO]) throws -> Session? {
+        // Reuse the stable (first/oldest) existing session so we don't keep minting new ones.
+        if let s = candidateSessions(t.userId, t.deviceId).first { return s }
         guard let id = E2EManager.shared.identity else { throw APIError.notAuthenticated }
-        let bundle = try await peerPrekeyBundle(peerUserId)
-        try verifyAndPinIdentity(bundle.identityKey, peerUserId: peerUserId, deviceId: bundle.deviceId)   // anti-MITM (TOFU, per device)
-        let s = try id.startSession(theirIdentityKey: bundle.identityKey, theirOneTimeKey: bundle.oneTimeKey)
-        sessions[conversationId, default: []].append(s)
-        saveSessions(conversationId)
+        guard let b = bundles[t.deviceId] else { return nil }        // no bundle for this device
+        guard let otk = b.one_time_prekey else { return nil }        // no available prekey → skip
+        try verifyAndPinIdentity(b.identity_public_key, peerUserId: t.userId, deviceId: t.deviceId)  // anti-MITM (TOFU, per device)
+        let s = try id.startSession(theirIdentityKey: b.identity_public_key, theirOneTimeKey: otk.public_key)
+        sessions[sessionKey(t.userId, t.deviceId), default: []].append(s)
+        saveSessions(t.userId, t.deviceId)
         return s
+    }
+
+    /// Fetch a user's prekey bundles, keyed by device id (one bundle per device; each
+    /// consumes one of that device's one-time prekeys).
+    private func fetchBundles(_ userId: String) async throws -> [String: BundleDTO] {
+        let env: PrekeysResponse = try await api.request("GET", "prekeys/\(userId)")
+        var out: [String: BundleDTO] = [:]
+        for b in env.bundles { if let dev = b.device_id { out[dev] = b } }
+        return out
     }
 
     // MARK: - Identity pinning (anti-MITM / "safety numbers", trust-on-first-use)
@@ -410,19 +515,6 @@ final class ChatEngine {
         return (dev.identity_public_key, dev.id)
     }
 
-    /// Peer's prekey bundle (identity + one consumed one-time key + device id) for startSession.
-    private func peerPrekeyBundle(_ userId: String) async throws -> (identityKey: String, oneTimeKey: String, deviceId: String?) {
-        let env: PrekeysResponse = try await api.request("GET", "prekeys/\(userId)")
-        // Prefer a device that actually handed out a one-time key — a stale device
-        // (left over after the peer reinstalled) can be listed first with a null
-        // prekey. (Matches Android; iOS previously only checked the first bundle.)
-        guard let b = env.bundles.first(where: { $0.one_time_prekey != nil }),
-              let otk = b.one_time_prekey else {
-            throw APIError.http(status: 409, message: "peer has no available prekeys")
-        }
-        return (b.identity_public_key, otk.public_key, b.device_id)
-    }
-
     // MARK: - Local message store (decrypt-once; plaintext at rest, file-protected)
 
     private func append(_ m: DecryptedMessage, to convId: String, persist doPersist: Bool = true) {
@@ -464,36 +556,46 @@ final class ChatEngine {
     /// caller can ask the sender (over WS) to re-establish the session.
     private(set) var lastSyncHadDecryptFailure = false
 
-    /// Drop the cached + persisted session for a conversation so the NEXT outbound
-    /// message starts a fresh one (peer asked us to reset / our session went stale).
-    func resetSession(_ conversationId: String) {
-        sessions[conversationId] = nil
-        kc.delete("sess_\(conversationId)")
-        NSLog("[VOIID] session reset for conv=\(conversationId)")
+    /// In-memory + on-disk key for a remote device's session list.
+    private func sessionKey(_ userId: String, _ deviceId: String) -> String { "\(userId)::\(deviceId)" }
+    /// Keychain account for a remote device's persisted session list.
+    private func sessionKCKey(_ userId: String, _ deviceId: String) -> String { "sess_\(userId)::\(deviceId)" }
+
+    /// Drop ALL cached + persisted sessions with `peerUserId` (across every one of that
+    /// peer's devices) so the NEXT outbound message re-establishes fresh sessions.
+    func resetSession(_ peerUserId: String) {
+        let memPrefix = "\(peerUserId)::"
+        // Keychain has no prefix-scan, so delete the on-disk pickle for each device we
+        // currently hold in memory, then drop the in-memory cache.
+        for k in sessions.keys where k.hasPrefix(memPrefix) {
+            kc.delete("sess_\(k)")   // sess_\(userId)::\(deviceId)  == sessionKCKey(...)
+            sessions[k] = nil
+        }
+        NSLog("[VOIID] session reset for peer=\(peerUserId) (all cached devices)")
     }
 
-    /// All candidate sessions for a conversation (loaded from the Keychain on first access).
-    private func candidateSessions(_ conversationId: String) -> [Session] {
-        if let s = sessions[conversationId] { return s }
-        let restored = restoreSessions(conversationId)
-        sessions[conversationId] = restored
+    /// All candidate sessions for one (peer, device) pair (loaded from the Keychain on first access).
+    private func candidateSessions(_ userId: String, _ deviceId: String) -> [Session] {
+        let key = sessionKey(userId, deviceId)
+        if let s = sessions[key] { return s }
+        let restored = restoreSessions(userId, deviceId)
+        sessions[key] = restored
         return restored
     }
 
-    /// Restore the persisted session list (newline-separated pickles; back-compatible
-    /// with the old single-pickle format).
-    private func restoreSessions(_ conversationId: String) -> [Session] {
-        guard let blob = kc.string("sess_\(conversationId)") else { return [] }
+    /// Restore a device's persisted session list (newline-separated pickles).
+    private func restoreSessions(_ userId: String, _ deviceId: String) -> [Session] {
+        guard let blob = kc.string(sessionKCKey(userId, deviceId)) else { return [] }
         return blob.split(separator: "\n").compactMap {
             try? Session.restore(pickle: String($0), pickleKey: sessionPickleKey())
         }
     }
 
-    /// Persist all sessions for a conversation as newline-separated pickles.
-    private func saveSessions(_ conversationId: String) {
-        guard let list = sessions[conversationId] else { return }
+    /// Persist a device's sessions as newline-separated pickles.
+    private func saveSessions(_ userId: String, _ deviceId: String) {
+        guard let list = sessions[sessionKey(userId, deviceId)] else { return }
         let blob = list.compactMap { try? $0.toPickle(pickleKey: sessionPickleKey()) }.joined(separator: "\n")
-        kc.set(blob, "sess_\(conversationId)")
+        kc.set(blob, sessionKCKey(userId, deviceId))
     }
     private func sessionPickleKey() -> Data {
         if let k = kc.data(sessionPickleKeyName), k.count == 32 { return k }
@@ -548,15 +650,21 @@ final class ChatEngine {
     }
 
     // DTOs for messages API
-    private struct SendBody: Encodable {
+
+    /// Multi-device fan-out send: one ciphertext per TARGET device.
+    private struct SendBundleBody: Encodable {
         let conversation_id: String
-        let ciphertext: String
-        var device_id: String? = nil      // which of OUR devices encrypted this
+        var sender_device_id: String? = nil   // which of OUR devices encrypted these
+        let messages: [DeviceCiphertext]       // one entry per target device
         var content_type: String? = nil
         var media_url: String? = nil
         var media_mime: String? = nil
     }
-    private struct SendResponse: Decodable { let message_id: String; let created_at: String }
+    private struct SendResponse: Decodable {
+        let message_id: String
+        var created_at: String? = nil
+        var delivered_devices: Int = 0
+    }
     private struct MessageDTO: Decodable {
         let id: String; let sender_id: String; let ciphertext: String; let created_at: String
         var sender_device_id: String? = nil   // which of the SENDER's devices encrypted it
