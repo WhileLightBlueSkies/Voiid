@@ -404,9 +404,19 @@ RustBuffer uniffi_voiid_e2e_core_fn_method_session_session_id(uint64_t ptr, Rust
 RustBuffer uniffi_voiid_e2e_core_fn_method_session_to_pickle(uint64_t ptr, RustBuffer pickle_key, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_DECRYPT_BACKUP
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_DECRYPT_BACKUP
+RustBuffer uniffi_voiid_e2e_core_fn_func_decrypt_backup(RustBuffer secret, RustBuffer blob, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_DECRYPT_MEDIA
 #define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_DECRYPT_MEDIA
 RustBuffer uniffi_voiid_e2e_core_fn_func_decrypt_media(RustBuffer media_key, RustBuffer ciphertext, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_ENCRYPT_BACKUP
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_ENCRYPT_BACKUP
+RustBuffer uniffi_voiid_e2e_core_fn_func_encrypt_backup(RustBuffer secret, RustBuffer plaintext, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_ENCRYPT_MEDIA
@@ -721,9 +731,21 @@ void ffi_voiid_e2e_core_rust_future_free_void(uint64_t handle
 void ffi_voiid_e2e_core_rust_future_complete_void(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_DECRYPT_BACKUP
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_DECRYPT_BACKUP
+uint16_t uniffi_voiid_e2e_core_checksum_func_decrypt_backup(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_DECRYPT_MEDIA
 #define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_DECRYPT_MEDIA
 uint16_t uniffi_voiid_e2e_core_checksum_func_decrypt_media(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_ENCRYPT_BACKUP
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_ENCRYPT_BACKUP
+uint16_t uniffi_voiid_e2e_core_checksum_func_encrypt_backup(void
     
 );
 #endif

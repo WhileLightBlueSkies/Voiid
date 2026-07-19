@@ -208,3 +208,83 @@ fn generated_secret_is_nonzero_32_bytes() {
         "two generated secrets must differ"
     );
 }
+
+// ---- Backup-blob encryption (encrypt_backup / decrypt_backup) ----
+
+/// A backup blob round-trips back to the exact same plaintext under the same secret.
+#[test]
+fn backup_roundtrip() {
+    let secret = api::generate_master_secret();
+    let plaintext = b"{\"conversations\":[{\"id\":\"c1\",\"messages\":[\"hi\"]}]}";
+    let blob = api::encrypt_backup(&secret, plaintext).expect("encrypt");
+    let out = api::decrypt_backup(&secret, &blob).expect("decrypt");
+    assert_eq!(out, plaintext, "decrypt must return the original plaintext");
+}
+
+/// The sealed blob is not the plaintext (it is actually encrypted) and carries the
+/// version byte + a 12-byte nonce ahead of the ciphertext.
+#[test]
+fn backup_blob_is_encrypted_and_framed() {
+    let secret = api::generate_master_secret();
+    let plaintext = b"top secret history";
+    let blob = api::encrypt_backup(&secret, plaintext).expect("encrypt");
+    assert_eq!(blob[0], 1, "first byte is the blob version");
+    assert!(blob.len() > 1 + 12 + plaintext.len(), "version+nonce+ciphertext+tag");
+    assert!(
+        !blob.windows(plaintext.len()).any(|w| w == plaintext),
+        "plaintext must not appear in the sealed blob"
+    );
+}
+
+/// Each encryption uses a fresh nonce, so two seals of the same plaintext differ.
+#[test]
+fn backup_each_seal_is_randomized() {
+    let secret = api::generate_master_secret();
+    let a = api::encrypt_backup(&secret, b"same").expect("a");
+    let b = api::encrypt_backup(&secret, b"same").expect("b");
+    assert_ne!(a, b, "fresh nonce per seal must produce distinct blobs");
+}
+
+/// A different master secret cannot open the blob (GCM auth fails).
+#[test]
+fn backup_wrong_secret_fails() {
+    let secret = api::generate_master_secret();
+    let other = api::generate_master_secret();
+    let blob = api::encrypt_backup(&secret, b"history").expect("encrypt");
+    assert!(
+        api::decrypt_backup(&other, &blob).is_err(),
+        "a wrong secret must fail the GCM tag, not return wrong plaintext"
+    );
+}
+
+/// A tampered blob (flipped ciphertext byte) fails instead of returning plaintext.
+#[test]
+fn backup_tampered_blob_fails() {
+    let secret = api::generate_master_secret();
+    let mut blob = api::encrypt_backup(&secret, b"history").expect("encrypt");
+    let last = blob.len() - 1;
+    blob[last] ^= 0xFF;
+    assert!(api::decrypt_backup(&secret, &blob).is_err(), "tamper must fail");
+}
+
+/// An unknown version byte or a truncated blob is rejected cleanly.
+#[test]
+fn backup_bad_frame_rejected() {
+    let secret = api::generate_master_secret();
+    assert!(api::decrypt_backup(&secret, &[]).is_err(), "empty blob");
+    assert!(api::decrypt_backup(&secret, &[9, 0, 0]).is_err(), "unknown version");
+    let short = vec![1u8; 8]; // version + partial nonce, no ciphertext
+    assert!(api::decrypt_backup(&secret, &short).is_err(), "truncated blob");
+}
+
+/// A backup restores across "devices": a secret recovered from its phrase opens a
+/// blob sealed under the original secret (the real cross-device restore path).
+#[test]
+fn backup_restores_via_recovery_phrase() {
+    let secret = api::generate_master_secret();
+    let blob = api::encrypt_backup(&secret, b"cross-device history").expect("encrypt");
+    let phrase = api::master_secret_to_phrase(&secret);
+    let recovered = api::phrase_to_master_secret(&phrase).expect("recover");
+    let out = api::decrypt_backup(&recovered, &blob).expect("decrypt on new device");
+    assert_eq!(out, b"cross-device history");
+}

@@ -516,6 +516,24 @@ pub fn unwrap_master_secret_with_pin(
     Ok(api::unwrap_master_secret_with_pin(&wrapped.into(), &pin)?.to_vec())
 }
 
+/// Seal a backup blob (client-serialized message history) under a key derived from
+/// the master secret. Returns a self-describing byte string to upload as-is; the
+/// server never sees the key or the plaintext.
+#[uniffi::export]
+pub fn encrypt_backup(secret: Vec<u8>, plaintext: Vec<u8>) -> FfiResult<Vec<u8>> {
+    let secret = to_key32(&secret)?;
+    Ok(api::encrypt_backup(&secret, &plaintext)?)
+}
+
+/// Open a backup blob produced by `encrypt_backup` using the master secret. A
+/// wrong secret or tampered blob errors (GCM auth) rather than returning wrong
+/// plaintext.
+#[uniffi::export]
+pub fn decrypt_backup(secret: Vec<u8>, blob: Vec<u8>) -> FfiResult<Vec<u8>> {
+    let secret = to_key32(&secret)?;
+    Ok(api::decrypt_backup(&secret, &blob)?)
+}
+
 /// Generate a fresh 1:1 call secret to send to the peer over a message.
 #[uniffi::export]
 pub fn new_call_secret() -> CallSecret {

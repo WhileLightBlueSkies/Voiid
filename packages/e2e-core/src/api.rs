@@ -155,6 +155,20 @@ pub fn unwrap_master_secret_with_pin(
     crate::recovery::unwrap_with_pin(wrapped, pin)
 }
 
+/// Seal a backup blob (the client-serialized message history) under a key derived
+/// from the master secret. Returns a self-describing byte string the server stores
+/// as-is — it never sees the key or the plaintext.
+pub fn encrypt_backup(secret: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, E2eError> {
+    crate::recovery::encrypt_backup(secret, plaintext)
+}
+
+/// Open a backup blob produced by [`encrypt_backup`] using the master secret. A
+/// wrong secret or tampered blob errors via the GCM auth check; never returns
+/// wrong-but-plausible plaintext and never panics.
+pub fn decrypt_backup(secret: &[u8; 32], blob: &[u8]) -> Result<Vec<u8>, E2eError> {
+    crate::recovery::decrypt_backup(secret, blob)
+}
+
 // --- Phase 2: media (images / video / audio files) ---
 
 /// Encrypt an attachment. Upload `ciphertext` to blob storage and send

@@ -2022,6 +2022,19 @@ fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
     }
 }
 /**
+ * Open a backup blob produced by `encrypt_backup` using the master secret. A
+ * wrong secret or tampered blob errors (GCM auth) rather than returning wrong
+ * plaintext.
+ */
+public func decryptBackup(secret: Data, blob: Data)throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeE2eFfiError_lift) {
+    uniffi_voiid_e2e_core_fn_func_decrypt_backup(
+        FfiConverterData.lower(secret),
+        FfiConverterData.lower(blob),$0
+    )
+})
+}
+/**
  * Decrypt a downloaded blob using the media key received over a message.
  */
 public func decryptMedia(mediaKey: MediaKey, ciphertext: Data)throws  -> Data  {
@@ -2029,6 +2042,19 @@ public func decryptMedia(mediaKey: MediaKey, ciphertext: Data)throws  -> Data  {
     uniffi_voiid_e2e_core_fn_func_decrypt_media(
         FfiConverterTypeMediaKey_lower(mediaKey),
         FfiConverterData.lower(ciphertext),$0
+    )
+})
+}
+/**
+ * Seal a backup blob (client-serialized message history) under a key derived from
+ * the master secret. Returns a self-describing byte string to upload as-is; the
+ * server never sees the key or the plaintext.
+ */
+public func encryptBackup(secret: Data, plaintext: Data)throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeE2eFfiError_lift) {
+    uniffi_voiid_e2e_core_fn_func_encrypt_backup(
+        FfiConverterData.lower(secret),
+        FfiConverterData.lower(plaintext),$0
     )
 })
 }
@@ -2157,7 +2183,13 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
+    if (uniffi_voiid_e2e_core_checksum_func_decrypt_backup() != 11673) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_voiid_e2e_core_checksum_func_decrypt_media() != 49753) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_voiid_e2e_core_checksum_func_encrypt_backup() != 20542) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_voiid_e2e_core_checksum_func_encrypt_media() != 14634) {

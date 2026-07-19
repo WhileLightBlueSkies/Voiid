@@ -31,8 +31,10 @@ use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use argon2::{Algorithm, Argon2, Params, Version};
 use bip39::Mnemonic;
+use hkdf::Hkdf;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 
 use crate::error::E2eError;
 
@@ -197,6 +199,86 @@ pub fn unwrap_with_pin(
         .as_slice()
         .try_into()
         .map_err(|_| E2eError::InvalidKey)
+}
+
+// ---- Backup-blob encryption ----
+//
+// The message-history backup is a plaintext blob (serialized client-side) sealed
+// under a key DERIVED from the master secret — not the master secret itself — so
+// the master secret stays a pure root and can key other purposes later. The
+// derived key never leaves the device; the server only ever stores the sealed
+// blob (see backend `routes/backup.ts`).
+
+/// HKDF-SHA256 domain-separation label for the backup encryption key. Bumping the
+/// label (or the blob version below) is a review-gated, migration-requiring change.
+const BACKUP_HKDF_INFO: &[u8] = b"VOIID backup key v1";
+
+/// Sealed-backup blob format version, stamped as the first byte so
+/// [`decrypt_backup`] can stay backward-compatible if the layout ever changes.
+const BACKUP_BLOB_VERSION: u8 = 1;
+
+/// Derive the 32-byte AES-256 backup key from the master secret via HKDF-SHA256
+/// with a fixed domain-separation label. Deterministic: the same master secret
+/// always yields the same backup key, so a backup sealed on one device opens on
+/// any device that recovers the same master secret.
+fn derive_backup_key(master_secret: &[u8; MASTER_SECRET_LEN]) -> [u8; 32] {
+    let hk = Hkdf::<Sha256>::new(None, master_secret);
+    let mut key = [0u8; 32];
+    hk.expand(BACKUP_HKDF_INFO, &mut key)
+        .expect("32 is a valid HKDF-SHA256 output length");
+    key
+}
+
+/// Seal a backup blob under a key derived from the master secret.
+///
+/// Returns a self-describing byte string `[version:1][nonce:12][ciphertext+tag]`,
+/// so [`decrypt_backup`] needs only the master secret and this blob — no separate
+/// key/nonce to store. A fresh random nonce is drawn per call.
+pub fn encrypt_backup(
+    master_secret: &[u8; MASTER_SECRET_LEN],
+    plaintext: &[u8],
+) -> Result<Vec<u8>, E2eError> {
+    let key = derive_backup_key(master_secret);
+    let mut nonce_bytes = [0u8; NONCE_LEN];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext)
+        .map_err(|_| E2eError::Serialization)?;
+
+    let mut blob = Vec::with_capacity(1 + NONCE_LEN + ciphertext.len());
+    blob.push(BACKUP_BLOB_VERSION);
+    blob.extend_from_slice(&nonce_bytes);
+    blob.extend_from_slice(&ciphertext);
+    Ok(blob)
+}
+
+/// Open a backup blob produced by [`encrypt_backup`], using the master secret.
+///
+/// Rejects an unknown version or a truncated blob with [`E2eError::InvalidKey`];
+/// a wrong master secret (or a tampered blob) fails the GCM tag and returns
+/// [`E2eError::DecryptionFailed`] — never wrong-but-plausible plaintext.
+pub fn decrypt_backup(
+    master_secret: &[u8; MASTER_SECRET_LEN],
+    blob: &[u8],
+) -> Result<Vec<u8>, E2eError> {
+    if blob.first().copied() != Some(BACKUP_BLOB_VERSION) {
+        return Err(E2eError::InvalidKey);
+    }
+    if blob.len() < 1 + NONCE_LEN {
+        return Err(E2eError::InvalidKey);
+    }
+    let nonce_bytes = &blob[1..1 + NONCE_LEN];
+    let ciphertext = &blob[1 + NONCE_LEN..];
+
+    let key = derive_backup_key(master_secret);
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
+    let nonce = Nonce::from_slice(nonce_bytes);
+    cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|_| E2eError::DecryptionFailed)
 }
 
 /// Stretch a PIN into a 32-byte AES key with Argon2id over the given salt.
