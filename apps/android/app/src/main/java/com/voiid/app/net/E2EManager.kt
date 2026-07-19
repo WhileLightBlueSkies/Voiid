@@ -59,6 +59,23 @@ class E2EManager private constructor(context: Context) {
         }
     }
 
+    /**
+     * Persist this device's FCM push token and (if we're already registered) push it
+     * to the backend on the SAME device row so the server can send wake notifications.
+     * Called from [VoiidMessagingService.onNewToken] and safe to call before bootstrap —
+     * the token is cached and [register] will attach it once the identity exists.
+     */
+    suspend fun registerPushToken(token: String) {
+        val prev = prefs.getString("fcm_token", null)
+        prefs.edit().putString("fcm_token", token).apply()
+        val id = identity ?: return   // not bootstrapped yet — register() will attach it
+        // Re-register only when the token actually changed OR we've never pushed one, so
+        // onNewToken re-fires don't spam the endpoint. Same registration_id → pure update.
+        if (prev == token) return
+        runCatching { register(id) }
+            .onFailure { android.util.Log.e("VOIID", "registerPushToken failed", it) }
+    }
+
     /** Retry a network step a few times on transport errors (timeouts / flaky net)
      *  instead of permanently failing bootstrap on the first hiccup. */
     private suspend fun <T> withTransportRetry(op: suspend () -> T): T {
@@ -135,7 +152,10 @@ class E2EManager private constructor(context: Context) {
     }
 
     @Serializable private data class RegisterBody(
-        val platform: String, val registration_id: Int, val identity_public_key: String)
+        val platform: String, val registration_id: Int, val identity_public_key: String,
+        // Push routing: attached to the SAME device row (upsert keys on
+        // (user_id, registration_id)) so the backend can send the wake push here.
+        val push_token: String? = null, val push_provider: String? = null)
     @Serializable private data class DeviceResp(val device_id: String)
     @Serializable private data class Otk(val key_id: Int, val public_key: String)
     @Serializable private data class PrekeysBody(val device_id: String, val one_time_prekeys: List<Otk>)
@@ -147,9 +167,13 @@ class E2EManager private constructor(context: Context) {
         // any one-time keys (those are managed separately by [ensurePrekeys]).
         val identityKey = id.publishBundle(0u).identityKey
         persist(id)
+        // Include the cached FCM token (if any) so registration/refresh also attaches
+        // (or updates) this device's push endpoint on the server in one call.
+        val fcm = prefs.getString("fcm_token", null)
         val regBody = ApiClient.json.encodeToString(
             RegisterBody.serializer(),
-            RegisterBody("android", registrationId(), identityKey))
+            RegisterBody("android", registrationId(), identityKey,
+                push_token = fcm, push_provider = fcm?.let { "fcm" }))
         val dev: DeviceResp = api.requestAs("POST", "devices/register", jsonBody = regBody)
         prefs.edit().putString("device_id", dev.device_id).apply()
         return dev.device_id

@@ -90,6 +90,14 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
 
     private fun list(id: String) = messagesByConversation.getOrPut(id) { mutableStateListOf() }
 
+    /** Resolve a conversation by id for deep-linking (e.g. a notification tap). Returns
+     *  a cached one immediately, otherwise reloads the list from the server once. */
+    suspend fun conversationById(id: String): VConversation? {
+        (directConversations + groupConversations).firstOrNull { it.id == id }?.let { return it }
+        runCatching { reload() }
+        return (directConversations + groupConversations).firstOrNull { it.id == id }
+    }
+
     /** Open a conversation: show cached, then sync (fetch + decrypt-new) from server. */
     fun openConversation(conv: VConversation) {
         refresh(conv.id)

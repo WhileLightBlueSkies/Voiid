@@ -32,6 +32,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -72,6 +73,16 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore) {
     var openClip by remember { mutableStateOf<VClip?>(null) }
     var showNewClip by remember { mutableStateOf(false) }
     var activeCall by remember { mutableStateOf<CallRequest?>(null) }
+
+    // Notification deep-link: when MainActivity publishes a conversation id, switch to the
+    // Chats tab and open that conversation (resolving/reloading it from the server if needed).
+    val pendingConversationId by com.voiid.app.net.DeepLinkRouter.pendingConversationId.collectAsState()
+    androidx.compose.runtime.LaunchedEffect(pendingConversationId) {
+        val cid = pendingConversationId ?: return@LaunchedEffect
+        val conv = chat.conversationById(cid)
+        if (conv != null) { tab = Tab.CHAT; openConversation = conv }
+        com.voiid.app.net.DeepLinkRouter.consume()
+    }
 
     Box(Modifier.fillMaxSize().background(VoiidColor.background)) {
 

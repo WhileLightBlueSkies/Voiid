@@ -1,5 +1,6 @@
 package com.voiid.app.main
 
+import kotlinx.coroutines.tasks.await
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
@@ -109,6 +110,12 @@ fun ChatsHomeView(
     androidx.compose.runtime.LaunchedEffect(Unit) {
         runCatching { com.voiid.app.net.E2EManager.get(context).bootstrap() }
         chat.loadConversations()
+        // Register this device's FCM push token on login (onNewToken may not fire if a
+        // token already exists, e.g. returning user), so wake pushes reach this device.
+        runCatching {
+            val token = com.google.firebase.messaging.FirebaseMessaging.getInstance().token.await()
+            com.voiid.app.net.E2EManager.get(context).registerPushToken(token)
+        }
     }
     var search by remember { mutableStateOf("") }
     var tab by remember { mutableStateOf(ChatTab.CHATS) }

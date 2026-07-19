@@ -1,5 +1,6 @@
 package com.voiid.app
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -28,6 +29,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.voiid.app.net.ConfigService
+import com.voiid.app.net.DeepLinkRouter
 import com.voiid.app.net.UpdateGate
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
@@ -50,6 +52,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // A notification tap (cold start) delivers the conversation id here.
+        handleDeepLink(intent)
         setContent {
             VoiidTheme {
                 CompositionLocalProvider(LocalVoiidHaptics provides rememberVoiidHaptics()) {
@@ -57,6 +61,17 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    // singleTop: a tap while the app is already running re-delivers here (not a new task).
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleDeepLink(intent)
+    }
+
+    private fun handleDeepLink(intent: Intent?) {
+        intent?.getStringExtra(DeepLinkRouter.EXTRA_CONVERSATION_ID)?.let { DeepLinkRouter.open(it) }
     }
 }
 

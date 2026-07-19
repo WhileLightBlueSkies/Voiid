@@ -67,6 +67,9 @@ dependencies {
     // Firebase Phone Auth (OTP sender/verifier on-device)
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.auth)
+    // Firebase Cloud Messaging — receives the content-free "wake" data push; the
+    // FirebaseMessagingService fetches + decrypts locally and posts the notification.
+    implementation(libs.firebase.messaging)
     implementation(libs.kotlinx.coroutines.play.services)   // Task.await()
 
     // E2E core (Rust via uniffi). The generated Kotlin in uniffi/voiid/voiid.kt
