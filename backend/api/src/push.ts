@@ -33,6 +33,13 @@ export interface PushTarget {
 export interface PushMeta {
   message_id?: string;
   conversation_id?: string;
+  // Call ring routing (Section 4.14): NON-SECRET identifiers only, so a
+  // backgrounded/offline callee wakes and shows the incoming-call UI. No SDP,
+  // no ICE, no SRTP keys, no media — signaling stays on the WS/E2E path.
+  type?: string; // 'wake' (default) | 'call'
+  call_id?: string;
+  call_kind?: string; // 'voice' | 'video'
+  caller_id?: string;
 }
 
 // FCM's maximum (and default) hold time for an undelivered message: 28 days, in
@@ -102,9 +109,13 @@ async function sendFcmWake(tokens: string[], meta?: PushMeta): Promise<void> {
     // it wake a dozing app. The client fetches by the routing ids, decrypts locally, and
     // BUILDS the notification itself. NON-SECRET routing metadata only — NO ciphertext,
     // plaintext, sender name, or body (Section 4.14). FCM `data` values must be strings.
-    const data: Record<string, string> = { type: 'wake' };
+    const data: Record<string, string> = { type: meta?.type ?? 'wake' };
     if (meta?.message_id) data.message_id = meta.message_id;
     if (meta?.conversation_id) data.conversation_id = meta.conversation_id;
+    // Call ring routing (non-secret) — lets the app show the incoming-call UI.
+    if (meta?.call_id) data.call_id = meta.call_id;
+    if (meta?.call_kind) data.call_kind = meta.call_kind;
+    if (meta?.caller_id) data.caller_id = meta.caller_id;
     const resp = await getMessaging(app).sendEachForMulticast({
       tokens,
       data,
@@ -248,15 +259,22 @@ function apnsSendOne(token: string, auth: string, meta?: PushMeta): Promise<void
     // generic alert is a placeholder the NSE replaces. `message_id`/`conversation_id`
     // are NON-SECRET top-level routing customs the NSE (and the app on tap) read — never
     // any ciphertext or message content (Section 4.14).
+    const isCall = meta?.type === 'call';
     const payload: Record<string, unknown> = {
       aps: {
         'mutable-content': 1,
-        alert: { title: 'New message' },
+        // Generic placeholder title (no sender/content); the NSE replaces it.
+        alert: { title: isCall ? 'Incoming call' : 'New message' },
         sound: 'default',
       },
     };
+    if (meta?.type) payload.type = meta.type;
     if (meta?.message_id) payload.message_id = meta.message_id;
     if (meta?.conversation_id) payload.conversation_id = meta.conversation_id;
+    // Call ring routing (non-secret) — the NSE/app show the incoming-call UI.
+    if (meta?.call_id) payload.call_id = meta.call_id;
+    if (meta?.call_kind) payload.call_kind = meta.call_kind;
+    if (meta?.caller_id) payload.caller_id = meta.caller_id;
     req.end(JSON.stringify(payload));
   });
 }

@@ -18,6 +18,7 @@ import mediaRoutes from './routes/media';
 import mlsRoutes from './routes/mls';
 import recoveryRoutes from './routes/recovery';
 import backupRoutes from './routes/backup';
+import callsRoutes from './routes/calls';
 import configRoutes from './routes/config';
 import { forceUpdateGate } from './version';
 
@@ -69,6 +70,9 @@ api.use('/mls', mlsRoutes);
 // recovery_keys.failed_attempts/locked_until lockout.
 api.use('/recovery', rateLimit({ max: 30, windowSeconds: 60, bucket: 'recovery' }), recoveryRoutes);
 api.use('/backup', backupRoutes);
+// Calls: TURN credential issuance + ring push + lean call-history records. Signaling
+// (SDP/ICE) is on the WS relay; media/keys are E2E on-device and never touch here.
+api.use('/calls', callsRoutes);
 
 app.use('/v1', api);
 app.use(api);   // legacy unversioned alias (migration safety) — remove once all clients send /v1

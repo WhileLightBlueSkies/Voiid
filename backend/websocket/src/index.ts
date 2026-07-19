@@ -83,6 +83,49 @@ wss.on('connection', (ws, req) => {
         return;
       }
 
+      // --- Call signaling relay (voice/video) ------------------------------------
+      // WebRTC signaling is a thin, ephemeral relay: the server forwards opaque SDP
+      // and ICE candidates between the two peers and never inspects, stores, or logs
+      // them. Call MEDIA and SRTP keys are E2E on the devices (derived in e2e-core);
+      // the server sees signaling only. Every frame targets a single `to_user_id`
+      // whose devices we reach via their Redis channel — identical fan-out to typing.
+      //
+      // SECURITY: the sender identity is ALWAYS the JWT-authenticated `userId` of
+      // THIS socket, stamped server-side as `from_user_id`. Any client-supplied
+      // `from`/`from_user_id` is ignored — a caller cannot spoof another user.
+      //
+      // NOTE: sdp/candidate can carry host IPs; they are relayed verbatim but MUST
+      // NOT be logged (no info-level logging of these frames anywhere here).
+      if (
+        (msg.type === 'call_offer' ||
+          msg.type === 'call_answer' ||
+          msg.type === 'call_ice' ||
+          msg.type === 'call_hangup' ||
+          msg.type === 'call_busy' ||
+          msg.type === 'call_decline') &&
+        typeof msg.to_user_id === 'string' &&
+        typeof msg.call_id === 'string'
+      ) {
+        // Rebuild the outbound frame from KNOWN fields only (never echo client
+        // extras) and stamp the authenticated sender. Undefined fields are dropped
+        // by JSON.stringify, so e.g. a hangup without `reason` simply omits it.
+        const out = JSON.stringify({
+          type: msg.type,
+          call_id: msg.call_id,
+          from_user_id: userId, // authoritative sender (never client-supplied)
+          conversation_id: msg.conversation_id,
+          call_kind: msg.call_kind, // 'voice' | 'video' (call_offer)
+          sdp: msg.sdp, // opaque; call_offer / call_answer
+          candidate: msg.candidate, // opaque; call_ice (trickle)
+          reason: msg.reason, // optional; call_hangup
+        });
+        // Deliver to the callee's devices (never echo back to the sender).
+        if (msg.to_user_id !== userId) {
+          pub.publish(`channel:user:${msg.to_user_id}`, out);
+        }
+        return;
+      }
+
       // session_reset: a recipient couldn't decrypt our message (stale/mismatched
       // E2E session, e.g. after a reinstall). Relay to the original sender so they
       // drop the stale session and re-establish a fresh one on the next message.
