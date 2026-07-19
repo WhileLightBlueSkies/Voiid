@@ -84,6 +84,20 @@ struct ChatsHomeView: View {
                 await chat.loadConversations()              // load REAL conversations from backend
             }
             .navigationDestination(item: $openConversation) { ChatDetailView(conversation: $0) }
+            .onReceive(NotificationCenter.default.publisher(for: .voiidOpenConversation)) { note in
+                // Deep-link from a tapped message notification: open its conversation,
+                // loading the list first if it isn't in memory yet.
+                guard let convId = note.object as? String else { return }
+                Task { @MainActor in
+                    let present = chat.directConversations.contains { $0.id == convId }
+                        || chat.groupConversations.contains { $0.id == convId }
+                    if !present { await chat.loadConversations() }
+                    if let conv = chat.directConversations.first(where: { $0.id == convId })
+                        ?? chat.groupConversations.first(where: { $0.id == convId }) {
+                        openConversation = conv
+                    }
+                }
+            }
             .sheet(isPresented: $showNewChat) {
                 NewChatView { conv in
                     // Open the freshly-started chat after the sheet dismisses.

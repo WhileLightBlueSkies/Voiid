@@ -134,6 +134,18 @@ final class ChatEngine {
     /// Network failures are swallowed — the message stays pending and is retried
     /// on the next flush (open / sync / reconnect).
     func flushPending(conversationId: String, peerUserId: String) async {
+        // Take the cross-process lock + reload shared state so an outbound send never
+        // races the NSE's inbound decrypt over the same session keychain item.
+        await CrossProcessLock.withLock {
+            reloadSharedState()
+            await flushPendingLocked(conversationId: conversationId, peerUserId: peerUserId)
+        }
+    }
+
+    /// Body of `flushPending`, assuming the caller already holds the cross-process lock
+    /// and has reloaded shared state (called directly from `runSyncLocked`, which is
+    /// itself already under the lock — flock is NOT reentrant, so we must not re-acquire).
+    private func flushPendingLocked(conversationId: String, peerUserId: String) async {
         let pendings = (store[conversationId] ?? []).filter { $0.isMine && $0.pending && $0.media == nil }
         for p in pendings {
             do {
@@ -216,19 +228,24 @@ final class ChatEngine {
         //    references the one shared R2 blob via `key`, so the media key stays E2E.
         let envelope = MediaEnvelope(media: ref, caption: caption)
         let envelopeData = try JSONEncoder().encode(envelope)
-        let messages = try await encryptFanout(envelopeData, peerUserId: peerUserId)
-        // 4. Send the per-device bundle, tagging it as media + the opaque ref for the server.
-        let res: SendResponse = try await api.request(
-            "POST", "messages/send",
-            body: SendBundleBody(conversation_id: conversationId,
-                                 sender_device_id: E2EManager.shared.deviceId,
-                                 messages: messages, content_type: "media",
-                                 media_url: key, media_mime: mime))
-        let echo = DecryptedMessage(id: res.message_id, senderId: TokenStore.shared.userId ?? "me",
-                                    text: caption, createdAt: res.created_at.map(parseDate) ?? Date(),
-                                    isMine: true, media: ref)
-        append(echo, to: conversationId)
-        return echo
+        // Ratchet-mutating section under the cross-process lock (the slow R2 upload
+        // above ran OUTSIDE the lock so we don't stall the NSE on a large upload).
+        return try await CrossProcessLock.withLock {
+            reloadSharedState()
+            let messages = try await encryptFanout(envelopeData, peerUserId: peerUserId)
+            // 4. Send the per-device bundle, tagging it as media + the opaque ref for the server.
+            let res: SendResponse = try await api.request(
+                "POST", "messages/send",
+                body: SendBundleBody(conversation_id: conversationId,
+                                     sender_device_id: E2EManager.shared.deviceId,
+                                     messages: messages, content_type: "media",
+                                     media_url: key, media_mime: mime))
+            let echo = DecryptedMessage(id: res.message_id, senderId: TokenStore.shared.userId ?? "me",
+                                        text: caption, createdAt: res.created_at.map(parseDate) ?? Date(),
+                                        isMine: true, media: ref)
+            append(echo, to: conversationId)
+            return echo
+        }
     }
 
     /// Fetch + decrypt a media blob referenced by a (received) message. Returns the
@@ -247,12 +264,94 @@ final class ChatEngine {
     func sync(conversationId: String, peerUserId: String) async throws -> [DecryptedMessage] {
         await lockSync(conversationId)
         defer { unlockSync(conversationId) }
-        return try await runSyncLocked(conversationId: conversationId, peerUserId: peerUserId)
+        // CROSS-PROCESS single-writer: the NSE decrypts in a separate process. Hold the
+        // app-group lock across the whole fetch→decrypt→persist span and re-read shared
+        // state first, so the app and the NSE can never advance the same ratchet at once.
+        return try await CrossProcessLock.withLock {
+            reloadSharedState()
+            return try await runSyncLocked(conversationId: conversationId, peerUserId: peerUserId)
+        }
+    }
+
+    /// Drop this process's in-memory caches and re-read the authoritative shared state
+    /// (session pickles from the shared keychain, the decrypted-message store from the
+    /// app-group file, the identity to pick up one-time-key consumption). MUST be called
+    /// at the top of every cross-process-locked critical section — otherwise a stale
+    /// cached session/store from before the OTHER process's write would double-decrypt.
+    private func reloadSharedState() {
+        sessions.removeAll()                    // force candidateSessions to re-read keychain
+        loadStore()                             // pick up messages the NSE/app decrypted
+        E2EManager.shared.reloadIdentity()      // pick up one-time-key consumption
+    }
+
+    // MARK: - Notification Service Extension entry point
+
+    /// A decrypted preview for the NSE to display, or nil to fall back to the generic
+    /// "New message" placeholder.
+    struct NotificationPreview { let title: String; let body: String; let threadId: String }
+
+    /// Decrypt an incoming message IN THE EXTENSION and return the preview to display.
+    ///
+    /// This runs the EXACT same cross-process-locked decrypt-once path as the app's
+    /// `sync`, so a message decrypted here is marked seen in the shared store and the
+    /// app will NOT re-decrypt it (and vice-versa) — no ratchet desync. Restores the
+    /// identity from the shared keychain WITHOUT any device registration (that stays the
+    /// app's job). Returns nil on any failure so the NSE shows the safe placeholder.
+    func notificationDecrypt(messageId: String, conversationId: String) async -> NotificationPreview? {
+        guard E2EManager.shared.loadForExtension() else { return nil }
+        guard let myId = TokenStore.shared.userId else { return nil }
+
+        // Resolve members for the sender's display name + the 1:1 peer (whose identity
+        // key/session we decrypt with). Group conversations aren't previewed here.
+        let members = (try? await fetchConversationMembers(conversationId)) ?? []
+        let others = members.filter { $0.user_id != myId }
+        guard others.count == 1, let peerUserId = others.first?.user_id else { return nil }
+
+        await lockSync(conversationId)
+        defer { unlockSync(conversationId) }
+        let decrypted: [DecryptedMessage]
+        do {
+            decrypted = try await CrossProcessLock.withLock {
+                reloadSharedState()
+                // Inbound-only: the NSE must NEVER send, so it skips flushPending.
+                return try await decryptInboundLocked(conversationId: conversationId, peerUserId: peerUserId)
+            }
+        } catch {
+            NSLog("[VOIID] NSE decrypt failed conv=\(conversationId): \(error)")
+            return nil
+        }
+
+        guard let msg = decrypted.first(where: { $0.id == messageId || $0.serverId == messageId }),
+              !msg.isMine, !msg.failed else { return nil }
+        let title = members.first(where: { $0.user_id == msg.senderId })?.full_name ?? "New message"
+        let body: String
+        if msg.media != nil {
+            body = msg.text.isEmpty ? "📎 Media" : "📎 \(msg.text)"
+        } else {
+            body = msg.text.isEmpty ? "New message" : msg.text
+        }
+        return NotificationPreview(title: title, body: body, threadId: conversationId)
+    }
+
+    private struct ConvMember: Decodable { let user_id: String; let full_name: String? }
+    private struct ConvDetailResponse: Decodable { let members: [ConvMember] }
+    private func fetchConversationMembers(_ id: String) async throws -> [ConvMember] {
+        let env: ConvDetailResponse = try await api.request("GET", "conversations/\(id)")
+        return env.members
     }
 
     @discardableResult
     private func runSyncLocked(conversationId: String, peerUserId: String) async throws -> [DecryptedMessage] {
-        await flushPending(conversationId: conversationId, peerUserId: peerUserId)   // push any queued sends first
+        await flushPendingLocked(conversationId: conversationId, peerUserId: peerUserId)   // push any queued sends first (lock already held)
+        return try await decryptInboundLocked(conversationId: conversationId, peerUserId: peerUserId)
+    }
+
+    /// Fetch the conversation, decrypt-once every unseen INBOUND message, persist, and
+    /// return the full conversation. Assumes the cross-process lock is held and shared
+    /// state was reloaded. Shared by the app's `sync` and the NSE's notification decrypt
+    /// (the NSE runs THIS directly — it must never send, so it skips `flushPendingLocked`).
+    @discardableResult
+    private func decryptInboundLocked(conversationId: String, peerUserId: String) async throws -> [DecryptedMessage] {
         lastSyncHadDecryptFailure = false
         // Pass our own device_id so the server hands back only THIS device's per-device
         // ciphertext (each device has its own session, hence its own ciphertext).
@@ -533,13 +632,31 @@ final class ChatEngine {
         store[convId] = arr
     }
 
+    /// The decrypted-message store lives in the APP-GROUP container so the NSE (a
+    /// separate process) reads/appends the SAME store — this is what makes decrypt-once
+    /// work across processes. Falls back to the app-private Application Support dir only
+    /// if the app-group container is somehow unavailable (mis-provisioned build).
     private var storeURL: URL {
+        if let shared = AppGroup.messageStoreURL { return shared }
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("voiid_messages.json")
     }
 
+    /// Legacy app-private store path (pre-app-group). Migrated into the shared
+    /// container once so existing installs keep their history.
+    private var legacyStoreURL: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return dir.appendingPathComponent("voiid_messages.json")
+    }
+
     private func loadStore() {
+        // One-time migration: seed the shared store from the legacy app-private file.
+        if let shared = AppGroup.messageStoreURL,
+           !FileManager.default.fileExists(atPath: shared.path),
+           FileManager.default.fileExists(atPath: legacyStoreURL.path) {
+            try? FileManager.default.copyItem(at: legacyStoreURL, to: shared)
+        }
         guard let data = try? Data(contentsOf: storeURL),
               let decoded = try? JSONDecoder().decode([String: [DecryptedMessage]].self, from: data) else { return }
         store = decoded

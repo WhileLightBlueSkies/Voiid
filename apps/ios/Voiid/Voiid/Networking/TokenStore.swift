@@ -14,7 +14,6 @@ import Security
 final class TokenStore {
     static let shared = TokenStore()
 
-    private let service = "com.voiid.auth"
     private let jwtKey = "jwt"
     private let userIdKey = "user_id"
 
@@ -37,37 +36,14 @@ final class TokenStore {
         delete(userIdKey)
     }
 
-    // MARK: - Keychain primitives
+    // MARK: - Keychain primitives (shared access group so the NSE can read the JWT)
 
-    private func save(_ key: String, _ value: String) {
-        let data = Data(value.utf8)
-        var query = baseQuery(key)
-        SecItemDelete(query as CFDictionary)            // overwrite
-        query[kSecValueData as String] = data
-        // Available after first unlock; survives app restarts, not backed up off-device.
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        SecItemAdd(query as CFDictionary, nil)
-    }
+    /// Backed by the SHARED-access-group keychain store: the Notification Service
+    /// Extension needs the auth JWT to call the API. Legacy app-private items are
+    /// migrated into the shared group on first access (see KeychainData).
+    private let kc = KeychainData(service: "com.voiid.auth")
 
-    private func read(_ key: String) -> String? {
-        var query = baseQuery(key)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var out: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &out) == errSecSuccess,
-              let data = out as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
-
-    private func delete(_ key: String) {
-        SecItemDelete(baseQuery(key) as CFDictionary)
-    }
-
-    private func baseQuery(_ key: String) -> [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: key,
-        ]
-    }
+    private func save(_ key: String, _ value: String) { kc.set(value, key) }
+    private func read(_ key: String) -> String? { kc.string(key) }
+    private func delete(_ key: String) { kc.delete(key) }
 }
