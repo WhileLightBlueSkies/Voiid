@@ -19,6 +19,7 @@ struct ChatsHomeView: View {
     @State private var activeCall: CallRequest?
     @State private var showNewChat = false
     @State private var showNewGroup = false
+    @State private var showBackup = false
     @State private var allContacts: [VContact] = []   // discovered VOIID contacts (for search)
     @Namespace private var underline
 
@@ -84,6 +85,7 @@ struct ChatsHomeView: View {
                 await chat.loadConversations()              // load REAL conversations from backend
             }
             .navigationDestination(item: $openConversation) { ChatDetailView(conversation: $0) }
+            .navigationDestination(isPresented: $showBackup) { BackupRecoveryView() }
             .onReceive(NotificationCenter.default.publisher(for: .voiidOpenConversation)) { note in
                 // Deep-link from a tapped message notification: open its conversation,
                 // loading the list first if it isn't in memory yet.
@@ -183,6 +185,11 @@ struct ChatsHomeView: View {
                     .foregroundColor(VoiidColor.textPrimary)
             }
             Menu {
+                Button {
+                    Haptics.tap(); showBackup = true
+                } label: {
+                    Label("Backup & Recovery", systemImage: "checkmark.shield")
+                }
                 Button(role: .destructive) {
                     Haptics.tap(); session.signOut()
                 } label: {

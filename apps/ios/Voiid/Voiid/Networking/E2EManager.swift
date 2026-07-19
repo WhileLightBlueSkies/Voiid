@@ -35,6 +35,21 @@ final class E2EManager {
     private let deviceIdName = "device_id"
     private let regIdName = "registration_id"
     private let prekeyNextIdName = "prekey_next_id"     // monotonic one-time-key id counter
+    private let masterSecretName = "master_backup_secret"   // 32-byte backup/recovery master secret
+
+    // MARK: - Backup master secret (recovery)
+
+    /// Persist the 32-byte backup master secret in the shared keychain
+    /// (AfterFirstUnlockThisDeviceOnly). A fresh install wipes it — intended, since
+    /// restore re-derives it from the PIN-wrapped copy or the recovery phrase.
+    func saveMasterSecret(_ secret: Data) { kc.setData(secret, masterSecretName) }
+
+    /// The locally-stored backup master secret, or nil if backup was never set up
+    /// (or this is a fresh install before restore).
+    func masterSecret() -> Data? { kc.data(masterSecretName) }
+
+    /// Forget the local backup master secret (does not touch the server copy).
+    func clearMasterSecret() { kc.delete(masterSecretName) }
 
     private static let targetPrekeys = 100   // refill toward this many available
     private static let lowWatermark = 20     // replenish once we drop below this

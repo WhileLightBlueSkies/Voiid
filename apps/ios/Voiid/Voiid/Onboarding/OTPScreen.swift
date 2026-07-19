@@ -23,6 +23,9 @@ struct OTPScreen: View {
     @State private var code = ""
     @State private var verifying = false
     @State private var errorText: String?
+    /// Set when a returning user has a server-side backup — presents the restore
+    /// flow before entering the app. nil = no backup (or not yet checked).
+    @State private var restoreMeta: BackupMeta?
     @FocusState private var keyboardUp: Bool
 
     private let pillHeight: CGFloat = 64
@@ -47,7 +50,20 @@ struct OTPScreen: View {
             // Publish this device's E2E identity + prekeys (needed for encrypted chat).
             try? await E2EManager.shared.bootstrap()
             Haptics.success()
-            if profileComplete { onExistingUser() } else { onContinue() }
+            if profileComplete {
+                // Returning user. If the account has a server-side backup and this
+                // device doesn't already hold the master secret (fresh install wiped
+                // the E2E keychain), offer restore BEFORE entering the app. No backup
+                // (or already restored) → proceed straight through.
+                if !BackupManager.shared.hasLocalSecret,
+                   let meta = try? await BackupService.shared.fetchBackupMeta() {
+                    restoreMeta = meta
+                } else {
+                    onExistingUser()
+                }
+            } else {
+                onContinue()
+            }
         } catch {
             errorText = (error as? APIError)?.errorDescription ?? error.localizedDescription
             Haptics.error()
@@ -133,6 +149,12 @@ struct OTPScreen: View {
             }
         }
         .onAppear { keyboardUp = true }
+        .fullScreenCover(item: $restoreMeta) { meta in
+            RestoreMessagesView(meta: meta) {
+                restoreMeta = nil
+                onExistingUser()
+            }
+        }
     }
 
     private func digit(_ i: Int) -> String {

@@ -119,6 +119,29 @@ final class ChatEngine {
         (store[conversationId] ?? []).sorted { $0.createdAt < $1.createdAt }
     }
 
+    // MARK: - Backup export / import (the plaintext payload of an encrypted backup)
+
+    /// Serialize the entire decrypted-message store for an encrypted backup. The
+    /// bytes are sealed under the backup master secret before they ever leave the
+    /// device (see BackupManager), so the server only sees ciphertext.
+    func exportStore() -> Data {
+        (try? JSONEncoder().encode(store)) ?? Data()
+    }
+
+    /// Merge a restored message store into the current one. Messages are keyed by id
+    /// per conversation; existing entries win (never clobber a locally-decrypted
+    /// message with a restored copy), restored-only messages are appended. Persists.
+    func importStore(_ data: Data) {
+        guard let decoded = try? JSONDecoder().decode([String: [DecryptedMessage]].self, from: data) else { return }
+        for (conv, msgs) in decoded {
+            var arr = store[conv] ?? []
+            let existing = Set(arr.map { $0.id })
+            for m in msgs where !existing.contains(m.id) { arr.append(m) }
+            store[conv] = arr
+        }
+        persist()
+    }
+
     /// Queue a text message for sending. Stores it locally as PENDING immediately
     /// (so it shows instantly + offline + survives restart) WITHOUT touching the
     /// network. Call `flushPending` to actually send. Returns the stored echo.
