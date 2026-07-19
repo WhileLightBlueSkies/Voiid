@@ -12,14 +12,14 @@ import { query } from '../db';
 import { publisher } from '../redis';
 import { requireAuth } from '../auth';
 import { b64, asyncHandler } from '../util';
-import { sendWakePush } from '../push';
+import { sendWakePush, PushMeta } from '../push';
 
 const router = Router();
 
 // Content-free wake push to a set of devices (Section 4.14): the Redis relay only reaches
 // devices holding a live socket; a silent, data-only push nudges the rest to fetch pending +
 // decrypt locally. Fire-and-forget — the HTTP response must NOT wait on push delivery.
-function scheduleWakePush(whereSql: string, params: unknown[]): void {
+function scheduleWakePush(whereSql: string, params: unknown[], meta?: PushMeta): void {
   query<{ push_token: string; push_provider: string }>(
     `select push_token, push_provider from devices
        where ${whereSql} and revoked_at is null
@@ -27,7 +27,7 @@ function scheduleWakePush(whereSql: string, params: unknown[]): void {
     params
   )
     .then((targets) => {
-      if (targets.length) void sendWakePush(targets);
+      if (targets.length) void sendWakePush(targets, meta);
     })
     .catch((e) => console.warn('[push] wake lookup failed:', (e as Error).message));
 }
@@ -112,9 +112,12 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
       }));
     }
 
-    // Wake offline/backgrounded TARGET devices (content-free push).
+    // Wake offline/backgrounded TARGET devices (content-free push + non-secret routing).
     if (deviceIds.length) {
-      scheduleWakePush('id = any($1::uuid[])', [deviceIds]);
+      scheduleWakePush('id = any($1::uuid[])', [deviceIds], {
+        message_id: message.id,
+        conversation_id,
+      });
     }
 
     return res.json({ message_id: message.id, delivered_devices: deviceIds.length });
@@ -156,7 +159,10 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
   // push nudges the rest to fetch pending messages + decrypt locally (no ciphertext or
   // content ever leaves in the push — Section 4.14).
   if (members.length) {
-    scheduleWakePush('user_id = any($1::uuid[])', [members.map((m) => m.user_id)]);
+    scheduleWakePush('user_id = any($1::uuid[])', [members.map((m) => m.user_id)], {
+      message_id: message.id,
+      conversation_id,
+    });
   }
 
   res.json({ message_id: message.id, created_at: message.created_at });
