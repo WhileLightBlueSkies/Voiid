@@ -135,6 +135,35 @@ final class E2EManager {
         if let id = identity { try? persist(id) }
     }
 
+    /// Restore the identity from the SHARED keychain pickle WITHOUT any network I/O.
+    /// Used by the Notification Service Extension: it must never register/replace the
+    /// device (that's the app's job) — it only needs the existing Identity to accept
+    /// inbound sessions and decrypt. Returns false if there's no identity yet (not
+    /// logged in / migration hasn't run) so the NSE can fall back to a placeholder.
+    @discardableResult
+    func loadForExtension() -> Bool {
+        if identity != nil { return true }
+        guard let pickle = kc.string(pickleName) else { return false }
+        do {
+            identity = try Identity.restore(pickle: pickle, pickleKey: pickleKey())
+            return true
+        } catch {
+            NSLog("[VOIID] NSE loadForExtension failed: \(error)")
+            return false
+        }
+    }
+
+    /// Re-restore the identity from the shared keychain pickle so THIS process picks up
+    /// one-time-key consumption performed by the OTHER process (app/NSE). Called under
+    /// the cross-process lock before accepting inbound sessions — without it, both
+    /// processes could consume the same one-time key and desync.
+    func reloadIdentity() {
+        guard let pickle = kc.string(pickleName) else { return }
+        if let restored = try? Identity.restore(pickle: pickle, pickleKey: pickleKey()) {
+            identity = restored
+        }
+    }
+
     /// Stable 32-byte pickle key (created once, kept in Keychain).
     private func pickleKey() -> Data {
         if let existing = kc.data(pickleKeyName), existing.count == 32 { return existing }
@@ -201,13 +230,24 @@ final class E2EManager {
     }
 }
 
-// MARK: - Minimal generic Keychain store (Data + String)
+// MARK: - Minimal generic Keychain store (Data + String), shared across processes
 
+/// Generic-password store scoped to a keychain `service`. All items are placed in
+/// the SHARED keychain access group (`SharedKeychain.group`) so the Notification
+/// Service Extension (a separate process) can read the same identity/session state.
+/// Legacy items written by older builds live in the app-PRIVATE default group and
+/// are copied into the shared group once, lazily, on first access (`migrateIfNeeded`).
 final class KeychainData {
     private let service: String
+    /// Shared access group (`TEAMID.com.voiid.shared`) or nil if unresolved (then we
+    /// fall back to app-private behaviour so a mis-provisioned build still works).
+    private let accessGroup = SharedKeychain.group
+    private var migrated = false
+
     init(service: String) { self.service = service }
 
     func setData(_ value: Data, _ key: String) {
+        migrateIfNeeded()
         var q = base(key); SecItemDelete(q as CFDictionary)
         q[kSecValueData as String] = value
         q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
@@ -216,6 +256,7 @@ final class KeychainData {
     func set(_ value: String, _ key: String) { setData(Data(value.utf8), key) }
 
     func data(_ key: String) -> Data? {
+        migrateIfNeeded()
         var q = base(key); q[kSecReturnData as String] = true; q[kSecMatchLimit as String] = kSecMatchLimitOne
         var out: CFTypeRef?
         guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess else { return nil }
@@ -224,17 +265,65 @@ final class KeychainData {
     func string(_ key: String) -> String? { data(key).flatMap { String(data: $0, encoding: .utf8) } }
     func delete(_ key: String) { SecItemDelete(base(key) as CFDictionary) }
 
-    /// Delete EVERY item in this Keychain service. iOS Keychain survives app
-    /// uninstall, so a reinstall would otherwise reuse a stale identity/sessions —
-    /// call on a detected fresh install to get a truly clean slate.
+    /// Delete EVERY item in this Keychain service — in BOTH the shared access group
+    /// AND the legacy app-private default group. iOS Keychain survives app uninstall,
+    /// so a reinstall would otherwise reuse a stale identity/sessions; call on a
+    /// detected fresh install for a truly clean slate (and suppress the legacy→shared
+    /// migration that would otherwise copy the stale items back in).
     func wipeService() {
+        migrated = true   // nothing to migrate after a wipe
+        // Shared group.
+        if let accessGroup {
+            SecItemDelete([kSecClass as String: kSecClassGenericPassword,
+                           kSecAttrService as String: service,
+                           kSecAttrAccessGroup as String: accessGroup] as CFDictionary)
+        }
+        // Legacy app-private default group (no access group specified).
         SecItemDelete([kSecClass as String: kSecClassGenericPassword,
                        kSecAttrService as String: service] as CFDictionary)
     }
 
     private func base(_ key: String) -> [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: service,
-         kSecAttrAccount as String: key]
+        var q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                kSecAttrService as String: service,
+                                kSecAttrAccount as String: key]
+        if let accessGroup { q[kSecAttrAccessGroup as String] = accessGroup }
+        return q
+    }
+
+    /// One-time copy of this service's app-private items into the shared access group,
+    /// so existing installs keep decrypting after the app-group upgrade. Idempotent:
+    /// items already in the shared group are skipped (errSecDuplicateItem). Legacy
+    /// copies are left in place (app-private, harmless) rather than risk data loss.
+    private func migrateIfNeeded() {
+        guard !migrated, let accessGroup else { migrated = true; return }
+        migrated = true
+        // Enumerate ALL entitled items for this service, with their access group.
+        let q: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+            kSecReturnAttributes as String: true,
+            kSecReturnData as String: true,
+        ]
+        var out: CFTypeRef?
+        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess,
+              let items = out as? [[String: Any]] else { return }
+        for item in items {
+            guard let account = item[kSecAttrAccount as String] as? String,
+                  let data = item[kSecValueData as String] as? Data else { continue }
+            // Skip items already in the shared group.
+            if (item[kSecAttrAccessGroup as String] as? String) == accessGroup { continue }
+            var add: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: account,
+                kSecAttrAccessGroup as String: accessGroup,
+                kSecValueData as String: data,
+                kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            ]
+            let status = SecItemAdd(add as CFDictionary, nil)
+            if status == errSecDuplicateItem { add[kSecValueData as String] = nil }  // already shared
+        }
     }
 }
