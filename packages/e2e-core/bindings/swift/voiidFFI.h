@@ -258,6 +258,11 @@ void uniffi_voiid_e2e_core_fn_free_groupmember(uint64_t handle, RustCallStatus *
 uint64_t uniffi_voiid_e2e_core_fn_constructor_groupmember_create(RustBuffer identity, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_CONSTRUCTOR_GROUPMEMBER_RESTORE
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_CONSTRUCTOR_GROUPMEMBER_RESTORE
+uint64_t uniffi_voiid_e2e_core_fn_constructor_groupmember_restore(RustBuffer blob, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_GROUPMEMBER_CREATE_GROUP
 #define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_GROUPMEMBER_CREATE_GROUP
 uint64_t uniffi_voiid_e2e_core_fn_method_groupmember_create_group(uint64_t ptr, RustCallStatus *_Nonnull out_status
@@ -271,6 +276,16 @@ uint64_t uniffi_voiid_e2e_core_fn_method_groupmember_join_group(uint64_t ptr, Ru
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_GROUPMEMBER_KEY_PACKAGE
 #define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_GROUPMEMBER_KEY_PACKAGE
 RustBuffer uniffi_voiid_e2e_core_fn_method_groupmember_key_package(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_GROUPMEMBER_LOAD_GROUP
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_GROUPMEMBER_LOAD_GROUP
+uint64_t uniffi_voiid_e2e_core_fn_method_groupmember_load_group(uint64_t ptr, RustBuffer group_id, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_GROUPMEMBER_SERIALIZE
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_GROUPMEMBER_SERIALIZE
+RustBuffer uniffi_voiid_e2e_core_fn_method_groupmember_serialize(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_CLONE_GROUPSESSION
@@ -301,6 +316,11 @@ RustBuffer uniffi_voiid_e2e_core_fn_method_groupsession_decrypt(uint64_t ptr, ui
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_GROUPSESSION_ENCRYPT
 #define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_GROUPSESSION_ENCRYPT
 RustBuffer uniffi_voiid_e2e_core_fn_method_groupsession_encrypt(uint64_t ptr, uint64_t member, RustBuffer plaintext, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_GROUPSESSION_GROUP_ID
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_GROUPSESSION_GROUP_ID
+RustBuffer uniffi_voiid_e2e_core_fn_method_groupsession_group_id(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_GROUPSESSION_MEMBER_COUNT
@@ -827,6 +847,18 @@ uint16_t uniffi_voiid_e2e_core_checksum_method_groupmember_key_package(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_GROUPMEMBER_LOAD_GROUP
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_GROUPMEMBER_LOAD_GROUP
+uint16_t uniffi_voiid_e2e_core_checksum_method_groupmember_load_group(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_GROUPMEMBER_SERIALIZE
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_GROUPMEMBER_SERIALIZE
+uint16_t uniffi_voiid_e2e_core_checksum_method_groupmember_serialize(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_GROUPSESSION_ADD_MEMBER
 #define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_GROUPSESSION_ADD_MEMBER
 uint16_t uniffi_voiid_e2e_core_checksum_method_groupsession_add_member(void
@@ -848,6 +880,12 @@ uint16_t uniffi_voiid_e2e_core_checksum_method_groupsession_decrypt(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_GROUPSESSION_ENCRYPT
 #define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_GROUPSESSION_ENCRYPT
 uint16_t uniffi_voiid_e2e_core_checksum_method_groupsession_encrypt(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_GROUPSESSION_GROUP_ID
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_GROUPSESSION_GROUP_ID
+uint16_t uniffi_voiid_e2e_core_checksum_method_groupsession_group_id(void
     
 );
 #endif
@@ -932,6 +970,12 @@ uint16_t uniffi_voiid_e2e_core_checksum_method_session_to_pickle(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_CONSTRUCTOR_GROUPMEMBER_CREATE
 #define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_CONSTRUCTOR_GROUPMEMBER_CREATE
 uint16_t uniffi_voiid_e2e_core_checksum_constructor_groupmember_create(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_CONSTRUCTOR_GROUPMEMBER_RESTORE
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_CONSTRUCTOR_GROUPMEMBER_RESTORE
+uint16_t uniffi_voiid_e2e_core_checksum_constructor_groupmember_restore(void
     
 );
 #endif

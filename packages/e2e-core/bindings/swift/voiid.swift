@@ -546,6 +546,21 @@ public protocol GroupMemberProtocol: AnyObject, Sendable {
      */
     func keyPackage() throws  -> Data
     
+    /**
+     * Re-open a group this member belongs to, by its `group_id`, after restoring.
+     */
+    func loadGroup(groupId: Data) throws  -> GroupSession
+    
+    /**
+     * Serialize this member and ALL its MLS state (signer + KeyPackage privates +
+     * every group it belongs to) to an opaque blob. Persist it encrypted
+     * on-device and restore it on the next launch with `restore`. MLS state is
+     * in-memory only, so WITHOUT persisting this, groups are lost on app restart.
+     * Re-serialize after every state-changing call (create/join/add/remove/
+     * encrypt/decrypt).
+     */
+    func serialize() throws  -> Data
+    
 }
 /**
  * A device's MLS identity for groups (Phase 3).
@@ -609,6 +624,17 @@ public static func create(identity: Data)throws  -> GroupMember  {
 })
 }
     
+    /**
+     * Reconstruct a member (and its full MLS storage) from a `serialize` blob.
+     */
+public static func restore(blob: Data)throws  -> GroupMember  {
+    return try  FfiConverterTypeGroupMember_lift(try rustCallWithError(FfiConverterTypeE2eFfiError_lift) {
+    uniffi_voiid_e2e_core_fn_constructor_groupmember_restore(
+        FfiConverterData.lower(blob),$0
+    )
+})
+}
+    
 
     
     /**
@@ -641,6 +667,34 @@ open func joinGroup(welcome: Data, ratchetTree: Data)throws  -> GroupSession  {
 open func keyPackage()throws  -> Data  {
     return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeE2eFfiError_lift) {
     uniffi_voiid_e2e_core_fn_method_groupmember_key_package(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * Re-open a group this member belongs to, by its `group_id`, after restoring.
+     */
+open func loadGroup(groupId: Data)throws  -> GroupSession  {
+    return try  FfiConverterTypeGroupSession_lift(try rustCallWithError(FfiConverterTypeE2eFfiError_lift) {
+    uniffi_voiid_e2e_core_fn_method_groupmember_load_group(
+            self.uniffiCloneHandle(),
+        FfiConverterData.lower(groupId),$0
+    )
+})
+}
+    
+    /**
+     * Serialize this member and ALL its MLS state (signer + KeyPackage privates +
+     * every group it belongs to) to an opaque blob. Persist it encrypted
+     * on-device and restore it on the next launch with `restore`. MLS state is
+     * in-memory only, so WITHOUT persisting this, groups are lost on app restart.
+     * Re-serialize after every state-changing call (create/join/add/remove/
+     * encrypt/decrypt).
+     */
+open func serialize()throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeE2eFfiError_lift) {
+    uniffi_voiid_e2e_core_fn_method_groupmember_serialize(
             self.uniffiCloneHandle(),$0
     )
 })
@@ -719,6 +773,12 @@ public protocol GroupSessionProtocol: AnyObject, Sendable {
     func decrypt(member: GroupMember, message: Data) throws  -> Data?
     
     func encrypt(member: GroupMember, plaintext: Data) throws  -> Data
+    
+    /**
+     * This group's stable id — persist it and pass it to `GroupMember.load_group`
+     * after a restart to re-open this exact group.
+     */
+    func groupId()  -> Data
     
     /**
      * Current member count from our view of the group state.
@@ -835,6 +895,18 @@ open func encrypt(member: GroupMember, plaintext: Data)throws  -> Data  {
             self.uniffiCloneHandle(),
         FfiConverterTypeGroupMember_lower(member),
         FfiConverterData.lower(plaintext),$0
+    )
+})
+}
+    
+    /**
+     * This group's stable id — persist it and pass it to `GroupMember.load_group`
+     * after a restart to re-open this exact group.
+     */
+open func groupId() -> Data  {
+    return try!  FfiConverterData.lift(try! rustCall() {
+    uniffi_voiid_e2e_core_fn_method_groupsession_group_id(
+            self.uniffiCloneHandle(),$0
     )
 })
 }
@@ -2231,6 +2303,12 @@ private let initializationResult: InitializationResult = {
     if (uniffi_voiid_e2e_core_checksum_method_groupmember_key_package() != 50506) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_voiid_e2e_core_checksum_method_groupmember_load_group() != 52683) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_voiid_e2e_core_checksum_method_groupmember_serialize() != 24992) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_voiid_e2e_core_checksum_method_groupsession_add_member() != 4832) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -2241,6 +2319,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_voiid_e2e_core_checksum_method_groupsession_encrypt() != 61784) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_voiid_e2e_core_checksum_method_groupsession_group_id() != 25873) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_voiid_e2e_core_checksum_method_groupsession_member_count() != 21166) {
@@ -2283,6 +2364,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_voiid_e2e_core_checksum_constructor_groupmember_create() != 17051) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_voiid_e2e_core_checksum_constructor_groupmember_restore() != 38950) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_voiid_e2e_core_checksum_constructor_identity_create() != 24981) {
