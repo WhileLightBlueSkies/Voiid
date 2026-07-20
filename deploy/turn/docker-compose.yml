@@ -1,0 +1,31 @@
+# VOIID TURN relay — container alternative to voiid-turn.service.
+#
+# Prefer the systemd unit on bare metal. Use this only if the host is already
+# container-managed.
+#
+# CRITICAL: network_mode "host" is mandatory. A TURN relay allocates thousands of
+# UDP ports (49152-65535) and must see real client source addresses; publishing
+# that range through Docker's userland proxy exhausts memory and rewrites the
+# addresses TURN depends on, breaking relayed media.
+
+services:
+  turn:
+    image: coturn/coturn:4.6
+    container_name: voiid-turn
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - turn-logs:/var/log/turnserver
+    command: ["-c", "/etc/coturn/turnserver.conf"]
+    # Needed to bind :443 and :3478 after dropping to the turnserver user.
+    cap_add:
+      - NET_BIND_SERVICE
+    ulimits:
+      nofile:
+        soft: 999999
+        hard: 999999
+
+volumes:
+  turn-logs:

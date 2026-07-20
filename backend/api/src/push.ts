@@ -24,6 +24,11 @@ export interface PushTarget {
   push_provider: string; // 'apns' | 'fcm'
 }
 
+/** An iOS device's PushKit token (distinct from its APNs alert token). */
+export interface VoipTarget {
+  voip_token: string;
+}
+
 /**
  * NON-SECRET routing metadata carried alongside the wake signal (Section 4.14).
  * These are opaque identifiers only — they let the client fetch the right
@@ -82,6 +87,15 @@ export async function sendWakePush(devices: PushTarget[], meta?: PushMeta): Prom
   } catch (e) {
     // Belt-and-suspenders: this function must never throw into the caller.
     console.warn('[push] sendWakePush failed:', (e as Error).message);
+  }
+}
+
+/** Null out a device's VoIP (PushKit) token so we stop pushing to a dead endpoint. */
+async function clearDeadVoipToken(token: string): Promise<void> {
+  try {
+    await query(`update devices set voip_token = null where voip_token = $1`, [token]);
+  } catch (e) {
+    console.warn('[push] clearDeadVoipToken failed:', (e as Error).message);
   }
 }
 
@@ -274,6 +288,151 @@ function apnsSendOne(token: string, auth: string, meta?: PushMeta): Promise<void
     // Call ring routing (non-secret) — the NSE/app show the incoming-call UI.
     if (meta?.call_id) payload.call_id = meta.call_id;
     if (meta?.call_kind) payload.call_kind = meta.call_kind;
+    if (meta?.caller_id) payload.caller_id = meta.caller_id;
+    req.end(JSON.stringify(payload));
+  });
+}
+
+// --- APNs VoIP / PushKit (iOS) — CALL RINGING ONLY ---------------------------------
+//
+// WHY a second push path exists (Section 4.14, calls):
+//   A normal alert push (sendWakePush above) is fine for messages but CANNOT reliably
+//   ring a call. If the iOS app is killed or has been backgrounded a while, an alert
+//   push only draws a banner — the process is not resumed in time to set up WebRTC,
+//   and iOS will not let a non-foreground app start audio. A VoIP push (PushKit) is
+//   the only mechanism that resumes a TERMINATED app immediately and lets it report
+//   the incoming call to CallKit. iOS *requires* that report: receiving a VoIP push
+//   and failing to call `CXProvider.reportNewIncomingCall` kills the app.
+//
+// It differs from the alert path in three ways that all matter:
+//   1. `apns-push-type: voip` (not `alert`)
+//   2. topic = `<bundle-id>.voip` — a DIFFERENT topic from the app's bundle id
+//   3. a DIFFERENT device token (PushKit token != APNs token) and, usually, a
+//      different APNs signing key.
+//
+// PRIVACY: payload is content-free — opaque routing ids only. No SDP, no ICE, no
+// SRTP keys, no caller name, no message content. Identical guarantee to the wake push.
+
+// VoIP-specific APNs credentials. Each falls back to the normal APNs credential when
+// unset, so a deployment that reuses one key/team across both topics only needs to set
+// VOIID_APNS_VOIP_TOPIC (or nothing at all — the topic defaults to `<bundle>.voip`).
+const VOIP_KEY_ID = process.env.VOIID_APNS_VOIP_KEY_ID ?? APNS_KEY_ID;
+const VOIP_TEAM_ID = process.env.VOIID_APNS_VOIP_TEAM_ID ?? APNS_TEAM_ID;
+const VOIP_KEY_PATH = process.env.VOIID_APNS_VOIP_KEY_PATH ?? APNS_KEY_PATH;
+const VOIP_KEY_P8 = process.env.VOIID_APNS_VOIP_P8 ?? APNS_KEY_P8;
+// The VoIP topic is the bundle id with a `.voip` suffix — NOT the plain bundle id.
+// Sending a voip push to the plain topic is rejected by APNs (TopicDisallowed).
+const VOIP_TOPIC =
+  process.env.VOIID_APNS_VOIP_TOPIC ?? (APNS_BUNDLE_ID ? `${APNS_BUNDLE_ID}.voip` : undefined);
+
+export function voipConfigured(): boolean {
+  return !!((VOIP_KEY_P8 || VOIP_KEY_PATH) && VOIP_KEY_ID && VOIP_TEAM_ID && VOIP_TOPIC);
+}
+
+// Separate provider-JWT cache: the VoIP key may be a different .p8 with a different
+// key id, so its bearer token cannot be shared with the alert path.
+let cachedVoipAuth: { token: string; iat: number } | null = null;
+function voipAuthToken(): string {
+  const now = Math.floor(Date.now() / 1000);
+  if (cachedVoipAuth && now - cachedVoipAuth.iat < 40 * 60) return cachedVoipAuth.token;
+  const key = VOIP_KEY_P8 ?? readFileSync(VOIP_KEY_PATH as string, 'utf8');
+  const token = jwt.sign({ iss: VOIP_TEAM_ID }, key, { algorithm: 'ES256', keyid: VOIP_KEY_ID });
+  cachedVoipAuth = { token, iat: now };
+  return token;
+}
+
+/**
+ * Ring iOS devices via PushKit. Fire-and-forget; never rejects.
+ *
+ * `meta` carries ONLY non-secret routing ids. Returns the number of tokens attempted
+ * so the caller can fall back to the alert path when nothing was VoIP-deliverable.
+ */
+export async function sendVoipPush(tokens: string[], meta?: PushMeta): Promise<number> {
+  try {
+    const list = tokens.filter(Boolean);
+    if (!list.length) return 0;
+    if (!voipConfigured()) {
+      console.warn('[push] APNs VoIP not configured; skipping VoIP ring');
+      return 0;
+    }
+    let auth: string;
+    try {
+      auth = voipAuthToken();
+    } catch (e) {
+      console.warn('[push] voip auth token failed:', (e as Error).message);
+      return 0;
+    }
+    await Promise.allSettled(list.map((t) => voipSendOne(t, auth, meta)));
+    return list.length;
+  } catch (e) {
+    console.warn('[push] sendVoipPush failed:', (e as Error).message);
+    return 0;
+  }
+}
+
+/** Send one VoIP push; resolves regardless of outcome (never rejects). */
+function voipSendOne(token: string, auth: string, meta?: PushMeta): Promise<void> {
+  return new Promise((resolve) => {
+    // A ring is only meaningful while the caller is still waiting. Unlike the 28-day
+    // message wake, expire this in ~30s so a device that comes back online tomorrow
+    // is NOT resumed to ring a long-dead call (which would crash it against CallKit).
+    const expiration = Math.floor(Date.now() / 1000) + 30;
+    let req: http2.ClientHttp2Stream;
+    try {
+      // Same APNs host as the alert path, so the HTTP/2 session is shared — APNs
+      // multiplexes topics over one connection; the topic is a per-request header.
+      const session = getApnsSession();
+      req = session.request({
+        ':method': 'POST',
+        ':path': `/3/device/${token}`,
+        authorization: `bearer ${auth}`,
+        'apns-topic': VOIP_TOPIC as string, // `<bundle-id>.voip`
+        'apns-push-type': 'voip',
+        'apns-priority': '10', // immediate; VoIP pushes are never throttled
+        'apns-expiration': String(expiration),
+      });
+    } catch (e) {
+      console.warn('[push] voip request setup failed:', (e as Error).message);
+      return resolve();
+    }
+
+    let status = 0;
+    let body = '';
+    req.on('response', (headers) => {
+      status = Number(headers[':status']) || 0;
+    });
+    req.setEncoding('utf8');
+    req.on('data', (chunk) => {
+      body += chunk;
+    });
+    req.on('error', (e) => {
+      console.warn('[push] voip request error:', (e as Error).message);
+      resolve();
+    });
+    req.on('end', () => {
+      if (status === 200) return resolve();
+      let reason = '';
+      try {
+        reason = JSON.parse(body)?.reason ?? '';
+      } catch {
+        /* non-JSON error body */
+      }
+      if (status === 410 || reason === 'Unregistered' || reason === 'BadDeviceToken') {
+        console.warn(`[push] voip dead token (${status} ${reason}); clearing`);
+        void clearDeadVoipToken(token);
+      } else {
+        console.warn(`[push] voip send failed (${status} ${reason})`);
+      }
+      resolve();
+    });
+
+    // CONTENT-FREE VoIP payload. No `aps.alert` — PushKit hands this dictionary
+    // straight to the app, which builds the CallKit UI itself from the routing ids.
+    // NON-SECRET identifiers only (Section 4.14).
+    const payload: Record<string, unknown> = { aps: {}, type: 'call' };
+    if (meta?.call_id) payload.call_id = meta.call_id;
+    if (meta?.call_kind) payload.call_kind = meta.call_kind;
+    if (meta?.conversation_id) payload.conversation_id = meta.conversation_id;
     if (meta?.caller_id) payload.caller_id = meta.caller_id;
     req.end(JSON.stringify(payload));
   });

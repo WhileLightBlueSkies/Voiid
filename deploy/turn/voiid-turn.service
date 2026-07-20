@@ -1,0 +1,59 @@
+# VOIID TURN relay (coturn) — systemd unit
+#
+# Install:
+#   sudo cp deploy/turn/voiid-turn.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now voiid-turn
+#
+# If the distro's stock `coturn.service` is installed, DISABLE it first or the two
+# units fight over ports 3478/5349/443:
+#   sudo systemctl disable --now coturn
+#
+# See docs/TURN_SETUP.md for the full walkthrough.
+
+[Unit]
+Description=VOIID TURN relay (coturn)
+Documentation=https://github.com/coturn/coturn
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# -c: config file. -o would daemonize; systemd wants it in the foreground.
+ExecStart=/usr/bin/turnserver -c /etc/turnserver.conf --no-stdout-log
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+
+# Binding :443 and :3478 requires a privileged port, but the process should not
+# KEEP root. Start as root, grab the capability, then coturn's proc-user/proc-group
+# (set in turnserver.conf) drops privileges to the turnserver account.
+User=root
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Each relayed session consumes file descriptors; the default 1024 caps you at a
+# few hundred concurrent calls and fails opaquely once exhausted.
+LimitNOFILE=999999
+
+# --- Sandboxing ----------------------------------------------------------------
+# A TURN relay is internet-facing and speaks an attacker-influenced protocol, so
+# constrain what a compromise can reach.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+# ProtectSystem=strict makes /etc and /var read-only; the log dir must be writable.
+ReadWritePaths=/var/log/turnserver
+# Certificates are read-only.
+ReadOnlyPaths=/etc/letsencrypt
+
+[Install]
+WantedBy=multi-user.target

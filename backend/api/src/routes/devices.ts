@@ -46,6 +46,40 @@ router.post('/register', requireAuth, asyncHandler(async (req, res) => {
   res.json({ device_id: deviceId });
 }));
 
+// POST /devices/voip-token  { device_id, voip_token }
+//
+// iOS PushKit registration. The PushKit token is a DIFFERENT value from the APNs
+// alert token registered above (`push_token`): iOS mints it from PKPushRegistry and
+// it is addressed on the `<bundle-id>.voip` topic. Only a VoIP push can resume a
+// killed app fast enough to ring via CallKit, so calls prefer this token on iOS.
+//
+// Registered separately (rather than at /register) because PushKit hands the token
+// to the app asynchronously, often well after device registration has completed.
+// Passing `voip_token: null` unregisters — used on logout / CallKit teardown.
+router.post('/voip-token', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id } = (req as any).auth;
+  const { device_id, voip_token } = req.body ?? {};
+
+  if (typeof device_id !== 'string' || !device_id) {
+    return res.status(400).json({ error: 'device_id required' });
+  }
+  if (voip_token != null && (typeof voip_token !== 'string' || !voip_token.trim())) {
+    return res.status(400).json({ error: 'voip_token must be a non-empty string or null' });
+  }
+
+  // Scope the write to the CALLER's own devices: a token bound to someone else's
+  // device row would redirect their call rings to an attacker-controlled handset.
+  const rows = await query<{ id: string }>(
+    `update devices set voip_token = $3, updated_at = now()
+       where id = $1 and user_id = $2 and revoked_at is null
+       returning id`,
+    [device_id, user_id, voip_token ?? null]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'device not found' });
+
+  res.json({ device_id: rows[0].id, voip_registered: voip_token != null });
+}));
+
 // GET /devices/:user_id — active devices (public info only).
 // identity_public_key (base64) is PUBLIC and required by peers to acceptSession
 // on an inbound PreKey message — without it the receive path can't decrypt.
