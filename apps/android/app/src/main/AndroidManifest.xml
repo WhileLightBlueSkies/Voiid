@@ -24,6 +24,11 @@
          call alive (mic + camera) and the full-screen incoming-call notification. -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <!-- API 31+: routing call audio to a Bluetooth headset via
+         AudioManager.setCommunicationDevice() requires BLUETOOTH_CONNECT. Without it,
+         connecting a headset mid-call silently fails to move the audio route. This is a
+         runtime permission — request it before/at call start where relevant. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
@@ -45,7 +50,8 @@
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
-            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"
+            android:supportsPictureInPicture="true"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|keyboardHidden|keyboard|navigation|uiMode|density"
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.Voiid">
             <intent-filter>

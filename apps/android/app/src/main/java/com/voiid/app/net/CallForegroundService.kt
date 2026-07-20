@@ -37,18 +37,54 @@ class CallForegroundService : Service() {
         val title = intent?.getStringExtra(EXTRA_TITLE) ?: "VOIID call"
         ensureOngoingChannel(this)
         val notif = ongoingNotification(this, title)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+
+        // Android 14 tightened microphone/camera FGS: the type is rejected outright if the
+        // matching runtime permission isn't held, and the whole start is rejected if the app
+        // isn't in an allowed state. Degrade step by step rather than crashing a live call.
+        val started = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-            if (video && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (video && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && hasCameraPermission()) {
                 type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
             }
             runCatching { startForeground(ONGOING_ID, notif, type) }
-                .onFailure { startForeground(ONGOING_ID, notif) }
+                .recoverCatching { startForeground(ONGOING_ID, notif) }
+                .isSuccess
         } else {
-            startForeground(ONGOING_ID, notif)
+            runCatching { startForeground(ONGOING_ID, notif) }.isSuccess
+        }
+
+        // `running` gates whether CallManager may keep the camera capturing in the background:
+        // without a live camera-type FGS, Android will hand us black frames.
+        running = started
+        if (!started) {
+            runCatching { stopSelf() }
+            return START_NOT_STICKY
         }
         return START_NOT_STICKY
     }
+
+    /**
+     * The user swiped VOIID out of Recents mid-call. Tear the call down properly and notify
+     * the peer, otherwise they're left staring at a zombie call that never rings off.
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        runCatching { CallManager.hangupFromSystem() }
+        running = false
+        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+        runCatching { stopSelf() }
+        super.onTaskRemoved(rootIntent)
+    }
+
+    override fun onDestroy() {
+        running = false
+        super.onDestroy()
+    }
+
+    private fun hasCameraPermission(): Boolean =
+        androidx.core.content.ContextCompat.checkSelfPermission(
+            this,
+            android.Manifest.permission.CAMERA,
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
 
     companion object {
         private const val ONGOING_CHANNEL = "voiid_call_ongoing"
@@ -60,6 +96,19 @@ class CallForegroundService : Service() {
 
         const val ACTION_ACCEPT = "com.voiid.app.CALL_ACCEPT"
         const val ACTION_DECLINE = "com.voiid.app.CALL_DECLINE"
+        /** Fired by the PiP window's mute RemoteAction. */
+        const val ACTION_TOGGLE_MUTE = "com.voiid.app.CALL_TOGGLE_MUTE"
+        /** Fired by the PiP window's hang-up RemoteAction. */
+        const val ACTION_HANGUP = "com.voiid.app.CALL_HANGUP"
+
+        /**
+         * True while the foreground service is actually holding its mic/camera FGS types.
+         * If a start was rejected (Android 14 background-start rules, revoked permission),
+         * this stays false and the engine stops trusting background camera capture.
+         */
+        @Volatile
+        var running: Boolean = false
+            private set
 
         /** Promote the ongoing call to a foreground service. */
         fun start(context: Context, state: CallManager.CallState) {
@@ -67,13 +116,19 @@ class CallForegroundService : Service() {
                 putExtra(EXTRA_VIDEO, state.kind == CallKind.VIDEO)
                 putExtra(EXTRA_TITLE, state.peerName)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(i)
-            else context.startService(i)
+            // On Android 12+ a background FGS start throws ForegroundServiceStartNotAllowed.
+            // Incoming calls arrive on a high-priority FCM message, which grants a temporary
+            // allowlist window, but that window can expire — never let it crash the call.
+            runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(i)
+                else context.startService(i)
+            }
         }
 
         fun stop(context: Context) {
+            running = false
             runCatching { NotificationManagerCompat.from(context).cancel(INCOMING_ID) }
-            context.stopService(Intent(context, CallForegroundService::class.java))
+            runCatching { context.stopService(Intent(context, CallForegroundService::class.java)) }
         }
 
         /** Post the full-screen incoming-call notification (rings over the lockscreen). */
@@ -185,6 +240,9 @@ class CallActionReceiver : BroadcastReceiver() {
                 CallForegroundService.cancelIncoming(context)
                 CallManager.decline()
             }
+            // From the PiP window's RemoteActions — the only controls that fit there.
+            CallForegroundService.ACTION_TOGGLE_MUTE -> CallManager.toggleMute()
+            CallForegroundService.ACTION_HANGUP -> CallManager.hangup()
         }
     }
 }

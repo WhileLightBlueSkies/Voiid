@@ -33,6 +33,7 @@ import com.voiid.app.net.DeepLinkRouter
 import com.voiid.app.net.UpdateGate
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
+import com.voiid.app.main.CallPipController
 import com.voiid.app.main.MainScreen
 import com.voiid.app.model.AIStore
 import com.voiid.app.model.AppRoute
@@ -49,10 +50,18 @@ import com.voiid.app.ui.theme.VoiidTheme
  * routes between the onboarding flow and the main tab app, owning the shared stores.
  */
 class MainActivity : ComponentActivity() {
+
+    /** Owns Picture-in-Picture for connected video calls (see [CallPipController]). */
+    private lateinit var pip: CallPipController
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         requestCallPermissions()
+        pip = CallPipController(this).also {
+            it.onRestoreInstanceState(savedInstanceState)
+            it.attach(this)
+        }
         // A notification tap (cold start) delivers the conversation id here.
         handleDeepLink(intent)
         setContent {
@@ -71,6 +80,39 @@ class MainActivity : ComponentActivity() {
         handleDeepLink(intent)
     }
 
+    /**
+     * The user is leaving the app (Home / Recents). On a connected video call this is where
+     * PiP is entered on Android 11 and below; on 12+ `setAutoEnterEnabled(true)` normally
+     * beats us to it and this becomes a harmless no-op.
+     */
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (::pip.isInitialized) pip.onUserLeaveHint()
+    }
+
+    // PiP mode changes are observed through AndroidX's
+    // `addOnPictureInPictureModeChangedListener` inside CallPipController, which plays better
+    // with Compose than overriding onPictureInPictureModeChanged here.
+
+    /** Keep the PiP aspect ratio stable if the activity is recreated while in PiP. */
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        if (::pip.isInitialized) pip.onSaveInstanceState(outState)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        com.voiid.app.net.CallManager.onHostForeground()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // In PiP the activity is still "visible" and must keep capturing; only a true
+        // background transition may pause the camera.
+        val inPip = ::pip.isInitialized && pip.isInPipNow()
+        if (!inPip) com.voiid.app.net.CallManager.onHostBackground()
+    }
+
     private fun handleDeepLink(intent: Intent?) {
         intent?.getStringExtra(DeepLinkRouter.EXTRA_CONVERSATION_ID)?.let { DeepLinkRouter.open(it) }
     }
@@ -83,6 +125,12 @@ class MainActivity : ComponentActivity() {
         )
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
             perms.add(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            // API 31+: AudioManager.setCommunicationDevice() needs BLUETOOTH_CONNECT to move
+            // call audio onto a Bluetooth headset. Without it, a headset connected mid-call is
+            // silently ignored and audio stays on the earpiece/speaker.
+            perms.add(android.Manifest.permission.BLUETOOTH_CONNECT)
         }
         val missing = perms.filter {
             androidx.core.content.ContextCompat.checkSelfPermission(this, it) !=

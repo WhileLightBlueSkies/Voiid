@@ -30,6 +30,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -41,6 +42,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -200,7 +203,6 @@ private fun IncomingCallUi(state: CallManager.CallState) {
 private fun InCallUi(state: CallManager.CallState) {
     val haptics = LocalVoiidHaptics.current
     val isVideo = state.kind == CallKind.VIDEO
-    val connected = state.phase == CallManager.Phase.CONNECTED
 
     // Live timer derived from the real connection time.
     var seconds by remember { mutableIntStateOf(0) }
@@ -231,15 +233,20 @@ private fun InCallUi(state: CallManager.CallState) {
         Modifier.background(VoiidColor.background)
     }
 
-    Box(Modifier.fillMaxSize().then(bgModifier)) {
+    // A PiP window is a few hundred pixels wide: every piece of chrome must go, leaving only
+    // full-bleed remote video. Mute/hang-up remain reachable as PiP RemoteActions.
+    val inPip by rememberIsInPipMode()
 
-        // Remote video fills the screen once frames arrive.
-        if (isVideo && state.hasRemoteVideo && connected) {
-            AndroidView(
-                factory = { ctx -> makeRenderer(ctx, mirror = false).also { CallManager.setRemoteRenderer(it) } },
-                modifier = Modifier.fillMaxSize(),
-            )
+    Box(Modifier.fillMaxSize().then(if (inPip) Modifier.background(Color.Black) else bgModifier)) {
+
+        // Remote video fills the screen once frames arrive. Deliberately kept in the
+        // composition whenever we're in PiP even if `hasRemoteVideo` briefly flaps — tearing
+        // the renderer out mid-PiP would leave an empty black window.
+        if (isVideo && (state.hasRemoteVideo || inPip)) {
+            RemoteVideoSurface(Modifier.fillMaxSize())
         }
+
+        if (inPip) return@Box
 
         Column(Modifier.fillMaxSize().statusBarsPadding(), horizontalAlignment = Alignment.CenterHorizontally) {
             Spacer(Modifier.height(48.dp))
@@ -261,6 +268,47 @@ private fun InCallUi(state: CallManager.CallState) {
             )
             Spacer(Modifier.height(48.dp))
         }
+    }
+}
+
+/**
+ * The remote-video surface. Beyond rendering it feeds PiP two things:
+ * - its window bounds, used as `setSourceRectHint` so the enter-PiP animation is seamless;
+ * - the decoded frame size, so the PiP window tracks the real video aspect ratio live.
+ */
+@Composable
+private fun RemoteVideoSurface(modifier: Modifier) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val renderer = remember {
+        makeRenderer(context, mirror = false, events = RemoteFrameEvents)
+    }
+    DisposableEffect(renderer) {
+        CallManager.setRemoteRenderer(renderer)
+        onDispose {
+            CallPipState.setRemoteVideoBounds(null)
+            CallManager.detachRenderer(renderer, remote = true)
+        }
+    }
+    AndroidView(
+        factory = { renderer },
+        modifier = modifier.onGloballyPositioned { coords ->
+            val b = coords.boundsInWindow()
+            if (b.width > 0f && b.height > 0f) {
+                CallPipState.setRemoteVideoBounds(
+                    android.graphics.Rect(
+                        b.left.toInt(), b.top.toInt(), b.right.toInt(), b.bottom.toInt(),
+                    ),
+                )
+            }
+        },
+    )
+}
+
+/** Publishes remote frame geometry so PiP can match the real video aspect. */
+private object RemoteFrameEvents : RendererCommon.RendererEvents {
+    override fun onFirstFrameRendered() {}
+    override fun onFrameResolutionChanged(videoWidth: Int, videoHeight: Int, rotation: Int) {
+        CallPipState.setRemoteVideoSize(videoWidth, videoHeight, rotation)
     }
 }
 
@@ -287,10 +335,7 @@ private fun VideoCenter(state: CallManager.CallState) {
             contentAlignment = Alignment.Center,
         ) {
             if (state.videoEnabled) {
-                AndroidView(
-                    factory = { ctx -> makeRenderer(ctx, mirror = true).also { CallManager.setLocalRenderer(it) } },
-                    modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(VoiidRadius.lg)),
-                )
+                LocalVideoSurface(Modifier.fillMaxSize().clip(RoundedCornerShape(VoiidRadius.lg)))
             } else {
                 Icon(Icons.Default.VideocamOff, null, tint = Color.White.copy(alpha = 0.8f), modifier = Modifier.size(30.dp))
             }
@@ -298,10 +343,26 @@ private fun VideoCenter(state: CallManager.CallState) {
     }
 }
 
+/** Self-preview surface; detached + released when the call UI leaves the composition. */
+@Composable
+private fun LocalVideoSurface(modifier: Modifier) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val renderer = remember { makeRenderer(context, mirror = true) }
+    DisposableEffect(renderer) {
+        CallManager.setLocalRenderer(renderer)
+        onDispose { CallManager.detachRenderer(renderer, remote = false) }
+    }
+    AndroidView(factory = { renderer }, modifier = modifier)
+}
+
 /** Build + init a SurfaceViewRenderer bound to the shared EGL context. */
-private fun makeRenderer(context: android.content.Context, mirror: Boolean): SurfaceViewRenderer =
+private fun makeRenderer(
+    context: android.content.Context,
+    mirror: Boolean,
+    events: RendererCommon.RendererEvents? = null,
+): SurfaceViewRenderer =
     SurfaceViewRenderer(context).apply {
-        init(CallManager.eglBaseContext, null)
+        init(CallManager.eglBaseContext, events)
         setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
         setEnableHardwareScaler(true)
         setMirror(mirror)

@@ -1,7 +1,12 @@
 package com.voiid.app.net
 
 import android.content.Context
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import com.voiid.app.main.CallKind
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -287,6 +292,16 @@ object CallManager {
     /** Hang up an active/outgoing call. */
     fun hangup() = endInternal(notifyPeer = true)
 
+    /**
+     * End the call because the OS is tearing us down (task swiped from Recents). Identical to
+     * [hangup] but safe to call from a service callback: the peer is always notified so they
+     * aren't left on a zombie call.
+     */
+    fun hangupFromSystem() {
+        if (_state.value == null) return
+        endInternal(notifyPeer = true)
+    }
+
     fun toggleMute() {
         val s = _state.value ?: return
         val muted = !s.muted
@@ -319,14 +334,73 @@ object CallManager {
         }
     }
 
+    // ---- host-activity lifecycle (background camera correctness) ----------------
+
+    /** True while capture was stopped because the app went to the background without a FGS. */
+    private var videoPausedForBackground = false
+
+    /**
+     * The call host left the foreground (and is *not* in PiP — PiP keeps the activity visible
+     * and capturing). Android only permits background camera access while a camera-type
+     * foreground service is live; if that service isn't running, keep publishing a frozen or
+     * black frame is worse than nothing, so stop capture cleanly and resume on return.
+     */
+    fun onHostBackground() {
+        val s = _state.value ?: return
+        if (s.kind != CallKind.VIDEO) return
+        if (CallForegroundService.running) return   // camera FGS holds the capture legally
+        exec.execute {
+            if (videoCapturer != null && !videoPausedForBackground) {
+                runCatching { videoCapturer?.stopCapture() }
+                videoPausedForBackground = true
+            }
+        }
+    }
+
+    /** Back in the foreground: restart capture if we paused it, so no frozen/black frames. */
+    fun onHostForeground() {
+        val s = _state.value ?: return
+        if (s.kind != CallKind.VIDEO) return
+        exec.execute {
+            if (!videoPausedForBackground) return@execute
+            videoPausedForBackground = false
+            if (_state.value?.videoEnabled == true) startCapture()
+        }
+    }
+
     fun setLocalRenderer(r: SurfaceViewRenderer?) {
+        val old = localRenderer
         localRenderer = r
-        exec.execute { if (r != null) localVideoTrack?.addSink(r) }
+        exec.execute {
+            if (old != null && old !== r) runCatching { localVideoTrack?.removeSink(old) }
+            if (r != null) runCatching { localVideoTrack?.addSink(r) }
+        }
     }
 
     fun setRemoteRenderer(r: SurfaceViewRenderer?) {
+        val old = remoteRenderer
         remoteRenderer = r
-        exec.execute { if (r != null) remoteVideoTrack?.addSink(r) }
+        exec.execute {
+            if (old != null && old !== r) runCatching { remoteVideoTrack?.removeSink(old) }
+            if (r != null) runCatching { remoteVideoTrack?.addSink(r) }
+        }
+    }
+
+    /**
+     * Detach and release a renderer that is leaving the composition for good.
+     *
+     * Sink removal and `release()` are both serialized onto [exec] so a frame can never be
+     * delivered to a half-released surface. Renderers are only detached when the call UI
+     * actually leaves the composition — never merely because the app was backgrounded or
+     * entered PiP, where rendering must continue.
+     */
+    fun detachRenderer(r: SurfaceViewRenderer, remote: Boolean) {
+        if (remote && remoteRenderer === r) remoteRenderer = null
+        if (!remote && localRenderer === r) localRenderer = null
+        exec.execute {
+            runCatching { if (remote) remoteVideoTrack?.removeSink(r) else localVideoTrack?.removeSink(r) }
+            runCatching { r.release() }
+        }
     }
 
     // ---- WebRTC plumbing -------------------------------------------------------
@@ -478,26 +552,113 @@ object CallManager {
         localVideoTrack = null; localAudioTrack = null; audioSource = null
         remoteVideoTrack = null; pc = null
         pendingRemoteCandidates.clear(); remoteDescSet = false; acceptPending = false
+        videoPausedForBackground = false
+        localRenderer = null; remoteRenderer = null
     }
 
     // ---- audio routing ---------------------------------------------------------
 
     private var savedAudioMode = AudioManager.MODE_NORMAL
     private var audioConfigured = false
+    private var routeWatcher: AudioDeviceCallback? = null
 
+    /**
+     * Put the device into communication mode and pick an output.
+     *
+     * A plugged-in headset or connected Bluetooth headset always wins over the speaker/earpiece
+     * choice — that's what users expect, and it matches every other calling app. [speaker] only
+     * decides between the built-in speaker and the earpiece when nothing external is attached.
+     *
+     * `MODE_IN_COMMUNICATION` is (re)asserted here, and this runs again on every device
+     * add/remove, so the mode survives backgrounding and mid-call route changes.
+     */
     private fun applyAudioRoute(speaker: Boolean) {
         val am = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
         if (!audioConfigured) { savedAudioMode = am.mode; audioConfigured = true }
-        am.mode = AudioManager.MODE_IN_COMMUNICATION
+        runCatching { am.mode = AudioManager.MODE_IN_COMMUNICATION }
+        registerRouteWatcher(am)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            // Modern, explicit routing: pick the device rather than toggling global flags.
+            runCatching {
+                val devices = am.availableCommunicationDevices
+                val preferred = devices.firstOrNull {
+                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                        it.type == AudioDeviceInfo.TYPE_HEARING_AID ||
+                        it.type == AudioDeviceInfo.TYPE_BLE_HEADSET
+                } ?: devices.firstOrNull {
+                    it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                        it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                        it.type == AudioDeviceInfo.TYPE_USB_HEADSET
+                } ?: devices.firstOrNull {
+                    if (speaker) {
+                        it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                    } else {
+                        it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+                    }
+                } ?: devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                preferred?.let { am.setCommunicationDevice(it) }
+            }
+            return
+        }
+
         @Suppress("DEPRECATION")
-        am.isSpeakerphoneOn = speaker
+        runCatching {
+            val bluetooth = hasDevice(am, AudioDeviceInfo.TYPE_BLUETOOTH_SCO)
+            val wired = hasDevice(am, AudioDeviceInfo.TYPE_WIRED_HEADSET) ||
+                hasDevice(am, AudioDeviceInfo.TYPE_WIRED_HEADPHONES) ||
+                hasDevice(am, AudioDeviceInfo.TYPE_USB_HEADSET)
+            if (bluetooth) {
+                am.startBluetoothSco()
+                am.isBluetoothScoOn = true
+                am.isSpeakerphoneOn = false
+            } else {
+                am.isBluetoothScoOn = false
+                am.stopBluetoothSco()
+                am.isSpeakerphoneOn = speaker && !wired
+            }
+        }
+    }
+
+    private fun hasDevice(am: AudioManager, type: Int): Boolean =
+        runCatching {
+            am.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any { it.type == type }
+        }.getOrDefault(false)
+
+    /**
+     * Follow headset/Bluetooth connect + disconnect for the life of the call. Without this a
+     * headset plugged in mid-call keeps playing out of the speaker.
+     */
+    private fun registerRouteWatcher(am: AudioManager) {
+        if (routeWatcher != null) return
+        val cb = object : AudioDeviceCallback() {
+            override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) = reapplyRoute()
+            override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) = reapplyRoute()
+        }
+        runCatching { am.registerAudioDeviceCallback(cb, Handler(Looper.getMainLooper())) }
+            .onSuccess { routeWatcher = cb }
+    }
+
+    private fun reapplyRoute() {
+        val s = _state.value ?: return
+        if (s.phase == Phase.ENDED) return
+        applyAudioRoute(s.speaker)
     }
 
     private fun restoreAudioRoute() {
         val am = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        routeWatcher?.let { cb -> runCatching { am.unregisterAudioDeviceCallback(cb) } }
+        routeWatcher = null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching { am.clearCommunicationDevice() }
+        }
         @Suppress("DEPRECATION")
-        am.isSpeakerphoneOn = false
-        am.mode = savedAudioMode
+        runCatching {
+            am.isBluetoothScoOn = false
+            am.stopBluetoothSco()
+            am.isSpeakerphoneOn = false
+        }
+        runCatching { am.mode = savedAudioMode }
         audioConfigured = false
     }
 
