@@ -18,6 +18,15 @@ import { readFileSync } from 'fs';
 import jwt from 'jsonwebtoken';
 import { getFirebaseAdminApp } from './firebase';
 import { query } from './db';
+import {
+  OFFLINE_TTL_MS,
+  buildFcmData,
+  buildApnsAlertPayload,
+  buildApnsAlertHeaders,
+  buildVoipPayload,
+  buildVoipHeaders,
+  voipTopicFor,
+} from './pushPayload';
 
 export interface PushTarget {
   push_token: string;
@@ -46,10 +55,6 @@ export interface PushMeta {
   call_kind?: string; // 'voice' | 'video'
   caller_id?: string;
 }
-
-// FCM's maximum (and default) hold time for an undelivered message: 28 days, in
-// milliseconds. An offline device still receives the wake on reconnect within this window.
-const OFFLINE_TTL_MS = 2419200000; // 28 days
 
 // --- APNs config (token-based .p8 auth over HTTP/2) --------------------------------
 const APNS_KEY_ID = process.env.APNS_KEY_ID;
@@ -123,13 +128,7 @@ async function sendFcmWake(tokens: string[], meta?: PushMeta): Promise<void> {
     // it wake a dozing app. The client fetches by the routing ids, decrypts locally, and
     // BUILDS the notification itself. NON-SECRET routing metadata only — NO ciphertext,
     // plaintext, sender name, or body (Section 4.14). FCM `data` values must be strings.
-    const data: Record<string, string> = { type: meta?.type ?? 'wake' };
-    if (meta?.message_id) data.message_id = meta.message_id;
-    if (meta?.conversation_id) data.conversation_id = meta.conversation_id;
-    // Call ring routing (non-secret) — lets the app show the incoming-call UI.
-    if (meta?.call_id) data.call_id = meta.call_id;
-    if (meta?.call_kind) data.call_kind = meta.call_kind;
-    if (meta?.caller_id) data.caller_id = meta.caller_id;
+    const data = buildFcmData(meta);
     const resp = await getMessaging(app).sendEachForMulticast({
       tokens,
       data,
@@ -219,19 +218,12 @@ function apnsSendOne(token: string, auth: string, meta?: PushMeta): Promise<void
   return new Promise((resolve) => {
     // Offline TTL: hold the alert for up to 28 days and deliver on reconnect (absolute
     // UNIX epoch seconds, per APNs `apns-expiration` semantics).
-    const expiration = Math.floor((Date.now() + OFFLINE_TTL_MS) / 1000);
     let req: http2.ClientHttp2Stream;
     try {
       const session = getApnsSession();
-      req = session.request({
-        ':method': 'POST',
-        ':path': `/3/device/${token}`,
-        authorization: `bearer ${auth}`,
-        'apns-topic': APNS_BUNDLE_ID as string,
-        'apns-push-type': 'alert', // alert delivery (reliable; triggers the NSE)
-        'apns-priority': '10', // deliver immediately
-        'apns-expiration': String(expiration),
-      });
+      req = session.request(
+        buildApnsAlertHeaders({ token, auth, topic: APNS_BUNDLE_ID as string })
+      );
     } catch (e) {
       console.warn('[push] apns request setup failed:', (e as Error).message);
       return resolve();
@@ -273,23 +265,7 @@ function apnsSendOne(token: string, auth: string, meta?: PushMeta): Promise<void
     // generic alert is a placeholder the NSE replaces. `message_id`/`conversation_id`
     // are NON-SECRET top-level routing customs the NSE (and the app on tap) read — never
     // any ciphertext or message content (Section 4.14).
-    const isCall = meta?.type === 'call';
-    const payload: Record<string, unknown> = {
-      aps: {
-        'mutable-content': 1,
-        // Generic placeholder title (no sender/content); the NSE replaces it.
-        alert: { title: isCall ? 'Incoming call' : 'New message' },
-        sound: 'default',
-      },
-    };
-    if (meta?.type) payload.type = meta.type;
-    if (meta?.message_id) payload.message_id = meta.message_id;
-    if (meta?.conversation_id) payload.conversation_id = meta.conversation_id;
-    // Call ring routing (non-secret) — the NSE/app show the incoming-call UI.
-    if (meta?.call_id) payload.call_id = meta.call_id;
-    if (meta?.call_kind) payload.call_kind = meta.call_kind;
-    if (meta?.caller_id) payload.caller_id = meta.caller_id;
-    req.end(JSON.stringify(payload));
+    req.end(JSON.stringify(buildApnsAlertPayload(meta)));
   });
 }
 
@@ -322,8 +298,7 @@ const VOIP_KEY_PATH = process.env.VOIID_APNS_VOIP_KEY_PATH ?? APNS_KEY_PATH;
 const VOIP_KEY_P8 = process.env.VOIID_APNS_VOIP_P8 ?? APNS_KEY_P8;
 // The VoIP topic is the bundle id with a `.voip` suffix — NOT the plain bundle id.
 // Sending a voip push to the plain topic is rejected by APNs (TopicDisallowed).
-const VOIP_TOPIC =
-  process.env.VOIID_APNS_VOIP_TOPIC ?? (APNS_BUNDLE_ID ? `${APNS_BUNDLE_ID}.voip` : undefined);
+const VOIP_TOPIC = process.env.VOIID_APNS_VOIP_TOPIC ?? voipTopicFor(APNS_BUNDLE_ID);
 
 export function voipConfigured(): boolean {
   return !!((VOIP_KEY_P8 || VOIP_KEY_PATH) && VOIP_KEY_ID && VOIP_TEAM_ID && VOIP_TOPIC);
@@ -376,21 +351,12 @@ function voipSendOne(token: string, auth: string, meta?: PushMeta): Promise<void
     // A ring is only meaningful while the caller is still waiting. Unlike the 28-day
     // message wake, expire this in ~30s so a device that comes back online tomorrow
     // is NOT resumed to ring a long-dead call (which would crash it against CallKit).
-    const expiration = Math.floor(Date.now() / 1000) + 30;
     let req: http2.ClientHttp2Stream;
     try {
       // Same APNs host as the alert path, so the HTTP/2 session is shared — APNs
       // multiplexes topics over one connection; the topic is a per-request header.
       const session = getApnsSession();
-      req = session.request({
-        ':method': 'POST',
-        ':path': `/3/device/${token}`,
-        authorization: `bearer ${auth}`,
-        'apns-topic': VOIP_TOPIC as string, // `<bundle-id>.voip`
-        'apns-push-type': 'voip',
-        'apns-priority': '10', // immediate; VoIP pushes are never throttled
-        'apns-expiration': String(expiration),
-      });
+      req = session.request(buildVoipHeaders({ token, auth, topic: VOIP_TOPIC as string }));
     } catch (e) {
       console.warn('[push] voip request setup failed:', (e as Error).message);
       return resolve();
@@ -429,11 +395,6 @@ function voipSendOne(token: string, auth: string, meta?: PushMeta): Promise<void
     // CONTENT-FREE VoIP payload. No `aps.alert` — PushKit hands this dictionary
     // straight to the app, which builds the CallKit UI itself from the routing ids.
     // NON-SECRET identifiers only (Section 4.14).
-    const payload: Record<string, unknown> = { aps: {}, type: 'call' };
-    if (meta?.call_id) payload.call_id = meta.call_id;
-    if (meta?.call_kind) payload.call_kind = meta.call_kind;
-    if (meta?.conversation_id) payload.conversation_id = meta.conversation_id;
-    if (meta?.caller_id) payload.caller_id = meta.caller_id;
-    req.end(JSON.stringify(payload));
+    req.end(JSON.stringify(buildVoipPayload(meta)));
   });
 }

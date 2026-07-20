@@ -6,8 +6,15 @@
 // over Redis; call MEDIA and SRTP keys are derived E2E on the devices (e2e-core).
 // The server NEVER sees media, keys, SDP, or candidates here (Section 4.14).
 import { Router } from 'express';
-import crypto from 'crypto';
 import { query } from '../db';
+import { resolveIceServers } from '../turn';
+import {
+  normalizeCallMetrics,
+  dedupeHash,
+  clampWindowHours,
+  END_REASONS,
+  DROP_REASONS,
+} from '../callMetrics';
 import { requireAuth } from '../auth';
 import { asyncHandler } from '../util';
 import jwt from 'jsonwebtoken';
@@ -15,75 +22,7 @@ import { sendWakePush, sendVoipPush, voipConfigured } from '../push';
 
 const router = Router();
 
-// TURN credential TTL (coturn REST scheme + Cloudflare). Default 1 hour.
-const TTL_SECONDS = Number(process.env.VOIID_TURN_TTL_SECONDS) || 3600;
-
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-function splitEnvList(value: string | undefined): string[] {
-  return (value ?? '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-// STUN is safe to expose unconditionally (public reflexive-address discovery).
-function stunUrls(): string[] {
-  const raw = process.env.VOIID_STUN_URLS?.trim();
-  return raw ? splitEnvList(raw) : ['stun:stun.l.google.com:19302'];
-}
-
-interface IceServer {
-  urls: string[];
-  username?: string;
-  credential?: string;
-}
-
-// --- coturn REST ephemeral-credential scheme (use-auth-secret) ---------------------
-// username = "<unixExpiry>:<userId>", credential = base64(HMAC_SHA1(secret, username)).
-// Works with self-hosted coturn configured with `use-auth-secret` + `static-auth-secret`.
-// Per-user and time-limited: a leaked credential expires within TTL and is scoped
-// to the requesting user (the userId is bound into the HMAC'd username).
-function coturnCredentials(userId: string): { username: string; credential: string; expiry: number } {
-  const expiry = Math.floor(Date.now() / 1000) + TTL_SECONDS;
-  const username = `${expiry}:${userId}`;
-  const secret = process.env.VOIID_TURN_STATIC_AUTH_SECRET as string;
-  const credential = crypto.createHmac('sha1', secret).update(username).digest('base64');
-  return { username, credential, expiry };
-}
-
-// --- Cloudflare TURN (managed) -----------------------------------------------------
-// If configured, Cloudflare mints the credentials for us. We prefer this over the
-// self-hosted coturn scheme when its env is present. Returns null on any failure so
-// the caller can fall back rather than 500.
-async function cloudflareIceServers(): Promise<IceServer[] | null> {
-  const keyId = process.env.VOIID_TURN_CLOUDFLARE_KEY_ID;
-  const token = process.env.VOIID_TURN_CLOUDFLARE_API_TOKEN;
-  if (!keyId || !token) return null;
-  try {
-    const resp = await fetch(
-      `https://rtc.live.cloudflare.com/v1/turn/keys/${keyId}/credentials/generate`,
-      {
-        method: 'POST',
-        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ ttl: TTL_SECONDS }),
-      }
-    );
-    if (!resp.ok) {
-      console.warn(`[calls] cloudflare TURN generate failed: ${resp.status}`);
-      return null;
-    }
-    // CF returns { iceServers: { urls: string[]|string, username, credential } }.
-    const body = (await resp.json()) as { iceServers?: { urls?: string[] | string; username?: string; credential?: string } };
-    const ice = body?.iceServers;
-    if (!ice?.urls) return null;
-    const urls = Array.isArray(ice.urls) ? ice.urls : [ice.urls];
-    return [{ urls, username: ice.username, credential: ice.credential }];
-  } catch (e) {
-    console.warn('[calls] cloudflare TURN request error:', (e as Error).message);
-    return null;
-  }
-}
 
 // GET /calls/turn — time-limited ICE servers for the client's RTCPeerConnection.
 // Precedence: Cloudflare (if configured) -> coturn HMAC (if secret set) -> STUN-only.
@@ -91,25 +30,7 @@ async function cloudflareIceServers(): Promise<IceServer[] | null> {
 // clear `turn_configured: false` flag so the client can still attempt (P2P-only) calls.
 router.get('/turn', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
-  const iceServers: IceServer[] = [{ urls: stunUrls() }];
-
-  // 1) Cloudflare managed TURN (preferred when configured).
-  const cf = await cloudflareIceServers();
-  if (cf) {
-    iceServers.push(...cf);
-    return res.json({ ice_servers: iceServers, ttl_seconds: TTL_SECONDS, turn_configured: true });
-  }
-
-  // 2) Self-hosted coturn REST scheme (HMAC over static-auth-secret).
-  const turnUrls = splitEnvList(process.env.VOIID_TURN_URLS);
-  if (turnUrls.length && process.env.VOIID_TURN_STATIC_AUTH_SECRET) {
-    const { username, credential } = coturnCredentials(user_id);
-    iceServers.push({ urls: turnUrls, username, credential });
-    return res.json({ ice_servers: iceServers, ttl_seconds: TTL_SECONDS, turn_configured: true });
-  }
-
-  // 3) STUN-only fallback (dev / TURN not provisioned). Not an error.
-  return res.json({ ice_servers: iceServers, ttl_seconds: TTL_SECONDS, turn_configured: false });
+  return res.json(await resolveIceServers(user_id));
 }));
 
 // POST /calls/ring — persist a ringing call record and wake the callee's offline/
@@ -279,6 +200,149 @@ router.post('/group/token', requireAuth, asyncHandler(async (req, res) => {
   const token = jwt.sign(grant, apiSecret, { algorithm: 'HS256' });
 
   return res.json({ url, token, room, identity, ttl_seconds: LIVEKIT_TOKEN_TTL_SECONDS });
+}));
+
+// --- Anonymous call-quality metrics (Section 4.14) ---------------------------------
+//
+// WHY THIS EXISTS: "did the call connect, how fast, did it hold up, did it need a
+// relay" are the only numbers that tell us whether calling actually works for real
+// users on real networks. Without them, call reliability is guesswork.
+//
+// ============================ PRIVACY DECISION ====================================
+// The `call_metrics` table stores NO user_id, NO device_id, and NO call_id.
+//
+// WHY NO user_id: a row of (user, when, duration, peer-ish signal) is a call detail
+// record — the exact metadata shape that makes "who talked to whom, when, for how
+// long" reconstructible. That is the thing VOIID exists to not have. Even a "coarse
+// bucket" of the user id (a hash prefix / cohort) was rejected: buckets are stable
+// pseudonyms, and a stable pseudonym plus timestamps plus durations re-identifies
+// people through correlation. So the row is a genuinely anonymous sample.
+//
+// WHY NO call_id: `calls.id` is the primary key of a table holding caller_user_id
+// and conversation_id. Storing it here would make this table JOINABLE straight back
+// onto the identity we just removed. Instead we store `dedupe_hash` — an HMAC-SHA256
+// of the call id under a server-side secret (VOIID_METRICS_DEDUPE_SECRET). It still
+// makes a client retry idempotent, it is not reversible without the secret, and
+// rotating the secret permanently severs the linkage for all existing rows. When the
+// secret is unset the key is a random per-process value: dedupe degrades to
+// per-process, and linkage becomes impossible by construction. Safe default.
+//
+// WHY AN HOUR BUCKET, NOT A TIMESTAMP: an exact `created_at` correlates one-to-one
+// with `calls.ended_at`, which would re-link the anonymous row to an identified one
+// by timing alone. We store `bucket_hour` (the hour, truncated) — enough resolution
+// for reliability trends, far too coarse to align with a specific call.
+//
+// WHAT IS NEVER ACCEPTED: SDP, ICE candidates, IP addresses, peer identity, call
+// content. `normalizeCallMetrics` builds the persisted row key-by-key from a fixed
+// whitelist rather than copying the request body, so an extra client field cannot
+// become stored data even by accident. Unknown keys are dropped and only their NAMES
+// are echoed back (never their values), for client-side debugging.
+// ==================================================================================
+
+// POST /calls/metrics — submit one anonymous aggregate sample when a call ends.
+// requireAuth is present to keep the endpoint from being an open write surface for
+// the internet; the authenticated identity is used ONLY for that gate and is
+// deliberately NOT persisted with the row.
+router.post('/metrics', requireAuth, asyncHandler(async (req, res) => {
+  const result = normalizeCallMetrics(req.body);
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  const m = result.value;
+
+  await query(
+    `insert into call_metrics (
+       dedupe_hash, bucket_hour, platform, connected, relayed, end_reason,
+       setup_ms, duration_ms, ice_restarts, avg_rtt_ms, avg_packet_loss_pct, jitter_ms)
+     values ($1, date_trunc('hour', now()), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+     on conflict (dedupe_hash) do nothing`,
+    [
+      dedupeHash(result.call_id),
+      m.platform,
+      m.connected,
+      m.relayed,
+      m.end_reason,
+      m.setup_ms ?? null,
+      m.duration_ms ?? null,
+      m.ice_restarts ?? null,
+      m.avg_rtt_ms ?? null,
+      m.avg_packet_loss_pct ?? null,
+      m.jitter_ms ?? null,
+    ]
+  );
+
+  // `dropped` is key NAMES only — never the rejected values.
+  return res.json({ recorded: true, dropped: result.dropped });
+}));
+
+// GET /calls/metrics/summary?hours=24[&platform=ios|android] — the headline call
+// reliability numbers for ops.
+//
+// Gating: auth'd, and additionally restricted to VOIID_OPS_USER_IDS when that env is
+// set (comma-separated user ids). Leaving it unset keeps the endpoint auth'd-only,
+// which is acceptable because the response is aggregate-only and contains nothing
+// attributable to any user.
+router.get('/metrics/summary', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id } = (req as any).auth;
+  const opsAllowlist = (process.env.VOIID_OPS_USER_IDS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (opsAllowlist.length && !opsAllowlist.includes(user_id)) {
+    return res.status(403).json({ error: 'ops access required' });
+  }
+
+  const hours = clampWindowHours(req.query.hours);
+  const platform =
+    req.query.platform === 'ios' || req.query.platform === 'android'
+      ? (req.query.platform as string)
+      : null;
+
+  // One pass over the window. Percentiles are computed only over calls that
+  // actually connected — a never-connected call has no meaningful time-to-connect.
+  const rows = await query<{
+    total: string;
+    connected: string;
+    relayed: string;
+    dropped: string;
+    p50_setup_ms: number | null;
+    p95_setup_ms: number | null;
+  }>(
+    `select
+       count(*)                                            as total,
+       count(*) filter (where connected)                   as connected,
+       count(*) filter (where relayed)                     as relayed,
+       count(*) filter (where connected and end_reason = any($2)) as dropped,
+       percentile_cont(0.5) within group (order by setup_ms)
+         filter (where connected and setup_ms is not null) as p50_setup_ms,
+       percentile_cont(0.95) within group (order by setup_ms)
+         filter (where connected and setup_ms is not null) as p95_setup_ms
+     from call_metrics
+     where bucket_hour >= date_trunc('hour', now()) - make_interval(hours => $1)
+       and ($3::text is null or platform = $3)`,
+    [hours, DROP_REASONS, platform]
+  );
+
+  const r = rows[0];
+  const total = Number(r?.total ?? 0);
+  const connected = Number(r?.connected ?? 0);
+  const relayed = Number(r?.relayed ?? 0);
+  const dropped = Number(r?.dropped ?? 0);
+  const pct = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 1000) / 10 : null);
+
+  return res.json({
+    window_hours: hours,
+    platform: platform ?? 'all',
+    samples: total,
+    // Headline reliability numbers.
+    setup_success_rate_pct: pct(connected, total),
+    time_to_connect_ms: {
+      p50: r?.p50_setup_ms != null ? Math.round(Number(r.p50_setup_ms)) : null,
+      p95: r?.p95_setup_ms != null ? Math.round(Number(r.p95_setup_ms)) : null,
+    },
+    // Of the calls that DID connect, how many died abnormally.
+    drop_rate_pct: pct(dropped, connected),
+    relayed_pct: pct(relayed, total),
+    end_reasons: END_REASONS,
+  });
 }));
 
 // POST /calls/:id/status — update a call's lifecycle (answered/ended/missed/declined).

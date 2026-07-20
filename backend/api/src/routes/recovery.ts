@@ -13,29 +13,19 @@ import { Router } from 'express';
 import { query } from '../db';
 import { requireAuth } from '../auth';
 import { asyncHandler } from '../util';
+import {
+  isValidWrappedKey,
+  pickWrappedKey,
+  applyFailure,
+  applySuccess,
+  lockRetryAfter,
+} from '../recoveryLockout';
 
 const router = Router();
 
-// After this many CONSECUTIVE failed online attempts, lock with an escalating
-// cooldown. (On-device offline attempts against a cached wrap are throttled by the
-// client; this is the online limit for recovering on a NEW device.)
-const LOCK_THRESHOLD = 10;
-// Escalating cooldowns once past the threshold: 15m, then 1h, then 24h (capped),
-// indexed by how many attempts past the threshold we are.
-const LOCK_COOLDOWNS_MS = [15 * 60_000, 60 * 60_000, 24 * 60 * 60_000];
-
-// Validate a PinWrappedSecret shape: version int, salt/nonce/ciphertext non-empty
-// base64 strings. We cannot (and must not) inspect the ciphertext — it is opaque —
-// so this only checks the envelope. Accepts both standard and url base64 alphabets.
-const BASE64_RE = /^[A-Za-z0-9+/_-]+={0,2}$/;
-function isValidWrappedKey(v: any): boolean {
-  if (!v || typeof v !== 'object') return false;
-  if (!Number.isInteger(v.version)) return false;
-  for (const field of ['salt', 'nonce', 'ciphertext'] as const) {
-    if (typeof v[field] !== 'string' || v[field].length === 0 || !BASE64_RE.test(v[field])) return false;
-  }
-  return true;
-}
+// The lockout state machine + envelope validation live in ../recoveryLockout so
+// they can be unit-tested without a database. See that module for the thresholds
+// and the escalating-cooldown schedule.
 
 // PUT /recovery/key — upsert the caller's PinWrappedSecret. Body is the wrap
 // itself: { version, salt, nonce, ciphertext } (also accepted nested under
@@ -47,12 +37,7 @@ router.put('/key', requireAuth, asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'invalid wrapped_key (expected { version:int, salt, nonce, ciphertext } as base64)' });
   }
   // Persist ONLY the four known fields — never store client-supplied extras.
-  const value = {
-    version: wrapped.version,
-    salt: wrapped.salt,
-    nonce: wrapped.nonce,
-    ciphertext: wrapped.ciphertext,
-  };
+  const value = pickWrappedKey(wrapped);
   await query(
     `insert into recovery_keys (user_id, wrapped_key, failed_attempts, locked_until)
        values ($1, $2, 0, null)
@@ -77,8 +62,8 @@ router.get('/key', requireAuth, asyncHandler(async (req, res) => {
   const row = rows[0];
   if (!row) return res.status(404).json({ error: 'no recovery key found' });
 
-  if (row.locked_until && row.locked_until.getTime() > Date.now()) {
-    const retryAfter = Math.ceil((row.locked_until.getTime() - Date.now()) / 1000);
+  const retryAfter = lockRetryAfter(row.locked_until);
+  if (retryAfter !== null) {
     res.setHeader('Retry-After', String(retryAfter));
     return res.status(429).json({ error: 'recovery locked', retry_after: retryAfter, locked_until: row.locked_until });
   }
@@ -104,26 +89,26 @@ router.post('/attempt-result', requireAuth, asyncHandler(async (req, res) => {
   if (!rows[0]) return res.status(404).json({ error: 'no recovery key found' });
 
   if (success) {
+    const state = applySuccess();
     await query(
       `update recovery_keys set failed_attempts = 0, locked_until = null where user_id = $1`,
       [user_id]
     );
-    return res.json({ failed_attempts: 0, locked_until: null });
+    return res.json({ failed_attempts: state.failed_attempts, locked_until: state.locked_until });
   }
 
   // Wrong PIN — increment, and once past the threshold apply an escalating cooldown.
-  const failed = rows[0].failed_attempts + 1;
-  let lockedUntil: Date | null = null;
-  if (failed >= LOCK_THRESHOLD) {
-    const idx = Math.min(failed - LOCK_THRESHOLD, LOCK_COOLDOWNS_MS.length - 1);
-    lockedUntil = new Date(Date.now() + LOCK_COOLDOWNS_MS[idx]);
-  }
+  const state = applyFailure(rows[0].failed_attempts);
   await query(
     `update recovery_keys set failed_attempts = $2, locked_until = $3 where user_id = $1`,
-    [user_id, failed, lockedUntil]
+    [user_id, state.failed_attempts, state.locked_until]
   );
-  const retryAfter = lockedUntil ? Math.ceil((lockedUntil.getTime() - Date.now()) / 1000) : undefined;
-  res.json({ failed_attempts: failed, locked_until: lockedUntil, retry_after: retryAfter });
+  if (state.retry_after != null) res.setHeader('Retry-After', String(state.retry_after));
+  res.json({
+    failed_attempts: state.failed_attempts,
+    locked_until: state.locked_until,
+    retry_after: state.retry_after,
+  });
 }));
 
 export default router;

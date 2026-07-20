@@ -26,6 +26,7 @@ import Combine
 import WebRTC
 import AVFoundation
 import UIKit
+import Network
 
 /// High-level call state the UI renders.
 enum CallState: Equatable {
@@ -63,6 +64,54 @@ final class CallService: NSObject, ObservableObject {
     /// Remote + local video tracks for the UI to render (nil for voice calls).
     @Published private(set) var remoteVideoTrack: RTCVideoTrack?
     @Published private(set) var localVideoTrack: RTCVideoTrack?
+    /// Live connection quality derived from packet loss + RTT. The call UI can
+    /// show a weak-connection indicator off this without knowing about stats.
+    @Published private(set) var quality: CallQuality = .unknown
+    /// True while we're re-gathering ICE after a network change. The UI can show
+    /// "Reconnecting…" — the call is NOT over and media may still be flowing.
+    @Published private(set) var isReconnecting = false
+    /// Latest parsed stats sample, for a debug overlay if we ever want one.
+    @Published private(set) var latestStats: CallStatsSample?
+
+    // MARK: Network resilience
+    //
+    // The problem: WebRTC gathers ICE candidates bound to whichever interface was
+    // up at the time. Walk out of WiFi range onto LTE and those candidates point
+    // at an address the device no longer owns; the selected pair goes silent and
+    // the call dies. Recovering means re-gathering — an ICE restart — over the
+    // same signaling channel and the same call_id.
+    //
+    // Three things can ask for a restart, in descending order of how much we
+    // trust them:
+    //   1. NWPathMonitor says the interface changed  — fastest and most reliable.
+    //   2. RTCIceConnectionState == .failed          — terminal, restart now.
+    //   3. RTCIceConnectionState == .disconnected    — usually transient; wait out
+    //      a grace period first, because most of these self-heal and a needless
+    //      renegotiation is itself disruptive.
+
+    /// How many restarts we'll attempt before giving up on the call.
+    private static let maxIceRestarts = 3
+    /// `.disconnected` is noisy; give ICE this long to recover on its own.
+    private static let disconnectGrace: Duration = .seconds(3)
+
+    private var iceRestartAttempts = 0
+    /// Total restarts across the call, for telemetry (not reset on success).
+    private var iceRestartsTotal = 0
+    /// A restart offer is out and we're waiting for the answer.
+    private var restartInFlight = false
+    /// Pending "`.disconnected` didn't heal" timer.
+    private var disconnectGraceTask: Task<Void, Never>?
+    /// Backoff between restart attempts.
+    private var restartBackoffTask: Task<Void, Never>?
+    private var networkObserverInstalled = false
+
+    // MARK: Telemetry
+    private let stats = CallStatsCollector()
+    private var callStartedAt: Date?
+    private var callConnectedAt: Date?
+    /// Set by whichever teardown path runs first; read when building metrics.
+    private var pendingEndReason: CallEndReason = .unknown
+    private var everConnected = false
 
     // MARK: WebRTC
     private static let factory: RTCPeerConnectionFactory = {
@@ -122,6 +171,7 @@ final class CallService: NSObject, ObservableObject {
     func configure(socket: WebSocketClient) {
         CallManager.shared.configure(service: self)
         installSystemObservers()
+        installNetworkObserver(socket: socket)
         // PiP follows the call lifecycle (remote track in, call ended out) without
         // this class needing to know about AVKit.
         CallPiPController.shared.observe(self)
@@ -139,17 +189,62 @@ final class CallService: NSObject, ObservableObject {
             Task { @MainActor in self?.handleRemoteIce(callId: callId, candidate: cand, sdpMLineIndex: mline, sdpMid: mid) }
         }
         socket.onCallHangup = { [weak self] _, callId in
-            Task { @MainActor in self?.handleRemoteEnd(callId: callId, state: .ended) }
+            Task { @MainActor in self?.handleRemoteEnd(callId: callId, reason: .remoteHangup) }
         }
         socket.onCallBusy = { [weak self] _, callId in
-            Task { @MainActor in self?.handleRemoteEnd(callId: callId, state: .ended) }
+            Task { @MainActor in self?.handleRemoteEnd(callId: callId, reason: .busy) }
         }
         socket.onCallDecline = { [weak self] _, callId in
-            Task { @MainActor in self?.handleRemoteEnd(callId: callId, state: .ended) }
+            Task { @MainActor in self?.handleRemoteEnd(callId: callId, reason: .declined) }
         }
     }
 
     private var socket: WebSocketClient { WebSocketClient.shared }
+
+    // MARK: - Network path + signaling liveness
+
+    /// Hook up NWPathMonitor and socket liveness. Both handlers are no-ops when
+    /// there's no live call, so this is installed once and left running.
+    private func installNetworkObserver(socket: WebSocketClient) {
+        guard !networkObserverInstalled else { return }
+        networkObserverInstalled = true
+
+        CallNetworkMonitor.shared.onPathChange = { [weak self] path, isHandover in
+            guard let self else { return }
+            let iface = path.interface?.voiidLabel ?? "none"
+            NSLog("[VOIID] network path changed → \(iface) satisfied=\(path.isSatisfied) handover=\(isHandover)")
+            guard let call = self.active, call.state == .connected || call.state == .connecting else { return }
+
+            // Path went away entirely — don't restart into a dead network, just
+            // wait. The call is not over; media resumes if the gap is short and
+            // the ICE-state handlers cover us if it isn't.
+            guard path.isSatisfied else {
+                NSLog("[VOIID] network unsatisfied during call — holding, not ending")
+                return
+            }
+            // The signaling socket is bound to the old interface too. Rebuild it
+            // regardless, so a restart offer has somewhere to go.
+            self.socket.reconnect()
+            guard isHandover else { return }
+            self.requestIceRestart(reason: "network handover to \(iface)")
+        }
+        CallNetworkMonitor.shared.start()
+
+        socket.onLivenessChange = { [weak self] live in
+            guard let self, let call = self.active, call.state != .ended else { return }
+            NSLog("[VOIID] signaling liveness=\(live) during active call \(call.id)")
+            // NOTE: we deliberately do NOT end the call when the socket drops.
+            // SRTP media flows peer-to-peer and survives a signaling outage; only
+            // renegotiation and hangup need the socket. WebSocketClient queues
+            // outbound call frames and flushes them here.
+        }
+
+        stats.onUpdate = { [weak self] quality, sample in
+            guard let self else { return }
+            self.quality = quality
+            self.latestStats = sample
+        }
+    }
 
     // MARK: - System observers (background / interruption / route / termination)
 
@@ -292,6 +387,7 @@ final class CallService: NSObject, ObservableObject {
                             isVideo: isVideo, isOutgoing: true, state: .outgoingRinging)
         videoEnabled = isVideo
         callUIMinimized = false
+        beginCallTelemetry()
 
         Task {
             await setupPeerConnection(isVideo: isVideo)
@@ -312,12 +408,221 @@ final class CallService: NSObject, ObservableObject {
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
         do {
             let offer = try await pc.offer(for: constraints)
-            try await pc.setLocalDescription(offer)
+            // Turn on Opus FEC/DTX before the SDP becomes our local description.
+            let tuned = RTCSessionDescription(type: .offer,
+                                              sdp: CallSDPTuning.tuneLocalDescription(offer.sdp))
+            try await pc.setLocalDescription(tuned)
             socket.sendCallOffer(toUserId: peerUserId, callId: callId,
-                                 callKind: isVideo ? "video" : "voice", sdp: offer.sdp)
+                                 callKind: isVideo ? "video" : "voice", sdp: tuned.sdp)
         } catch {
             NSLog("[VOIID] call offer failed: \(error.localizedDescription)")
+            pendingEndReason = .setupFailed
             endActiveCall(notifyPeer: true, fromCallKit: false)
+        }
+    }
+
+    // MARK: - Telemetry lifecycle
+
+    /// Reset per-call counters. Called for both outgoing and incoming calls at
+    /// the moment the call becomes real, so `setup_ms` measures the same thing
+    /// on both sides: intent-to-call until media actually flows.
+    private func beginCallTelemetry() {
+        stats.reset()
+        quality = .unknown
+        latestStats = nil
+        callStartedAt = Date()
+        callConnectedAt = nil
+        everConnected = false
+        pendingEndReason = .unknown
+        iceRestartAttempts = 0
+        iceRestartsTotal = 0
+        restartInFlight = false
+        isReconnecting = false
+    }
+
+    /// Fire-and-forget the anonymous aggregate. See CallStatsCollector's privacy
+    /// note for what may and may not go in here.
+    ///
+    /// This is called from the teardown path, so it captures its values up front
+    /// and never touches `self` state that teardown is about to clear. A failure
+    /// — including a 404 while the backend endpoint is still being built — is
+    /// swallowed completely. Telemetry never affects a call.
+    private func postCallMetrics(callId: String, endReason: CallEndReason) {
+        let durationMs: Int? = callConnectedAt.map { Int(Date().timeIntervalSince($0) * 1000) }
+        let setupMs: Int? = {
+            guard let started = callStartedAt, let connected = callConnectedAt else { return nil }
+            return Int(connected.timeIntervalSince(started) * 1000)
+        }()
+        let metrics = stats.buildMetrics(callId: callId,
+                                         connected: everConnected,
+                                         setupMs: setupMs,
+                                         durationMs: durationMs,
+                                         endReason: endReason,
+                                         iceRestarts: iceRestartsTotal)
+        let client = api
+        Task.detached {
+            _ = try? await client.request("POST", "calls/metrics", body: metrics, as: EmptyResponse.self)
+        }
+    }
+
+    // MARK: - ICE restart (network handover recovery)
+
+    /// Ask for an ICE restart. Safe to call from anywhere and from several
+    /// triggers at once — it de-duplicates, backs off, and enforces the attempt
+    /// cap. Only the offerer role drives the restart; see below.
+    private func requestIceRestart(reason: String) {
+        guard let call = active, call.state == .connected || call.state == .connecting else { return }
+        guard pc != nil else { return }
+
+        // A restart already in flight will either succeed or time out into
+        // another attempt — piling on more offers just creates glare.
+        guard !restartInFlight else {
+            NSLog("[VOIID] ICE restart already in flight, ignoring: \(reason)")
+            return
+        }
+
+        guard iceRestartAttempts < Self.maxIceRestarts else {
+            NSLog("[VOIID] ICE restart cap (\(Self.maxIceRestarts)) exhausted — ending call")
+            pendingEndReason = .iceFailed
+            endActiveCall(notifyPeer: true, fromCallKit: false)
+            return
+        }
+
+        // ICE restart is an offer/answer exchange, and only one side may offer.
+        // Both peers see the same network events, so without a rule they'd both
+        // offer and collide. The ORIGINAL CALLER always drives; the answerer
+        // just waits for the offer to arrive (its own network change will have
+        // been noticed by the caller as an ICE failure if it matters). This
+        // avoids needing full rollback/perfect-negotiation glare handling.
+        guard call.isOutgoing else {
+            NSLog("[VOIID] ICE restart needed (\(reason)) but we're the answerer — awaiting peer's offer")
+            isReconnecting = true
+            return
+        }
+
+        let attempt = iceRestartAttempts
+        iceRestartAttempts += 1
+        iceRestartsTotal += 1
+        restartInFlight = true
+        isReconnecting = true
+        NSLog("[VOIID] ICE restart attempt \(attempt + 1)/\(Self.maxIceRestarts): \(reason)")
+
+        restartBackoffTask?.cancel()
+        restartBackoffTask = Task { [weak self] in
+            // First attempt fires immediately; later ones back off (0s, 2s, 4s).
+            if attempt > 0 {
+                try? await Task.sleep(for: .seconds(Double(attempt) * 2))
+                guard !Task.isCancelled else { return }
+            }
+            await self?.performIceRestart(callId: call.id, peerUserId: call.peerUserId, isVideo: call.isVideo)
+        }
+    }
+
+    /// Build and send the restart offer. Refreshes TURN credentials first — they
+    /// are short-lived, and a handover is exactly the moment a stale credential
+    /// would leave us with no relay candidates and no way to recover.
+    private func performIceRestart(callId: String, peerUserId: String, isVideo: Bool) async {
+        guard let pc, let call = active, call.id == callId, call.state != .ended else {
+            restartInFlight = false
+            return
+        }
+
+        // Re-fetch ICE servers and push them into the existing peer connection.
+        // setConfiguration keeps the connection (and its media) alive; only the
+        // candidate gathering is affected.
+        let fresh = await fetchIceServers()
+        let config = pc.configuration
+        config.iceServers = fresh
+        if !pc.setConfiguration(config) {
+            NSLog("[VOIID] setConfiguration for ICE restart failed — restarting with cached servers")
+        }
+
+        // Rates measured across a reconnect gap are meaningless.
+        stats.resetRateBaseline()
+
+        let constraints = RTCMediaConstraints(mandatoryConstraints: ["IceRestart": "true"],
+                                              optionalConstraints: nil)
+        do {
+            let offer = try await pc.offer(for: constraints)
+            let tuned = RTCSessionDescription(type: .offer,
+                                              sdp: CallSDPTuning.tuneLocalDescription(offer.sdp))
+            try await pc.setLocalDescription(tuned)
+            // Same channel, same call_id — the peer treats this as renegotiation,
+            // not a new incoming call (see handleIncomingOffer).
+            socket.sendCallOffer(toUserId: peerUserId, callId: callId,
+                                 callKind: isVideo ? "video" : "voice", sdp: tuned.sdp)
+            NSLog("[VOIID] ICE restart offer sent for \(callId)")
+        } catch {
+            NSLog("[VOIID] ICE restart offer failed: \(error.localizedDescription)")
+            restartInFlight = false
+            // Don't end the call here — the ICE state handlers will trigger
+            // another attempt, and the cap decides when to actually give up.
+        }
+    }
+
+    /// A restart worked: clear the reconnect UI and let the call earn a fresh
+    /// budget of attempts if the network misbehaves again later.
+    private func handleIceRecovered() {
+        guard restartInFlight || isReconnecting || iceRestartAttempts > 0 else { return }
+        NSLog("[VOIID] ICE recovered — resetting restart budget")
+        restartInFlight = false
+        isReconnecting = false
+        iceRestartAttempts = 0
+        disconnectGraceTask?.cancel(); disconnectGraceTask = nil
+        restartBackoffTask?.cancel(); restartBackoffTask = nil
+    }
+
+    /// `.failed` means this candidate set is dead. Restart now — no grace period.
+    private func handleIceFailed() {
+        guard let call = active, call.state != .ended else { return }
+        disconnectGraceTask?.cancel(); disconnectGraceTask = nil
+        // A failure invalidates any in-flight restart's assumptions; let the next
+        // attempt through rather than waiting on an answer that isn't coming.
+        restartInFlight = false
+        requestIceRestart(reason: "ice connection failed")
+        // As the answerer we don't send the restart offer (the caller does), so we
+        // need a backstop or we'd sit in "Reconnecting…" forever if the caller is
+        // gone. The caller's own path is bounded by the attempt cap.
+        if !call.isOutgoing { startAnswererRecoveryWatchdog(callId: call.id) }
+    }
+
+    /// Answerer-side backstop: if the caller's restart offer never arrives and ICE
+    /// never comes back, end the call instead of hanging in limbo.
+    private func startAnswererRecoveryWatchdog(callId: String) {
+        guard restartBackoffTask == nil else { return }
+        restartBackoffTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(30))
+            guard !Task.isCancelled, let self else { return }
+            guard let call = self.active, call.id == callId, call.state != .ended else { return }
+            if let pc = self.pc, pc.iceConnectionState == .connected || pc.iceConnectionState == .completed {
+                self.handleIceRecovered()
+                return
+            }
+            NSLog("[VOIID] no recovery from peer within watchdog — ending call \(callId)")
+            self.pendingEndReason = .iceFailed
+            self.endActiveCall(notifyPeer: true, fromCallKit: false)
+        }
+    }
+
+    /// `.disconnected` fires constantly on mobile and usually heals itself within
+    /// a second or two. Wait it out; only escalate if it's still bad afterwards.
+    private func handleIceDisconnected() {
+        guard disconnectGraceTask == nil else { return }
+        guard let call = active, call.state == .connected || call.state == .connecting else { return }
+        NSLog("[VOIID] ICE disconnected — \(Self.disconnectGrace) grace before restart")
+        isReconnecting = true
+        disconnectGraceTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.disconnectGrace)
+            guard !Task.isCancelled, let self else { return }
+            self.disconnectGraceTask = nil
+            guard let pc = self.pc, let current = self.active, current.id == call.id,
+                  current.state != .ended else { return }
+            let state = pc.iceConnectionState
+            if state == .connected || state == .completed {
+                self.handleIceRecovered()   // healed on its own, as most do
+                return
+            }
+            self.requestIceRestart(reason: "ice disconnected past grace period")
         }
     }
 
@@ -399,6 +704,18 @@ final class CallService: NSObject, ObservableObject {
     }
 
     private func handleIncomingOffer(from: String, callId: String, kind: String, sdp: String) {
+        // RENEGOTIATION: an offer for a call that is already up. This is the peer
+        // performing an ICE restart after a network handover — it is NOT a new
+        // call. Do not ring, do not touch CallKit; just apply it and answer.
+        // Without this branch the restart offer would ring the user again
+        // mid-conversation and the recovery would never complete.
+        if let call = active, call.id == callId, pc != nil,
+           !awaitingOfferCallIds.contains(callId),
+           call.state == .connected || call.state == .connecting {
+            handleRenegotiationOffer(from: from, call: call, sdp: sdp)
+            return
+        }
+
         // The offer for a call we already rang from a VoIP push: attach the SDP to
         // the EXISTING call rather than reporting a second one to CallKit.
         if var call = active, call.id == callId {
@@ -434,6 +751,36 @@ final class CallService: NSObject, ObservableObject {
         CallManager.shared.reportIncomingCall(uuid: uuid, handle: from, displayName: from, hasVideo: isVideo) { _ in }
     }
 
+    /// Apply a mid-call re-offer (the peer's ICE restart) and answer it in place.
+    /// Never rings, never reports to CallKit, never rebuilds the peer connection —
+    /// the media tracks and the CallKit call must survive untouched.
+    private func handleRenegotiationOffer(from: String, call: ActiveCall, sdp: String) {
+        NSLog("[VOIID] renegotiation offer for active call \(call.id) — answering in place")
+        isReconnecting = true
+        Task {
+            guard let pc, let current = active, current.id == call.id, current.state != .ended else { return }
+            do {
+                try await pc.setRemoteDescription(RTCSessionDescription(type: .offer, sdp: sdp))
+                hasRemoteDescription = true
+                drainPendingCandidates()
+                let answer = try await pc.answer(for: RTCMediaConstraints(mandatoryConstraints: nil,
+                                                                         optionalConstraints: nil))
+                let tuned = RTCSessionDescription(type: .answer,
+                                                  sdp: CallSDPTuning.tuneLocalDescription(answer.sdp))
+                try await pc.setLocalDescription(tuned)
+                socket.sendCallAnswer(toUserId: from.isEmpty ? current.peerUserId : from,
+                                      callId: current.id, sdp: tuned.sdp)
+                stats.resetRateBaseline()
+                iceRestartsTotal += 1
+            } catch {
+                // A failed renegotiation is NOT a reason to drop a call whose
+                // media may still be flowing. Log it; the ICE state machine will
+                // decide whether this call is actually dead.
+                NSLog("[VOIID] renegotiation failed (call continues): \(error.localizedDescription)")
+            }
+        }
+    }
+
     /// Called by CallManager when the user accepts via CallKit (or the in-app button
     /// routes through CallKit). Builds the answer and completes negotiation.
     func callKitAnswer(uuid: UUID) {
@@ -459,10 +806,13 @@ final class CallService: NSObject, ObservableObject {
                 hasRemoteDescription = true
                 drainPendingCandidates()
                 let answer = try await pc.answer(for: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil))
-                try await pc.setLocalDescription(answer)
-                socket.sendCallAnswer(toUserId: call.peerUserId, callId: call.id, sdp: answer.sdp)
+                let tuned = RTCSessionDescription(type: .answer,
+                                                  sdp: CallSDPTuning.tuneLocalDescription(answer.sdp))
+                try await pc.setLocalDescription(tuned)
+                socket.sendCallAnswer(toUserId: call.peerUserId, callId: call.id, sdp: tuned.sdp)
             } catch {
                 NSLog("[VOIID] call answer failed: \(error.localizedDescription)")
+                pendingEndReason = .setupFailed
                 endActiveCall(notifyPeer: true, fromCallKit: false)
             }
         }
@@ -481,6 +831,7 @@ final class CallService: NSObject, ObservableObject {
         // peerUserId can still be empty if a VoIP push rang us with no caller_id and
         // the offer hasn't arrived — nothing to send the decline to in that case.
         if !call.peerUserId.isEmpty { socket.sendCallDecline(toUserId: call.peerUserId, callId: call.id) }
+        pendingEndReason = .declined
         endActiveCall(notifyPeer: false, fromCallKit: false)
     }
 
@@ -493,8 +844,13 @@ final class CallService: NSObject, ObservableObject {
                 try await pc.setRemoteDescription(RTCSessionDescription(type: .answer, sdp: sdp))
                 hasRemoteDescription = true
                 drainPendingCandidates()
+                // If this answered an ICE-restart offer, the exchange is done —
+                // clear the in-flight flag so a later handover can restart again.
+                // The attempt budget is only refunded once ICE actually connects.
+                restartInFlight = false
             } catch {
                 NSLog("[VOIID] setRemoteDescription(answer) failed: \(error.localizedDescription)")
+                restartInFlight = false
             }
         }
     }
@@ -519,8 +875,9 @@ final class CallService: NSObject, ObservableObject {
 
     // MARK: - Teardown
 
-    private func handleRemoteEnd(callId: String, state: CallState) {
+    private func handleRemoteEnd(callId: String, reason: CallEndReason) {
         guard let call = active, call.id == callId else { return }
+        pendingEndReason = reason
         CallManager.shared.endCall(uuid: call.uuid)
         endActiveCall(notifyPeer: false, fromCallKit: false)
     }
@@ -676,6 +1033,10 @@ final class CallService: NSObject, ObservableObject {
         guard var call = active, call.state != .connected else { return }
         call.state = .connected
         active = call
+        isReconnecting = false
+        if callConnectedAt == nil { callConnectedAt = Date() }
+        everConnected = true
+        if let pc { stats.start(pc: pc) }
         CallManager.shared.reportOutgoingConnected(uuid: call.uuid)
         // A video call held at arm's length belongs on the speaker, not the
         // earpiece. Only forced once, on connect — the user can still toggle.
@@ -712,12 +1073,31 @@ extension CallService: RTCPeerConnectionDelegate {
     nonisolated func peerConnection(_ pc: RTCPeerConnection, didChange newState: RTCIceConnectionState) {
         Task { @MainActor in
             switch newState {
-            case .connected, .completed: self.markConnected()
-            case .failed, .closed, .disconnected:
-                if newState == .failed || newState == .closed {
+            case .connected, .completed:
+                self.handleIceRecovered()
+                self.markConnected()
+
+            case .disconnected:
+                // Transient far more often than not — most of these heal in under
+                // a second. Restarting immediately would cause more dropped calls
+                // than it saves, so wait out a grace period first.
+                self.handleIceDisconnected()
+
+            case .failed:
+                // Terminal for this candidate set. Restart immediately; only the
+                // attempt cap inside requestIceRestart ends the call.
+                self.handleIceFailed()
+
+            case .closed:
+                // We (or the peer connection itself) tore this down. Nothing to
+                // recover — but only end if the call isn't already ending.
+                if let call = self.active, call.state != .ended {
+                    self.pendingEndReason = .iceFailed
                     self.endActiveCall(notifyPeer: true, fromCallKit: false)
                 }
-            default: break
+
+            default:
+                break
             }
         }
     }
