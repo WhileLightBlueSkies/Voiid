@@ -15,13 +15,16 @@
 | Platform | Source | Version | Pinned how |
 |---|---|---|---|
 | **Android** | [GetStream/webrtc-android](https://github.com/GetStream/webrtc-android) — `io.getstream:stream-webrtc-android` (Maven Central) | **1.3.8** | Exact version in `apps/android/gradle/libs.versions.toml` (`streamWebrtc = "1.3.8"`), referenced via `version.ref`. No version range, no `+`. ✅ |
-| **iOS** | [stasel/WebRTC](https://github.com/stasel/WebRTC) — prebuilt `WebRTC.xcframework` | see `apps/ios/vendor/README.md` | Vendored binary at `apps/ios/vendor/WebRTC.xcframework` (**gitignored**, like the Firebase vendor). ⚠️ |
+| **iOS** | [stasel/WebRTC](https://github.com/stasel/WebRTC) — prebuilt `WebRTC.xcframework` | **150.0.0** (Chromium **M150**) | Vendored binary at `apps/ios/vendor/WebRTC.xcframework` (**gitignored**, like the Firebase vendor); version + SHA-256 recorded in **`apps/ios/VENDOR.md`** (tracked). ✅ |
 
 **Note on the iOS binary:** the framework's own `CFBundleShortVersionString` is a
-placeholder (`1.0`), so the real version is **not recoverable from the artifact**.
-It must be recorded at fetch time — that's what `apps/ios/vendor/README.md` is
-for (exact release tag + download URL + how to re-fetch). Keep it accurate; it is
-the only record of what we ship.
+useless placeholder (`1.0`), so the version is **not recoverable from the
+artifact**. It was identified by byte-for-byte **SHA-256 comparison** of the
+vendored `ios-arm64` slice against candidate release assets, and both checksums
+are recorded in `apps/ios/VENDOR.md` along with a verify-before-unzip re-fetch
+procedure. That file is the single source of truth for what we ship — keep it
+accurate on every bump. (It lives at `apps/ios/VENDOR.md` rather than inside
+`vendor/` because `vendor/` is gitignored.)
 
 **Why the iOS one is gitignored:** it's ~93 MB. Same tradeoff as the vendored
 Firebase SDK. The cost is that a fresh clone can't build iOS until the framework

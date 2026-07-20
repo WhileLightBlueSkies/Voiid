@@ -40,8 +40,10 @@ enum CallState: Equatable {
 struct ActiveCall: Identifiable, Equatable {
     let id: String            // call_id (shared by both peers)
     let uuid: UUID            // CallKit handle
-    let peerUserId: String
-    let title: String
+    /// Filled from the VoIP push payload, then corrected by the authenticated
+    /// `from_user_id` on the WS offer (the push payload is not authenticated).
+    var peerUserId: String
+    var title: String
     let isVideo: Bool
     let isOutgoing: Bool
     var state: CallState
@@ -80,6 +82,21 @@ final class CallService: NSObject, ObservableObject {
     private var hasRemoteDescription = false
     // The offer we received but haven't answered yet (incoming call awaiting accept).
     private var pendingIncomingOfferSDP: String?
+
+    // MARK: VoIP-push reconciliation
+    // A VoIP push reports the call to CallKit *before* the SDP offer arrives over the
+    // WebSocket. These track that in-between window so the later `call_offer` for the
+    // same call_id attaches to the call we already reported instead of creating a
+    // second one (which would double-ring and wedge CallKit).
+    /// call_ids we rang from a VoIP push and are still waiting on an offer for.
+    private var awaitingOfferCallIds: Set<String> = []
+    /// The user hit Answer in CallKit before the offer landed — answer on arrival.
+    private var answerWhenOfferArrives = false
+    /// Fires if the offer never comes (caller cancelled / push raced a hangup) so we
+    /// don't ring forever.
+    private var offerTimeoutTask: Task<Void, Never>?
+    /// How long a push-rung call may ring without an offer before we give up.
+    private static let offerTimeout: Duration = .seconds(30)
 
     private var timer: Timer?
     private let api = APIClient()
@@ -154,13 +171,107 @@ final class CallService: NSObject, ObservableObject {
 
     // MARK: - Incoming
 
+    /// Ring an incoming call straight from a PushKit VoIP push, BEFORE any SDP has
+    /// arrived. iOS requires `reportNewIncomingCall` to happen inside the push
+    /// handler, so this is deliberately synchronous up to the CallKit report and
+    /// only then calls `completion` (which PushKit demands we call).
+    ///
+    /// Everything here is best-effort metadata: the real peer identity arrives with
+    /// the authenticated `call_offer` frame and overwrites it.
+    func reportIncomingCallFromVoIPPush(callId: String,
+                                        callerId: String,
+                                        kind: String,
+                                        conversationId: String?,
+                                        displayName: String?,
+                                        completion: @escaping () -> Void) {
+        // The WS offer beat the push (app was alive), or this is a duplicate push —
+        // the call is already ringing, nothing to do. Still must call completion.
+        if let active, active.id == callId { completion(); return }
+
+        // Already busy on a different call. iOS still requires us to report a call
+        // for this push, so report it and immediately end it as busy.
+        if let active, active.id != callId {
+            let uuid = UUID()
+            let peer = callerId
+            // CallKit rejects an empty handle — fall back to a non-empty routing id.
+            let handle = peer.isEmpty ? (conversationId ?? callId) : peer
+            CallManager.shared.reportIncomingCall(uuid: uuid, handle: handle,
+                                                  displayName: displayName ?? handle,
+                                                  hasVideo: kind == "video") { _ in
+                CallManager.shared.endCall(uuid: uuid)
+                completion()
+            }
+            if !peer.isEmpty { socket.sendCallBusy(toUserId: peer, callId: callId) }
+            return
+        }
+
+        let isVideo = (kind == "video")
+        let uuid = UUID()
+        let handle = callerId.isEmpty ? (conversationId ?? callId) : callerId
+        active = ActiveCall(id: callId, uuid: uuid, peerUserId: callerId,
+                            title: displayName ?? handle,
+                            isVideo: isVideo, isOutgoing: false, state: .incomingRinging)
+        videoEnabled = isVideo
+        pendingIncomingOfferSDP = nil
+        answerWhenOfferArrives = false
+        awaitingOfferCallIds.insert(callId)
+
+        // THE mandatory bit: report to CallKit, complete the push from its callback.
+        CallManager.shared.reportIncomingCall(uuid: uuid, handle: handle,
+                                              displayName: displayName ?? handle,
+                                              hasVideo: isVideo) { ok in
+            if !ok { NSLog("[VOIID] VoIP push: CallKit refused call \(callId)") }
+            completion()
+        }
+
+        // Now get the socket up so the offer (and ICE) can actually reach us — the
+        // app may have been cold-launched by this push with no live connection.
+        WebSocketClient.shared.reconnect()
+        startOfferTimeout(for: callId)
+    }
+
+    /// If no `call_offer` follows the push (caller cancelled, or the push raced a
+    /// hangup we'll never see), stop ringing instead of hanging forever.
+    private func startOfferTimeout(for callId: String) {
+        offerTimeoutTask?.cancel()
+        offerTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.offerTimeout)
+            guard !Task.isCancelled, let self else { return }
+            guard let call = self.active, call.id == callId,
+                  self.awaitingOfferCallIds.contains(callId) else { return }
+            NSLog("[VOIID] VoIP push: no offer for \(callId) within timeout — ending")
+            self.awaitingOfferCallIds.remove(callId)
+            CallManager.shared.endCall(uuid: call.uuid)
+            self.endActiveCall(notifyPeer: false, fromCallKit: false)
+        }
+    }
+
     private func handleIncomingOffer(from: String, callId: String, kind: String, sdp: String) {
-        // Busy: already in a call → tell the caller.
+        // The offer for a call we already rang from a VoIP push: attach the SDP to
+        // the EXISTING call rather than reporting a second one to CallKit.
+        if var call = active, call.id == callId {
+            guard awaitingOfferCallIds.contains(callId), pendingIncomingOfferSDP == nil else { return }
+            awaitingOfferCallIds.remove(callId)
+            offerTimeoutTask?.cancel(); offerTimeoutTask = nil
+            pendingIncomingOfferSDP = sdp
+            // `from` is stamped server-side and authenticated — trust it over the push.
+            call.peerUserId = from
+            if call.title.isEmpty || call.title == call.id { call.title = from }
+            active = call
+            // The user already tapped Answer in CallKit while we had no SDP; now we can.
+            if answerWhenOfferArrives {
+                answerWhenOfferArrives = false
+                callKitAnswer(uuid: call.uuid)
+            }
+            return
+        }
+        // Busy: already in a different call → tell the caller.
         if let active, active.id != callId {
             socket.sendCallBusy(toUserId: from, callId: callId)
             return
         }
         guard active == nil else { return }
+        // No push (app was foregrounded, or VoIP push undelivered) — ring from the WS.
         let isVideo = (kind == "video")
         let uuid = UUID()
         pendingIncomingOfferSDP = sdp
@@ -174,7 +285,18 @@ final class CallService: NSObject, ObservableObject {
     /// Called by CallManager when the user accepts via CallKit (or the in-app button
     /// routes through CallKit). Builds the answer and completes negotiation.
     func callKitAnswer(uuid: UUID) {
-        guard var call = active, call.uuid == uuid, let offerSDP = pendingIncomingOfferSDP else { return }
+        guard var call = active, call.uuid == uuid else { return }
+        guard let offerSDP = pendingIncomingOfferSDP else {
+            // Answered from the lock screen after a VoIP push but the offer hasn't
+            // landed yet. Remember the intent; `handleIncomingOffer` finishes the
+            // answer the moment the SDP arrives.
+            if awaitingOfferCallIds.contains(call.id) {
+                answerWhenOfferArrives = true
+                call.state = .connecting
+                active = call
+            }
+            return
+        }
         call.state = .connecting
         active = call
         Task {
@@ -204,7 +326,9 @@ final class CallService: NSObject, ObservableObject {
     /// Decline an incoming call.
     func decline() {
         guard let call = active, !call.isOutgoing else { return }
-        socket.sendCallDecline(toUserId: call.peerUserId, callId: call.id)
+        // peerUserId can still be empty if a VoIP push rang us with no caller_id and
+        // the offer hasn't arrived — nothing to send the decline to in that case.
+        if !call.peerUserId.isEmpty { socket.sendCallDecline(toUserId: call.peerUserId, callId: call.id) }
         endActiveCall(notifyPeer: false, fromCallKit: false)
     }
 
@@ -265,7 +389,10 @@ final class CallService: NSObject, ObservableObject {
     /// re-entering the CallKit end transaction.
     func endActiveCall(notifyPeer: Bool, fromCallKit: Bool) {
         guard let call = active else { return }
-        if notifyPeer { socket.sendCallHangup(toUserId: call.peerUserId, callId: call.id) }
+        offerTimeoutTask?.cancel(); offerTimeoutTask = nil
+        awaitingOfferCallIds.remove(call.id)
+        answerWhenOfferArrives = false
+        if notifyPeer, !call.peerUserId.isEmpty { socket.sendCallHangup(toUserId: call.peerUserId, callId: call.id) }
         if !fromCallKit { CallManager.shared.endCall(uuid: call.uuid) }
 
         // Best-effort call-record status update.

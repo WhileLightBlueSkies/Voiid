@@ -336,6 +336,9 @@ final class ChatStore: ObservableObject {
         // Call signaling: wire the WebRTC engine's inbound handlers (call_offer/answer/
         // ice/hangup) + CallKit onto the same socket.
         CallService.shared.configure(socket: WebSocketClient.shared)
+        // We're authenticated by the time realtime starts, so this is the point where
+        // a VoIP token captured before login (or on a fresh install) gets uploaded.
+        VoIPPushManager.shared.uploadTokenIfNeeded()
     }
 
     // Conversations we've already asked the peer to reset this session (avoid loops).

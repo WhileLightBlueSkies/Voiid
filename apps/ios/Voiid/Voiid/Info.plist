@@ -2,6 +2,18 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Background modes for calls. NOTE: these must live here, not as
+	     INFOPLIST_KEY_UIBackgroundModes build settings — Xcode's generated-plist
+	     mechanism does not recognise UIBackgroundModes and silently drops it.
+	       voip                – PushKit wakes the app for an incoming call
+	       audio               – keep call audio alive in the background
+	       remote-notification – message pushes / NSE + Firebase Auth silent push -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>voip</string>
+		<string>audio</string>
+		<string>remote-notification</string>
+	</array>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

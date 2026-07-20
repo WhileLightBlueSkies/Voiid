@@ -32,6 +32,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         // Register for remote notifications so the server can send the NSE-triggering
         // message push (and Firebase Auth's silent verification push).
         application.registerForRemoteNotifications()
+        // Separate, high-priority push channel for incoming calls: PushKit VoIP.
+        // Alert pushes are best-effort and get dropped for killed/backgrounded apps,
+        // which loses calls; a VoIP push wakes us and we ring CallKit immediately.
+        VoIPPushManager.shared.start()
         return true
     }
 
