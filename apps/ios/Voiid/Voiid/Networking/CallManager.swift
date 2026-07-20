@@ -34,8 +34,12 @@ final class CallManager: NSObject {
     private override init() {
         let config = CXProviderConfiguration()
         config.supportsVideo = true
+        // Call waiting: a second inbound call must be reportable while the first
+        // is up, otherwise CallKit rejects the report and the user never gets the
+        // native "answer / decline" choice. One call per group, two groups — the
+        // two calls are independent, never merged (we don't do conferencing).
         config.maximumCallsPerCallGroup = 1
-        config.maximumCallGroups = 1
+        config.maximumCallGroups = 2
         config.supportedHandleTypes = [.generic]
         provider = CXProvider(configuration: config)
         super.init()
@@ -73,7 +77,9 @@ final class CallManager: NSObject {
         update.remoteHandle = CXHandle(type: .generic, value: handle)
         update.localizedCallerName = displayName
         update.hasVideo = hasVideo
-        update.supportsHolding = false
+        // Hold is real: CXSetHeldCallAction below disables the local tracks and
+        // mirrors the state to the peer over call_hold/call_unhold.
+        update.supportsHolding = true
         update.supportsGrouping = false
         update.supportsUngrouping = false
         update.supportsDTMF = false
@@ -96,7 +102,18 @@ final class CallManager: NSObject {
         update.remoteHandle = cxHandle
         update.localizedCallerName = displayName
         update.hasVideo = hasVideo
+        update.supportsHolding = true
         provider.reportCall(with: uuid, updated: update)
+    }
+
+    /// Ask CallKit to hold/unhold. Routed through the transaction API (not applied
+    /// directly) so the in-app hold button and the system UI end up in the same
+    /// state — CallKit calls us back via `CXSetHeldCallAction`.
+    func requestHold(uuid: UUID, onHold: Bool) {
+        let action = CXSetHeldCallAction(call: uuid, onHold: onHold)
+        callController.request(CXTransaction(action: action)) { error in
+            if let error { NSLog("[VOIID] CallKit setHeld error: \(error.localizedDescription)") }
+        }
     }
 
     /// Tell CallKit the outgoing call started ringing / connected.
@@ -145,6 +162,16 @@ extension CallManager: CXProviderDelegate {
         }
     }
 
+    /// Hold, from the native in-call UI, from our own hold button (which routes
+    /// through `requestHold`), or implicitly when the user answers a second,
+    /// waiting call.
+    nonisolated func provider(_ provider: CXProvider, perform action: CXSetHeldCallAction) {
+        Task { @MainActor in
+            self.service?.callKitSetHeld(uuid: action.callUUID, held: action.isOnHold)
+            action.fulfill()
+        }
+    }
+
     nonisolated func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
         Task { @MainActor in
             self.service?.setMuted(action.isMuted)
@@ -156,6 +183,11 @@ extension CallManager: CXProviderDelegate {
         // Hand the CallKit-activated session to WebRTC and enable audio.
         RTCAudioSession.sharedInstance().audioSessionDidActivate(audioSession)
         RTCAudioSession.sharedInstance().isAudioEnabled = true
+        // The ringback tone may have activated this session itself (it plays
+        // before the call connects, and didActivate only fires on connect). Now
+        // that WebRTC owns it, CallToneService must stop treating it as its own
+        // so it can never deactivate a live call's session.
+        Task { @MainActor in CallToneService.shared.noteWebRTCTookOverSession() }
     }
 
     nonisolated func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {

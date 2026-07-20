@@ -127,13 +127,24 @@ struct CallScreen: View {
 
     private var liveState: CallState? { isRealOneToOne ? call.active?.state : nil }
 
+    /// Mid-call ICE restart in progress. Surfaced prominently because the
+    /// alternative reading of a frozen call is "it's dead" — and the user hangs
+    /// up on a call that was about to recover.
+    private var isReconnecting: Bool {
+        isRealOneToOne && call.isReconnecting
+            && (liveState == .connected || liveState == .connecting)
+    }
+
     private var statusText: String {
         if isRealOneToOne {
             switch call.active?.state {
             case .some(.connected):
+                if call.isReconnecting { return "Reconnecting…" }
+                if call.isOnHold { return "On hold" }
+                if call.peerOnHold { return "\(request.title) is on hold" }
                 return String(format: "%02d:%02d", call.connectedSeconds / 60, call.connectedSeconds % 60)
             case .some(.incomingRinging): return request.kind == .video ? "Incoming video call" : "Incoming call"
-            case .some(.connecting): return "Connecting…"
+            case .some(.connecting): return call.isReconnecting ? "Reconnecting…" : "Connecting…"
             case .some(.ended), .none: return "Call ended"
             default: return request.kind == .video ? "Ringing — Video" : "Ringing…"
             }
@@ -218,7 +229,10 @@ struct CallScreen: View {
                     Text(statusText)
                         .font(VoiidFont.rounded(14, .regular))
                         .foregroundColor(request.kind == .video ? .white.opacity(0.85) : VoiidColor.textSecondary)
+                    if isReconnecting { reconnectingBadge }
+                    else if isRealOneToOne, call.isOnHold || call.peerOnHold { holdBadge }
                 }
+                .animation(.easeInOut(duration: 0.2), value: isReconnecting)
 
                 Spacer()
                 // Center content: avatar (voice) or video grid/self
@@ -254,6 +268,41 @@ struct CallScreen: View {
         } else {
             startCall()   // group: simulated
         }
+    }
+
+    // MARK: status badges
+
+    /// Subtle, non-alarming: the call is recovering, not failing.
+    private var reconnectingBadge: some View {
+        HStack(spacing: 6) {
+            ProgressView()
+                .progressViewStyle(.circular)
+                .scaleEffect(0.6)
+                .tint(request.kind == .video ? .white : VoiidColor.textSecondary)
+            Text("Reconnecting…")
+                .font(VoiidFont.rounded(11, .medium))
+                .foregroundColor(request.kind == .video ? .white.opacity(0.9) : VoiidColor.textSecondary)
+        }
+        .padding(.horizontal, VoiidSpacing.sm)
+        .padding(.vertical, 4)
+        .background(request.kind == .video ? Color.white.opacity(0.18) : VoiidColor.surfaceCard)
+        .clipShape(Capsule())
+        .accessibilityLabel("Reconnecting")
+        .transition(.opacity)
+    }
+
+    private var holdBadge: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "pause.circle.fill").font(.system(size: 11))
+            Text(call.isOnHold ? "You put this call on hold" : "On hold")
+                .font(VoiidFont.rounded(11, .medium))
+        }
+        .foregroundColor(request.kind == .video ? .white.opacity(0.9) : VoiidColor.textSecondary)
+        .padding(.horizontal, VoiidSpacing.sm)
+        .padding(.vertical, 4)
+        .background(request.kind == .video ? Color.white.opacity(0.18) : VoiidColor.surfaceCard)
+        .clipShape(Capsule())
+        .transition(.opacity)
     }
 
     // MARK: backgrounds
@@ -347,7 +396,10 @@ struct CallScreen: View {
                 }
             }
         } else {
-            HStack(spacing: VoiidSpacing.xl) {
+            // Hold is only offered on a real, connected 1:1 call — there is
+            // nothing to hold before that, and the group path doesn't support it.
+            let showHold = isRealOneToOne && liveState == .connected
+            HStack(spacing: showHold ? VoiidSpacing.md : VoiidSpacing.xl) {
                 let isMuted = isRealOneToOne ? call.muted : muted
                 ctrl(isMuted ? "mic.slash.fill" : "mic.fill", isMuted) {
                     if isRealOneToOne { call.toggleMute() } else { muted.toggle() }
@@ -364,6 +416,11 @@ struct CallScreen: View {
                     let spk = isRealOneToOne ? call.speakerOn : speaker
                     ctrl(spk ? "speaker.wave.2.fill" : "speaker.fill", spk) {
                         if isRealOneToOne { call.toggleSpeaker() } else { speaker.toggle() }
+                    }
+                }
+                if showHold {
+                    ctrl(call.isOnHold ? "play.fill" : "pause.fill", call.isOnHold) {
+                        call.toggleHold()
                     }
                 }
                 // End

@@ -70,6 +70,15 @@ final class WebSocketClient {
     var onCallBusy: ((_ fromUserId: String, _ callId: String) -> Void)?
     /// Peer declined the incoming call. (fromUserId, callId)
     var onCallDecline: ((_ fromUserId: String, _ callId: String) -> Void)?
+    /// The callee's device has actually started alerting — this is what tells the
+    /// CALLER it may start its ringback tone. Deliberately distinct from "we sent
+    /// the offer": a phone that never rang must never produce ringback.
+    /// (fromUserId, callId)
+    var onCallRinging: ((_ fromUserId: String, _ callId: String) -> Void)?
+    /// Peer put the call on hold. (fromUserId, callId)
+    var onCallHold: ((_ fromUserId: String, _ callId: String) -> Void)?
+    /// Peer took the call off hold. (fromUserId, callId)
+    var onCallUnhold: ((_ fromUserId: String, _ callId: String) -> Void)?
 
     // MARK: Call-signaling senders
 
@@ -97,6 +106,17 @@ final class WebSocketClient {
     }
     func sendCallDecline(toUserId: String, callId: String) {
         sendJSON(["type": "call_decline", "to_user_id": toUserId, "call_id": callId], queueIfDown: true)
+    }
+    /// Sent by the CALLEE the moment its device starts alerting (i.e. when we
+    /// report the incoming call to CallKit), so the caller can start ringback.
+    func sendCallRinging(toUserId: String, callId: String) {
+        sendJSON(["type": "call_ringing", "to_user_id": toUserId, "call_id": callId], queueIfDown: true)
+    }
+    func sendCallHold(toUserId: String, callId: String) {
+        sendJSON(["type": "call_hold", "to_user_id": toUserId, "call_id": callId], queueIfDown: true)
+    }
+    func sendCallUnhold(toUserId: String, callId: String) {
+        sendJSON(["type": "call_unhold", "to_user_id": toUserId, "call_id": callId], queueIfDown: true)
     }
 
     func connect() {
@@ -260,6 +280,12 @@ final class WebSocketClient {
             if let from = obj["from_user_id"] as? String, let cid = obj["call_id"] as? String { onCallBusy?(from, cid) }
         case "call_decline":
             if let from = obj["from_user_id"] as? String, let cid = obj["call_id"] as? String { onCallDecline?(from, cid) }
+        case "call_ringing":
+            if let from = obj["from_user_id"] as? String, let cid = obj["call_id"] as? String { onCallRinging?(from, cid) }
+        case "call_hold":
+            if let from = obj["from_user_id"] as? String, let cid = obj["call_id"] as? String { onCallHold?(from, cid) }
+        case "call_unhold":
+            if let from = obj["from_user_id"] as? String, let cid = obj["call_id"] as? String { onCallUnhold?(from, cid) }
         default: break   // "connected" etc.
         }
     }

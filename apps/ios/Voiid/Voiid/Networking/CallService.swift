@@ -73,6 +73,21 @@ final class CallService: NSObject, ObservableObject {
     /// Latest parsed stats sample, for a debug overlay if we ever want one.
     @Published private(set) var latestStats: CallStatsSample?
 
+    // MARK: Hold / call waiting
+    /// WE put the call on hold (via CallKit's CXSetHeldCallAction, the in-app
+    /// hold button, or implicitly by answering a second waiting call).
+    @Published private(set) var isOnHold = false
+    /// The PEER told us they're holding (inbound `call_hold`). Their media has
+    /// stopped; the UI says so rather than looking frozen.
+    @Published private(set) var peerOnHold = false
+    /// A second inbound call is waiting while this one is up. The user chooses in
+    /// CallKit's native call-waiting UI; see `reportWaitingCall`.
+    @Published private(set) var hasWaitingCall = false
+
+    /// call_ids we've already told the caller we're alerting for, so a VoIP push
+    /// and the WS offer for the same call don't send `call_ringing` twice.
+    private var ringingSentCallIds: Set<String> = []
+
     // MARK: Network resilience
     //
     // The problem: WebRTC gathers ICE candidates bound to whichever interface was
@@ -148,6 +163,29 @@ final class CallService: NSObject, ObservableObject {
     /// How long a push-rung call may ring without an offer before we give up.
     private static let offerTimeout: Duration = .seconds(30)
 
+    // MARK: Call waiting
+    //
+    // A second inbound call arriving mid-call used to be answered with an
+    // immediate `call_busy` — the user never learned anyone had called. Instead
+    // we report it to CallKit so the OS shows its native call-waiting UI and the
+    // user gets the choice. See `answerWaitingCall` for the (deliberately
+    // bounded) semantics of accepting it.
+
+    /// A second inbound call reported to CallKit and awaiting the user's choice.
+    private struct WaitingCall {
+        let id: String
+        let uuid: UUID
+        var peerUserId: String
+        var title: String
+        let isVideo: Bool
+        /// nil while the VoIP push has rung but the SDP offer hasn't landed yet.
+        var sdp: String?
+    }
+    private var waitingCall: WaitingCall?
+    /// The user answered the waiting call before its offer arrived.
+    private var answerWaitingWhenOfferArrives = false
+    private var waitingCallTimeoutTask: Task<Void, Never>?
+
     private var timer: Timer?
     private let api = APIClient()
 
@@ -197,6 +235,86 @@ final class CallService: NSObject, ObservableObject {
         socket.onCallDecline = { [weak self] _, callId in
             Task { @MainActor in self?.handleRemoteEnd(callId: callId, reason: .declined) }
         }
+        socket.onCallRinging = { [weak self] _, callId in
+            Task { @MainActor in self?.handleRemoteRinging(callId: callId) }
+        }
+        socket.onCallHold = { [weak self] _, callId in
+            Task { @MainActor in self?.handlePeerHold(callId: callId, held: true) }
+        }
+        socket.onCallUnhold = { [weak self] _, callId in
+            Task { @MainActor in self?.handlePeerHold(callId: callId, held: false) }
+        }
+    }
+
+    // MARK: - Ringback (caller side)
+
+    /// The callee's device is genuinely alerting → start ringback.
+    ///
+    /// This is the ONLY trigger for ringback. Starting it optimistically when the
+    /// offer goes out would mean the caller hears "ringing" for a peer that is
+    /// offline, unreachable, or whose push never landed — which is worse than
+    /// silence, because it's a lie about the other person's phone.
+    private func handleRemoteRinging(callId: String) {
+        guard let call = active, call.id == callId, call.isOutgoing,
+              call.state == .outgoingRinging else { return }
+        CallToneService.shared.startRingback()
+    }
+
+    /// Tell the caller we've started alerting. Sent at the moment we report the
+    /// call to CallKit (not when the offer is parsed), because that is the moment
+    /// the user's phone actually rings.
+    private func sendRingingIfNeeded(toUserId: String, callId: String) {
+        guard !toUserId.isEmpty, !ringingSentCallIds.contains(callId) else { return }
+        ringingSentCallIds.insert(callId)
+        socket.sendCallRinging(toUserId: toUserId, callId: callId)
+    }
+
+    // MARK: - Hold
+
+    /// Toggle hold from the in-app button. Routed through CallKit so the system
+    /// in-call UI and ours never disagree; CallKit calls back into
+    /// `callKitSetHeld`.
+    func toggleHold() {
+        guard let call = active, call.state == .connected else { return }
+        CallManager.shared.requestHold(uuid: call.uuid, onHold: !isOnHold)
+    }
+
+    /// CallKit performed a hold/unhold — either the user asked, or CallKit did it
+    /// implicitly because they answered a second call.
+    func callKitSetHeld(uuid: UUID, held: Bool) {
+        guard let call = active, call.uuid == uuid, call.state != .ended else { return }
+        applyHold(held)
+        // Mirror to the peer so their UI can say "on hold" and they can stop
+        // rendering/sending into a call nobody is listening to.
+        if !call.peerUserId.isEmpty {
+            if held { socket.sendCallHold(toUserId: call.peerUserId, callId: call.id) }
+            else { socket.sendCallUnhold(toUserId: call.peerUserId, callId: call.id) }
+        }
+    }
+
+    /// Stop sending while held. Tracks are disabled rather than removed so there
+    /// is no renegotiation — unhold is instant and the peer connection, its ICE
+    /// state and its stats all survive untouched.
+    private func applyHold(_ held: Bool) {
+        isOnHold = held
+        localAudioTrack?.isEnabled = !held && !muted
+        localVideoTrack?.isEnabled = !held && videoEnabled && (active?.isVideo ?? false)
+        // Only one call may own the audio route at a time; a held call gives it up.
+        // CallKit's didActivate/didDeactivate will also drive this, and both
+        // paths are idempotent, so they can't fight.
+        RTCAudioSession.sharedInstance().isAudioEnabled = !held
+        if held, let capturer = videoCapturer { capturer.stopCapture() }
+        else if !held, let capturer = videoCapturer, active?.isVideo == true, !captureSuspendedForBackground {
+            startCapture(capturer: capturer, front: usingFrontCamera)
+        }
+    }
+
+    /// The peer is holding (or resumed). Their media has stopped arriving; say so
+    /// instead of showing a frozen frame.
+    private func handlePeerHold(callId: String, held: Bool) {
+        guard let call = active, call.id == callId, call.state != .ended else { return }
+        peerOnHold = held
+        remoteVideoTrack?.isEnabled = !held
     }
 
     private var socket: WebSocketClient { WebSocketClient.shared }
@@ -440,6 +558,8 @@ final class CallService: NSObject, ObservableObject {
         iceRestartsTotal = 0
         restartInFlight = false
         isReconnecting = false
+        isOnHold = false
+        peerOnHold = false
     }
 
     /// Fire-and-forget the anonymous aggregate. See CallStatsCollector's privacy
@@ -647,20 +767,19 @@ final class CallService: NSObject, ObservableObject {
         // the call is already ringing, nothing to do. Still must call completion.
         if let active, active.id == callId { completion(); return }
 
-        // Already busy on a different call. iOS still requires us to report a call
-        // for this push, so report it and immediately end it as busy.
+        // Already on a different call → CALL WAITING. iOS requires us to report a
+        // call for this push regardless; rather than reporting it and immediately
+        // killing it (which told the user nothing), report it properly so they get
+        // the native call-waiting UI and can choose. See `reportWaitingCall`.
         if let active, active.id != callId {
-            let uuid = UUID()
-            let peer = callerId
             // CallKit rejects an empty handle — fall back to a non-empty routing id.
-            let handle = peer.isEmpty ? (conversationId ?? callId) : peer
-            CallManager.shared.reportIncomingCall(uuid: uuid, handle: handle,
-                                                  displayName: displayName ?? handle,
-                                                  hasVideo: kind == "video") { _ in
-                CallManager.shared.endCall(uuid: uuid)
-                completion()
-            }
-            if !peer.isEmpty { socket.sendCallBusy(toUserId: peer, callId: callId) }
+            let handle = callerId.isEmpty ? (conversationId ?? callId) : callerId
+            reportWaitingCall(callId: callId, from: callerId,
+                              title: displayName ?? handle,
+                              isVideo: kind == "video", sdp: nil,
+                              completion: completion)
+            // The offer still needs a live socket to reach us.
+            WebSocketClient.shared.reconnect()
             return
         }
 
@@ -682,6 +801,10 @@ final class CallService: NSObject, ObservableObject {
             if !ok { NSLog("[VOIID] VoIP push: CallKit refused call \(callId)") }
             completion()
         }
+        // We are now alerting → let the caller start ringback. `callerId` comes
+        // from the (unauthenticated) push payload and may be empty; if it is, the
+        // authenticated `call_offer` supplies it and we send from there instead.
+        sendRingingIfNeeded(toUserId: callerId, callId: callId)
 
         // Now get the socket up so the offer (and ICE) can actually reach us — the
         // app may have been cold-launched by this push with no live connection.
@@ -729,6 +852,9 @@ final class CallService: NSObject, ObservableObject {
             call.peerUserId = from
             if call.title.isEmpty || call.title == call.id { call.title = from }
             active = call
+            // The push may have rung us with no caller_id to reply to. Now we have
+            // an authenticated one, so the caller can finally hear ringback.
+            sendRingingIfNeeded(toUserId: from, callId: callId)
             // The user already tapped Answer in CallKit while we had no SDP; now we can.
             if answerWhenOfferArrives {
                 answerWhenOfferArrives = false
@@ -736,9 +862,11 @@ final class CallService: NSObject, ObservableObject {
             }
             return
         }
-        // Busy: already in a different call → tell the caller.
+        // Already on a different call → CALL WAITING (or attaching the SDP to a
+        // waiting call a VoIP push already reported).
         if let active, active.id != callId {
-            socket.sendCallBusy(toUserId: from, callId: callId)
+            reportWaitingCall(callId: callId, from: from, title: from,
+                              isVideo: kind == "video", sdp: sdp)
             return
         }
         guard active == nil else { return }
@@ -751,6 +879,8 @@ final class CallService: NSObject, ObservableObject {
         videoEnabled = isVideo
         // Ask the OS to show the native incoming-call UI.
         CallManager.shared.reportIncomingCall(uuid: uuid, handle: from, displayName: from, hasVideo: isVideo) { _ in }
+        // Alerting now → the caller may start ringback.
+        sendRingingIfNeeded(toUserId: from, callId: callId)
     }
 
     /// Apply a mid-call re-offer (the peer's ICE restart) and answer it in place.
@@ -783,9 +913,143 @@ final class CallService: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - Call waiting (second inbound call while busy)
+
+    /// Report a second inbound call to CallKit so the OS shows its native
+    /// call-waiting UI, instead of silently bouncing the caller with `call_busy`.
+    ///
+    /// SCOPE — deliberate and documented. Answering the waiting call ENDS the
+    /// first one (see `answerWaitingCall`); it does not park it and let the user
+    /// swap back and forth. True two-call hold/swap needs two concurrent
+    /// RTCPeerConnections and a second `ActiveCall`, which is a structural change
+    /// to this class. What's here gets the user the thing that actually mattered:
+    /// they find out someone is calling and get to choose. Hold itself is fully
+    /// implemented (`applyHold`) and is what CallKit drives on the first call
+    /// during the transition.
+    ///
+    /// `sdp` is nil when a VoIP push rang us before the offer arrived; it's filled
+    /// in later by `handleIncomingOffer`.
+    private func reportWaitingCall(callId: String, from: String, title: String,
+                                   isVideo: Bool, sdp: String?,
+                                   completion: (() -> Void)? = nil) {
+        // Offer landing for a waiting call we already reported — just attach it.
+        if var waiting = waitingCall, waiting.id == callId {
+            if let sdp, waiting.sdp == nil {
+                waiting.sdp = sdp
+                if !from.isEmpty { waiting.peerUserId = from }
+                waitingCall = waiting
+                sendRingingIfNeeded(toUserId: waiting.peerUserId, callId: callId)
+                // The user hit Answer before the SDP existed; finish the job now.
+                if answerWaitingWhenOfferArrives {
+                    answerWaitingWhenOfferArrives = false
+                    answerWaitingCall()
+                }
+            }
+            completion?()
+            return
+        }
+        // A THIRD call. One waiting call is as much as the native UI can present
+        // meaningfully — this one is genuinely busy.
+        guard waitingCall == nil else {
+            if !from.isEmpty { socket.sendCallBusy(toUserId: from, callId: callId) }
+            completion?()
+            return
+        }
+
+        let uuid = UUID()
+        let handle = title.isEmpty ? callId : title
+        waitingCall = WaitingCall(id: callId, uuid: uuid, peerUserId: from,
+                                  title: handle, isVideo: isVideo, sdp: sdp)
+        hasWaitingCall = true
+        CallManager.shared.reportIncomingCall(uuid: uuid, handle: handle, displayName: handle,
+                                              hasVideo: isVideo) { [weak self] ok in
+            Task { @MainActor in
+                guard let self else { completion?(); return }
+                if !ok {
+                    // CallKit refused (Do Not Disturb, capacity). Fall back to the
+                    // old behaviour so the caller isn't left ringing into nothing.
+                    NSLog("[VOIID] call waiting: CallKit refused \(callId) — falling back to busy")
+                    self.clearWaitingCall(sendBusy: true)
+                }
+                completion?()
+            }
+        }
+        sendRingingIfNeeded(toUserId: from, callId: callId)
+        startWaitingCallTimeout(for: callId)
+    }
+
+    /// Don't let a waiting call ring forever if the user ignores it.
+    private func startWaitingCallTimeout(for callId: String) {
+        waitingCallTimeoutTask?.cancel()
+        waitingCallTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.offerTimeout)
+            guard !Task.isCancelled, let self else { return }
+            guard let waiting = self.waitingCall, waiting.id == callId else { return }
+            NSLog("[VOIID] call waiting: \(callId) unanswered — ending")
+            self.clearWaitingCall(sendBusy: true)
+        }
+    }
+
+    /// Tear down the waiting-call slot. `sendBusy` tells the second caller we're
+    /// not taking it; the primary call is never touched by this.
+    private func clearWaitingCall(sendBusy: Bool, decline: Bool = false) {
+        guard let waiting = waitingCall else { return }
+        waitingCall = nil
+        hasWaitingCall = false
+        answerWaitingWhenOfferArrives = false
+        waitingCallTimeoutTask?.cancel(); waitingCallTimeoutTask = nil
+        ringingSentCallIds.remove(waiting.id)
+        if !waiting.peerUserId.isEmpty {
+            if decline { socket.sendCallDecline(toUserId: waiting.peerUserId, callId: waiting.id) }
+            else if sendBusy { socket.sendCallBusy(toUserId: waiting.peerUserId, callId: waiting.id) }
+        }
+        CallManager.shared.endCall(uuid: waiting.uuid)
+    }
+
+    /// The user chose the waiting call. Ends the first call, then promotes the
+    /// second into the single `active` slot and answers it normally.
+    private func answerWaitingCall() {
+        guard let waiting = waitingCall else { return }
+        guard let sdp = waiting.sdp else {
+            // Answered from the lock screen before the offer landed — remember the
+            // intent; reportWaitingCall finishes this when the SDP arrives.
+            answerWaitingWhenOfferArrives = true
+            return
+        }
+        waitingCall = nil
+        hasWaitingCall = false
+        waitingCallTimeoutTask?.cancel(); waitingCallTimeoutTask = nil
+
+        // Release the first call BEFORE the second takes the audio route — at most
+        // one call may own it. endActiveCall's deferred `active = nil` is keyed on
+        // the old call_id, so it can't clobber the call we're about to install.
+        if let first = active, first.state != .ended {
+            NSLog("[VOIID] call waiting: answering \(waiting.id), ending \(first.id)")
+            pendingEndReason = .localHangup
+            endActiveCall(notifyPeer: true, fromCallKit: false)
+        }
+        // Silence the first call's end cue — the user is switching calls, not
+        // finishing one, and a farewell beep over the new call would be wrong.
+        CallToneService.shared.stopAll()
+
+        active = ActiveCall(id: waiting.id, uuid: waiting.uuid, peerUserId: waiting.peerUserId,
+                            title: waiting.title, isVideo: waiting.isVideo,
+                            isOutgoing: false, state: .incomingRinging)
+        videoEnabled = waiting.isVideo
+        callUIMinimized = false
+        beginCallTelemetry()
+        pendingIncomingOfferSDP = sdp
+        callKitAnswer(uuid: waiting.uuid)
+    }
+
     /// Called by CallManager when the user accepts via CallKit (or the in-app button
     /// routes through CallKit). Builds the answer and completes negotiation.
     func callKitAnswer(uuid: UUID) {
+        // Answering the SECOND, waiting call takes a different route entirely.
+        if let waiting = waitingCall, waiting.uuid == uuid {
+            answerWaitingCall()
+            return
+        }
         guard var call = active, call.uuid == uuid else { return }
         guard let offerSDP = pendingIncomingOfferSDP else {
             // Answered from the lock screen after a VoIP push but the offer hasn't
@@ -878,8 +1142,23 @@ final class CallService: NSObject, ObservableObject {
     // MARK: - Teardown
 
     private func handleRemoteEnd(callId: String, reason: CallEndReason) {
+        // The SECOND (waiting) caller gave up before the user chose. Clear the
+        // call-waiting UI; the first call carries on completely undisturbed.
+        if let waiting = waitingCall, waiting.id == callId {
+            clearWaitingCall(sendBusy: false)
+            return
+        }
         guard let call = active, call.id == callId else { return }
         pendingEndReason = reason
+        // Ringback stops first, then the reason gets its own short cue. Both are
+        // best-effort: CallKit may deactivate the session underneath a cue, which
+        // truncates it. Never worth failing a teardown over.
+        CallToneService.shared.stopRingback()
+        switch reason {
+        case .busy: CallToneService.shared.playBusy()
+        case .declined: CallToneService.shared.playDeclined()
+        default: break
+        }
         CallManager.shared.endCall(uuid: call.uuid)
         endActiveCall(notifyPeer: false, fromCallKit: false)
     }
@@ -893,6 +1172,11 @@ final class CallService: NSObject, ObservableObject {
     func callKitStart(uuid: UUID) { /* audio session handled by CallKit didActivate */ }
 
     func callKitEnd(uuid: UUID) {
+        // Declining the waiting call must leave the call we're actually on alone.
+        if let waiting = waitingCall, waiting.uuid == uuid {
+            clearWaitingCall(sendBusy: false, decline: true)
+            return
+        }
         endActiveCall(notifyPeer: true, fromCallKit: true)
     }
 
@@ -902,7 +1186,23 @@ final class CallService: NSObject, ObservableObject {
         guard let call = active else { return }
         offerTimeoutTask?.cancel(); offerTimeoutTask = nil
         awaitingOfferCallIds.remove(call.id)
+        ringingSentCallIds.remove(call.id)
         answerWhenOfferArrives = false
+
+        // Ringback must never outlive the call it belongs to, on ANY teardown
+        // path — that's the guarantee this single line buys, regardless of which
+        // of the many callers got here first.
+        CallToneService.shared.stopRingback()
+        // A short cue on the way out, but only for outcomes the user didn't
+        // already hear one for (busy/declined play theirs in handleRemoteEnd) and
+        // only where it says something true.
+        switch pendingEndReason {
+        case .setupFailed, .iceFailed: CallToneService.shared.playFailed()
+        case .busy, .declined: break
+        default: if everConnected { CallToneService.shared.playEndCue() }
+        }
+        isOnHold = false
+        peerOnHold = false
         if notifyPeer, !call.peerUserId.isEmpty { socket.sendCallHangup(toUserId: call.peerUserId, callId: call.id) }
         if !fromCallKit { CallManager.shared.endCall(uuid: call.uuid) }
 
@@ -944,7 +1244,8 @@ final class CallService: NSObject, ObservableObject {
 
     func setMuted(_ m: Bool) {
         muted = m
-        localAudioTrack?.isEnabled = !m
+        // Hold already silences us; unmuting while held must not start sending.
+        localAudioTrack?.isEnabled = !m && !isOnHold
     }
     func toggleMute() { setMuted(!muted) }
 
@@ -955,7 +1256,7 @@ final class CallService: NSObject, ObservableObject {
 
     func toggleVideo() {
         videoEnabled.toggle()
-        localVideoTrack?.isEnabled = videoEnabled
+        localVideoTrack?.isEnabled = videoEnabled && !isOnHold
     }
 
     func switchCamera() {
@@ -1036,6 +1337,10 @@ final class CallService: NSObject, ObservableObject {
         call.state = .connected
         active = call
         isReconnecting = false
+        // Answered. Ringback must die here, before any media reaches the speaker —
+        // a tone bleeding into the first second of a conversation is exactly the
+        // artefact this whole path exists to avoid.
+        CallToneService.shared.stopRingback()
         if callConnectedAt == nil { callConnectedAt = Date() }
         everConnected = true
         if let pc { stats.start(pc: pc) }
