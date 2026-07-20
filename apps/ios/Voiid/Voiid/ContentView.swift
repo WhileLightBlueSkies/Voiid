@@ -13,6 +13,9 @@ struct ContentView: View {
     @StateObject private var ai = AIStore()
     @StateObject private var clips = ClipsStore()
     @ObservedObject private var call = CallService.shared
+    /// Set when the user taps the PiP window (or the in-app floating window) to
+    /// come back to a call whose screen is no longer presented.
+    @State private var restoreCallUIRequested = false
 
     var body: some View {
         Group {
@@ -38,14 +41,30 @@ struct ContentView: View {
                     kind: c.isVideo ? .video : .voice, peerUserId: c.peerUserId))
             }
         }
+        // Tapping the PiP window asks the app to bring the call UI back. Usually
+        // the call screen is still presented underneath (backgrounding does not
+        // dismiss it) and this is a no-op; it matters when the call screen was
+        // dismissed while the call carried on.
+        .onReceive(NotificationCenter.default.publisher(for: .voiidRestoreCallUI)) { _ in
+            guard call.active != nil, !call.callUIVisible else { return }
+            call.restoreCallUI()
+            restoreCallUIRequested = true
+        }
     }
 
-    /// Present the global call surface only for an INCOMING call (an outgoing call is
-    /// already presented from the chat detail screen).
+    /// Present the global call surface for an INCOMING call (an outgoing call is
+    /// already presented from the chat detail screen), or when a PiP restore asked
+    /// for the call UI back and nothing else is showing it.
     private var incomingCallPresented: Binding<Bool> {
         Binding(
-            get: { call.active?.isOutgoing == false && call.active?.state != .ended },
-            set: { _ in }
+            get: {
+                guard let active = call.active, active.state != .ended,
+                      !call.callUIMinimized else { return false }
+                return !active.isOutgoing || restoreCallUIRequested
+            },
+            set: { presented in
+                if !presented { restoreCallUIRequested = false }
+            }
         )
     }
 }

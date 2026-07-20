@@ -44,6 +44,22 @@ final class CallManager: NSObject {
         let rtcSession = RTCAudioSession.sharedInstance()
         rtcSession.useManualAudio = true
         rtcSession.isAudioEnabled = false
+        Self.configureAudioSessionForCalls()
+    }
+
+    /// The category/mode a VoIP call needs, declared up front so WebRTC configures
+    /// the CallKit-provided session correctly:
+    ///   .playAndRecord + .voiceChat  – two-way call audio, echo cancellation, and
+    ///                                  (with the `audio` background mode) keeps
+    ///                                  flowing while backgrounded or locked.
+    ///   allowBluetooth(A2DP)         – headsets/car kits can take the call.
+    /// This is the session WebRTC applies in `audioSessionDidActivate`.
+    private static func configureAudioSessionForCalls() {
+        let config = RTCAudioSessionConfiguration.webRTC()
+        config.category = AVAudioSession.Category.playAndRecord.rawValue
+        config.mode = AVAudioSession.Mode.voiceChat.rawValue
+        config.categoryOptions = [.allowBluetoothHFP, .allowBluetoothA2DP, .duckOthers]
+        RTCAudioSessionConfiguration.setWebRTC(config)
     }
 
     func configure(service: CallService) { self.service = service }

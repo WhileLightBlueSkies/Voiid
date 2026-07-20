@@ -137,8 +137,37 @@ struct CallScreen: View {
         ZStack {
             background
             // Real remote video fills the screen behind the overlay (1:1 video calls).
-            if isRealOneToOne, request.kind == .video, let remote = call.remoteVideoTrack {
-                RTCVideoView(track: remote).ignoresSafeArea()
+            // Rendered through the shared sample-buffer layer rather than
+            // RTCMTLVideoView — RTCMTLVideoView cannot be picture-in-picture'd, and
+            // this is the same layer the system PiP window draws from.
+            if isRealOneToOne, request.kind == .video, call.remoteVideoTrack != nil {
+                CallRemoteVideoView().ignoresSafeArea()
+            }
+            // Minimize: shrink to the in-app floating window, call keeps running.
+            if isRealOneToOne, liveState == .connected || liveState == .connecting {
+                VStack {
+                    HStack {
+                        Button {
+                            Haptics.tap()
+                            call.minimizeCallUI()
+                            dismiss()
+                        } label: {
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundColor(request.kind == .video ? .white : VoiidColor.textPrimary)
+                                .frame(width: 38, height: 38)
+                                .background(request.kind == .video
+                                            ? Color.white.opacity(0.2) : VoiidColor.surfaceCard)
+                                .clipShape(Circle())
+                        }
+                        .accessibilityLabel("Minimize call")
+                        Spacer()
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, VoiidSpacing.lg)
+                .padding(.top, VoiidSpacing.md)
+                .zIndex(1)
             }
             VStack(spacing: 0) {
                 Spacer().frame(height: 60)
@@ -181,8 +210,14 @@ struct CallScreen: View {
                     .padding(.bottom, VoiidSpacing.xxl)
             }
         }
-        .onAppear { onAppearStart() }
-        .onDisappear { timer?.invalidate() }
+        .onAppear {
+            onAppearStart()
+            if isRealOneToOne { call.setCallUIVisible(true) }
+        }
+        .onDisappear {
+            timer?.invalidate()
+            if isRealOneToOne { call.setCallUIVisible(false) }
+        }
         .onChange(of: call.active?.state) { _, newState in
             // A real 1:1 call reached a terminal state → close the screen.
             if isRealOneToOne, (newState == nil || newState == .ended) {

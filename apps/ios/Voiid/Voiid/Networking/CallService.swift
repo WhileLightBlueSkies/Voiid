@@ -25,6 +25,7 @@ import Foundation
 import Combine
 import WebRTC
 import AVFoundation
+import UIKit
 
 /// High-level call state the UI renders.
 enum CallState: Equatable {
@@ -101,11 +102,32 @@ final class CallService: NSObject, ObservableObject {
     private var timer: Timer?
     private let api = APIClient()
 
+    // MARK: Lifecycle / background handling
+    /// True while the full-screen call UI is on screen. Used to decide whether a
+    /// PiP restore tap needs to re-present it, and whether to show the in-app
+    /// floating call window.
+    @Published private(set) var callUIVisible = false
+    /// The user minimized the call screen but the call is still running. Keeps the
+    /// call-screen presentation bindings from immediately re-presenting it, and is
+    /// what makes the in-app floating window appear.
+    @Published private(set) var callUIMinimized = false
+    /// Set when we stopped the camera because the app went to the background, so
+    /// foregrounding knows to restart it (and only then).
+    private var captureSuspendedForBackground = false
+    private var systemObserversInstalled = false
+
     private override init() { super.init() }
 
     /// Wire signaling callbacks + CallKit. Call once at app startup.
     func configure(socket: WebSocketClient) {
         CallManager.shared.configure(service: self)
+        installSystemObservers()
+        // PiP follows the call lifecycle (remote track in, call ended out) without
+        // this class needing to know about AVKit.
+        CallPiPController.shared.observe(self)
+        // In-app floating "return to call" window (foreground only — system PiP
+        // is what covers the backgrounded case).
+        CallFloatingWindowManager.shared.observe(self)
 
         socket.onCallOffer = { [weak self] from, callId, kind, sdp in
             Task { @MainActor in self?.handleIncomingOffer(from: from, callId: callId, kind: kind, sdp: sdp) }
@@ -129,6 +151,135 @@ final class CallService: NSObject, ObservableObject {
 
     private var socket: WebSocketClient { WebSocketClient.shared }
 
+    // MARK: - System observers (background / interruption / route / termination)
+
+    /// Everything a call needs to survive leaving the foreground. All handlers are
+    /// no-ops when there is no active call, so this is safe to install once at
+    /// startup and leave running for the life of the process.
+    private func installSystemObservers() {
+        guard !systemObserversInstalled else { return }
+        systemObserversInstalled = true
+        let nc = NotificationCenter.default
+
+        // Camera capture is suspended by iOS once we leave the foreground: stop it
+        // deliberately so we never publish a stale/frozen local frame.
+        nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { CallService.shared.handleEnteredBackground() }
+        }
+        nc.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { CallService.shared.handleWillEnterForeground() }
+        }
+        // Don't leave the peer ringing/talking to a zombie call if we're killed.
+        nc.addObserver(forName: UIApplication.willTerminateNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { CallService.shared.handleWillTerminate() }
+        }
+        nc.addObserver(forName: UIScene.didDisconnectNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { CallService.shared.handleWillTerminate() }
+        }
+        // PSTN call / Siri / alarm takes the audio session away and gives it back.
+        nc.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { note in
+            MainActor.assumeIsolated { CallService.shared.handleAudioInterruption(note) }
+        }
+        // Headphones / Bluetooth connected or yanked mid-call.
+        nc.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main) { note in
+            MainActor.assumeIsolated { CallService.shared.handleRouteChange(note) }
+        }
+    }
+
+    private func handleEnteredBackground() {
+        guard let call = active, call.state != .ended, call.isVideo else { return }
+        guard let capturer = videoCapturer, !captureSuspendedForBackground else { return }
+        captureSuspendedForBackground = true
+        capturer.stopCapture()
+        // Publish "no video" rather than a frozen last frame while we're away.
+        localVideoTrack?.isEnabled = false
+    }
+
+    private func handleWillEnterForeground() {
+        guard captureSuspendedForBackground else { return }
+        captureSuspendedForBackground = false
+        guard let call = active, call.state != .ended, let capturer = videoCapturer else { return }
+        startCapture(capturer: capturer, front: usingFrontCamera)
+        localVideoTrack?.isEnabled = videoEnabled && call.isVideo
+    }
+
+    /// Best-effort clean shutdown on termination. Kept synchronous — the app is
+    /// being torn down and any `Task` we schedule here will likely never run.
+    private func handleWillTerminate() {
+        guard let call = active else { return }
+        if !call.peerUserId.isEmpty {
+            socket.sendCallHangup(toUserId: call.peerUserId, callId: call.id)
+        }
+        CallManager.shared.endCall(uuid: call.uuid)
+        videoCapturer?.stopCapture()
+        pc?.close()
+        RTCAudioSession.sharedInstance().isAudioEnabled = false
+    }
+
+    private func handleAudioInterruption(_ note: Notification) {
+        guard active != nil else { return }
+        guard let info = note.userInfo,
+              let raw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+        let rtc = RTCAudioSession.sharedInstance()
+        switch type {
+        case .began:
+            // Something else (a phone call, Siri) owns audio now.
+            rtc.isAudioEnabled = false
+        case .ended:
+            let options = AVAudioSession.InterruptionOptions(
+                rawValue: info[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+            )
+            guard options.contains(.shouldResume) else { return }
+            rtc.lockForConfiguration()
+            try? rtc.setActive(true)
+            rtc.unlockForConfiguration()
+            rtc.isAudioEnabled = true
+            applyOutputOverride(speaker: speakerOn)
+        @unknown default:
+            break
+        }
+    }
+
+    private func handleRouteChange(_ note: Notification) {
+        guard let call = active, call.state != .ended else { return }
+        guard let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
+        switch reason {
+        case .newDeviceAvailable:
+            // A headset / Bluetooth device appeared — let audio follow it by
+            // dropping any speaker override we had forced.
+            speakerOn = false
+            applyOutputOverride(speaker: false)
+        case .oldDeviceUnavailable:
+            // Headset removed. A video call belongs on the speaker; a voice call
+            // falls back to the receiver (what the user expects at their ear).
+            let wantSpeaker = call.isVideo
+            speakerOn = wantSpeaker
+            applyOutputOverride(speaker: wantSpeaker)
+        default:
+            break
+        }
+    }
+
+    /// Force the output port. Centralised so route changes and the speaker button
+    /// go through the same locked configuration path.
+    private func applyOutputOverride(speaker: Bool) {
+        let session = RTCAudioSession.sharedInstance()
+        session.lockForConfiguration()
+        try? session.overrideOutputAudioPort(speaker ? .speaker : .none)
+        session.unlockForConfiguration()
+    }
+
+    /// Told by the call screen whether it is on screen (drives PiP restore + the
+    /// in-app floating window).
+    func setCallUIVisible(_ visible: Bool) { callUIVisible = visible }
+
+    /// Shrink the call to the in-app floating window (call keeps running).
+    func minimizeCallUI() { callUIMinimized = true }
+    /// Bring the full-screen call UI back (floating-window or PiP tap).
+    func restoreCallUI() { callUIMinimized = false }
+
     // MARK: - Outgoing
 
     /// Place a 1:1 call. Builds the peer connection, creates an offer, signals it,
@@ -140,6 +291,7 @@ final class CallService: NSObject, ObservableObject {
         active = ActiveCall(id: callId, uuid: uuid, peerUserId: peerUserId, title: title,
                             isVideo: isVideo, isOutgoing: true, state: .outgoingRinging)
         videoEnabled = isVideo
+        callUIMinimized = false
 
         Task {
             await setupPeerConnection(isVideo: isVideo)
@@ -405,6 +557,8 @@ final class CallService: NSObject, ObservableObject {
 
         timer?.invalidate(); timer = nil
         connectedSeconds = 0
+        captureSuspendedForBackground = false
+        callUIMinimized = false
         videoCapturer?.stopCapture()
         videoCapturer = nil
         videoSource = nil
@@ -437,10 +591,7 @@ final class CallService: NSObject, ObservableObject {
 
     func toggleSpeaker() {
         speakerOn.toggle()
-        let session = RTCAudioSession.sharedInstance()
-        session.lockForConfiguration()
-        try? session.overrideOutputAudioPort(speakerOn ? .speaker : .none)
-        session.unlockForConfiguration()
+        applyOutputOverride(speaker: speakerOn)
     }
 
     func toggleVideo() {
@@ -526,6 +677,12 @@ final class CallService: NSObject, ObservableObject {
         call.state = .connected
         active = call
         CallManager.shared.reportOutgoingConnected(uuid: call.uuid)
+        // A video call held at arm's length belongs on the speaker, not the
+        // earpiece. Only forced once, on connect — the user can still toggle.
+        if call.isVideo, !speakerOn {
+            speakerOn = true
+            applyOutputOverride(speaker: true)
+        }
         if timer == nil {
             timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.connectedSeconds += 1 }
