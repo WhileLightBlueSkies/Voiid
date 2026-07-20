@@ -18,12 +18,15 @@
 		0B1613322FE4070E008FC346 /* FirebasePerformance in Frameworks */ = {isa = PBXBuildFile; productRef = 0B1613312FE4070E008FC346 /* FirebasePerformance */; };
 		0B1613FB2FE40940008FC346 /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = 0B1613FA2FE40940008FC346 /* GoogleService-Info.plist */; };
 		E2EC04E000000000000000A1 /* Voiid.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E2EC04E000000000000000A0 /* Voiid.xcframework */; };
+		BB0000000000000000000001 /* WebRTC.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000000 /* WebRTC.xcframework */; };
+		BB0000000000000000000002 /* WebRTC.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000000 /* WebRTC.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		0B1613FA2FE40940008FC346 /* GoogleService-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "GoogleService-Info.plist"; sourceTree = "<group>"; };
 		0B832F1F2FE005110023F558 /* Voiid.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Voiid.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		E2EC04E000000000000000A0 /* Voiid.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Voiid.xcframework; path = Frameworks/Voiid.xcframework; sourceTree = "<group>"; };
+		BB0000000000000000000000 /* WebRTC.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = WebRTC.xcframework; path = ../vendor/WebRTC.xcframework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -54,6 +57,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				E2EC04E000000000000000A1 /* Voiid.xcframework in Frameworks */,
+				BB0000000000000000000001 /* WebRTC.xcframework in Frameworks */,
 				0B1613302FE4070E008FC346 /* FirebaseMessaging in Frameworks */,
 				0B1613322FE4070E008FC346 /* FirebasePerformance in Frameworks */,
 				0B1613282FE4070E008FC346 /* FirebaseAuth in Frameworks */,
@@ -74,6 +78,7 @@
 			children = (
 				0B1613FA2FE40940008FC346 /* GoogleService-Info.plist */,
 				E2EC04E000000000000000A0 /* Voiid.xcframework */,
+				BB0000000000000000000000 /* WebRTC.xcframework */,
 				0B832F212FE005110023F558 /* Voiid */,
 				0B832F202FE005110023F558 /* Products */,
 			);
@@ -98,6 +103,7 @@
 				0B832F1B2FE005110023F558 /* Sources */,
 				0B832F1C2FE005110023F558 /* Frameworks */,
 				0B832F1D2FE005110023F558 /* Resources */,
+				BB0000000000000000000003 /* Embed Frameworks */,
 				AA0000000000000000000042 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
@@ -316,6 +322,7 @@
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Frameworks",
+					"$(PROJECT_DIR)/../vendor",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Voiid/Info.plist;
@@ -371,6 +378,7 @@
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Frameworks",
+					"$(PROJECT_DIR)/../vendor",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Voiid/Info.plist;
@@ -550,6 +558,17 @@
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		BB0000000000000000000003 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				BB0000000000000000000002 /* WebRTC.xcframework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 
 		AA0000000000000000000050 /* VoiidNSE */ = {
 			isa = PBXNativeTarget;
@@ -589,6 +608,7 @@
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Frameworks",
+					"$(PROJECT_DIR)/../vendor",
 				);
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = VoiidNSE/Info.plist;
@@ -623,6 +643,7 @@
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Frameworks",
+					"$(PROJECT_DIR)/../vendor",
 				);
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = VoiidNSE/Info.plist;

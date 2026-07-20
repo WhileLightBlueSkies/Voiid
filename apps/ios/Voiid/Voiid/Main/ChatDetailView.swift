@@ -138,12 +138,19 @@ struct ChatDetailView: View {
     }
 
     private func startCall(_ kind: CallKind) {
+        let isGroup = conversation.type == .group
         activeCall = CallRequest(
             title: conversation.title,
-            isGroup: conversation.type == .group,
-            members: conversation.type == .group ? DummyData.groupMembers : [],
+            isGroup: isGroup,
+            members: isGroup ? DummyData.groupMembers : [],
             photoName: conversation.photoName,
-            kind: kind)
+            kind: kind,
+            peerUserId: isGroup ? nil : resolvedPeerUserId)
+    }
+
+    /// The 1:1 peer's user id for placing a real call.
+    private var resolvedPeerUserId: String? {
+        chat.directConversations.first(where: { $0.id == conversation.id })?.peerUserId ?? conversation.peerUserId
     }
 
     // MARK: header — normal, or selection bar in multi-select

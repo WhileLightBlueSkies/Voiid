@@ -333,6 +333,9 @@ final class ChatStore: ObservableObject {
                 }
             }
         }
+        // Call signaling: wire the WebRTC engine's inbound handlers (call_offer/answer/
+        // ice/hangup) + CallKit onto the same socket.
+        CallService.shared.configure(socket: WebSocketClient.shared)
     }
 
     // Conversations we've already asked the peer to reset this session (avoid loops).
