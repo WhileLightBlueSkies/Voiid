@@ -122,6 +122,46 @@ object CallManager {
     private var acceptPending = false
     private var frontCamera = true
 
+    // ---- network resilience ----------------------------------------------------
+
+    /** Give up after this many ICE restarts and end the call honestly rather than hanging. */
+    private const val MAX_ICE_RESTARTS = 3
+    /**
+     * ICE DISCONNECTED is usually a transient blip — a couple of lost STUN checks, a brief
+     * radio stall — and heals itself within a second or two. Renegotiating on every blip
+     * causes far more disruption than it fixes, so DISCONNECTED only escalates to a restart
+     * if it is *still* disconnected after this grace period. FAILED is terminal and skips it.
+     */
+    private const val DISCONNECT_GRACE_MS = 3_000L
+    /** TURN credentials are short-lived; re-fetch rather than restart with expired ones. */
+    private const val ICE_SERVER_TTL_MS = 4 * 60_000L
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private var cachedIceServers: List<PeerConnection.IceServer> = emptyList()
+    private var iceServersFetchedAtMs = 0L
+
+    private var iceRestartAttempts = 0
+    /** An ICE-restart offer is out and we're waiting to see ICE come back up. */
+    private var restartInFlight = false
+    /**
+     * True once this call has completed a full offer/answer exchange. It is the discriminator
+     * that lets the answerer tell a *renegotiation* offer (same call_id, call already up —
+     * apply silently) from a genuine new incoming call (ring the user).
+     */
+    @Volatile private var hasNegotiated = false
+    private var disconnectGrace: Runnable? = null
+    private var restartWatchdog: Runnable? = null
+
+    private var netMonitor: CallNetworkMonitor? = null
+    private var metrics: CallMetricsCollector? = null
+    private var qualityJob: kotlinx.coroutines.Job? = null
+    private var endReason: String? = null
+
+    private val _quality = MutableStateFlow(CallStatsSnapshot())
+    /** Live connection health for a weak-signal indicator in the call UI. */
+    val quality: StateFlow<CallStatsSnapshot> = _quality.asStateFlow()
+
     // ---- lifecycle -------------------------------------------------------------
 
     /** Idempotent one-time init: WebRTC factory + WS call-signal handler. Safe to call often. */
@@ -160,19 +200,22 @@ object CallManager {
             speaker = kind == CallKind.VIDEO,
         )
         startForegroundService()
+        beginCallSession()
         // Wake an offline callee via push (best effort) in parallel with WS offer.
         scope.launch(Dispatchers.IO) {
             runCatching { CallApi(appContext).ring(peerUserId, callId, kind, conversationId) }
         }
         exec.execute {
-            val servers = fetchIceServers()
+            val servers = iceServers()
             createPeerConnection(servers) ?: return@execute
             addLocalMedia(kind)
             applyAudioRoute(kind == CallKind.VIDEO)
-            pc?.createOffer(object : SdpObserverAdapter() {
+            val p = pc ?: return@execute
+            p.createOffer(object : SdpObserverAdapter() {
                 override fun onCreateSuccess(sdp: SessionDescription) {
-                    pc?.setLocalDescription(SdpObserverAdapter(), sdp)
-                    WebSocketClient.get(appContext).sendCallOffer(peerUserId, callId, kind, sdp.description)
+                    val tuned = tune(sdp)
+                    p.setLocalDescription(SdpObserverAdapter(), tuned)
+                    WebSocketClient.get(appContext).sendCallOffer(peerUserId, callId, kind, tuned.description)
                 }
             }, offerAnswerConstraints(kind))
         }
@@ -205,6 +248,14 @@ object CallManager {
 
     private fun onRemoteOffer(sig: WebSocketClient.CallSignal) {
         val current = _state.value
+        // RENEGOTIATION, not a new call: same call_id on a call that has already completed an
+        // offer/answer exchange. This is the peer's ICE restart after their network moved.
+        // It must be applied silently — no ring, no incoming UI, no notification, no state
+        // reset. Missing this case is what turns one handover into a second phantom call.
+        if (current != null && current.callId == sig.callId && hasNegotiated && pc != null) {
+            onRenegotiationOffer(sig, current)
+            return
+        }
         // Busy: already on a different call -> tell the caller.
         if (current != null && current.callId != sig.callId) {
             WebSocketClient.get(appContext).sendCallBusy(sig.fromUserId, sig.callId)
@@ -219,9 +270,10 @@ object CallManager {
             videoEnabled = kind == CallKind.VIDEO, speaker = kind == CallKind.VIDEO,
         )
         CallForegroundService.showIncoming(appContext, _state.value!!)
+        beginCallSession()
         val sdp = sig.sdp ?: return
         exec.execute {
-            val servers = fetchIceServers()
+            val servers = iceServers()
             createPeerConnection(servers) ?: return@execute
             pc?.setRemoteDescription(object : SdpObserverAdapter() {
                 override fun onSetSuccess() { remoteDescSet = true; drainCandidates(); if (acceptPending) doAnswer() }
@@ -229,14 +281,77 @@ object CallManager {
         }
     }
 
-    private fun onRemoteAnswer(sig: WebSocketClient.CallSignal) {
+    /**
+     * Apply a renegotiation (ICE-restart) offer for the call we are ALREADY on.
+     *
+     * Deliberately minimal: set the remote description, answer, done. No ring, no incoming
+     * notification, no media re-attach (the tracks and their senders are still live), no
+     * phase change — from the user's point of view nothing happened, which is the entire goal.
+     */
+    private fun onRenegotiationOffer(sig: WebSocketClient.CallSignal, s: CallState) {
         val sdp = sig.sdp ?: return
         exec.execute {
+            val p = pc ?: return@execute
+            // Glare: both ends restarted at the same instant, so we hold a local offer and are
+            // being handed a remote one. Someone has to yield. We use a fixed, symmetric rule —
+            // the side that originally received the call yields — so both ends always agree on
+            // who backs down and we can't deadlock trading offers.
+            if (restartInFlight) {
+                if (!s.incoming) return@execute       // we win: keep our own offer in flight
+                runCatching {
+                    p.setLocalDescription(
+                        SdpObserverAdapter(),
+                        SessionDescription(SessionDescription.Type.ROLLBACK, ""),
+                    )
+                }
+                restartInFlight = false
+                cancelRestartWatchdog()
+            }
+            p.setRemoteDescription(object : SdpObserverAdapter() {
+                override fun onSetSuccess() {
+                    exec.execute {
+                        remoteDescSet = true
+                        drainCandidates()
+                        answerRenegotiation(s)
+                    }
+                }
+            }, SessionDescription(SessionDescription.Type.OFFER, sdp))
+        }
+    }
+
+    /** Build + send the answer to a renegotiation offer. Runs on [exec]. */
+    private fun answerRenegotiation(s: CallState) {
+        val p = pc ?: return
+        p.createAnswer(object : SdpObserverAdapter() {
+            override fun onCreateSuccess(sdp: SessionDescription) {
+                val tuned = tune(sdp)
+                p.setLocalDescription(SdpObserverAdapter(), tuned)
+                WebSocketClient.get(appContext).sendCallAnswer(s.peerUserId, s.callId, tuned.description)
+            }
+        }, offerAnswerConstraints(s.kind))
+    }
+
+    private fun onRemoteAnswer(sig: WebSocketClient.CallSignal) {
+        val sdp = sig.sdp ?: return
+        // An answer to a restart offer resolves it; an answer to the first offer means the
+        // session is negotiated and any later same-call_id offer is a renegotiation.
+        val wasRestart = restartInFlight
+        exec.execute {
             pc?.setRemoteDescription(object : SdpObserverAdapter() {
-                override fun onSetSuccess() { remoteDescSet = true; drainCandidates() }
+                override fun onSetSuccess() {
+                    exec.execute {
+                        remoteDescSet = true
+                        hasNegotiated = true
+                        restartInFlight = false
+                        drainCandidates()
+                    }
+                }
             }, SessionDescription(SessionDescription.Type.ANSWER, sdp))
         }
-        update { it.copy(phase = Phase.CONNECTING) }
+        // A restart answer must not drag a live call back to the CONNECTING spinner.
+        if (!wasRestart && _state.value?.phase != Phase.CONNECTED) {
+            update { it.copy(phase = Phase.CONNECTING) }
+        }
     }
 
     private fun onRemoteIce(sig: WebSocketClient.CallSignal) {
@@ -252,7 +367,12 @@ object CallManager {
 
     private fun onRemoteEnd(sig: WebSocketClient.CallSignal) {
         if (_state.value?.callId != sig.callId) return
-        endInternal(notifyPeer = false)
+        val reason = when (sig.type) {
+            "call_decline" -> "declined"
+            "call_busy" -> "busy"
+            else -> "remote-hangup"
+        }
+        endInternal(notifyPeer = false, reason = reason)
     }
 
     // ---- user actions (from the call UI) --------------------------------------
@@ -276,8 +396,12 @@ object CallManager {
         applyAudioRoute(s.kind == CallKind.VIDEO)
         pc?.createAnswer(object : SdpObserverAdapter() {
             override fun onCreateSuccess(sdp: SessionDescription) {
-                pc?.setLocalDescription(SdpObserverAdapter(), sdp)
-                WebSocketClient.get(appContext).sendCallAnswer(s.peerUserId, s.callId, sdp.description)
+                val tuned = tune(sdp)
+                pc?.setLocalDescription(SdpObserverAdapter(), tuned)
+                // We've now completed offer/answer: any further offer on this call_id is a
+                // renegotiation to apply silently, not a new call to ring.
+                hasNegotiated = true
+                WebSocketClient.get(appContext).sendCallAnswer(s.peerUserId, s.callId, tuned.description)
             }
         }, offerAnswerConstraints(s.kind))
     }
@@ -286,11 +410,11 @@ object CallManager {
     fun decline() {
         val s = _state.value ?: return
         WebSocketClient.get(appContext).sendCallDecline(s.peerUserId, s.callId)
-        endInternal(notifyPeer = false)
+        endInternal(notifyPeer = false, reason = "declined")
     }
 
     /** Hang up an active/outgoing call. */
-    fun hangup() = endInternal(notifyPeer = true)
+    fun hangup() = endInternal(notifyPeer = true, reason = "local-hangup")
 
     /**
      * End the call because the OS is tearing us down (task swiped from Recents). Identical to
@@ -299,7 +423,7 @@ object CallManager {
      */
     fun hangupFromSystem() {
         if (_state.value == null) return
-        endInternal(notifyPeer = true)
+        endInternal(notifyPeer = true, reason = "local-hangup")
     }
 
     fun toggleMute() {
@@ -405,14 +529,21 @@ object CallManager {
 
     // ---- WebRTC plumbing -------------------------------------------------------
 
-    private fun createPeerConnection(iceServers: List<PeerConnection.IceServer>): PeerConnection? {
-        val cfg = PeerConnection.RTCConfiguration(iceServers).apply {
+    /**
+     * The one place RTCConfiguration is built, so an ICE restart re-applies exactly the same
+     * policies with only the ICE servers refreshed. GATHER_CONTINUALLY matters here: it lets
+     * WebRTC surface candidates from a newly-arrived interface without a full restart.
+     */
+    private fun rtcConfig(iceServers: List<PeerConnection.IceServer>) =
+        PeerConnection.RTCConfiguration(iceServers).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
             bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
             rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
         }
-        pc = factory.createPeerConnection(cfg, pcObserver)
+
+    private fun createPeerConnection(iceServers: List<PeerConnection.IceServer>): PeerConnection? {
+        pc = factory.createPeerConnection(rtcConfig(iceServers), pcObserver)
         return pc
     }
 
@@ -471,12 +602,31 @@ object CallManager {
             WebSocketClient.get(appContext).sendCallIce(s.peerUserId, s.callId, obj)
         }
 
+        /**
+         * The heart of surviving a real network. The old behaviour — end the call on FAILED —
+         * is exactly the drop we're fixing: a WiFi→cellular handover reliably produces FAILED
+         * once the old candidates die, and the correct response is to re-gather, not hang up.
+         */
         override fun onIceConnectionChange(newState: PeerConnection.IceConnectionState?) {
             when (newState) {
                 PeerConnection.IceConnectionState.CONNECTED,
-                PeerConnection.IceConnectionState.COMPLETED -> markConnected()
-                PeerConnection.IceConnectionState.FAILED,
-                PeerConnection.IceConnectionState.CLOSED -> if (_state.value?.phase != Phase.ENDED) endInternal(notifyPeer = true)
+                PeerConnection.IceConnectionState.COMPLETED -> {
+                    // Whatever we were worried about resolved itself (or our restart worked).
+                    cancelDisconnectGrace()
+                    cancelRestartWatchdog()
+                    exec.execute { restartInFlight = false; iceRestartAttempts = 0 }
+                    markConnected()
+                }
+                // Transient by nature — give it a moment to heal before touching anything.
+                PeerConnection.IceConnectionState.DISCONNECTED -> armDisconnectGrace()
+                // Terminal: ICE has given up on every pair. Re-gather immediately.
+                PeerConnection.IceConnectionState.FAILED -> {
+                    cancelDisconnectGrace()
+                    requestIceRestart("ice_failed")
+                }
+                // CLOSED only happens once we've disposed the PC ourselves.
+                PeerConnection.IceConnectionState.CLOSED ->
+                    if (_state.value?.phase != Phase.ENDED) endInternal(notifyPeer = true, reason = "ice-closed")
                 else -> Unit
             }
         }
@@ -511,6 +661,7 @@ object CallManager {
 
     private fun markConnected() {
         val s = _state.value ?: return
+        metrics?.onConnected()
         if (s.phase == Phase.CONNECTED) return
         update { it.copy(phase = Phase.CONNECTED, connectedAtMs = System.currentTimeMillis()) }
         startForegroundService()
@@ -521,14 +672,24 @@ object CallManager {
 
     // ---- teardown --------------------------------------------------------------
 
-    private fun endInternal(notifyPeer: Boolean) {
+    private fun endInternal(notifyPeer: Boolean, reason: String) {
         val s = _state.value ?: return
+        endReason = endReason ?: reason
         if (notifyPeer && s.phase != Phase.ENDED) {
             runCatching { WebSocketClient.get(appContext).sendCallHangup(s.peerUserId, s.callId) }
         }
         scope.launch(Dispatchers.IO) {
             runCatching { CallApi(appContext).status(s.callId, "ended") }
         }
+        // Anonymous aggregate — counters only, and it can never fail the call (see CallStats).
+        runCatching {
+            metrics?.report(
+                callId = s.callId,
+                connected = s.connectedAtMs != null,
+                endReason = endReason ?: reason,
+            )
+        }
+        endCallSession()
         update { it.copy(phase = Phase.ENDED) }
         exec.execute { releaseWebRtc() }
         restoreAudioRoute()
@@ -554,6 +715,193 @@ object CallManager {
         pendingRemoteCandidates.clear(); remoteDescSet = false; acceptPending = false
         videoPausedForBackground = false
         localRenderer = null; remoteRenderer = null
+        hasNegotiated = false; restartInFlight = false; iceRestartAttempts = 0
+    }
+
+    // ---- network resilience: session, ICE restart, SDP tuning ------------------
+
+    /**
+     * Start the per-call resilience machinery: watch the device's transport for handovers,
+     * begin sampling stats, and tell the signaling socket a call is up so it reconnects
+     * aggressively. Idempotent — both call directions funnel through here.
+     */
+    private fun beginCallSession() {
+        endReason = null
+        iceRestartAttempts = 0
+        restartInFlight = false
+        hasNegotiated = false
+
+        runCatching { WebSocketClient.get(appContext).callActive = true }
+
+        if (netMonitor == null) {
+            netMonitor = CallNetworkMonitor(appContext) { reason ->
+                // Fires on a binder thread; requestIceRestart hops to exec itself.
+                requestIceRestart(reason)
+            }.also { runCatching { it.start() } }
+        }
+
+        if (metrics == null) {
+            val collector = CallMetricsCollector(appContext, exec)
+            metrics = collector
+            runCatching { collector.start { pc } }
+            // Mirror the collector's snapshot so the UI can observe CallManager alone.
+            // StateFlow.collect never completes, so this job is cancelled in endCallSession.
+            qualityJob?.cancel()
+            qualityJob = scope.launch {
+                runCatching { collector.snapshot.collect { _quality.value = it } }
+            }
+        }
+    }
+
+    /** Tear the resilience machinery down. Safe to call more than once. */
+    private fun endCallSession() {
+        cancelDisconnectGrace()
+        cancelRestartWatchdog()
+        runCatching { WebSocketClient.get(appContext).callActive = false }
+        qualityJob?.cancel(); qualityJob = null
+        netMonitor?.let { runCatching { it.stop() } }
+        netMonitor = null
+        // The collector is stopped but NOT nulled here — endInternal already asked it to
+        // upload, and that POST runs on its own IO scope after sampling has stopped.
+        metrics?.let { runCatching { it.stop() } }
+        metrics = null
+        _quality.value = CallStatsSnapshot()
+    }
+
+    /**
+     * ICE servers with a short TTL cache. TURN credentials are deliberately short-lived, so a
+     * restart that happens minutes into a call must not reuse the ones we fetched at dial time —
+     * expired credentials mean the relay candidate silently fails to allocate, which on a
+     * symmetric-NAT cellular network is the difference between reconnecting and not.
+     */
+    private fun iceServers(forceRefresh: Boolean = false): List<PeerConnection.IceServer> {
+        val now = System.currentTimeMillis()
+        val fresh = cachedIceServers.isNotEmpty() && (now - iceServersFetchedAtMs) < ICE_SERVER_TTL_MS
+        if (!forceRefresh && fresh) return cachedIceServers
+        val servers = fetchIceServers()
+        if (servers.isNotEmpty()) {
+            cachedIceServers = servers
+            iceServersFetchedAtMs = now
+        }
+        return servers
+    }
+
+    /** Apply our local-SDP tweaks (Opus FEC + DTX) to a freshly created offer/answer. */
+    private fun tune(sdp: SessionDescription): SessionDescription =
+        SessionDescription(sdp.type, SdpTweaks.enableOpusFecDtx(sdp.description))
+
+    /**
+     * Ask for an ICE restart. Callable from any thread; the actual PeerConnection work is
+     * serialized onto [exec] like everything else.
+     */
+    private fun requestIceRestart(reason: String) {
+        val s = _state.value ?: return
+        if (s.phase != Phase.CONNECTING && s.phase != Phase.CONNECTED) return
+        exec.execute { doIceRestart(reason) }
+    }
+
+    /**
+     * Re-gather ICE for the SAME call: create an offer with `IceRestart=true` and send it as a
+     * normal `call_offer` under the existing call_id. The peer recognises the call_id and
+     * applies it silently via [onRenegotiationOffer] — critically, it does not re-ring.
+     *
+     * Runs on [exec].
+     */
+    private fun doIceRestart(reason: String) {
+        val s = _state.value ?: return
+        if (s.phase == Phase.ENDED) return
+        val p = pc ?: return
+        // Nothing to restart until the first offer/answer has completed.
+        if (!hasNegotiated) return
+        if (restartInFlight) return
+        if (iceRestartAttempts >= MAX_ICE_RESTARTS) {
+            android.util.Log.w("VOIID", "ICE restart budget exhausted ($reason) — ending call")
+            mainHandler.post { endInternal(notifyPeer = true, reason = "ice-failed") }
+            return
+        }
+
+        iceRestartAttempts++
+        restartInFlight = true
+        metrics?.iceRestarts = iceRestartAttempts
+        android.util.Log.i("VOIID", "ICE restart #$iceRestartAttempts ($reason)")
+
+        // Refresh TURN credentials and push them into the live PeerConnection before we
+        // re-gather, so the restart can allocate a fresh relay candidate if it needs one.
+        runCatching {
+            val servers = iceServers(forceRefresh = true)
+            if (servers.isNotEmpty()) p.setConfiguration(rtcConfig(servers))
+        }
+
+        val constraints = offerAnswerConstraints(s.kind).apply {
+            mandatory.add(MediaConstraints.KeyValuePair("IceRestart", "true"))
+        }
+        p.createOffer(object : SdpObserverAdapter() {
+            override fun onCreateSuccess(sdp: SessionDescription) {
+                val tuned = tune(sdp)
+                p.setLocalDescription(object : SdpObserverAdapter() {
+                    override fun onSetSuccess() {
+                        // Queued by WebSocketClient if the socket happens to be down — a
+                        // handover often takes the signaling socket with it.
+                        WebSocketClient.get(appContext)
+                            .sendCallOffer(s.peerUserId, s.callId, s.kind, tuned.description)
+                        armRestartWatchdog()
+                    }
+                    override fun onSetFailure(error: String?) {
+                        exec.execute { restartInFlight = false }
+                    }
+                }, tuned)
+            }
+            override fun onCreateFailure(error: String?) {
+                exec.execute { restartInFlight = false }
+            }
+        }, constraints)
+    }
+
+    /**
+     * A restart offer can be lost outright (the peer is mid-handover too, or the relay dropped
+     * it). If ICE hasn't come back by the time this fires, try again — with a widening delay —
+     * until the attempt budget runs out.
+     */
+    private fun armRestartWatchdog() {
+        cancelRestartWatchdog()
+        val backoffMs = 4_000L * iceRestartAttempts.coerceAtLeast(1)   // 4s, 8s, 12s
+        val r = Runnable {
+            restartWatchdog = null
+            exec.execute {
+                val s = _state.value ?: return@execute
+                if (s.phase == Phase.ENDED) return@execute
+                if (!restartInFlight) return@execute      // ICE recovered; nothing to do
+                restartInFlight = false
+                if (iceRestartAttempts >= MAX_ICE_RESTARTS) {
+                    mainHandler.post { endInternal(notifyPeer = true, reason = "ice-failed") }
+                } else {
+                    doIceRestart("restart_timeout")
+                }
+            }
+        }
+        restartWatchdog = r
+        mainHandler.postDelayed(r, backoffMs)
+    }
+
+    private fun cancelRestartWatchdog() {
+        restartWatchdog?.let { mainHandler.removeCallbacks(it) }
+        restartWatchdog = null
+    }
+
+    /** Start the DISCONNECTED grace timer — see [DISCONNECT_GRACE_MS]. */
+    private fun armDisconnectGrace() {
+        if (disconnectGrace != null) return
+        val r = Runnable {
+            disconnectGrace = null
+            requestIceRestart("ice_disconnected")
+        }
+        disconnectGrace = r
+        mainHandler.postDelayed(r, DISCONNECT_GRACE_MS)
+    }
+
+    private fun cancelDisconnectGrace() {
+        disconnectGrace?.let { mainHandler.removeCallbacks(it) }
+        disconnectGrace = null
     }
 
     // ---- audio routing ---------------------------------------------------------
