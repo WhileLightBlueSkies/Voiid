@@ -96,13 +96,24 @@ wss.on('connection', (ws, req) => {
       //
       // NOTE: sdp/candidate can carry host IPs; they are relayed verbatim but MUST
       // NOT be logged (no info-level logging of these frames anywhere here).
+      // `call_ringing` is what lets the CALLER hear a ringback tone. The tone itself
+      // is played locally on the caller's device (server-generated ringback would mean
+      // streaming audio, which is wrong for a P2P/E2EE app) — this frame only tells the
+      // caller "their device is actually alerting now", so ringback starts at the
+      // truthful moment rather than the instant we sent the offer.
+      //
+      // `call_hold`/`call_unhold` carry call-waiting state so the peer can show
+      // "on hold" and stop sending media while held.
       if (
         (msg.type === 'call_offer' ||
           msg.type === 'call_answer' ||
           msg.type === 'call_ice' ||
           msg.type === 'call_hangup' ||
           msg.type === 'call_busy' ||
-          msg.type === 'call_decline') &&
+          msg.type === 'call_decline' ||
+          msg.type === 'call_ringing' ||
+          msg.type === 'call_hold' ||
+          msg.type === 'call_unhold') &&
         typeof msg.to_user_id === 'string' &&
         typeof msg.call_id === 'string'
       ) {
