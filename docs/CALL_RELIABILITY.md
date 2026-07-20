@@ -80,6 +80,49 @@ difference vs WhatsApp.
 
 ---
 
+## P0.5 — call audio & ringing behavior (the silent-switch trap)
+
+Two DIFFERENT sounds, with deliberately different silent-switch behavior. Getting
+these mixed up is the classic bug ("it doesn't ring when my phone is on silent").
+
+### Callee side — incoming ringtone
+- iOS: played by the **system** via CallKit's `reportNewIncomingCall`. It follows the
+  **ring/silent switch**, exactly like a native phone call — on silent the device
+  vibrates instead of ringing. **This is correct, expected iOS behavior and must NOT
+  be overridden.** WhatsApp/Signal/FaceTime all behave this way; a user who silences
+  their phone expects silence. Do not try to force audio here.
+- Android: the incoming-call notification channel / full-screen intent uses the
+  ring stream and likewise respects ringer mode (silent/vibrate).
+
+### Caller side — RINGBACK tone (the "brrring brrring" you hear while waiting)
+This one **MUST play even when the device is on silent**, because the user actively
+initiated the call and is holding the phone. Getting this right is entirely about
+the audio session category:
+- [ ] iOS: play the ringback through the **call's own audio session** —
+      `AVAudioSession` category `.playAndRecord` (or at minimum `.playback`) with
+      mode `.voiceChat`. Categories `.playback`/`.playAndRecord` **ignore the
+      ring/silent switch**; `.ambient`/`.soloAmbient` obey it. Do NOT play ringback
+      with `AudioServicesPlaySystemSound` or from an `.ambient` session — that is
+      precisely the bug where nothing is heard on silent.
+- [ ] iOS ordering subtlety: for an OUTGOING call the audio session must be active
+      *before* the call connects in order to play ringback. CallKit's
+      `provider(_:didActivate:)` fires on connect, so activate the session (or start
+      the outgoing CallKit transaction) early enough that ringback has a live session.
+      Hand off cleanly to `RTCAudioSession` when media starts so there's no clash.
+- [ ] Android: play ringback on `STREAM_VOICE_CALL` (not `STREAM_RING`/notification)
+      with the call's `MODE_IN_COMMUNICATION` audio mode, so it follows the in-call
+      route (earpiece/speaker/Bluetooth) and isn't silenced by ringer mode.
+- [ ] Stop ringback the instant the call is answered, declined, busy, or fails —
+      never let it bleed into connected audio.
+- [ ] Start ringback when the `call_ringing` frame arrives (the callee's device is
+      genuinely alerting), not optimistically when the offer is sent — otherwise the
+      caller hears ringing for a phone that never rang.
+
+### Related call-state audio
+- [ ] Busy tone / declined feedback, and an audible or haptic cue on call failure.
+- [ ] "Reconnecting…" should be a visible UI state during ICE restart (and optionally
+      a subtle tone), so a mid-call freeze doesn't look like a dead call.
+
 ## P1 — you can't claim reliability you don't measure
 
 ### 6. Call quality telemetry
