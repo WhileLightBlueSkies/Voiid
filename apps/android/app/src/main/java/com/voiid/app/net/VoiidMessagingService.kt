@@ -53,6 +53,26 @@ class VoiidMessagingService : FirebaseMessagingService() {
 
     override fun onMessageReceived(message: RemoteMessage) {
         val data = message.data
+
+        // Incoming 1:1 call: wake the incoming-call UI (full-screen ring). The matching
+        // call_offer arrives over the WebSocket once the app/socket is live.
+        if (data["type"] == "call") {
+            val callId = data["call_id"] ?: return
+            val callerId = data["caller_id"] ?: return
+            val conversationId = data["conversation_id"]
+            val kind = if (data["call_kind"] == "video") com.voiid.app.main.CallKind.VIDEO
+            else com.voiid.app.main.CallKind.VOICE
+            val ctx = applicationContext
+            CallManager.init(ctx)
+            val name = runBlocking {
+                withTimeoutOrNull(6_000L) {
+                    conversationId?.let { runCatching { ChatService(ctx).resolvePeer(it).title }.getOrNull() }
+                }
+            }?.takeIf { it.isNotBlank() } ?: callerId
+            CallManager.onRingPush(callId, callerId, name, kind, conversationId)
+            return
+        }
+
         if (data["type"] != "wake") return
         val conversationId = data["conversation_id"] ?: return
         val messageId = data["message_id"]

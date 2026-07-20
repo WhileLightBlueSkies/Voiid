@@ -1,42 +1,27 @@
 package com.voiid.app.main
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
-import androidx.compose.material.icons.automirrored.filled.VolumeUp
-import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.VideocamOff
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -48,7 +33,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -59,7 +43,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.voiid.app.model.VMember
+import androidx.compose.ui.viewinterop.AndroidView
+import com.voiid.app.net.CallManager
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.VoiidAvatar
 import com.voiid.app.ui.components.softClickable
@@ -67,21 +52,28 @@ import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
 import kotlinx.coroutines.delay
+import org.webrtc.RendererCommon
+import org.webrtc.SurfaceViewRenderer
 
 /**
- * Call type picker + simulated Voice/Video call screens (1:1 + group) —
- * port of iOS `CallScreens.swift`. Dummy: Ringing → Connected with a running timer.
+ * 1:1 voice/video call UI backed by the real WebRTC engine ([CallManager]).
+ * The call-type picker starts a real outgoing call; on-screen state, the timer,
+ * mute/speaker/camera controls and the video renderers are all wired to live call state.
+ *
+ * Group calls are OUT OF SCOPE for v1 (see CallManager) — this UI renders 1:1 only.
  */
 
 enum class CallKind { VOICE, VIDEO }
 
-/** What a call needs to render (works for 1:1 and group). */
+/** What the call-type picker needs to dial a real 1:1 call. */
 data class CallRequest(
     val title: String,
     val isGroup: Boolean,
-    val members: List<VMember>,   // for group grids; empty for 1:1
+    val members: List<com.voiid.app.model.VMember>,   // kept for source compat; unused in 1:1
     val photoName: String?,
     val kind: CallKind,
+    val conversationId: String = "",
+    val peerUserId: String? = null,
 )
 
 // MARK: - Voice/Video picker (small branded sheet)
@@ -133,28 +125,102 @@ private fun CallTypeCard(label: String, icon: ImageVector, modifier: Modifier, o
     }
 }
 
-// MARK: - Call screen (voice + video, 1:1 + group)
+// MARK: - Full-screen call overlay (driven by CallManager state)
+
+/**
+ * The single call surface RootTabView shows whenever [CallManager.state] is non-null.
+ * Branches between the incoming ring UI and the active/outgoing in-call UI.
+ */
+@Composable
+fun CallOverlay(state: CallManager.CallState) {
+    if (state.incoming && state.phase == CallManager.Phase.RINGING_IN) {
+        IncomingCallUi(state)
+    } else {
+        InCallUi(state)
+    }
+}
 
 @Composable
-fun CallScreen(request: CallRequest, onEnd: () -> Unit) {
+private fun IncomingCallUi(state: CallManager.CallState) {
     val haptics = LocalVoiidHaptics.current
-    var connected by remember { mutableStateOf(false) }
+    val isVideo = state.kind == CallKind.VIDEO
+    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(VoiidColor.primary, Color.Black)))) {
+        Column(
+            Modifier.fillMaxSize().statusBarsPadding().padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Spacer(Modifier.height(64.dp))
+            Text(
+                if (isVideo) "Incoming video call" else "Incoming voice call",
+                style = VoiidFont.rounded(15), color = Color.White.copy(alpha = 0.85f),
+            )
+            Spacer(Modifier.height(24.dp))
+            Box(
+                Modifier.size(140.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.15f))
+                    .border(3.dp, Color.White.copy(alpha = 0.6f), CircleShape),
+                contentAlignment = Alignment.Center,
+            ) { VoiidAvatar(size = 140.dp, modifier = Modifier.clip(CircleShape)) }
+            Spacer(Modifier.height(20.dp))
+            Text(state.peerName, style = VoiidFont.rounded(26, FontWeight.Bold), color = Color.White)
+
+            Spacer(Modifier.weight(1f))
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(
+                        Modifier.size(72.dp).clip(CircleShape).background(VoiidColor.error)
+                            .softClickable { haptics.rigid(); CallManager.decline() },
+                        contentAlignment = Alignment.Center,
+                    ) { Icon(Icons.Default.CallEnd, "Decline", tint = Color.White, modifier = Modifier.size(30.dp)) }
+                    Text("Decline", style = VoiidFont.rounded(13), color = Color.White)
+                }
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(
+                        Modifier.size(72.dp).clip(CircleShape).background(Color(0xFF34C759))
+                            .softClickable { haptics.tap(); CallManager.accept() },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            if (isVideo) Icons.Default.Videocam else Icons.Default.Call,
+                            "Accept", tint = Color.White, modifier = Modifier.size(30.dp),
+                        )
+                    }
+                    Text("Accept", style = VoiidFont.rounded(13), color = Color.White)
+                }
+            }
+            Spacer(Modifier.height(32.dp))
+        }
+    }
+}
+
+@Composable
+private fun InCallUi(state: CallManager.CallState) {
+    val haptics = LocalVoiidHaptics.current
+    val isVideo = state.kind == CallKind.VIDEO
+    val connected = state.phase == CallManager.Phase.CONNECTED
+
+    // Live timer derived from the real connection time.
     var seconds by remember { mutableIntStateOf(0) }
-    var muted by remember { mutableStateOf(false) }
-    var speaker by remember { mutableStateOf(false) }
-    var videoOn by remember { mutableStateOf(true) }
-    val isVideo = request.kind == CallKind.VIDEO
-
-    LaunchedEffect(Unit) {
-        delay(2000)
-        connected = true
-        while (true) { delay(1000); seconds += 1 }
+    LaunchedEffect(state.connectedAtMs) {
+        val start = state.connectedAtMs
+        if (start == null) { seconds = 0; return@LaunchedEffect }
+        while (true) {
+            seconds = ((System.currentTimeMillis() - start) / 1000).toInt()
+            delay(500)
+        }
     }
 
-    val statusText = when {
-        !connected -> if (isVideo) "Ringing — Video" else "Ringing…"
-        else -> "%02d:%02d".format(seconds / 60, seconds % 60)
+    val statusText = when (state.phase) {
+        CallManager.Phase.RINGING_OUT -> if (isVideo) "Ringing — Video" else "Ringing…"
+        CallManager.Phase.RINGING_IN -> "Incoming…"
+        CallManager.Phase.CONNECTING -> "Connecting…"
+        CallManager.Phase.CONNECTED -> "%02d:%02d".format(seconds / 60, seconds % 60)
+        CallManager.Phase.ENDED -> "Call ended"
     }
+
     val onDark = isVideo
     val titleColor = if (onDark) Color.White else VoiidColor.textPrimary
     val statusColor = if (onDark) Color.White.copy(alpha = 0.85f) else VoiidColor.textSecondary
@@ -166,62 +232,32 @@ fun CallScreen(request: CallRequest, onEnd: () -> Unit) {
     }
 
     Box(Modifier.fillMaxSize().then(bgModifier)) {
+
+        // Remote video fills the screen once frames arrive.
+        if (isVideo && state.hasRemoteVideo && connected) {
+            AndroidView(
+                factory = { ctx -> makeRenderer(ctx, mirror = false).also { CallManager.setRemoteRenderer(it) } },
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+
         Column(Modifier.fillMaxSize().statusBarsPadding(), horizontalAlignment = Alignment.CenterHorizontally) {
             Spacer(Modifier.height(48.dp))
-
-            // Group call banner card
-            if (request.isGroup) {
-                Row(
-                    Modifier
-                        .clip(CircleShape)
-                        .background(if (isVideo) Color.White.copy(alpha = 0.15f) else VoiidColor.surfaceCard)
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Box(
-                        Modifier.size(30.dp).clip(CircleShape).background(VoiidColor.primary),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            if (isVideo) Icons.Default.Videocam else Icons.Default.Call,
-                            null, tint = VoiidColor.textOnPrimary, modifier = Modifier.size(14.dp),
-                        )
-                    }
-                    Column {
-                        Text(
-                            if (isVideo) "Group video call" else "Group voice call",
-                            style = VoiidFont.rounded(13, FontWeight.SemiBold),
-                            color = if (isVideo) Color.White else VoiidColor.textPrimary,
-                        )
-                        Text(
-                            "${request.members.size} participants",
-                            style = VoiidFont.rounded(11),
-                            color = if (isVideo) Color.White.copy(alpha = 0.8f) else VoiidColor.textSecondary,
-                        )
-                    }
-                }
-                Spacer(Modifier.height(16.dp))
-            }
-
-            // Title + status
-            Text(request.title, style = VoiidFont.rounded(24, FontWeight.Bold), color = titleColor)
+            Text(state.peerName, style = VoiidFont.rounded(24, FontWeight.Bold), color = titleColor)
             Spacer(Modifier.height(6.dp))
             Text(statusText, style = VoiidFont.rounded(14), color = statusColor)
 
-            // Center content: avatar (voice) or video grid/self
             Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-                if (isVideo) VideoCenter(request, videoOn) else VoiceCenter(request)
+                if (isVideo) VideoCenter(state) else VoiceCenter()
             }
 
-            // Controls
             CallControls(
-                isVideo = isVideo, muted = muted, speaker = speaker, videoOn = videoOn,
-                onMute = { haptics.tap(); muted = !muted },
-                onSpeaker = { haptics.tap(); speaker = !speaker },
-                onVideo = { haptics.tap(); videoOn = !videoOn },
-                onFlip = { haptics.tap() },
-                onEnd = { haptics.rigid(); onEnd() },
+                isVideo = isVideo, muted = state.muted, speaker = state.speaker, videoOn = state.videoEnabled,
+                onMute = { haptics.tap(); CallManager.toggleMute() },
+                onSpeaker = { haptics.tap(); CallManager.toggleSpeaker() },
+                onVideo = { haptics.tap(); CallManager.toggleVideo() },
+                onFlip = { haptics.tap(); CallManager.switchCamera() },
+                onEnd = { haptics.rigid(); CallManager.hangup() },
             )
             Spacer(Modifier.height(48.dp))
         }
@@ -229,82 +265,47 @@ fun CallScreen(request: CallRequest, onEnd: () -> Unit) {
 }
 
 @Composable
-private fun VoiceCenter(request: CallRequest) {
-    if (request.isGroup) {
-        ParticipantGrid(request.members, video = false)
-    } else {
+private fun VoiceCenter() {
+    Box(
+        Modifier.size(160.dp).clip(CircleShape).background(VoiidColor.fieldFill)
+            .border(3.dp, VoiidColor.accent, CircleShape),
+        contentAlignment = Alignment.Center,
+    ) { VoiidAvatar(size = 160.dp, modifier = Modifier.clip(CircleShape)) }
+}
+
+@Composable
+private fun VideoCenter(state: CallManager.CallState) {
+    Box(Modifier.fillMaxSize()) {
+        // Local self-preview (bottom-right).
         Box(
-            Modifier.size(160.dp).clip(CircleShape).background(VoiidColor.fieldFill)
-                .border(3.dp, VoiidColor.accent, CircleShape),
+            Modifier
+                .align(Alignment.BottomEnd)
+                .padding(24.dp)
+                .size(width = 110.dp, height = 150.dp)
+                .clip(RoundedCornerShape(VoiidRadius.lg))
+                .background(VoiidColor.primary.copy(alpha = 0.5f)),
             contentAlignment = Alignment.Center,
-        ) { VoiidAvatar(size = 160.dp, modifier = Modifier.clip(CircleShape)) }
-    }
-}
-
-@Composable
-private fun VideoCenter(request: CallRequest, videoOn: Boolean) {
-    if (request.isGroup) {
-        ParticipantGrid(request.members, video = true)
-    } else {
-        Box(Modifier.fillMaxSize()) {
-            // self preview (bottom-right)
-            Box(
-                Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(24.dp)
-                    .size(width = 110.dp, height = 150.dp)
-                    .clip(RoundedCornerShape(VoiidRadius.lg))
-                    .background(VoiidColor.primary.copy(alpha = 0.5f)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    if (videoOn) Icons.Default.Person else Icons.Default.VideocamOff,
-                    null, tint = Color.White.copy(alpha = 0.8f), modifier = Modifier.size(30.dp),
+        ) {
+            if (state.videoEnabled) {
+                AndroidView(
+                    factory = { ctx -> makeRenderer(ctx, mirror = true).also { CallManager.setLocalRenderer(it) } },
+                    modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(VoiidRadius.lg)),
                 )
+            } else {
+                Icon(Icons.Default.VideocamOff, null, tint = Color.White.copy(alpha = 0.8f), modifier = Modifier.size(30.dp))
             }
         }
     }
 }
 
-@Composable
-private fun ParticipantGrid(members: List<VMember>, video: Boolean) {
-    LazyVerticalGrid(
-        columns = GridCells.Fixed(2),
-        contentPadding = PaddingValues(horizontal = 24.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        items(members, key = { it.id }) { m ->
-            if (video) {
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(0.8f)
-                        .clip(RoundedCornerShape(VoiidRadius.lg))
-                        .background(VoiidColor.primary.copy(alpha = 0.5f)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    VoiidAvatar(size = 56.dp, modifier = Modifier.clip(CircleShape))
-                    Text(
-                        if (m.isYou) "You" else m.name,
-                        style = VoiidFont.rounded(10, FontWeight.Medium), color = Color.White,
-                        modifier = Modifier
-                            .align(Alignment.BottomStart)
-                            .padding(6.dp)
-                            .clip(CircleShape)
-                            .background(Color.Black.copy(alpha = 0.4f))
-                            .padding(horizontal = 6.dp, vertical = 2.dp),
-                    )
-                }
-            } else {
-                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    VoiidAvatar(size = 72.dp, modifier = Modifier.clip(CircleShape))
-                    Text(if (m.isYou) "You" else m.name, style = VoiidFont.rounded(12), color = VoiidColor.textPrimary)
-                }
-            }
-        }
+/** Build + init a SurfaceViewRenderer bound to the shared EGL context. */
+private fun makeRenderer(context: android.content.Context, mirror: Boolean): SurfaceViewRenderer =
+    SurfaceViewRenderer(context).apply {
+        init(CallManager.eglBaseContext, null)
+        setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
+        setEnableHardwareScaler(true)
+        setMirror(mirror)
     }
-}
 
 @Composable
 private fun CallControls(
@@ -326,7 +327,6 @@ private fun CallControls(
         } else {
             Ctrl(Icons.AutoMirrored.Filled.VolumeUp, speaker, isVideo, onSpeaker)
         }
-        // End
         Box(
             Modifier.size(64.dp).clip(CircleShape).background(VoiidColor.error).softClickable(onClick = onEnd),
             contentAlignment = Alignment.Center,

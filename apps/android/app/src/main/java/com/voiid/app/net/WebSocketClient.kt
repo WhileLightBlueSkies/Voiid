@@ -56,6 +56,19 @@ class WebSocketClient private constructor(context: Context) {
     var onSessionReset: ((conversationId: String) -> Unit)? = null
     /** An MLS group control event (welcome/commit) was relayed for one of our groups. */
     var onMlsEvent: ((conversationId: String?) -> Unit)? = null
+    /** A call-signaling frame (offer/answer/ice/hangup/decline/busy) was relayed to us. */
+    var onCallSignal: ((CallSignal) -> Unit)? = null
+
+    /** One inbound call-signaling frame. `from_user_id` is server-stamped (authenticated). */
+    data class CallSignal(
+        val type: String,
+        val fromUserId: String,
+        val callId: String,
+        val callKind: String?,
+        val sdp: String?,
+        val candidate: JsonObject?,
+        val conversationId: String?,
+    )
 
     fun connect() {
         if (connected) return
@@ -108,6 +121,39 @@ class WebSocketClient private constructor(context: Context) {
         socket?.send("""{"type":"session_reset","conversation_id":"$conversationId","recipient_ids":[$recips]}""")
     }
 
+    // ---- 1:1 call signaling (relayed; server stamps from_user_id) ---------------
+
+    /** Send an SDP offer to start a call. Values are JSON-escaped (SDP has newlines/quotes). */
+    fun sendCallOffer(toUserId: String, callId: String, kind: com.voiid.app.main.CallKind, sdp: String) {
+        val k = if (kind == com.voiid.app.main.CallKind.VIDEO) "video" else "voice"
+        socket?.send("""{"type":"call_offer","to_user_id":${enc(toUserId)},"call_id":${enc(callId)},"call_kind":"$k","sdp":${enc(sdp)}}""")
+    }
+
+    /** Answer an incoming call with our SDP answer. */
+    fun sendCallAnswer(toUserId: String, callId: String, sdp: String) {
+        socket?.send("""{"type":"call_answer","to_user_id":${enc(toUserId)},"call_id":${enc(callId)},"sdp":${enc(sdp)}}""")
+    }
+
+    /** Trickle one ICE candidate. [candidateJson] is a ready JSON object string. */
+    fun sendCallIce(toUserId: String, callId: String, candidateJson: String) {
+        socket?.send("""{"type":"call_ice","to_user_id":${enc(toUserId)},"call_id":${enc(callId)},"candidate":$candidateJson}""")
+    }
+
+    fun sendCallHangup(toUserId: String, callId: String) {
+        socket?.send("""{"type":"call_hangup","to_user_id":${enc(toUserId)},"call_id":${enc(callId)}}""")
+    }
+
+    fun sendCallDecline(toUserId: String, callId: String) {
+        socket?.send("""{"type":"call_decline","to_user_id":${enc(toUserId)},"call_id":${enc(callId)}}""")
+    }
+
+    fun sendCallBusy(toUserId: String, callId: String) {
+        socket?.send("""{"type":"call_busy","to_user_id":${enc(toUserId)},"call_id":${enc(callId)}}""")
+    }
+
+    /** JSON-encode a string as a quoted literal (escapes quotes/newlines). */
+    private fun enc(s: String): String = JsonPrimitive(s).toString()
+
     private val listener = object : WebSocketListener() {
         override fun onMessage(webSocket: WebSocket, text: String) {
             scope.launch { handle(text) }
@@ -142,6 +188,21 @@ class WebSocketClient private constructor(context: Context) {
             }
             "session_reset" -> obj["conversation_id"]?.jsonPrimitive?.contentOrNull?.let { onSessionReset?.invoke(it) }
             "mls_event" -> onMlsEvent?.invoke(obj["conversation_id"]?.jsonPrimitive?.contentOrNull)
+            "call_offer", "call_answer", "call_ice", "call_hangup", "call_decline", "call_busy" -> {
+                val from = obj["from_user_id"]?.jsonPrimitive?.contentOrNull ?: return
+                val callId = obj["call_id"]?.jsonPrimitive?.contentOrNull ?: return
+                onCallSignal?.invoke(
+                    CallSignal(
+                        type = t,
+                        fromUserId = from,
+                        callId = callId,
+                        callKind = obj["call_kind"]?.jsonPrimitive?.contentOrNull,
+                        sdp = obj["sdp"]?.jsonPrimitive?.contentOrNull,
+                        candidate = obj["candidate"] as? JsonObject,
+                        conversationId = obj["conversation_id"]?.jsonPrimitive?.contentOrNull,
+                    ),
+                )
+            }
             else -> Unit   // "connected" etc.
         }
     }

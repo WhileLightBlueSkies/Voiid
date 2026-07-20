@@ -72,7 +72,17 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore) {
     var openConversation by remember { mutableStateOf<VConversation?>(null) }
     var openClip by remember { mutableStateOf<VClip?>(null) }
     var showNewClip by remember { mutableStateOf(false) }
-    var activeCall by remember { mutableStateOf<CallRequest?>(null) }
+
+    // Real 1:1 WebRTC calls: init the engine once, observe live call state.
+    val context = androidx.compose.ui.platform.LocalContext.current
+    androidx.compose.runtime.LaunchedEffect(Unit) { com.voiid.app.net.CallManager.init(context) }
+    val callState by com.voiid.app.net.CallManager.state.collectAsState()
+    val startCall: (CallRequest) -> Unit = { req ->
+        // v1 is 1:1 only; a group request (no peer) is a no-op (see CallManager).
+        if (!req.isGroup && !req.peerUserId.isNullOrBlank()) {
+            com.voiid.app.net.CallManager.startOutgoing(req.conversationId, req.peerUserId, req.title, req.kind)
+        }
+    }
 
     // Notification deep-link: when MainActivity publishes a conversation id, switch to the
     // Chats tab and open that conversation (resolving/reloading it from the server if needed).
@@ -89,7 +99,7 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore) {
         Column(Modifier.fillMaxSize().imePadding()) {
             Box(Modifier.fillMaxWidth().weight(1f)) {
                 when (tab) {
-                    Tab.CHAT -> ChatsHomeView(chat, onOpenConversation = { openConversation = it }, onStartCall = { activeCall = it })
+                    Tab.CHAT -> ChatsHomeView(chat, onOpenConversation = { openConversation = it }, onStartCall = startCall)
                     Tab.AI -> AIChatView(ai)
                     Tab.CLIPS -> ClipsFeedView(clips, onOpenClip = { openClip = it }, onNewClip = { showNewClip = true })
                 }
@@ -107,7 +117,7 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore) {
                 ChatDetailView(
                     conversation = conv, chat = chat,
                     onBack = { openConversation = null },
-                    onStartCall = { activeCall = it },
+                    onStartCall = startCall,
                 )
             }
         }
@@ -123,15 +133,13 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore) {
             }
         }
 
-        // Call screen — full-screen cover on top of everything.
+        // Call surface — real WebRTC call, full-screen cover on top of everything.
         AnimatedVisibility(
-            visible = activeCall != null,
+            visible = callState != null,
             enter = fadeIn(),
             exit = fadeOut(),
         ) {
-            activeCall?.let { req ->
-                CallScreen(request = req, onEnd = { activeCall = null })
-            }
+            callState?.let { CallOverlay(it) }
         }
     }
 

@@ -255,6 +255,8 @@ fun ChatsHomeView(
                         members = if (c.type == ConversationType.GROUP) DummyData.groupMembers else emptyList(),
                         photoName = c.photoName,
                         kind = kind,
+                        conversationId = c.id,
+                        peerUserId = c.peerUserId,
                     ),
                 )
                 callTarget = null

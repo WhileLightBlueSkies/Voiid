@@ -132,6 +132,7 @@ fun ChatDetailView(
                 title = conversation.title, isGroup = isGroup,
                 members = if (isGroup) DummyData.groupMembers else emptyList(),
                 photoName = conversation.photoName, kind = kind,
+                conversationId = conversation.id, peerUserId = conversation.peerUserId,
             ),
         )
     }

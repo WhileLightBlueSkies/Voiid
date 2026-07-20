@@ -77,6 +77,10 @@ dependencies {
     // (it ships the Android-native JNA dispatch library); the plain jar won't load.
     implementation("net.java.dev.jna:jna:5.14.0@aar")
 
+    // WebRTC engine for real 1:1 voice/video calls. Stream's maintained build of
+    // libwebrtc, published on Maven Central under the original `org.webrtc` package.
+    implementation(libs.stream.webrtc.android)
+
     debugImplementation(libs.androidx.ui.tooling)
 
     testImplementation(libs.junit)
