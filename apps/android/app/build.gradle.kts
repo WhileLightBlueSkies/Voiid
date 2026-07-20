@@ -81,6 +81,13 @@ dependencies {
     // libwebrtc, published on Maven Central under the original `org.webrtc` package.
     implementation(libs.stream.webrtc.android)
 
+    // LiveKit SFU client for group calls. It does NOT collide with the Stream WebRTC
+    // build above: LiveKit depends on io.github.webrtc-sdk:android-prefixed, whose
+    // classes are relocated to `livekit.org.webrtc` (zero classes under `org.webrtc`)
+    // and whose native library is `liblkjingle_peerconnection_so.so` (vs Stream's
+    // `libjingle_peerconnection_so.so`). Both stacks coexist — no exclusions needed.
+    implementation(libs.livekit.android)
+
     debugImplementation(libs.androidx.ui.tooling)
 
     testImplementation(libs.junit)

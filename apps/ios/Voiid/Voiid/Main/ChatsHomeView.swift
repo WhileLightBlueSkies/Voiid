@@ -125,12 +125,28 @@ struct ChatsHomeView: View {
             }
             .sheet(item: $callTarget) { conv in
                 CallTypeSheet(title: conv.title) { kind in
+                    // Mirrors ChatDetailView.startCall. Without peerUserId (1:1) or
+                    // conversationId (group) CallScreen falls back to the SIMULATED
+                    // path — so calls started from the list must carry them, or they
+                    // silently do nothing real.
+                    let isGroup = conv.type == .group
+                    // 1:1 and group calls both own the audio route, so they're
+                    // mutually exclusive.
+                    guard GroupCallService.canStart() else { return }
+                    // A real group call needs the MLS group to exist: the media key is
+                    // derived from it, and joining without it would hand plaintext to
+                    // the SFU. Fall back rather than silently downgrade.
+                    let conversationId: String? = (isGroup && GroupEngine.shared.hasGroup(conversationId: conv.id))
+                        ? conv.id
+                        : nil
                     activeCall = CallRequest(
                         title: conv.title,
-                        isGroup: conv.type == .group,
-                        members: conv.type == .group ? DummyData.groupMembers : [],
+                        isGroup: isGroup,
+                        members: isGroup ? DummyData.groupMembers : [],
                         photoName: conv.photoName,
-                        kind: kind)
+                        kind: kind,
+                        peerUserId: isGroup ? nil : conv.peerUserId,
+                        conversationId: conversationId)
                 }
             }
             .fullScreenCover(item: $activeCall) { CallScreen(request: $0) }

@@ -405,6 +405,49 @@ class GroupEngine private constructor(context: Context) {
         }
     }
 
+    // MARK: - Group call key (LiveKit E2EE)
+
+    /**
+     * Derive the shared media key for a group CALL in this conversation, encoded for
+     * LiveKit's key provider. Returns null if we have no MLS group for the conversation
+     * (never joined / not synced yet) or the derivation fails.
+     *
+     * ## Derivation
+     * `GroupSession.callKeys` returns [uniffi.voiid.SrtpKeys] (`masterKey` ‖ `masterSalt`)
+     * derived from the MLS **exporter secret**, so:
+     *  - every member at the same epoch derives byte-identical material, with no key
+     *    exchange over the wire, and
+     *  - it changes on every membership commit (add/remove rekeys the group).
+     *
+     * ## Why Base64
+     * LiveKit's `KeyProvider.setSharedKey` takes a **String**, which it converts with
+     * `toByteArray(UTF_8)` before handing it to the frame cryptor's HKDF. Raw MLS key bytes
+     * are not valid UTF-8 — encoding them would be lossy (invalid sequences collapse to
+     * U+FFFD) and could silently converge to the same bytes on different inputs. We
+     * therefore Base64 (NO_WRAP, ASCII-safe) the concatenation, which round-trips through
+     * UTF-8 unchanged and preserves the full entropy of the input through LiveKit's KDF.
+     * This is an ENCODING, not a weakening: the key material is unchanged.
+     *
+     * The result never leaves the device — it is not sent to the API and never reaches the SFU.
+     */
+    suspend fun callKey(conversationId: String): String? = withContext(Dispatchers.IO) {
+        lock.withLock<String?> {
+            val m = runCatching { ensureMemberLocked() }.getOrElse {
+                Log.e("VOIID", "MLS: callKey — no member", it); return@withLock null
+            }
+            val gid = groupIds[conversationId] ?: run {
+                Log.w("VOIID", "MLS: callKey — no local group for conv=$conversationId"); return@withLock null
+            }
+            runCatching {
+                val session = m.loadGroup(gid)
+                val keys = session.callKeys(m)
+                Base64.encodeToString(keys.masterKey + keys.masterSalt, Base64.NO_WRAP)
+            }.getOrElse {
+                Log.e("VOIID", "MLS: callKey derivation failed for conv=$conversationId", it); null
+            }
+        }
+    }
+
     // MARK: - Helpers
 
     private suspend fun postGroupEvents(conversationId: String, events: List<GroupEvent>) {

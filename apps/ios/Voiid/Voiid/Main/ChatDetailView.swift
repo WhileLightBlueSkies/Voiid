@@ -139,13 +139,28 @@ struct ChatDetailView: View {
 
     private func startCall(_ kind: CallKind) {
         let isGroup = conversation.type == .group
+
+        // 1:1 and group calls both own the audio route, so they are mutually
+        // exclusive — starting one while the other runs would put two WebRTC audio
+        // session managers in charge of a single AVAudioSession.
+        guard GroupCallService.canStart() else { return }
+
+        // A real group call needs the MLS group to exist, since the media key is
+        // derived from it. Without it we'd have no way to encrypt, and joining
+        // unencrypted would expose media to the SFU — so fall back rather than
+        // silently downgrade.
+        let conversationId: String? = (isGroup && GroupEngine.shared.hasGroup(conversationId: conversation.id))
+            ? conversation.id
+            : nil
+
         activeCall = CallRequest(
             title: conversation.title,
             isGroup: isGroup,
             members: isGroup ? DummyData.groupMembers : [],
             photoName: conversation.photoName,
             kind: kind,
-            peerUserId: isGroup ? nil : resolvedPeerUserId)
+            peerUserId: isGroup ? nil : resolvedPeerUserId,
+            conversationId: conversationId)
     }
 
     /// The 1:1 peer's user id for placing a real call.

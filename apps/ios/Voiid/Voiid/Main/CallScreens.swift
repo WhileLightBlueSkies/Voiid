@@ -21,8 +21,12 @@ struct CallRequest: Identifiable {
     let photoName: String?
     let kind: CallKind
     /// The 1:1 peer's user id — required to actually place a real WebRTC call.
-    /// nil for group calls (group calling is a later increment) or previews.
+    /// nil for group calls (which route through LiveKit instead) or previews.
     var peerUserId: String? = nil
+    /// The conversation this call belongs to. Required for a real group call: it
+    /// resolves both the LiveKit room and the MLS group the E2EE key derives from.
+    /// nil for 1:1 calls and previews.
+    var conversationId: String? = nil
 }
 
 // MARK: - WebRTC video renderer (Metal)
@@ -116,6 +120,11 @@ struct CallScreen: View {
     /// A real 1:1 call is one with a peer id and not a group.
     private var isRealOneToOne: Bool { !request.isGroup && request.peerUserId != nil }
 
+    /// A real group call is one with a conversation id, which we need to resolve the
+    /// LiveKit room and derive the MLS call key. Without it we fall back to the
+    /// simulated screen (previews, and call sites that don't carry the conversation).
+    private var isRealGroup: Bool { request.isGroup && request.conversationId != nil }
+
     private var liveState: CallState? { isRealOneToOne ? call.active?.state : nil }
 
     private var statusText: String {
@@ -134,6 +143,16 @@ struct CallScreen: View {
     }
 
     var body: some View {
+        // Real group calls hand off to the LiveKit-backed screen entirely; the
+        // simulated path below now only serves previews and 1:1 calls.
+        if isRealGroup, let cid = request.conversationId {
+            GroupCallScreen(conversationId: cid, title: request.title, kind: request.kind)
+        } else {
+            simulatedOrOneToOneBody
+        }
+    }
+
+    private var simulatedOrOneToOneBody: some View {
         ZStack {
             background
             // Real remote video fills the screen behind the overlay (1:1 video calls).

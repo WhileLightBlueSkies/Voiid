@@ -69,6 +69,7 @@ class CallForegroundService : Service() {
      */
     override fun onTaskRemoved(rootIntent: Intent?) {
         runCatching { CallManager.hangupFromSystem() }
+        runCatching { GroupCallManager.leaveFromSystem() }
         running = false
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         runCatching { stopSelf() }
@@ -119,6 +120,23 @@ class CallForegroundService : Service() {
             // On Android 12+ a background FGS start throws ForegroundServiceStartNotAllowed.
             // Incoming calls arrive on a high-priority FCM message, which grants a temporary
             // allowlist window, but that window can expire — never let it crash the call.
+            runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(i)
+                else context.startService(i)
+            }
+        }
+
+        /**
+         * Promote an ongoing GROUP call ([GroupCallManager]) to a foreground service, so mic
+         * and camera keep capturing while the app is backgrounded. Same service, same
+         * notification — a group and a 1:1 call are mutually exclusive, so they can never
+         * contend for it.
+         */
+        fun startGroup(context: Context, title: String, video: Boolean) {
+            val i = Intent(context, CallForegroundService::class.java).apply {
+                putExtra(EXTRA_VIDEO, video)
+                putExtra(EXTRA_TITLE, title)
+            }
             runCatching {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(i)
                 else context.startService(i)

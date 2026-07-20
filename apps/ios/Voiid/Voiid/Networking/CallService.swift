@@ -381,6 +381,8 @@ final class CallService: NSObject, ObservableObject {
     /// and asks the backend to ring (wake) the callee.
     func startCall(peerUserId: String, title: String, isVideo: Bool) {
         guard active == nil else { return }   // one call at a time
+        // A group call already owns the audio route (see GroupCallService).
+        guard !GroupCallService.shared.isActive else { return }
         let callId = UUID().uuidString
         let uuid = UUID()
         active = ActiveCall(id: callId, uuid: uuid, peerUserId: peerUserId, title: title,

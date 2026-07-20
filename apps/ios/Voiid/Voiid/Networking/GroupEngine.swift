@@ -472,6 +472,34 @@ final class GroupEngine {
     /// True once we hold (or can re-open) an MLS group for this conversation.
     func hasGroup(conversationId: String) -> Bool { convGroups[conversationId] != nil }
 
+    // MARK: - Call keys (group calling / SFU media encryption)
+
+    /// Derive this conversation's SRTP call keys from the MLS group's exporter secret.
+    ///
+    /// Every member holding the same group state derives the same keys, and because the
+    /// exporter secret changes on every membership commit, the keys rotate automatically
+    /// when someone is added or removed. Nothing here is ever sent to the API or the SFU.
+    ///
+    /// Throws if the member isn't restored yet, or we hold no MLS group for the conversation.
+    func callKeys(conversationId: String) throws -> SrtpKeys {
+        guard let m = ensureMember() else { throw APIError.notAuthenticated }
+        return try loadSession(conversationId).callKeys(member: m)
+    }
+
+    /// The MLS-derived call key encoded as a string, for LiveKit's shared-key E2EE provider.
+    ///
+    /// LiveKit's `BaseKeyProvider` takes a `String` and force-unwraps `.data(using: .utf8)`,
+    /// so raw MLS key bytes cannot be handed over directly — they are not valid UTF-8 and
+    /// the force-unwrap would crash. We therefore base64-encode `masterKey || masterSalt`.
+    /// The encoding is deterministic, so every member still arrives at byte-identical key
+    /// material, and LiveKit runs its own PBKDF2 over it to derive the frame-encryption key.
+    ///
+    /// Both halves are included so the salt contributes entropy rather than being discarded.
+    func callKeyPassphrase(conversationId: String) throws -> String {
+        let keys = try callKeys(conversationId: conversationId)
+        return (keys.masterKey + keys.masterSalt).base64EncodedString()
+    }
+
     // MARK: - Persistence
 
     private func persistMember() {

@@ -77,9 +77,12 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore) {
     val context = androidx.compose.ui.platform.LocalContext.current
     androidx.compose.runtime.LaunchedEffect(Unit) { com.voiid.app.net.CallManager.init(context) }
     val callState by com.voiid.app.net.CallManager.state.collectAsState()
+    // Group calls run on the LiveKit SFU (GroupCallManager); 1:1 stays peer-to-peer.
+    val groupCallState by com.voiid.app.net.GroupCallManager.state.collectAsState()
     val startCall: (CallRequest) -> Unit = { req ->
-        // v1 is 1:1 only; a group request (no peer) is a no-op (see CallManager).
-        if (!req.isGroup && !req.peerUserId.isNullOrBlank()) {
+        if (req.isGroup) {
+            com.voiid.app.net.GroupCallManager.join(context, req.conversationId, req.title, req.kind)
+        } else if (!req.peerUserId.isNullOrBlank()) {
             com.voiid.app.net.CallManager.startOutgoing(req.conversationId, req.peerUserId, req.title, req.kind)
         }
     }
@@ -140,6 +143,16 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore) {
             exit = fadeOut(),
         ) {
             callState?.let { CallOverlay(it) }
+        }
+
+        // Group call surface — LiveKit SFU. Mutually exclusive with the 1:1 overlay above
+        // (GroupCallManager/CallManager refuse to start while the other holds a call).
+        AnimatedVisibility(
+            visible = groupCallState != null,
+            enter = fadeIn(),
+            exit = fadeOut(),
+        ) {
+            groupCallState?.let { GroupCallOverlay(it) }
         }
     }
 

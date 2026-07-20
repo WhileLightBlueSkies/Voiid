@@ -191,6 +191,8 @@ object CallManager {
     fun startOutgoing(conversationId: String, peerUserId: String?, peerName: String, kind: CallKind) {
         if (peerUserId.isNullOrBlank()) return   // 1:1 only — no peer, nothing to dial
         if (_state.value != null) return          // one call at a time
+        // A group call owns the mic, the audio route and the foreground service. Never run both.
+        if (GroupCallManager.isActive) return
         init(appContextOrNull() ?: return)
         val callId = java.util.UUID.randomUUID().toString()
         _state.value = CallState(
@@ -237,6 +239,8 @@ object CallManager {
         appContextOrNull()?.let { init(it) }
         if (_state.value?.callId == callId) return
         if (_state.value != null) return
+        // Busy in a group call — don't ring over it or we'd tear down live group media.
+        if (GroupCallManager.isActive) return
         _state.value = CallState(
             callId = callId, peerUserId = callerId, peerName = callerName,
             conversationId = conversationId, kind = kind, incoming = true,
