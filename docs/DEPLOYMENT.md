@@ -42,21 +42,29 @@ configured. So `deploy/turn/` is kept but not part of the initial bring-up.
 
 **Two instances:**
 
-| Box | Runs | Sizing (start) |
+| Box / service | Runs | Sizing (start) |
 |---|---|---|
-| **Box A — app** | API + WebSocket + Postgres + Redis | 4 vCPU / 8 GB |
-| **Box B — LiveKit** | LiveKit SFU only (media-heavy, isolated so a group call can't degrade the API/DB) | 4 vCPU / 8 GB |
+| **Box A — app** | API + WebSocket + Redis | 4 vCPU / 8 GB |
+| **Box B — LiveKit** | LiveKit SFU only (media-heavy, isolated so a group call can't degrade the API) | 4 vCPU / 8 GB |
+| **Supabase** | managed Postgres (the DB) | managed — no box |
 | *(Cloudflare)* | TURN | managed — no box |
+
+**Postgres = Supabase (managed).** `backend/api/src/db.ts` connects via a plain
+`pg` Pool over `DATABASE_URL` with TLS — Supabase is used purely as hosted
+Postgres (no supabase-js, no edge functions). So Box A does NOT run Postgres, and
+the "managed, backed-up DB" box is already handled. Just point `DATABASE_URL` at
+the Supabase connection string. **Use a DEDICATED Supabase project for this clean
+app** — its 16-migration schema is separate from the `Voiid-Main` fork's schema;
+don't share a database.
 
 **Box B (LiveKit) firewall/ports:** `7880` (HTTP/WS signaling, put TLS in front for
 `wss://livekit.voiid.app`), `7881` (TCP fallback), **UDP `50000-60000`** (media),
 on a **public IP**. Hand its `LIVEKIT_API_KEY`/`SECRET` to Box A's env.
 
-**Box A caution:** co-locating Postgres is fine for the live test, but Postgres is
-the one stateful, can't-lose service — **move it to managed / a dedicated backed-up
-box before real users.** API + WS are stateless (all shared state via Redis), so
-scale-out later is just adding more of them behind the proxy; Postgres + Redis are
-what you'd move to managed/replicated first.
+**Box A is now nearly stateless** — API + WS hold no state (all shared state via
+Redis), so scale-out later is just adding more of them behind the proxy. Redis is
+the only stateful piece on Box A; for a fully-disposable Box A use a managed Redis
+(Upstash etc.), otherwise back up/persist it. The DB (Supabase) is already managed.
 
 **Group calls can be skipped for the FIRST live test** — 1:1 calls don't need
 LiveKit, and `POST /calls/group/token` returns a clean 503 until it's configured.
@@ -79,9 +87,13 @@ up when testing group calls.
 
 ## 2. Data stores
 
-### PostgreSQL
-- [ ] Provision Postgres 14+ (managed or on the box). Create a database + user.
-- [ ] **Apply the 16 migrations in order** — there is no migration runner yet, so:
+### PostgreSQL = Supabase (managed)
+- [ ] Create a **dedicated Supabase project** for this app (NOT shared with the
+      Voiid-Main fork — different schema). Grab its Postgres connection string.
+- [ ] Set `DATABASE_URL` to the Supabase connection string (TLS required; the app
+      enables SSL automatically for non-local hosts).
+- [ ] **Apply the 16 migrations in order** — there is no migration runner yet, so
+      either paste each file into the Supabase SQL editor in order, or:
   ```bash
   for f in database/migrations/0*.sql; do
     echo "== $f"; psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f" || break
