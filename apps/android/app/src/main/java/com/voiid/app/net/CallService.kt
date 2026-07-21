@@ -82,6 +82,28 @@ object CallManager {
         val videoEnabled: Boolean = true,
         val connectedAtMs: Long? = null,
         val hasRemoteVideo: Boolean = false,
+        /** We put the call on hold: our mic (and camera) are off and the peer knows. */
+        val onHold: Boolean = false,
+        /** The PEER told us they put us on hold (`call_hold`). */
+        val peerOnHold: Boolean = false,
+        /**
+         * ICE has lost its path and we are re-gathering. Purely a UI signal: media may resume at
+         * any moment, so this must never be confused with ENDED. Cleared on ICE recovery.
+         */
+        val reconnecting: Boolean = false,
+    )
+
+    /**
+     * A SECOND incoming call that arrived while we were already on one — "call waiting".
+     * It has no PeerConnection of its own; it is a pending offer we are alerting the user
+     * about, and it either gets declined or is promoted into the one live call slot.
+     */
+    data class WaitingCall(
+        val callId: String,
+        val peerUserId: String,
+        val peerName: String,
+        val conversationId: String?,
+        val kind: CallKind,
     )
 
     private const val STREAM_ID = "voiid_stream"
@@ -92,6 +114,10 @@ object CallManager {
 
     private val _state = MutableStateFlow<CallState?>(null)
     val state: StateFlow<CallState?> = _state.asStateFlow()
+
+    private val _waiting = MutableStateFlow<WaitingCall?>(null)
+    /** Non-null while a second call is ringing us during an active call. See [WaitingCall]. */
+    val waiting: StateFlow<WaitingCall?> = _waiting.asStateFlow()
 
     private lateinit var appContext: Context
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -230,17 +256,47 @@ object CallManager {
             "call_offer" -> onRemoteOffer(sig)
             "call_answer" -> onRemoteAnswer(sig)
             "call_ice" -> onRemoteIce(sig)
+            "call_ringing" -> onRemoteRinging(sig)
+            "call_hold" -> onRemoteHold(sig, held = true)
+            "call_unhold" -> onRemoteHold(sig, held = false)
             "call_hangup", "call_decline", "call_busy" -> onRemoteEnd(sig)
         }
+    }
+
+    /**
+     * The callee's device is genuinely alerting -> start ringback. This is the ONLY trigger for
+     * ringback: starting it when we sent the offer would have us ring for a phone that is off,
+     * out of coverage, or whose push never landed.
+     */
+    private fun onRemoteRinging(sig: WebSocketClient.CallSignal) {
+        val s = _state.value ?: return
+        if (s.callId != sig.callId) return
+        if (s.incoming) return                      // we're the callee; nothing to ring back at
+        if (s.phase != Phase.RINGING_OUT) return    // already connecting/connected/ended
+        CallTones.startRingback()
+    }
+
+    /** The peer put us on hold, or took us off it. Their media stops either way. */
+    private fun onRemoteHold(sig: WebSocketClient.CallSignal, held: Boolean) {
+        val s = _state.value ?: return
+        if (s.callId != sig.callId) return
+        update { it.copy(peerOnHold = held) }
     }
 
     /** A ring push (FCM) arrived before/independent of the WS offer — show incoming UI now. */
     fun onRingPush(callId: String, callerId: String, callerName: String, kind: CallKind, conversationId: String?) {
         appContextOrNull()?.let { init(it) }
         if (_state.value?.callId == callId) return
-        if (_state.value != null) return
+        if (_waiting.value?.callId == callId) return
         // Busy in a group call — don't ring over it or we'd tear down live group media.
-        if (GroupCallManager.isActive) return
+        if (GroupCallManager.isActive) {
+            runCatching { WebSocketClient.get(appContext).sendCallBusy(callerId, callId) }
+            return
+        }
+        if (_state.value != null) {
+            raiseWaiting(WaitingCall(callId, callerId, callerName, conversationId, kind))
+            return
+        }
         _state.value = CallState(
             callId = callId, peerUserId = callerId, peerName = callerName,
             conversationId = conversationId, kind = kind, incoming = true,
@@ -248,6 +304,17 @@ object CallManager {
             speaker = kind == CallKind.VIDEO,
         )
         CallForegroundService.showIncoming(appContext, _state.value!!)
+        announceRinging(callerId, callId)
+    }
+
+    /**
+     * Tell the caller our device is alerting, so they get a ringback. Sent exactly where the
+     * user-visible alert is raised, never earlier — the frame's whole meaning is "a human is
+     * being notified right now". It rides the normal outbox, so a momentarily-down socket
+     * delays the ringback rather than losing it.
+     */
+    private fun announceRinging(callerId: String, callId: String) {
+        runCatching { WebSocketClient.get(appContext).sendCallRinging(callerId, callId) }
     }
 
     private fun onRemoteOffer(sig: WebSocketClient.CallSignal) {
@@ -260,12 +327,31 @@ object CallManager {
             onRenegotiationOffer(sig, current)
             return
         }
-        // Busy: already on a different call -> tell the caller.
-        if (current != null && current.callId != sig.callId) {
-            WebSocketClient.get(appContext).sendCallBusy(sig.fromUserId, sig.callId)
+        val kind = if (sig.callKind == "video") CallKind.VIDEO else CallKind.VOICE
+
+        // The offer for a call we are already alerting the user about as call-waiting. Keep the
+        // SDP: if they choose to take it, we replay this exact offer into the freed call slot.
+        if (_waiting.value?.callId == sig.callId) {
+            waitingOfferSdp = sig.sdp ?: waitingOfferSdp
             return
         }
-        val kind = if (sig.callKind == "video") CallKind.VIDEO else CallKind.VOICE
+
+        // A second call while we're already on one.
+        if (current != null && current.callId != sig.callId) {
+            if (canOfferCallWaiting(current)) {
+                waitingOfferSdp = sig.sdp
+                raiseWaiting(
+                    WaitingCall(
+                        callId = sig.callId, peerUserId = sig.fromUserId,
+                        peerName = sig.fromUserId, conversationId = sig.conversationId, kind = kind,
+                    ),
+                )
+            } else {
+                // Genuinely busy — see canOfferCallWaiting for why this is deliberate.
+                WebSocketClient.get(appContext).sendCallBusy(sig.fromUserId, sig.callId)
+            }
+            return
+        }
         val name = current?.peerName?.takeIf { it.isNotBlank() } ?: sig.fromUserId
         _state.value = CallState(
             callId = sig.callId, peerUserId = sig.fromUserId, peerName = name,
@@ -274,6 +360,7 @@ object CallManager {
             videoEnabled = kind == CallKind.VIDEO, speaker = kind == CallKind.VIDEO,
         )
         CallForegroundService.showIncoming(appContext, _state.value!!)
+        announceRinging(sig.fromUserId, sig.callId)
         beginCallSession()
         val sdp = sig.sdp ?: return
         exec.execute {
@@ -337,6 +424,8 @@ object CallManager {
 
     private fun onRemoteAnswer(sig: WebSocketClient.CallSignal) {
         val sdp = sig.sdp ?: return
+        // Answered: kill ringback now, not when media arrives, so it can never overlap voice.
+        CallTones.stopRingback()
         // An answer to a restart offer resolves it; an answer to the first offer means the
         // session is negotiated and any later same-call_id offer is a renegotiation.
         val wasRestart = restartInFlight
@@ -363,6 +452,9 @@ object CallManager {
         val cand = (c["candidate"] as? JsonPrimitive)?.contentOrNull ?: return
         val mid = (c["sdpMid"] as? JsonPrimitive)?.contentOrNull
         val idx = (c["sdpMLineIndex"] as? JsonPrimitive)?.contentOrNull?.toIntOrNull() ?: 0
+        // Candidates for a call-waiting offer we haven't taken must not be fed into the live
+        // PeerConnection — they belong to a session that does not exist yet.
+        if (_state.value?.callId != sig.callId) return
         val ice = IceCandidate(mid, idx, cand)
         exec.execute {
             if (remoteDescSet) pc?.addIceCandidate(ice) else pendingRemoteCandidates.add(ice)
@@ -370,13 +462,109 @@ object CallManager {
     }
 
     private fun onRemoteEnd(sig: WebSocketClient.CallSignal) {
+        // The second caller gave up (or cancelled) before we chose — drop the waiting slot.
+        if (_waiting.value?.callId == sig.callId) { clearWaiting(); return }
         if (_state.value?.callId != sig.callId) return
         val reason = when (sig.type) {
             "call_decline" -> "declined"
             "call_busy" -> "busy"
             else -> "remote-hangup"
         }
+        // Audible feedback while the ENDED frame is on screen: a declined or busy call should
+        // sound different from one the peer simply hung up on.
+        CallTones.stopRingback()
+        when (reason) {
+            "declined", "busy" -> CallTones.playBusy()
+            else -> if (_state.value?.connectedAtMs != null) CallTones.playEnded()
+        }
         endInternal(notifyPeer = false, reason = reason)
+    }
+
+    // ---- call waiting ----------------------------------------------------------
+
+    /**
+     * The pending offer behind [_waiting], kept so accepting it can be served without asking
+     * the caller to re-offer. Cleared with the waiting slot.
+     */
+    @Volatile private var waitingOfferSdp: String? = null
+
+    /**
+     * Whether a second incoming call should be offered to the user rather than refused.
+     *
+     * We only offer call waiting over a call that is actually *up*. Over a call still ringing or
+     * mid-setup, `call_busy` is the honest answer: there is no established call to hold, the
+     * user is already looking at a ringing screen, and stacking a second alert on top of it is
+     * confusing rather than useful. One waiting call at a time, for the same reason.
+     */
+    private fun canOfferCallWaiting(current: CallState): Boolean =
+        _waiting.value == null &&
+            (current.phase == Phase.CONNECTED || current.phase == Phase.CONNECTING) &&
+            current.phase != Phase.ENDED
+
+    /** Publish the waiting call and alert the user (notification + in-call banner). */
+    private fun raiseWaiting(call: WaitingCall) {
+        _waiting.value = call
+        CallForegroundService.showWaiting(appContext, call)
+        // We ARE alerting, so the second caller gets a truthful ringback like anyone else.
+        announceRinging(call.peerUserId, call.callId)
+    }
+
+    private fun clearWaiting() {
+        _waiting.value = null
+        waitingOfferSdp = null
+        runCatching { CallForegroundService.cancelWaiting(appContext) }
+    }
+
+    /** Reject the waiting call; the call in progress is untouched. */
+    fun declineWaiting() {
+        val w = _waiting.value ?: return
+        runCatching { WebSocketClient.get(appContext).sendCallDecline(w.peerUserId, w.callId) }
+        clearWaiting()
+    }
+
+    /**
+     * Take the waiting call.
+     *
+     * Android has no CallKit/Telecom multi-call surface unless the app adopts
+     * `ConnectionService`, and this engine holds exactly one [PeerConnection], one mic capture
+     * and one audio route — deliberately, because that invariant is what keeps routing,
+     * ICE restart and the foreground service simple and correct. So "answer the second call"
+     * is implemented as an explicit **swap**: the current call is hung up (the peer is properly
+     * notified, never left on a zombie call), and the waiting offer is then replayed into the
+     * freed slot exactly as if it had just arrived.
+     *
+     * The user always chooses. That is the substantive change over the old behaviour, where a
+     * second call was silently refused with `call_busy` and the user never learned it happened.
+     */
+    fun acceptWaiting() {
+        val w = _waiting.value ?: return
+        val sdp = waitingOfferSdp
+        _waiting.value = null
+        waitingOfferSdp = null
+        runCatching { CallForegroundService.cancelWaiting(appContext) }
+
+        if (_state.value != null) endInternal(notifyPeer = true, reason = "swapped")
+
+        // Let teardown settle first: releaseWebRtc is queued on exec and restoreAudioRoute runs
+        // now, so the replayed offer must land after both. exec serializes the WebRTC half; this
+        // short hop covers the audio-route half and the ENDED frame the UI is showing.
+        scope.launch {
+            kotlinx.coroutines.delay(250)
+            if (_state.value != null) return@launch    // something else claimed the slot
+            onRemoteOffer(
+                WebSocketClient.CallSignal(
+                    type = "call_offer",
+                    fromUserId = w.peerUserId,
+                    callId = w.callId,
+                    callKind = if (w.kind == CallKind.VIDEO) "video" else "voice",
+                    sdp = sdp,
+                    candidate = null,
+                    conversationId = w.conversationId,
+                ),
+            )
+            // The offer path raises the incoming UI; the user already said yes, so answer it.
+            if (sdp != null) accept()
+        }
     }
 
     // ---- user actions (from the call UI) --------------------------------------
@@ -433,8 +621,39 @@ object CallManager {
     fun toggleMute() {
         val s = _state.value ?: return
         val muted = !s.muted
-        exec.execute { localAudioTrack?.setEnabled(!muted) }
+        // Hold outranks mute: un-muting while held must not quietly start sending audio again.
+        exec.execute { localAudioTrack?.setEnabled(!muted && !(_state.value?.onHold ?: false)) }
         update { it.copy(muted = muted) }
+    }
+
+    /**
+     * Put the call on hold, or take it off hold.
+     *
+     * Hold is implemented at the track level rather than by renegotiating to `sendonly`/
+     * `inactive`: disabling a track stops it producing media immediately, keeps the
+     * PeerConnection and its ICE state completely intact (so hold costs nothing to undo and
+     * cannot interact with an in-flight ICE restart), and needs no SDP round trip. The peer is
+     * told over signaling so their UI can say "On hold" instead of silently hearing nothing —
+     * which is exactly the difference between hold and a broken call.
+     */
+    fun toggleHold() {
+        val s = _state.value ?: return
+        if (s.phase != Phase.CONNECTED && s.phase != Phase.CONNECTING) return
+        val hold = !s.onHold
+        exec.execute {
+            runCatching { localAudioTrack?.setEnabled(!hold && !(_state.value?.muted ?: false)) }
+            if (s.kind == CallKind.VIDEO) {
+                runCatching { localVideoTrack?.setEnabled(!hold && (_state.value?.videoEnabled ?: false)) }
+                // Release the camera while held; nobody is watching and it costs battery.
+                if (hold) runCatching { videoCapturer?.stopCapture() }
+                else if (_state.value?.videoEnabled == true) runCatching { startCapture() }
+            }
+        }
+        runCatching {
+            val ws = WebSocketClient.get(appContext)
+            if (hold) ws.sendCallHold(s.peerUserId, s.callId) else ws.sendCallUnhold(s.peerUserId, s.callId)
+        }
+        update { it.copy(onHold = hold) }
     }
 
     fun toggleSpeaker() {
@@ -447,6 +666,7 @@ object CallManager {
     fun toggleVideo() {
         val s = _state.value ?: return
         if (s.kind != CallKind.VIDEO) return
+        if (s.onHold) return   // held calls send nothing; resume first
         val on = !s.videoEnabled
         exec.execute {
             localVideoTrack?.setEnabled(on)
@@ -666,6 +886,11 @@ object CallManager {
     private fun markConnected() {
         val s = _state.value ?: return
         metrics?.onConnected()
+        CallTones.stopRingback()
+        // ICE is up: whatever we were reconnecting from is over. Routed through the same main
+        // -thread post as the set, so a DISCONNECTED->CONNECTED flap can't land out of order
+        // and leave the banner stuck on.
+        markReconnecting(false)
         if (s.phase == Phase.CONNECTED) return
         update { it.copy(phase = Phase.CONNECTED, connectedAtMs = System.currentTimeMillis()) }
         startForegroundService()
@@ -679,6 +904,10 @@ object CallManager {
     private fun endInternal(notifyPeer: Boolean, reason: String) {
         val s = _state.value ?: return
         endReason = endReason ?: reason
+        // Ringback must die here no matter which path ended the call — timeout, local hangup,
+        // ICE giving up. A tone that outlives its call is the worst version of this feature.
+        CallTones.stopRingback()
+        if (reason == "ice-failed" || reason == "ice-closed") CallTones.playFailed()
         if (notifyPeer && s.phase != Phase.ENDED) {
             runCatching { WebSocketClient.get(appContext).sendCallHangup(s.peerUserId, s.callId) }
         }
@@ -694,7 +923,7 @@ object CallManager {
             )
         }
         endCallSession()
-        update { it.copy(phase = Phase.ENDED) }
+        update { it.copy(phase = Phase.ENDED, reconnecting = false) }
         exec.execute { releaseWebRtc() }
         restoreAudioRoute()
         CallForegroundService.stop(appContext)
@@ -759,6 +988,9 @@ object CallManager {
 
     /** Tear the resilience machinery down. Safe to call more than once. */
     private fun endCallSession() {
+        // Drop the looping ringback but let a busy/failed/ended cue play out — it is feedback
+        // *about* this teardown, so cutting it off here would silence the thing we just started.
+        CallTones.release(keepOneShots = true)
         cancelDisconnectGrace()
         cancelRestartWatchdog()
         runCatching { WebSocketClient.get(appContext).callActive = false }
@@ -801,7 +1033,17 @@ object CallManager {
     private fun requestIceRestart(reason: String) {
         val s = _state.value ?: return
         if (s.phase != Phase.CONNECTING && s.phase != Phase.CONNECTED) return
+        markReconnecting(true)
         exec.execute { doIceRestart(reason) }
+    }
+
+    /** Publish/clear the UI's "Reconnecting…" flag. Callable from any thread. */
+    private fun markReconnecting(on: Boolean) {
+        mainHandler.post {
+            val s = _state.value ?: return@post
+            if (s.phase == Phase.ENDED || s.reconnecting == on) return@post
+            _state.value = s.copy(reconnecting = on)
+        }
     }
 
     /**
@@ -894,6 +1136,11 @@ object CallManager {
 
     /** Start the DISCONNECTED grace timer — see [DISCONNECT_GRACE_MS]. */
     private fun armDisconnectGrace() {
+        // Show "Reconnecting…" as soon as the path is lost, not only once we escalate to a
+        // restart: the freeze the user is hearing starts *now*, and a call that looks dead for
+        // three silent seconds is the thing this state exists to prevent. It costs nothing if
+        // the blip heals — CONNECTED clears it again.
+        markReconnecting(true)
         if (disconnectGrace != null) return
         val r = Runnable {
             disconnectGrace = null

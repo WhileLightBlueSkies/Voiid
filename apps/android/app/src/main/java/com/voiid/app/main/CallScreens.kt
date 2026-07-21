@@ -1,5 +1,10 @@
 package com.voiid.app.main
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -22,6 +27,8 @@ import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.VideocamOff
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -31,6 +38,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -215,12 +223,18 @@ private fun InCallUi(state: CallManager.CallState) {
         }
     }
 
-    val statusText = when (state.phase) {
-        CallManager.Phase.RINGING_OUT -> if (isVideo) "Ringing — Video" else "Ringing…"
-        CallManager.Phase.RINGING_IN -> "Incoming…"
-        CallManager.Phase.CONNECTING -> "Connecting…"
-        CallManager.Phase.CONNECTED -> "%02d:%02d".format(seconds / 60, seconds % 60)
-        CallManager.Phase.ENDED -> "Call ended"
+    // Priority matters: a reconnecting call is the thing the user needs told about, and a held
+    // call is silent on purpose — both must beat the running timer, which otherwise ticks along
+    // implying everything is fine.
+    val statusText = when {
+        state.phase == CallManager.Phase.ENDED -> "Call ended"
+        state.reconnecting -> "Reconnecting…"
+        state.onHold -> "On hold"
+        state.peerOnHold -> "${state.peerName} put you on hold"
+        state.phase == CallManager.Phase.RINGING_OUT -> if (isVideo) "Ringing — Video" else "Ringing…"
+        state.phase == CallManager.Phase.RINGING_IN -> "Incoming…"
+        state.phase == CallManager.Phase.CONNECTING -> "Connecting…"
+        else -> "%02d:%02d".format(seconds / 60, seconds % 60)
     }
 
     val onDark = isVideo
@@ -252,7 +266,13 @@ private fun InCallUi(state: CallManager.CallState) {
             Spacer(Modifier.height(48.dp))
             Text(state.peerName, style = VoiidFont.rounded(24, FontWeight.Bold), color = titleColor)
             Spacer(Modifier.height(6.dp))
-            Text(statusText, style = VoiidFont.rounded(14), color = statusColor)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (state.reconnecting) PulsingDot()
+                Text(statusText, style = VoiidFont.rounded(14), color = statusColor)
+            }
+
+            val waiting by CallManager.waiting.collectAsState()
+            waiting?.let { CallWaitingBanner(it, haptics) }
 
             Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                 if (isVideo) VideoCenter(state) else VoiceCenter()
@@ -260,10 +280,13 @@ private fun InCallUi(state: CallManager.CallState) {
 
             CallControls(
                 isVideo = isVideo, muted = state.muted, speaker = state.speaker, videoOn = state.videoEnabled,
+                onHold = state.onHold,
+                canHold = state.phase == CallManager.Phase.CONNECTED || state.phase == CallManager.Phase.CONNECTING,
                 onMute = { haptics.tap(); CallManager.toggleMute() },
                 onSpeaker = { haptics.tap(); CallManager.toggleSpeaker() },
                 onVideo = { haptics.tap(); CallManager.toggleVideo() },
                 onFlip = { haptics.tap(); CallManager.switchCamera() },
+                onToggleHold = { haptics.tap(); CallManager.toggleHold() },
                 onEnd = { haptics.rigid(); CallManager.hangup() },
             )
             Spacer(Modifier.height(48.dp))
@@ -368,20 +391,84 @@ private fun makeRenderer(
         setMirror(mirror)
     }
 
+/**
+ * A slow amber pulse next to "Reconnecting…". Deliberately subtle: the call may well recover
+ * within a second, and a loud alarm for something that usually self-heals trains users to
+ * distrust it. It is there so a frozen call reads as *recovering*, not dead.
+ */
+@Composable
+private fun PulsingDot() {
+    val transition = rememberInfiniteTransition(label = "reconnecting")
+    val alpha by transition.animateFloat(
+        initialValue = 0.25f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(750), RepeatMode.Reverse),
+        label = "reconnectingAlpha",
+    )
+    Box(Modifier.size(8.dp).clip(CircleShape).background(Color(0xFFFFB020).copy(alpha = alpha)))
+}
+
+/**
+ * A second call is ringing while this one is up. Shown in-call as well as in the notification,
+ * because the user is most likely staring at this screen when it happens.
+ */
+@Composable
+private fun CallWaitingBanner(
+    call: CallManager.WaitingCall,
+    haptics: com.voiid.app.ui.components.VoiidHaptics,
+) {
+    Column(
+        Modifier
+            .padding(horizontal = 20.dp, vertical = 12.dp)
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(VoiidRadius.lg))
+            .background(VoiidColor.surfaceCard)
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text(
+            "${call.peerName} is calling",
+            style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.textPrimary,
+        )
+        Text(
+            "Answering will end your current call.",
+            style = VoiidFont.rounded(12), color = VoiidColor.textSecondary,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(
+                "Decline",
+                style = VoiidFont.rounded(14, FontWeight.Medium), color = VoiidColor.error,
+                modifier = Modifier.softClickable { haptics.rigid(); CallManager.declineWaiting() },
+            )
+            Text(
+                "End & answer",
+                style = VoiidFont.rounded(14, FontWeight.Medium), color = VoiidColor.primary,
+                modifier = Modifier.softClickable { haptics.tap(); CallManager.acceptWaiting() },
+            )
+        }
+    }
+}
+
 @Composable
 private fun CallControls(
     isVideo: Boolean,
     muted: Boolean,
     speaker: Boolean,
     videoOn: Boolean,
+    onHold: Boolean,
+    canHold: Boolean,
     onMute: () -> Unit,
     onSpeaker: () -> Unit,
     onVideo: () -> Unit,
     onFlip: () -> Unit,
+    onToggleHold: () -> Unit,
     onEnd: () -> Unit,
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(32.dp)) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(24.dp)) {
         Ctrl(if (muted) Icons.Default.MicOff else Icons.Default.Mic, muted, isVideo, onMute)
+        if (canHold) {
+            Ctrl(if (onHold) Icons.Default.PlayArrow else Icons.Default.Pause, onHold, isVideo, onToggleHold)
+        }
         if (isVideo) {
             Ctrl(if (videoOn) Icons.Default.Videocam else Icons.Default.VideocamOff, !videoOn, isVideo, onVideo)
             Ctrl(Icons.Default.Cameraswitch, false, isVideo, onFlip)

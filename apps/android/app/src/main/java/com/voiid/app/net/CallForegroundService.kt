@@ -92,6 +92,7 @@ class CallForegroundService : Service() {
         private const val INCOMING_CHANNEL = "voiid_call_incoming"
         private const val ONGOING_ID = 4711
         private const val INCOMING_ID = 4712
+        private const val WAITING_ID = 4713
         const val EXTRA_VIDEO = "video"
         const val EXTRA_TITLE = "title"
 
@@ -101,6 +102,10 @@ class CallForegroundService : Service() {
         const val ACTION_TOGGLE_MUTE = "com.voiid.app.CALL_TOGGLE_MUTE"
         /** Fired by the PiP window's hang-up RemoteAction. */
         const val ACTION_HANGUP = "com.voiid.app.CALL_HANGUP"
+        /** Call-waiting notification: take the second call (ending the current one). */
+        const val ACTION_WAITING_ACCEPT = "com.voiid.app.CALL_WAITING_ACCEPT"
+        /** Call-waiting notification: reject the second call, keep the current one. */
+        const val ACTION_WAITING_DECLINE = "com.voiid.app.CALL_WAITING_DECLINE"
 
         /**
          * True while the foreground service is actually holding its mic/camera FGS types.
@@ -185,6 +190,43 @@ class CallForegroundService : Service() {
             runCatching { NotificationManagerCompat.from(context).cancel(INCOMING_ID) }
         }
 
+        /**
+         * Post the CALL WAITING notification: a second call arrived while one is in progress.
+         *
+         * Separate notification id from [INCOMING_ID] so it can never replace or be replaced by
+         * the ongoing call's own notification, and deliberately **not** a full-screen intent —
+         * the user is mid-conversation and slamming a lockscreen takeover over a live call is
+         * hostile. It uses the same incoming-call channel, so it alerts exactly as loudly as the
+         * user's ringer mode says it should.
+         */
+        fun showWaiting(context: Context, call: CallManager.WaitingCall) {
+            ensureIncomingChannel(context)
+            val open = Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            }
+            val openPi = PendingIntent.getActivity(
+                context, 3, open,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            val notif = NotificationCompat.Builder(context, INCOMING_CHANNEL)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle(call.peerName)
+                .setContentText("Call waiting — answering ends your current call")
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_CALL)
+                .setOngoing(true)
+                .setAutoCancel(false)
+                .setContentIntent(openPi)
+                .addAction(0, "Decline", actionIntent(context, ACTION_WAITING_DECLINE, 5))
+                .addAction(0, "End & answer", actionIntent(context, ACTION_WAITING_ACCEPT, 6))
+                .build()
+            runCatching { NotificationManagerCompat.from(context).notify(WAITING_ID, notif) }
+        }
+
+        fun cancelWaiting(context: Context) {
+            runCatching { NotificationManagerCompat.from(context).cancel(WAITING_ID) }
+        }
+
         private fun actionIntent(context: Context, action: String, req: Int): PendingIntent {
             val i = Intent(context, CallActionReceiver::class.java).setAction(action)
             return PendingIntent.getBroadcast(
@@ -257,6 +299,19 @@ class CallActionReceiver : BroadcastReceiver() {
             CallForegroundService.ACTION_DECLINE -> {
                 CallForegroundService.cancelIncoming(context)
                 CallManager.decline()
+            }
+            // From the call-waiting notification.
+            CallForegroundService.ACTION_WAITING_ACCEPT -> {
+                CallForegroundService.cancelWaiting(context)
+                context.startActivity(
+                    Intent(context, MainActivity::class.java)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                )
+                CallManager.acceptWaiting()
+            }
+            CallForegroundService.ACTION_WAITING_DECLINE -> {
+                CallForegroundService.cancelWaiting(context)
+                CallManager.declineWaiting()
             }
             // From the PiP window's RemoteActions — the only controls that fit there.
             CallForegroundService.ACTION_TOGGLE_MUTE -> CallManager.toggleMute()

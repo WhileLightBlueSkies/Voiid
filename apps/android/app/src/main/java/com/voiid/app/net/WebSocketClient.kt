@@ -83,7 +83,7 @@ class WebSocketClient private constructor(context: Context) {
     var onSessionReset: ((conversationId: String) -> Unit)? = null
     /** An MLS group control event (welcome/commit) was relayed for one of our groups. */
     var onMlsEvent: ((conversationId: String?) -> Unit)? = null
-    /** A call-signaling frame (offer/answer/ice/hangup/decline/busy) was relayed to us. */
+    /** A call-signaling frame (offer/answer/ice/hangup/decline/busy/ringing/hold) was relayed to us. */
     var onCallSignal: ((CallSignal) -> Unit)? = null
 
     /** One inbound call-signaling frame. `from_user_id` is server-stamped (authenticated). */
@@ -239,6 +239,26 @@ class WebSocketClient private constructor(context: Context) {
         send("""{"type":"call_busy","to_user_id":${enc(toUserId)},"call_id":${enc(callId)}}""", queueIfDown = true)
     }
 
+    /**
+     * "My device is actually alerting now." Sent by the CALLEE the moment the incoming-call
+     * notification / full-screen intent goes up, and it is what starts the caller's ringback.
+     * Deliberately not sent optimistically by the caller on offer — otherwise the caller hears
+     * ringing for a phone that never rang.
+     */
+    fun sendCallRinging(toUserId: String, callId: String) {
+        send("""{"type":"call_ringing","to_user_id":${enc(toUserId)},"call_id":${enc(callId)}}""", queueIfDown = true)
+    }
+
+    /** We put the call on hold — the peer should stop expecting media and show "On hold". */
+    fun sendCallHold(toUserId: String, callId: String) {
+        send("""{"type":"call_hold","to_user_id":${enc(toUserId)},"call_id":${enc(callId)}}""", queueIfDown = true)
+    }
+
+    /** We resumed from hold. */
+    fun sendCallUnhold(toUserId: String, callId: String) {
+        send("""{"type":"call_unhold","to_user_id":${enc(toUserId)},"call_id":${enc(callId)}}""", queueIfDown = true)
+    }
+
     /** JSON-encode a string as a quoted literal (escapes quotes/newlines). */
     private fun enc(s: String): String = JsonPrimitive(s).toString()
 
@@ -297,7 +317,9 @@ class WebSocketClient private constructor(context: Context) {
             }
             "session_reset" -> obj["conversation_id"]?.jsonPrimitive?.contentOrNull?.let { onSessionReset?.invoke(it) }
             "mls_event" -> onMlsEvent?.invoke(obj["conversation_id"]?.jsonPrimitive?.contentOrNull)
-            "call_offer", "call_answer", "call_ice", "call_hangup", "call_decline", "call_busy" -> {
+            "call_offer", "call_answer", "call_ice", "call_hangup", "call_decline", "call_busy",
+            "call_ringing", "call_hold", "call_unhold",
+            -> {
                 val from = obj["from_user_id"]?.jsonPrimitive?.contentOrNull ?: return
                 val callId = obj["call_id"]?.jsonPrimitive?.contentOrNull ?: return
                 onCallSignal?.invoke(
