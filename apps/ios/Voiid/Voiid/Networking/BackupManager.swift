@@ -30,6 +30,53 @@ final class BackupManager: ObservableObject {
     /// up, or a restore has completed).
     var hasLocalSecret: Bool { E2EManager.shared.masterSecret() != nil }
 
+    // MARK: - Destinations
+
+    /// The transport service for each destination. `.server` is the always-available
+    /// default; `.iCloud`/`.googleDrive` are opt-in additional locations for the SAME
+    /// encrypted blob.
+    private func service(for destination: BackupDestination) -> BackupDestinationService {
+        switch destination {
+        case .server:      return backup
+        case .iCloud:      return ICloudBackupService.shared
+        case .googleDrive: return GoogleDriveBackupService.shared
+        }
+    }
+
+    /// UserDefaults key for the set of user-enabled optional destinations. `.server` is
+    /// implicit-on and never stored.
+    private static let enabledKey = "voiid.backup.enabledDestinations"
+
+    /// Destinations the user has opted into, in addition to the always-on server. Published
+    /// so the settings UI reacts. `.server` is always considered enabled.
+    @Published var optionalEnabled: Set<BackupDestination> = BackupManager.loadEnabled()
+
+    private static func loadEnabled() -> Set<BackupDestination> {
+        let raw = UserDefaults.standard.stringArray(forKey: enabledKey) ?? []
+        return Set(raw.compactMap { BackupDestination(rawValue: $0) }).subtracting([.server])
+    }
+
+    /// Every destination the blob should currently be written to.
+    var enabledDestinations: Set<BackupDestination> { optionalEnabled.union([.server]) }
+
+    func isEnabled(_ destination: BackupDestination) -> Bool {
+        destination.isServer || optionalEnabled.contains(destination)
+    }
+
+    /// Turn an optional destination on/off. Persists the choice. The server can't be disabled.
+    /// Enabling triggers an immediate backup to that destination if backup is already set up;
+    /// a failure there is surfaced to the caller but never disturbs the other destinations.
+    func setEnabled(_ destination: BackupDestination, _ on: Bool) async throws {
+        guard !destination.isServer else { return }
+        if on { optionalEnabled.insert(destination) } else { optionalEnabled.remove(destination) }
+        UserDefaults.standard.set(optionalEnabled.map(\.rawValue), forKey: Self.enabledKey)
+        if on, let secret = E2EManager.shared.masterSecret() {
+            let plaintext = ChatEngine.shared.exportStore()
+            let blob = try encryptBackup(secret: secret, plaintext: plaintext)
+            try await service(for: destination).uploadBackup(blob)
+        }
+    }
+
     // MARK: - Setup
 
     /// Step 1 of setup: mint a fresh master secret and its 24-word phrase. Nothing is
@@ -53,20 +100,63 @@ final class BackupManager: ObservableObject {
 
     // MARK: - Backup
 
-    /// Seal the current message store under the local master secret and upload it.
-    /// Requires backup to be set up (throws if there's no local secret).
+    /// Seal the current message store under the local master secret and upload the SAME
+    /// ciphertext blob to every enabled destination. Requires backup to be set up (throws
+    /// if there's no local secret).
+    ///
+    /// Defensive fan-out: the server backup is authoritative — if it's enabled and fails,
+    /// that error is thrown. iCloud/Drive are best-effort: their failures are collected but
+    /// do NOT disturb the server backup or crash. If the server is disabled (user chose only
+    /// iCloud/Drive) and every enabled destination fails, the first failure is thrown.
     func backupNow() async throws {
         guard let secret = E2EManager.shared.masterSecret() else {
             throw APIError.http(status: 412, message: "Set up backup before backing up.")
         }
         let plaintext = ChatEngine.shared.exportStore()
+        // The blob is ALWAYS the encryptBackup ciphertext — identical bytes to every
+        // destination. Google/Apple/our server only ever see this.
         let blob = try encryptBackup(secret: secret, plaintext: plaintext)
-        try await backup.uploadBackup(blob)
+
+        var failures: [BackupDestination: Error] = [:]
+        for destination in enabledDestinations {
+            do { try await service(for: destination).uploadBackup(blob) }
+            catch { failures[destination] = error }
+        }
+
+        if isEnabled(.server), let serverError = failures[.server] {
+            throw serverError            // server is the default; its failure is real.
+        }
+        if !isEnabled(.server), failures.count == enabledDestinations.count,
+           let firstError = failures.values.first {
+            throw firstError             // no server fallback and everything failed.
+        }
+        // Otherwise: at least the server (or one destination) succeeded — treat as success;
+        // an aux-destination hiccup shouldn't fail the whole backup.
     }
 
-    /// Current backup status (last-backup time/size), or nil when none exists.
+    /// Current server backup status (last-backup time/size), or nil when none exists. Kept
+    /// for the existing UI / login-restore trigger, which key off the server.
     func status() async throws -> BackupMeta? {
         try await backup.fetchBackupMeta()
+    }
+
+    /// Per-destination snapshots for the settings UI. An unavailable/empty destination maps
+    /// to nil; a destination that errors is swallowed to nil (never breaks the screen).
+    func snapshots() async -> [BackupDestination: BackupSnapshot] {
+        var out: [BackupDestination: BackupSnapshot] = [:]
+        for destination in BackupDestination.allCases {
+            if let snap = try? await service(for: destination).fetchSnapshot() {
+                out[destination] = snap
+            }
+        }
+        return out
+    }
+
+    /// Destinations that currently hold a backup, newest first — the restore candidates.
+    func restoreCandidates() async -> [(destination: BackupDestination, snapshot: BackupSnapshot)] {
+        let snaps = await snapshots()
+        return snaps.map { ($0.key, $0.value) }
+            .sorted { ($0.snapshot.modified ?? .distantPast) > ($1.snapshot.modified ?? .distantPast) }
     }
 
     // MARK: - Recovery phrase (re-show) / Change PIN
@@ -96,7 +186,9 @@ final class BackupManager: ObservableObject {
     /// then downloads + decrypts + merges the message store and persists the secret.
     /// A wrong PIN / tampered wrap THROWS (GCM auth) — the attempt is reported as failed
     /// before the error is re-thrown, and the caller shows the message.
-    func restoreWithPin(_ pin: String) async throws {
+    /// - Parameter source: which destination to pull the sealed blob from (default `.server`).
+    ///   The PIN wrap always comes from the server recovery lock regardless of `source`.
+    func restoreWithPin(_ pin: String, from source: BackupDestination = .server) async throws {
         // `getKey` can throw before we ever attempt an unwrap (locked / not-set /
         // transport) — those are NOT failed PIN attempts, so don't report them.
         let wrapped = try await recovery.getKey()
@@ -108,22 +200,22 @@ final class BackupManager: ObservableObject {
             throw error
         }
         await recovery.reportAttempt(success: true)
-        try await restore(with: secret)
+        try await restore(with: secret, from: source)
     }
 
     /// Restore via the 24-word recovery phrase. `phraseToMasterSecret` validates the
     /// BIP39 phrase (throws on an invalid one), then we restore as usual. No PIN
     /// attempt is reported (the phrase path doesn't touch the server lock).
-    func restoreWithPhrase(_ phrase: String) async throws {
+    func restoreWithPhrase(_ phrase: String, from source: BackupDestination = .server) async throws {
         let secret = try phraseToMasterSecret(phrase: phrase)
-        try await restore(with: secret)
+        try await restore(with: secret, from: source)
     }
 
     /// Shared tail of both restore paths: download the sealed blob, decrypt it with
     /// the recovered secret (throws if the secret is wrong — GCM auth), merge the
     /// messages into the local store, and persist the secret so future backups work.
-    private func restore(with secret: Data) async throws {
-        let blob = try await backup.downloadBackup()
+    private func restore(with secret: Data, from source: BackupDestination = .server) async throws {
+        let blob = try await service(for: source).downloadBackup()
         let plaintext = try decryptBackup(secret: secret, blob: blob)
         ChatEngine.shared.importStore(plaintext)
         E2EManager.shared.saveMasterSecret(secret)

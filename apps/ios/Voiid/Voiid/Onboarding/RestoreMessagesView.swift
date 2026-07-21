@@ -21,6 +21,12 @@ struct RestoreMessagesView: View {
     @State private var errorText: String?
     @State private var busy = false
 
+    // Which destination to pull the sealed blob from. Defaults to the newest available
+    // backup across server / iCloud / Google Drive. The PIN/phrase still unlock the same
+    // master secret regardless of source.
+    @State private var source: BackupDestination = .server
+    @State private var candidates: [(destination: BackupDestination, snapshot: BackupSnapshot)] = []
+
     var body: some View {
         ZStack {
             VoiidBackground()
@@ -53,6 +59,8 @@ struct RestoreMessagesView: View {
             Text("We found a backup from \(BackupRecoveryView.relative(meta.updatedAtDate)) (\(BackupRecoveryView.size(meta.size_bytes))). Restore it to get your chats back on this device.")
                 .font(VoiidFont.subhead).foregroundColor(VoiidColor.textSecondary)
 
+            if candidates.count > 1 { sourcePicker }
+
             if let errorText { Text(errorText).font(VoiidFont.footnote).foregroundColor(VoiidColor.error) }
 
             Spacer()
@@ -67,6 +75,37 @@ struct RestoreMessagesView: View {
                 .padding(.top, VoiidSpacing.xs)
         }
         .padding(VoiidSpacing.lg)
+        .task { await loadCandidates() }
+    }
+
+    /// Lets the user choose which location to restore from when more than one has a backup.
+    private var sourcePicker: some View {
+        VStack(alignment: .leading, spacing: VoiidSpacing.xs) {
+            Text("Restore from").font(VoiidFont.footnote).foregroundColor(VoiidColor.textSecondary)
+            ForEach(candidates, id: \.destination.id) { candidate in
+                Button {
+                    Haptics.tap(); source = candidate.destination
+                } label: {
+                    HStack(spacing: VoiidSpacing.sm) {
+                        Image(systemName: source == candidate.destination ? "largecircle.fill.circle" : "circle")
+                            .foregroundColor(source == candidate.destination ? VoiidColor.primary : VoiidColor.textSecondary)
+                        Image(systemName: candidate.destination.systemImage).foregroundColor(VoiidColor.textSecondary)
+                        Text(candidate.destination.title).font(VoiidFont.subhead).foregroundColor(VoiidColor.textPrimary)
+                        Spacer()
+                        Text(BackupRecoveryView.relative(candidate.snapshot.modified))
+                            .font(VoiidFont.footnote).foregroundColor(VoiidColor.textSecondary)
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.vertical, VoiidSpacing.xs)
+    }
+
+    private func loadCandidates() async {
+        let found = await BackupManager.shared.restoreCandidates()
+        candidates = found
+        source = found.first?.destination ?? .server   // newest by default
     }
 
     // MARK: Actions
@@ -75,7 +114,7 @@ struct RestoreMessagesView: View {
         busy = true; errorText = nil
         Task {
             do {
-                try await BackupManager.shared.restoreWithPin(pin)
+                try await BackupManager.shared.restoreWithPin(pin, from: source)
                 finishRestored()
             } catch let e as RecoveryError {
                 // Locked / not-set — surface directly (not a wrong-PIN case).
@@ -94,7 +133,7 @@ struct RestoreMessagesView: View {
         busy = true; errorText = nil
         Task {
             do {
-                try await BackupManager.shared.restoreWithPhrase(phrase)
+                try await BackupManager.shared.restoreWithPhrase(phrase, from: source)
                 finishRestored()
             } catch {
                 errorText = "That recovery phrase didn’t work. Check the words and try again."

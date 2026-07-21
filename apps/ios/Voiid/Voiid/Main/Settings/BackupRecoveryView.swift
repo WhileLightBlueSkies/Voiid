@@ -27,6 +27,11 @@ struct BackupRecoveryView: View {
     @State private var showPhrase = false
     @State private var showChangePin = false
 
+    // Additional destinations (iCloud / Google Drive) for the SAME encrypted blob.
+    @State private var destSnapshots: [BackupDestination: BackupSnapshot] = [:]
+    @State private var togglingDestination: BackupDestination?
+    @State private var destError: String?
+
     private var isSetUp: Bool { manager.hasLocalSecret }
 
     var body: some View {
@@ -39,6 +44,7 @@ struct BackupRecoveryView: View {
                     if isSetUp {
                         actionButton(title: backingUp ? "Backing up…" : "Back up now",
                                      system: "arrow.up.circle", enabled: !backingUp) { backUpNow() }
+                        destinationsCard
                         actionButton(title: "View recovery phrase", system: "key") { showPhrase = true }
                         actionButton(title: "Change PIN", system: "lock.rotation") { showChangePin = true }
                     } else {
@@ -103,6 +109,88 @@ struct BackupRecoveryView: View {
         .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
     }
 
+    // MARK: Additional destinations (iCloud / Google Drive)
+
+    private var destinationsCard: some View {
+        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+            Text("Additional backup locations")
+                .font(VoiidFont.subhead).foregroundColor(VoiidColor.textSecondary)
+
+            destinationRow(.iCloud,
+                           available: ICloudBackupService.shared.isAvailable,
+                           unavailableNote: "Sign in to iCloud in Settings to enable.")
+            Divider().overlay(VoiidColor.textSecondary.opacity(0.15))
+            destinationRow(.googleDrive,
+                           available: GoogleDriveBackupService.shared.isSignedIn,
+                           unavailableNote: "Requires Google sign-in setup.")
+
+            if let destError {
+                Text(destError).font(VoiidFont.footnote).foregroundColor(VoiidColor.error)
+            }
+            Text("The same encrypted backup is copied to each location you turn on. iCloud and Google only ever store the encrypted file — never your PIN, phrase, or messages.")
+                .font(VoiidFont.footnote).foregroundColor(VoiidColor.textSecondary)
+                .padding(.top, VoiidSpacing.xs)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(VoiidSpacing.md)
+        .background(VoiidColor.surfaceCard)
+        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func destinationRow(_ destination: BackupDestination, available: Bool,
+                                unavailableNote: String) -> some View {
+        let isOn = manager.isEnabled(destination)
+        let busy = togglingDestination == destination
+        HStack(spacing: VoiidSpacing.sm) {
+            Image(systemName: destination.systemImage)
+                .foregroundColor(available ? VoiidColor.primary : VoiidColor.textSecondary)
+                .frame(width: 26)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(destination.title).font(VoiidFont.headline).foregroundColor(VoiidColor.textPrimary)
+                if let snap = destSnapshots[destination], isOn {
+                    Text("Last backup \(Self.relative(snap.modified)) · \(Self.size(snap.sizeBytes))")
+                        .font(VoiidFont.footnote).foregroundColor(VoiidColor.textSecondary)
+                } else if !available {
+                    Text(unavailableNote).font(VoiidFont.footnote).foregroundColor(VoiidColor.textSecondary)
+                }
+            }
+            Spacer()
+            if busy {
+                ProgressView().tint(VoiidColor.primary)
+            } else {
+                Toggle("", isOn: Binding(
+                    get: { isOn },
+                    set: { newValue in toggleDestination(destination, newValue) }
+                ))
+                .labelsHidden()
+                .tint(VoiidColor.primary)
+                .disabled(!available)
+            }
+        }
+        .opacity(available ? 1 : 0.6)
+    }
+
+    private func toggleDestination(_ destination: BackupDestination, _ on: Bool) {
+        guard togglingDestination == nil else { return }
+        togglingDestination = destination; destError = nil
+        Task {
+            do {
+                try await manager.setEnabled(destination, on)
+                await refreshDestinations()
+                flash(on ? "\(destination.title) on" : "\(destination.title) off")
+            } catch {
+                destError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                Haptics.error()
+            }
+            togglingDestination = nil
+        }
+    }
+
+    private func refreshDestinations() async {
+        destSnapshots = await manager.snapshots()
+    }
+
     private func actionButton(title: String, system: String, prominent: Bool = false,
                               enabled: Bool = true, action: @escaping () -> Void) -> some View {
         Button(action: { Haptics.tap(); action() }) {
@@ -131,6 +219,7 @@ struct BackupRecoveryView: View {
         do { meta = try await manager.status() }
         catch { statusError = (error as? APIError)?.errorDescription ?? error.localizedDescription }
         loadingStatus = false
+        await refreshDestinations()
     }
 
     private func backUpNow() {
