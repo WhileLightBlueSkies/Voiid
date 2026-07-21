@@ -46,8 +46,12 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import com.voiid.app.net.BackupManager
 import com.voiid.app.net.BackupService
+import com.voiid.app.net.DriveAuthRecoverable
+import com.voiid.app.net.GoogleDriveBackupService
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.softClickable
 import com.voiid.app.ui.theme.VoiidColor
@@ -73,20 +77,74 @@ fun BackupRecoveryScreen(onBack: () -> Unit) {
     var loadingMeta by remember { mutableStateOf(true) }
     var setUp by remember { mutableStateOf(manager.isSetUp()) }
 
+    // Google Drive (additional, opt-in destination).
+    var driveEnabled by remember { mutableStateOf(manager.isDriveEnabled() && manager.isDriveSignedIn()) }
+    var driveMeta by remember { mutableStateOf<GoogleDriveBackupService.DriveBackupMeta?>(null) }
+    var driveBusy by remember { mutableStateOf(false) }
+    var driveError by remember { mutableStateOf<String?>(null) }
+
+    suspend fun reloadDrive() {
+        driveEnabled = manager.isDriveEnabled() && manager.isDriveSignedIn()
+        driveMeta = if (driveEnabled) runCatching { manager.fetchDriveMeta() }.getOrNull() else null
+    }
+
     suspend fun reloadMeta() {
         loadingMeta = true
         meta = runCatching { manager.fetchMeta() }.getOrNull()
         setUp = manager.isSetUp()
         loadingMeta = false
+        reloadDrive()
     }
 
     LaunchedEffect(Unit) { reloadMeta() }
+
+    // Re-consent flow (GoogleAuthUtil may need a second grant), then finish enabling.
+    val recoveryLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        scope.launch {
+            driveBusy = true; driveError = null
+            try { manager.enableDriveBackup(); reloadDrive() }
+            catch (e: Exception) { driveError = e.message ?: "Couldn't enable Google Drive backup." }
+            driveBusy = false
+        }
+    }
+    // Google Sign-In result → enable Drive (uploads the same encrypted blob).
+    val signInLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        scope.launch {
+            driveBusy = true; driveError = null
+            try {
+                manager.enableDriveBackup()
+                reloadDrive()
+            } catch (e: DriveAuthRecoverable) {
+                recoveryLauncher.launch(e.recoveryIntent)
+            } catch (e: Exception) {
+                driveError = e.message ?: "Couldn't enable Google Drive backup."
+            }
+            driveBusy = false
+        }
+    }
 
     when (screen) {
         Screen.HOME -> BackupHome(
             setUp = setUp,
             loadingMeta = loadingMeta,
             meta = meta,
+            driveEnabled = driveEnabled,
+            driveMeta = driveMeta,
+            driveBusy = driveBusy,
+            driveError = driveError,
+            onEnableDrive = {
+                driveError = null
+                signInLauncher.launch(manager.driveSignInClient().signInIntent)
+            },
+            onDisableDrive = {
+                manager.disableDriveBackup()
+                driveError = null
+                scope.launch { reloadDrive() }
+            },
             onBack = onBack,
             onSetup = { screen = Screen.SETUP },
             onBackupNow = {
@@ -119,6 +177,12 @@ private fun BackupHome(
     setUp: Boolean,
     loadingMeta: Boolean,
     meta: BackupService.BackupMeta?,
+    driveEnabled: Boolean,
+    driveMeta: GoogleDriveBackupService.DriveBackupMeta?,
+    driveBusy: Boolean,
+    driveError: String?,
+    onEnableDrive: () -> Unit,
+    onDisableDrive: () -> Unit,
     onBack: () -> Unit,
     onSetup: () -> Unit,
     onBackupNow: () -> Unit,
@@ -175,6 +239,58 @@ private fun BackupHome(
             BackupSecondaryButton("View recovery phrase", onClick = onViewPhrase)
             Spacer(Modifier.height(12.dp))
             BackupSecondaryButton("Change PIN", onClick = onChangePin)
+
+            Spacer(Modifier.height(28.dp))
+            DriveBackupSection(
+                enabled = driveEnabled,
+                meta = driveMeta,
+                busy = driveBusy,
+                error = driveError,
+                onEnable = onEnableDrive,
+                onDisable = onDisableDrive,
+            )
+        }
+    }
+}
+
+// MARK: - Google Drive destination (additional to the server backup)
+
+@Composable
+private fun DriveBackupSection(
+    enabled: Boolean,
+    meta: GoogleDriveBackupService.DriveBackupMeta?,
+    busy: Boolean,
+    error: String?,
+    onEnable: () -> Unit,
+    onDisable: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth()) {
+        Text("Google Drive backup",
+            style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Keep the same end-to-end encrypted backup in your own private Google Drive folder " +
+                "as an extra copy. Google only ever sees ciphertext — never your messages or key.",
+            style = VoiidFont.rounded(13), color = VoiidColor.textSecondary,
+        )
+        Spacer(Modifier.height(12.dp))
+        if (enabled) {
+            Text("Drive backup on",
+                style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.success)
+            Spacer(Modifier.height(4.dp))
+            Text("Last Drive backup: ${formatUpdatedAt(meta?.modifiedTime)}",
+                style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
+            Spacer(Modifier.height(12.dp))
+            BackupSecondaryButton(if (busy) "Working…" else "Turn off Drive backup") { if (!busy) onDisable() }
+        } else {
+            BackupSecondaryButton(if (busy) "Connecting…" else "Back up to Google Drive") { if (!busy) onEnable() }
+            Spacer(Modifier.height(8.dp))
+            Text("Requires Google sign-in setup.",
+                style = VoiidFont.rounded(12), color = VoiidColor.textSecondary)
+        }
+        error?.let {
+            Spacer(Modifier.height(10.dp))
+            Text(it, style = VoiidFont.rounded(13), color = VoiidColor.error)
         }
     }
 }

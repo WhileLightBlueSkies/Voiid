@@ -72,6 +72,12 @@ dependencies {
     implementation(libs.firebase.messaging)
     implementation(libs.kotlinx.coroutines.play.services)   // Task.await()
 
+    // Google Sign-In — authorizes the least-privilege drive.appdata OAuth scope so the
+    // encrypted backup blob can be stored in the user's own private Drive appDataFolder.
+    // GoogleAuthUtil (in play-services-auth-base) mints the OAuth access token; the Drive
+    // v3 REST transfer itself rides the existing OkHttp (no heavy Drive client library).
+    implementation(libs.play.services.auth)
+
     // E2E core (Rust via uniffi). The generated Kotlin in uniffi/voiid/voiid.kt
     // uses JNA to call into jniLibs/<abi>/libvoiid_e2e_core.so. Must be the @aar
     // (it ships the Android-native JNA dispatch library); the plain jar won't load.

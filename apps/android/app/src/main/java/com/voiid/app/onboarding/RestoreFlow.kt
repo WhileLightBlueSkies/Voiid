@@ -1,5 +1,7 @@
 package com.voiid.app.onboarding
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Spacer
@@ -58,10 +60,34 @@ fun RestoreFlow(
     var step by remember { mutableStateOf(RestoreStep.LANDING) }
     var pin by remember { mutableStateOf("") }
     var phrase by remember { mutableStateOf("") }
+    // Which storage location the encrypted blob is pulled from (secret still comes from PIN/phrase).
+    var source by remember { mutableStateOf(BackupManager.RestoreSource.SERVER) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
 
     fun finish() { onDone() }
+
+    // Google Sign-In → if a Drive backup exists, switch the restore source to Drive and
+    // continue to PIN entry (the secret still comes from PIN/phrase, only the blob source changes).
+    val driveSignInLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        scope.launch {
+            busy = true; error = null
+            try {
+                val driveMeta = manager.fetchDriveMeta()
+                if (driveMeta == null) {
+                    error = "No Google Drive backup found for this account."
+                } else {
+                    source = BackupManager.RestoreSource.DRIVE
+                    step = RestoreStep.PIN
+                }
+            } catch (e: Exception) {
+                error = e.message ?: "Couldn't reach Google Drive."
+            }
+            busy = false
+        }
+    }
 
     fun handleOutcome(outcome: BackupManager.RestoreOutcome) {
         when (outcome) {
@@ -80,8 +106,12 @@ fun RestoreFlow(
         RestoreStep.LANDING -> RestoreLanding(
             meta = meta,
             onBack = onSkip,
-            onEnterPin = { error = null; step = RestoreStep.PIN },
-            onEnterPhrase = { error = null; step = RestoreStep.PHRASE },
+            onEnterPin = { error = null; source = BackupManager.RestoreSource.SERVER; step = RestoreStep.PIN },
+            onEnterPhrase = { error = null; source = BackupManager.RestoreSource.SERVER; step = RestoreStep.PHRASE },
+            onRestoreFromDrive = {
+                error = null
+                driveSignInLauncher.launch(manager.driveSignInClient().signInIntent)
+            },
             onSkip = onSkip,
         )
         RestoreStep.PIN -> PinEntryScreen(
@@ -95,7 +125,7 @@ fun RestoreFlow(
                 busy = true; error = null
                 scope.launch {
                     try {
-                        handleOutcome(manager.restoreWithPin(pin))
+                        handleOutcome(manager.restoreWithPin(pin, source))
                     } catch (e: Exception) {
                         error = e.message ?: "Couldn't restore. Please try again."
                     }
@@ -118,7 +148,7 @@ fun RestoreFlow(
                 busy = true; error = null
                 scope.launch {
                     try {
-                        handleOutcome(manager.restoreWithPhrase(phrase))
+                        handleOutcome(manager.restoreWithPhrase(phrase, source))
                     } catch (e: Exception) {
                         error = e.message ?: "Invalid recovery phrase."
                     }
@@ -135,6 +165,7 @@ private fun RestoreLanding(
     onBack: () -> Unit,
     onEnterPin: () -> Unit,
     onEnterPhrase: () -> Unit,
+    onRestoreFromDrive: () -> Unit,
     onSkip: () -> Unit,
 ) {
     val haptics = LocalVoiidHaptics.current
@@ -152,6 +183,8 @@ private fun RestoreLanding(
         BackupButton("Enter PIN", enabled = true, onClick = onEnterPin)
         Spacer(Modifier.height(12.dp))
         BackupSecondaryButton("Enter recovery phrase", onClick = onEnterPhrase)
+        Spacer(Modifier.height(12.dp))
+        BackupSecondaryButton("Restore from Google Drive", onClick = onRestoreFromDrive)
         Spacer(Modifier.height(20.dp))
         Text("Skip for now", style = VoiidFont.rounded(14, FontWeight.Medium), color = VoiidColor.textSecondary,
             modifier = Modifier.noRippleClickable { haptics.tap(); onSkip() })

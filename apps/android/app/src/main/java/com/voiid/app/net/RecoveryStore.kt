@@ -23,6 +23,7 @@ class RecoveryStore private constructor(context: Context) {
             }
 
         private const val KEY_MASTER_SECRET = "master_secret"
+        private const val KEY_DRIVE_ENABLED = "drive_backup_enabled"
     }
 
     private val prefs = SecurePrefs.open(context, "voiid_recovery")
@@ -38,7 +39,14 @@ class RecoveryStore private constructor(context: Context) {
     fun loadMasterSecret(): ByteArray? =
         prefs.getString(KEY_MASTER_SECRET, null)?.let { Base64.decode(it, Base64.NO_WRAP) }
 
+    /** Whether the Google Drive backup destination is opted-in on THIS device (UX flag). */
+    fun isDriveEnabled(): Boolean = prefs.getBoolean(KEY_DRIVE_ENABLED, false)
+
+    fun setDriveEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_DRIVE_ENABLED, enabled).apply()
+    }
+
     fun clear() {
-        prefs.edit().remove(KEY_MASTER_SECRET).apply()
+        prefs.edit().remove(KEY_MASTER_SECRET).remove(KEY_DRIVE_ENABLED).apply()
     }
 }
