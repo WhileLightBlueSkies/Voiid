@@ -18,6 +18,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -96,6 +98,10 @@ object GroupCallManager {
     /** Held so [refreshCallKey] can re-key without reaching through the SDK's manager. */
     @Volatile private var keyProvider: io.livekit.android.e2ee.KeyProvider? = null
     @Volatile private var eventJob: Job? = null
+    /** Collects [GroupEngine.epochChanges] for the active conversation and re-keys on epoch advance. */
+    @Volatile private var epochJob: Job? = null
+    /** Last key handed to [keyProvider]; guards against redundant re-keys and no-op commits. */
+    @Volatile private var lastAppliedKey: String? = null
     @Volatile private var appContext: Context? = null
     /** Guards join/leave against double-taps and overlapping teardown. */
     private val lifecycle = Any()
@@ -159,6 +165,7 @@ object GroupCallManager {
             E2EEOptions().also {
                 it.keyProvider.setSharedKey(keyB64, KEY_INDEX)
                 keyProvider = it.keyProvider
+                lastAppliedKey = keyB64
             }
         }.getOrElse {
             Log.e("VOIID", "group call: E2EE setup failed", it)
@@ -187,6 +194,7 @@ object GroupCallManager {
         room = r
         _state.value = _state.value?.copy(e2ee = true)
         startEventMirror(r)
+        startEpochWatch(ctx, conversationId)
 
         try {
             r.connect(creds.url, creds.token)
@@ -238,8 +246,10 @@ object GroupCallManager {
                         fail("Couldn't connect to the call.")
                         return@collect
                     }
-                    // Membership changed → the MLS epoch may have moved with it, so re-derive
-                    // the media key. Re-applying an unchanged key is a no-op.
+                    // Secondary/opportunistic trigger: an SFU membership change often coincides
+                    // with an MLS commit. The authoritative trigger is startEpochWatch (driven by
+                    // the actual exporter-secret rotation); refreshCallKey de-dups so re-applying
+                    // an unchanged key here is a no-op.
                     is RoomEvent.ParticipantConnected,
                     is RoomEvent.ParticipantDisconnected,
                     -> refreshCallKey()
@@ -251,18 +261,45 @@ object GroupCallManager {
     }
 
     /**
+     * Watch the MLS epoch for the active conversation. When a membership commit is applied or
+     * merged locally, [GroupEngine.epochChanges] fires and we re-derive + re-apply the call key.
+     * This is the authoritative trigger: it follows the ACTUAL exporter-secret rotation, unlike
+     * the LiveKit participant events (which can fire before/without the local commit landing).
+     * [debounce] coalesces a burst of consecutive commits (e.g. adding several people) into one
+     * re-key. Runs on [scope] (Dispatchers.IO), off the main thread, and is cancelled on leave.
+     */
+    private fun startEpochWatch(ctx: Context, conversationId: String) {
+        epochJob?.cancel()
+        epochJob = scope.launch {
+            GroupEngine.get(ctx).epochChanges
+                .filter { it == conversationId }
+                .debounce(EPOCH_DEBOUNCE_MS)
+                .collect {
+                    Log.i("VOIID", "group call: MLS epoch advanced conv=$conversationId — re-keying")
+                    refreshCallKey()
+                }
+        }
+    }
+
+    /**
      * Re-derive the MLS call key and hand it to the key provider. MLS rekeys on every
      * membership commit, so the media key must follow or members at the new epoch can't be
-     * decrypted. Cheap and idempotent.
+     * decrypted. Never throws: on failure we log and keep the call up on the CURRENT key rather
+     * than tearing it down. Skips the SDK call when the key is unchanged (idempotent).
      */
     fun refreshCallKey() {
         val ctx = appContext ?: return
         val conversationId = _state.value?.conversationId ?: return
         scope.launch {
             val key = runCatching { GroupEngine.get(ctx).callKey(conversationId) }.getOrNull() ?: return@launch
+            if (key == lastAppliedKey) return@launch                 // epoch unchanged → no-op
             val provider = keyProvider ?: return@launch
             runCatching { provider.setSharedKey(key, KEY_INDEX) }
-                .onFailure { Log.e("VOIID", "group call: key refresh failed", it) }
+                .onSuccess {
+                    lastAppliedKey = key
+                    Log.i("VOIID", "group call: re-keyed to new MLS epoch")
+                }
+                .onFailure { Log.e("VOIID", "group call: key refresh failed — staying on current key", it) }
         }
     }
 
@@ -383,6 +420,9 @@ object GroupCallManager {
     private fun teardown() {
         eventJob?.cancel()
         eventJob = null
+        epochJob?.cancel()
+        epochJob = null
+        lastAppliedKey = null
         val r = room
         room = null
         keyProvider = null
@@ -405,6 +445,8 @@ object GroupCallManager {
     /** Key slot in LiveKit's key ring. We only ever use one (the MLS-derived shared key). */
     private const val KEY_INDEX = 0
     private const val ERROR_LINGER_MS = 4000L
+    /** Coalesce a burst of consecutive membership commits into a single re-key. */
+    private const val EPOCH_DEBOUNCE_MS = 250L
 
     @Serializable private data class GroupTokenBody(val conversation_id: String)
 

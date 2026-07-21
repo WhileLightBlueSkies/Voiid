@@ -60,6 +60,15 @@ android {
         compose = true
         buildConfig = true   // exposes BuildConfig.VERSION_NAME for force-update gating
     }
+    lint {
+        // False positive that otherwise fails EVERY release build (lintVitalRelease):
+        // MainActivity is a Compose ComponentActivity and gets registerForActivityResult
+        // directly from androidx.activity — it uses no Fragments, so the check's
+        // "upgrade Fragment to 1.3.0" requirement doesn't apply. This lint misfires on
+        // Compose/ComponentActivity apps. Scoped to this one check only; all other lint
+        // (including release-vital) stays enabled.
+        disable += "InvalidFragmentVersionForActivityResult"
+    }
 }
 
 // Give each per-ABI release APK a distinct versionCode — Play rejects multiple APKs

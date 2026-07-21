@@ -4,6 +4,9 @@ import android.content.Context
 import android.util.Base64
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -74,6 +77,21 @@ class GroupEngine private constructor(context: Context) {
     /** conversationId -> MLS group_id (persisted so groups survive a restart). */
     private val groupIds = HashMap<String, ByteArray>()
     @Volatile private var groupMapLoaded = false
+
+    /**
+     * Fires the conversationId whenever an applied/merged commit advances that group's MLS
+     * epoch, i.e. the exporter secret — and thus the derived group-call media key — changed.
+     * A live [GroupCallManager] collects this to re-derive and re-apply the LiveKit E2EE key,
+     * closing the epoch-skew gap where members at different epochs derive different keys and
+     * can no longer decrypt each other's media. Buffered + [tryEmit] so emission never blocks
+     * the MLS lock and a burst of commits can't suspend a state-changing FFI call. Only emitted
+     * when the derived key genuinely changed (see [signalEpochAdvancedLocked]).
+     */
+    private val _epochChanges = MutableSharedFlow<String>(extraBufferCapacity = 64)
+    val epochChanges: SharedFlow<String> = _epochChanges.asSharedFlow()
+
+    /** conversationId -> last derived call-key Base64 (epoch fingerprint). Guarded by [lock]. */
+    private val lastCallKeyByConv = HashMap<String, String>()
 
     // MARK: - Member lifecycle
 
@@ -239,6 +257,8 @@ class GroupEngine private constructor(context: Context) {
             }
             postGroupEvents(conversationId, events)
         }
+        // Each addMember merged a commit locally → epoch advanced. Re-key any live call.
+        signalEpochAdvancedLocked(conversationId, session, m)
         Log.i("VOIID", "MLS: added user=$userId (${kps.key_packages.size} devices) to conv=$conversationId")
     }
 
@@ -265,6 +285,8 @@ class GroupEngine private constructor(context: Context) {
                     Log.w("VOIID", "MLS: removeMember device=${d.id} failed (maybe not a member)")
                 }
             }
+            // Removal rekeys the group → epoch advanced. Re-key any live call.
+            signalEpochAdvancedLocked(conversationId, session, m)
             Log.i("VOIID", "MLS: removed user=$userId from conv=$conversationId")
         }
     }
@@ -359,6 +381,8 @@ class GroupEngine private constructor(context: Context) {
         val session = m.loadGroup(gid)
         session.decrypt(m, Base64.decode(ev.payload, Base64.NO_WRAP))   // applies commit, returns null
         persistMemberLocked(m)
+        // The commit advanced our epoch → the call key changed. Re-key any live call.
+        signalEpochAdvancedLocked(ev.conversation_id, session, m)
         Log.i("VOIID", "MLS: applied commit conv=${ev.conversation_id}")
     }
 
@@ -440,11 +464,42 @@ class GroupEngine private constructor(context: Context) {
             }
             runCatching {
                 val session = m.loadGroup(gid)
-                val keys = session.callKeys(m)
-                Base64.encodeToString(keys.masterKey + keys.masterSalt, Base64.NO_WRAP)
+                val key = deriveCallKeyB64(session, m)
+                // Seed the epoch fingerprint so a commit that lands DURING the call is detected
+                // as a change and triggers exactly one re-key (not a spurious one at join).
+                lastCallKeyByConv[conversationId] = key
+                key
             }.getOrElse {
                 Log.e("VOIID", "MLS: callKey derivation failed for conv=$conversationId", it); null
             }
+        }
+    }
+
+    /**
+     * Base64 (NO_WRAP) of `masterKey ‖ masterSalt` for a loaded [session] — the exact material
+     * handed to LiveKit's key provider. Because it is derived from the MLS exporter secret it
+     * also serves as an epoch fingerprint: it changes iff the epoch advanced. Caller holds [lock].
+     */
+    private fun deriveCallKeyB64(session: GroupSession, m: GroupMember): String {
+        val keys = session.callKeys(m)
+        return Base64.encodeToString(keys.masterKey + keys.masterSalt, Base64.NO_WRAP)
+    }
+
+    /**
+     * Emit [conversationId] on [epochChanges] iff the derived call key genuinely changed since we
+     * last saw it (call join seeds it; each commit updates it). Idempotent re-applies of the same
+     * commit — or commits that don't move the exporter secret — do NOT wake a live call. Never
+     * throws: a fingerprint failure just skips the signal, leaving the call on its current key.
+     * Caller holds [lock].
+     */
+    private fun signalEpochAdvancedLocked(conversationId: String, session: GroupSession, m: GroupMember) {
+        val fp = runCatching { deriveCallKeyB64(session, m) }.getOrElse {
+            Log.w("VOIID", "MLS: epoch fingerprint failed conv=$conversationId — skip rekey signal", it); return
+        }
+        val prev = lastCallKeyByConv.put(conversationId, fp)
+        if (prev != null && prev != fp) {
+            val delivered = _epochChanges.tryEmit(conversationId)
+            Log.i("VOIID", "MLS: epoch advanced conv=$conversationId rekey-signal delivered=$delivered")
         }
     }
 
