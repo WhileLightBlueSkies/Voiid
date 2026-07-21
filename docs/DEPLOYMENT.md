@@ -30,6 +30,41 @@ and the `/ws` path on that host.
 
 ---
 
+## 0.1 CHOSEN TOPOLOGY (decided)
+
+**TURN: Cloudflare** (managed) — chosen for zero ops + global anycast coverage
+(relays near every user automatically, which single-region self-hosted coturn
+can't match). Trade-off accepted: Cloudflare sees relay *metadata* (peer IPs,
+timing) for the ~10–20% of calls that relay — it can NEVER see media, which stays
+DTLS-SRTP encrypted. Our own coturn stays available in-code as a fallback and can
+be added later (privacy/backup relay); the API prefers Cloudflare when both are
+configured. So `deploy/turn/` is kept but not part of the initial bring-up.
+
+**Two instances:**
+
+| Box | Runs | Sizing (start) |
+|---|---|---|
+| **Box A — app** | API + WebSocket + Postgres + Redis | 4 vCPU / 8 GB |
+| **Box B — LiveKit** | LiveKit SFU only (media-heavy, isolated so a group call can't degrade the API/DB) | 4 vCPU / 8 GB |
+| *(Cloudflare)* | TURN | managed — no box |
+
+**Box B (LiveKit) firewall/ports:** `7880` (HTTP/WS signaling, put TLS in front for
+`wss://livekit.voiid.app`), `7881` (TCP fallback), **UDP `50000-60000`** (media),
+on a **public IP**. Hand its `LIVEKIT_API_KEY`/`SECRET` to Box A's env.
+
+**Box A caution:** co-locating Postgres is fine for the live test, but Postgres is
+the one stateful, can't-lose service — **move it to managed / a dedicated backed-up
+box before real users.** API + WS are stateless (all shared state via Redis), so
+scale-out later is just adding more of them behind the proxy; Postgres + Redis are
+what you'd move to managed/replicated first.
+
+**Group calls can be skipped for the FIRST live test** — 1:1 calls don't need
+LiveKit, and `POST /calls/group/token` returns a clean 503 until it's configured.
+So a 1:1-only smoke test can run on Box A alone with Cloudflare TURN; bring Box B
+up when testing group calls.
+
+---
+
 ## 1. Prerequisites
 - [ ] A domain (e.g. `voiid.app`) with DNS you control. Suggested records:
   - `api.voiid.app` → API/proxy host
@@ -99,7 +134,20 @@ and the `/ws` path on that host.
 
 ## 4. Calls infrastructure
 
-### coturn (TURN) — config already in `deploy/turn/`, full steps in docs/TURN_SETUP.md
+### CHOSEN: Cloudflare TURN (managed)
+- [ ] Create a Cloudflare Realtime/TURN key. Set `VOIID_TURN_CLOUDFLARE_KEY_ID` +
+      `VOIID_TURN_CLOUDFLARE_API_TOKEN` on Box A. That's it — the API mints
+      per-client credentials from Cloudflare and advertises them via
+      `GET /v1/calls/turn`. Keep `VOIID_STUN_URLS` (Cloudflare or Google STUN) for
+      the P2P-discovery path. Leave the coturn vars UNSET; when both are set the API
+      prefers Cloudflare.
+- [ ] **Verify:** the Trickle-ICE web test with creds from `GET /v1/calls/turn`
+      should show a `relay` candidate. Test a real call with one device on cellular
+      to confirm relayed calls connect.
+
+### FALLBACK / later: self-hosted coturn — config in `deploy/turn/`, steps in docs/TURN_SETUP.md
+Not part of the initial bring-up (Cloudflare is the chosen path). Add it later if
+you want relay metadata kept in-house or a backup relay:
 - [ ] Install coturn on the (bare-metal) box. Use `deploy/turn/turnserver.conf`.
 - [ ] Generate a strong secret and set it in BOTH places (they MUST match):
   - coturn `static-auth-secret=…`
