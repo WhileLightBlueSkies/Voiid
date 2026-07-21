@@ -30,6 +30,25 @@ android {
             )
         }
     }
+
+    // The app carries TWO WebRTC native builds (Stream's libjingle for 1:1 +
+    // LiveKit's liblkjingle for group calls) plus the e2e-core Rust lib, across 4
+    // ABIs — a universal APK is ~130 MB. Split RELEASE APKs by ABI so each device
+    // build carries only its own ABI (~40 MB). Gated to release tasks ONLY, so
+    // debug builds (and the app-debug.apk verification path) are untouched.
+    //
+    // PREFERRED distribution is the App Bundle (`./gradlew bundleRelease`) — Play
+    // then delivers only the device's ABI automatically with no per-ABI APK/version
+    // -code juggling. These splits are for DIRECT APK distribution (sideload / other
+    // stores). See docs/WEBRTC_VERSIONS.md.
+    splits {
+        abi {
+            isEnable = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }
+            reset()
+            include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+            isUniversalApk = false
+        }
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -40,6 +59,22 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true   // exposes BuildConfig.VERSION_NAME for force-update gating
+    }
+}
+
+// Give each per-ABI release APK a distinct versionCode — Play rejects multiple APKs
+// that share one. Offset = base*10 + abiRank, so arm64 always outranks armeabi on a
+// device that could run either. No-op for the universal debug APK (no ABI filter).
+androidComponents {
+    val abiRank = mapOf("armeabi-v7a" to 1, "arm64-v8a" to 2, "x86" to 3, "x86_64" to 4)
+    onVariants { variant ->
+        variant.outputs.forEach { output ->
+            val abi = output.filters.find { it.filterType == com.android.build.api.variant.FilterConfiguration.FilterType.ABI }?.identifier
+            val base = output.versionCode.get() ?: 1
+            if (abi != null) {
+                output.versionCode.set(base * 10 + (abiRank[abi] ?: 0))
+            }
+        }
     }
 }
 
