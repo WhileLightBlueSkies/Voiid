@@ -110,6 +110,11 @@ final class GroupCallService: NSObject, ObservableObject {
     private var tickTimer: Timer?
     /// Guards against overlapping join attempts (double-tap on the call button).
     private var joining = false
+    /// Live subscription to MLS epoch changes for the active conversation. When the
+    /// group's membership changes mid-call the exporter secret rotates, so we must
+    /// re-derive and re-apply the media key or participants at different epochs desync.
+    /// Held only while in a call; torn down on leave.
+    private var epochSubscription: AnyCancellable?
 
     private override init() { super.init() }
 
@@ -206,9 +211,51 @@ final class GroupCallService: NSObject, ObservableObject {
         }
 
         configureAudioSession()
+        subscribeToEpochChanges(conversationId: conversationId)
         state = .connected
         startTicking()
         refreshParticipants()
+    }
+
+    // MARK: - Mid-call re-key (MLS epoch skew)
+
+    /// Subscribe to the active group's MLS epoch changes. Rapid consecutive commits
+    /// (e.g. adding several devices at once) are coalesced by a short debounce so we
+    /// re-key once at the settled epoch rather than thrashing the key provider. Only
+    /// events for the current conversation are acted on; the subscription is dropped
+    /// on leave.
+    private func subscribeToEpochChanges(conversationId: String) {
+        epochSubscription = GroupEngine.shared.groupEpochChanged
+            .filter { $0 == conversationId }
+            .debounce(for: .milliseconds(400), scheduler: DispatchQueue.main)
+            .sink { [weak self] convId in
+                Task { @MainActor in self?.reapplyCallKey(conversationId: convId) }
+            }
+    }
+
+    /// Re-derive this conversation's MLS call key and re-apply it to LiveKit's shared-key
+    /// E2EE provider, rolling the media key to the new epoch. Best-effort: if anything is
+    /// missing or throws we log and keep the call up on the previous key rather than tear
+    /// it down — a stale key degrades to "can't decrypt the newest epoch", never a crash.
+    private func reapplyCallKey(conversationId: String) {
+        guard state.isActive, self.conversationId == conversationId, let room else { return }
+        guard let keyProvider = room.e2eeManager?.keyProvider else {
+            NSLog("[VOIID] group-call rekey: no E2EE key provider on room; staying on old key")
+            return
+        }
+        let passphrase: String
+        do {
+            passphrase = try GroupEngine.shared.callKeyPassphrase(conversationId: conversationId)
+        } catch {
+            NSLog("[VOIID] group-call rekey: re-derive failed, keeping old key: \(error)")
+            return
+        }
+        // Shared-key mode: setKey defaults to the current key index (0, as set at join),
+        // so this replaces the shared key in place — the supported way to roll it. Every
+        // member that reaches this epoch derives the byte-identical passphrase, so they
+        // converge on the same key once each has applied the commit.
+        keyProvider.setKey(key: passphrase)
+        NSLog("[VOIID] group-call rekey: applied new epoch key conv=\(conversationId)")
     }
 
     // MARK: - Leave
@@ -222,6 +269,8 @@ final class GroupCallService: NSObject, ObservableObject {
 
     private func teardown() async {
         stopTicking()
+        epochSubscription?.cancel()
+        epochSubscription = nil
         if let room {
             room.remove(delegate: self)
             await room.disconnect()

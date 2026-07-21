@@ -34,12 +34,20 @@
 
 import Foundation
 import Security
+import Combine
 
 @MainActor
 final class GroupEngine {
     static let shared = GroupEngine()
     private let api = APIClient()
     private let kc = KeychainData(service: "com.voiid.mls")
+
+    /// Fires with a `conversationId` whenever that group's MLS epoch advances — i.e.
+    /// right after a membership commit is applied (`syncGroupEvents`) or merged locally
+    /// (`addMember`/`removeMember`). The exporter secret, and therefore the derived call
+    /// key, changes on every such commit, so a live call must re-derive and re-apply its
+    /// media key when this fires. Only emitted when the derived key genuinely changed.
+    let groupEpochChanged = PassthroughSubject<String, Never>()
 
     private let memberBlobName = "mls_member_blob"     // serialized GroupMember (all state)
     private let convGroupsName = "mls_conv_groups"     // JSON { conversationId: base64(group_id) }
@@ -301,8 +309,12 @@ final class GroupEngine {
                 guard let commit = decodeB64(e.payload) else { continue }
                 do {
                     let session = try loadSession(e.conversation_id)
+                    let keyBefore = callKeyPassphraseIfAvailable(e.conversation_id)
                     _ = try session.decrypt(member: m, message: commit)   // applies (returns nil)
                     persistMember()
+                    // Epoch advanced → the call key rotated. Signal any live call so it can
+                    // re-derive and re-apply, else members desync after this membership change.
+                    emitEpochChangeIfKeyRotated(e.conversation_id, previous: keyBefore)
                     NSLog("[VOIID] MLS applied commit conv=\(e.conversation_id)")
                 } catch {
                     NSLog("[VOIID] MLS commit apply skipped conv=\(e.conversation_id): \(error)")
@@ -371,6 +383,7 @@ final class GroupEngine {
         guard let m = ensureMember() else { return }
         do {
             let session = try loadSession(conversationId)
+            let keyBefore = callKeyPassphraseIfAvailable(conversationId)
             let kps = try await fetchKeyPackages(userId: userId)
             var events: [GroupEventOut] = []
             let existing = Set(existingMemberUserIds).subtracting([userId])
@@ -386,6 +399,8 @@ final class GroupEngine {
                                                 payload: out.commit.base64EncodedString()))
                 }
             }
+            // Adding a member merged a commit locally → advance our own live call's key.
+            emitEpochChangeIfKeyRotated(conversationId, previous: keyBefore)
             try await distribute(conversationId: conversationId, events: events)
             NSLog("[VOIID] MLS added user=\(userId) conv=\(conversationId)")
         } catch {
@@ -400,6 +415,7 @@ final class GroupEngine {
         guard let m = ensureMember() else { return }
         do {
             let session = try loadSession(conversationId)
+            let keyBefore = callKeyPassphraseIfAvailable(conversationId)
             let deviceIds = try await deviceIds(of: userId)
             var events: [GroupEventOut] = []
             let remaining = Set(remainingMemberUserIds).subtracting([userId])
@@ -412,6 +428,8 @@ final class GroupEngine {
                                                 payload: commit.base64EncodedString()))
                 }
             }
+            // Removing a member merged a commit locally → advance our own live call's key.
+            emitEpochChangeIfKeyRotated(conversationId, previous: keyBefore)
             try await distribute(conversationId: conversationId, events: events)
             NSLog("[VOIID] MLS removed user=\(userId) conv=\(conversationId)")
         } catch {
@@ -498,6 +516,22 @@ final class GroupEngine {
     func callKeyPassphrase(conversationId: String) throws -> String {
         let keys = try callKeys(conversationId: conversationId)
         return (keys.masterKey + keys.masterSalt).base64EncodedString()
+    }
+
+    /// Snapshot the current derived call-key passphrase for a conversation, or nil if we
+    /// can't derive one (no group / not restored). Used to decide whether a just-applied
+    /// commit actually rotated the media key before signalling a live call.
+    private func callKeyPassphraseIfAvailable(_ conversationId: String) -> String? {
+        try? callKeyPassphrase(conversationId: conversationId)
+    }
+
+    /// Emit `groupEpochChanged` for a conversation only if the derived call key changed
+    /// between `previous` and now. Cheap, never throws — a nil/derive failure is treated
+    /// as "no confirmed change" and stays silent rather than churning a live call.
+    private func emitEpochChangeIfKeyRotated(_ conversationId: String, previous: String?) {
+        let current = callKeyPassphraseIfAvailable(conversationId)
+        guard let current, current != previous else { return }
+        groupEpochChanged.send(conversationId)
     }
 
     // MARK: - Persistence
