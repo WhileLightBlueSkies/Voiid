@@ -330,7 +330,7 @@ final class GroupEngine {
     private struct MessageDTO: Decodable {
         let id: String
         let sender_id: String
-        let ciphertext: String
+        let ciphertext: String?
         let created_at: String
         var sender_device_id: String? = nil
         var content_type: String? = nil
@@ -358,7 +358,7 @@ final class GroupEngine {
         for msg in env.messages.reversed() {   // server DESC → process ASC
             if msg.sender_id == myId { continue }              // our own echo already stored
             if seen.contains(msg.id) { continue }              // decrypt-once
-            guard let ct = decodeB64(msg.ciphertext) else { continue }
+            guard let ciphertext = msg.ciphertext, let ct = decodeB64(ciphertext) else { continue }
             do {
                 guard let plain = try session.decrypt(member: m, message: ct) else {
                     persistMember(); continue   // a commit/proposal — applied, no plaintext

@@ -417,7 +417,13 @@ final class ChatEngine {
                 continue
             }
             if seen.contains(m.id) { continue }
-            guard let wire = decodeWire(m.ciphertext) else { continue }
+            // A null ciphertext means the server had no per-device blob for us yet (e.g. our
+            // device_id wasn't resolved when this row's fan-out was written, or delivery to
+            // this device is still pending) — skip for now, it'll show up once available.
+            guard let ciphertext = m.ciphertext, let wire = decodeWire(ciphertext) else {
+                NSLog("[VOIID] ⚠️ skipping inbound id=\(m.id): no ciphertext for this device")
+                continue
+            }
             do {
                 let plain = try await decryptInbound(wire, peerUserId: peerUserId,
                                                      senderDeviceId: m.sender_device_id)
@@ -824,7 +830,7 @@ final class ChatEngine {
         var delivered_devices: Int = 0
     }
     private struct MessageDTO: Decodable {
-        let id: String; let sender_id: String; let ciphertext: String; let created_at: String
+        let id: String; let sender_id: String; let ciphertext: String?; let created_at: String
         var sender_device_id: String? = nil   // which of the SENDER's devices encrypted it
         var content_type: String? = nil
         var receipt_status: String? = nil      // "delivered"/"read" — recipient's state of OUR sent msg

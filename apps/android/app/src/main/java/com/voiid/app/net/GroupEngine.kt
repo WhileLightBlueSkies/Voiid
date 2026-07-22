@@ -405,7 +405,11 @@ class GroupEngine private constructor(context: Context) {
                 it.content_type == "group" && it.sender_id != myId && !chat.hasMessage(conversationId, it.id)
             }
             for (msg in fresh) {
-                val ct = runCatching { Base64.decode(msg.ciphertext, Base64.NO_WRAP) }.getOrNull()
+                // A null ciphertext means the server had no per-device blob for us yet (our
+                // device_id wasn't resolved when this row's fan-out was written, or delivery
+                // to this device is still pending) — skip for now, don't tombstone it.
+                val rawCiphertext = msg.ciphertext ?: continue
+                val ct = runCatching { Base64.decode(rawCiphertext, Base64.NO_WRAP) }.getOrNull()
                 val createdAt = parseIso(msg.created_at)
                 if (ct == null) {
                     chat.storeGroupTombstone(conversationId, msg.id, msg.sender_id, createdAt)
@@ -549,7 +553,7 @@ class GroupEngine private constructor(context: Context) {
     @Serializable private data class MessageDTO(
         val id: String,
         val sender_id: String,
-        val ciphertext: String,
+        val ciphertext: String? = null,
         val created_at: String,
         val sender_device_id: String? = null,
         val content_type: String? = null,

@@ -258,7 +258,13 @@ class ChatEngine private constructor(context: Context) {
                 continue
             }
             if (seen.contains(m.id)) continue
-            val wire = decodeWire(m.ciphertext) ?: continue
+            // A null ciphertext means the server had no per-device blob for us yet (e.g. our
+            // device_id wasn't resolved when this row's fan-out was written, or delivery to
+            // this device is still pending) — skip for now, it'll show up once available.
+            val wire = m.ciphertext?.let { decodeWire(it) } ?: run {
+                android.util.Log.w("VOIID", "⚠️ skipping inbound id=${m.id}: no ciphertext for this device")
+                null
+            } ?: continue
             runCatching {
                 val plain = decryptInbound(wire, peerUserId, m.sender_device_id)
                 android.util.Log.i("VOIID", "✅ decrypted inbound id=${m.id} senderDev=${m.sender_device_id}")
@@ -676,7 +682,7 @@ class ChatEngine private constructor(context: Context) {
     @Serializable private data class MessageDTO(
         val id: String,
         val sender_id: String,
-        val ciphertext: String,
+        val ciphertext: String? = null,
         val created_at: String,
         val sender_device_id: String? = null,   // which of the SENDER's devices encrypted it
         val content_type: String? = null,

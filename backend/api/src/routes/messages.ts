@@ -194,12 +194,12 @@ router.get('/conversation/:id', requireAuth, asyncHandler(async (req, res) => {
                  when bool_or(r.status = 'delivered') then 'delivered'
                  else null end as receipt_status
        from messages m
-       left join message_ciphertexts mc on mc.message_id = m.id and mc.recipient_device_id = $4::uuid
+       left join message_ciphertexts mc on mc.message_id = m.id and mc.recipient_device_id = $3::uuid
        left join message_read_receipts r on r.message_id = m.id
-       where m.conversation_id = $1 ${before ? 'and m.created_at < $3' : ''}
+       where m.conversation_id = $1 ${before ? 'and m.created_at < $4' : ''}
        group by m.id, mc.ciphertext
        order by m.created_at desc limit $2`,
-    before ? [req.params.id, limit, before, deviceId] : [req.params.id, limit, deviceId]
+    before ? [req.params.id, limit, deviceId, before] : [req.params.id, limit, deviceId]
   );
 
   // Mark this device's fan-out ciphertexts delivered as we serve them.
