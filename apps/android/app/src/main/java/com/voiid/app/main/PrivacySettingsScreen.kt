@@ -2,6 +2,7 @@ package com.voiid.app.main
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -51,11 +52,34 @@ fun PrivacySettingsScreen(onBack: () -> Unit) {
     var sendReceipts by remember { mutableStateOf(PrivacySettings.sendReadReceipts(context)) }
     var sendTyping by remember { mutableStateOf(PrivacySettings.sendTypingIndicators(context)) }
     var showOnline by remember { mutableStateOf(PrivacySettings.showOnlineStatus(context)) }
+    var lastSeenVis by remember { mutableStateOf(PrivacySettings.lastSeenVisibility(context)) }
+    var photoVis by remember { mutableStateOf(PrivacySettings.photoVisibility(context)) }
+    var aboutVis by remember { mutableStateOf(PrivacySettings.aboutVisibility(context)) }
     val mapVisibility by MapPresenceEngine.visibility.collectAsState()
     val haptics = LocalVoiidHaptics.current
 
     BackupScaffold(title = "Privacy", onBack = onBack) {
         Spacer(Modifier.height(8.dp))
+
+        // Server-enforced "who can see". GET /users/:id and /users/status/:id apply these
+        // (via the contact_sync relationship) so other people don't receive what you hide.
+        PrivacySection(
+            header = "Who can see my info",
+            footer = "Choose who can see your last seen & online, profile photo, and about. " +
+                "\"My Contacts\" means people you've saved. This is enforced on the server.",
+        ) {
+            PrivacyVisibilityRow("Last seen & online", lastSeenVis) {
+                lastSeenVis = it; PrivacySettings.setLastSeenVisibility(context, it)
+            }
+            PrivacyVisibilityRow("Profile photo", photoVis) {
+                photoVis = it; PrivacySettings.setPhotoVisibility(context, it)
+            }
+            PrivacyVisibilityRow("About", aboutVis) {
+                aboutVis = it; PrivacySettings.setAboutVisibility(context, it)
+            }
+        }
+
+        Spacer(Modifier.height(20.dp))
 
         PrivacySection(
             header = "Message receipts",
@@ -129,5 +153,39 @@ private fun PrivacyToggleRow(title: String, checked: Boolean, onChange: (Boolean
     ) {
         Text(title, style = VoiidFont.rounded(15), color = VoiidColor.textPrimary, modifier = Modifier.weight(1f))
         VoiidToggle(checked = checked, onCheckedChange = onChange)
+    }
+}
+
+/** A "who can see" row: title on top, a 3-way segmented selector below. */
+@Composable
+private fun PrivacyVisibilityRow(
+    title: String,
+    selected: PrivacySettings.Visibility,
+    onSelect: (PrivacySettings.Visibility) -> Unit,
+) {
+    val haptics = LocalVoiidHaptics.current
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+        Text(title, style = VoiidFont.rounded(15), color = VoiidColor.textPrimary)
+        Spacer(Modifier.height(8.dp))
+        Row(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(VoiidColor.fieldFill),
+        ) {
+            PrivacySettings.Visibility.entries.forEach { v ->
+                val active = v == selected
+                Box(
+                    Modifier.weight(1f).height(34.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(if (active) VoiidColor.primary else androidx.compose.ui.graphics.Color.Transparent)
+                        .softClickable { haptics.tap(); onSelect(v) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        v.label,
+                        style = VoiidFont.rounded(13, FontWeight.Medium),
+                        color = if (active) VoiidColor.textOnPrimary else VoiidColor.textSecondary,
+                    )
+                }
+            }
+        }
     }
 }

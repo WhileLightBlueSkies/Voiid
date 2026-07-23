@@ -9,6 +9,7 @@
 import SwiftUI
 
 struct OTPScreen: View {
+    @EnvironmentObject private var session: AppSession
     let onContinue: () -> Void
     /// Called instead of onContinue when the user already has a complete profile
     /// (returning user) — skip Signup/Profile and go straight to the app.
@@ -50,6 +51,9 @@ struct OTPScreen: View {
             // Persist the VERIFIED phone number. The server never stores it, so this is the
             // ONLY place the real number is known — without this, Settings shows a placeholder.
             AppSession.saveVerifiedPhone(phoneE164)
+            // AppSession.init() already ran at cold launch with an empty key, so update the
+            // LIVE profile too — otherwise the number only appears after the next relaunch.
+            session.profile.phoneNumber = phoneE164
             // Publish this device's E2E identity + prekeys (needed for encrypted chat).
             try? await E2EManager.shared.bootstrap()
             Haptics.success()

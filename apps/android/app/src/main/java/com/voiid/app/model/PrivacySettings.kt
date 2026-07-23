@@ -1,6 +1,11 @@
 package com.voiid.app.model
 
 import android.content.Context
+import com.voiid.app.net.ProfileService
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /**
  * The persisted state behind Settings -> Privacy. Port of iOS `PrivacySettings.swift`.
@@ -31,9 +36,61 @@ object PrivacySettings {
     private const val KEY_READ_RECEIPTS = "send_read_receipts"
     private const val KEY_TYPING = "send_typing_indicators"
     private const val KEY_ONLINE_STATUS = "show_online_status"
+    private const val KEY_LAST_SEEN_VIS = "last_seen_visibility"
+    private const val KEY_PHOTO_VIS = "photo_visibility"
+    private const val KEY_ABOUT_VIS = "about_visibility"
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private fun prefs(context: Context) =
         context.applicationContext.getSharedPreferences(NAME, Context.MODE_PRIVATE)
+
+    /**
+     * WhatsApp-style "who can see" scope. [server] is exactly what the backend stores +
+     * enforces (users.*_privacy) in GET /users/:id and /users/status/:id.
+     */
+    enum class Visibility(val server: String, val label: String) {
+        EVERYONE("everyone", "Everyone"),
+        CONTACTS("contacts", "My Contacts"),
+        NOBODY("nobody", "Nobody");
+
+        companion object {
+            fun from(raw: String?): Visibility =
+                entries.firstOrNull { it.server == raw } ?: EVERYONE
+        }
+    }
+
+    // "Who can see": default EVERYONE (matches the server default) when unset.
+    fun lastSeenVisibility(context: Context): Visibility =
+        Visibility.from(prefs(context).getString(KEY_LAST_SEEN_VIS, null))
+    fun photoVisibility(context: Context): Visibility =
+        Visibility.from(prefs(context).getString(KEY_PHOTO_VIS, null))
+    fun aboutVisibility(context: Context): Visibility =
+        Visibility.from(prefs(context).getString(KEY_ABOUT_VIS, null))
+
+    fun setLastSeenVisibility(context: Context, v: Visibility) {
+        prefs(context).edit().putString(KEY_LAST_SEEN_VIS, v.server).apply(); sync(context)
+    }
+    fun setPhotoVisibility(context: Context, v: Visibility) {
+        prefs(context).edit().putString(KEY_PHOTO_VIS, v.server).apply(); sync(context)
+    }
+    fun setAboutVisibility(context: Context, v: Visibility) {
+        prefs(context).edit().putString(KEY_ABOUT_VIS, v.server).apply(); sync(context)
+    }
+
+    /** Push all three scopes to the server so it can ENFORCE them for other viewers. */
+    private fun sync(context: Context) {
+        val app = context.applicationContext
+        scope.launch {
+            runCatching {
+                ProfileService(app).updateProfile(
+                    lastSeenPrivacy = lastSeenVisibility(app).server,
+                    photoPrivacy = photoVisibility(app).server,
+                    aboutPrivacy = aboutVisibility(app).server,
+                )
+            }
+        }
+    }
 
     // All three preferences default to ON, so an absent key must read true — plain
     // `getBoolean(key, false)` would silently switch every existing user's receipts off

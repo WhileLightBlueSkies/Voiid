@@ -53,6 +53,9 @@ class ProfileService(context: Context) {
         photoUrl: String? = null,
         bio: String? = null,
         username: String? = null,
+        lastSeenPrivacy: String? = null,
+        photoPrivacy: String? = null,
+        aboutPrivacy: String? = null,
     ): ProfileUser {
         val body = buildJsonObject {
             fullName?.let { put("full_name", it) }
@@ -60,6 +63,9 @@ class ProfileService(context: Context) {
             photoUrl?.let { put("photo_url", it) }
             bio?.let { put("bio", it) }
             username?.let { put("username", it) }
+            lastSeenPrivacy?.let { put("last_seen_privacy", it) }
+            photoPrivacy?.let { put("photo_privacy", it) }
+            aboutPrivacy?.let { put("about_privacy", it) }
         }
         val env: ProfileEnvelope =
             api.requestAs("POST", "users/profile/update", jsonBody = body.toString())
