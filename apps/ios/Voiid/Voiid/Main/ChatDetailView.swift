@@ -249,18 +249,12 @@ struct ChatDetailView: View {
     // MARK: header
 
     /// The NATIVE chat toolbar. Apple owns the back button and all bar chrome; we only
-    /// supply content — a tappable avatar+name as a LEADING group (→ profile / group info)
-    /// and call / video / ⋯ as a trailing group. On iOS 26 each `ToolbarItemGroup` renders
-    /// as its own native Liquid-Glass capsule, and `ToolbarSpacer` breaks the name group off
-    /// from the system back button so they read as separate glass pills; on iOS 18 it is the
-    /// classic native bar. Nothing custom, no forced background.
+    /// supply content — a tappable avatar+name in `.principal` (→ profile / group info) and
+    /// call / video / ⋯ as trailing items. The system renders it: Liquid Glass on iOS 26,
+    /// the classic native bar on iOS 18. Nothing custom, no forced background.
     @ToolbarContentBuilder
     private var chatToolbar: some ToolbarContent {
-        // Break the leading name group off the system back button into its own glass pill.
-        if #available(iOS 26.0, *) {
-            ToolbarSpacer(.fixed, placement: .topBarLeading)
-        }
-        ToolbarItemGroup(placement: .topBarLeading) {
+        ToolbarItem(placement: .principal) {
             Button { Haptics.tap(); showInfo = true } label: {
                 HStack(spacing: VoiidSpacing.sm) {
                     ProfileAvatarButton(photoURL: conversation.photoURL,
