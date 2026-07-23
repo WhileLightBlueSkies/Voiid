@@ -110,6 +110,8 @@ struct ChatsHomeView: View {
                         ProfileAvatarButton(photoURL: session.profile.photoURL,
                                             name: session.profile.fullName, size: 32)
                     }
+                    // Show the avatar BARE — no iOS 26 glass ring / button chrome around it.
+                    .buttonStyle(.plain)
                     .accessibilityLabel("Profile and settings")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
