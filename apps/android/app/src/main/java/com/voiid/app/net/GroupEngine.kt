@@ -93,6 +93,22 @@ class GroupEngine private constructor(context: Context) {
     /** conversationId -> last derived call-key Base64 (epoch fingerprint). Guarded by [lock]. */
     private val lastCallKeyByConv = HashMap<String, String>()
 
+    /**
+     * Sign-out teardown only (see [SessionTeardown]). Without this, [member] and the
+     * [groupMapLoaded] latch stay populated in memory, so the NEXT account signed in on
+     * this device would silently reuse the previous account's MLS device identity and
+     * group map — the same bug class fixed for [E2EManager] above. Wipes the persisted
+     * member blob, group map and KeyPackage-published flag too, so a restart can't
+     * resurrect them either.
+     */
+    fun resetForSignOut() {
+        member = null
+        groupIds.clear()
+        groupMapLoaded = false
+        lastCallKeyByConv.clear()
+        prefs.edit().clear().apply()
+    }
+
     // MARK: - Member lifecycle
 
     /** This device's stable MLS identity label bytes: `"<userId>::<deviceId>"`. */

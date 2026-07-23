@@ -26,15 +26,17 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.RemoveRedEye
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -89,6 +91,10 @@ fun SettingsScreen(
     session: AppSession,
     onClose: () -> Unit,
     onBackupRecovery: () -> Unit,
+    onPrivacy: () -> Unit,
+    onStorage: () -> Unit,
+    onLinkedDevices: () -> Unit,
+    onAbout: () -> Unit,
 ) {
     val haptics = LocalVoiidHaptics.current
     val context = LocalContext.current
@@ -265,9 +271,21 @@ fun SettingsScreen(
             ) {
                 SettingsRow(Icons.Default.VerifiedUser, "Backup & Recovery") { onClose(); onBackupRecovery() }
                 SettingsDivider()
-                SettingsRow(Icons.Default.Notifications, "Notifications") {}
+                SettingsRow(Icons.Default.PhoneAndroid, "Linked Devices") { onClose(); onLinkedDevices() }
                 SettingsDivider()
-                SettingsRow(Icons.Default.Lock, "Privacy") {}
+                // Android owns Voiid's notification behaviour entirely (no in-app toggle
+                // duplicates the OS channel list) — this jumps straight to Voiid's
+                // notification settings pane, mirroring iOS's
+                // UIApplication.openNotificationSettingsURLString deep link.
+                SettingsRow(Icons.Default.Notifications, "Notifications") {
+                    val intent = android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                        .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+                    runCatching { context.startActivity(intent) }
+                }
+                SettingsDivider()
+                SettingsRow(Icons.Default.Lock, "Privacy") { onClose(); onPrivacy() }
+                SettingsDivider()
+                SettingsRow(Icons.Default.Storage, "Storage") { onClose(); onStorage() }
                 SettingsDivider()
                 // Stories: view-receipts opt-in (default OFF). Sending one tells the SERVER you
                 // opened someone's story at time T — a fact it otherwise never learns, with no
@@ -275,7 +293,7 @@ fun SettingsScreen(
                 // none. Written straight to the shared story prefs (see StoryPrefs).
                 StoryReceiptsRow()
                 SettingsDivider()
-                SettingsRow(Icons.AutoMirrored.Filled.HelpOutline, "Help") {}
+                SettingsRow(Icons.Default.Info, "About") { onClose(); onAbout() }
             }
 
             // ---- danger

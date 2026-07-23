@@ -102,7 +102,15 @@ class AppSession(app: Application) : AndroidViewModel(app) {
         loadProfile()
     }
 
+    /**
+     * Order matters: wipe every local trace of THIS account before clearing the auth
+     * token, mirroring iOS `SettingsSheet.performLogOut()` -> `SessionTeardown` ->
+     * `AppSession.signOut()`. See `SessionTeardown.wipeLocalAccountState` for why —
+     * without it the next account signed in on this device inherited the previous
+     * user's chats, contacts and E2E identity.
+     */
     fun signOut() {
+        com.voiid.app.net.SessionTeardown.wipeLocalAccountState(appContext)
         auth.logout()
         route = AppRoute.ONBOARDING
     }
@@ -202,7 +210,10 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                 groupEngine.syncGroupEvents()
                 groupEngine.receiveGroupMessages(conv.id)
                 refresh(conv.id)
-                engine.markRead(conv.id)
+                // Settings -> Privacy -> "Send read receipts": when off, this device
+                // stops POSTing receipts/mark with status "read" (delivery receipts are
+                // a transport signal and unaffected — see PrivacySettings).
+                if (PrivacySettings.sendReadReceipts(appContext)) engine.markRead(conv.id)
             } catch (e: Exception) {
                 loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t load messages."
             }
@@ -217,7 +228,8 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                 engine.resetSession(peer)
                 ws.sendSessionReset(conv.id, listOf(peer))
             }
-            engine.markRead(conv.id)            // blue ticks for the sender
+            // Settings -> Privacy -> "Send read receipts" (see PrivacySettings doc).
+            if (PrivacySettings.sendReadReceipts(appContext)) engine.markRead(conv.id)
             fetchPresence(conv.id, peer)
         } catch (e: Exception) {
             loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t load messages."
@@ -457,6 +469,9 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
 
     /** Send a typing frame for a direct chat (best-effort). */
     fun sendTyping(conversationId: String, isStart: Boolean) {
+        // Settings -> Privacy -> "Send typing indicators": when off, this device emits
+        // no `typing` WS frames at all (see PrivacySettings).
+        if (!PrivacySettings.sendTypingIndicators(appContext)) return
         val peer = directConversations.firstOrNull { it.id == conversationId }?.peerUserId ?: return
         ws.sendTyping(conversationId, listOf(peer), isStart)
     }

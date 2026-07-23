@@ -11,6 +11,10 @@ import kotlinx.serialization.Serializable
 object ConfigService {
     @Volatile var featureFlags: Map<String, Boolean> = emptyMap(); private set
 
+    /** Negotiated with the server at launch; Settings -> About reads this live rather than
+     *  hardcoding it, mirroring iOS ConfigService.apiVersion. */
+    @Volatile var apiVersion: String = "v1"; private set
+
     @Serializable private data class StoreUrl(val ios: String? = null, val android: String? = null)
     @Serializable private data class ConfigDTO(
         val api_version: String = "v1",
@@ -26,6 +30,7 @@ object ConfigService {
             .getOrNull() ?: return
         val cfg = runCatching { ApiClient.json.decodeFromString<ConfigDTO>(raw) }.getOrNull() ?: return
         featureFlags = cfg.feature_flags
+        apiVersion = cfg.api_version
         if (cfg.force_update) UpdateGate.trigger(cfg.store_url?.android)
     }
 

@@ -123,6 +123,10 @@ fun ChatsHomeView(
     var callTarget by remember { mutableStateOf<VConversation?>(null) }
     var showNewChat by remember { mutableStateOf(false) }
     var showBackup by remember { mutableStateOf(false) }
+    var showPrivacy by remember { mutableStateOf(false) }
+    var showStorage by remember { mutableStateOf(false) }
+    var showLinkedDevices by remember { mutableStateOf(false) }
+    var showAbout by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var allContacts by remember { mutableStateOf<List<VContact>>(emptyList()) }
     val scope = rememberCoroutineScope()
@@ -211,6 +215,10 @@ fun ChatsHomeView(
                 session = session,
                 onClose = { showSettings = false },
                 onBackupRecovery = { showBackup = true },
+                onPrivacy = { showPrivacy = true },
+                onStorage = { showStorage = true },
+                onLinkedDevices = { showLinkedDevices = true },
+                onAbout = { showAbout = true },
             )
         }
     }
@@ -222,6 +230,46 @@ fun ChatsHomeView(
             properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
         ) {
             BackupRecoveryScreen(onBack = { showBackup = false })
+        }
+    }
+
+    // Privacy — fullscreen dialog
+    if (showPrivacy) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showPrivacy = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            PrivacySettingsScreen(onBack = { showPrivacy = false })
+        }
+    }
+
+    // Storage — fullscreen dialog
+    if (showStorage) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showStorage = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            StorageSettingsScreen(onBack = { showStorage = false })
+        }
+    }
+
+    // Linked Devices — fullscreen dialog
+    if (showLinkedDevices) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showLinkedDevices = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            LinkedDevicesScreen(onBack = { showLinkedDevices = false })
+        }
+    }
+
+    // About — fullscreen dialog
+    if (showAbout) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showAbout = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            AboutScreen(onBack = { showAbout = false })
         }
     }
 

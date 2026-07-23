@@ -142,6 +142,17 @@ class ChatEngine private constructor(context: Context) {
 
     // MARK: - Public API
 
+    /**
+     * Drop every in-memory session and decrypted message BEFORE the caller deletes the
+     * backing files (see [com.voiid.app.net.SessionTeardown]). Deleting files first would
+     * leave this map to flush its stale contents right back to disk on the next [persist]
+     * (e.g. from a send that raced the sign-out). Does NOT touch the files itself.
+     */
+    fun wipeInMemoryState() {
+        sessions.clear()
+        store.clear()
+    }
+
     /** Locally-stored (already decrypted) messages for a conversation, oldest-first. */
     fun messages(conversationId: String): List<DecryptedMessage> =
         (store[conversationId] ?: emptyList()).sortedBy { it.createdAt }

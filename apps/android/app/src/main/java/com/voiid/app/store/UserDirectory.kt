@@ -74,6 +74,17 @@ object UserDirectory {
         loadJob?.join()
     }
 
+    /**
+     * Sign-out teardown only (see [com.voiid.app.net.SessionTeardown]): drops the in-memory
+     * mirror of every saved contact name, phone number and photo. The `users` TABLE itself is
+     * truncated separately by [com.voiid.app.store.VoiidDatabase.wipeAllForSignOut] (one
+     * transaction for every table) — this only has to clear the mirror so nothing here
+     * re-populates it via [reload] in the gap before that runs.
+     */
+    fun wipe() {
+        byId.clear()
+    }
+
     // MARK: - Reads
 
     /** Null only for a user we have never seen. Callers must NOT fall back to the raw id. */
