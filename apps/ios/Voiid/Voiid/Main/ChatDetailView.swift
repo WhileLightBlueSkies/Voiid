@@ -46,7 +46,10 @@ struct ChatDetailView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
+            // Multi-select gets its own top bar; NORMAL mode shows `normalHeader` — a
+            // separate back button + one pill (avatar, name, call, video, ⋯) rendered in
+            // Apple's Liquid Glass on iOS 26, flat below (see voiidGlassCapsule).
+            if selectionMode { selectionHeader } else { normalHeader }
             // "You are sharing your location" — pinned at the top of the chat, one-tap Stop.
             LocationBanner(conversationId: conversation.id)
             messageList
@@ -236,10 +239,90 @@ struct ChatDetailView: View {
         }
     }
 
-    // MARK: header — normal, or selection bar in multi-select
+    // MARK: header
 
-    @ViewBuilder private var header: some View {
-        if selectionMode { selectionHeader } else { normalHeader }
+    /// Chat header: a SEPARATE back button, then ONE pill holding the avatar + name/presence
+    /// (tap → profile / group info) and the call / video / ⋯ actions.
+    ///
+    /// The pill uses Apple's genuine LIQUID GLASS material on iOS 26 (`.glassEffect`), so it
+    /// is the real system material — not a custom-looking fill — and falls back to a flat
+    /// surface on iOS 18–25 (where Liquid Glass does not exist). Works for direct and group.
+    private var normalHeader: some View {
+        HStack(spacing: VoiidSpacing.sm) {
+            Button { Haptics.tap(); dismiss() } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundColor(VoiidColor.textPrimary)
+                    .frame(width: 44, height: 44)
+                    .voiidGlassCircle()
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Back")
+
+            HStack(spacing: VoiidSpacing.sm) {
+                Button { Haptics.tap(); showInfo = true } label: {
+                    HStack(spacing: VoiidSpacing.sm) {
+                        ProfileAvatarButton(photoURL: conversation.photoURL,
+                                            name: conversation.title, size: 40)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(conversation.title)
+                                .font(VoiidFont.rounded(18, .semibold))
+                                .foregroundColor(VoiidColor.textPrimary)
+                                .lineLimit(1)
+                            if let presenceText {
+                                Text(presenceText)
+                                    .font(VoiidFont.rounded(12, .regular))
+                                    .foregroundColor(chat.typingConversations.contains(conversation.id) ? VoiidColor.primary : VoiidColor.textSecondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                headerAction("phone.fill", label: "Voice call") { startCall(.voice) }
+                headerAction("video.fill", label: "Video call") { startCall(.video) }
+                Menu {
+                    Button { showInfo = true } label: {
+                        Label(conversation.type == .group ? "Group info" : "View profile", systemImage: "info.circle")
+                    }
+                    Button { withAnimation { selectionMode = true } } label: {
+                        Label("Select messages", systemImage: "checkmark.circle")
+                    }
+                    Button(role: .destructive) { showClearChat = true } label: {
+                        Label("Clear chat", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(VoiidColor.textPrimary)
+                        .frame(width: 30, height: 30)
+                }
+                .accessibilityLabel("More")
+            }
+            .padding(.leading, VoiidSpacing.sm)
+            .padding(.trailing, VoiidSpacing.md)
+            .padding(.vertical, 7)
+            .voiidGlassCapsule()
+        }
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.vertical, VoiidSpacing.sm)
+    }
+
+    /// A round action inside the header pill.
+    private func headerAction(_ systemName: String, label: String,
+                              _ action: @escaping () -> Void) -> some View {
+        Button { Haptics.tap(); action() } label: {
+            Image(systemName: systemName)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(VoiidColor.primary)
+                .frame(width: 30, height: 30)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
 
     private var selectionHeader: some View {
@@ -269,89 +352,6 @@ struct ChatDetailView: View {
         if selectedIDs.contains(id) { selectedIDs.remove(id) } else { selectedIDs.insert(id) }
     }
 
-    private var normalHeader: some View {
-        HStack(spacing: VoiidSpacing.sm) {
-            // A SEPARATE circular back button, distinct from the pill (iOS-26 control style).
-            Button { Haptics.tap(); dismiss() } label: {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundColor(VoiidColor.textPrimary)
-                    .frame(width: 42, height: 42)
-                    .background(VoiidColor.surfaceCard, in: Circle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Back")
-
-            // One big pill holding identity + actions: [avatar · name/presence · 📞 · 🎥 · ⋯].
-            // Works for direct and group chats alike (title/photo/actions are conversation-
-            // agnostic; the ⋯ menu adapts its wording).
-            HStack(spacing: VoiidSpacing.xs) {
-                Button { Haptics.tap(); showInfo = true } label: {
-                    HStack(spacing: VoiidSpacing.sm) {
-                        ProfileAvatarButton(photoURL: conversation.photoURL,
-                                            name: conversation.title, size: 34)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(conversation.title)
-                                .font(VoiidFont.rounded(16, .semibold))
-                                .foregroundColor(VoiidColor.textPrimary)
-                                .lineLimit(1)
-                            if let presenceText {
-                                Text(presenceText)
-                                    .font(VoiidFont.rounded(11, .regular))
-                                    .foregroundColor(chat.typingConversations.contains(conversation.id) ? VoiidColor.primary : VoiidColor.textSecondary)
-                                    .lineLimit(1)
-                            }
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-
-                pillAction("phone.fill", label: "Voice call") { startCall(.voice) }
-                pillAction("video.fill", label: "Video call") { startCall(.video) }
-                Menu {
-                    Button { showInfo = true } label: {
-                        Label(conversation.type == .group ? "Group info" : "View profile", systemImage: "info.circle")
-                    }
-                    Button { withAnimation { selectionMode = true } } label: {
-                        Label("Select messages", systemImage: "checkmark.circle")
-                    }
-                    Button(role: .destructive) { showClearChat = true } label: {
-                        Label("Clear chat", systemImage: "trash")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(VoiidColor.textPrimary)
-                        .frame(width: 34, height: 34)
-                        .background(VoiidColor.fieldFill, in: Circle())
-                }
-                .accessibilityLabel("More")
-            }
-            .padding(.horizontal, VoiidSpacing.sm)
-            .padding(.vertical, 6)
-            .background(VoiidColor.surfaceCard, in: Capsule())
-            .overlay(Capsule().stroke(VoiidColor.textSecondary.opacity(0.08), lineWidth: 1))
-        }
-        .padding(.horizontal, VoiidSpacing.md)
-        .padding(.vertical, VoiidSpacing.sm)
-        .background(VoiidColor.background)
-    }
-
-    /// A round action button sized to sit inside the header pill.
-    private func pillAction(_ systemName: String, label: String,
-                            _ action: @escaping () -> Void) -> some View {
-        Button { Haptics.tap(); action() } label: {
-            Image(systemName: systemName)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundColor(VoiidColor.textPrimary)
-                .frame(width: 34, height: 34)
-                .background(VoiidColor.fieldFill, in: Circle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(label)
-    }
 
     /// Peer user_id read from the live store (resolved lazily after open), not the
     /// value-copied `conversation` which never updates.

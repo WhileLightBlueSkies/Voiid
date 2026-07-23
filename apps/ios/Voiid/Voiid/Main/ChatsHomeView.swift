@@ -106,6 +106,11 @@ struct ChatsHomeView: View {
                 WebSocketClient.shared.reconnect()         // fresh socket (avoid a stale/dead one missing pushes)
                 LocationShareEngine.shared.configure()     // route inbound live fixes + start the expiry ticker
                 await session.refreshServerProfile()        // pull REAL name/photo/bio/username from the server
+                // Re-run contact discovery on every launch so the local address-book name
+                // map (UserDirectory saved_name) is rebuilt — critical after a RESTORE /
+                // reinstall, where the users table is empty and names would otherwise fall
+                // back to the peer's signup name instead of the contact you saved.
+                _ = try? await ContactsService.shared.discover()
                 await chat.loadConversations()              // load REAL conversations from backend
             }
             .navigationDestination(item: $openConversation) { ChatDetailView(conversation: $0) }

@@ -350,10 +350,15 @@ final class ChatEngine {
     @discardableResult
     func sendMedia(_ data: Data, mime: String, caption: String = "",
                    conversationId: String, peerUserId: String) async throws -> DecryptedMessage {
+        // Bracket logging so a failure is attributable in the console: if "start" prints but
+        // "uploaded" does not, it failed at encrypt or R2 upload; if both print but nothing
+        // arrives, it failed in the fan-out/send below (the caller logs that catch).
+        NSLog("[VOIID] 🖼️ sendMedia start: \(data.count) bytes, mime=\(mime)")
         // 1. Encrypt the blob (e2e-core) → ciphertext + media key.
         let enc = try encryptMedia(plaintext: data)
         // 2. Upload the CIPHERTEXT to R2; get back the opaque object key.
         let key = try await MediaService.shared.upload(ciphertext: enc.ciphertext, mime: mime)
+        NSLog("[VOIID] 🖼️ sendMedia uploaded → key=\(key)")
         let ref = MediaRef(mediaUrl: key, mime: mime,
                            key: enc.mediaKey.key, nonce: enc.mediaKey.nonce,
                            sha256: enc.mediaKey.ciphertextSha256)
@@ -1042,6 +1047,11 @@ final class ChatEngine {
         return dir.appendingPathComponent("voiid_messages.json")
     }
 
+    /// Set once a load has run, so a DECODE FAILURE never lets an empty store overwrite
+    /// real messages on the next persist(). Without this, one incompatible-JSON load wiped
+    /// the whole history the next time anything was saved.
+    private var storeLoaded = false
+
     private func loadStore() {
         // One-time migration: seed the shared store from the legacy app-private file.
         if let shared = AppGroup.messageStoreURL,
@@ -1049,12 +1059,31 @@ final class ChatEngine {
            FileManager.default.fileExists(atPath: legacyStoreURL.path) {
             try? FileManager.default.copyItem(at: legacyStoreURL, to: shared)
         }
-        guard let data = try? Data(contentsOf: storeURL),
-              let decoded = try? JSONDecoder().decode([String: [DecryptedMessage]].self, from: data) else { return }
-        store = decoded
+        guard FileManager.default.fileExists(atPath: storeURL.path) else {
+            NSLog("[VOIID] 📂 message store: no file yet (fresh) at \(storeURL.path)")
+            storeLoaded = true
+            return
+        }
+        do {
+            let data = try Data(contentsOf: storeURL)
+            let decoded = try JSONDecoder().decode([String: [DecryptedMessage]].self, from: data)
+            store = decoded
+            let total = decoded.values.reduce(0) { $0 + $1.count }
+            NSLog("[VOIID] 📂 message store LOADED: \(decoded.count) conversations, \(total) messages")
+            storeLoaded = true
+        } catch {
+            // DO NOT mark loaded — a persist() must not clobber the on-disk file we failed
+            // to parse. Surface it loudly instead of silently starting empty.
+            NSLog("[VOIID] ❌ message store DECODE FAILED — refusing to overwrite it: \(error)")
+        }
     }
 
     private func persist() {
+        // Never let an unloaded/failed store overwrite good data on disk.
+        guard storeLoaded else {
+            NSLog("[VOIID] ⚠️ persist skipped — store not loaded (would clobber on-disk history)")
+            return
+        }
         guard let data = try? JSONEncoder().encode(store) else { return }
         // Protection class MUST match the keychain items this store is kept in step with.
         // The identity/session/MLS pickles are `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`
@@ -1067,8 +1096,13 @@ final class ChatEngine {
         // `.completeFileProtectionUntilFirstUserAuthentication` keeps the file encrypted at
         // rest until the first unlock after boot, which is the strongest class that still
         // lets a background extension do its job. Same class as the SQLite database.
-        try? data.write(to: storeURL,
-                        options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        do {
+            try data.write(to: storeURL,
+                           options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        } catch {
+            // A silently-failing write is exactly "nothing stores locally". Make it visible.
+            NSLog("[VOIID] ❌ message store WRITE FAILED at \(storeURL.path): \(error)")
+        }
     }
 
     // MARK: - Session persistence (pickled in Keychain)
@@ -1166,18 +1200,34 @@ final class ChatEngine {
     /// recognised `"t"` is decoded, not shown verbatim.
     private func decodeEnvelope(_ plain: String, contentType: String?) -> (caption: String, media: MediaRef?) {
         let data = plain.data(using: .utf8)
-        if contentType == "media", let data,
-           let env = try? JSONDecoder().decode(MediaEnvelope.self, from: data) {
+        // MEDIA — decode by SHAPE, not just the content_type hint. A cross-platform message
+        // (e.g. Android → iOS) whose hint didn't round-trip must STILL render as media, not
+        // as raw JSON. A real MediaEnvelope always has a non-empty media.mediaUrl.
+        if let data,
+           let env = try? JSONDecoder().decode(MediaEnvelope.self, from: data),
+           !env.media.mediaUrl.isEmpty {
             return (env.caption, env.media)
         }
-        // A story reply carries a typed envelope; render its body (reaction or text), and
-        // NEVER leave the raw JSON in a bubble. The `"t"` probe also catches the case where
-        // an older content_type hint is missing but the payload is a recognised envelope.
+        // Story reply: render its body (reaction or text), never the raw JSON.
         if let data, let probe = try? JSONDecoder().decode(EnvelopeProbe.self, from: data),
            probe.t == "story_reply",
            let reply = try? JSONDecoder().decode(StoryReplyEnvelope.self, from: data) {
-            let body = reply.reaction ?? reply.text
-            return (body, nil)
+            return (reply.reaction ?? reply.text, nil)
+        }
+        // A reply envelope reaching here (no probe upstream): show its text, not JSON.
+        if let data, let probe = try? JSONDecoder().decode(EnvelopeProbe.self, from: data),
+           probe.t == MessageActionContentType.reply,
+           let reply = try? JSONDecoder().decode(MessageReplyEnvelope.self, from: data) {
+            return (reply.text, nil)
+        }
+        // Plain text is the normal case (NOT a JSON object). But if the plaintext looks like
+        // a JSON object we don't recognise, NEVER leak it into a bubble — show a safe
+        // placeholder instead. This is the backstop that stopped Android media/envelopes
+        // rendering as literal `{"v":1,...}` text.
+        let trimmed = plain.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("{"), trimmed.hasSuffix("}"),
+           (try? JSONSerialization.jsonObject(with: Data(trimmed.utf8))) != nil {
+            return ("Unsupported message", nil)
         }
         return (plain, nil)
     }

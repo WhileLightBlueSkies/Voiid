@@ -36,6 +36,7 @@ struct GroupInfoView: View {
         .toolbarBackground(.hidden, for: .navigationBar)
         .tint(VoiidColor.primary)
         .onAppear { session.hideTabBar = true }
+        .onDisappear { session.hideTabBar = false }
         .task { await loadMembers() }
         .fullScreenCover(isPresented: $viewPhoto) {
             ProfilePhotoViewer(title: conversation.title, imageName: conversation.photoName) { viewPhoto = false }

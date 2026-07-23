@@ -97,16 +97,14 @@ struct ProfileAvatarButton: View {
         .task(id: photoURL) { await resolveIfNeeded() }
     }
 
-    /// Absolute URLs are handled by AsyncImage above; anything else is an R2 key that
-    /// has to be fetched through a presigned GET. Failure is silent on purpose — the
-    /// initials fallback is a perfectly good avatar, and an error glyph here would be
-    /// noise on every screen that shows a face.
+    /// Resolve through the SHARED cache so a face fetched once shows instantly everywhere
+    /// (and your own profile photo stops taking a few seconds each time). A synchronous
+    /// cache hit paints immediately; a miss fetches once and caches. Failure is silent —
+    /// the initials fallback is a fine avatar.
     private func resolveIfNeeded() async {
-        resolved = nil
-        guard let key = photoURL, !key.isEmpty, !key.hasPrefix("http") else { return }
-        guard let data = try? await MediaService.shared.download(key: key),
-              let image = UIImage(data: data) else { return }
-        resolved = image
+        guard let ref = photoURL, !ref.isEmpty else { resolved = nil; return }
+        if let hit = AvatarCache.cached(ref) { resolved = hit; return }
+        resolved = await AvatarCache.resolve(ref)
     }
 }
 

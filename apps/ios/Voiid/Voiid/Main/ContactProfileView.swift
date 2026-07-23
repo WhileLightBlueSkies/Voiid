@@ -54,6 +54,7 @@ struct ContactProfileView: View {
         .toolbarBackground(.hidden, for: .navigationBar)
         .tint(VoiidColor.primary)
         .onAppear { session.hideTabBar = true }
+        .onDisappear { session.hideTabBar = false }
         .task { await loadProfile() }
         .fullScreenCover(isPresented: $viewPhoto) {
             ProfilePhotoViewer(title: displayName, imageName: conversation.photoName) { viewPhoto = false }

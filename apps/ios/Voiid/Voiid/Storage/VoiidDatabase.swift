@@ -43,8 +43,18 @@ final class VoiidDatabase {
     private init() {
         do {
             pool = try Self.open()
+            // Loud, unmissable proof the local DB opened, WHERE it lives, and what it holds.
+            // If you ever see "local database UNAVAILABLE" instead, that is why nothing is
+            // storing locally — every read/write silently no-ops on a nil pool.
+            let counts = try? pool?.read { db -> String in
+                let convs = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM conversations") ?? 0
+                let msgs = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM messages") ?? 0
+                let users = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM users") ?? 0
+                return "conversations=\(convs) messages=\(msgs) users=\(users)"
+            }
+            NSLog("[VOIID] ✅ local DB OPEN at \(Self.databaseURL.path) — \(counts ?? "?") | appGroup=\(AppGroup.containerURL != nil)")
         } catch {
-            NSLog("[VOIID] local database unavailable: \(error.localizedDescription)")
+            NSLog("[VOIID] ❌ local database UNAVAILABLE (nothing will persist): \(error)")
             pool = nil
         }
     }

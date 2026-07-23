@@ -157,11 +157,10 @@ struct DraggableChatGrid: View {
             ZStack(alignment: .topTrailing) {
                 ZStack {
                     RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous).fill(VoiidColor.fieldFill)
-                    if let name = conv.photoName, let ui = UIImage(named: name) {
-                        Image(uiImage: ui).resizable().scaledToFill()
-                    } else {
-                        Image("VoiidWordmark").resizable().scaledToFit().frame(width: 56).opacity(0.22)
-                    }
+                    // Show the peer's REAL profile photo (conv.photoURL is an R2 key or URL),
+                    // resolved through the shared cache — falling back to a bundled asset, then
+                    // the wordmark. Previously the grid only ever showed bundled/dummy assets.
+                    GridPeerImage(photoURL: conv.photoURL, photoName: conv.photoName)
                 }
                 .aspectRatio(1, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
@@ -185,6 +184,31 @@ struct DraggableChatGrid: View {
             Color.clear
                 .onAppear { cellCenters[conv.id] = CGPoint(x: g.frame(in: .named("grid")).midX, y: g.frame(in: .named("grid")).midY) }
                 .onChange(of: g.frame(in: .named("grid"))) { _, f in cellCenters[conv.id] = CGPoint(x: f.midX, y: f.midY) }
+        }
+    }
+}
+
+/// Square peer image for a chat-grid card. Resolves the peer's `photoURL` (an R2 object key
+/// or an absolute URL) through the shared AvatarCache — instant on a cache hit — and falls
+/// back to a bundled asset, then the Voiid wordmark.
+private struct GridPeerImage: View {
+    let photoURL: String?
+    let photoName: String?
+    @State private var resolved: UIImage?
+
+    var body: some View {
+        Group {
+            if let resolved {
+                Image(uiImage: resolved).resizable().scaledToFill()
+            } else if let name = photoName, let ui = UIImage(named: name) {
+                Image(uiImage: ui).resizable().scaledToFill()
+            } else {
+                Image("VoiidWordmark").resizable().scaledToFit().frame(width: 56).opacity(0.22)
+            }
+        }
+        .task(id: photoURL) {
+            if let hit = AvatarCache.cached(photoURL) { resolved = hit; return }
+            resolved = await AvatarCache.resolve(photoURL)
         }
     }
 }

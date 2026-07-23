@@ -409,18 +409,27 @@ class ChatEngine private constructor(context: Context) {
      * decoded rather than shown verbatim. Never leave a raw JSON blob in a message bubble.
      */
     private fun decodeEnvelope(plain: String, contentType: String?): Pair<String, MediaRef?> {
-        when (contentType) {
-            "media" -> runCatching {
-                val env = ApiClient.json.decodeFromString(MediaEnvelope.serializer(), plain)
-                return env.caption to env.media
-            }
-            "story_reply" -> runCatching { return decodeStoryReplyText(plain) to null }
+        // MEDIA — decode by SHAPE, not just the content_type hint. A cross-platform message
+        // (iOS → Android) whose hint didn't round-trip must STILL render as media, not raw
+        // JSON. A real MediaEnvelope always has a non-empty media.mediaUrl.
+        runCatching {
+            val env = ApiClient.json.decodeFromString(MediaEnvelope.serializer(), plain)
+            if (env.media.mediaUrl.isNotEmpty()) return env.caption to env.media
         }
-        // Defensive: a typed envelope that slipped through with the wrong/absent content_type must
-        // still not be shown as raw JSON. A MediaEnvelope has no "t"; a story_reply does.
-        if (plain.startsWith("{") && plain.contains("\"t\"")) {
+        // Story reply → its body (reaction/text), never the raw JSON.
+        if (plain.contains("\"story_reply\"")) {
             runCatching { return decodeStoryReplyText(plain) to null }
         }
+        // Text reply envelope reaching here (no probe upstream) → show its text.
+        if (plain.contains("\"msg_reply\"")) {
+            runCatching {
+                return ApiClient.json.decodeFromString(ReplyWire.serializer(), plain).text to null
+            }
+        }
+        // Plain text is the normal case. But NEVER leak an unrecognised JSON object into a
+        // bubble — that is the bug where Android/iOS envelopes rendered as literal `{...}`.
+        val t = plain.trim()
+        if (t.startsWith("{") && t.endsWith("}")) return "Unsupported message" to null
         return plain to null
     }
 

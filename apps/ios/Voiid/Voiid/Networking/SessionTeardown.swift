@@ -160,5 +160,6 @@ enum SessionTeardown {
     private static func clearCaches() {
         URLCache.shared.removeAllCachedResponses()
         MediaCache.shared.clear()
+        AvatarCache.clear()   // previous account's faces must not survive into the next login
     }
 }

@@ -68,6 +68,9 @@ struct APIClient {
         }
         var req = URLRequest(url: url)
         req.httpMethod = method
+        // Fail fast: never let a single stuck request hang the UI (the default is 60s). The
+        // local-first render should take over almost immediately if the network is slow.
+        req.timeoutInterval = 20
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         // Version negotiation / force-update headers (read by the backend gate).
         req.setValue("ios", forHTTPHeaderField: "X-Voiid-Platform")
