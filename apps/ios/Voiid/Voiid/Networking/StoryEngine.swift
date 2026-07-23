@@ -12,6 +12,7 @@
 //  writes back. A failed fetch leaves the tray unchanged.
 //
 
+import Combine
 import Foundation
 import SwiftUI
 
@@ -315,8 +316,10 @@ final class StoryEngine: ObservableObject {
                                      storyCreatedAt: Int64(story.createdAt.timeIntervalSince1970 * 1000),
                                      text: text, reaction: reaction)
         // Reuse ChatService's create-or-fetch (returns the existing conversation if any).
-        let convId = LocalStore.conversationId(forPeer: story.authorId)
-            ?? (try? await ChatService.shared.createDirect(memberId: story.authorId))
+        var convId = LocalStore.conversationId(forPeer: story.authorId)
+        if convId == nil {
+            convId = try? await ChatService.shared.createDirect(memberId: story.authorId)
+        }
         guard let convId else { return }
         _ = try? await chat.sendStoryReply(env, conversationId: convId, peerUserId: story.authorId)
     }

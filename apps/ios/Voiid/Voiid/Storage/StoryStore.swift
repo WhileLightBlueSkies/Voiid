@@ -109,9 +109,9 @@ enum StoryStore {
     }
 
     static func story(_ id: String) -> Story? {
-        db.read { database in
+        db.read { database -> Row? in
             try Row.fetchOne(database, sql: "SELECT * FROM stories WHERE id = ?", arguments: [id])
-        }.flatMap(decode)
+        }.flatMap { $0 }.flatMap(decode)
     }
 
     /// True when any unexpired unviewed story exists — drives the tab unread dot (§8.1).

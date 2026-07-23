@@ -68,8 +68,8 @@ final class CallService: NSObject, ObservableObject {
     /// The audio-output routes available RIGHT NOW (earpiece/speaker always; Bluetooth and
     /// wired appear only while such a device is connected) and which one is live. Drives the
     /// in-call route picker. Refreshed on every AVAudioSession route change.
-    @Published private(set) var audioRoutes: [CallAudioRoute] = [.earpiece, .speaker]
-    @Published private(set) var currentRoute: CallAudioRoute = .earpiece
+    @Published var audioRoutes: [CallAudioRoute] = [.earpiece, .speaker]
+    @Published var currentRoute: CallAudioRoute = .earpiece
     @Published private(set) var videoEnabled = true
     @Published private(set) var connectedSeconds = 0
     /// Remote + local video tracks for the UI to render (nil for voice calls).

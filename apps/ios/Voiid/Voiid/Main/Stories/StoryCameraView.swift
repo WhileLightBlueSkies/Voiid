@@ -10,6 +10,7 @@
 //  capped at 30s). The composer applies the size/re-encode caps (§8.2) before posting.
 //
 
+import Combine
 import SwiftUI
 import AVFoundation
 
@@ -91,7 +92,7 @@ private struct CameraPreview: UIViewRepresentable {
 /// The @Published UI state is always mutated back on the main queue.
 private final class CameraController: NSObject, ObservableObject,
                                       AVCapturePhotoCaptureDelegate, AVCaptureFileOutputRecordingDelegate {
-    struct Output { var photo: Data?; var video: URL? }
+    struct Output: Equatable { var photo: Data?; var video: URL? }
 
     let session = AVCaptureSession()
     private let photoOut = AVCapturePhotoOutput()

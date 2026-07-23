@@ -185,7 +185,7 @@ enum LocationStore {
                   FROM location_last_fix WHERE share_id = ?
                 """, arguments: [shareId])
         }
-        guard let row else { return nil }
+        guard let row = row.flatMap({ $0 }) else { return nil }
         let sender: String = row["sender_user_id"]
         let lat: Double = row["lat"] ?? 0
         let lon: Double = row["lon"] ?? 0

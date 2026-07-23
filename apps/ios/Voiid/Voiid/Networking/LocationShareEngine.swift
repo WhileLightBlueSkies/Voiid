@@ -291,7 +291,7 @@ final class LocationShareEngine: ObservableObject {
               let key = LocationKeyStore.shared.key(shareId: shareId),
               let ct = Data(base64Encoded: ciphertextB64),
               let plain = try? decryptBackup(secret: key, blob: ct),
-              let fix = LocationFix(plaintext: String(decoding: plain, as: UTF8.self)) else { return }
+              let fix = LocationFix.from(plaintext: String(decoding: plain, as: UTF8.self)) else { return }
         // Drop an out-of-order relay frame rather than rendering a jump backwards.
         if let last = inboundSeq[shareId], fix.seq <= last { return }
         inboundSeq[shareId] = fix.seq
