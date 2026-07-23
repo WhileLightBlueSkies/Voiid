@@ -763,20 +763,37 @@ final class ChatEngine {
                            to: conversationId)
                     continue
                 }
+                // A location envelope (pin / live / map control). LocationWire captures/erases
+                // the shareKey (or the map key) in the Keychain (safe in the NSE too), strips
+                // it from the persisted JSON, and yields a clean display string so no raw JSON
+                // — and NO coordinate — ever reaches a notification body.
+                if let loc = LocationWire.decode(plain, fromUserId: m.sender_id) {
+                    if loc.renders {
+                        // pin / live_start / live_stop → a real bubble.
+                        replace(id: m.id, with:
+                                DecryptedMessage(id: m.id, senderId: m.sender_id, text: loc.text,
+                                                 createdAt: parseDate(m.created_at), isMine: false,
+                                                 locationJSON: loc.json),
+                               to: conversationId)
+                    } else {
+                        // map_key / map_off / live_rekey → SILENT control. Its key/effect is
+                        // already captured; keep the id "seen" (so it isn't reprocessed) but
+                        // hide it from the chat — it must never appear as an empty bubble.
+                        append(DecryptedMessage(id: m.id, senderId: m.sender_id, text: "",
+                                                createdAt: parseDate(m.created_at), isMine: false,
+                                                control: true), to: conversationId)
+                    }
+                    continue
+                }
                 // A media message's plaintext is a JSON MediaEnvelope; a text
                 // message is just the string. Detect via the server's content_type
                 // hint, falling back to the decoded shape.
                 let parsed = decodeEnvelope(plain, contentType: m.content_type)
-                // A location envelope (pin / live control). LocationWire captures/erases the
-                // shareKey in the Keychain (safe in the NSE too), strips it from the persisted
-                // JSON, and yields a clean display string so no raw JSON — and NO coordinate —
-                // ever reaches a notification body.
-                let loc = LocationWire.decode(plain)
                 replace(id: m.id, with:
                         DecryptedMessage(id: m.id, senderId: m.sender_id,
-                                         text: loc?.text ?? parsed.caption,
+                                         text: parsed.caption,
                                          createdAt: parseDate(m.created_at), isMine: false,
-                                         media: parsed.media, locationJSON: loc?.json),
+                                         media: parsed.media),
                        to: conversationId)
             } catch {
                 NSLog("[VOIID] ❌ inbound decrypt FAILED id=\(m.id) senderDev=\(m.sender_device_id ?? "nil"): \(error)")
@@ -1405,6 +1422,20 @@ enum LocationWire {
     private static let vault = KeychainData(service: "com.voiid.location.keys")
     private static func keyName(_ shareId: String) -> String { "sharekey_\(shareId)" }
 
+    // Feature (B) — the live Map. Its inbound key is keyed by the SENDER's user id (one key
+    // per contact who is visible to you), not by shareId. We mirror `MapKeyStore`'s exact
+    // Keychain service + naming here so a `map_key` captured on THIS decode path (app OR NSE,
+    // foreground OR background) is the very key `MapKeyStore.inboundKey(forSender:)` later
+    // reads to decrypt that contact's fixes. Without this the receiver holds no key and every
+    // inbound fix is silently dropped — the "I only see my own dot" bug.
+    private static let mapVault = KeychainData(service: "com.voiid.mapkeys")
+    private static func mapInboundName(_ userId: String) -> String { "inbound_map_key.\(userId)" }
+
+    /// Kinds that render a visible chat bubble. Everything else (`map_key`, `map_off`,
+    /// `live_rekey`) is SILENT control — captured for its key/effect but never shown.
+    static let renderKinds: Set<String> = ["pin", "live_start", "live_stop"]
+    static let silentKinds: Set<String> = ["map_key", "map_off", "live_rekey"]
+
     /// Rendered kinds get a bubble; everything else is silent control.
     static func displayText(kind: String, label: String?) -> String {
         switch kind {
@@ -1426,18 +1457,36 @@ enum LocationWire {
     }
 
     /// Full decode: capture/erase the key, and return (clean display text, key-stripped
-    /// JSON). nil when the plaintext is not a location envelope.
-    static func decode(_ plaintext: String) -> (text: String, json: String)? {
+    /// JSON). `fromUserId` is the message SENDER — required to file a Map (`map_key`) key
+    /// under the right contact. nil when the plaintext is not a location envelope.
+    static func decode(_ plaintext: String, fromUserId: String) -> (text: String, json: String, renders: Bool)? {
         guard let data = plaintext.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              (obj["_vloc"] as? Int) == 1,
-              let kind = obj["k"] as? String else { return nil }
+              let kind = obj["k"] as? String,
+              // Recognise by KIND, not by `_vloc`. Android omits `_vloc` from the wire
+              // (encodeDefaults=false), so requiring it made every Android pin/live/map
+              // envelope fall through to the generic decoder and render as "Unsupported
+              // message". The kind string is the reliable, cross-platform discriminator.
+              renderKinds.contains(kind) || silentKinds.contains(kind) else { return nil }
+
+        // Feature (B) Map control — keyed by SENDER, not shareId. Capture/erase here so the
+        // key is present whether this ran in the app or the NSE, foreground or background.
+        switch kind {
+        case "map_key":
+            if let key = obj["key"] as? String, let raw = Data(base64Encoded: key), raw.count == 32,
+               !fromUserId.isEmpty {
+                mapVault.setData(raw, mapInboundName(fromUserId))
+            }
+        case "map_off":
+            if !fromUserId.isEmpty { mapVault.delete(mapInboundName(fromUserId)) }
+        default: break
+        }
 
         if let shareId = obj["s"] as? String {
             switch kind {
-            case "live_start", "live_rekey", "map_key":
+            case "live_start", "live_rekey":
                 if let key = obj["key"] as? String { vault.set(key, keyName(shareId)) }
-            case "live_stop", "map_off":
+            case "live_stop":
                 vault.delete(keyName(shareId))
             default: break
             }
@@ -1450,6 +1499,7 @@ enum LocationWire {
         var stripped = obj; stripped["key"] = nil
         let json = (try? JSONSerialization.data(withJSONObject: stripped))
             .flatMap { String(data: $0, encoding: .utf8) } ?? plaintext
-        return (displayText(kind: kind, label: obj["label"] as? String), json)
+        return (displayText(kind: kind, label: obj["label"] as? String), json,
+                renderKinds.contains(kind))
     }
 }

@@ -40,9 +40,18 @@ final class AppSession: ObservableObject {
         // Resume straight to the app if we already hold a valid session token.
         route = AuthService.shared.isAuthenticated ? .main : .onboarding
         loadLocalProfile()
-        // Show the REAL verified number, never DummyData's placeholder. Empty (→ "—" in
-        // Settings) if we somehow don't have it, but NEVER a fake number.
-        profile.phoneNumber = UserDefaults.standard.string(forKey: Self.verifiedPhoneKey) ?? ""
+        // Show the REAL verified number, never DummyData's placeholder. Prefer the value
+        // captured at OTP time; fall back to Firebase's persisted signed-in user (covers
+        // accounts that logged in BEFORE we saved it) and persist that for next launch.
+        // Empty (→ "—" in Settings) only if truly unknown, but NEVER a fake number.
+        if let saved = UserDefaults.standard.string(forKey: Self.verifiedPhoneKey), !saved.isEmpty {
+            profile.phoneNumber = saved
+        } else if let fromFirebase = FirebasePhoneAuth.currentPhoneNumber {
+            profile.phoneNumber = fromFirebase
+            Self.saveVerifiedPhone(fromFirebase)
+        } else {
+            profile.phoneNumber = ""
+        }
         // On relaunch of an already-authenticated session, pull the authoritative profile
         // from the server so a reinstall / new device shows the REAL name, photo, bio and
         // username — not a stale local copy or a placeholder.

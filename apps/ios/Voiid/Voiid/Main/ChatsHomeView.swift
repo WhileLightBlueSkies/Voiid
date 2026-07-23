@@ -136,6 +136,7 @@ struct ChatsHomeView: View {
                 // Everything below is background/best-effort and must NEVER block the list.
                 WebSocketClient.shared.reconnect()         // fresh socket (avoid a stale/dead one missing pushes)
                 LocationShareEngine.shared.configure()     // route inbound live fixes + start the expiry ticker
+                MapPresenceEngine.shared.configureControlSender()   // hand map_key/map_off to the audience over the ratchet
                 Task { try? await E2EManager.shared.bootstrap() }   // publish identity/prekeys (idempotent)
                 Task { await session.refreshServerProfile() }       // REAL name/photo/bio/username
                 // Contact discovery (rebuilds saved-name map after a restore) — SLOW (address
