@@ -40,8 +40,11 @@ data class PeerInfo(val peerUserId: String?, val title: String?, val photoURL: S
 data class GroupMemberInfo(val userId: String, val name: String, val photoURL: String?, val isYou: Boolean)
 
 class ChatService(context: Context) {
+    private val appContext = context.applicationContext
     private val tokens = TokenStore.get(context)
     private val api = ApiClient(tokens)
+
+    init { com.voiid.app.store.UserDirectory.init(appContext) }
 
     /** Fetch the user's real conversations, then enrich direct chats (peer) concurrently. */
     suspend fun fetchConversations(): List<VConversation> = coroutineScope {
@@ -77,6 +80,12 @@ class ChatService(context: Context) {
         val myId = tokens.userId
         val peer = env.members.firstOrNull { it.user_id != myId }
             ?: return PeerInfo(null, env.conversation.name, null)
+        // Every peer resolution feeds the local directory, so a name is available offline and
+        // on the call paths (a ring push carries no caller name — see UserDirectory). Server
+        // fields only: the address-book name this may already hold is left untouched.
+        com.voiid.app.store.UserDirectory.upsertFromServer(
+            userId = peer.user_id, fullName = peer.full_name, photoUrl = peer.photo_url,
+        )
         return PeerInfo(peer.user_id, peer.full_name ?: env.conversation.name, peer.photo_url)
     }
 
@@ -103,6 +112,9 @@ class ChatService(context: Context) {
         val env: ConvDetailEnvelope = api.requestAs("GET", "conversations/$conversationId")
         val myId = tokens.userId
         return env.members.map {
+            com.voiid.app.store.UserDirectory.upsertFromServer(
+                userId = it.user_id, fullName = it.full_name, photoUrl = it.photo_url,
+            )
             GroupMemberInfo(it.user_id, it.full_name ?: "Member", it.photo_url, isYou = it.user_id == myId)
         }
     }

@@ -472,9 +472,12 @@ private fun CallControls(
         if (isVideo) {
             Ctrl(if (videoOn) Icons.Default.Videocam else Icons.Default.VideocamOff, !videoOn, isVideo, onVideo)
             Ctrl(Icons.Default.Cameraswitch, false, isVideo, onFlip)
-        } else {
-            Ctrl(Icons.AutoMirrored.Filled.VolumeUp, speaker, isVideo, onSpeaker)
         }
+        // Audio-output control on EVERY call, voice AND video — a video call needs to reach a
+        // Bluetooth headset just as much as a voice call. The route itself is chosen by the
+        // Telecom path (which already prefers Bluetooth > wired > speaker > earpiece when a
+        // device is connected); this button toggles the speaker within that.
+        Ctrl(Icons.AutoMirrored.Filled.VolumeUp, speaker, isVideo, onSpeaker)
         Box(
             Modifier.size(64.dp).clip(CircleShape).background(VoiidColor.error).softClickable(onClick = onEnd),
             contentAlignment = Alignment.Center,

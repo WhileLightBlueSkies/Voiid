@@ -159,6 +159,12 @@ object CallManager {
      * if it is *still* disconnected after this grace period. FAILED is terminal and skips it.
      */
     private const val DISCONNECT_GRACE_MS = 3_000L
+    /**
+     * How long we wait for Telecom to bind a Connection after accepting an inbound call
+     * before ringing in-app ourselves. Telecom's own budget is 5s; half of that leaves room
+     * to still ring inside the window the user would call "immediately".
+     */
+    private const val TELECOM_RING_WATCHDOG_MS = 2_500L
     /** TURN credentials are short-lived; re-fetch rather than restart with expired ones. */
     private const val ICE_SERVER_TTL_MS = 4 * 60_000L
 
@@ -209,24 +215,89 @@ object CallManager {
         // Route inbound call signaling from the WS relay to us. Distinct callback slot
         // from ChatStore's message/typing handlers, so both coexist on the one socket.
         WebSocketClient.get(appContext).onCallSignal = { sig -> onSignal(sig) }
+        // Names for the call UI come from the local directory, never from signaling — see
+        // [com.voiid.app.store.UserDirectory]. Load it before the first ring can arrive.
+        com.voiid.app.store.UserDirectory.init(appContext)
+        // Register the self-managed PhoneAccount, so calls can reach the system call log, the
+        // dialer's Recents, and the remote surfaces (Bluetooth / Wear / Auto). Telecom is a
+        // pure OBSERVER of the state machine below — see [TelecomBridge]. Idempotent, never
+        // throws, and a failure costs us the system integration and nothing else.
+        TelecomBridge.register(appContext)
         initialized = true
     }
 
+    // ---- call history ----------------------------------------------------------
+    //
+    // Calls used to be live signaling only: a missed call left no trace anywhere once the
+    // notification went away. Every call is now written to `call_history` TWICE by design —
+    // once as it starts (so an ignored call is on record even if the process dies with it)
+    // and once on teardown with the real outcome. The row is idempotent by call id.
+
+    /** When the current call started ringing; the `started_at` of its history row. */
+    @Volatile private var callStartedAtMs: Long = 0
+
+    private fun recordCall(s: CallState, outcome: String, endedAtMs: Long? = null) {
+        if (!::appContext.isInitialized) return
+        com.voiid.app.store.LocalStore.recordCall(
+            context = appContext,
+            id = s.callId,
+            conversationId = s.conversationId,
+            peerUserId = s.peerUserId,
+            kind = if (s.kind == CallKind.VIDEO) "video" else "voice",
+            direction = if (s.incoming) "incoming" else "outgoing",
+            outcome = outcome,
+            startedAtMs = callStartedAtMs.takeIf { it > 0 } ?: System.currentTimeMillis(),
+            endedAtMs = endedAtMs,
+        )
+    }
+
+    /**
+     * The name to show for a peer, resolved locally. [fromSignaling] is only ever a hint:
+     * a value equal to the user id is discarded by the directory, because a UUID on the
+     * incoming-call screen is the bug this exists to fix.
+     */
+    private fun resolvePeerName(userId: String, fromSignaling: String? = null): String =
+        com.voiid.app.store.UserDirectory.displayName(userId, fallback = fromSignaling)
+
     // ---- outbound (this device starts the call) --------------------------------
 
-    fun startOutgoing(conversationId: String, peerUserId: String?, peerName: String, kind: CallKind) {
+    /**
+     * [conversationId] is nullable because a call can now start from OUTSIDE the app — a
+     * "Voice call (Voiid)" row in a contact card, or a redial from the system call log. Those
+     * arrive with a person, never with a conversation. Everything downstream already treated
+     * it as optional ([CallState.conversationId] and `calls/ring` are both nullable).
+     */
+    fun startOutgoing(conversationId: String?, peerUserId: String?, peerName: String, kind: CallKind) {
         if (peerUserId.isNullOrBlank()) return   // 1:1 only — no peer, nothing to dial
         if (_state.value != null) return          // one call at a time
         // A group call owns the mic, the audio route and the foreground service. Never run both.
         if (GroupCallManager.isActive) return
         init(appContextOrNull() ?: return)
         val callId = java.util.UUID.randomUUID().toString()
+        callStartedAtMs = System.currentTimeMillis()
         _state.value = CallState(
-            callId = callId, peerUserId = peerUserId, peerName = peerName,
+            callId = callId, peerUserId = peerUserId, peerName = resolvePeerName(peerUserId, peerName),
             conversationId = conversationId, kind = kind, incoming = false,
             phase = Phase.RINGING_OUT, videoEnabled = kind == CallKind.VIDEO,
             speaker = kind == CallKind.VIDEO,
         )
+        recordCall(_state.value!!, outcome = "missed")   // upgraded on teardown
+        // Offer the call to Telecom so it lands in the system call log against the right
+        // contact. Purely additive: the in-app call below runs identically whether this
+        // succeeds or not. The number comes from the address-book path only — a peer met by
+        // username has none, and then the handle is the opaque `voiid:` one iOS calls
+        // `.generic`, which still dials but cannot be logged or contact-matched.
+        runCatching {
+            TelecomBridge.placeOutgoing(
+                context = appContext,
+                callId = callId,
+                peerUserId = peerUserId,
+                peerName = _state.value!!.peerName,
+                conversationId = conversationId,
+                kind = kind,
+                phoneE164 = com.voiid.app.store.UserDirectory.phoneE164(peerUserId),
+            )
+        }
         startForegroundService()
         beginCallSession()
         // Wake an offline callee via push (best effort) in parallel with WS offer.
@@ -293,18 +364,63 @@ object CallManager {
             runCatching { WebSocketClient.get(appContext).sendCallBusy(callerId, callId) }
             return
         }
+        val name = resolvePeerName(callerId, callerName)
         if (_state.value != null) {
-            raiseWaiting(WaitingCall(callId, callerId, callerName, conversationId, kind))
+            raiseWaiting(WaitingCall(callId, callerId, name, conversationId, kind))
             return
         }
+        callStartedAtMs = System.currentTimeMillis()
         _state.value = CallState(
-            callId = callId, peerUserId = callerId, peerName = callerName,
+            callId = callId, peerUserId = callerId, peerName = name,
             conversationId = conversationId, kind = kind, incoming = true,
             phase = Phase.RINGING_IN, videoEnabled = kind == CallKind.VIDEO,
             speaker = kind == CallKind.VIDEO,
         )
-        CallForegroundService.showIncoming(appContext, _state.value!!)
+        // Written before the user has done anything: a call ignored until the process dies
+        // is exactly the one that must still show up as missed.
+        recordCall(_state.value!!, outcome = "missed")
+        raiseIncomingAlert(_state.value!!)
         announceRinging(callerId, callId)
+    }
+
+    /**
+     * Alert the user about an inbound call, preferring Telecom.
+     *
+     * When Telecom takes the call it decides WHEN we may ring (and whether we may at all —
+     * a cellular call in progress wins), and the same notification is then posted from
+     * [VoiidConnection.onShowIncomingCallUi]. That indirection is the entire point: it is
+     * what stops Voiid ringing over a phone call the OS was about to prioritise.
+     *
+     * Two fallbacks, because a missed ring is the worst possible failure here:
+     *  1. Telecom refuses outright -> post the notification directly, exactly as before.
+     *  2. Telecom accepts but never creates a Connection (seen on some OEM ROMs) -> the
+     *     watchdog below rings in-app anyway. Telecom's own budget for this is 5 seconds;
+     *     we give it half that before deciding it isn't coming.
+     */
+    private fun raiseIncomingAlert(s: CallState) {
+        val reported = runCatching {
+            TelecomBridge.reportIncoming(
+                context = appContext,
+                callId = s.callId,
+                peerUserId = s.peerUserId,
+                peerName = s.peerName,
+                conversationId = s.conversationId,
+                kind = s.kind,
+                phoneE164 = com.voiid.app.store.UserDirectory.phoneE164(s.peerUserId),
+            )
+        }.getOrDefault(false)
+
+        if (!reported) {
+            CallForegroundService.showIncoming(appContext, s)
+            return
+        }
+        mainHandler.postDelayed({
+            val cur = _state.value ?: return@postDelayed
+            if (cur.callId != s.callId || cur.phase != Phase.RINGING_IN) return@postDelayed
+            if (TelecomBridge.connection(s.callId) != null) return@postDelayed
+            android.util.Log.w("VOIID", "Telecom took the call but never bound a Connection — ringing in-app")
+            CallForegroundService.showIncoming(appContext, cur)
+        }, TELECOM_RING_WATCHDOG_MS)
     }
 
     /**
@@ -327,6 +443,29 @@ object CallManager {
             onRenegotiationOffer(sig, current)
             return
         }
+        // The OFFER for a call we are ALREADY ringing — the VoIP/FCM push arrived first and
+        // onRingPush already raised the state, reported the call to Telecom, and recorded a
+        // missed row. This is the SDP catching up, NOT a new call. Without this branch it
+        // fell through to the new-call path below and rang a SECOND time: a duplicate
+        // Telecom registration for one call_id (two rows in the system call log, the leak
+        // the reviewer flagged) and a duplicate notification. Attach the SDP to the
+        // existing call and set up the peer connection; never re-ring, never re-report.
+        if (current != null && current.callId == sig.callId && !hasNegotiated) {
+            // Refine the name only if the push had none; never downgrade a resolved name.
+            if (current.peerName.isBlank()) {
+                _state.value = current.copy(peerName = resolvePeerName(sig.fromUserId))
+            }
+            beginCallSession()
+            val sdp = sig.sdp ?: return
+            exec.execute {
+                val servers = iceServers()
+                createPeerConnection(servers) ?: return@execute
+                pc?.setRemoteDescription(object : SdpObserverAdapter() {
+                    override fun onSetSuccess() { remoteDescSet = true; drainCandidates(); if (acceptPending) doAnswer() }
+                }, SessionDescription(SessionDescription.Type.OFFER, sdp))
+            }
+            return
+        }
         val kind = if (sig.callKind == "video") CallKind.VIDEO else CallKind.VOICE
 
         // The offer for a call we are already alerting the user about as call-waiting. Keep the
@@ -343,7 +482,8 @@ object CallManager {
                 raiseWaiting(
                     WaitingCall(
                         callId = sig.callId, peerUserId = sig.fromUserId,
-                        peerName = sig.fromUserId, conversationId = sig.conversationId, kind = kind,
+                        peerName = resolvePeerName(sig.fromUserId),
+                        conversationId = sig.conversationId, kind = kind,
                     ),
                 )
             } else {
@@ -352,14 +492,19 @@ object CallManager {
             }
             return
         }
-        val name = current?.peerName?.takeIf { it.isNotBlank() } ?: sig.fromUserId
+        // The offer carries no name (and must not: signaling is not a name service). Resolve
+        // it locally; a state raised by the ring push a moment ago is a fine hint, the raw
+        // sender id never is.
+        val name = resolvePeerName(sig.fromUserId, current?.peerName?.takeIf { it.isNotBlank() })
+        if (current == null) callStartedAtMs = System.currentTimeMillis()
         _state.value = CallState(
             callId = sig.callId, peerUserId = sig.fromUserId, peerName = name,
             conversationId = sig.conversationId ?: current?.conversationId, kind = kind,
             incoming = true, phase = Phase.RINGING_IN,
             videoEnabled = kind == CallKind.VIDEO, speaker = kind == CallKind.VIDEO,
         )
-        CallForegroundService.showIncoming(appContext, _state.value!!)
+        recordCall(_state.value!!, outcome = "missed")
+        raiseIncomingAlert(_state.value!!)
         announceRinging(sig.fromUserId, sig.callId)
         beginCallSession()
         val sdp = sig.sdp ?: return
@@ -504,6 +649,7 @@ object CallManager {
     /** Publish the waiting call and alert the user (notification + in-call banner). */
     private fun raiseWaiting(call: WaitingCall) {
         _waiting.value = call
+        recordWaiting(call, outcome = "missed")   // upgraded if it is declined or taken
         CallForegroundService.showWaiting(appContext, call)
         // We ARE alerting, so the second caller gets a truthful ringback like anyone else.
         announceRinging(call.peerUserId, call.callId)
@@ -519,7 +665,24 @@ object CallManager {
     fun declineWaiting() {
         val w = _waiting.value ?: return
         runCatching { WebSocketClient.get(appContext).sendCallDecline(w.peerUserId, w.callId) }
+        recordWaiting(w, outcome = "declined")
         clearWaiting()
+    }
+
+    /**
+     * History for a call that never occupied the live slot. It has no [CallState], so it is
+     * written straight through — but it is still a call the user was alerted about, and a
+     * second caller who gets no trace at all is precisely the old behaviour.
+     */
+    private fun recordWaiting(w: WaitingCall, outcome: String) {
+        if (!::appContext.isInitialized) return
+        val now = System.currentTimeMillis()
+        com.voiid.app.store.LocalStore.recordCall(
+            context = appContext, id = w.callId, conversationId = w.conversationId,
+            peerUserId = w.peerUserId, kind = if (w.kind == CallKind.VIDEO) "video" else "voice",
+            direction = "incoming", outcome = outcome, startedAtMs = now,
+            endedAtMs = if (outcome == "missed") null else now,
+        )
     }
 
     /**
@@ -661,6 +824,23 @@ object CallManager {
         val on = !s.speaker
         applyAudioRoute(on)
         update { it.copy(speaker = on) }
+    }
+
+    /**
+     * The SYSTEM moved the audio route — the user tapped speaker in the Telecom UI, pressed a
+     * button on a Bluetooth headset, or Android Auto took over.
+     *
+     * Mirror it into our own state so the in-app speaker button agrees with reality. This is
+     * the same reason iOS routes hold through a `CXTransaction` instead of applying it
+     * directly: one owner of the truth, and every surface reads it. Deliberately does NOT
+     * re-apply the route — that would fight the change we were just told about.
+     */
+    fun onSystemAudioRouteChanged(speakerOn: Boolean) {
+        mainHandler.post {
+            val s = _state.value ?: return@post
+            if (s.phase == Phase.ENDED || s.speaker == speakerOn) return@post
+            _state.value = s.copy(speaker = speakerOn)
+        }
     }
 
     fun toggleVideo() {
@@ -893,6 +1073,9 @@ object CallManager {
         markReconnecting(false)
         if (s.phase == Phase.CONNECTED) return
         update { it.copy(phase = Phase.CONNECTED, connectedAtMs = System.currentTimeMillis()) }
+        // Telling Telecom the call is up is what starts the duration the call log records,
+        // and what makes the OS treat this as a real call for arbitration purposes.
+        TelecomBridge.setActive(s.callId)
         startForegroundService()
         scope.launch(Dispatchers.IO) {
             runCatching { CallApi(appContext).status(s.callId, "connected") }
@@ -922,6 +1105,18 @@ object CallManager {
                 endReason = endReason ?: reason,
             )
         }
+        // Final outcome. "declined" covers both directions (we rejected it, or the callee did);
+        // anything that never connected is a miss, which is the whole point of the log.
+        val outcome = when {
+            s.connectedAtMs != null -> "answered"
+            reason == "declined" -> "declined"
+            reason == "ice-failed" || reason == "ice-closed" -> "failed"
+            else -> "missed"
+        }
+        recordCall(s, outcome = outcome, endedAtMs = System.currentTimeMillis())
+        // The SAME outcome, told to Telecom in its own vocabulary, so the system call log and
+        // our `call_history` can never disagree about what happened.
+        TelecomBridge.setDisconnected(s.callId, disconnectCause(s, reason, outcome))
         endCallSession()
         update { it.copy(phase = Phase.ENDED, reconnecting = false) }
         exec.execute { releaseWebRtc() }
@@ -932,6 +1127,25 @@ object CallManager {
             kotlinx.coroutines.delay(600)
             if (_state.value?.phase == Phase.ENDED) _state.value = null
         }
+    }
+
+    /**
+     * Map our end-of-call vocabulary onto Telecom's [android.telecom.DisconnectCause].
+     *
+     * MISSED IS THE ONE THAT MATTERS. It is what files the red missed-call entry, exactly as
+     * `.unanswered` does on iOS. Reporting REMOTE or LOCAL for a call nobody answered files
+     * it as a completed call, and the miss — the single most useful row in the log —
+     * silently vanishes. Only an INCOMING call that never connected can be missed; an
+     * outgoing one that never connected was cancelled by us.
+     */
+    private fun disconnectCause(s: CallState, reason: String, outcome: String): Int = when {
+        outcome == "answered" ->
+            if (reason == "local-hangup" || reason == "swapped") TelecomCause.LOCAL else TelecomCause.REMOTE
+        reason == "busy" -> TelecomCause.BUSY
+        outcome == "declined" -> TelecomCause.REJECTED
+        outcome == "failed" -> TelecomCause.ERROR
+        s.incoming -> TelecomCause.MISSED
+        else -> TelecomCause.CANCELED
     }
 
     private fun releaseWebRtc() {
@@ -1172,6 +1386,23 @@ object CallManager {
      * add/remove, so the mode survives backgrounding and mid-call route changes.
      */
     private fun applyAudioRoute(speaker: Boolean) {
+        // TELECOM OWNS THE ROUTE WHEN IT OWNS THE CALL, and the two must never both act.
+        // A self-managed app that also calls setCommunicationDevice()/startBluetoothSco()
+        // fights the platform: the symptoms are device-specific and will not reproduce on a
+        // dev machine — audio stuck on the earpiece, Bluetooth never engaging, or a route
+        // that flips back a second after the user changes it. Everything below this line is
+        // the FALLBACK for calls Telecom refused (or an OS too old to have taken them), and
+        // is unchanged from before Telecom existed.
+        val callId = _state.value?.callId
+        if (callId != null && TelecomBridge.setAudioRoute(callId, speaker)) {
+            // The ROUTE is Telecom's. The MODE is not, and WebRTC's echo canceller and gain
+            // control key off MODE_IN_COMMUNICATION — a call in MODE_NORMAL echoes. Telecom
+            // asserts the same value for a self-managed call with `audioModeIsVoip = true`,
+            // so this is belt-and-braces rather than a fight over the same setting.
+            ensureCommunicationMode()
+            return
+        }
+
         val am = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
         if (!audioConfigured) { savedAudioMode = am.mode; audioConfigured = true }
         runCatching { am.mode = AudioManager.MODE_IN_COMMUNICATION }
@@ -1219,6 +1450,56 @@ object CallManager {
         }
     }
 
+    /**
+     * Telecom bound a Connection for [callId] AFTER the AudioManager path had already claimed
+     * the route. Hand it over.
+     *
+     * This is unavoidable rather than a design choice: `placeCall`/`addNewIncomingCall` are
+     * asynchronous, and the engine must open the mic and pick an output immediately — waiting
+     * for Telecom would put a hole at the start of every call. So the AudioManager path runs
+     * first and is retracted here, and the same speaker preference is re-expressed through the
+     * Connection so the user sees no change.
+     *
+     * Leaving BOTH owners active is the collision the Telecom docs warn about, and its
+     * symptoms (audio stuck on earpiece, Bluetooth never engaging, a route that flips back a
+     * second later) are device-specific and will not reproduce on a dev machine.
+     */
+    fun onTelecomAssumedAudio(callId: String) {
+        mainHandler.post {
+            val s = _state.value ?: return@post
+            if (s.callId != callId || s.phase == Phase.ENDED) return@post
+            releaseAudioManagerRoute()
+            TelecomBridge.setAudioRoute(callId, s.speaker)
+        }
+    }
+
+    /**
+     * Drop our explicit device selection and the route watcher, WITHOUT touching the audio
+     * mode: `MODE_IN_COMMUNICATION` is what WebRTC's echo canceller keys off, and Telecom
+     * asserts the same mode for a self-managed call, so leaving it set is correct in both
+     * worlds. Only the *route* has a single legal owner.
+     */
+    /** Assert MODE_IN_COMMUNICATION (and remember what to restore), touching no route. */
+    private fun ensureCommunicationMode() {
+        val am = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        if (!audioConfigured) { savedAudioMode = am.mode; audioConfigured = true }
+        runCatching { am.mode = AudioManager.MODE_IN_COMMUNICATION }
+    }
+
+    private fun releaseAudioManagerRoute() {
+        val am = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        routeWatcher?.let { cb -> runCatching { am.unregisterAudioDeviceCallback(cb) } }
+        routeWatcher = null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching { am.clearCommunicationDevice() }
+        }
+        @Suppress("DEPRECATION")
+        runCatching {
+            am.isBluetoothScoOn = false
+            am.stopBluetoothSco()
+        }
+    }
+
     private fun hasDevice(am: AudioManager, type: Int): Boolean =
         runCatching {
             am.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any { it.type == type }
@@ -1245,6 +1526,10 @@ object CallManager {
     }
 
     private fun restoreAudioRoute() {
+        // Nothing to restore if Telecom held the route for this whole call: `audioConfigured`
+        // is only ever set by the AudioManager path above. Tearing down a mode and a SCO
+        // link we never established would stamp on whatever the platform is doing next.
+        if (!audioConfigured && routeWatcher == null) return
         val am = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
         routeWatcher?.let { cb -> runCatching { am.unregisterAudioDeviceCallback(cb) } }
         routeWatcher = null

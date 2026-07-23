@@ -77,6 +77,10 @@ fun OtpScreen(
             try {
                 val idToken = com.voiid.app.net.FirebasePhoneAuth.verify(verificationId, code)
                 val profileComplete = session.auth.loginWithFirebase(idToken)
+                // The verified number is the ONLY place we ever see it: the API never returns
+                // a phone number (privacy). Keep it on our own row so Settings can show it.
+                session.updateProfile(phoneE164 = phoneNumber)
+                session.loadProfile()
                 // Publish this device's E2E identity + prekeys (needed for chat).
                 runCatching { com.voiid.app.net.E2EManager.get(context).bootstrap() }
                 haptics.success()

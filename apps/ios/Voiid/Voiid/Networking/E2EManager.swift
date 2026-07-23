@@ -29,6 +29,19 @@ final class E2EManager {
     var deviceId: String? { _deviceId ?? kc.string(deviceIdName) }
     private var bootstrapped = false
 
+    /// Reset the once-per-process bootstrap latch and the in-memory identity.
+    ///
+    /// `bootstrap()` opens with `if bootstrapped { return }`, so after a sign-out WITHOUT
+    /// this the next account's bootstrap is a no-op: the app keeps using the previous
+    /// user's `Identity` and device id even though their keychain was wiped, and publishes
+    /// prekeys for an identity that no longer exists server-side. Log-out and sign-in
+    /// happen in one process lifetime, so the latch must be cleared explicitly.
+    func resetForSignOut() {
+        identity = nil
+        _deviceId = nil
+        bootstrapped = false
+    }
+
     private let kc = KeychainData(service: "com.voiid.e2e")
     private let pickleKeyName = "identity_pickle_key"   // 32 random bytes
     private let pickleName = "identity_pickle"          // encrypted identity

@@ -18,8 +18,24 @@ struct ContactProfileView: View {
     @State private var showAllMedia = false
     @State private var profile: UserProfile?
 
-    /// Best display name: the live profile name if loaded, else the conversation title.
-    private var displayName: String { profile?.name ?? conversation.title }
+    /// Display name with the app-wide precedence: the name YOU saved in your address
+    /// book wins over the name the peer chose for themselves at signup. Previously
+    /// this preferred `profile?.name` (their signup name), so a contact you'd saved as
+    /// "Mum" showed up as whatever they typed when registering.
+    private var displayName: String {
+        guard let peer = conversation.peerUserId else { return conversation.title }
+        return UserDirectory.shared.displayName(peer, fallback: profile?.name ?? conversation.title)
+    }
+
+    /// Shown under the name: the phone number if we have one, else the peer's own
+    /// profile name when it differs from what we're displaying — so there is always a
+    /// second identifying line rather than a bare name.
+    private var secondaryIdentity: String? {
+        guard let peer = conversation.peerUserId else { return nil }
+        if let phone = UserDirectory.shared.user(peer)?.phoneE164, !phone.isEmpty { return phone }
+        if let full = profile?.name, !full.isEmpty, full != displayName { return full }
+        return nil
+    }
 
     var body: some View {
         ScrollView {
@@ -53,6 +69,11 @@ struct ContactProfileView: View {
             }
             .buttonStyle(.plain)
             Text(displayName).font(VoiidFont.rounded(22, .bold)).foregroundColor(VoiidColor.textPrimary)
+            if let secondary = secondaryIdentity {
+                Text(secondary)
+                    .font(VoiidFont.rounded(15, .regular))
+                    .foregroundColor(VoiidColor.textSecondary)
+            }
             if let username = profile?.username, !username.isEmpty {
                 Text("@\(username)").font(VoiidFont.rounded(14, .regular)).foregroundColor(VoiidColor.textSecondary)
             }
@@ -138,6 +159,12 @@ struct ContactProfileView: View {
     private func loadProfile() async {
         guard let peerId = conversation.peerUserId else { return }
         profile = try? await ChatService.shared.userProfile(userId: peerId)
+        // Cache what the server told us, so the next visit (and every call from this
+        // person) can name them with no network at all.
+        if let p = profile {
+            UserDirectory.shared.upsertFromServer(userId: peerId, fullName: p.name,
+                                                  username: p.username, photoURL: p.photoURL)
+        }
     }
 
     // MARK: helpers

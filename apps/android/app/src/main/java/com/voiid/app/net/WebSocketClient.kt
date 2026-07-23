@@ -203,6 +203,24 @@ class WebSocketClient private constructor(context: Context) {
         send(frame, queueIfDown = false)
     }
 
+    // ---- Location fixes (docs/LOCATION.md P3) -----------------------------------
+    // The ephemeral position stream. `ciphertext` is an opaque base64 blob (one
+    // ciphertext for the whole audience, encrypted under a shareKey the server never
+    // holds). NOT queued if the socket is down: a stale position is worse than none, and
+    // the server buffers only the latest fix for a genuinely-offline recipient anyway.
+
+    /** Relay one encrypted position fix to the recipient list (P3 stream, never a message row). */
+    fun sendLocUpdate(shareId: String, recipientIds: List<String>, ciphertextB64: String) {
+        val recips = recipientIds.joinToString(",") { enc(it) }
+        send("""{"type":"loc_update","share_id":${enc(shareId)},"recipient_ids":[$recips],"ciphertext":${enc(ciphertextB64)}}""", queueIfDown = false)
+    }
+
+    /** Instant stop for live sockets. The durable stop rides the message path separately. */
+    fun sendLocStop(shareId: String, recipientIds: List<String>) {
+        val recips = recipientIds.joinToString(",") { enc(it) }
+        send("""{"type":"loc_stop","share_id":${enc(shareId)},"recipient_ids":[$recips]}""", queueIfDown = false)
+    }
+
     /** Ask the message's sender to re-establish the E2E session (we couldn't decrypt). */
     fun sendSessionReset(conversationId: String, recipientIds: List<String>) {
         val recips = recipientIds.joinToString(",") { "\"" + it + "\"" }
@@ -314,6 +332,22 @@ class WebSocketClient private constructor(context: Context) {
                 val mid = obj["message_id"]?.jsonPrimitive?.contentOrNull ?: return
                 val status = obj["status"]?.jsonPrimitive?.contentOrNull ?: return
                 onReceipt?.invoke(mid, status)
+            }
+            // Location fixes / stops (docs/LOCATION.md P3). Routed to the shared LocationRelay
+            // seam so BOTH location engines (conversation share + Map) can consume them without
+            // fighting over a single callback. `ciphertext` is copied to the relay verbatim and
+            // never parsed here — the same "treat as opaque" rule as SDP.
+            "loc_update" -> {
+                val sid = obj["share_id"]?.jsonPrimitive?.contentOrNull ?: return
+                val from = obj["from_user_id"]?.jsonPrimitive?.contentOrNull ?: return
+                val ct = obj["ciphertext"]?.jsonPrimitive?.contentOrNull ?: return
+                val ts = obj["ts"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: System.currentTimeMillis()
+                LocationRelay.dispatchFix(sid, from, ct, ts)
+            }
+            "loc_stop" -> {
+                val sid = obj["share_id"]?.jsonPrimitive?.contentOrNull ?: return
+                val from = obj["from_user_id"]?.jsonPrimitive?.contentOrNull ?: return
+                LocationRelay.dispatchStop(sid, from)
             }
             "session_reset" -> obj["conversation_id"]?.jsonPrimitive?.contentOrNull?.let { onSessionReset?.invoke(it) }
             "mls_event" -> onMlsEvent?.invoke(obj["conversation_id"]?.jsonPrimitive?.contentOrNull)

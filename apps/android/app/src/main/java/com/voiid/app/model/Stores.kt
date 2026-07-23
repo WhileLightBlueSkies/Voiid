@@ -10,6 +10,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.voiid.app.net.AuthService
+import com.voiid.app.store.LocalStore
+import com.voiid.app.store.UserDirectory
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.UUID
@@ -25,6 +27,7 @@ import java.util.UUID
 enum class AppRoute { ONBOARDING, MAIN }
 
 class AppSession(app: Application) : AndroidViewModel(app) {
+    private val appContext: android.content.Context = app.applicationContext
     val auth = AuthService(app)
 
     // Resume straight to the app if we already hold a session token.
@@ -38,8 +41,66 @@ class AppSession(app: Application) : AndroidViewModel(app) {
     /** The authenticated user's id (our backend id), once logged in. */
     val userId: String? get() = auth.userId
 
+    init {
+        UserDirectory.init(appContext)
+        loadProfile()
+    }
+
+    /**
+     * Our own profile lives in the same `users` table as everyone else's — one row, one set
+     * of merge rules. Read it locally first (so Settings shows your real name and number on a
+     * cold, offline launch instead of the "You" placeholder), then refresh from the server.
+     */
+    fun loadProfile() {
+        val id = userId ?: return
+        viewModelScope.launch {
+            UserDirectory.ready(appContext)
+            UserDirectory.user(id)?.let { row ->
+                profile = profile.copy(
+                    id = id,
+                    fullName = row.fullName ?: profile.fullName,
+                    phoneNumber = row.phoneE164 ?: profile.phoneNumber,
+                    photoURL = row.photoUrl ?: profile.photoURL,
+                    bio = row.bio ?: profile.bio,
+                )
+            }
+            val u = runCatching { com.voiid.app.net.ProfileService(appContext).fetchUser(id) }.getOrNull()
+                ?: return@launch
+            UserDirectory.upsertFromServer(
+                userId = id, fullName = u.full_name, username = u.username,
+                photoUrl = u.photo_url, bio = u.bio,
+            )
+            profile = profile.copy(
+                id = id,
+                fullName = u.full_name ?: profile.fullName,
+                photoURL = u.photo_url ?: profile.photoURL,
+                bio = u.bio ?: profile.bio,
+            )
+        }
+    }
+
+    /**
+     * Apply a profile edit LOCALLY — on screen immediately and durable before any request is
+     * attempted, so editing your name offline works and survives a restart. The caller owns
+     * the server sync (and reporting its failure); this never blocks on it.
+     */
+    fun updateProfile(fullName: String? = null, photoUrl: String? = null, phoneE164: String? = null) {
+        profile = profile.copy(
+            fullName = fullName ?: profile.fullName,
+            photoURL = photoUrl ?: profile.photoURL,
+            phoneNumber = phoneE164 ?: profile.phoneNumber,
+        )
+        val id = userId ?: return
+        UserDirectory.upsertFromServer(
+            userId = id, fullName = fullName, photoUrl = photoUrl, phoneE164 = phoneE164,
+        )
+    }
+
     /** Called at the end of onboarding once a real session token exists. */
-    fun completeOnboarding() { route = AppRoute.MAIN }
+    fun completeOnboarding() {
+        route = AppRoute.MAIN
+        loadProfile()
+    }
 
     fun signOut() {
         auth.logout()
@@ -50,6 +111,8 @@ class AppSession(app: Application) : AndroidViewModel(app) {
 // MARK: - Chat store (the heart of the "feels real" experience)
 
 class ChatStore(app: Application) : AndroidViewModel(app) {
+    private val appContext: android.content.Context = app.applicationContext
+
     // REAL backend data — starts empty, loaded via loadConversations(). A new
     // account shows an empty list, confirming we read the live server (not mock).
     val directConversations = mutableStateListOf<VConversation>()
@@ -66,20 +129,46 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
     // Conversations we've already asked the peer to reset this session (avoid loops).
     private val resetRequested = HashSet<String>()
 
-    /** Fetch real conversations from the backend + install realtime handlers. */
+    /**
+     * Show the local list FIRST, then fetch. The network only ever updates the store — a
+     * failed (or slow, or offline) fetch leaves the grid exactly as it was instead of
+     * emptying it, which is what used to happen when the list was nothing but the body of a
+     * GET. Also installs the realtime handlers.
+     */
     fun loadConversations() {
         startRealtime()
-        ws.reconnect()   // fresh socket on each chats-screen entry (avoid a dead one missing pushes)
-        viewModelScope.launch { reload() }
+        viewModelScope.launch {
+            loadLocal()
+            ws.reconnect()   // fresh socket on each chats-screen entry (avoid a dead one missing pushes)
+            reload()
+        }
+    }
+
+    /** Render from Room. Never touches the network, never clears on failure. */
+    private suspend fun loadLocal() {
+        val cached = runCatching { LocalStore.conversations(appContext) }.getOrDefault(emptyList())
+        if (cached.isEmpty()) return
+        directConversations.clear(); groupConversations.clear()
+        directConversations.addAll(cached.filter { it.type == ConversationType.DIRECT })
+        groupConversations.addAll(cached.filter { it.type == ConversationType.GROUP })
+        cached.forEach { refresh(it.id) }   // decrypted message history from the engine store
     }
 
     /** Suspend reload (so callers like handleIncoming can await it, then sync). */
     private suspend fun reload() {
         try {
-            val convs = chatService.fetchConversations()
+            // Titles come from the directory, not the server: if you saved this person as
+            // "Mum" in your address book, every screen says "Mum" whatever they signed up as.
+            val convs = chatService.fetchConversations().map { c ->
+                val peer = c.peerUserId
+                if (c.type == ConversationType.DIRECT && peer != null) {
+                    c.copy(title = UserDirectory.displayName(peer, fallback = c.title))
+                } else c
+            }
             directConversations.clear(); groupConversations.clear()
             directConversations.addAll(convs.filter { it.type == ConversationType.DIRECT })
             groupConversations.addAll(convs.filter { it.type == ConversationType.GROUP })
+            LocalStore.saveConversations(appContext, convs)   // so the next cold launch renders instantly
             convs.forEach { refresh(it.id) }   // show cached (already-decrypted) messages
             loadError = null
         } catch (e: Exception) {
@@ -160,6 +249,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
     private fun refresh(convId: String) {
         val mapped = engine.messages(convId).map { d ->
             val kind = when {
+                d.location != null -> MessageKind.LOCATION
                 d.media == null -> MessageKind.TEXT
                 d.media.mime.startsWith("audio/") -> MessageKind.VOICE
                 else -> MessageKind.IMAGE
@@ -177,7 +267,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                 id = d.serverId ?: d.id, conversationId = convId,
                 senderId = if (d.isMine) "me" else d.senderId,
                 kind = kind, text = d.text, createdAt = d.createdAt,
-                status = status, isMine = d.isMine, mediaRef = d.media,
+                status = status, isMine = d.isMine, mediaRef = d.media, location = d.location,
             )
         }
         if (mapped.isNotEmpty() || messagesByConversation.containsKey(convId)) {
@@ -240,6 +330,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                 peerUserId = contact.userId, photoURL = contact.photoURL,
             )
             directConversations.add(0, conv)
+            LocalStore.saveConversations(appContext, listOf(conv))   // survives a restart before the first sync
             conv
         } catch (e: Exception) {
             loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t start chat."
@@ -259,6 +350,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                 memberCount = memberUserIds.size + 1,
             )
             if (groupConversations.none { it.id == convId }) groupConversations.add(0, conv)
+            LocalStore.saveConversations(appContext, listOf(conv))
             conv
         } catch (e: Exception) {
             loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t create the group."
@@ -402,6 +494,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
     private fun previewFor(kind: MessageKind): String = when (kind) {
         MessageKind.IMAGE -> "📷 Photo"
         MessageKind.VOICE -> "🎤 Voice message"
+        MessageKind.LOCATION -> "📍 Location"
         MessageKind.DOCUMENT -> "📄 Document"
         else -> "Message"
     }

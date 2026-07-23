@@ -22,9 +22,65 @@ final class AppSession: ObservableObject {
 
     private let auth = AuthService.shared
 
+    /// Where the local copy of your own profile lives. Small and flat, so UserDefaults
+    /// is the right tool — it is read during launch, before the database is touched,
+    /// and it must never be the reason a launch blocks.
+    private static let profileKey = "voiid.me.profile.v1"
+
     init() {
         // Resume straight to the app if we already hold a valid session token.
         route = AuthService.shared.isAuthenticated ? .main : .onboarding
+        loadLocalProfile()
+    }
+
+    // MARK: - Own profile
+    //
+    // This was hardcoded to `DummyData.me` — every screen that showed "your" name or
+    // photo was showing a placeholder, and there was nowhere to put a real one. It is
+    // now persisted locally and synced, like everything else.
+
+    private struct StoredProfile: Codable {
+        var fullName: String
+        var phoneNumber: String
+        var photoURL: String?
+        var email: String?
+        var bio: String?
+    }
+
+    private func loadLocalProfile() {
+        guard let data = UserDefaults.standard.data(forKey: Self.profileKey),
+              let stored = try? JSONDecoder().decode(StoredProfile.self, from: data)
+        else { return }
+        profile = VUser(id: auth.userId ?? "me",
+                        fullName: stored.fullName,
+                        phoneNumber: stored.phoneNumber,
+                        email: stored.email,
+                        photoName: nil,
+                        photoURL: stored.photoURL,
+                        bio: stored.bio)
+    }
+
+    private func persistLocalProfile() {
+        let stored = StoredProfile(fullName: profile.fullName,
+                                   phoneNumber: profile.phoneNumber,
+                                   photoURL: profile.photoURL,
+                                   email: profile.email,
+                                   bio: profile.bio)
+        if let data = try? JSONEncoder().encode(stored) {
+            UserDefaults.standard.set(data, forKey: Self.profileKey)
+        }
+    }
+
+    /// Update your profile locally and immediately. Callers sync to the server
+    /// separately; a failed sync must not undo what the user sees.
+    func updateProfile(fullName: String? = nil, photoURL: String? = nil,
+                       phoneNumber: String? = nil, email: String? = nil, bio: String? = nil) {
+        if let fullName { profile.fullName = fullName }
+        if let photoURL { profile.photoURL = photoURL }
+        if let phoneNumber { profile.phoneNumber = phoneNumber }
+        if let email { profile.email = email }
+        if let bio { profile.bio = bio }
+        persistLocalProfile()
     }
 
     /// The authenticated user's id (our backend id), once logged in.
@@ -36,10 +92,30 @@ final class AppSession: ObservableObject {
         withAnimation(.easeInOut) { route = .main }
     }
 
+    /// Clears the auth token and this account's own profile.
+    ///
+    /// It does NOT wipe the local database, the plaintext message blob, the E2E keychain
+    /// or the registered VoIP token — that is `SessionTeardown.wipeLocalAccountState()`,
+    /// which the Log Out row runs immediately BEFORE calling this (before, because the
+    /// teardown's VoIP unregister still needs the JWT). Call them in that order or the
+    /// previous account's data survives on the device.
     func signOut() {
         auth.logout()
+        // Your profile is per-account state; leaving it behind would show the previous
+        // user's name and photo on the next login.
+        UserDefaults.standard.removeObject(forKey: Self.profileKey)
+        profile = DummyData.me
+        // In-memory stores outlive the session (they are @StateObjects on ContentView),
+        // so they have to be told.
+        NotificationCenter.default.post(name: .voiidDidSignOut, object: nil)
         withAnimation(.easeInOut) { route = .onboarding }
     }
+}
+
+/// Posted by `AppSession.signOut()`. Anything holding per-account state in memory
+/// observes this and drops it.
+extension Notification.Name {
+    static let voiidDidSignOut = Notification.Name("voiidDidSignOut")
 }
 
 // MARK: - Chat store (the heart of the "feels real" experience)
@@ -55,20 +131,95 @@ final class ChatStore: ObservableObject {
     @Published var typingConversations: Set<String> = []
     @Published var loadError: String?
 
-    /// Fetch real conversations from the backend. Call after login / on appear.
-    /// Also installs the realtime (WebSocket) handlers once.
+    init() {
+        // Sign-out has to empty this store. It is a @StateObject on ContentView, so it
+        // survives the route change back to onboarding, and `loadConversations()` is
+        // local-first — a stale array would render the PREVIOUS user's chat grid to the
+        // next account before the network could correct it.
+        NotificationCenter.default.addObserver(forName: .voiidDidSignOut,
+                                               object: nil,
+                                               queue: .main) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in self.reset() }
+        }
+    }
+
+    /// Drop every trace of the signed-out account held in memory.
+    func reset() {
+        directConversations = []
+        groupConversations = []
+        messagesByConversation = [:]
+        typingConversations = []
+        loadError = nil
+    }
+
+    /// Load conversations LOCAL-FIRST, then reconcile with the server.
+    ///
+    /// Order matters. Previously this was network-only, so a failed GET left the
+    /// arrays empty and the user saw a blank chat grid even though their entire
+    /// message history was on disk — the messages were unreachable because nothing
+    /// knew which conversations existed. Now the database answers first and the
+    /// network merely updates it: offline, you see your chats.
     func loadConversations() async {
         startRealtime()
+
+        // One-time lift of the legacy app-group JSON blob into SQLite.
+        LocalStore.importLegacyMessageBlobIfNeeded()
+
+        // Render from disk before touching the network.
+        applyLocalConversations()
+
         do {
             let convs = try await ChatService.shared.fetchConversations()
-            directConversations = convs.filter { $0.type == .direct }
-            groupConversations = convs.filter { $0.type == .group }
-            // Show any locally-cached (already-decrypted) messages immediately.
-            for c in convs { refresh(c.id) }
+            LocalStore.saveConversations(convs)
+            // Learn the peer names/photos this payload carried, so calls and headers
+            // can resolve a name without a further round trip. Bulk, not per-row: the
+            // single-row upsert reloads the whole table and republishes each time.
+            UserDirectory.shared.upsertManyFromServer(
+                convs.compactMap { c in
+                    guard c.type == .direct, let peer = c.peerUserId else { return nil }
+                    return (userId: peer, fullName: c.title, username: nil, photoURL: c.photoURL)
+                }
+            )
+            applyLocalConversations()
             loadError = nil
         } catch {
-            loadError = (error as? APIError)?.errorDescription ?? "Couldn’t load chats."
+            // Only surface the failure if we have nothing to show. With cached
+            // conversations on screen, a dropped connection is not worth an error
+            // banner — the list is simply as fresh as the last successful sync.
+            if directConversations.isEmpty && groupConversations.isEmpty {
+                loadError = (error as? APIError)?.errorDescription ?? "Couldn’t load chats."
+            } else {
+                loadError = nil
+            }
         }
+    }
+
+    /// Publish whatever the local database currently holds.
+    ///
+    /// Previews are filled in from the local message store rather than being read from
+    /// the conversations table: the offline list would otherwise render with no preview
+    /// text at all, making a cold launch look emptier than it actually is even though
+    /// every message is right there on disk.
+    private func applyLocalConversations() {
+        let convs = LocalStore.conversations().map { conv -> VConversation in
+            var conv = conv
+            guard let last = ChatEngine.shared.messages(conversationId: conv.id).last else { return conv }
+            if let media = last.media {
+                conv.lastMessagePreview = media.mime.hasPrefix("audio/") ? "Voice message" : "Photo"
+            } else if !last.text.isEmpty {
+                conv.lastMessagePreview = last.text
+            }
+            // A conversation whose row predates its messages (e.g. imported from the
+            // legacy blob) has no timestamp — take it from the message itself so the
+            // list still sorts sensibly.
+            if conv.lastMessageAt == nil { conv.lastMessageAt = last.createdAt }
+            return conv
+        }
+        guard !convs.isEmpty else { return }
+        directConversations = convs.filter { $0.type == .direct }
+        groupConversations = convs.filter { $0.type == .group }
+        for c in convs { refresh(c.id) }
     }
 
     /// Messages currently held for a conversation (decrypted, from the local store).
@@ -89,6 +240,9 @@ final class ChatStore: ObservableObject {
             let conv = VConversation(id: convId, type: .direct, title: contact.displayName,
                                      photoName: nil, lastMessagePreview: nil, lastMessageAt: nil,
                                      unreadCount: 0, peerUserId: contact.userId, photoURL: contact.photoURL)
+            // Persist before returning: a chat started here must still exist after a
+            // restart even if no message is ever sent in it.
+            LocalStore.upsertConversation(conv)
             directConversations.insert(conv, at: 0)
             return conv
         } catch {
@@ -113,6 +267,7 @@ final class ChatStore: ObservableObject {
             let conv = VConversation(id: convId, type: .group, title: name,
                                      photoName: nil, lastMessagePreview: nil, lastMessageAt: nil,
                                      unreadCount: 0, memberCount: members.count + 1)
+            LocalStore.upsertConversation(conv)
             groupConversations.insert(conv, at: 0)
             return conv
         } catch {
@@ -134,7 +289,11 @@ final class ChatStore: ObservableObject {
             // this device's copy of the group's app messages into the shared store.
             await GroupEngine.shared.syncGroupEvents()
             await GroupEngine.shared.syncGroupMessages(conversationId: conv.id)
-            await ChatEngine.shared.markRead(conversationId: conv.id)
+            // Settings → Privacy → "Send read receipts". This is one of the only two
+            // places the app POSTs receipts/mark with status "read"; both are gated.
+            if PrivacySettings.shared.sendReadReceipts {
+                await ChatEngine.shared.markRead(conversationId: conv.id)
+            }
             refresh(conv.id)
             return
         }
@@ -150,7 +309,10 @@ final class ChatStore: ObservableObject {
                 ChatEngine.shared.resetSession(peer)
                 WebSocketClient.shared.sendSessionReset(conversationId: conv.id, recipientIds: [peer])
             }
-            await ChatEngine.shared.markRead(conversationId: conv.id)   // blue ticks for the sender
+            // Settings → Privacy → "Send read receipts" (blue ticks for the sender).
+            if PrivacySettings.shared.sendReadReceipts {
+                await ChatEngine.shared.markRead(conversationId: conv.id)
+            }
             await fetchPresence(conv.id, peerUserId: peer)
         } catch {
             loadError = (error as? APIError)?.errorDescription ?? "Couldn’t load messages."
@@ -181,8 +343,21 @@ final class ChatStore: ObservableObject {
 
     /// Rebuild a conversation's UI messages from the local (decrypted) store.
     private func refresh(_ convId: String) {
-        let mapped = ChatEngine.shared.messages(conversationId: convId).map { d -> VMessage in
-            let kind: MessageKind = d.media.map { $0.mime.hasPrefix("audio/") ? .voice : .image } ?? .text
+        let mapped = ChatEngine.shared.messages(conversationId: convId).compactMap { d -> VMessage? in
+            // A location envelope: decode the stored (key-stripped) JSON into a LocationRef.
+            // Rows in the location tables are RECONCILED from the message store here (the
+            // store is the source of truth; the tables are a derived cache). pin / live_start
+            // render a bubble; live_stop / live_rekey are SILENT control — recorded in the
+            // decrypt-once ledger but never shown as a message (docs/LOCATION.md §4).
+            let locRef: LocationRef?
+            if let json = d.locationJSON, let env = LocationEnvelope.parse(json) {
+                reconcileLocationShare(env, conversationId: convId, isMine: d.isMine, senderId: d.senderId)
+                guard env.k.rendersBubble, env.k != .live_stop else { return nil }
+                locRef = env.ref
+            } else { locRef = nil }
+            let kind: MessageKind
+            if locRef != nil { kind = .location }
+            else { kind = d.media.map { $0.mime.hasPrefix("audio/") ? .voice : .image } ?? .text }
             // Mine: sending (offline) / sent / delivered / read — from the PERSISTED
             // delivery status so it never regresses on rebuild. Inbound: shown as read.
             let status: MessageStatus
@@ -200,13 +375,35 @@ final class ChatStore: ObservableObject {
                             senderId: d.isMine ? "me" : d.senderId,
                             kind: kind, text: d.text, createdAt: d.createdAt,
                             status: status, isMine: d.isMine,
-                            mediaRef: d.media)
+                            mediaRef: d.media, location: locRef)
         }
         if !mapped.isEmpty || messagesByConversation[convId] != nil {
             messagesByConversation[convId] = mapped
         }
         if let last = mapped.last {
-            bumpPreview(convId, preview: last.kind == .text ? last.text : previewFor(last.kind))
+            let preview = (last.kind == .text || last.kind == .location) ? last.text : previewFor(last.kind)
+            bumpPreview(convId, preview: preview)
+        }
+    }
+
+    /// Keep the location tables in step with the message store: an INBOUND live_start creates
+    /// the inbound-share row (so a relayed fix passes the client-side authorization check and
+    /// its expiry is known), and a live_stop ends it. Outbound rows are owned by
+    /// LocationShareEngine. Idempotent — runs on every refresh; the shareKey is already in the
+    /// Keychain (captured at decrypt time), so no key handling is needed here.
+    private func reconcileLocationShare(_ env: LocationEnvelope, conversationId: String,
+                                        isMine: Bool, senderId: String) {
+        guard !isMine, let shareId = env.s else { return }
+        switch env.k {
+        case .live_start:
+            LocationStore.upsertInbound(id: shareId, conversationId: conversationId,
+                                        ownerUserId: senderId, expiresAtMillis: env.expiresAt,
+                                        cadenceSeconds: env.cadence ?? 15)
+        case .live_stop:
+            LocationStore.end(id: shareId)
+            LocationShareEngine.shared.markStopped(shareId)
+        default:
+            break
         }
     }
 

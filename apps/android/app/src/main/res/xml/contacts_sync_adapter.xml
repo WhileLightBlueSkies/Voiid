@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Binds the Voiid account type to the contacts provider.
+
+  supportsUploading="false": this sync is strictly one-way and local. Nothing from the
+  user's address book is ever sent anywhere — contact discovery matches SHA-256 hashes and
+  raw numbers never leave the device (see ContactsService).
+
+  userVisible="true": the user gets a sync toggle in Settings > Accounts > Voiid. Turning
+  it off removes the contact-card rows and nothing else, which is a legitimate choice.
+-->
+<sync-adapter xmlns:android="http://schemas.android.com/apk/res/android"
+    android:contentAuthority="com.android.contacts"
+    android:accountType="com.voiid.app"
+    android:supportsUploading="false"
+    android:isAlwaysSyncable="true"
+    android:userVisible="true" />

@@ -19,6 +19,9 @@ struct ChatDetailView: View {
     let conversation: VConversation
     @EnvironmentObject var chat: ChatStore
     @EnvironmentObject var session: AppSession
+    /// Settings → Privacy. Observed (not just read) so flipping a toggle in the Settings
+    /// sheet re-renders the presence line immediately instead of on the next open.
+    @ObservedObject private var privacy = PrivacySettings.shared
     @Environment(\.dismiss) private var dismiss
 
     @State private var draft = ""
@@ -27,6 +30,7 @@ struct ChatDetailView: View {
     @State private var showInfo = false       // group info / contact profile
     @State private var showAttach = false     // attach menu (photo / poll)
     @State private var showPollCompose = false
+    @State private var showLocationCompose = false   // location share compose sheet
     @State private var pickPhoto = false
     @State private var replyingTo: VMessage?  // reply preview above input
     @State private var infoMessage: VMessage? // Message Info sheet
@@ -43,6 +47,8 @@ struct ChatDetailView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            // "You are sharing your location" — pinned at the top of the chat, one-tap Stop.
+            LocationBanner(conversationId: conversation.id)
             messageList
             inputBar
         }
@@ -65,7 +71,9 @@ struct ChatDetailView: View {
         }
         .onDisappear {
             session.hideTabBar = false
-            if let peer = livePeerUserId {
+            // Settings → Privacy → "Send typing indicators". With it off we never sent a
+            // start frame, so there is nothing to stop.
+            if privacy.sendTypingIndicators, let peer = livePeerUserId {
                 WebSocketClient.shared.sendTyping(conversationId: conversation.id, recipientIds: [peer], isStart: false)
             }
         }
@@ -80,6 +88,15 @@ struct ChatDetailView: View {
             PollComposeSheet { q, opts in
                 chat.sendPoll(q, options: opts, to: conversation.id)
             }
+            .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $showLocationCompose) {
+            LocationComposeSheet(
+                conversationTitle: conversation.title,
+                isGroup: conversation.type == .group,
+                audienceCount: conversation.type == .group ? max(1, conversation.memberCount - 1) : 1,
+                onSendPin: { label in sendLocationPin(label: label) },
+                onStartLive: { duration in startLiveShare(duration: duration) })
             .presentationDetents([.medium, .large])
         }
         .sheet(item: $infoMessage) { msg in
@@ -149,9 +166,14 @@ struct ChatDetailView: View {
         // derived from it. Without it we'd have no way to encrypt, and joining
         // unencrypted would expose media to the SFU — so fall back rather than
         // silently downgrade.
-        let conversationId: String? = (isGroup && GroupEngine.shared.hasGroup(conversationId: conversation.id))
-            ? conversation.id
-            : nil
+        //
+        // A 1:1 call always carries its conversation: `POST /calls/ring` requires one
+        // (without it the callee's wake push is never sent) and the missed-call
+        // notification threads and deep-links on it. It does NOT make the call a group
+        // call — that needs `isGroup` too.
+        let conversationId: String? = isGroup
+            ? (GroupEngine.shared.hasGroup(conversationId: conversation.id) ? conversation.id : nil)
+            : conversation.id
 
         activeCall = CallRequest(
             title: conversation.title,
@@ -166,6 +188,52 @@ struct ChatDetailView: View {
     /// The 1:1 peer's user id for placing a real call.
     private var resolvedPeerUserId: String? {
         chat.directConversations.first(where: { $0.id == conversation.id })?.peerUserId ?? conversation.peerUserId
+    }
+
+    // MARK: - Location sharing (docs/LOCATION.md — feature A)
+
+    private var isGroupChat: Bool { conversation.type == .group }
+
+    /// The 1:1 peer's user id, local-first (cached) then resolved from the server.
+    private func resolvePeer() async -> String? {
+        if let p = resolvedPeerUserId { return p }
+        return try? await ChatService.shared.resolvePeer(conversationId: conversation.id).peerUserId
+    }
+
+    /// Send a static pin. The engine captures one fix and sends the E2EE envelope; the
+    /// echo appears in this chat, so we refresh once the send returns.
+    private func sendLocationPin(label: String?) {
+        Task {
+            let peer = isGroupChat ? nil : await resolvePeer()
+            guard isGroupChat || peer != nil else { return }
+            LocationShareEngine.shared.sendPin(conversationId: conversation.id, isGroup: isGroupChat,
+                                               peerUserId: peer, label: label) { _ in
+                Task { @MainActor in chat.openConversation(conversation) }
+            }
+        }
+    }
+
+    /// Start a time-bounded live share. The audience for the WS fix stream is the peer
+    /// (1:1) or every OTHER group member (resolved from the server member list).
+    private func startLiveShare(duration: ShareDuration) {
+        Task {
+            let me = TokenStore.shared.userId
+            let recipients: [String]
+            let peer: String?
+            if isGroupChat {
+                peer = nil
+                recipients = ((try? await ChatService.shared.members(conversationId: conversation.id)) ?? [])
+                    .map { $0.userId }.filter { $0 != me }
+            } else {
+                peer = await resolvePeer()
+                recipients = peer.map { [$0] } ?? []
+            }
+            guard !recipients.isEmpty else { return }
+            _ = await LocationShareEngine.shared.startLiveShare(
+                conversationId: conversation.id, isGroup: isGroupChat, peerUserId: peer,
+                recipientIds: recipients, duration: duration)
+            chat.openConversation(conversation)
+        }
     }
 
     // MARK: header — normal, or selection bar in multi-select
@@ -216,9 +284,11 @@ struct ChatDetailView: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(conversation.title)
                             .font(VoiidFont.rounded(17, .semibold)).foregroundColor(VoiidColor.textPrimary)
-                        Text(presenceText)
-                            .font(VoiidFont.rounded(11, .regular))
-                            .foregroundColor(chat.typingConversations.contains(conversation.id) ? VoiidColor.primary : VoiidColor.textSecondary)
+                        if let presenceText {
+                            Text(presenceText)
+                                .font(VoiidFont.rounded(11, .regular))
+                                .foregroundColor(chat.typingConversations.contains(conversation.id) ? VoiidColor.primary : VoiidColor.textSecondary)
+                        }
                     }
                 }
             }
@@ -257,9 +327,15 @@ struct ChatDetailView: View {
         chat.directConversations.first(where: { $0.id == conversation.id })?.peerUserId ?? conversation.peerUserId
     }
 
-    private var presenceText: String {
+    /// `nil` when there is no line to draw, so the caller omits the `Text` entirely
+    /// rather than laying out an empty one.
+    private var presenceText: String? {
         if chat.typingConversations.contains(conversation.id) { return "typing…" }
         if conversation.type == .group { return "\(conversation.memberCount) members" }
+        // Settings → Privacy → "Show when contacts are online". Display-only, this
+        // device: it hides the online / last-seen line, it does not change presence
+        // reporting. Typing and the group member count are not online status and stay.
+        guard privacy.showOnlineStatus else { return nil }
         let live = chat.directConversations.first(where: { $0.id == conversation.id })
         if live?.isOnline == true { return "Online" }
         if let seen = live?.lastSeenAt { return "last seen \(VoiidDate.relative(seen))" }
@@ -404,6 +480,7 @@ struct ChatDetailView: View {
         HStack(spacing: VoiidSpacing.sm) {
             Menu {
                 Button { pickPhoto = true } label: { Label("Photo", systemImage: "photo") }
+                Button { showLocationCompose = true } label: { Label("Location", systemImage: "location") }
                 if conversation.type == .group {
                     Button { showPollCompose = true } label: { Label("Poll", systemImage: "chart.bar") }
                 }
@@ -430,7 +507,8 @@ struct ChatDetailView: View {
                 .padding(.horizontal, VoiidSpacing.md)
                 .frame(minHeight: 46)
                 .onChange(of: draft) { _, newValue in
-                    guard let peer = livePeerUserId else { return }
+                    // Settings → Privacy → "Send typing indicators".
+                    guard privacy.sendTypingIndicators, let peer = livePeerUserId else { return }
                     WebSocketClient.shared.sendTyping(conversationId: conversation.id,
                                                       recipientIds: [peer],
                                                       isStart: !newValue.isEmpty)
@@ -711,6 +789,9 @@ struct MessageBubble: View {
             AsyncVoiceNote(ref: message.mediaRef, label: message.text)
         case .poll:
             if let poll = message.poll { PollBubble(poll: poll, onVote: onVote) }
+        case .location:
+            if let ref = message.location { LocationPinBubble(ref: ref) }
+            else { styledText(message.text) }
         default:
             styledText(message.text)
         }
@@ -833,6 +914,10 @@ struct BubbleShape: Shape {
     func set(_ img: UIImage, _ k: String) { images[k] = img }
     func data(_ k: String) -> Data? { datas[k] }
     func setData(_ d: Data, _ k: String) { datas[k] = d }
+    /// Drop every decrypted byte. Called by `SessionTeardown` on sign-out: this cache is
+    /// process-lifetime and sign-out does not restart the process, so without it the
+    /// previous account's photos and voice notes stay in memory behind the login screen.
+    func clear() { images.removeAll(); datas.removeAll() }
 }
 
 /// An image bubble that fetches + decrypts its blob via ChatEngine on appear.

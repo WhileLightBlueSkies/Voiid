@@ -29,6 +29,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     ) -> Bool {
         FirebaseApp.configure()
         UNUserNotificationCenter.current().delegate = self
+        registerNotificationCategories()
         // Register for remote notifications so the server can send the NSE-triggering
         // message push (and Firebase Auth's silent verification push).
         application.registerForRemoteNotifications()
@@ -39,16 +40,47 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         return true
     }
 
+    /// Actions on a missed-call banner. Registered here (not lazily) because iOS
+    /// resolves a notification's `categoryIdentifier` against whatever was registered
+    /// when the notification is DELIVERED — and a missed-call notification is
+    /// routinely delivered by the system while the app is not running.
+    private func registerNotificationCategories() {
+        let callBack = UNNotificationAction(identifier: MissedCallNotifier.actionCallBack,
+                                            title: "Call back", options: [.foreground])
+        let message = UNNotificationAction(identifier: MissedCallNotifier.actionMessage,
+                                           title: "Message", options: [.foreground])
+        let missedCall = UNNotificationCategory(identifier: MissedCallNotifier.categoryId,
+                                                actions: [callBack, message],
+                                                intentIdentifiers: [], options: [])
+        UNUserNotificationCenter.current().setNotificationCategories([missedCall])
+    }
+
     // MARK: - Message notifications (UNUserNotificationCenterDelegate)
 
     /// Notification tapped → deep-link to its conversation. Reads the NON-SECRET
     /// `conversation_id` routing key the server/NSE attached (never any content).
+    ///
+    /// A missed-call banner carries the same key, so a plain tap opens the caller's
+    /// chat with no extra navigation code; only its "Call back" action needs its own
+    /// branch (there is no calls/recents screen to send anyone to).
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let userInfo = response.notification.request.content.userInfo
+        if response.actionIdentifier == MissedCallNotifier.actionCallBack,
+           userInfo["type"] as? String == MissedCallNotifier.typeValue,
+           let callerId = userInfo["caller_id"] as? String, !callerId.isEmpty {
+            CallService.shared.startCall(
+                peerUserId: callerId,
+                title: UserDirectory.shared.displayName(callerId),
+                isVideo: (userInfo["call_kind"] as? String) == "video",
+                conversationId: userInfo["conversation_id"] as? String
+            )
+            completionHandler()
+            return
+        }
         if let conversationId = userInfo["conversation_id"] as? String {
             NotificationCenter.default.post(name: .voiidOpenConversation, object: conversationId)
         }
@@ -105,6 +137,19 @@ struct VoiidApp: App {
         WindowGroup {
             ContentView()
                 .voiidForceUpdateGate()   // /config on launch + blocking update screen on 426
+                // Contact linking, inbound half: tapping a Voiid entry in the phone
+                // app's Recents, or the Voiid row inside a contact card, resumes the
+                // app with an INStartCallIntent naming the person to call.
+                .onContinueUserActivity("INStartCallIntent") { activity in
+                    CallIntentRouter.startCall(from: activity)
+                }
+                // Legacy activity types, for call-back entries donated by older builds.
+                .onContinueUserActivity("INStartAudioCallIntent") { activity in
+                    CallIntentRouter.startCall(from: activity)
+                }
+                .onContinueUserActivity("INStartVideoCallIntent") { activity in
+                    CallIntentRouter.startCall(from: activity, forceVideo: true)
+                }
         }
     }
 }

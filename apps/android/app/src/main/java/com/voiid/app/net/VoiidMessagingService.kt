@@ -15,6 +15,8 @@ import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import com.voiid.app.MainActivity
 import com.voiid.app.R
+import com.voiid.app.store.UserDirectory
+import com.voiid.app.store.displayName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -64,11 +66,18 @@ class VoiidMessagingService : FirebaseMessagingService() {
             else com.voiid.app.main.CallKind.VOICE
             val ctx = applicationContext
             CallManager.init(ctx)
+            // The push deliberately carries NO caller name (that would tell Google who calls
+            // whom). Resolve it on-device: the local directory first — it needs no network and
+            // works on a process this push just cold-started — and only then the conversation
+            // lookup. Never the raw caller id: a UUID on the ring screen is the bug being fixed.
             val name = runBlocking {
-                withTimeoutOrNull(6_000L) {
-                    conversationId?.let { runCatching { ChatService(ctx).resolvePeer(it).title }.getOrNull() }
-                }
-            }?.takeIf { it.isNotBlank() } ?: callerId
+                UserDirectory.ready(ctx)
+                UserDirectory.user(callerId)?.displayName()
+                    ?: withTimeoutOrNull(6_000L) {
+                        conversationId?.let { runCatching { ChatService(ctx).resolvePeer(it).title }.getOrNull() }
+                    }?.takeIf { it.isNotBlank() && it != callerId }
+                    ?: UserDirectory.displayName(callerId)
+            }
             CallManager.onRingPush(callId, callerId, name, kind, conversationId)
             return
         }
@@ -138,7 +147,12 @@ class VoiidMessagingService : FirebaseMessagingService() {
             ?: after.lastOrNull { !it.isMine && it.id !in before }
             ?: after.lastOrNull { !it.isMine }
 
-        val title = peer?.title?.takeIf { it.isNotBlank() }
+        // Same precedence as everywhere else: the address-book name wins over the name the
+        // sender chose for themselves, so a notification says "Mum" too.
+        val title = peer?.let { p ->
+            p.peerUserId?.let { UserDirectory.displayName(it, fallback = p.title) }
+                ?: p.title?.takeIf { it.isNotBlank() }
+        }
         val body = when {
             target == null -> null                       // fetched but nothing to show → generic
             target.media != null -> "📎 Media" // 📎 Media (no caption/plaintext detail)

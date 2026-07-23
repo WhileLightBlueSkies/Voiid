@@ -15,7 +15,8 @@
 |---|---|---|
 | **API service** | `backend/api` (Node/Express) | everything (auth, messages, prekeys, backup, calls signaling creds) |
 | **WebSocket service** | `backend/websocket` (Node) | realtime message delivery, typing, call signaling relay |
-| **PostgreSQL** | the database | everything (16 migrations) |
+| **Workers service** | `backend/workers` (Node) | background jobs — **story expiry** (deletes expired R2 objects + DB rows) |
+| **PostgreSQL** | the database | everything (18 migrations) |
 | **Redis** | pub/sub + presence | WS fan-out between API and sockets |
 | **Object storage (R2/S3)** | Cloudflare R2 or any S3 | media attachments + encrypted backups |
 | **coturn** | TURN/STUN server | calls that can't go peer-to-peer (~10-20% of them) |
@@ -44,7 +45,7 @@ configured. So `deploy/turn/` is kept but not part of the initial bring-up.
 
 | Box / service | Runs | Sizing (start) |
 |---|---|---|
-| **Box A — app** | API + WebSocket + Redis | 4 vCPU / 8 GB |
+| **Box A — app** | API + WebSocket + Workers + Redis | 4 vCPU / 8 GB |
 | **Box B — LiveKit** | LiveKit SFU only (media-heavy, isolated so a group call can't degrade the API) | 4 vCPU / 8 GB |
 | **Supabase** | managed Postgres (the DB) | managed — no box |
 | *(Cloudflare)* | TURN | managed — no box |
@@ -92,17 +93,19 @@ up when testing group calls.
       Voiid-Main fork — different schema). Grab its Postgres connection string.
 - [ ] Set `DATABASE_URL` to the Supabase connection string (TLS required; the app
       enables SSL automatically for non-local hosts).
-- [ ] **Apply the 16 migrations in order** — there is no migration runner yet, so
-      either paste each file into the Supabase SQL editor in order, or:
+- [ ] **Apply the migrations.** There IS a migration runner:
+      `infrastructure/deployment/migrate.mjs` applies every unapplied
+      `database/migrations/NNN_*.sql` in filename order, each in its own transaction,
+      and records it in `schema_migrations` so re-runs are no-ops. `deploy-dev.sh`
+      invokes it on every deploy, so a push to `dev` is the whole step. To run it by
+      hand:
   ```bash
-  for f in database/migrations/0*.sql; do
-    echo "== $f"; psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f" || break
-  done
+  node --env-file=/opt/voiid/.env infrastructure/deployment/migrate.mjs
   ```
-  Migrations `001`–`016` cover: users, devices, prekeys, OTP, conversations,
+  Migrations `001`–`018` cover: users, devices, prekeys, OTP, conversations,
   messages, receipts, contact-sync, security-events, username, MLS, recovery,
   message-ciphertexts (fan-out), **calls (014)**, **device VoIP token (015)**,
-  **call metrics (016)**. (014/015/016 are the newest — make sure they run.)
+  **call metrics (016)**, **stories (017)**, **location shares (018)**.
 - [ ] Set `DATABASE_URL=postgres://user:pass@host:5432/voiid`.
 
 ### Redis
@@ -114,6 +117,14 @@ up when testing group calls.
 - [ ] Set `R2_ENDPOINT`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`.
 - Media + encrypted backups live here. Without it, media/backup return 503 (the
   rest of the app still works).
+- [ ] **Lifecycle rule — REQUIRED for stories.** Bucket → Settings → Object lifecycle
+      rules → add: **prefix `media/stories/`, expire after 2 days**.
+      This is the *orphan net*, not the retention policy. Story objects are normally
+      deleted by `voiid-workers` an hour after `expires_at` (24h after posting); the
+      rule only catches objects whose row was reaped without its object (worker down,
+      R2 unreachable 5×, or an upload that was never followed by `POST /v1/stories`).
+      It is set **wider** than the reaper on purpose, so the primary mechanism stays
+      code in this repo rather than a console setting.
 
 ---
 
@@ -214,15 +225,30 @@ Also install per-platform config:
 
 ```bash
 # from repo root, with a .env at repo root holding the vars from §7
-cd backend/api && npm ci && npm run build && npm run start   # serves API_PORT
-cd backend/websocket && npm ci && npm run build && npm run start  # serves WS_PORT
+npm ci
+npm run build -w @voiid/common-utils
+npm run build -w @voiid/api        && npm run start -w @voiid/api        # API_PORT
+npm run build -w @voiid/websocket  && npm run start -w @voiid/websocket  # WS_PORT
+npm run build -w @voiid/workers    && npm run start -w @voiid/workers    # WORKERS_PORT
 ```
-Run both under a process manager (systemd / pm2 / docker). Then the reverse proxy:
+Run all three under a process manager (systemd / pm2 / docker) —
+`infrastructure/deployment/deploy-dev.sh` does exactly this as `voiid-api`,
+`voiid-ws`, `voiid-workers`. Then the reverse proxy:
 - `https://api.voiid.app/*` → API service (`API_PORT`)
 - `wss://api.voiid.app/ws` → WebSocket service (`WS_PORT`)  ← the `/ws` path
 - TLS terminated at the proxy.
+- **`voiid-workers` is NOT proxied.** Its `/health` on `WORKERS_PORT` is internal
+  only (point Uptime Kuma at it from inside the box); it serves no public route.
 
-(`npm test` in `backend/api` runs the 53-test suite — worth running in CI.)
+**`voiid-workers` runs story expiry** — it deletes expired story ciphertext from R2
+and the expired rows from Postgres. If it is down, stories still *expire correctly*
+(every read path filters `expires_at > now()`); what accumulates is expired
+ciphertext at rest. Treat a red `/health` as a data-retention incident, not an
+outage.
+
+(`npm test` in `backend/api` runs the test suite — worth running in CI. It includes
+`test/pushPayload.test.ts`, which fails the build if any key outside
+`ALLOWED_PUSH_KEYS` ever reaches a push payload.)
 
 ---
 
@@ -233,6 +259,8 @@ Run both under a process manager (systemd / pm2 / docker). Then the reverse prox
 NODE_ENV=production
 API_PORT=8080
 WS_PORT=8081
+WORKERS_PORT=3003                 # background job /health (internal only)
+WORKERS_INTERVAL_MS=300000        # story reaper pass interval (5 min)
 DATABASE_URL=postgres://user:pass@host:5432/voiid
 REDIS_URL=redis://host:6379
 JWT_SECRET=<long random>          # MUST be identical for api AND websocket
@@ -288,7 +316,7 @@ AUTH_DEV_BYPASS=   # bypasses auth — leave UNSET in production
 
 Bring it up incrementally; each step proves one layer.
 1. [ ] **API health:** `GET https://api.voiid.app/config` returns JSON (proxy + API + DB reachable).
-2. [ ] **DB:** migrations applied (`\dt` shows ~16+ tables incl. `calls`, `call_metrics`, `mls_group_events`).
+2. [ ] **DB:** migrations applied (`\dt` shows ~20+ tables incl. `calls`, `call_metrics`, `mls_group_events`, `stories`, `story_keys`).
 3. [ ] **Register/login:** on a real device, phone → OTP (use a Firebase test number) → lands in the app. Proves Firebase auth + JWT + users/devices tables.
 4. [ ] **WebSocket:** connect (the app does `wss://…/ws?token=JWT` on login). Proves proxy `/ws` routing + Redis.
 5. [ ] **1:1 message (TWO devices):** send both directions; delivered + decrypts. Proves prekeys, fan-out, WS relay, push.
@@ -297,6 +325,8 @@ Bring it up incrementally; each step proves one layer.
 8. [ ] **1:1 call (TWO devices):** place a call. Proves TURN issuance + signaling + WebRTC. Test on **different networks** (one WiFi, one cellular) to exercise TURN relay + ICE restart, and with **one phone on silent** to check ringback plays for the caller.
 9. [ ] **Group call:** create a group, start a group call with 3+ people. Proves LiveKit + MLS-derived E2EE.
 10. [ ] **Metrics:** after a few calls, `GET /calls/metrics/summary` (as an ops user) shows setup-success rate / % relayed.
+11. [ ] **Workers:** `curl http://localhost:${WORKERS_PORT:-3003}/health` → `status: ok`, `db: up`, `media.configured: true`.
+12. [ ] **Story (TWO devices):** post → the second device's feed carries it → open and decrypt → reply lands in the 1:1 chat. Then force expiry (`update stories set expires_at = now() - interval '2 hours' where id = '…'`), wait one worker pass, and confirm the row is gone AND the R2 object is gone. Proves the whole retention path end to end.
 
 ---
 
@@ -311,8 +341,16 @@ Bring it up incrementally; each step proves one layer.
   NAT/CGNAT (no relay). Test on cellular to catch this.
 - **Google Drive `drive.appdata`** is a sensitive scope → OAuth app verification
   has a multi-day lead time for non-test users. Start it early.
-- **Migrations are manual** — don't forget 014/015/016; calls + VoIP token + metrics
-  break without them.
+- **Migrations run automatically** on deploy via `migrate.mjs` (ledgered in
+  `schema_migrations`). If you provisioned the DB by hand before that runner existed,
+  seed the ledger or the runner will re-apply everything — the files are idempotent
+  (`if not exists`), so it is safe either way, but check `select * from
+  schema_migrations` after the first deploy.
+- **Forgetting the R2 lifecycle rule** on `media/stories/` is silent: nothing breaks,
+  orphaned story ciphertext just accumulates in the bucket forever.
+- **`voiid-workers` down is silent too** — stories still disappear from every client
+  on time, so the only symptom is a growing bucket and a growing `stories` table.
+  Monitor its `/health`.
 
 ---
 

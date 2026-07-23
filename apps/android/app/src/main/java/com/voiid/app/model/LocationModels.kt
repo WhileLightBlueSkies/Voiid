@@ -1,0 +1,103 @@
+package com.voiid.app.model
+
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+
+/**
+ * Location sharing models (Feature A — location INSIDE conversations). See docs/LOCATION.md.
+ *
+ * The envelope below is the PLAINTEXT of an E2EE message (1:1 over the Double Ratchet, group
+ * over MLS) or of a WebSocket-relayed live fix. Coordinates are only ever inside this
+ * authenticated plaintext — the server sees ciphertext, an opaque share id, and routing ids.
+ *
+ * `_vloc` is the discriminator: `content_type == "location"` OR a plaintext that parses as
+ * JSON with `_vloc == 1` is a location envelope. The marker (not the content_type) is what
+ * makes this safe on the group/MLS path, where content_type is always "group".
+ */
+@Serializable
+data class LocationEnvelope(
+    @SerialName("_vloc") val vloc: Int = 1,
+    /** pin | live_start | live_stop | live_rekey | fix. (map_key/map_off are Feature B.) */
+    val k: String,
+    /** share_id (uuid) — omitted for k:"pin". */
+    val s: String? = null,
+    val t: Long = 0,
+    /** Monotonic sequence for a fix, so an out-of-order relay frame is dropped, not drawn. */
+    val n: Long? = null,
+    val lat: Double? = null,
+    val lon: Double? = null,
+    val acc: Double? = null,
+    /** Optional, user-typed. NEVER reverse-geocoded (docs/LOCATION.md §10). */
+    val label: String? = null,
+    /** Millis. live_start / live_rekey only. */
+    val expiresAt: Long? = null,
+    /**
+     * Base64 32-byte shareKey — live_start / live_rekey ONLY. Comes from
+     * `generateMasterSecret()` and is NEVER persisted in the message store; the recipient
+     * lifts it into the secure key store and drops it here. See docs/LOCATION.md §1 (the
+     * HKDF-label trap) and §11.
+     */
+    val key: String? = null,
+    /** Seconds; live_start. */
+    val cadence: Int? = null,
+    // Reserved, never drawn in v1 (docs/LOCATION.md §10.14).
+    val alt: Double? = null,
+    val hdg: Double? = null,
+    val spd: Double? = null,
+) {
+    companion object {
+        const val VLOC = 1
+        const val K_PIN = "pin"
+        const val K_LIVE_START = "live_start"
+        const val K_LIVE_STOP = "live_stop"
+        const val K_LIVE_REKEY = "live_rekey"
+        const val K_FIX = "fix"
+
+        /** True for a `k` that renders a chat bubble (vs. silent control consumed by the engine). */
+        fun rendersBubble(k: String): Boolean = k == K_PIN || k == K_LIVE_START || k == K_LIVE_STOP
+    }
+}
+
+/** One decoded live position for a share, held ONLY as the single most-recent fix (no trail). */
+data class LocationFix(
+    val shareId: String,
+    val senderUserId: String,
+    val lat: Double,
+    val lon: Double,
+    val acc: Double,
+    val seq: Long,
+    /** Epoch millis this fix was produced (envelope `t`). */
+    val fixedAt: Long,
+)
+
+/** The three recipient-visible states, never conflated (docs/LOCATION.md §3). */
+enum class ShareState { LIVE, STALE, ENDED }
+
+/**
+ * Live view state for ONE inbound share, observed by the bubble. Everything is derivable from
+ * [expiresAt] alone (the timer guarantee): a recipient who never receives the stop still hides
+ * the marker at [expiresAt], offline, with no network.
+ */
+data class LiveShareView(
+    val shareId: String,
+    val ownerUserId: String,
+    val expiresAt: Long,          // millis
+    val cadenceSeconds: Int,
+    val lastFix: LocationFix?,
+    /** A `live_stop` (or `loc_stop`) was received — hard ended regardless of the timer. */
+    val endedExplicit: Boolean,
+) {
+    fun state(now: Long = System.currentTimeMillis()): ShareState = when {
+        endedExplicit || now >= expiresAt -> ShareState.ENDED
+        lastFix == null -> ShareState.STALE
+        now - lastFix.fixedAt <= (2L * cadenceSeconds * 1000L + 30_000L) -> ShareState.LIVE
+        else -> ShareState.STALE
+    }
+}
+
+/** One of MY currently-active outbound live shares — drives the persistent banner + Stop. */
+data class OutboundShareView(
+    val shareId: String,
+    val conversationId: String,
+    val expiresAt: Long,          // millis
+)

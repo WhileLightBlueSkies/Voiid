@@ -31,6 +31,19 @@
 //     the server-side conversation membership (used to fan out app messages) needs a
 //     backend "add member to conversation" endpoint that isn't in the current contract.
 //
+//  CROSS-PROCESS SINGLE WRITER (why every mutation goes through `withGroupState`):
+//   The Notification Service Extension decrypts group messages for the notification
+//   preview in a SEPARATE process, against the SAME keychain blob. `GroupMember.serialize`
+//   / `.restore` is a WHOLE-STATE snapshot — one blob holding every group, the signature
+//   key and every KeyPackage private — so a write-back derived from a stale read does not
+//   merge, it REPLACES. Lose a Commit that way and the group is dead: `max_past_epochs`
+//   is 0 and /mls/group-events is destructive-on-read, so the Commit can never be
+//   re-fetched. Every mutating entry point therefore: takes the app-group flock, drops
+//   ALL in-memory state (member, sessions, conversation→group map), re-reads the blob,
+//   and only then mutates. `persistMember()` additionally refuses any write whose base
+//   version is no longer current, so a future unlocked path fails loudly instead of
+//   silently destroying the other process's epoch.
+//
 
 import Foundation
 import Security
@@ -50,6 +63,7 @@ final class GroupEngine {
     let groupEpochChanged = PassthroughSubject<String, Never>()
 
     private let memberBlobName = "mls_member_blob"     // serialized GroupMember (all state)
+    private let memberVersionName = "mls_member_blob_version"   // monotonic write counter
     private let convGroupsName = "mls_conv_groups"     // JSON { conversationId: base64(group_id) }
 
     /// This device's MLS identity (holds every group). nil until bootstrap/restore.
@@ -59,10 +73,60 @@ final class GroupEngine {
     /// conversationId → MLS group_id (persisted, so we can loadGroup after restart).
     private var convGroups: [String: Data] = [:]
 
+    /// The blob version `member` was restored FROM. `persistMember` refuses to write when
+    /// the stored version has moved on, because that means another process committed
+    /// something our in-memory state never saw — and our serialize() would erase it.
+    private var memberBlobVersion = 0
+
+    /// While false, nothing may MINT a GroupMember. Set for the extension's inbound-only
+    /// section: creating (or recreating after a failed restore) writes a group-less blob
+    /// over the app's real MLS state, which loses every group irrecoverably. The app is
+    /// the only process allowed to bootstrap an identity.
+    private var memberCreationAllowed = true
+
     private var bootstrapped = false
     private static let keyPackageBatch = 10
 
     private init() { loadConvGroups() }
+
+    // MARK: - Cross-process critical section
+
+    /// Run `body` as the single writer of MLS state: hold the app-group flock, then drop
+    /// and re-read every cached piece of shared state before touching it.
+    ///
+    /// The reload is not an optimisation, it is the correctness condition. Cached
+    /// `sessions` are especially dangerous: a `GroupSession` wraps an `MlsGroup`
+    /// materialised from a SPECIFIC `GroupMember`'s storage provider, but decrypt takes the
+    /// member as a parameter — so reusing one across a re-restore writes an old group view
+    /// into a new provider. They are dropped wholesale.
+    ///
+    /// NEVER nest these: `CrossProcessLock` is an flock on a fresh descriptor each time, so
+    /// a second acquisition from inside the first deadlocks this process against itself.
+    /// Public entry points take it exactly once and call `…Locked` bodies internally.
+    private func withGroupState<T>(createMember: Bool = true,
+                                   _ body: () async throws -> T) async rethrows -> T {
+        try await CrossProcessLock.withLock {
+            let previous = memberCreationAllowed
+            memberCreationAllowed = createMember
+            defer { memberCreationAllowed = previous }
+            reloadSharedState()
+            return try await body()
+        }
+    }
+
+    /// Drop this process's caches and re-read the authoritative shared state. Called only
+    /// from `withGroupState`, i.e. always with the cross-process lock held.
+    private func reloadSharedState() {
+        member = nil
+        sessions.removeAll()          // bound to the OLD member's provider — never reuse
+        loadConvGroups()              // the other process may have joined a new group
+        // The decrypt-once ledger for group messages is ChatEngine's store; re-read it so
+        // we neither re-decrypt what the other process already did nor persist over it.
+        ChatEngine.shared.reloadStore()
+        if let uid = TokenStore.shared.userId, let dev = E2EManager.shared.deviceId {
+            restoreMember(userId: uid, deviceId: dev)
+        }
+    }
 
     // MARK: - Bootstrap / lifecycle
 
@@ -70,36 +134,50 @@ final class GroupEngine {
     /// Idempotent per app session. Must run AFTER E2EManager registered the device
     /// (needs the device id); called from E2EManager.bootstrap().
     func bootstrap() async {
-        guard let userId = TokenStore.shared.userId,
+        guard TokenStore.shared.userId != nil,
               let deviceId = E2EManager.shared.deviceId else {
             NSLog("[VOIID] MLS bootstrap skipped (no user/device yet)")
             return
         }
-        restoreMember(userId: userId, deviceId: deviceId)
-        if bootstrapped { return }
-        do {
-            try await publishKeyPackages(deviceId: deviceId)
-            bootstrapped = true
-            NSLog("[VOIID] MLS bootstrap: keypackages published")
-        } catch {
-            NSLog("[VOIID] MLS bootstrap keypackage publish failed: \(error)")
+        // `withGroupState` performs the create-or-restore (reloadSharedState → restoreMember);
+        // minting KeyPackages mutates the member, so it must run under the same lock.
+        await withGroupState {
+            if bootstrapped { return }
+            do {
+                try await publishKeyPackages(deviceId: deviceId)
+                bootstrapped = true
+                NSLog("[VOIID] MLS bootstrap: keypackages published")
+            } catch {
+                NSLog("[VOIID] MLS bootstrap keypackage publish failed: \(error)")
+            }
         }
     }
 
     /// Restore the persisted GroupMember, or create a fresh one (first run). A fresh
     /// member has NO groups — only acceptable when there was no prior blob. If restore
     /// of an existing blob fails we recreate (groups are unfortunately lost) rather
-    /// than crash.
+    /// than crash — but ONLY when `memberCreationAllowed`, so the extension degrades to a
+    /// generic notification instead of nuking the app's MLS state on a transient failure.
     private func restoreMember(userId: String, deviceId: String) {
         if member != nil { return }
         let identity = Data("\(userId)::\(deviceId)".utf8)
         if let blob = kc.data(memberBlobName) {
-            do { member = try GroupMember.restore(blob: blob); return }
-            catch { NSLog("[VOIID] MLS member restore failed — recreating (groups lost): \(error)") }
+            do {
+                member = try GroupMember.restore(blob: blob)
+                memberBlobVersion = storedBlobVersion()   // the version this state derives from
+                return
+            } catch {
+                NSLog("[VOIID] MLS member restore failed: \(error)")
+            }
+        }
+        guard memberCreationAllowed else {
+            NSLog("[VOIID] MLS member unavailable and creation not permitted here — skipping")
+            return
         }
         do {
             let m = try GroupMember.create(identity: identity)
             member = m
+            memberBlobVersion = storedBlobVersion()
             persistMember()
             NSLog("[VOIID] MLS member created for \(userId)::\(deviceId)")
         } catch {
@@ -159,6 +237,10 @@ final class GroupEngine {
     /// distribute Welcome (to each new device's user) + Commit (to already-added
     /// members) over /mls/group-events. `memberUserIds` are the OTHER members (not us).
     func createGroup(conversationId: String, memberUserIds: [String]) async {
+        await withGroupState { await createGroupLocked(conversationId: conversationId, memberUserIds: memberUserIds) }
+    }
+
+    private func createGroupLocked(conversationId: String, memberUserIds: [String]) async {
         guard let m = ensureMember() else {
             NSLog("[VOIID] MLS createGroup: no member"); return
         }
@@ -229,6 +311,10 @@ final class GroupEngine {
     /// every member device (all conversation members' devices + our other devices,
     /// excluding this sending device). Appends a local echo so the UI renders it.
     func sendGroupMessage(conversationId: String, text: String) async {
+        await withGroupState { await sendGroupMessageLocked(conversationId: conversationId, text: text) }
+    }
+
+    private func sendGroupMessageLocked(conversationId: String, text: String) async {
         guard let m = ensureMember() else { NSLog("[VOIID] MLS send: no member"); return }
         do {
             let session = try loadSession(conversationId)
@@ -248,11 +334,14 @@ final class GroupEngine {
                                      messages: messages, content_type: "group"))
             // Local echo (we can't decrypt our own MLS output) — use the server id so it
             // dedups against the inbound copy and never double-renders.
+            // A location envelope rides the MLS text plaintext; decode it back so the
+            // sender sees the pin/live bubble immediately (docs/LOCATION.md §4).
+            let loc = LocationWire.decode(text)
             let echo = DecryptedMessage(id: res.message_id,
                                         senderId: TokenStore.shared.userId ?? "me",
-                                        text: text,
+                                        text: loc?.text ?? text,
                                         createdAt: res.created_at.map(parseDate) ?? Date(),
-                                        isMine: true, deliveryStatus: "sent")
+                                        isMine: true, locationJSON: loc?.json, deliveryStatus: "sent")
             ChatEngine.shared.ingestGroupMessage(echo, conversationId: conversationId)
             NSLog("[VOIID] MLS sent id=\(res.message_id) conv=\(conversationId) devices=\(messages.count)")
         } catch {
@@ -276,7 +365,15 @@ final class GroupEngine {
     /// Fetch + process this device's undelivered Welcome/Commit events. A Welcome joins
     /// a new group; a Commit advances an existing one. Failures are logged + skipped so
     /// one bad event never kills the loop. Call BEFORE decrypting app messages.
+    /// NEVER call this from the Notification Service Extension: GET /mls/group-events sets
+    /// `delivered_at` on every one of the caller's undelivered rows on the FIRST fetch, so
+    /// an extension killed by the ~30s watchdog before `persistMember()` loses those
+    /// Welcome/Commit messages forever and the group becomes permanently undecryptable.
     func syncGroupEvents() async {
+        await withGroupState { await syncGroupEventsLocked() }
+    }
+
+    private func syncGroupEventsLocked() async {
         guard let m = ensureMember() else { return }
         let events: [GroupEventIn]
         do {
@@ -341,8 +438,43 @@ final class GroupEngine {
     /// one, and append the plaintext into the shared ChatEngine store (so the chat UI
     /// renders it). Our OWN messages + already-seen ids are skipped; a commit that
     /// somehow rides this path decrypts to nil and is ignored. A failed decrypt is
-    /// logged + skipped — it never kills the sync.
+    /// tombstoned — it never kills the sync.
     func syncGroupMessages(conversationId: String) async {
+        await withGroupState { await decryptInboundLocked(conversationId: conversationId,
+                                                          tombstoneFailures: true) }
+    }
+
+    // MARK: - Notification Service Extension entry point
+
+    /// Decrypt this group's unseen inbound messages IN THE EXTENSION and return the one the
+    /// push is about, or nil to fall back to the generic placeholder.
+    ///
+    /// STRICTLY INBOUND-ONLY. It runs the same locked decrypt-once path as the app, so a
+    /// message decrypted here is marked seen in the shared store and the app will not
+    /// re-decrypt it (double-decrypting one MLS generation is a hard SecretReuseError —
+    /// the key is taken out of `past_secrets`). It deliberately does NOT call
+    /// `syncGroupEvents()`: that endpoint is destructive-on-read and losing a Commit to the
+    /// extension's watchdog would kill the group. A message from an epoch whose Commit we
+    /// haven't applied simply fails to decrypt BEFORE any storage write, so it degrades to
+    /// the placeholder and the app decrypts it properly later.
+    func notificationDecrypt(conversationId: String, messageId: String) async -> DecryptedMessage? {
+        await withGroupState(createMember: false) { () async -> DecryptedMessage? in
+            // Not a group we hold MLS state for (a Welcome we haven't processed yet) —
+            // there is nothing to decrypt with and the extension must not go looking.
+            guard hasGroup(conversationId: conversationId) else { return nil }
+            // No tombstones from here: the extension skips MLS control events by design, so
+            // "I don't have this epoch's Commit yet" is a NORMAL outcome for it. Writing a
+            // "couldn't be decrypted" row for that would put a scary placeholder in the chat
+            // for a message the app decrypts correctly moments later.
+            await decryptInboundLocked(conversationId: conversationId, tombstoneFailures: false)
+            return ChatEngine.shared.storedMessage(id: messageId, conversationId: conversationId)
+        }
+    }
+
+    /// Body of the receive path. Assumes the cross-process lock is held and shared state
+    /// was reloaded (`withGroupState`) — it advances per-sender ratchets and writes the
+    /// member blob, so it must never run unlocked.
+    private func decryptInboundLocked(conversationId: String, tombstoneFailures: Bool) async {
         guard let m = ensureMember() else { return }
         let session: GroupSession
         do { session = try loadSession(conversationId) }
@@ -363,14 +495,32 @@ final class GroupEngine {
                 guard let plain = try session.decrypt(member: m, message: ct) else {
                     persistMember(); continue   // a commit/proposal — applied, no plaintext
                 }
-                persistMember()
+                persistMember()   // FIRST thing after a successful decrypt: the sender
+                                  // ratchet advanced in memory and is lost otherwise
                 let text = String(decoding: plain, as: UTF8.self)
+                // Location control (live_start/stop/rekey) carried over MLS: LocationWire
+                // captures its key + strips it, and renders a clean bubble instead of raw JSON.
+                let loc = LocationWire.decode(text)
                 let decrypted = DecryptedMessage(id: msg.id, senderId: msg.sender_id,
-                                                 text: text, createdAt: parseDate(msg.created_at),
-                                                 isMine: false)
+                                                 text: loc?.text ?? text,
+                                                 createdAt: parseDate(msg.created_at),
+                                                 isMine: false, locationJSON: loc?.json)
                 ChatEngine.shared.ingestGroupMessage(decrypted, conversationId: conversationId)
             } catch {
-                NSLog("[VOIID] MLS decrypt skipped id=\(msg.id) conv=\(conversationId): \(error)")
+                NSLog("[VOIID] MLS decrypt FAILED id=\(msg.id) conv=\(conversationId): \(error)")
+                // TOMBSTONE rather than skip: previously a failed id was never recorded, so
+                // the message left no trace at all and the chat just had a silent hole where
+                // someone had spoken. The record is retryable by design (see
+                // `ChatEngine.storedMessageIds`) — it upgrades to the real text if a later
+                // Commit makes the message decryptable, and otherwise stays a visible
+                // "couldn't be decrypted" placeholder instead of nothing.
+                guard tombstoneFailures else { continue }
+                ChatEngine.shared.ingestGroupMessage(
+                    DecryptedMessage(id: msg.id, senderId: msg.sender_id,
+                                     text: "🔒 Message couldn’t be decrypted",
+                                     createdAt: parseDate(msg.created_at), isMine: false,
+                                     failed: true),
+                    conversationId: conversationId)
             }
         }
     }
@@ -380,6 +530,14 @@ final class GroupEngine {
     /// Add a user's device(s) to an existing group: consume their KeyPackages, add each
     /// via MLS, and distribute Welcome (to them) + Commit (to existing members).
     func addMember(conversationId: String, userId: String, existingMemberUserIds: [String]) async {
+        await withGroupState {
+            await addMemberLocked(conversationId: conversationId, userId: userId,
+                                  existingMemberUserIds: existingMemberUserIds)
+        }
+    }
+
+    private func addMemberLocked(conversationId: String, userId: String,
+                                 existingMemberUserIds: [String]) async {
         guard let m = ensureMember() else { return }
         do {
             let session = try loadSession(conversationId)
@@ -412,6 +570,14 @@ final class GroupEngine {
     /// broadcast it to the remaining members (MLS rekeys so the removed member can't
     /// read later messages).
     func removeMember(conversationId: String, userId: String, remainingMemberUserIds: [String]) async {
+        await withGroupState {
+            await removeMemberLocked(conversationId: conversationId, userId: userId,
+                                     remainingMemberUserIds: remainingMemberUserIds)
+        }
+    }
+
+    private func removeMemberLocked(conversationId: String, userId: String,
+                                    remainingMemberUserIds: [String]) async {
         guard let m = ensureMember() else { return }
         do {
             let session = try loadSession(conversationId)
@@ -536,9 +702,34 @@ final class GroupEngine {
 
     // MARK: - Persistence
 
+    /// Snapshot the whole MLS state back to the shared keychain.
+    ///
+    /// GUARDED WRITE: `serialize()` is a full-state replace, so writing a snapshot taken
+    /// from an older base version would delete whatever the other process committed in
+    /// between — and an erased epoch is unrecoverable (max_past_epochs = 0, and
+    /// /mls/group-events marks events delivered on first read, so the Commit cannot be
+    /// re-fetched). Under `withGroupState` the versions always match; a mismatch means a
+    /// mutation path was added that skipped the lock/reload, and refusing the write turns
+    /// permanent group death into a recoverable "this message didn't stick".
+    ///
+    /// (An MLS epoch counter would be a stronger check than a local write counter, but
+    /// `GroupSession::epoch()` exists only in the Rust core and is not on the uniffi
+    /// surface — see the note in packages/e2e-core/src/group.rs.)
     private func persistMember() {
         guard let m = member, let blob = try? m.serialize() else { return }
-        kc.setData(blob, memberBlobName)
+        let current = storedBlobVersion()
+        guard current == memberBlobVersion else {
+            NSLog("[VOIID] ⛔️ MLS persist REFUSED: blob moved \(memberBlobVersion)→\(current) under us — dropping this write to avoid destroying the other process's epoch")
+            return
+        }
+        kc.setData(blob, memberBlobName)          // data first: a crash before the counter
+        memberBlobVersion = current + 1           // write only costs us a missed detection
+        kc.set(String(memberBlobVersion), memberVersionName)
+    }
+
+    /// The version counter of the blob currently in the keychain (0 when never written).
+    private func storedBlobVersion() -> Int {
+        Int(kc.string(memberVersionName) ?? "") ?? 0
     }
 
     private func loadConvGroups() {
@@ -563,6 +754,7 @@ final class GroupEngine {
         member = nil
         sessions.removeAll()
         convGroups.removeAll()
+        memberBlobVersion = 0        // the counter lived in the wiped service too
         bootstrapped = false
     }
 

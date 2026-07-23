@@ -46,6 +46,13 @@ class CallForegroundService : Service() {
             if (video && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && hasCameraPermission()) {
                 type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
             }
+            // `phoneCall` is the type Android 14+ expects for a Telecom-integrated call, but
+            // it is only legal while a self-managed Connection actually exists — asserting it
+            // otherwise throws. Gated on the live Connection, never on the mere fact that we
+            // hold MANAGE_OWN_CALLS. (The recoverCatching below still covers OEMs that refuse.)
+            if (TelecomBridge.hasActiveConnection) {
+                type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
+            }
             runCatching { startForeground(ONGOING_ID, notif, type) }
                 .recoverCatching { startForeground(ONGOING_ID, notif) }
                 .isSuccess
@@ -155,7 +162,19 @@ class CallForegroundService : Service() {
         }
 
         /** Post the full-screen incoming-call notification (rings over the lockscreen). */
-        fun showIncoming(context: Context, state: CallManager.CallState) {
+        fun showIncoming(context: Context, state: CallManager.CallState) =
+            showIncoming(context, state.peerName, state.kind == CallKind.VIDEO)
+
+        /**
+         * The same ring, addressed by name/kind rather than by [CallManager.CallState].
+         *
+         * Exists because with Telecom adopted the ring is normally posted from
+         * [VoiidConnection.onShowIncomingCallUi] — a binder callback that may run in a
+         * process where the engine has not published its state yet, and which carries its own
+         * copy of the peer name in the ConnectionRequest extras. Same notification, same
+         * channel, same full-screen intent; only the source of the two strings differs.
+         */
+        fun showIncoming(context: Context, peerName: String, video: Boolean) {
             ensureIncomingChannel(context)
 
             val full = Intent(context, MainActivity::class.java).apply {
@@ -168,10 +187,10 @@ class CallForegroundService : Service() {
             val acceptPi = actionIntent(context, ACTION_ACCEPT, 1)
             val declinePi = actionIntent(context, ACTION_DECLINE, 2)
 
-            val kindLabel = if (state.kind == CallKind.VIDEO) "Incoming video call" else "Incoming voice call"
+            val kindLabel = if (video) "Incoming video call" else "Incoming voice call"
             val notif = NotificationCompat.Builder(context, INCOMING_CHANNEL)
                 .setSmallIcon(R.mipmap.ic_launcher)
-                .setContentTitle(state.peerName)
+                .setContentTitle(peerName)
                 .setContentText(kindLabel)
                 .setPriority(NotificationCompat.PRIORITY_MAX)
                 .setCategory(NotificationCompat.CATEGORY_CALL)

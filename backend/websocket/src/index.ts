@@ -18,6 +18,133 @@ const presence = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
 // Publisher for typing/presence fan-out originating from WS frames.
 const pub = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
 
+// --- Pending call-offer buffer ------------------------------------------------------
+// Redis pub/sub is fire-and-forget: an offer published while the callee holds no live
+// socket is gone for good. Since ringing happens out-of-band (VoIP/FCM push), the callee
+// routinely wakes AFTER the offer was published and would otherwise sit on "Connecting"
+// forever. We park the offer in a short-lived per-user hash (call_id -> frame) and flush
+// it the moment that user's socket attaches.
+//
+// TTL is deliberately tight: an offer older than this is a call nobody is still waiting
+// on, and SDP (which carries host IPs) should not linger.
+const OFFER_BUFFER_TTL = Number(process.env.VOIID_CALL_OFFER_TTL_SECONDS) || 60;
+const offersKey = (userId: string) => `call:offers:${userId}`;
+// Per-user buffer of "this call was taken on another of your devices" verdicts. Same
+// lifetime as the offer buffer, and cleared the same two ways (the offer's resolution
+// hdel, or TTL). Exists because the verdict must reach a sibling device that was woken
+// by a VoIP push but has not yet attached its socket — over plain pub/sub it would be
+// lost, and that sibling would post a FALSE missed-call notification for a call the
+// account actually answered.
+const takenKey = (userId: string) => `call:taken:${userId}`;
+
+// --- Live location relay ------------------------------------------------------------
+// Position fixes are ENCRYPTED ON THE SENDER'S DEVICE under a share key this process has
+// never seen (it is distributed to the audience inside an E2EE control message on the
+// message path) and arrive here as an opaque base64 blob. This relay copies that blob
+// and stamps the authenticated sender — it never parses it, never stores it in Postgres,
+// and, exactly like SDP/ICE above, MUST NOT be logged.
+//
+// WHY THE RELAY AND NOT THE MESSAGE PATH: a fix every 10s for 5 recipients x 2 devices is
+// 3,600 wake pushes/hour to the RECIPIENTS' phones plus 1,800 permanent DB rows an hour,
+// for data that is worthless the moment it is stale. So fixes ride the ephemeral relay
+// and nothing else; only the durable start/stop control messages take the message path.
+//
+// SAME BUFFER PROBLEM AS CALL OFFERS, DIFFERENT ANSWER: Redis pub/sub has no persistence,
+// so a fix published while the recipient's socket is down evaporates. We park the LATEST
+// frame per share in a per-user hash. Two deliberate differences from the offer buffer:
+//   * it holds the latest fix only, never a queue — replaying a trail of stale positions
+//     is worse than showing nothing;
+//   * the flush does NOT delete, because a user's SECOND device connecting needs it too
+//     and re-delivering one idempotent latest fix is harmless. The TTL reaps it, and a
+//     `loc_stop` hdels it so a stopped share can never be resurrected from the buffer.
+const LOC_BUFFER_TTL = Number(process.env.VOIID_LOC_BUFFER_TTL_SECONDS) || 300;
+const lastFixKey = (userId: string) => `loc:last:${userId}`;
+
+// Per-socket, per-share token bucket for loc_update. The product cadence is one fix every
+// 10-15s (~4-6/min); 12/min is generous headroom. Excess frames are DROPPED SILENTLY —
+// a flooding stream is a bug or an attack, and dropping an ephemeral fix costs nothing
+// (the next one supersedes it anyway). Without this the relay is an unmetered fan-out
+// amplifier: one frame in, N publishes out.
+const LOC_MAX_FRAMES_PER_WINDOW = 12;
+const LOC_RATE_WINDOW_MS = 60_000;
+// A fix is ~100-160 bytes of plaintext, so a few hundred bytes of base64. The cap keeps
+// the relay from being repurposed as a bulk side-channel for arbitrary data.
+const LOC_MAX_CIPHERTEXT_CHARS = 4096;
+// STRUCTURAL opacity check: the payload must be base64 and nothing else. A JSON object
+// with a plaintext `lat` in it cannot match this alphabet (no `{`, `"`, `:`, `.`, space),
+// so a client that "helpfully" sends raw coordinates is rejected at the door rather than
+// relayed. Cheap, and it means this process can never carry a readable position.
+const LOC_B64_RE = /^[A-Za-z0-9+/=_-]+$/;
+// A conversation share fans out to one conversation; the cap only bounds how much work a
+// single frame can ask this process to do.
+const LOC_MAX_RECIPIENTS = 512;
+
+/**
+ * Deliver any buffered latest-fix frames to a user whose socket just attached.
+ *
+ * Unlike flushPendingOffers this does NOT clear the buffer — see the note above. Frames
+ * are opaque ciphertext; a share the recipient no longer knows about is dropped by the
+ * client, which is where location relay authorization actually lives (this process has
+ * no database and cannot check that a recipient is an authorized target).
+ */
+async function flushPendingLocation(userId: string, ws: WebSocket): Promise<void> {
+  try {
+    const buffered = await pub.hgetall(lastFixKey(userId));
+    for (const frame of Object.values(buffered ?? {})) {
+      if (ws.readyState === WebSocket.OPEN) ws.send(frame);
+    }
+  } catch {
+    // A missed flush degrades to "the marker updates on the next fix", not a dropped socket.
+  }
+}
+
+/**
+ * Deliver (and clear) any offers parked for a user that just connected.
+ *
+ * Safe to replay: clients ignore a duplicate offer for a call they've already attached,
+ * and an offer whose call has since been answered/hung up was deleted at that moment.
+ */
+async function flushPendingOffers(userId: string, ws: WebSocket): Promise<void> {
+  try {
+    const key = offersKey(userId);
+    const pending = await pub.hgetall(key);
+    const frames = Object.values(pending ?? {});
+    if (!frames.length) return;
+    // Deliberately do NOT delete the key here. An account can have several devices, and
+    // EACH must ring — but a device is woken by its own VoIP push and attaches its socket
+    // independently, so they connect at different moments. Draining the buffer on the
+    // first connect (as this used to) left every other device silent. Instead we leave
+    // the offer in place and let it be cleared by the call's resolution (the hdel on
+    // answer/hangup/decline/busy) or by TTL. Re-delivery is safe: clients ignore a
+    // duplicate offer for a call they have already attached (iOS: handleIncomingOffer).
+    for (const frame of frames) {
+      if (ws.readyState === WebSocket.OPEN) ws.send(frame);
+    }
+  } catch {
+    // Never let a Redis hiccup take down the connection — a missed flush degrades to
+    // the pre-existing behaviour (caller times out), not a dropped socket.
+  }
+}
+
+/**
+ * Deliver any "call taken on another device" verdicts parked for a user that just
+ * connected. Same non-draining, replay-safe discipline as flushPendingOffers: several
+ * siblings may each need the verdict, and a client that receives a call_taken for a call
+ * it never knew about simply ignores it.
+ */
+async function flushPendingTaken(userId: string, ws: WebSocket): Promise<void> {
+  try {
+    const pending = await pub.hgetall(takenKey(userId));
+    const frames = Object.values(pending ?? {});
+    for (const frame of frames) {
+      if (ws.readyState === WebSocket.OPEN) ws.send(frame);
+    }
+  } catch {
+    // A missed flush degrades to the pre-existing behaviour (a possible spurious
+    // missed-call banner), never a dropped socket.
+  }
+}
+
 sub.psubscribe('channel:user:*');
 sub.on('pmessage', (_pattern, channel, payload) => {
   const userId = channel.replace('channel:user:', '');
@@ -51,6 +178,20 @@ wss.on('connection', (ws, req) => {
   presence.set(`user:${userId}:online`, '1', 'EX', 60);
   presence.set(`user:${userId}:last_seen`, Date.now().toString());
 
+  // A socket attaching is the ONLY moment a push-woken callee can receive the offer it
+  // slept through. Do it before anything else so the answer path isn't left waiting.
+  void flushPendingOffers(userId, ws);
+  // And any "already taken on your other device" verdict, so a push-woken sibling cancels
+  // its ring / missed-call banner instead of firing a false notification.
+  void flushPendingTaken(userId, ws);
+  // Same reasoning for live location: a recipient woken by a message push attaches after
+  // the fix was published, and would otherwise show nothing until the sender's next one.
+  void flushPendingLocation(userId, ws);
+
+  // loc_update rate state for THIS socket, keyed by share_id. Socket-local so it dies
+  // with the connection — no cross-socket map to leak.
+  const locRate = new Map<string, { count: number; windowStart: number }>();
+
   ws.on('message', (raw) => {
     // Realtime control frames: heartbeat (presence) and typing (Section 10 Redis keys).
     try {
@@ -83,6 +224,87 @@ wss.on('connection', (ws, req) => {
         return;
       }
 
+      // --- Live location relay ----------------------------------------------------
+      // loc_update: { type:'loc_update', share_id, recipient_ids:[...], ciphertext(b64) }
+      // loc_stop:   { type:'loc_stop',   share_id, recipient_ids:[...] }
+      //
+      // `ciphertext` is opaque: encrypted on-device under a share key that never reaches
+      // any server, copied verbatim, never parsed, never logged. The client supplies
+      // recipient_ids because this process has no database — identical to `typing`.
+      //
+      // SECURITY, STATED PLAINLY: sender identity is authoritative (stamped from the JWT,
+      // never echoed from the frame), but this process CANNOT verify that a recipient is
+      // an authorized target of that share — it has no DB. Membership is enforced once,
+      // at POST /location/shares. A malicious client can therefore relay loc_update frames
+      // at arbitrary users and gains nothing: the payload is encrypted under a key those
+      // users do not hold. THE RECEIVING CLIENT MUST DISCARD ANY loc_update WHOSE share_id
+      // IS NOT IN ITS LOCAL INBOUND-SHARE TABLE. That check is the real authorization.
+      if (
+        (msg.type === 'loc_update' || msg.type === 'loc_stop') &&
+        typeof msg.share_id === 'string' &&
+        Array.isArray(msg.recipient_ids)
+      ) {
+        const recipients = msg.recipient_ids.slice(0, LOC_MAX_RECIPIENTS);
+
+        if (msg.type === 'loc_update') {
+          // Opaque-payload gate: base64 only, bounded length. A raw-coordinate JSON body
+          // fails the alphabet test and is dropped instead of relayed.
+          if (
+            typeof msg.ciphertext !== 'string' ||
+            msg.ciphertext.length === 0 ||
+            msg.ciphertext.length > LOC_MAX_CIPHERTEXT_CHARS ||
+            !LOC_B64_RE.test(msg.ciphertext)
+          ) {
+            return;
+          }
+          // Token bucket per share, per socket. Silent drop by design.
+          const now = Date.now();
+          const bucket = locRate.get(msg.share_id);
+          if (!bucket || now - bucket.windowStart >= LOC_RATE_WINDOW_MS) {
+            locRate.set(msg.share_id, { count: 1, windowStart: now });
+          } else if (bucket.count >= LOC_MAX_FRAMES_PER_WINDOW) {
+            return;
+          } else {
+            bucket.count += 1;
+          }
+        }
+
+        // Rebuild from a fixed field list — client extras are never echoed.
+        const out = JSON.stringify(
+          msg.type === 'loc_update'
+            ? {
+                type: 'loc_update',
+                share_id: msg.share_id,
+                from_user_id: userId, // authoritative sender (never client-supplied)
+                ciphertext: msg.ciphertext, // opaque; never parsed, never logged
+                ts: Date.now(),
+              }
+            : {
+                type: 'loc_stop',
+                share_id: msg.share_id,
+                from_user_id: userId,
+                ts: Date.now(),
+              }
+        );
+
+        for (const rid of recipients) {
+          if (typeof rid !== 'string' || rid === userId) continue;
+          pub.publish(`channel:user:${rid}`, out);
+          const key = lastFixKey(rid);
+          if (msg.type === 'loc_update') {
+            // Latest-only: hset overwrites the previous fix for this share rather than
+            // appending, so the buffer can never become a position history.
+            pub.hset(key, msg.share_id, out);
+            pub.expire(key, LOC_BUFFER_TTL);
+          } else {
+            // A stopped share must not be resurrectable from the buffer on reconnect.
+            pub.hdel(key, msg.share_id);
+          }
+        }
+        if (msg.type === 'loc_stop') locRate.delete(msg.share_id);
+        return;
+      }
+
       // --- Call signaling relay (voice/video) ------------------------------------
       // WebRTC signaling is a thin, ephemeral relay: the server forwards opaque SDP
       // and ICE candidates between the two peers and never inspects, stores, or logs
@@ -96,6 +318,13 @@ wss.on('connection', (ws, req) => {
       //
       // NOTE: sdp/candidate can carry host IPs; they are relayed verbatim but MUST
       // NOT be logged (no info-level logging of these frames anywhere here).
+      //
+      // ONE EXCEPTION to "never stored": `call_offer` is buffered in Redis for
+      // OFFER_BUFFER_TTL seconds (see below). Redis pub/sub has no persistence, so an
+      // offer published while the callee has no live socket is dropped forever — the
+      // callee then wakes from a VoIP push, answers, and waits for an offer that no
+      // longer exists (stuck on "Connecting"). The buffer is deleted the moment the
+      // call resolves, and never holds SRTP keys or any message content.
       // `call_ringing` is what lets the CALLER hear a ringback tone. The tone itself
       // is played locally on the caller's device (server-generated ringback would mean
       // streaming audio, which is wrong for a P2P/E2EE app) — this frame only tells the
@@ -133,6 +362,73 @@ wss.on('connection', (ws, req) => {
         // Deliver to the callee's devices (never echo back to the sender).
         if (msg.to_user_id !== userId) {
           pub.publish(`channel:user:${msg.to_user_id}`, out);
+
+          // Buffer the offer so a callee whose socket is down (backgrounded/killed,
+          // about to be woken by the VoIP push) can still get it. We CANNOT decide
+          // "is the callee live?" from publish()'s return value: every WS instance
+          // psubscribes to `channel:user:*`, so that count is the number of INSTANCES,
+          // not of that user's sockets. So buffer unconditionally and let the flush
+          // on connect be idempotent — the clients already ignore a duplicate offer
+          // for a call they've attached (iOS: handleIncomingOffer).
+          if (msg.type === 'call_offer') {
+            const key = offersKey(msg.to_user_id);
+            pub.hset(key, msg.call_id, out);
+            pub.expire(key, OFFER_BUFFER_TTL);
+          }
+          // The call resolved (or died) — drop any buffered offer immediately rather
+          // than letting it sit out its TTL and re-ring a settled call on reconnect.
+          if (
+            msg.type === 'call_answer' ||
+            msg.type === 'call_hangup' ||
+            msg.type === 'call_decline' ||
+            msg.type === 'call_busy'
+          ) {
+            // Clear BOTH directions. An answer/decline/busy comes from the callee, so
+            // the buffered offer sits under the sender's key — but a hangup can come
+            // from EITHER side, and a caller who cancels before the callee wakes must
+            // not leave a live offer in the buffer. If it survived, the callee would
+            // connect within the TTL and get a phantom ring for a call that was already
+            // cancelled. Only one of these keys can hold this call_id, so deleting both
+            // is free.
+            pub.hdel(offersKey(userId), msg.call_id);
+            pub.hdel(offersKey(msg.to_user_id), msg.call_id);
+
+            // …and tell the sender's OWN other devices that this call is settled.
+            //
+            // Call frames are relayed only to the far side, so a user with two
+            // devices had no way to learn that the call they are both ringing for
+            // was taken on the other one: the sibling kept ringing until the CALLER
+            // eventually hung up, and (with client-side missed-call notifications)
+            // then claimed the user had missed a call they actually answered. The
+            // sender's own socket also receives this; clients ignore it for the call
+            // they themselves resolved.
+            //
+            // Only for the CALLEE's verdict (answer/decline/busy). A `call_hangup` can
+            // come from either side and never means "a sibling took the ringing call".
+            if (msg.type !== 'call_hangup') {
+              // Preserve the real cause. `busy` is NOT `decline`: it means one of the
+              // user's devices was already on a call, not that they refused this one —
+              // and the sibling's missed-call logic may treat those differently.
+              const reason =
+                msg.type === 'call_answer' ? 'answer'
+                : msg.type === 'call_busy' ? 'busy'
+                : 'decline';
+              const takenFrame = JSON.stringify({
+                type: 'call_taken',
+                call_id: msg.call_id,
+                from_user_id: userId,
+                reason,
+              });
+              // Live siblings hear it immediately…
+              pub.publish(`channel:user:${userId}`, takenFrame);
+              // …and one still asleep (VoIP-pushed, not yet connected) gets it on attach,
+              // so it cancels its ring/banner instead of reporting a false missed call.
+              // Keyed by call_id so a later resolution of the SAME call overwrites rather
+              // than duplicates; cleared by TTL.
+              pub.hset(takenKey(userId), msg.call_id, takenFrame);
+              pub.expire(takenKey(userId), OFFER_BUFFER_TTL);
+            }
+          }
         }
         return;
       }

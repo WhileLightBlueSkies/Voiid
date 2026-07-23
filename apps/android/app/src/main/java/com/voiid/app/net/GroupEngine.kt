@@ -326,6 +326,34 @@ class GroupEngine private constructor(context: Context) {
         }
     }
 
+    /**
+     * Send a location-protocol control envelope (docs/LOCATION.md P2 — live_start / live_stop /
+     * live_rekey) into a GROUP over MLS. Same fan-out as [sendGroupMessage] but with NO local
+     * echo (the location engine owns the sender's own bubble) and no bubble on receipt: the
+     * `_vloc` plaintext is intercepted in [receiveGroupMessages] and handed to [LocationRelay].
+     * [envelopeJson] carries the shareKey for a live_start and never leaves E2E.
+     */
+    suspend fun sendGroupLocationControl(conversationId: String, envelopeJson: String) = withContext(Dispatchers.IO) {
+        lock.withLock<Unit> {
+            val m = ensureMemberLocked()
+            val gid = groupIds[conversationId] ?: run {
+                Log.w("VOIID", "MLS: location send — no local group for conv=$conversationId"); return@withLock
+            }
+            val session = m.loadGroup(gid)
+            val ciphertext = session.encrypt(m, envelopeJson.toByteArray())
+            persistMemberLocked(m)   // encrypt advanced the ratchet → state changed
+            val ctB64 = Base64.encodeToString(ciphertext, Base64.NO_WRAP)
+            val targets = resolveGroupTargetDevices(conversationId)
+            if (targets.isEmpty()) { Log.w("VOIID", "MLS: location send — no target devices"); return@withLock }
+            val bundle = targets.map { DeviceCiphertext(it.deviceId, ctB64) }
+            val body = ApiClient.json.encodeToString(
+                SendBundleBody.serializer(),
+                SendBundleBody(conversationId, e2e.deviceId, bundle, content_type = "group"))
+            runCatching { api.request("POST", "messages/send", jsonBody = body) }
+                .onFailure { Log.e("VOIID", "MLS: group location send failed", it) }
+        }
+    }
+
     private data class TargetDevice(val userId: String, val deviceId: String)
 
     /** Every member device of the conversation EXCEPT this sending device. */
@@ -418,7 +446,17 @@ class GroupEngine private constructor(context: Context) {
                         .onSuccess { plain ->
                             persistMemberLocked(m)   // decrypt advanced the ratchet → state changed
                             if (plain != null) {
-                                chat.storeGroupInbound(conversationId, msg.id, msg.sender_id, plain.decodeToString(), createdAt)
+                                val text = plain.decodeToString()
+                                // A location-protocol control envelope (docs/LOCATION.md P2) rides the
+                                // MLS app channel just like text, tagged only by its `_vloc` marker
+                                // (group content_type is always "group"). Route it to the location
+                                // engine via the shared seam instead of a chat bubble; the engine
+                                // renders the pin/live bubble itself.
+                                if (LocationRelay.looksLikeEnvelope(text)) {
+                                    LocationRelay.dispatchControl(text, msg.sender_id, conversationId)
+                                } else {
+                                    chat.storeGroupInbound(conversationId, msg.id, msg.sender_id, text, createdAt)
+                                }
                                 Log.i("VOIID", "MLS: decrypted group msg id=${msg.id}")
                             } // null = a commit rode the app channel; nothing to show
                         }

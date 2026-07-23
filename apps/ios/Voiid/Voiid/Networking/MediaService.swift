@@ -45,6 +45,18 @@ final class MediaService {
         return presign.key
     }
 
+    /// Profile photo upload.
+    ///
+    /// Deliberately NOT E2E encrypted, unlike message media: an avatar has to be
+    /// viewable by everyone you talk to, and there is no shared per-conversation key
+    /// to wrap it with. It rides the same presigned-PUT path, so the bytes still land
+    /// in our R2 bucket and are only reachable through a short-lived signed URL.
+    ///
+    /// Returns the opaque object key, which is what gets stored as `photo_url`.
+    func uploadProfilePhoto(_ imageData: Data, mime: String = "image/jpeg") async throws -> String {
+        try await upload(ciphertext: imageData, mime: mime)
+    }
+
     /// Encrypted download: get a presigned GET for `key`, fetch the ciphertext.
     func download(key: String) async throws -> Data {
         let presign: PresignDownloadResp = try await api.request(

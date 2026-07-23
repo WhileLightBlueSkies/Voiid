@@ -64,6 +64,7 @@ class MainActivity : ComponentActivity() {
         }
         // A notification tap (cold start) delivers the conversation id here.
         handleDeepLink(intent)
+        ensureContactsAccount()
         setContent {
             VoiidTheme {
                 CompositionLocalProvider(LocalVoiidHaptics provides rememberVoiidHaptics()) {
@@ -113,6 +114,19 @@ class MainActivity : ComponentActivity() {
         if (!inPip) com.voiid.app.net.CallManager.onHostBackground()
     }
 
+    /**
+     * Create the "Voiid" account that the contact-card rows hang off, once the user is
+     * actually signed in.
+     *
+     * Idempotent and free after the first launch. Deliberately gated on being signed in: an
+     * account appearing in Settings > Accounts before the user has even logged in would be
+     * both confusing and useless (there would be no peers to write rows for).
+     */
+    private fun ensureContactsAccount() {
+        if (com.voiid.app.net.TokenStore.get(this).jwt == null) return
+        runCatching { com.voiid.app.contacts.VoiidAccountManager.ensureAccount(this) }
+    }
+
     private fun handleDeepLink(intent: Intent?) {
         intent?.getStringExtra(DeepLinkRouter.EXTRA_CONVERSATION_ID)?.let { DeepLinkRouter.open(it) }
     }
@@ -122,6 +136,14 @@ class MainActivity : ComponentActivity() {
         val perms = mutableListOf(
             android.Manifest.permission.RECORD_AUDIO,
             android.Manifest.permission.CAMERA,
+            // Contact-card integration: the "Voice call (Voiid)" / "Video call (Voiid)" rows
+            // are RawContacts we write into the address book. Same CONTACTS group as the
+            // already-requested READ_CONTACTS, so it normally rides along silently; a refusal
+            // means no rows and nothing else. Re-asked here (as well as on the onboarding
+            // permissions screen) so users who installed before this feature existed get the
+            // chance to grant it. MANAGE_OWN_CALLS and FOREGROUND_SERVICE_PHONE_CALL are
+            // install-time and need no code.
+            android.Manifest.permission.WRITE_CONTACTS,
         )
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
             perms.add(android.Manifest.permission.POST_NOTIFICATIONS)
@@ -150,6 +172,7 @@ private fun VoiidRoot() {
     val chat: ChatStore = viewModel()
     val ai: AIStore = viewModel()
     val clips: ClipsStore = viewModel()
+    val stories: com.voiid.app.model.StoriesStore = viewModel()
     val context = LocalContext.current
 
     // Fetch remote config on launch (version negotiation + feature flags + force-update).
@@ -164,7 +187,7 @@ private fun VoiidRoot() {
     Crossfade(targetState = session.route, animationSpec = tween(350), label = "rootRoute") { route ->
         when (route) {
             AppRoute.ONBOARDING -> OnboardingFlow(session)
-            AppRoute.MAIN -> MainScreen(chat, ai, clips)
+            AppRoute.MAIN -> MainScreen(chat, ai, clips, stories)
         }
     }
 }

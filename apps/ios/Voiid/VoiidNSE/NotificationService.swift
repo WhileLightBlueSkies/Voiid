@@ -14,6 +14,9 @@
 //  keychain session state + app-group message store + an flock single-writer lock).
 //  A message decrypted here is marked seen in the shared store, so the app never
 //  re-decrypts it (and vice-versa) — the Double Ratchet is advanced exactly once.
+//  Group conversations take the MLS branch (GroupEngine) under the same lock, and are
+//  strictly inbound-only there: the extension never fetches MLS control events, because
+//  that endpoint marks them delivered on read and a watchdog kill would lose them.
 //
 //  On ANY failure or timeout we fall back to the generic placeholder — never crash,
 //  never leak. The extension has a hard ~30s budget; we self-impose a shorter one.

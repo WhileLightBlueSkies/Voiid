@@ -263,7 +263,9 @@ struct CallScreen: View {
         if isRealOneToOne {
             // Outgoing: no active call yet → place it. Incoming: already active → just observe.
             if call.active == nil, let peer = request.peerUserId {
-                call.startCall(peerUserId: peer, title: request.title, isVideo: request.kind == .video)
+                call.startCall(peerUserId: peer, title: request.title,
+                               isVideo: request.kind == .video,
+                               conversationId: request.conversationId)
             }
         } else {
             startCall()   // group: simulated
@@ -412,12 +414,10 @@ struct CallScreen: View {
                     ctrl("arrow.triangle.2.circlepath.camera.fill", false) {
                         if isRealOneToOne { call.switchCamera() }
                     }
-                } else {
-                    let spk = isRealOneToOne ? call.speakerOn : speaker
-                    ctrl(spk ? "speaker.wave.2.fill" : "speaker.fill", spk) {
-                        if isRealOneToOne { call.toggleSpeaker() } else { speaker.toggle() }
-                    }
                 }
+                // Audio-route control on EVERY call, voice and video alike — a video call
+                // needs to reach AirPods just as much as a voice call does.
+                audioRouteControl(isRealOneToOne: isRealOneToOne)
                 if showHold {
                     ctrl(call.isOnHold ? "play.fill" : "pause.fill", call.isOnHold) {
                         call.toggleHold()
@@ -434,6 +434,51 @@ struct CallScreen: View {
 
     private func endTapped() {
         if isRealOneToOne { call.hangUp() } else { dismiss() }
+    }
+
+    /// Audio-output control.
+    ///
+    /// With only earpiece + speaker available it is a plain speaker toggle (unchanged
+    /// behaviour). The moment a Bluetooth or wired device is connected it becomes a Menu
+    /// listing every route with the live one checked — so the user can send the call to
+    /// their headset, or pull it back to the phone, on any call type.
+    ///
+    /// Group calls route through LiveKit, not CallService's session, so they keep the simple
+    /// local speaker toggle.
+    @ViewBuilder
+    private func audioRouteControl(isRealOneToOne: Bool) -> some View {
+        if isRealOneToOne {
+            let routes = call.audioRoutes
+            let current = call.currentRoute
+            if routes.count > 2 {
+                Menu {
+                    ForEach(routes) { route in
+                        Button {
+                            Haptics.tap(); call.selectAudioRoute(route)
+                        } label: {
+                            Label(route.label, systemImage: route == current ? "checkmark" : route.symbol)
+                        }
+                    }
+                } label: {
+                    routeGlyph(current.symbol, active: current != .earpiece)
+                }
+                .simultaneousGesture(TapGesture().onEnded { Haptics.tap() })
+            } else {
+                ctrl(current == .speaker ? "speaker.wave.2.fill" : "speaker.fill",
+                     current == .speaker) { call.toggleSpeaker() }
+            }
+        } else {
+            ctrl(speaker ? "speaker.wave.2.fill" : "speaker.fill", speaker) { speaker.toggle() }
+        }
+    }
+
+    /// The `ctrl` chrome without a Button, so it can back a Menu label.
+    private func routeGlyph(_ icon: String, active: Bool) -> some View {
+        Image(systemName: icon).font(.system(size: 22))
+            .foregroundColor(active ? VoiidColor.primary : (request.kind == .video ? .white : VoiidColor.textPrimary))
+            .frame(width: 58, height: 58)
+            .background(active ? VoiidColor.textOnPrimary : (request.kind == .video ? .white.opacity(0.2) : VoiidColor.surfaceCard))
+            .clipShape(Circle())
     }
 
     private func ctrl(_ icon: String, _ active: Bool, _ tap: @escaping () -> Void) -> some View {

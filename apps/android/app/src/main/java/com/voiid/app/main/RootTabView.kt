@@ -15,6 +15,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -59,6 +60,10 @@ import com.voiid.app.ui.theme.VoiidFont
 private enum class Tab(val asset: Int, val label: String) {
     AI(R.drawable.tab_ai, "AI"),
     CHAT(R.drawable.tab_chats, "Chats"),
+    STORIES(R.drawable.tab_stories, "Stories"),   // right of Chats — chat-adjacent (replies land in chats)
+    // Order MUST match iOS RootTabView.swift (AI · Chats · Stories · Map · Clips) so the two apps
+    // feel like one product — Map sits between Stories and Clips, not tacked on after Clips.
+    MAP(R.drawable.tab_map, "Map"),   // Feature (B) — the Map (docs/LOCATION.md §7)
     CLIPS(R.drawable.tab_clips, "Clips"),
 }
 
@@ -67,11 +72,22 @@ private enum class Tab(val asset: Int, val label: String) {
  * (chat detail, clip fullscreen). Port of `RootTabView.swift` + iOS navigation behaviour.
  */
 @Composable
-fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore) {
+fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voiid.app.model.StoriesStore) {
     var tab by remember { mutableStateOf(Tab.CHAT) }
     var openConversation by remember { mutableStateOf<VConversation?>(null) }
     var openClip by remember { mutableStateOf<VClip?>(null) }
     var showNewClip by remember { mutableStateOf(false) }
+    // Stories viewer + composer are full-screen overlay siblings (they must cover the tab bar),
+    // driven by nullable state exactly like the clip overlay above.
+    var openStoryContext by remember { mutableStateOf<Int?>(null) }
+    var showStoryComposer by remember { mutableStateOf(false) }
+
+    // Feature (B) — the Map. Its store (allow-list, ghost state, subjects) is a ViewModel so
+    // the Map surface can observe it the Compose way; the underlying engine is a singleton.
+    val map: com.voiid.app.model.MapStore = androidx.lifecycle.viewmodel.compose.viewModel()
+    // The Map tab icon carries a filled accent dot whenever you are VISIBLE — a persistent
+    // indicator reachable from every screen (§8). Long-pressing the tab is the kill switch.
+    val mapVisibility by map.visibility.collectAsState()
 
     // Real 1:1 WebRTC calls: init the engine once, observe live call state.
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -104,10 +120,22 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore) {
                 when (tab) {
                     Tab.CHAT -> ChatsHomeView(chat, onOpenConversation = { openConversation = it }, onStartCall = startCall)
                     Tab.AI -> AIChatView(ai)
+                    Tab.STORIES -> com.voiid.app.main.stories.StoriesHomeView(
+                        stories,
+                        onOpenContext = { openStoryContext = it },
+                        onCompose = { showStoryComposer = true },
+                    )
                     Tab.CLIPS -> ClipsFeedView(clips, onOpenClip = { openClip = it }, onNewClip = { showNewClip = true })
+                    Tab.MAP -> MapTabView(map, chat)
                 }
             }
-            TabBar(tab) { tab = it }
+            TabBar(
+                selected = tab,
+                mapVisible = mapVisibility == com.voiid.app.model.MapVisibility.VISIBLE,
+                storiesUnread = stories.hasUnread,
+                onLongPressMap = { map.killSwitch() },
+                onSelect = { tab = it },
+            )
         }
 
         // Chat detail — slides in over everything (covers the tab bar), like the iOS push.
@@ -136,6 +164,22 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore) {
             }
         }
 
+        // Story viewer — full-screen cover (must sit over the tab bar), matching openClip.
+        AnimatedVisibility(
+            visible = openStoryContext != null,
+            enter = slideInVertically { it } + fadeIn(),
+            exit = slideOutVertically { it } + fadeOut(),
+        ) {
+            openStoryContext?.let { start ->
+                com.voiid.app.main.stories.StoryViewerView(
+                    contexts = stories.contexts.toList(),
+                    startContextIndex = start,
+                    stories = stories,
+                    onClose = { openStoryContext = null },
+                )
+            }
+        }
+
         // Call surface — real WebRTC call, full-screen cover on top of everything.
         AnimatedVisibility(
             visible = callState != null,
@@ -159,10 +203,19 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore) {
     if (showNewClip) {
         NewClipSheet(onDismiss = { showNewClip = false })
     }
+    if (showStoryComposer) {
+        com.voiid.app.main.stories.StoryComposerSheet(stories = stories, onDismiss = { showStoryComposer = false })
+    }
 }
 
 @Composable
-private fun TabBar(selected: Tab, onSelect: (Tab) -> Unit) {
+private fun TabBar(
+    selected: Tab,
+    mapVisible: Boolean,
+    storiesUnread: Boolean,
+    onLongPressMap: () -> Unit,
+    onSelect: (Tab) -> Unit,
+) {
     val haptics = LocalVoiidHaptics.current
     Column(
         Modifier
@@ -174,7 +227,9 @@ private fun TabBar(selected: Tab, onSelect: (Tab) -> Unit) {
         BoxWithConstraints(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 8.dp, bottom = 4.dp),
         ) {
-            val slot = maxWidth / 3
+            // Divide by the ACTUAL tab count — the Row below lays tabs out with weight(1f), so a
+            // hardcoded /3 silently misaligns the sliding pill the moment a 4th tab (Map) exists.
+            val slot = maxWidth / Tab.entries.size
             val pillW = 54.dp
             val activeIndex = selected.ordinal
             val leftTarget = slot * activeIndex + (slot - pillW) / 2
@@ -201,23 +256,38 @@ private fun TabBar(selected: Tab, onSelect: (Tab) -> Unit) {
             )
             Row(Modifier.fillMaxWidth()) {
                 Tab.entries.forEach { t ->
-                    TabItem(t, active = selected == t, modifier = Modifier.weight(1f)) {
-                        haptics.selection(); onSelect(t)
-                    }
+                    TabItem(
+                        t,
+                        active = selected == t,
+                        // Reuse the generic tab dot: accent when you're visible on the Map, or when
+                        // any unexpired unviewed story exists (one home, one unread truth — no rail).
+                        showVisibleDot = (t == Tab.MAP && mapVisible) || (t == Tab.STORIES && storiesUnread),
+                        onLongPress = if (t == Tab.MAP) onLongPressMap else null,
+                        modifier = Modifier.weight(1f),
+                    ) { haptics.selection(); onSelect(t) }
                 }
             }
         }
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun TabItem(t: Tab, active: Boolean, modifier: Modifier, onClick: () -> Unit) {
+private fun TabItem(
+    t: Tab,
+    active: Boolean,
+    showVisibleDot: Boolean,
+    onLongPress: (() -> Unit)?,
+    modifier: Modifier,
+    onClick: () -> Unit,
+) {
     val iconScale by animateFloatAsState(if (active) 1.12f else 1f, spring(dampingRatio = 0.55f), label = "tabIcon")
     Column(
-        modifier = modifier.clickable(
+        modifier = modifier.combinedClickable(
             interactionSource = remember { MutableInteractionSource() },
             indication = null,
             onClick = onClick,
+            onLongClick = onLongPress,
         ),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -229,6 +299,18 @@ private fun TabItem(t: Tab, active: Boolean, modifier: Modifier, onClick: () -> 
                 contentScale = ContentScale.Fit,
                 colorFilter = ColorFilter.tint(if (active) VoiidColor.primary else VoiidColor.textSecondary),
             )
+            // Persistent visibility indicator: a filled accent dot whenever you appear on the
+            // Map. Visible from every screen, so being visible is never something you forget.
+            if (showVisibleDot) {
+                Box(
+                    Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(x = 4.dp, y = (-2).dp)
+                        .size(9.dp)
+                        .clip(androidx.compose.foundation.shape.CircleShape)
+                        .background(VoiidColor.primary),
+                )
+            }
         }
         Spacer(Modifier.height(6.dp))
         androidx.compose.material3.Text(

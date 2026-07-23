@@ -26,9 +26,20 @@ export const OFFLINE_TTL_MS = 2419200000; // 28 days
 export const VOIP_TTL_SECONDS = 30;
 
 /**
+ * A story is dead after 24h, so holding its wake push for the default 28 days is
+ * wrong twice over: the device would be woken to fetch a story the feed query has
+ * already filtered out (`expires_at > now()`), and the push would sit in Apple's /
+ * Google's queue long after the content it refers to stopped existing. Per-type TTLs
+ * are established practice here — VOIP_TTL_SECONDS above is the precedent.
+ */
+export const STORY_TTL_SECONDS = 86400; // 24h — matches stories.expires_at
+
+/**
  * The complete set of keys allowed to leave the server in ANY push payload, at any
- * nesting level. Tests assert payloads against this; anything new must be added here
- * deliberately (and must be a non-secret routing identifier).
+ * nesting level. Tests assert payloads against this (test/pushPayload.test.ts);
+ * anything new must be added here deliberately (and must be a non-secret routing
+ * identifier). A caption, thumbnail, author display name, or any part of a story
+ * envelope belongs NOWHERE in this list.
  */
 export const ALLOWED_PUSH_KEYS = [
   'aps',
@@ -42,7 +53,17 @@ export const ALLOWED_PUSH_KEYS = [
   'call_id',
   'call_kind',
   'caller_id',
+  'story_id',
 ] as const;
+
+/**
+ * Offline hold time for a wake push, in seconds, by notification type. Shared by the
+ * APNs `apns-expiration` header and the FCM `ttl`, so the two transports cannot drift.
+ */
+export function wakeTtlSeconds(meta?: PushMeta): number {
+  if (meta?.type === 'story') return STORY_TTL_SECONDS;
+  return Math.floor(OFFLINE_TTL_MS / 1000);
+}
 
 /**
  * FCM data-only wake payload. No `notification` block => the OS hands it silently to
@@ -57,6 +78,9 @@ export function buildFcmData(meta?: PushMeta): Record<string, string> {
   if (meta?.call_id) data.call_id = meta.call_id;
   if (meta?.call_kind) data.call_kind = meta.call_kind;
   if (meta?.caller_id) data.caller_id = meta.caller_id;
+  // Story routing (non-secret): the woken client calls GET /stories/feed and pulls
+  // its own encrypted key envelope. NOTHING about the story's content ships here.
+  if (meta?.story_id) data.story_id = meta.story_id;
   return data;
 }
 
@@ -67,12 +91,17 @@ export function buildFcmData(meta?: PushMeta): Record<string, string> {
  * here is a generic constant and never carries a sender or a body.
  */
 export function buildApnsAlertPayload(meta?: PushMeta): Record<string, unknown> {
-  const isCall = meta?.type === 'call';
+  // Constant placeholder per type — never an author name, caption, or thumbnail.
+  // "New update" for a story is deliberately vague: the NSE replaces it after it has
+  // fetched and decrypted the envelope LOCALLY, so the only string Apple ever sees is
+  // this one, identical for every story from every author.
+  const title =
+    meta?.type === 'call' ? 'Incoming call' : meta?.type === 'story' ? 'New update' : 'New message';
   const payload: Record<string, unknown> = {
     aps: {
       'mutable-content': 1,
       // Generic placeholder title (no sender/content); the NSE replaces it.
-      alert: { title: isCall ? 'Incoming call' : 'New message' },
+      alert: { title },
       sound: 'default',
     },
   };
@@ -82,6 +111,7 @@ export function buildApnsAlertPayload(meta?: PushMeta): Record<string, unknown> 
   if (meta?.call_id) payload.call_id = meta.call_id;
   if (meta?.call_kind) payload.call_kind = meta.call_kind;
   if (meta?.caller_id) payload.caller_id = meta.caller_id;
+  if (meta?.story_id) payload.story_id = meta.story_id;
   return payload;
 }
 
@@ -100,14 +130,19 @@ export function buildVoipPayload(meta?: PushMeta): Record<string, unknown> {
 
 export type ApnsHeaders = Record<string, string>;
 
-/** APNs HTTP/2 headers for the alert path: 28-day expiry, `alert` push type. */
+/**
+ * APNs HTTP/2 headers for the alert path: `alert` push type, and a PER-TYPE expiry —
+ * 28 days for a message wake, 24h for a story (see wakeTtlSeconds). Passing `meta` is
+ * optional so existing callers keep the 28-day behaviour byte for byte.
+ */
 export function buildApnsAlertHeaders(args: {
   token: string;
   auth: string;
   topic: string;
   nowMs?: number;
+  meta?: PushMeta;
 }): ApnsHeaders {
-  const expiration = Math.floor(((args.nowMs ?? Date.now()) + OFFLINE_TTL_MS) / 1000);
+  const expiration = Math.floor((args.nowMs ?? Date.now()) / 1000) + wakeTtlSeconds(args.meta);
   return {
     ':method': 'POST',
     ':path': `/3/device/${args.token}`,

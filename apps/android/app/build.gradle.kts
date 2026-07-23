@@ -4,6 +4,7 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.google.services)
+    alias(libs.plugins.ksp)          // Room’s annotation processor
 }
 
 android {
@@ -19,6 +20,21 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
+
+        // Maps API key is a BUILD-TIME secret supplied by the developer, never committed.
+        // Sources, in order: -PMAPS_API_KEY, local.properties (Gradle folds that file into
+        // project properties), MAPS_API_KEY env var.
+        //
+        // An absent key is a SUPPORTED state, not a build failure: with an empty key the
+        // Maps SDK renders a blank grey tile grid and logs an auth error nobody sees, which
+        // is worse than no map at all. MAPS_CONFIGURED lets the UI refuse to instantiate
+        // GoogleMap and render an explicit "Maps aren't set up in this build" card instead,
+        // while location sharing itself keeps working end to end (coordinates + Open in Maps).
+        // See docs/LOCATION.md §7.
+        val mapsKey = (project.findProperty("MAPS_API_KEY") as String?)
+            ?: System.getenv("MAPS_API_KEY").orEmpty()
+        manifestPlaceholders["MAPS_API_KEY"] = mapsKey
+        buildConfigField("boolean", "MAPS_CONFIGURED", mapsKey.isNotBlank().toString())
     }
 
     buildTypes {
@@ -108,6 +124,19 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.security.crypto)
 
+    // Room — the local-first SQLite store (users / conversations / messages /
+    // call_history). The UI reads THIS; the network is a sync peer, not the store.
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+    ksp(libs.androidx.room.compiler)
+
+    // CameraX — in-app story capture. NSCameraUsageDescription / the CAMERA permission are
+    // already declared and requested at onboarding, so no permission plumbing changes.
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
+
     // Firebase Phone Auth (OTP sender/verifier on-device)
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.auth)
@@ -121,6 +150,13 @@ dependencies {
     // GoogleAuthUtil (in play-services-auth-base) mints the OAuth access token; the Drive
     // v3 REST transfer itself rides the existing OkHttp (no heavy Drive client library).
     implementation(libs.play.services.auth)
+
+    // Location sharing (docs/LOCATION.md). Fused provider for the fixes, Maps SDK +
+    // Maps Compose for the bubble thumbnail (lite mode) and the detail map. ~300 KB on a
+    // ~140 MB APK, and GMS is already a dependency of Firebase/auth above.
+    implementation(libs.play.services.location)
+    implementation(libs.play.services.maps)
+    implementation(libs.maps.compose)
 
     // E2E core (Rust via uniffi). The generated Kotlin in uniffi/voiid/voiid.kt
     // uses JNA to call into jniLibs/<abi>/libvoiid_e2e_core.so. Must be the @aar

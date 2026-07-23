@@ -41,6 +41,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronLeft
@@ -114,6 +115,7 @@ fun ChatDetailView(
 
     // sheets / dialogs
     var showPollCompose by remember { mutableStateOf(false) }
+    var showLocation by remember { mutableStateOf(false) }
     var infoMessage by remember { mutableStateOf<VMessage?>(null) }
     var forwardMessage by remember { mutableStateOf<VMessage?>(null) }
     var deleteMessage by remember { mutableStateOf<VMessage?>(null) }
@@ -166,6 +168,9 @@ fun ChatDetailView(
 
     // Load cached + sync (fetch + decrypt) the real E2EE messages on open.
     LaunchedEffect(conversation.id) { chat.openConversation(conversation) }
+
+    // Location: wire the relay seam + reconcile any live shares for this chat (docs/LOCATION.md).
+    LaunchedEffect(conversation.id) { com.voiid.app.net.LocationShareEngine.refresh(context) }
 
     // Poll the conversation while open — fetch+decrypt new messages, send receipts,
     // refresh presence — so delivery doesn't depend on the (sometimes-dropped) WS push.
@@ -269,6 +274,9 @@ fun ChatDetailView(
                     }
                 }
             }
+
+            // Persistent "sharing live location" banner for THIS chat (docs/LOCATION.md §8.A).
+            LocationBanner(conversationId = conversation.id)
 
             // Messages
             LazyColumn(
@@ -381,6 +389,11 @@ fun ChatDetailView(
                                 },
                                 leadingIcon = { Icon(Icons.Default.Photo, null) },
                             )
+                            DropdownMenuItem(
+                                text = { Text("Location") },
+                                onClick = { showAttach = false; showLocation = true },
+                                leadingIcon = { Icon(Icons.Default.LocationOn, null) },
+                            )
                             if (isGroup) {
                                 DropdownMenuItem(
                                     text = { Text("Poll") },
@@ -434,6 +447,9 @@ fun ChatDetailView(
     // Sheets
     if (showPollCompose) {
         PollComposeSheet(onSend = { q, opts -> chat.sendPoll(q, opts, conversation.id) }, onDismiss = { showPollCompose = false })
+    }
+    if (showLocation) {
+        LocationComposeSheet(conv = conversation, onDismiss = { showLocation = false })
     }
     infoMessage?.let { m ->
         MessageInfoSheet(message = m, isGroup = isGroup, onDismiss = { infoMessage = null })

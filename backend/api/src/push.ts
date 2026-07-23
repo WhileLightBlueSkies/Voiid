@@ -19,7 +19,7 @@ import jwt from 'jsonwebtoken';
 import { getFirebaseAdminApp } from './firebase';
 import { query } from './db';
 import {
-  OFFLINE_TTL_MS,
+  wakeTtlSeconds,
   buildFcmData,
   buildApnsAlertPayload,
   buildApnsAlertHeaders,
@@ -50,10 +50,15 @@ export interface PushMeta {
   // Call ring routing (Section 4.14): NON-SECRET identifiers only, so a
   // backgrounded/offline callee wakes and shows the incoming-call UI. No SDP,
   // no ICE, no SRTP keys, no media — signaling stays on the WS/E2E path.
-  type?: string; // 'wake' (default) | 'call'
+  type?: string; // 'wake' (default) | 'call' | 'story'
   call_id?: string;
   call_kind?: string; // 'voice' | 'video'
   caller_id?: string;
+  // Story routing (Section 4.14): a NON-SECRET identifier so a woken device knows to
+  // call GET /stories/feed and pull ITS OWN encrypted key envelope. A caption,
+  // thumbnail, author display name, media key, or R2 key here is a privacy-rule
+  // violation and must be rejected in review.
+  story_id?: string;
 }
 
 // --- APNs config (token-based .p8 auth over HTTP/2) --------------------------------
@@ -132,8 +137,10 @@ async function sendFcmWake(tokens: string[], meta?: PushMeta): Promise<void> {
     const resp = await getMessaging(app).sendEachForMulticast({
       tokens,
       data,
-      // TTL: hold the wake for an offline device and deliver on reconnect (28d max).
-      android: { priority: 'high', ttl: OFFLINE_TTL_MS },
+      // TTL: hold the wake for an offline device and deliver on reconnect. PER TYPE —
+      // 28d (FCM's max) for a message, 24h for a story, so a story wake expires with
+      // the story instead of waking a device to fetch something already filtered out.
+      android: { priority: 'high', ttl: wakeTtlSeconds(meta) * 1000 },
     });
     resp.responses.forEach((r, i) => {
       if (r.success) return;
@@ -216,13 +223,13 @@ async function sendApnsWake(tokens: string[], meta?: PushMeta): Promise<void> {
  */
 function apnsSendOne(token: string, auth: string, meta?: PushMeta): Promise<void> {
   return new Promise((resolve) => {
-    // Offline TTL: hold the alert for up to 28 days and deliver on reconnect (absolute
-    // UNIX epoch seconds, per APNs `apns-expiration` semantics).
+    // Offline TTL: hold the alert for up to 28 days (24h for a story) and deliver on
+    // reconnect (absolute UNIX epoch seconds, per APNs `apns-expiration` semantics).
     let req: http2.ClientHttp2Stream;
     try {
       const session = getApnsSession();
       req = session.request(
-        buildApnsAlertHeaders({ token, auth, topic: APNS_BUNDLE_ID as string })
+        buildApnsAlertHeaders({ token, auth, topic: APNS_BUNDLE_ID as string, meta })
       );
     } catch (e) {
       console.warn('[push] apns request setup failed:', (e as Error).message);

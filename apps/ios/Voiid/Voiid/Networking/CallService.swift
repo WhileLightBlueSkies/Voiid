@@ -22,6 +22,7 @@
 //
 
 import Foundation
+import CallKit
 import Combine
 import WebRTC
 import AVFoundation
@@ -49,6 +50,11 @@ struct ActiveCall: Identifiable, Equatable {
     let isVideo: Bool
     let isOutgoing: Bool
     var state: CallState
+    /// The conversation this call belongs to, when we know it. Carried on the call
+    /// because three separate things downstream are keyed by conversation and not by
+    /// user: `POST /calls/ring`, the local call-history row, and the missed-call
+    /// notification's thread + tap deep-link.
+    var conversationId: String?
 }
 
 @MainActor
@@ -59,6 +65,11 @@ final class CallService: NSObject, ObservableObject {
     @Published private(set) var active: ActiveCall?
     @Published private(set) var muted = false
     @Published private(set) var speakerOn = false
+    /// The audio-output routes available RIGHT NOW (earpiece/speaker always; Bluetooth and
+    /// wired appear only while such a device is connected) and which one is live. Drives the
+    /// in-call route picker. Refreshed on every AVAudioSession route change.
+    @Published private(set) var audioRoutes: [CallAudioRoute] = [.earpiece, .speaker]
+    @Published private(set) var currentRoute: CallAudioRoute = .earpiece
     @Published private(set) var videoEnabled = true
     @Published private(set) var connectedSeconds = 0
     /// Remote + local video tracks for the UI to render (nil for voice calls).
@@ -163,6 +174,24 @@ final class CallService: NSObject, ObservableObject {
     /// How long a push-rung call may ring without an offer before we give up.
     private static let offerTimeout: Duration = .seconds(30)
 
+    // MARK: Incoming ring cap
+    //
+    // An offer-backed incoming call used to have NO local bound at all — only the
+    // push-without-offer window was timed (`startOfferTimeout`) — so a caller who let
+    // it ring for two minutes made us ring for two minutes. That is now a problem as
+    // well as a nuisance: the missed-call notification is scheduled at ring time, and
+    // it must never be able to fire while the phone is still ringing.
+
+    /// The longest we will alert for an inbound call before calling it missed.
+    private static let incomingRingCap: Duration = .seconds(45)
+    /// Margin between the ring ending and the backstop notification firing.
+    private static let missedNotificationSlack: TimeInterval = 2
+    private var ringCapTask: Task<Void, Never>?
+    /// The user tapped Answer (even if the SDP hadn't landed yet and the call later
+    /// died before connecting). An answered call is NEVER a missed call, so this
+    /// survives independently of `everConnected`.
+    private var localAnswerGiven = false
+
     // MARK: Call waiting
     //
     // A second inbound call arriving mid-call used to be answered with an
@@ -180,6 +209,10 @@ final class CallService: NSObject, ObservableObject {
         let isVideo: Bool
         /// nil while the VoIP push has rung but the SDP offer hasn't landed yet.
         var sdp: String?
+        var conversationId: String?
+        /// When the second call started alerting — the history row needs a start time
+        /// and the primary call's `callStartedAt` belongs to a different call.
+        let startedAt: Date
     }
     private var waitingCall: WaitingCall?
     /// The user answered the waiting call before its offer arrived.
@@ -237,6 +270,9 @@ final class CallService: NSObject, ObservableObject {
         }
         socket.onCallRinging = { [weak self] _, callId in
             Task { @MainActor in self?.handleRemoteRinging(callId: callId) }
+        }
+        socket.onCallTaken = { [weak self] callId, reason in
+            Task { @MainActor in self?.handleCallTakenElsewhere(callId: callId, reason: reason) }
         }
         socket.onCallHold = { [weak self] _, callId in
             Task { @MainActor in self?.handlePeerHold(callId: callId, held: true) }
@@ -418,6 +454,13 @@ final class CallService: NSObject, ObservableObject {
 
     /// Best-effort clean shutdown on termination. Kept synchronous — the app is
     /// being torn down and any `Task` we schedule here will likely never run.
+    ///
+    /// DELIBERATELY does NOT cancel the pending missed-call notification, and does not
+    /// route through `endActiveCall`. Being force-quit while the phone is ringing is
+    /// precisely the case the scheduled request exists for: there will be no process
+    /// left to notice the call was never answered, so the request the notification
+    /// daemon is already holding is the only thing that can tell the user. Cleaning up
+    /// here would silently delete the feature.
     private func handleWillTerminate() {
         guard let call = active else { return }
         if !call.peerUserId.isEmpty {
@@ -473,6 +516,9 @@ final class CallService: NSObject, ObservableObject {
         default:
             break
         }
+        // Whatever the reason, the set of available routes and the live one may have
+        // changed — keep the picker truthful.
+        refreshAudioRoutes()
     }
 
     /// Force the output port. Centralised so route changes and the speaker button
@@ -497,28 +543,47 @@ final class CallService: NSObject, ObservableObject {
 
     /// Place a 1:1 call. Builds the peer connection, creates an offer, signals it,
     /// and asks the backend to ring (wake) the callee.
-    func startCall(peerUserId: String, title: String, isVideo: Bool) {
+    /// The peer's E.164 number, when we know it — CallKit needs this (not a user id)
+    /// to match the call to an address-book contact. nil is fine: the call still
+    /// works, it just won't link to a contact card.
+    private func peerPhone(_ userId: String) -> String? {
+        UserDirectory.shared.user(userId)?.phoneE164
+    }
+
+    /// `conversationId` is optional only because the system call surfaces (Recents,
+    /// Siri) hand us a person, not a conversation — it is resolved from the local
+    /// store when not supplied. It is NOT cosmetic: `POST /calls/ring` requires it,
+    /// and without it the ring 400s, no VoIP push is sent, and a killed callee never
+    /// hears the call at all.
+    func startCall(peerUserId: String, title: String, isVideo: Bool, conversationId: String? = nil) {
         guard active == nil else { return }   // one call at a time
         // A group call already owns the audio route (see GroupCallService).
         guard !GroupCallService.shared.isActive else { return }
         let callId = UUID().uuidString
         let uuid = UUID()
+        let convId = conversationId ?? LocalStore.conversationId(forPeer: peerUserId)
         active = ActiveCall(id: callId, uuid: uuid, peerUserId: peerUserId, title: title,
-                            isVideo: isVideo, isOutgoing: true, state: .outgoingRinging)
+                            isVideo: isVideo, isOutgoing: true, state: .outgoingRinging,
+                            conversationId: convId)
         videoEnabled = isVideo
         callUIMinimized = false
         beginCallTelemetry()
 
         Task {
             await setupPeerConnection(isVideo: isVideo)
-            CallManager.shared.startOutgoingCall(uuid: uuid, handle: peerUserId, displayName: title, hasVideo: isVideo)
+            CallManager.shared.startOutgoingCall(uuid: uuid, handle: peerUserId, displayName: title,
+                                                 hasVideo: isVideo, phoneNumber: peerPhone(peerUserId))
             CallManager.shared.reportOutgoingConnecting(uuid: uuid)
             await createAndSendOffer(callId: callId, peerUserId: peerUserId, isVideo: isVideo)
             // Wake an offline/backgrounded callee via push.
-            struct RingBody: Encodable { let to_user_id: String; let call_id: String; let call_kind: String; let conversation_id: String? }
+            guard let convId else {
+                NSLog("[VOIID] no conversation for \(peerUserId) — skipping calls/ring (WS offer only)")
+                return
+            }
+            struct RingBody: Encodable { let to_user_id: String; let call_id: String; let call_kind: String; let conversation_id: String }
             _ = try? await api.request("POST", "calls/ring",
                                        body: RingBody(to_user_id: peerUserId, call_id: callId,
-                                                      call_kind: isVideo ? "video" : "voice", conversation_id: nil),
+                                                      call_kind: isVideo ? "video" : "voice", conversation_id: convId),
                                        as: EmptyResponse.self)
         }
     }
@@ -553,6 +618,7 @@ final class CallService: NSObject, ObservableObject {
         callStartedAt = Date()
         callConnectedAt = nil
         everConnected = false
+        localAnswerGiven = false
         pendingEndReason = .unknown
         iceRestartAttempts = 0
         iceRestartsTotal = 0
@@ -757,6 +823,20 @@ final class CallService: NSObject, ObservableObject {
     ///
     /// Everything here is best-effort metadata: the real peer identity arrives with
     /// the authenticated `call_offer` frame and overwrites it.
+    /// Human-readable name for a peer, for every call surface (CallKit, in-call UI,
+    /// call waiting). Resolves address-book name → profile name → phone → username.
+    ///
+    /// NEVER returns the raw user id. A UUID on the incoming-call screen was the most
+    /// visible symptom of the app having no local contact store: the call paths had
+    /// nothing to look a name up in, so they displayed the id they were handed.
+    ///
+    /// Resolution is deliberately LOCAL. The ring push carries no caller name — adding
+    /// one would disclose who is calling whom to Apple and Google — so the callee
+    /// resolves it here from `caller_id`, which works even on a cold push launch.
+    private func peerName(_ userId: String, fallback: String? = nil) -> String {
+        UserDirectory.shared.displayName(userId, fallback: fallback)
+    }
+
     func reportIncomingCallFromVoIPPush(callId: String,
                                         callerId: String,
                                         kind: String,
@@ -775,8 +855,9 @@ final class CallService: NSObject, ObservableObject {
             // CallKit rejects an empty handle — fall back to a non-empty routing id.
             let handle = callerId.isEmpty ? (conversationId ?? callId) : callerId
             reportWaitingCall(callId: callId, from: callerId,
-                              title: displayName ?? handle,
+                              title: peerName(callerId, fallback: displayName),
                               isVideo: kind == "video", sdp: nil,
+                              conversationId: conversationId,
                               completion: completion)
             // The offer still needs a live socket to reach us.
             WebSocketClient.shared.reconnect()
@@ -787,17 +868,28 @@ final class CallService: NSObject, ObservableObject {
         let uuid = UUID()
         let handle = callerId.isEmpty ? (conversationId ?? callId) : callerId
         active = ActiveCall(id: callId, uuid: uuid, peerUserId: callerId,
-                            title: displayName ?? handle,
-                            isVideo: isVideo, isOutgoing: false, state: .incomingRinging)
+                            title: peerName(callerId, fallback: displayName),
+                            isVideo: isVideo, isOutgoing: false, state: .incomingRinging,
+                            conversationId: conversationId ?? LocalStore.conversationId(forPeer: callerId))
         videoEnabled = isVideo
+        beginCallTelemetry()
         pendingIncomingOfferSDP = nil
         answerWhenOfferArrives = false
         awaitingOfferCallIds.insert(callId)
 
+        // Hand the system the missed-call backstop BEFORE reporting to CallKit, i.e.
+        // before anything can invoke PushKit's `completion` — from that moment iOS is
+        // free to suspend or jetsam us and no further line here is guaranteed to run.
+        // This ordering is the entire reason the notification survives a killed app.
+        // (`add` is a cheap async hand-off to the notification daemon, so it does not
+        // meaningfully delay the CallKit report.) See MissedCallNotifier.
+        scheduleMissedBackstop(for: active)
+
         // THE mandatory bit: report to CallKit, complete the push from its callback.
         CallManager.shared.reportIncomingCall(uuid: uuid, handle: handle,
-                                              displayName: displayName ?? handle,
-                                              hasVideo: isVideo) { ok in
+                                              displayName: peerName(callerId, fallback: displayName),
+                                              hasVideo: isVideo,
+                                              phoneNumber: peerPhone(callerId)) { ok in
             if !ok { NSLog("[VOIID] VoIP push: CallKit refused call \(callId)") }
             completion()
         }
@@ -810,6 +902,41 @@ final class CallService: NSObject, ObservableObject {
         // app may have been cold-launched by this push with no live connection.
         WebSocketClient.shared.reconnect()
         startOfferTimeout(for: callId)
+        startIncomingRingCap(for: callId)
+    }
+
+    /// Hand the notification daemon the "you missed a call" banner for an inbound
+    /// call we are about to start alerting for. Idempotent per call_id: the push and
+    /// the WS offer both land here and the second submission REPLACES the first
+    /// (usually with a better-resolved caller name).
+    private func scheduleMissedBackstop(for call: ActiveCall?) {
+        guard let call, !call.isOutgoing else { return }
+        // Fire strictly after the ring can still be going, or the user would get a
+        // "missed call" banner over a ringing phone.
+        let delay = Double(Self.incomingRingCap.components.seconds) + Self.missedNotificationSlack
+        MissedCallNotifier.schedule(callId: call.id, peerUserId: call.peerUserId,
+                                    displayName: call.title, isVideo: call.isVideo,
+                                    conversationId: call.conversationId, after: delay)
+    }
+
+    /// Hard bound on how long an inbound call may alert.
+    ///
+    /// `startOfferTimeout` only covers the push-rang-but-no-offer window; an
+    /// offer-backed incoming call had no local bound at all and rang for as long as
+    /// the caller cared to wait. Capping it is what makes the scheduled missed-call
+    /// notification safe: the ring is guaranteed over before the banner is due.
+    private func startIncomingRingCap(for callId: String) {
+        ringCapTask?.cancel()
+        ringCapTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.incomingRingCap)
+            guard !Task.isCancelled, let self else { return }
+            guard let call = self.active, call.id == callId,
+                  call.state == .incomingRinging else { return }
+            NSLog("[VOIID] incoming call \(callId) rang past the cap — treating as missed")
+            // No decline frame: the user didn't refuse it, they just weren't there.
+            self.pendingEndReason = .timeout
+            self.endActiveCall(notifyPeer: true, fromCallKit: false)
+        }
     }
 
     /// If no `call_offer` follows the push (caller cancelled, or the push raced a
@@ -850,11 +977,18 @@ final class CallService: NSObject, ObservableObject {
             pendingIncomingOfferSDP = sdp
             // `from` is stamped server-side and authenticated — trust it over the push.
             call.peerUserId = from
-            if call.title.isEmpty || call.title == call.id { call.title = from }
+            if call.title.isEmpty || call.title == call.id || call.title == from {
+                call.title = peerName(from)
+            }
+            call.conversationId = call.conversationId ?? LocalStore.conversationId(forPeer: from)
             active = call
             // The push may have rung us with no caller_id to reply to. Now we have
             // an authenticated one, so the caller can finally hear ringback.
             sendRingingIfNeeded(toUserId: from, callId: callId)
+            // Re-submit the backstop with the identity we can actually trust: the push
+            // payload is unauthenticated and often has no caller_id at all, so the
+            // first submission may say "Unknown". Same identifier ⇒ it replaces.
+            scheduleMissedBackstop(for: active)
             // The user already tapped Answer in CallKit while we had no SDP; now we can.
             if answerWhenOfferArrives {
                 answerWhenOfferArrives = false
@@ -865,8 +999,9 @@ final class CallService: NSObject, ObservableObject {
         // Already on a different call → CALL WAITING (or attaching the SDP to a
         // waiting call a VoIP push already reported).
         if let active, active.id != callId {
-            reportWaitingCall(callId: callId, from: from, title: from,
-                              isVideo: kind == "video", sdp: sdp)
+            reportWaitingCall(callId: callId, from: from, title: peerName(from),
+                              isVideo: kind == "video", sdp: sdp,
+                              conversationId: nil)
             return
         }
         guard active == nil else { return }
@@ -874,13 +1009,22 @@ final class CallService: NSObject, ObservableObject {
         let isVideo = (kind == "video")
         let uuid = UUID()
         pendingIncomingOfferSDP = sdp
-        active = ActiveCall(id: callId, uuid: uuid, peerUserId: from, title: from,
-                            isVideo: isVideo, isOutgoing: false, state: .incomingRinging)
+        active = ActiveCall(id: callId, uuid: uuid, peerUserId: from, title: peerName(from),
+                            isVideo: isVideo, isOutgoing: false, state: .incomingRinging,
+                            conversationId: LocalStore.conversationId(forPeer: from))
         videoEnabled = isVideo
+        beginCallTelemetry()
         // Ask the OS to show the native incoming-call UI.
-        CallManager.shared.reportIncomingCall(uuid: uuid, handle: from, displayName: from, hasVideo: isVideo) { _ in }
+        CallManager.shared.reportIncomingCall(uuid: uuid, handle: from,
+                                              displayName: peerName(from), hasVideo: isVideo,
+                                              phoneNumber: peerPhone(from)) { _ in }
         // Alerting now → the caller may start ringback.
         sendRingingIfNeeded(toUserId: from, callId: callId)
+        // Even on this path the app can be killed mid-ring (the user force-quits from
+        // the switcher), so the backstop is scheduled here too rather than relying on
+        // teardown running.
+        scheduleMissedBackstop(for: active)
+        startIncomingRingCap(for: callId)
     }
 
     /// Apply a mid-call re-offer (the peer's ICE restart) and answer it in place.
@@ -931,14 +1075,21 @@ final class CallService: NSObject, ObservableObject {
     /// in later by `handleIncomingOffer`.
     private func reportWaitingCall(callId: String, from: String, title: String,
                                    isVideo: Bool, sdp: String?,
+                                   conversationId: String?,
                                    completion: (() -> Void)? = nil) {
         // Offer landing for a waiting call we already reported — just attach it.
         if var waiting = waitingCall, waiting.id == callId {
             if let sdp, waiting.sdp == nil {
                 waiting.sdp = sdp
                 if !from.isEmpty { waiting.peerUserId = from }
+                waiting.conversationId = waiting.conversationId
+                    ?? conversationId
+                    ?? LocalStore.conversationId(forPeer: waiting.peerUserId)
                 waitingCall = waiting
                 sendRingingIfNeeded(toUserId: waiting.peerUserId, callId: callId)
+                // Authenticated identity at last — replace the backstop so the banner
+                // names the caller instead of saying "Unknown".
+                scheduleWaitingMissedBackstop(waiting)
                 // The user hit Answer before the SDP existed; finish the job now.
                 if answerWaitingWhenOfferArrives {
                     answerWaitingWhenOfferArrives = false
@@ -952,17 +1103,39 @@ final class CallService: NSObject, ObservableObject {
         // meaningfully — this one is genuinely busy.
         guard waitingCall == nil else {
             if !from.isEmpty { socket.sendCallBusy(toUserId: from, callId: callId) }
+            // The user is never shown this call at all, so without a record + banner
+            // it would vanish completely. Post it immediately: the call is already
+            // over (we just sent busy), there is nothing to wait for.
+            let convId = conversationId ?? LocalStore.conversationId(forPeer: from)
+            LocalStore.recordCall(id: callId, conversationId: convId,
+                                  peerUserId: from.isEmpty ? nil : from,
+                                  kind: isVideo ? "video" : "voice", direction: "incoming",
+                                  outcome: "missed", startedAt: Date(), endedAt: Date())
+            MissedCallNotifier.fireNow(callId: callId, peerUserId: from,
+                                       displayName: title.isEmpty ? nil : title,
+                                       isVideo: isVideo, conversationId: convId)
             completion?()
             return
         }
 
         let uuid = UUID()
-        let handle = title.isEmpty ? callId : title
-        waitingCall = WaitingCall(id: callId, uuid: uuid, peerUserId: from,
-                                  title: handle, isVideo: isVideo, sdp: sdp)
+        // Resolve through the directory rather than trusting `title`: callers pass the
+        // peer's user id here when they have nothing better, and that must not reach
+        // the call-waiting UI as a UUID.
+        let handle = peerName(from, fallback: title.isEmpty ? nil : title)
+        let waiting = WaitingCall(id: callId, uuid: uuid, peerUserId: from,
+                                  title: handle, isVideo: isVideo, sdp: sdp,
+                                  conversationId: conversationId
+                                      ?? LocalStore.conversationId(forPeer: from),
+                                  startedAt: Date())
+        waitingCall = waiting
         hasWaitingCall = true
+        // Same reasoning as the primary call: a VoIP push can report this one and the
+        // app be suspended before anything else runs.
+        scheduleWaitingMissedBackstop(waiting)
         CallManager.shared.reportIncomingCall(uuid: uuid, handle: handle, displayName: handle,
-                                              hasVideo: isVideo) { [weak self] ok in
+                                              hasVideo: isVideo,
+                                              phoneNumber: peerPhone(from)) { [weak self] ok in
             Task { @MainActor in
                 guard let self else { completion?(); return }
                 if !ok {
@@ -976,6 +1149,15 @@ final class CallService: NSObject, ObservableObject {
         }
         sendRingingIfNeeded(toUserId: from, callId: callId)
         startWaitingCallTimeout(for: callId)
+    }
+
+    /// Backstop banner for the SECOND call. Its ring window is bounded by
+    /// `startWaitingCallTimeout`, not by the primary call's ring cap.
+    private func scheduleWaitingMissedBackstop(_ waiting: WaitingCall) {
+        let delay = Double(Self.offerTimeout.components.seconds) + Self.missedNotificationSlack
+        MissedCallNotifier.schedule(callId: waiting.id, peerUserId: waiting.peerUserId,
+                                    displayName: waiting.title, isVideo: waiting.isVideo,
+                                    conversationId: waiting.conversationId, after: delay)
     }
 
     /// Don't let a waiting call ring forever if the user ignores it.
@@ -992,18 +1174,101 @@ final class CallService: NSObject, ObservableObject {
 
     /// Tear down the waiting-call slot. `sendBusy` tells the second caller we're
     /// not taking it; the primary call is never touched by this.
-    private func clearWaitingCall(sendBusy: Bool, decline: Bool = false) {
+    ///
+    /// `takenElsewhere` is the verdict ("answer"/"decline") one of the user's OTHER
+    /// devices already gave: we then say nothing to the caller (they were answered)
+    /// and post no banner (nothing was missed).
+    private func clearWaitingCall(sendBusy: Bool, decline: Bool = false,
+                                  takenElsewhere: String? = nil) {
         guard let waiting = waitingCall else { return }
+        // The user hit Answer and the SDP never showed up. That call FAILED; it was
+        // not ignored, and telling them they missed it would be a lie.
+        let userAnswered = answerWaitingWhenOfferArrives
         waitingCall = nil
         hasWaitingCall = false
         answerWaitingWhenOfferArrives = false
         waitingCallTimeoutTask?.cancel(); waitingCallTimeoutTask = nil
         ringingSentCallIds.remove(waiting.id)
-        if !waiting.peerUserId.isEmpty {
+        if !waiting.peerUserId.isEmpty, takenElsewhere == nil {
             if decline { socket.sendCallDecline(toUserId: waiting.peerUserId, callId: waiting.id) }
             else if sendBusy { socket.sendCallBusy(toUserId: waiting.peerUserId, callId: waiting.id) }
         }
-        CallManager.shared.endCall(uuid: waiting.uuid)
+        // A second call used to leave NO trace on any exit — five different
+        // missed/declined outcomes vanished the moment the call-waiting UI went away.
+        LocalStore.recordCall(
+            id: waiting.id,
+            conversationId: waiting.conversationId,
+            peerUserId: waiting.peerUserId.isEmpty ? nil : waiting.peerUserId,
+            kind: waiting.isVideo ? "video" : "voice",
+            direction: "incoming",
+            outcome: {
+                if let takenElsewhere { return takenElsewhere == "answer" ? "answered" : "declined" }
+                if decline { return "declined" }
+                return userAnswered ? "failed" : "missed"
+            }(),
+            startedAt: waiting.startedAt,
+            endedAt: Date()
+        )
+        // Declining is a deliberate act, not a missed call — drop the backstop. Every
+        // other exit (ignored to timeout, second caller gave up, CallKit refused it)
+        // genuinely was missed, and we know that NOW, so post it now rather than
+        // leaving the timed request to catch up.
+        if decline || userAnswered || takenElsewhere != nil {
+            MissedCallNotifier.cancel(callId: waiting.id)
+        } else {
+            MissedCallNotifier.fireNow(callId: waiting.id, peerUserId: waiting.peerUserId,
+                                       displayName: waiting.title, isVideo: waiting.isVideo,
+                                       conversationId: waiting.conversationId)
+        }
+        // Same rule as the primary call: an inbound call nobody picked up must file in
+        // Recents as `.unanswered`, or it looks like a completed call and the second
+        // caller disappears from the phone app entirely.
+        let endReason: CXCallEndedReason
+        if let takenElsewhere {
+            endReason = takenElsewhere == "answer" ? .answeredElsewhere : .declinedElsewhere
+        } else if decline {
+            endReason = .declinedElsewhere
+        } else if userAnswered {
+            endReason = .failed
+        } else {
+            endReason = .unanswered
+        }
+        CallManager.shared.endCall(uuid: waiting.uuid, reason: endReason)
+    }
+
+    /// One of the user's OTHER devices answered or declined this call.
+    ///
+    /// The WS relay used to tell only the FAR side about an answer, so a second
+    /// device of the callee's kept ringing until the caller eventually hung up — and
+    /// would then have posted "missed call" for a call that was answered. The server
+    /// now fans the verdict back to the user's own channel (`call_taken`); this is the
+    /// only path that can distinguish "nobody picked up" from "someone else did".
+    private func handleCallTakenElsewhere(callId: String, reason: String) {
+        if let waiting = waitingCall, waiting.id == callId {
+            clearWaitingCall(sendBusy: false, takenElsewhere: reason)
+            return
+        }
+        guard let call = active, call.id == callId, !call.isOutgoing else { return }
+        // WE are the device that resolved it — this frame is the echo of our own
+        // answer coming back off our own channel.
+        guard !localAnswerGiven, !everConnected, call.state == .incomingRinging else { return }
+        NSLog("[VOIID] call \(callId) \(reason)ed on another device — stopping this ring")
+        // Nothing was missed and the caller needs no hangup from us: the sibling
+        // device is talking to them.
+        MissedCallNotifier.cancel(callId: callId)
+        pendingEndReason = .declined   // ⇒ outcome "declined", never "missed"
+        CallManager.shared.endCall(uuid: call.uuid,
+                                   reason: reason == "answer" ? .answeredElsewhere : .declinedElsewhere)
+        endActiveCall(notifyPeer: false, fromCallKit: true)
+        // recordCall upserts on the call id, so this corrects the row endActiveCall
+        // just wrote — a call answered on your tablet belongs in history as answered.
+        if reason == "answer" {
+            LocalStore.recordCall(id: callId, conversationId: call.conversationId,
+                                  peerUserId: call.peerUserId.isEmpty ? nil : call.peerUserId,
+                                  kind: call.isVideo ? "video" : "voice", direction: "incoming",
+                                  outcome: "answered", startedAt: callStartedAt ?? Date(),
+                                  endedAt: Date())
+        }
     }
 
     /// The user chose the waiting call. Ends the first call, then promotes the
@@ -1019,6 +1284,8 @@ final class CallService: NSObject, ObservableObject {
         waitingCall = nil
         hasWaitingCall = false
         waitingCallTimeoutTask?.cancel(); waitingCallTimeoutTask = nil
+        // Answered — the backstop must die before anything else can go wrong.
+        MissedCallNotifier.cancel(callId: waiting.id)
 
         // Release the first call BEFORE the second takes the audio route — at most
         // one call may own it. endActiveCall's deferred `active = nil` is keyed on
@@ -1051,6 +1318,12 @@ final class CallService: NSObject, ObservableObject {
             return
         }
         guard var call = active, call.uuid == uuid else { return }
+        // ANSWERED. Kill the backstop here — before any of the work below, which can
+        // fail — and remember it, because a call that fails after being answered is a
+        // failed call, never a missed one.
+        localAnswerGiven = true
+        ringCapTask?.cancel(); ringCapTask = nil
+        MissedCallNotifier.cancel(callId: call.id)
         guard let offerSDP = pendingIncomingOfferSDP else {
             // Answered from the lock screen after a VoIP push but the offer hasn't
             // landed yet. Remember the intent; `handleIncomingOffer` finishes the
@@ -1177,6 +1450,16 @@ final class CallService: NSObject, ObservableObject {
             clearWaitingCall(sendBusy: false, decline: true)
             return
         }
+        // Record WHY. This used to leave `pendingEndReason` at `.unknown`, so tapping
+        // Decline in the native CallKit UI — by far the most common way a call is
+        // refused — was persisted as outcome "missed". With a notification hanging off
+        // that value, the user would be told they missed a call they had just
+        // deliberately rejected.
+        if let call = active, call.uuid == uuid, pendingEndReason == .unknown {
+            pendingEndReason = (!call.isOutgoing && !everConnected && !localAnswerGiven)
+                ? .declined
+                : .localHangup
+        }
         endActiveCall(notifyPeer: true, fromCallKit: true)
     }
 
@@ -1185,6 +1468,7 @@ final class CallService: NSObject, ObservableObject {
     func endActiveCall(notifyPeer: Bool, fromCallKit: Bool) {
         guard let call = active else { return }
         offerTimeoutTask?.cancel(); offerTimeoutTask = nil
+        ringCapTask?.cancel(); ringCapTask = nil
         awaitingOfferCallIds.remove(call.id)
         ringingSentCallIds.remove(call.id)
         answerWhenOfferArrives = false
@@ -1204,7 +1488,59 @@ final class CallService: NSObject, ObservableObject {
         isOnHold = false
         peerOnHold = false
         if notifyPeer, !call.peerUserId.isEmpty { socket.sendCallHangup(toUserId: call.peerUserId, callId: call.id) }
-        if !fromCallKit { CallManager.shared.endCall(uuid: call.uuid) }
+        // Tell CallKit WHY it ended. An inbound call that never connected is a MISSED
+        // call and must be reported as `.unanswered`, or it files in Recents as a
+        // normal completed call and the user never sees they were called.
+        if !fromCallKit {
+            let endReason: CXCallEndedReason
+            if everConnected {
+                endReason = .remoteEnded
+            } else if pendingEndReason == .declined || pendingEndReason == .busy {
+                endReason = .declinedElsewhere
+            } else {
+                // Never connected and not explicitly refused — missed, in both
+                // directions (an outgoing call nobody picked up is "unanswered" too).
+                endReason = .unanswered
+            }
+            CallManager.shared.endCall(uuid: call.uuid, reason: endReason)
+        }
+
+        // Local call history. Previously calls left NO trace on the device once the
+        // CallKit UI went away — a missed call was simply invisible. Recorded before
+        // the network call so it survives being offline.
+        let outcome: String = {
+            if everConnected { return "answered" }
+            switch pendingEndReason {
+            case .declined: return "declined"
+            case .busy: return "declined"
+            case .setupFailed, .iceFailed: return "failed"
+            // Answered but dead before media flowed: a failure, not a missed call.
+            default: return (call.isOutgoing || localAnswerGiven) ? "failed" : "missed"
+            }
+        }()
+        LocalStore.recordCall(
+            id: call.id,
+            conversationId: call.conversationId,
+            peerUserId: call.peerUserId.isEmpty ? nil : call.peerUserId,
+            kind: call.isVideo ? "video" : "voice",
+            direction: call.isOutgoing ? "outgoing" : "incoming",
+            outcome: outcome,
+            startedAt: callStartedAt ?? Date(),
+            endedAt: Date()
+        )
+
+        // The missed-call banner. The scheduled request is only a backstop for the app
+        // not being alive; when we ARE alive we know the answer right now, so either
+        // replace it with an immediate banner or drop it entirely. `outcome` already
+        // encodes every exclusion the banner needs: answered, declined, busy, failed,
+        // and outgoing calls are all something other than "missed".
+        if outcome == "missed" {
+            MissedCallNotifier.fireNow(callId: call.id, peerUserId: call.peerUserId,
+                                       displayName: call.title, isVideo: call.isVideo,
+                                       conversationId: call.conversationId)
+        } else {
+            MissedCallNotifier.cancel(callId: call.id)
+        }
 
         // Best-effort call-record status update.
         let callId = call.id
@@ -1250,9 +1586,14 @@ final class CallService: NSObject, ObservableObject {
     func toggleMute() { setMuted(!muted) }
 
     func toggleSpeaker() {
-        speakerOn.toggle()
-        applyOutputOverride(speaker: speakerOn)
+        // Keep the legacy speaker button working: it now just selects between the two
+        // always-present routes, so it and the route picker never disagree.
+        selectAudioRoute(speakerOn ? .earpiece : .speaker)
     }
+
+    /// Let the routing extension (a different file, so it can't touch the private setter)
+    /// keep `speakerOn` in step with the chosen route.
+    func speakerOnChanged(_ on: Bool) { speakerOn = on }
 
     func toggleVideo() {
         videoEnabled.toggle()

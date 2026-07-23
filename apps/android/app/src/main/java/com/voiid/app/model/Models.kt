@@ -14,13 +14,15 @@ data class VUser(
     var phoneNumber: String,
     var email: String? = null,
     var photoName: String? = null,
+    /** Remote avatar: an R2 object key (resolved through a presigned GET), or an absolute URL. */
+    var photoURL: String? = null,
     var bio: String? = null,
     var statusText: String? = null,
     var isOnline: Boolean = false,
 )
 
 enum class MessageStatus { SENDING, SENT, DELIVERED, READ, FAILED }
-enum class MessageKind { TEXT, IMAGE, VOICE, DOCUMENT, SYSTEM, POLL }
+enum class MessageKind { TEXT, IMAGE, VOICE, DOCUMENT, SYSTEM, POLL, LOCATION }
 
 data class VMessage(
     val id: String,
@@ -44,6 +46,8 @@ data class VMessage(
     val replyToText: String? = null,
     /** For media messages (IMAGE/VOICE): the E2EE ref used to fetch + decrypt the blob. */
     val mediaRef: com.voiid.app.net.ChatEngine.MediaRef? = null,
+    /** For LOCATION messages: the keyless pin / live_start projection (docs/LOCATION.md §4). */
+    val location: com.voiid.app.net.ChatEngine.LocationRef? = null,
 )
 
 enum class ConversationType { DIRECT, GROUP }

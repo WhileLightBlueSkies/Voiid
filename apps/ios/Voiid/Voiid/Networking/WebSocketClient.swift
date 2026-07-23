@@ -56,6 +56,18 @@ final class WebSocketClient {
     /// An MLS group control event (Welcome/Commit) is waiting → fetch + process group events.
     var onGroupEvent: ((_ conversationId: String) -> Void)?
 
+    // MARK: - Location fix relay (P3, ephemeral — never a message row, never a push)
+    //
+    // Deliberately generic (share_id / from_user_id / opaque ciphertext) so BOTH location
+    // features share this one routing point: the Map (Feature B) and in-conversation live
+    // sharing (Feature A) each subscribe from their own engine. `ciphertext` is an opaque
+    // base64 string this client copies and NEVER parses — the coordinate is sealed under a
+    // per-share key the server (and this relay) cannot read.
+    /// One encrypted position fix for a share. (shareId, fromUserId, ciphertext-b64)
+    var onLocationUpdate: ((_ shareId: String, _ fromUserId: String, _ ciphertext: String) -> Void)?
+    /// A share was stopped (instant effect on live sockets). (shareId, fromUserId)
+    var onLocationStop: ((_ shareId: String, _ fromUserId: String) -> Void)?
+
     // MARK: - 1:1 call signaling (relayed over the same WS)
     // Each inbound frame is stamped server-side with `from_user_id` (authenticated).
     /// Inbound SDP offer for a new incoming call. (fromUserId, callId, callKind, sdp)
@@ -75,6 +87,11 @@ final class WebSocketClient {
     /// the offer": a phone that never rang must never produce ringback.
     /// (fromUserId, callId)
     var onCallRinging: ((_ fromUserId: String, _ callId: String) -> Void)?
+    /// ANOTHER OF OUR OWN DEVICES answered or declined this incoming call, so this
+    /// one must stop ringing. Relayed to the sender's own channel by the WS server —
+    /// every other call frame goes only to the far side, which is why a second device
+    /// used to keep ringing until the caller gave up. (callId, "answer" | "decline")
+    var onCallTaken: ((_ callId: String, _ reason: String) -> Void)?
     /// Peer put the call on hold. (fromUserId, callId)
     var onCallHold: ((_ fromUserId: String, _ callId: String) -> Void)?
     /// Peer took the call off hold. (fromUserId, callId)
@@ -168,6 +185,22 @@ final class WebSocketClient {
         sendJSON(["type": "session_reset", "conversation_id": conversationId, "recipient_ids": recipientIds])
     }
 
+    /// Relay one encrypted position fix to the audience. The client supplies
+    /// `recipient_ids` because the WS process has no database (same shape as `typing`);
+    /// the server stamps `from_user_id` from the JWT and never echoes client extras. Not
+    /// queued while down: a stale fix is worthless, so a dropped frame is simply the next
+    /// cadence tick's problem.
+    func sendLocationUpdate(shareId: String, recipientIds: [String], ciphertext: String) {
+        sendJSON(["type": "loc_update", "share_id": shareId,
+                  "recipient_ids": recipientIds, "ciphertext": ciphertext])
+    }
+
+    /// Stop a share for instant effect on live sockets. The durable stop (the guarantee that
+    /// reaches an offline recipient) rides the message path separately.
+    func sendLocationStop(shareId: String, recipientIds: [String]) {
+        sendJSON(["type": "loc_stop", "share_id": shareId, "recipient_ids": recipientIds])
+    }
+
     // MARK: - Internals
 
     private func receiveLoop() {
@@ -254,6 +287,32 @@ final class WebSocketClient {
             if let cid = obj["conversation_id"] as? String { onSessionReset?(cid) }
         case "mls_event":
             if let cid = obj["conversation_id"] as? String { onGroupEvent?(cid) }
+        case "loc_update":
+            // Opaque relay: copy the ciphertext, never parse it. Sender is server-stamped.
+            if let sid = obj["share_id"] as? String,
+               let from = obj["from_user_id"] as? String,
+               let ct = obj["ciphertext"] as? String {
+                onLocationUpdate?(sid, from, ct)
+                // Additionally fan out to any other location surface (conversation shares
+                // AND the Map) — a single closure would starve one of them, and each drops
+                // share_ids it doesn't own, so broadcasting is safe.
+                NotificationCenter.default.post(name: .voiidLocationRelayUpdate, object: nil,
+                    userInfo: ["share_id": sid, "from": from, "ciphertext": ct])
+            }
+        case "loc_stop":
+            if let sid = obj["share_id"] as? String,
+               let from = obj["from_user_id"] as? String {
+                onLocationStop?(sid, from)
+                NotificationCenter.default.post(name: .voiidLocationRelayStop, object: nil,
+                    userInfo: ["share_id": sid, "from": from])
+            }
+        case "story", "story_receipt", "story_deleted":
+            // Routing signals only — a device's story ciphertext is NEVER on this channel
+            // (§7.10). Wake StoryEngine, which pulls its own blobs from GET /stories/feed.
+            // NotificationCenter (not a new closure) mirrors the loc_* precedent above so
+            // no extra wiring is needed at the WS setup site.
+            NotificationCenter.default.post(name: .voiidStorySignal, object: nil,
+                userInfo: ["type": type, "story_id": (obj["story_id"] as? String) ?? ""])
         case "call_offer":
             if let from = obj["from_user_id"] as? String, let cid = obj["call_id"] as? String,
                let sdp = obj["sdp"] as? String {
@@ -282,6 +341,10 @@ final class WebSocketClient {
             if let from = obj["from_user_id"] as? String, let cid = obj["call_id"] as? String { onCallDecline?(from, cid) }
         case "call_ringing":
             if let from = obj["from_user_id"] as? String, let cid = obj["call_id"] as? String { onCallRinging?(from, cid) }
+        case "call_taken":
+            if let cid = obj["call_id"] as? String {
+                onCallTaken?(cid, (obj["reason"] as? String) ?? "answer")
+            }
         case "call_hold":
             if let from = obj["from_user_id"] as? String, let cid = obj["call_id"] as? String { onCallHold?(from, cid) }
         case "call_unhold":

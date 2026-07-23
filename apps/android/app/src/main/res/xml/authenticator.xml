@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Declares the "Voiid" account TYPE. ContactsContract refuses RawContacts whose account
+  type has no registered authenticator, so this is the price of putting rows inside a
+  contact card. See VoiidAuthenticator.kt.
+
+  android:accountType MUST equal VoiidContacts.ACCOUNT_TYPE and the accountType in
+  contacts_sync_adapter.xml — a mismatch fails silently, with no log line.
+
+  android:label is what the user sees in Settings > Accounts.
+-->
+<account-authenticator xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accountType="com.voiid.app"
+    android:icon="@mipmap/ic_launcher"
+    android:smallIcon="@mipmap/ic_launcher"
+    android:label="@string/app_name" />

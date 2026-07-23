@@ -19,7 +19,7 @@ struct ChatsHomeView: View {
     @State private var activeCall: CallRequest?
     @State private var showNewChat = false
     @State private var showNewGroup = false
-    @State private var showBackup = false
+    @State private var showSettings = false
     @State private var allContacts: [VContact] = []   // discovered VOIID contacts (for search)
     @Namespace private var underline
 
@@ -35,6 +35,28 @@ struct ChatsHomeView: View {
                 header
                 searchBar
                 tabs
+                // "You are sharing your location" — pinned below the tabs, visible from the
+                // home screen, one-tap Stop (docs/LOCATION.md §8). Renders nothing when idle.
+                LocationBanner()
+                // `loadError` was set but never rendered anywhere, so a failed sync on a
+                // cold launch produced a blank grid with no explanation. With local-first
+                // loading this only appears when we have nothing cached to fall back on.
+                if let loadError = chat.loadError {
+                    HStack(spacing: VoiidSpacing.sm) {
+                        Image(systemName: "wifi.exclamationmark")
+                        Text(loadError).font(VoiidFont.rounded(13, .regular))
+                        Spacer()
+                        Button("Retry") { Task { await chat.loadConversations() } }
+                            .font(VoiidFont.rounded(13, .semibold))
+                    }
+                    .foregroundColor(VoiidColor.textSecondary)
+                    .padding(.horizontal, VoiidSpacing.md)
+                    .padding(.vertical, VoiidSpacing.sm)
+                    .background(VoiidColor.fieldFill)
+                    .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+                    .padding(.horizontal, VoiidSpacing.lg)
+                    .padding(.bottom, VoiidSpacing.sm)
+                }
                 if search.isEmpty {
                     // Home-screen-style draggable grid (reorder + drag to Call/Delete zones)
                     DraggableChatGrid(
@@ -82,10 +104,10 @@ struct ChatsHomeView: View {
             .task {
                 try? await E2EManager.shared.bootstrap()   // ensure identity/prekeys published (idempotent)
                 WebSocketClient.shared.reconnect()         // fresh socket (avoid a stale/dead one missing pushes)
+                LocationShareEngine.shared.configure()     // route inbound live fixes + start the expiry ticker
                 await chat.loadConversations()              // load REAL conversations from backend
             }
             .navigationDestination(item: $openConversation) { ChatDetailView(conversation: $0) }
-            .navigationDestination(isPresented: $showBackup) { BackupRecoveryView() }
             .onReceive(NotificationCenter.default.publisher(for: .voiidOpenConversation)) { note in
                 // Deep-link from a tapped message notification: open its conversation,
                 // loading the list first if it isn't in memory yet.
@@ -99,6 +121,9 @@ struct ChatsHomeView: View {
                         openConversation = conv
                     }
                 }
+            }
+            .sheet(isPresented: $showSettings) {
+                SettingsSheet()
             }
             .sheet(isPresented: $showNewChat) {
                 NewChatView { conv in
@@ -185,41 +210,51 @@ struct ChatsHomeView: View {
         }
     }
 
-    // Top bar — "Chats" title left, hamburger menu right
+    // Top bar — profile avatar on its own row (top LEFT), title beneath it.
+    //
+    // Two rows rather than one: the avatar is the entry point to settings and wants to
+    // sit at the very top edge, while the "Chats" title reads better dropped below it
+    // as a section heading. Same shape as the large-title pattern users already expect.
     private var header: some View {
-        HStack {
-            Text("Chats")
-                .font(VoiidFont.rounded(24, .bold))
-                .foregroundColor(VoiidColor.textPrimary)
-            Spacer()
-            Button {
-                Haptics.tap()
-                if tab == .groups { showNewGroup = true } else { showNewChat = true }
-            } label: {
-                Image(systemName: tab == .groups ? "person.3.fill" : "square.and.pencil")
-                    .font(.system(size: 20, weight: .medium))
-                    .foregroundColor(VoiidColor.textPrimary)
-            }
-            Menu {
+        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+            HStack {
                 Button {
-                    Haptics.tap(); showBackup = true
+                    Haptics.tap()
+                    showSettings = true
                 } label: {
-                    Label("Backup & Recovery", systemImage: "checkmark.shield")
+                    ProfileAvatarButton(photoURL: session.profile.photoURL,
+                                        name: session.profile.fullName)
                 }
-                Button(role: .destructive) {
-                    Haptics.tap(); session.signOut()
-                } label: {
-                    Label("Log out", systemImage: "rectangle.portrait.and.arrow.right")
-                }
-            } label: {
-                Image(systemName: "line.3.horizontal")
-                    .font(.system(size: 22, weight: .medium))
-                    .foregroundColor(VoiidColor.textPrimary)
+                .buttonStyle(.plain)
+                .accessibilityLabel("Profile and settings")
+                Spacer()
+                headerActions
             }
-            .simultaneousGesture(TapGesture().onEnded { Haptics.tap() })
+            Text("Chats")
+                .font(VoiidFont.rounded(28, .bold))
+                .foregroundColor(VoiidColor.textPrimary)
         }
         .padding(.horizontal, VoiidSpacing.lg)
         .padding(.top, VoiidSpacing.sm)
+    }
+
+    // Compose only.
+    //
+    // The overflow (hamburger) menu that used to live here is gone. It held a second
+    // "Backup & Recovery" entry point and an UNCONFIRMED "Log out" — one irreversible
+    // action, one tap, no dialog, sitting next to a routine one. Both now live in the
+    // Settings sheet behind the avatar, which is the single entry point; log-out there
+    // is confirmed and runs the local teardown.
+    private var headerActions: some View {
+        Button {
+            Haptics.tap()
+            if tab == .groups { showNewGroup = true } else { showNewChat = true }
+        } label: {
+            Image(systemName: tab == .groups ? "person.3.fill" : "square.and.pencil")
+                .font(.system(size: 20, weight: .medium))
+                .foregroundColor(VoiidColor.textPrimary)
+        }
+        .accessibilityLabel(tab == .groups ? "New group" : "New chat")
     }
 
     private var searchBar: some View {

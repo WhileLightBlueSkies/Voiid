@@ -33,3 +33,64 @@ export function assertOpaque(payload: Record<string, unknown>): void {
     }
   }
 }
+
+// --- Coordinate guard (location features) ------------------------------------------
+//
+// WHY A SECOND GUARD: assertOpaque only knows the four message-body field names. A
+// request body carrying `latitude` sails straight past it, and the location routes are
+// exactly where a well-meaning change ("just send the coords so the server can show a
+// map preview") would otherwise land. Position data is E2E content in VOIID: it is
+// encrypted on-device and the server stores only "a share exists between A and B until
+// T". So the location routes reject a coordinate STRUCTURALLY rather than relying on
+// every future handler remembering not to read one.
+//
+// Matching is per TOKEN, not substring: a key is split on separators and camelCase
+// humps, and each token is compared to the banned set. That catches `lat`, `Latitude`,
+// `user_lat`, `lastLon`, `geo`, while leaving innocent keys like `related` or
+// `translation` alone (a substring match would reject both).
+const BANNED_COORD_TOKENS = new Set([
+  'lat', 'lon', 'lng', 'latitude', 'longitude',
+  'coord', 'coords', 'coordinate', 'coordinates',
+  'accuracy', 'altitude', 'speed', 'heading', 'bearing',
+  'geo', 'geolocation', 'position', 'gps',
+]);
+
+function coordTokens(key: string): string[] {
+  return key
+    // camelCase / PascalCase humps -> separate tokens (lastLon -> last Lon)
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[^A-Za-z0-9]+/)
+    .filter(Boolean)
+    .map((t) => t.toLowerCase());
+}
+
+/**
+ * Guard: reject any request/relay payload that carries a coordinate-shaped FIELD.
+ *
+ * Recursive over objects and arrays (a coordinate nested one level down is still a
+ * coordinate). Depth-limited and cycle-safe so a hostile body cannot turn the guard
+ * itself into a DoS. Values are never inspected — only key names — because the whole
+ * point is that the server must not be able to interpret the payload at all.
+ */
+export function assertNoCoordinates(value: unknown, path = 'body', depth = 0, seen = new Set<unknown>()): void {
+  if (value == null || typeof value !== 'object') return;
+  if (depth > 8) throw new Error('payload nested too deeply');
+  if (seen.has(value)) return; // cycle — already validated on the way in
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) assertNoCoordinates(value[i], `${path}[${i}]`, depth + 1, seen);
+    return;
+  }
+
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    for (const token of coordTokens(key)) {
+      if (BANNED_COORD_TOKENS.has(token)) {
+        throw new Error(
+          `location payloads must never contain coordinates; forbidden field "${path}.${key}"`
+        );
+      }
+    }
+    assertNoCoordinates(child, `${path}.${key}`, depth + 1, seen);
+  }
+}

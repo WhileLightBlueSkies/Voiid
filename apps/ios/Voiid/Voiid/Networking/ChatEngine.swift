@@ -45,6 +45,23 @@ struct MediaRef: Codable, Equatable, Hashable {
     let sha256: String        // ciphertext integrity hash
 }
 
+/// A story reply's ratchet plaintext (§5.2). Sent as a normal 1:1 message with
+/// content_type "story_reply"; lives in the chat and does NOT expire with the story.
+///
+/// MUST live in ChatEngine.swift, NOT in the app-only Models/Story.swift: this file is
+/// compiled into the VoiidNSE extension target (which has no app model layer), and
+/// `decodeEnvelope` below decodes this type while the NSE decrypts an inbound push. Every
+/// wire type ChatEngine touches lives here for exactly that reason (cf. MediaRef, MediaEnvelope).
+struct StoryReplyEnvelope: Codable {
+    var v: Int = 1
+    var t: String = "story_reply"
+    let storyId: String
+    let storyAuthorId: String
+    let storyCreatedAt: Int64    // epoch ms
+    var text: String = ""        // the reply body
+    var reaction: String?        // a single emoji for the quick-tap rail, or nil
+}
+
 /// A decrypted message ready for the UI (and the on-disk store record).
 /// For media messages `text` holds a caption (often empty) and `media` carries
 /// the reference needed to fetch + decrypt the blob on demand.
@@ -55,6 +72,12 @@ struct DecryptedMessage: Codable {
     let createdAt: Date
     let isMine: Bool
     var media: MediaRef? = nil
+    /// The KEY-STRIPPED location envelope JSON for a pin / live-share bubble
+    /// (docs/LOCATION.md §4), or nil for a non-location message. Kept as a String (not a
+    /// typed struct) so this record — which is ALSO compiled into the Notification Service
+    /// Extension — needs no app-only type. The app decodes it into a `LocationRef` at render
+    /// time. The shareKey is NEVER stored here; it is captured to the Keychain by `LocationWire`.
+    var locationJSON: String? = nil
     /// True until the server has accepted this (offline / not-yet-sent). Persisted,
     /// so a message typed offline is visible immediately + survives restart + retried.
     var pending: Bool = false
@@ -93,6 +116,26 @@ final class ChatEngine {
     private var syncWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
     private init() { loadStore() }
 
+    /// Drop every trace of the signed-in account from MEMORY.
+    ///
+    /// Log-out deletes `voiid_messages.json` and the SQLite file, but this process does not
+    /// restart on sign-out — so without this, `store` still holds every decrypted message in
+    /// PLAINTEXT and `sessions` still holds live Olm sessions for the account that just left.
+    /// The next account to sign in on this handset would be running alongside the previous
+    /// user's messages, and the first `persist()` would write them straight back to disk,
+    /// silently undoing the file deletion.
+    ///
+    /// Must be called BEFORE the files are deleted, so nothing can flush in between.
+    func wipeInMemoryState() {
+        store.removeAll()
+        sessions.removeAll()
+        syncLocked.removeAll()
+        // Resume anyone parked on a per-conversation mutex; leaking a continuation would
+        // hang that task forever, and the work it was waiting to do is now meaningless.
+        for (_, waiters) in syncWaiters { for w in waiters { w.resume() } }
+        syncWaiters.removeAll()
+    }
+
     /// Acquire the per-conversation lock (hand-off: a waiter is woken WITH the lock
     /// held, so a new caller can't jump the queue).
     private func lockSync(_ conv: String) async {
@@ -125,16 +168,45 @@ final class ChatEngine {
     // live in the SAME decrypted-message store so the chat UI renders them identically.
     // These two hooks let GroupEngine dedup (decrypt-once) and append into that store.
 
-    /// All message ids currently stored for a conversation (used by GroupEngine to skip
-    /// already-decrypted MLS messages — MLS app messages can't be safely re-decrypted).
+    /// Message ids GroupEngine must NOT decrypt again — everything stored except
+    /// tombstones. MLS application messages are decrypt-once (the generation key is taken
+    /// out of `past_secrets`), hence the ledger; but a tombstone is deliberately excluded
+    /// so it IS retried. The MLS FFI collapses every failure into `DecryptionFailed`, so
+    /// Swift cannot tell "this generation was already consumed" (terminal) from "I haven't
+    /// applied the Commit for this epoch yet" (recoverable the moment it arrives). Retrying
+    /// costs one failed local decrypt per sync and has no side effect — OpenMLS writes
+    /// nothing on the error path — whereas treating a tombstone as final would hide a
+    /// perfectly decryptable message forever.
     func storedMessageIds(conversationId: String) -> Set<String> {
-        Set((store[conversationId] ?? []).map { $0.id })
+        Set((store[conversationId] ?? []).filter { !$0.failed }.map { $0.id })
     }
 
     /// Append an already-decrypted group message into the shared store (dedup by id +
-    /// persist). No-op if an entry with the same id already exists.
+    /// persist). An existing TOMBSTONE for the same id is upgraded in place; a successful
+    /// decrypt is never clobbered.
+    ///
+    /// MUST be called from inside GroupEngine's cross-process critical section. `append`
+    /// rewrites the WHOLE app-group store file from this process's in-memory copy, so
+    /// calling it with a stale `store` silently erases whatever the other process wrote —
+    /// which is why `GroupEngine.reloadSharedState()` calls `reloadStore()` first.
     func ingestGroupMessage(_ m: DecryptedMessage, conversationId: String) {
+        if let existing = (store[conversationId] ?? []).first(where: { $0.id == m.id }) {
+            guard existing.failed, !m.failed else { return }
+            replace(id: m.id, with: m, to: conversationId)
+            persist()
+            return
+        }
         append(m, to: conversationId)
+    }
+
+    /// Re-read the shared decrypted-message store from the app-group container. Used by
+    /// GroupEngine to make the group path obey the same read-modify-write discipline the
+    /// 1:1 path gets from `reloadSharedState`.
+    func reloadStore() { loadStore() }
+
+    /// One stored message by local id or server id (the push carries the server id).
+    func storedMessage(id: String, conversationId: String) -> DecryptedMessage? {
+        (store[conversationId] ?? []).first { $0.id == id || $0.serverId == id }
     }
 
     // MARK: - Backup export / import (the plaintext payload of an encrypted backup)
@@ -289,6 +361,35 @@ final class ChatEngine {
         }
     }
 
+    /// Send a location envelope (pin or live-share CONTROL) in a direct chat over the
+    /// durable message path (docs/LOCATION.md §1–2). `plaintextJSON` is the full envelope
+    /// (it may carry the shareKey, which stays end-to-end — the server only ever sees
+    /// `content_type: "location"` + opaque ciphertext). A visible local echo is appended
+    /// only when `rendersBubble` is true; its persisted JSON has the key stripped.
+    func sendLocation(plaintextJSON: String, conversationId: String, peerUserId: String,
+                      displayText: String, rendersBubble: Bool) async throws {
+        let plaintext = Data(plaintextJSON.utf8)
+        try await CrossProcessLock.withLock {
+            reloadSharedState()
+            let messages = try await encryptFanout(plaintext, peerUserId: peerUserId)
+            let res: SendResponse = try await api.request(
+                "POST", "messages/send",
+                body: SendBundleBody(conversation_id: conversationId,
+                                     sender_device_id: E2EManager.shared.deviceId,
+                                     messages: messages, content_type: "location"))
+            if rendersBubble {
+                let echo = DecryptedMessage(id: res.message_id,
+                                            senderId: TokenStore.shared.userId ?? "me",
+                                            text: displayText,
+                                            createdAt: res.created_at.map(parseDate) ?? Date(),
+                                            isMine: true,
+                                            locationJSON: LocationWire.strip(plaintextJSON),
+                                            deliveryStatus: "sent")
+                append(echo, to: conversationId)
+            }
+        }
+    }
+
     /// Fetch + decrypt a media blob referenced by a (received) message. Returns the
     /// PLAINTEXT bytes (the caller renders them); decryption uses the per-message
     /// media key carried in the E2EE envelope.
@@ -342,9 +443,18 @@ final class ChatEngine {
         guard E2EManager.shared.loadForExtension() else { return nil }
         guard let myId = TokenStore.shared.userId else { return nil }
 
-        // Resolve members for the sender's display name + the 1:1 peer (whose identity
-        // key/session we decrypt with). Group conversations aren't previewed here.
-        let members = (try? await fetchConversationMembers(conversationId)) ?? []
+        // Resolve the conversation for its kind + the sender's display name + the 1:1 peer
+        // (whose identity key/session we decrypt with).
+        let detail = try? await fetchConversationDetail(conversationId)
+        let members = detail?.members ?? []
+        // Groups use MLS, not the 1:1 ratchet — a completely separate engine, its own
+        // cross-process critical section. Branch BEFORE taking any lock here: flock is not
+        // reentrant, so acquiring it around GroupEngine's own acquisition would deadlock
+        // the extension against itself and deliver nothing.
+        if detail?.conversation?.type == "group" {
+            return await groupNotificationPreview(messageId: messageId, conversationId: conversationId,
+                                                  members: members, groupName: detail?.conversation?.name)
+        }
         let others = members.filter { $0.user_id != myId }
         guard others.count == 1, let peerUserId = others.first?.user_id else { return nil }
 
@@ -364,7 +474,9 @@ final class ChatEngine {
 
         guard let msg = decrypted.first(where: { $0.id == messageId || $0.serverId == messageId }),
               !msg.isMine, !msg.failed else { return nil }
-        let title = members.first(where: { $0.user_id == msg.senderId })?.full_name ?? "New message"
+        // The peer's saved address-book name wins over the name they signed up with —
+        // same precedence the in-app UI uses, resolved from the shared local database.
+        let title = senderName(msg.senderId, members: members)
         let body: String
         if msg.media != nil {
             body = msg.text.isEmpty ? "📎 Media" : "📎 \(msg.text)"
@@ -374,11 +486,54 @@ final class ChatEngine {
         return NotificationPreview(title: title, body: body, threadId: conversationId)
     }
 
+    /// Preview for an MLS GROUP message: "<group name>" / "<sender>: <text>".
+    ///
+    /// Decryption is delegated wholesale to GroupEngine, which takes the cross-process lock
+    /// and reloads MLS state itself — so this must be called with NO lock held. nil on any
+    /// failure (not joined yet, epoch we haven't committed, timeout) so the extension shows
+    /// the generic placeholder; a preview-less notification is bad, a missing one is worse.
+    ///
+    /// TRUST NOTE: the sender attribution is the server-asserted `messages.sender_id`, the
+    /// same basis the in-app group UI uses. MLS's cryptographically authenticated sender
+    /// leaf index is not exposed through the FFI, so a hostile server could mislabel WHO
+    /// sent a message it cannot read. The content itself stays end-to-end encrypted.
+    private func groupNotificationPreview(messageId: String, conversationId: String,
+                                          members: [ConvMember], groupName: String?) async -> NotificationPreview? {
+        guard let msg = await GroupEngine.shared.notificationDecrypt(
+                conversationId: conversationId, messageId: messageId),
+              !msg.isMine, !msg.failed else { return nil }
+        let sender = senderName(msg.senderId, members: members)
+        // Group title: the server's name, else the locally-cached conversation title, else a
+        // neutral word — never the conversation UUID.
+        let title = [groupName, SharedDirectory.conversationTitle(conversationId)]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty } ?? "Group"
+        let text: String
+        if msg.media != nil {
+            text = msg.text.isEmpty ? "📎 Media" : "📎 \(msg.text)"
+        } else {
+            text = msg.text.isEmpty ? "New message" : msg.text
+        }
+        return NotificationPreview(title: title, body: "\(sender): \(text)", threadId: conversationId)
+    }
+
+    /// A human name for a sender, never a raw id: this device's address book first (via the
+    /// shared local directory), then the profile name the server returned with the
+    /// conversation, then "Unknown".
+    private func senderName(_ senderId: String, members: [ConvMember]) -> String {
+        let serverName = members.first { $0.user_id == senderId }?.full_name
+        return SharedDirectory.displayName(senderId, fallback: serverName)
+    }
+
     private struct ConvMember: Decodable { let user_id: String; let full_name: String? }
-    private struct ConvDetailResponse: Decodable { let members: [ConvMember] }
-    private func fetchConversationMembers(_ id: String) async throws -> [ConvMember] {
-        let env: ConvDetailResponse = try await api.request("GET", "conversations/\(id)")
-        return env.members
+    /// `type` is "direct" | "group"; `name` is the group's server-side title (null for direct).
+    private struct ConvSummary: Decodable { let type: String?; let name: String? }
+    private struct ConvDetailResponse: Decodable {
+        var conversation: ConvSummary? = nil
+        let members: [ConvMember]
+    }
+    private func fetchConversationDetail(_ id: String) async throws -> ConvDetailResponse {
+        try await api.request("GET", "conversations/\(id)")
     }
 
     @discardableResult
@@ -432,11 +587,17 @@ final class ChatEngine {
                 // A media message's plaintext is a JSON MediaEnvelope; a text
                 // message is just the string. Detect via the server's content_type
                 // hint, falling back to the decoded shape.
-                let parsed = decodeEnvelope(plain, isMedia: m.content_type == "media")
+                let parsed = decodeEnvelope(plain, contentType: m.content_type)
+                // A location envelope (pin / live control). LocationWire captures/erases the
+                // shareKey in the Keychain (safe in the NSE too), strips it from the persisted
+                // JSON, and yields a clean display string so no raw JSON — and NO coordinate —
+                // ever reaches a notification body.
+                let loc = LocationWire.decode(plain)
                 replace(id: m.id, with:
-                        DecryptedMessage(id: m.id, senderId: m.sender_id, text: parsed.caption,
+                        DecryptedMessage(id: m.id, senderId: m.sender_id,
+                                         text: loc?.text ?? parsed.caption,
                                          createdAt: parseDate(m.created_at), isMine: false,
-                                         media: parsed.media),
+                                         media: parsed.media, locationJSON: loc?.json),
                        to: conversationId)
             } catch {
                 NSLog("[VOIID] ❌ inbound decrypt FAILED id=\(m.id) senderDev=\(m.sender_device_id ?? "nil"): \(error)")
@@ -557,6 +718,19 @@ final class ChatEngine {
     private func encryptFanout(_ plaintext: Data, peerUserId: String) async throws -> [DeviceCiphertext] {
         let targets = try await resolveTargets(peerUserId)
         if targets.isEmpty { throw APIError.http(status: 409, message: "no target devices for peer") }
+        let out = try await fanOut(plaintext, targets: targets)
+        // Nothing deliverable (e.g. peer hasn't published prekeys yet) — retryable, like the
+        // legacy single-device path, so the 4s poll re-sends when keys appear.
+        if out.isEmpty { throw APIError.http(status: 409, message: "peer has no available prekeys") }
+        return out
+    }
+
+    /// The core fan-out: encrypt `plaintext` once per TARGET device, reusing the hard-won
+    /// per-device session keying (glare candidates, append-never-overwrite, one bundle
+    /// fetch per user). Both the 1:1 path (`encryptFanout`) and the Stories path
+    /// (`encryptStoryKeys`) route through here so the correctness lives in ONE place.
+    /// Devices with no bundle / no available one-time prekey are skipped + logged.
+    private func fanOut(_ plaintext: Data, targets: [TargetDevice]) async throws -> [DeviceCiphertext] {
         var out: [DeviceCiphertext] = []
         // Group by owning user so we fetch each user's prekey bundles at most once per send
         // (each GET consumes a one-time key per device — don't call it per device).
@@ -574,9 +748,6 @@ final class ChatEngine {
                 out.append(DeviceCiphertext(recipient_device_id: t.deviceId, ciphertext: encodeWire(wire)))
             }
         }
-        // Nothing deliverable (e.g. peer hasn't published prekeys yet) — retryable, like the
-        // legacy single-device path, so the 4s poll re-sends when keys appear.
-        if out.isEmpty { throw APIError.http(status: 409, message: "peer has no available prekeys") }
         return out
     }
 
@@ -711,7 +882,19 @@ final class ChatEngine {
 
     private func persist() {
         guard let data = try? JSONEncoder().encode(store) else { return }
-        try? data.write(to: storeURL, options: [.atomic, .completeFileProtection])
+        // Protection class MUST match the keychain items this store is kept in step with.
+        // The identity/session/MLS pickles are `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`
+        // (E2EManager), so the NSE can reach them on a locked device — but with
+        // `.completeFileProtection` this file was unreadable in exactly that state. The NSE
+        // would then advance the ratchet in the keychain while failing to record the message
+        // here, and a failed LOAD is the dangerous half: `store` reads back empty and the next
+        // write persists that empty store over real history.
+        //
+        // `.completeFileProtectionUntilFirstUserAuthentication` keeps the file encrypted at
+        // rest until the first unlock after boot, which is the strongest class that still
+        // lets a background extension do its job. Same class as the SQLite database.
+        try? data.write(to: storeURL,
+                        options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     }
 
     // MARK: - Session persistence (pickled in Keychain)
@@ -802,16 +985,31 @@ final class ChatEngine {
         init(media: MediaRef, caption: String) { self.v = 1; self.media = media; self.caption = caption }
     }
 
-    /// Decode a decrypted plaintext into (caption, media?). If the server flagged
-    /// it as media (or it parses as a MediaEnvelope), pull out the reference;
-    /// otherwise it's a plain text body.
-    private func decodeEnvelope(_ plain: String, isMedia: Bool) -> (caption: String, media: MediaRef?) {
-        if isMedia, let data = plain.data(using: .utf8),
+    /// Decode a decrypted plaintext into (caption, media?). Media envelopes are keyed on
+    /// `content_type == "media"` as before. Story replies (content_type "story_reply") are
+    /// decoded ADDITIVELY here so their JSON body is never rendered as raw text (§5.3) —
+    /// plus a defensive fallback: any plaintext that parses as a JSON object carrying a
+    /// recognised `"t"` is decoded, not shown verbatim.
+    private func decodeEnvelope(_ plain: String, contentType: String?) -> (caption: String, media: MediaRef?) {
+        let data = plain.data(using: .utf8)
+        if contentType == "media", let data,
            let env = try? JSONDecoder().decode(MediaEnvelope.self, from: data) {
             return (env.caption, env.media)
         }
+        // A story reply carries a typed envelope; render its body (reaction or text), and
+        // NEVER leave the raw JSON in a bubble. The `"t"` probe also catches the case where
+        // an older content_type hint is missing but the payload is a recognised envelope.
+        if let data, let probe = try? JSONDecoder().decode(EnvelopeProbe.self, from: data),
+           probe.t == "story_reply",
+           let reply = try? JSONDecoder().decode(StoryReplyEnvelope.self, from: data) {
+            let body = reply.reaction ?? reply.text
+            return (body, nil)
+        }
         return (plain, nil)
     }
+
+    /// Peeks only at an envelope's discriminator so we can decode the right concrete type.
+    private struct EnvelopeProbe: Decodable { let t: String? }
 
     // DTOs for messages API
 
@@ -836,4 +1034,198 @@ final class ChatEngine {
         var receipt_status: String? = nil      // "delivered"/"read" — recipient's state of OUR sent msg
     }
     private struct MessagesResponse: Decodable { let messages: [MessageDTO] }
+
+    // MARK: - Stories
+    //
+    // Stories reuse this engine's crypto wholesale: a story blob is encrypted with the
+    // SAME `encryptMedia` primitive as a media message, and the per-device key envelope
+    // is an ORDINARY ratchet message fanned out through the SAME session machinery. All of
+    // it lives here (not in StoryEngine) so the crypto stays in one place and StoryEngine
+    // never touches a Session, an Identity, or a media key. See docs/STORIES_PROTOCOL.md.
+
+    /// Encrypt a story blob once with a fresh random AES-256-GCM key (§1.3 step 2). Returns
+    /// the ciphertext (PUT straight to R2) and the media key parts that go INTO the envelope
+    /// — the key never leaves E2E.
+    func encryptStoryBlob(_ data: Data) throws -> (ciphertext: Data, key: String, nonce: String, sha256: String) {
+        let enc = try encryptMedia(plaintext: data)
+        return (enc.ciphertext, enc.mediaKey.key, enc.mediaKey.nonce, enc.mediaKey.ciphertextSha256)
+    }
+
+    /// Fetch-verify-decrypt a story blob given its media key (from the decrypted envelope).
+    /// `decryptMedia` verifies the ciphertext SHA-256 before decrypting, so a mismatch
+    /// throws rather than returning a blank frame (§1.5.7).
+    func decryptStoryBlob(ciphertext: Data, key: String, nonce: String, sha256: String) throws -> Data {
+        try decryptMedia(mediaKey: MediaKey(key: key, nonce: nonce, ciphertextSha256: sha256),
+                         ciphertext: ciphertext)
+    }
+
+    /// Fan out a story key `envelope` to every active device of `audienceUserIds`, plus
+    /// (when `includeOwnDevices`) our own OTHER devices, minus this posting device. Each
+    /// device's copy is `Session.encrypt(envelope)` over the existing 1:1 ratchet, so a
+    /// story key is exactly one ordinary ratchet message per device (§1.3 step 7). Devices
+    /// with no available prekey are skipped + logged — partial delivery is the norm on this
+    /// transport and `POST /stories/:id/keys` retries the rest. Ratchet-mutating, so it runs
+    /// under the cross-process lock like every other fan-out.
+    func encryptStoryKeys(_ envelope: Data, audienceUserIds: [String],
+                          includeOwnDevices: Bool) async throws -> [(deviceId: String, ciphertext: String)] {
+        return try await CrossProcessLock.withLock {
+            reloadSharedState()
+            let targets = try await resolveStoryTargets(audienceUserIds, includeOwnDevices: includeOwnDevices)
+            let out = try await fanOut(envelope, targets: targets)
+            return out.map { ($0.recipient_device_id, $0.ciphertext) }
+        }
+    }
+
+    /// Target devices for a story: every audience user's active devices, plus optionally
+    /// our own other devices, minus this device. Deduped by device id (the audience may
+    /// overlap with ourselves, or a user may appear twice).
+    private func resolveStoryTargets(_ userIds: [String], includeOwnDevices: Bool) async throws -> [TargetDevice] {
+        var targets: [TargetDevice] = []
+        var seen = Set<String>()
+        let myDev = E2EManager.shared.deviceId
+        let myId = TokenStore.shared.userId
+        for uid in userIds {
+            let devs: DevicesResponse = (try? await api.request("GET", "devices/\(uid)")) ?? DevicesResponse(devices: [])
+            for d in devs.devices where d.id != myDev && seen.insert(d.id).inserted {
+                targets.append(TargetDevice(userId: uid, deviceId: d.id))
+            }
+        }
+        if includeOwnDevices, let myId {
+            let mine: DevicesResponse = (try? await api.request("GET", "devices/\(myId)")) ?? DevicesResponse(devices: [])
+            for d in mine.devices where d.id != myDev && seen.insert(d.id).inserted {
+                targets.append(TargetDevice(userId: myId, deviceId: d.id))
+            }
+        }
+        return targets
+    }
+
+    /// Decrypt a story key envelope THIS device received from the feed. `authorDeviceId`
+    /// selects the author device whose session produced it. Returns nil to DROP (the caller
+    /// surfaces "This story couldn't be loaded", never a blank frame).
+    func decryptStoryEnvelope(ciphertextB64: String, authorUserId: String,
+                              authorDeviceId: String?) async -> Data? {
+        guard let wire = decodeWire(ciphertextB64) else { return nil }
+        return await CrossProcessLock.withLock {
+            reloadSharedState()
+            do {
+                let plain = try await decryptInbound(wire, peerUserId: authorUserId, senderDeviceId: authorDeviceId)
+                return Data(plain.utf8)
+            } catch {
+                NSLog("[VOIID] story envelope decrypt failed author=\(authorUserId): \(error)")
+                return nil
+            }
+        }
+    }
+
+    /// Decrypt a view receipt on the AUTHOR side. The API deliberately does not tell us who
+    /// posted it (the viewer id lives inside the encrypted payload), so we try the story's
+    /// KNOWN AUDIENCE devices — the author already holds a session with each, established
+    /// when the story key was fanned out to them. Returns nil to drop.
+    func decryptStoryReceipt(ciphertextB64: String, audienceUserIds: [String]) async -> Data? {
+        guard let wire = decodeWire(ciphertextB64) else { return nil }
+        return await CrossProcessLock.withLock {
+            reloadSharedState()
+            for uid in audienceUserIds {
+                guard let devs: DevicesResponse = try? await api.request("GET", "devices/\(uid)") else { continue }
+                for d in devs.devices {
+                    if let plain = try? await decryptInbound(wire, peerUserId: uid, senderDeviceId: d.id) {
+                        return Data(plain.utf8)
+                    }
+                }
+            }
+            return nil
+        }
+    }
+
+    /// Send a story reply as an ordinary 1:1 message (content_type "story_reply", §5). It
+    /// lands in the chat with the author and does NOT expire with the story. Reuses the
+    /// exact fan-out used for a text message.
+    @discardableResult
+    func sendStoryReply(_ envelope: StoryReplyEnvelope,
+                        conversationId: String, peerUserId: String) async throws -> DecryptedMessage {
+        let data = try JSONEncoder().encode(envelope)
+        return try await CrossProcessLock.withLock {
+            reloadSharedState()
+            let messages = try await encryptFanout(data, peerUserId: peerUserId)
+            let res: SendResponse = try await api.request(
+                "POST", "messages/send",
+                body: SendBundleBody(conversation_id: conversationId,
+                                     sender_device_id: E2EManager.shared.deviceId,
+                                     messages: messages, content_type: "story_reply"))
+            let body = envelope.reaction ?? envelope.text
+            let echo = DecryptedMessage(id: res.message_id, senderId: TokenStore.shared.userId ?? "me",
+                                        text: body, createdAt: res.created_at.map(parseDate) ?? Date(),
+                                        isMine: true)
+            append(echo, to: conversationId)
+            return echo
+        }
+    }
+}
+
+// MARK: - Location wire (docs/LOCATION.md §4)
+
+/// Decodes a location envelope from a decrypted plaintext, WITHOUT depending on any
+/// app-only type — pure Foundation + `KeychainData` — so it compiles in BOTH the app and
+/// the Notification Service Extension (which share ChatEngine/GroupEngine but not the app's
+/// model layer). It has three jobs:
+///   1. Recognise a `_vloc == 1` envelope and produce a clean DISPLAY string, so no raw
+///      JSON — and critically NO coordinate — ever reaches a notification body.
+///   2. Capture (live_start/rekey) or erase (live_stop) the shareKey in the Keychain. The
+///      key MUST be captured wherever the message is first decrypted, including the NSE,
+///      or a share received while the app is closed can never be decrypted afterwards.
+///   3. STRIP the key from the JSON that gets persisted in the plaintext message store —
+///      keys live in the secure store, never in SQLite (docs/LOCATION.md §6).
+enum LocationWire {
+    // Same Keychain service + naming as LocationKeyStore (the app-side accessor), so a key
+    // captured here in the NSE is the exact one the app later reads.
+    private static let vault = KeychainData(service: "com.voiid.location.keys")
+    private static func keyName(_ shareId: String) -> String { "sharekey_\(shareId)" }
+
+    /// Rendered kinds get a bubble; everything else is silent control.
+    static func displayText(kind: String, label: String?) -> String {
+        switch kind {
+        case "pin":        return (label?.isEmpty == false ? label! : "Location")
+        case "live_start": return "Live location"
+        case "live_stop":  return "Live location ended"
+        default:           return ""
+        }
+    }
+
+    /// Strip the shareKey from an envelope JSON, returning the safe-to-persist string.
+    static func strip(_ plaintextJSON: String) -> String {
+        guard let data = plaintextJSON.data(using: .utf8),
+              var obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (obj["_vloc"] as? Int) == 1 else { return plaintextJSON }
+        obj["key"] = nil
+        return (try? JSONSerialization.data(withJSONObject: obj))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? plaintextJSON
+    }
+
+    /// Full decode: capture/erase the key, and return (clean display text, key-stripped
+    /// JSON). nil when the plaintext is not a location envelope.
+    static func decode(_ plaintext: String) -> (text: String, json: String)? {
+        guard let data = plaintext.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (obj["_vloc"] as? Int) == 1,
+              let kind = obj["k"] as? String else { return nil }
+
+        if let shareId = obj["s"] as? String {
+            switch kind {
+            case "live_start", "live_rekey", "map_key":
+                if let key = obj["key"] as? String { vault.set(key, keyName(shareId)) }
+            case "live_stop", "map_off":
+                vault.delete(keyName(shareId))
+            default: break
+            }
+            // Wake the app to reconcile inbound-share state (harmless in the NSE — no
+            // observers there). String name avoids a cross-file Notification.Name dependency.
+            NotificationCenter.default.post(name: Notification.Name("voiidLocationInboxChanged"),
+                                            object: shareId)
+        }
+
+        var stripped = obj; stripped["key"] = nil
+        let json = (try? JSONSerialization.data(withJSONObject: stripped))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? plaintext
+        return (displayText(kind: kind, label: obj["label"] as? String), json)
+    }
 }

@@ -337,6 +337,10 @@ private fun BubbleInner(message: VMessage, isGroup: Boolean, isLastMine: Boolean
             message.poll?.let { PollBubble(it, onVote) }
             MetaRow(message, isLastMine, Modifier.padding(top = 2.dp))
         }
+        MessageKind.LOCATION -> {
+            LocationPinBubble(message)
+            MetaRow(message, isLastMine, Modifier.padding(top = 2.dp))
+        }
         else -> Row(
             verticalAlignment = Alignment.Bottom,
             horizontalArrangement = Arrangement.spacedBy(6.dp),

@@ -25,6 +25,7 @@
 //
 
 import Foundation
+import GRDB
 import Security
 
 // MARK: - App Group container
@@ -49,6 +50,79 @@ enum AppGroup {
     /// The file the cross-process lock is taken on (contents are irrelevant).
     static var lockURL: URL? {
         containerURL?.appendingPathComponent("voiid_decrypt.lock")
+    }
+}
+
+// MARK: - Shared local directory (names, resolvable without the app)
+
+/// Read-only access to the local user directory + conversation titles from ANY process,
+/// including the Notification Service Extension.
+///
+/// WHY THIS EXISTS RATHER THAN `UserDirectory`: a notification must never show a raw user
+/// id, and the name a user actually expects to see is the one from THIS device's address
+/// book (`saved_name`) — which only exists locally. `UserDirectory` is the app's canonical
+/// resolver, but it is a @MainActor ObservableObject that drags in the whole storage layer
+/// plus `CallManager` (for E.164 normalisation); the NSE compiles a handful of networking
+/// files inside a 24 MB budget and cannot afford that graph. The `users` and
+/// `conversations` tables it mirrors already live in the SAME app-group database, so the
+/// extension applies the same precedence to the same rows without the objects.
+///
+/// The precedence below MUST stay in step with `DirectoryUser.displayName`:
+///   saved_name → full_name → phone_e164 → username → caller's fallback → "Unknown".
+/// A raw user id is never an acceptable answer.
+enum SharedDirectory {
+    /// Opened lazily and only if the app has already created the database — opening a
+    /// missing path would MINT an empty, un-migrated file that the app then has to
+    /// migrate from scratch. No writes ever happen through this handle.
+    private static let queue: DatabaseQueue? = {
+        guard let url = AppGroup.containerURL?.appendingPathComponent("voiid.sqlite"),
+              FileManager.default.fileExists(atPath: url.path) else { return nil }
+        var config = Configuration()
+        // Names and conversation titles pass through here; never let them reach the log.
+        config.publicStatementArguments = false
+        return try? DatabaseQueue(path: url.path, configuration: config)
+    }()
+
+    private static func read<T>(_ block: (Database) throws -> T) -> T? {
+        guard let queue else { return nil }
+        return try? queue.read(block)
+    }
+
+    /// The name to show for a user id. `fallback` is normally the server-supplied
+    /// `full_name` from the conversation payload — used only when we have no local row.
+    static func displayName(_ userId: String, fallback: String? = nil) -> String {
+        let row = read { db in
+            try Row.fetchOne(db, sql: """
+                select saved_name, full_name, phone_e164, username from users where user_id = ?
+                """, arguments: [userId])
+        } ?? nil
+        var candidates: [String?] = []
+        if let row {
+            // `as String?` selects GRDB's NULL-tolerant subscript. The non-optional overload
+            // traps on a NULL column, and every one of these columns is nullable — a name
+            // lookup must never be able to crash the extension.
+            candidates = [row["saved_name"] as String?, row["full_name"] as String?,
+                          row["phone_e164"] as String?, row["username"] as String?]
+        }
+        candidates.append(fallback)
+        for c in candidates {
+            if let c = c?.trimmingCharacters(in: .whitespacesAndNewlines), !c.isEmpty, c != userId {
+                return c
+            }
+        }
+        return "Unknown"
+    }
+
+    /// A conversation's locally-stored title. Authoritative for GROUPS only (a direct
+    /// chat's title is derived from the peer at read time), which is exactly the case
+    /// that needs it: the group name to put in a notification title.
+    static func conversationTitle(_ conversationId: String) -> String? {
+        let title = read { db in
+            try String.fetchOne(db, sql: "select title from conversations where id = ?",
+                                arguments: [conversationId])
+        } ?? nil
+        guard let t = title?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty else { return nil }
+        return t
     }
 }
 
