@@ -38,10 +38,10 @@ router.get('/:id', requireAuth, async (req, res) => {
   const targetId = req.params.id;
   const rows = await query<{
     id: string; full_name: string | null; photo_url: string | null; bio: string | null;
-    status_text: string | null; username: string | null;
+    status_text: string | null; username: string | null; phone_number: string | null;
     photo_privacy: string; about_privacy: string;
   }>(
-    `select id, full_name, photo_url, bio, status_text, username,
+    `select id, full_name, photo_url, bio, status_text, username, phone_number,
             photo_privacy, about_privacy
        from users where id = $1 and deleted_at is null`,
     [targetId]
@@ -70,6 +70,10 @@ router.get('/:id', requireAuth, async (req, res) => {
       status_text: u.status_text,
       photo_url: allowed(u.photo_privacy) ? u.photo_url : null,
       bio: allowed(u.about_privacy) ? u.bio : null,
+      // The phone number is the account's identity and is returned ONLY to the owner
+      // (self), never to anyone else — it is how a user recovers their own real number on
+      // a device that didn't capture it at OTP time. Others never receive it.
+      phone_number: isOwner ? u.phone_number : undefined,
     },
   });
 });

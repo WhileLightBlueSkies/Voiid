@@ -73,6 +73,13 @@ final class AppSession: ObservableObject {
         if let url = p.photoURL, !url.isEmpty { profile.photoURL = url }
         if let bio = p.about, !bio.isEmpty { profile.bio = bio }
         if let u = p.username, !u.isEmpty { profile.username = u }
+        // The server returns the phone number ONLY for our own profile — the authoritative,
+        // Firebase-independent source. Use it if we don't already have one (e.g. an account
+        // that logged in before we captured it at OTP), and persist it for offline launches.
+        if profile.phoneNumber.isEmpty, let phone = p.phoneNumber, !phone.isEmpty {
+            profile.phoneNumber = phone
+            Self.saveVerifiedPhone(phone)
+        }
         persistLocalProfile()
     }
 

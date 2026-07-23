@@ -51,6 +51,8 @@ struct UserProfile {
     let photoURL: String?
     let about: String?
     let username: String?
+    /// Only ever populated for the OWN profile (the server returns it only to the owner).
+    let phoneNumber: String?
 }
 
 @MainActor
@@ -144,10 +146,12 @@ final class ChatService {
             let bio: String?
             let status_text: String?
             let username: String?
+            let phone_number: String?
         }
         let env: Envelope = try await api.request("GET", "users/\(userId)")
         return UserProfile(name: env.user.full_name, photoURL: env.user.photo_url,
-                           about: env.user.bio ?? env.user.status_text, username: env.user.username)
+                           about: env.user.bio ?? env.user.status_text, username: env.user.username,
+                           phoneNumber: env.user.phone_number)
     }
 
     /// Peer presence (online + last_seen epoch millis) from Redis-backed status.
