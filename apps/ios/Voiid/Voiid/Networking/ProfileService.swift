@@ -42,7 +42,10 @@ final class ProfileService {
         email: String? = nil,
         photoURL: String? = nil,
         bio: String? = nil,
-        username: String? = nil
+        username: String? = nil,
+        lastSeenPrivacy: String? = nil,
+        photoPrivacy: String? = nil,
+        aboutPrivacy: String? = nil
     ) async throws -> ProfileUser {
         var body: [String: String] = [:]
         if let fullName { body["full_name"] = fullName }
@@ -50,6 +53,9 @@ final class ProfileService {
         if let photoURL { body["photo_url"] = photoURL }
         if let bio { body["bio"] = bio }
         if let username { body["username"] = username }
+        if let lastSeenPrivacy { body["last_seen_privacy"] = lastSeenPrivacy }
+        if let photoPrivacy { body["photo_privacy"] = photoPrivacy }
+        if let aboutPrivacy { body["about_privacy"] = aboutPrivacy }
         let env: ProfileEnvelope = try await api.request("POST", "users/profile/update", body: body)
         return env.user
     }

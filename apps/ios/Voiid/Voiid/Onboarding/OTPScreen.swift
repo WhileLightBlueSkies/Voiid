@@ -47,6 +47,9 @@ struct OTPScreen: View {
         do {
             let idToken = try await FirebasePhoneAuth.verify(verificationID: verificationID, code: code)
             let profileComplete = try await AuthService.shared.loginWithFirebase(idToken: idToken)
+            // Persist the VERIFIED phone number. The server never stores it, so this is the
+            // ONLY place the real number is known — without this, Settings shows a placeholder.
+            AppSession.saveVerifiedPhone(phoneE164)
             // Publish this device's E2E identity + prekeys (needed for encrypted chat).
             try? await E2EManager.shared.bootstrap()
             Haptics.success()

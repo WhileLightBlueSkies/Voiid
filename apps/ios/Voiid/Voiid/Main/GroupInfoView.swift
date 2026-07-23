@@ -35,8 +35,10 @@ struct GroupInfoView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
         .tint(VoiidColor.primary)
+        // Hide on appear; do NOT reset on disappear — popping back to the CHAT (also a
+        // detail) must keep the bar hidden. It is restored when a root tab page appears
+        // (ChatDetailView.onDisappear + each tab root's onAppear).
         .onAppear { session.hideTabBar = true }
-        .onDisappear { session.hideTabBar = false }
         .task { await loadMembers() }
         .fullScreenCover(isPresented: $viewPhoto) {
             ProfilePhotoViewer(title: conversation.title, imageName: conversation.photoName) { viewPhoto = false }

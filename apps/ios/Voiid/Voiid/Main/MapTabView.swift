@@ -71,6 +71,7 @@ struct MapTabView: View {
         }
         .tint(VoiidColor.primary)
         .onAppear {
+            session.hideTabBar = false   // Map is a root tab — always show the bottom bar
             engine.noteForegrounded()
             if !seenExplainer { showExplainer = true }
         }

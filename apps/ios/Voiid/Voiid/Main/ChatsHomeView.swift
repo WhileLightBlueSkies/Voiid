@@ -124,16 +124,22 @@ struct ChatsHomeView: View {
             }
             .onAppear { session.hideTabBar = false }   // root screen always shows the bar
             .task {
-                try? await E2EManager.shared.bootstrap()   // ensure identity/prekeys published (idempotent)
+                // INSTANT FIRST: render the cached (local) chat list before ANY network or
+                // address-book work. loadConversations() reads local storage synchronously up
+                // front, so the list appears immediately; the network sync inside it continues
+                // after. Nothing slow may run before this — that was the 8–15s "not instant" bug
+                // (contact discovery + profile fetch were awaited ahead of the render).
+                await chat.loadConversations()
+
+                // Everything below is background/best-effort and must NEVER block the list.
                 WebSocketClient.shared.reconnect()         // fresh socket (avoid a stale/dead one missing pushes)
                 LocationShareEngine.shared.configure()     // route inbound live fixes + start the expiry ticker
-                await session.refreshServerProfile()        // pull REAL name/photo/bio/username from the server
-                // Re-run contact discovery on every launch so the local address-book name
-                // map (UserDirectory saved_name) is rebuilt — critical after a RESTORE /
-                // reinstall, where the users table is empty and names would otherwise fall
-                // back to the peer's signup name instead of the contact you saved.
-                _ = try? await ContactsService.shared.discover()
-                await chat.loadConversations()              // load REAL conversations from backend
+                Task { try? await E2EManager.shared.bootstrap() }   // publish identity/prekeys (idempotent)
+                Task { await session.refreshServerProfile() }       // REAL name/photo/bio/username
+                // Contact discovery (rebuilds saved-name map after a restore) — SLOW (address
+                // book + hashing + network), so strictly background; when it finishes it
+                // refreshes names in place via UserDirectory.
+                Task { _ = try? await ContactsService.shared.discover() }
             }
             .navigationDestination(item: $openConversation) { ChatDetailView(conversation: $0) }
             .onReceive(NotificationCenter.default.publisher(for: .voiidOpenConversation)) { note in

@@ -26,11 +26,23 @@ final class AppSession: ObservableObject {
     /// is the right tool — it is read during launch, before the database is touched,
     /// and it must never be the reason a launch blocks.
     private static let profileKey = "voiid.me.profile.v1"
+    /// The VERIFIED E.164 phone from the OTP flow. The server never stores the phone, so
+    /// this UserDefaults key is the only source of the user's REAL number.
+    static let verifiedPhoneKey = "voiid.me.phone.e164"
+
+    /// Called from the OTP screen on a successful verification. The one place the real
+    /// number is known.
+    static func saveVerifiedPhone(_ e164: String) {
+        UserDefaults.standard.set(e164, forKey: verifiedPhoneKey)
+    }
 
     init() {
         // Resume straight to the app if we already hold a valid session token.
         route = AuthService.shared.isAuthenticated ? .main : .onboarding
         loadLocalProfile()
+        // Show the REAL verified number, never DummyData's placeholder. Empty (→ "—" in
+        // Settings) if we somehow don't have it, but NEVER a fake number.
+        profile.phoneNumber = UserDefaults.standard.string(forKey: Self.verifiedPhoneKey) ?? ""
         // On relaunch of an already-authenticated session, pull the authoritative profile
         // from the server so a reinstall / new device shows the REAL name, photo, bio and
         // username — not a stale local copy or a placeholder.
@@ -131,6 +143,7 @@ final class AppSession: ObservableObject {
         // Your profile is per-account state; leaving it behind would show the previous
         // user's name and photo on the next login.
         UserDefaults.standard.removeObject(forKey: Self.profileKey)
+        UserDefaults.standard.removeObject(forKey: Self.verifiedPhoneKey)
         profile = DummyData.me
         // In-memory stores outlive the session (they are @StateObjects on ContentView),
         // so they have to be told.

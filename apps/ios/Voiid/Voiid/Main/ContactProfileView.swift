@@ -53,8 +53,11 @@ struct ContactProfileView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
         .tint(VoiidColor.primary)
+        // Hide the bottom bar on this detail screen. We do NOT reset on disappear: when you
+        // pop back to the CHAT (also a detail screen) its onAppear does not re-fire, so a
+        // reset here would wrongly show the bar over the chat. The bar is restored only when
+        // a ROOT tab page appears (each sets hideTabBar = false).
         .onAppear { session.hideTabBar = true }
-        .onDisappear { session.hideTabBar = false }
         .task { await loadProfile() }
         .fullScreenCover(isPresented: $viewPhoto) {
             ProfilePhotoViewer(title: displayName, imageName: conversation.photoName) { viewPhoto = false }

@@ -46,21 +46,18 @@ struct ChatDetailView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Multi-select has its own bar; NORMAL mode uses the NATIVE navigation bar +
-            // toolbar — Apple's system back button and `chatToolbar` items. No custom chrome,
-            // no forced background: iOS renders it as Liquid Glass on 26 and its own native
-            // bar on 18 (the native fallback), automatically.
-            if selectionMode { selectionHeader }
+            // Back button + ONE pill (avatar · name · call · video · ⋯) spanning the whole
+            // thing, in Apple's Liquid Glass on iOS 26 (flat below). Multi-select swaps in
+            // its own bar. See `normalHeader`.
+            if selectionMode { selectionHeader } else { normalHeader }
             // "You are sharing your location" — pinned at the top of the chat, one-tap Stop.
             LocationBanner(conversationId: conversation.id)
             messageList
             inputBar
         }
         .background(VoiidColor.background.ignoresSafeArea())
-        .navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden(selectionMode)
-        .toolbar(selectionMode ? .hidden : .visible, for: .navigationBar)
-        .toolbar { if !selectionMode { chatToolbar } }
+        .navigationBarBackButtonHidden(true)
+        .toolbar(.hidden, for: .navigationBar)
         // Hide the bottom tab bar while a chat is open; restore on leave.
         .onAppear {
             session.hideTabBar = true
@@ -244,58 +241,87 @@ struct ChatDetailView: View {
 
     // MARK: header
 
-    /// The NATIVE chat toolbar. Apple owns the back button and all bar chrome; we only
-    /// supply content — a tappable avatar+name in `.principal` (→ profile / group info) and
-    /// call / video / ⋯ as trailing items. The system renders it: Liquid Glass on iOS 26,
-    /// the classic native bar on iOS 18. Nothing custom, no forced background.
-    @ToolbarContentBuilder
-    private var chatToolbar: some ToolbarContent {
-        ToolbarItem(placement: .principal) {
-            Button { Haptics.tap(); showInfo = true } label: {
-                HStack(spacing: VoiidSpacing.sm) {
-                    ProfileAvatarButton(photoURL: conversation.photoURL,
-                                        name: conversation.title, size: 34)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(conversation.title)
-                            .font(VoiidFont.rounded(17, .semibold))
-                            .foregroundColor(VoiidColor.textPrimary)
-                            .lineLimit(1)
-                        if let presenceText {
-                            Text(presenceText)
-                                .font(VoiidFont.rounded(11, .regular))
-                                .foregroundColor(chat.typingConversations.contains(conversation.id) ? VoiidColor.primary : VoiidColor.textSecondary)
-                                .lineLimit(1)
-                        }
-                    }
-                }
+    /// Chat header: a round back button, then ONE continuous pill spanning the avatar, the
+    /// name/presence (tap → profile / group info) AND the call / video / ⋯ actions. Rendered
+    /// in Apple's Liquid Glass material on iOS 26 (`.glassEffect`), flat below. The controls
+    /// inside are native Button/Menu; only the single-pill container is custom, because the
+    /// native toolbar cannot put the name and the actions in one pill.
+    private var normalHeader: some View {
+        HStack(spacing: VoiidSpacing.sm) {
+            Button { Haptics.tap(); dismiss() } label: {
+                Image(systemName: "chevron.backward")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundColor(VoiidColor.primary)
+                    .frame(width: 44, height: 44)
+                    .voiidGlassCircle()
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(conversation.type == .group ? "Group info" : "Contact profile")
+            .accessibilityLabel("Back")
+
+            HStack(spacing: VoiidSpacing.sm) {
+                Button { Haptics.tap(); showInfo = true } label: {
+                    HStack(spacing: VoiidSpacing.sm) {
+                        ProfileAvatarButton(photoURL: conversation.photoURL,
+                                            name: conversation.title, size: 38)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(conversation.title)
+                                .font(VoiidFont.rounded(17, .semibold))
+                                .foregroundColor(VoiidColor.textPrimary)
+                                .lineLimit(1)
+                            if let presenceText {
+                                Text(presenceText)
+                                    .font(VoiidFont.rounded(11, .regular))
+                                    .foregroundColor(chat.typingConversations.contains(conversation.id) ? VoiidColor.primary : VoiidColor.textSecondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                headerAction("phone.fill", "Voice call") { startCall(.voice) }
+                headerAction("video.fill", "Video call") { startCall(.video) }
+                Menu {
+                    Button { showInfo = true } label: {
+                        Label(conversation.type == .group ? "Group info" : "View profile", systemImage: "info.circle")
+                    }
+                    Button { withAnimation { selectionMode = true } } label: {
+                        Label("Select messages", systemImage: "checkmark.circle")
+                    }
+                    Button(role: .destructive) { showClearChat = true } label: {
+                        Label("Clear chat", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(VoiidColor.primary)
+                        .frame(width: 30, height: 30)
+                }
+                .accessibilityLabel("More")
+            }
+            .padding(.leading, VoiidSpacing.sm)
+            .padding(.trailing, VoiidSpacing.md)
+            .padding(.vertical, 7)
+            .voiidGlassCapsule()
         }
-        ToolbarItemGroup(placement: .topBarTrailing) {
-            Button { Haptics.tap(); startCall(.voice) } label: {
-                Image(systemName: "phone.fill")
-            }
-            .accessibilityLabel("Voice call")
-            Button { Haptics.tap(); startCall(.video) } label: {
-                Image(systemName: "video.fill")
-            }
-            .accessibilityLabel("Video call")
-            Menu {
-                Button { showInfo = true } label: {
-                    Label(conversation.type == .group ? "Group info" : "View profile", systemImage: "info.circle")
-                }
-                Button { withAnimation { selectionMode = true } } label: {
-                    Label("Select messages", systemImage: "checkmark.circle")
-                }
-                Button(role: .destructive) { showClearChat = true } label: {
-                    Label("Clear chat", systemImage: "trash")
-                }
-            } label: {
-                Image(systemName: "ellipsis")
-            }
-            .accessibilityLabel("More")
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.vertical, VoiidSpacing.sm)
+    }
+
+    /// A round action inside the header pill (native Button; brand-tinted glyph).
+    private func headerAction(_ systemName: String, _ label: String,
+                              _ action: @escaping () -> Void) -> some View {
+        Button { Haptics.tap(); action() } label: {
+            Image(systemName: systemName)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(VoiidColor.primary)
+                .frame(width: 30, height: 30)
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
 
     private var selectionHeader: some View {
