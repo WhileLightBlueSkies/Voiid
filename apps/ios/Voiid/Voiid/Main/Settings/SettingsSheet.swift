@@ -93,7 +93,6 @@ struct ProfileAvatarButton: View {
         }
         .frame(width: size, height: size)
         .clipShape(Circle())
-        .overlay(Circle().stroke(VoiidColor.textSecondary.opacity(0.15), lineWidth: 1))
         .task(id: photoURL) { await resolveIfNeeded() }
     }
 

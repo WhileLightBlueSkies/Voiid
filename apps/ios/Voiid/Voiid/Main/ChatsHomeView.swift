@@ -321,9 +321,10 @@ struct ChatsHomeView: View {
     private func gridCard(_ conv: VConversation) -> some View {
         VStack(spacing: VoiidSpacing.sm) {
             ZStack(alignment: .topTrailing) {
-                // Avatar fills the column width as a full circle (scales per device).
+                // Avatar fills the column width as a square (scales per device).
                 ZStack {
-                    Circle().fill(VoiidColor.fieldFill)
+                    RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
+                        .fill(VoiidColor.fieldFill)
                     if let name = conv.photoName, let ui = UIImage(named: name) {
                         Image(uiImage: ui).resizable().scaledToFill()
                     } else {
@@ -332,7 +333,7 @@ struct ChatsHomeView: View {
                     }
                 }
                 .aspectRatio(1, contentMode: .fit)
-                .clipShape(Circle())
+                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
 
                 if conv.isOnline {
                     Circle().fill(VoiidColor.success)

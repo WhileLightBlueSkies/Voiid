@@ -156,14 +156,14 @@ struct DraggableChatGrid: View {
         VStack(spacing: VoiidSpacing.sm) {
             ZStack(alignment: .topTrailing) {
                 ZStack {
-                    Circle().fill(VoiidColor.fieldFill)
+                    RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous).fill(VoiidColor.fieldFill)
                     // Show the peer's REAL profile photo (conv.photoURL is an R2 key or URL),
                     // resolved through the shared cache — falling back to a bundled asset, then
                     // the wordmark. Previously the grid only ever showed bundled/dummy assets.
                     GridPeerImage(photoURL: conv.photoURL, photoName: conv.photoName)
                 }
                 .aspectRatio(1, contentMode: .fit)
-                .clipShape(Circle())
+                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
                 if conv.isOnline {
                     Circle().fill(VoiidColor.success).frame(width: 13, height: 13)
                         .overlay(Circle().stroke(VoiidColor.background, lineWidth: 2)).offset(x: -6, y: 6)
