@@ -32,7 +32,6 @@ struct ChatsHomeView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                header
                 searchBar
                 tabs
                 // "You are sharing your location" — pinned below the tabs, visible from the
@@ -100,6 +99,29 @@ struct ChatsHomeView: View {
                 }
             }
             .background(VoiidColor.background.ignoresSafeArea())
+            // Native large title + toolbar (replaces the hand-drawn header): the system draws
+            // the "Chats" title and the bar; we only supply the leading profile avatar (→
+            // Settings) and the trailing compose action.
+            .navigationTitle("Chats")
+            .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { Haptics.tap(); showSettings = true } label: {
+                        ProfileAvatarButton(photoURL: session.profile.photoURL,
+                                            name: session.profile.fullName, size: 32)
+                    }
+                    .accessibilityLabel("Profile and settings")
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        Haptics.tap()
+                        if tab == .groups { showNewGroup = true } else { showNewChat = true }
+                    } label: {
+                        Image(systemName: tab == .groups ? "person.3.fill" : "square.and.pencil")
+                    }
+                    .accessibilityLabel(tab == .groups ? "New group" : "New chat")
+                }
+            }
             .onAppear { session.hideTabBar = false }   // root screen always shows the bar
             .task {
                 try? await E2EManager.shared.bootstrap()   // ensure identity/prekeys published (idempotent)
@@ -214,53 +236,6 @@ struct ChatsHomeView: View {
                 openConversation = conv
             }
         }
-    }
-
-    // Top bar — profile avatar on its own row (top LEFT), title beneath it.
-    //
-    // Two rows rather than one: the avatar is the entry point to settings and wants to
-    // sit at the very top edge, while the "Chats" title reads better dropped below it
-    // as a section heading. Same shape as the large-title pattern users already expect.
-    private var header: some View {
-        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
-            HStack {
-                Button {
-                    Haptics.tap()
-                    showSettings = true
-                } label: {
-                    ProfileAvatarButton(photoURL: session.profile.photoURL,
-                                        name: session.profile.fullName)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Profile and settings")
-                Spacer()
-                headerActions
-            }
-            Text("Chats")
-                .font(VoiidFont.rounded(28, .bold))
-                .foregroundColor(VoiidColor.textPrimary)
-        }
-        .padding(.horizontal, VoiidSpacing.lg)
-        .padding(.top, VoiidSpacing.sm)
-    }
-
-    // Compose only.
-    //
-    // The overflow (hamburger) menu that used to live here is gone. It held a second
-    // "Backup & Recovery" entry point and an UNCONFIRMED "Log out" — one irreversible
-    // action, one tap, no dialog, sitting next to a routine one. Both now live in the
-    // Settings sheet behind the avatar, which is the single entry point; log-out there
-    // is confirmed and runs the local teardown.
-    private var headerActions: some View {
-        Button {
-            Haptics.tap()
-            if tab == .groups { showNewGroup = true } else { showNewChat = true }
-        } label: {
-            Image(systemName: tab == .groups ? "person.3.fill" : "square.and.pencil")
-                .font(.system(size: 20, weight: .medium))
-                .foregroundColor(VoiidColor.textPrimary)
-        }
-        .accessibilityLabel(tab == .groups ? "New group" : "New chat")
     }
 
     private var searchBar: some View {
