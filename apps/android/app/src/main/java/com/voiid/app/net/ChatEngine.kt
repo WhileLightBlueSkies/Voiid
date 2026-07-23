@@ -313,14 +313,18 @@ class ChatEngine private constructor(context: Context) {
             runCatching {
                 val plain = decryptInbound(wire, peerUserId, m.sender_device_id)
                 android.util.Log.i("VOIID", "✅ decrypted inbound id=${m.id} senderDev=${m.sender_device_id}")
-                if (m.content_type == "location") {
-                    // Location-protocol message (docs/LOCATION.md §4). Handed to the location
-                    // engines via the shared LocationRelay seam, which decide what to do by its
-                    // `k`: a RENDERABLE kind (pin / live_start) is stored as a bubble by the
-                    // subscribed engine (storeLocationInbound); a SILENT kind (map_key / map_off /
-                    // live_rekey) is consumed and never rendered. Either way the default text
-                    // bubble is suppressed here, and the id is marked control-seen so this
-                    // decrypt-once Olm message is not re-fetched and re-failed on the next sync.
+                // Location-protocol message (docs/LOCATION.md §4). Recognise it by
+                // content_type OR by the `_vloc` marker — an iOS envelope that didn't route on
+                // content_type still gets handled instead of rendering as "Unsupported message".
+                if (m.content_type == "location" || LocationRelay.looksLikeEnvelope(plain)) {
+                    // Render/capture DIRECTLY here (like iOS's ChatEngine.sync), not only via
+                    // LocationRelay: the location engines are subscribed ONLY in the foreground,
+                    // so a pin/live/map key arriving in the FCM BACKGROUND process would be lost.
+                    // Renderable kinds (pin / live_start) become an inline bubble; a map_key is
+                    // captured background-safe so the Map can decrypt this contact's fixes even
+                    // if the Map engine was never alive. Then still fan out to any live engines
+                    // for the WS fix stream + share-state timers.
+                    handleLocationInbound(plain, m.sender_id, conversationId, parseIso(m.created_at))
                     LocationRelay.dispatchControl(plain, m.sender_id, conversationId)
                     markControlSeen(m.id)
                     newlyReceived.add(m.id)
@@ -890,6 +894,49 @@ class ChatEngine private constructor(context: Context) {
         if (hasMessage(conversationId, id)) return
         replace(conversationId, DecryptedMessage(id, senderId, "", createdAt, isMine = false, location = ref))
         persist()
+    }
+
+    /**
+     * Decrypted-side handling of an inbound location envelope, run in BOTH the foreground and
+     * the FCM background process — mirrors iOS handling directly in ChatEngine.sync. Renders a
+     * pin / live_start as an inline bubble and captures share/map keys, so NOTHING depends on a
+     * foreground-only engine subscription (the cause of iOS location "not coming" / showing as
+     * "Unsupported message", and of live-Map contacts never appearing). Idempotent with
+     * [LocationShareEngine.onControl] — it uses the SAME message ids and key stores, so a
+     * message processed by both paths never double-renders.
+     */
+    private fun handleLocationInbound(plain: String, senderId: String, conversationId: String, createdAt: Long) {
+        val env = runCatching {
+            ApiClient.json.decodeFromString(com.voiid.app.model.LocationEnvelope.serializer(), plain)
+        }.getOrNull() ?: return
+        when (env.k) {
+            "pin" -> {
+                val lat = env.lat ?: return; val lon = env.lon ?: return
+                storeLocationInbound(conversationId, "locpin_${senderId}_${env.t}", senderId,
+                    LocationRef(kind = "pin", lat = lat, lon = lon, acc = env.acc ?: 0.0, label = env.label), createdAt)
+            }
+            "live_start" -> {
+                val shareId = env.s ?: return
+                // Same key store LocationShareEngine reads, so the WS fix stream can decrypt
+                // this share once the app is foregrounded.
+                env.key?.let { SecurePrefs.open(appContext, "voiid_location").edit().putString(shareId, it).apply() }
+                val lat = env.lat ?: return; val lon = env.lon ?: return
+                val expiresAt = env.expiresAt ?: (createdAt + 3_600_000L)
+                storeLocationInbound(conversationId, "loclive_$shareId", senderId,
+                    LocationRef(kind = "live_start", shareId = shareId, lat = lat, lon = lon,
+                        acc = env.acc ?: 0.0, expiresAt = expiresAt, cadenceSeconds = env.cadence), createdAt)
+            }
+            "live_rekey" ->
+                env.s?.let { sid -> env.key?.let { SecurePrefs.open(appContext, "voiid_location").edit().putString(sid, it).apply() } }
+            "map_key" -> {
+                val shareId = env.s ?: return
+                val keyB64 = env.key ?: return
+                MapInboundKeyStore.put(appContext, shareId, senderId, keyB64,
+                    env.expiresAt ?: (System.currentTimeMillis() + 24L * 3600 * 1000))
+            }
+            "map_off" -> env.s?.let { MapInboundKeyStore.remove(appContext, it) }
+            // live_stop → LocationShareEngine ends the inbound view; nothing to render here.
+        }
     }
 
     /** Tombstone a group message we couldn't decrypt so it isn't retried forever

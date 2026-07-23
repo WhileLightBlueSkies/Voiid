@@ -40,7 +40,11 @@ struct MapEnvelope: Codable {
     // Optionals carry explicit `= nil` defaults so the synthesized memberwise initializer
     // lets each call site pass only the fields that kind needs (a fix omits key/cadence; a
     // map_key omits lat/lon).
-    var vloc: Int = 1
+    // Optional so a decode SUCCEEDS when `_vloc` is absent from the wire. Android omits it
+    // (encodeDefaults=false); a non-optional property makes Swift's synthesized decoder THROW
+    // on the missing key (it does NOT fall back to the default), which silently dropped every
+    // Android-sent fix on iOS. `k` is the real discriminator. Still emitted as 1 when we send.
+    var vloc: Int? = 1
     var k: String            // "map_key" | "map_off" | "fix"
     var s: String? = nil     // share_id (uuid)
     var t: Int64? = nil      // millis
