@@ -105,6 +105,7 @@ struct ChatsHomeView: View {
                 try? await E2EManager.shared.bootstrap()   // ensure identity/prekeys published (idempotent)
                 WebSocketClient.shared.reconnect()         // fresh socket (avoid a stale/dead one missing pushes)
                 LocationShareEngine.shared.configure()     // route inbound live fixes + start the expiry ticker
+                await session.refreshServerProfile()        // pull REAL name/photo/bio/username from the server
                 await chat.loadConversations()              // load REAL conversations from backend
             }
             .navigationDestination(item: $openConversation) { ChatDetailView(conversation: $0) }

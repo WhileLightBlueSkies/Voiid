@@ -134,6 +134,19 @@ class ChatEngine private constructor(context: Context) {
         /** Delivery state of OUR sent message: "sent"/"delivered"/"read". Persisted
          *  so it never regresses when the message list is rebuilt. */
         val deliveryStatus: String? = null,
+        /** Per-USER reactions (userId -> emoji), so two people can react differently. */
+        val reactions: Map<String, String>? = null,
+        /** Delete-for-everyone tombstone from the original author. */
+        val deletedForEveryone: Boolean = false,
+        /** Quoted-reply snapshot (server id + short preview + who), so it renders even if
+         *  the original was deleted. */
+        val quotedId: String? = null,
+        val quotedPreview: String? = null,
+        val quotedSender: String? = null,
+        /** "Forwarded" tag. */
+        val forwarded: Boolean = false,
+        /** A control message (reaction/delete signal): kept for dedup, never rendered. */
+        val control: Boolean = false,
     )
 
     /** The E2EE plaintext of a media message: the reference + an optional caption. */
@@ -155,7 +168,7 @@ class ChatEngine private constructor(context: Context) {
 
     /** Locally-stored (already decrypted) messages for a conversation, oldest-first. */
     fun messages(conversationId: String): List<DecryptedMessage> =
-        (store[conversationId] ?: emptyList()).sortedBy { it.createdAt }
+        (store[conversationId] ?: emptyList()).filter { !it.control }.sortedBy { it.createdAt }
 
     /** Queue a text message as PENDING locally (instant + offline + survives restart),
      *  WITHOUT touching the network. Call [flushPending] to actually send. */
@@ -310,6 +323,30 @@ class ChatEngine private constructor(context: Context) {
                     // decrypt-once Olm message is not re-fetched and re-failed on the next sync.
                     LocationRelay.dispatchControl(plain, m.sender_id, conversationId)
                     markControlSeen(m.id)
+                    newlyReceived.add(m.id)
+                    return@runCatching
+                }
+                // ACTION envelopes decorate an EXISTING message rather than adding a bubble.
+                val probeT = runCatching { ApiClient.json.decodeFromString(ActionProbe.serializer(), plain).t }.getOrNull()
+                if (probeT == "msg_reaction" || probeT == "msg_delete") {
+                    if (probeT == "msg_reaction") {
+                        val e = ApiClient.json.decodeFromString(ReactionWire.serializer(), plain)
+                        applyReaction(conversationId, e.target, m.sender_id, e.emoji)
+                    } else {
+                        val e = ApiClient.json.decodeFromString(DeleteWire.serializer(), plain)
+                        // Only the ORIGINAL AUTHOR may delete: the target must be from this peer.
+                        val t = store[conversationId]?.firstOrNull { it.serverId == e.target || it.id == e.target }
+                        if (t != null && t.senderId == m.sender_id) applyDeleteForEveryone(conversationId, e.target)
+                    }
+                    // Keep the control id in the store (seen) but hidden from the UI.
+                    append(conversationId, DecryptedMessage(m.id, m.sender_id, "", parseIso(m.created_at), false, control = true))
+                    newlyReceived.add(m.id)
+                    return@runCatching
+                }
+                if (probeT == "msg_reply") {
+                    val e = ApiClient.json.decodeFromString(ReplyWire.serializer(), plain)
+                    replace(conversationId, DecryptedMessage(m.id, m.sender_id, e.text, parseIso(m.created_at), false,
+                        quotedId = e.quotedId, quotedPreview = e.quotedPreview, quotedSender = e.quotedSender))
                     newlyReceived.add(m.id)
                     return@runCatching
                 }
@@ -634,6 +671,93 @@ class ChatEngine private constructor(context: Context) {
         )
         append(conversationId, echo)
         return echo
+    }
+
+    // MARK: - Message actions (reaction / delete-for-everyone / reply / forward)
+    //
+    // Mirror of iOS MessageActionWire + the ChatEngine senders. Each rides the SAME per-device
+    // E2EE fan-out; the server sees only opaque ciphertext + a content_type hint. Receivers
+    // apply them in [sync] by probing the plaintext "t" discriminator. Envelope JSON field
+    // names MUST match iOS byte-for-byte.
+    @Serializable private data class ReactionWire(val t: String = "msg_reaction", val v: Int = 1, val target: String, val emoji: String? = null)
+    @Serializable private data class DeleteWire(val t: String = "msg_delete", val v: Int = 1, val target: String)
+    @Serializable private data class ReplyWire(val t: String = "msg_reply", val v: Int = 1, val text: String, val quotedId: String, val quotedPreview: String, val quotedSender: String)
+    @Serializable private data class ActionProbe(val t: String? = null)
+
+    /** Send (or clear, emoji=null) a reaction to [targetServerId]. No bubble. */
+    suspend fun sendReaction(targetServerId: String, emoji: String?, conversationId: String, peerUserId: String) {
+        val json = ApiClient.json.encodeToString(ReactionWire.serializer(), ReactionWire(target = targetServerId, emoji = emoji))
+        val bcast = encryptBroadcast(json.encodeToByteArray(), listOf(peerUserId), includeOwnDevices = true)
+        if (bcast.isEmpty()) return
+        val messages = bcast.map { DeviceCiphertext(it.recipientDeviceId, it.ciphertext) }
+        val body = ApiClient.json.encodeToString(SendBundleBody.serializer(),
+            SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "msg_reaction"))
+        api.requestAs<SendResponse>("POST", "messages/send", jsonBody = body)
+        applyReaction(conversationId, targetServerId, tokens.userId ?: "me", emoji)
+    }
+
+    /** Ask recipients to tombstone [targetServerId] (honoured only from the original author). */
+    suspend fun sendDeleteForEveryone(targetServerId: String, conversationId: String, peerUserId: String) {
+        val json = ApiClient.json.encodeToString(DeleteWire.serializer(), DeleteWire(target = targetServerId))
+        val bcast = encryptBroadcast(json.encodeToByteArray(), listOf(peerUserId), includeOwnDevices = true)
+        if (bcast.isEmpty()) return
+        val messages = bcast.map { DeviceCiphertext(it.recipientDeviceId, it.ciphertext) }
+        val body = ApiClient.json.encodeToString(SendBundleBody.serializer(),
+            SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "msg_delete"))
+        api.requestAs<SendResponse>("POST", "messages/send", jsonBody = body)
+        applyDeleteForEveryone(conversationId, targetServerId)
+    }
+
+    /** Send a text reply quoting another message. Renders as a normal bubble with a quote. */
+    suspend fun sendReply(text: String, quotedId: String, quotedPreview: String, quotedSender: String,
+                          conversationId: String, peerUserId: String): DecryptedMessage {
+        val env = ReplyWire(text = text, quotedId = quotedId, quotedPreview = quotedPreview, quotedSender = quotedSender)
+        val json = ApiClient.json.encodeToString(ReplyWire.serializer(), env)
+        val bcast = encryptBroadcast(json.encodeToByteArray(), listOf(peerUserId), includeOwnDevices = true)
+        if (bcast.isEmpty()) throw ApiError.Http(409, "peer has no available prekeys")
+        val messages = bcast.map { DeviceCiphertext(it.recipientDeviceId, it.ciphertext) }
+        val body = ApiClient.json.encodeToString(SendBundleBody.serializer(),
+            SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "msg_reply"))
+        val res: SendResponse = api.requestAs("POST", "messages/send", jsonBody = body)
+        val echo = DecryptedMessage(res.message_id, tokens.userId ?: "me", text,
+            res.created_at?.let { parseIso(it) } ?: System.currentTimeMillis(), true,
+            quotedId = quotedId, quotedPreview = quotedPreview, quotedSender = quotedSender)
+        append(conversationId, echo)
+        return echo
+    }
+
+    /** Forward existing media WITHOUT re-uploading — re-send its MediaRef (key stays E2E). */
+    suspend fun forwardMedia(ref: MediaRef, caption: String, conversationId: String, peerUserId: String): DecryptedMessage {
+        val env = MediaEnvelope(media = ref, caption = caption)
+        val json = ApiClient.json.encodeToString(MediaEnvelope.serializer(), env)
+        val bcast = encryptBroadcast(json.encodeToByteArray(), listOf(peerUserId), includeOwnDevices = true)
+        if (bcast.isEmpty()) throw ApiError.Http(409, "peer has no available prekeys")
+        val messages = bcast.map { DeviceCiphertext(it.recipientDeviceId, it.ciphertext) }
+        val body = ApiClient.json.encodeToString(SendBundleBody.serializer(),
+            SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "media", media_url = ref.mediaUrl, media_mime = ref.mime))
+        val res: SendResponse = api.requestAs("POST", "messages/send", jsonBody = body)
+        val echo = DecryptedMessage(res.message_id, tokens.userId ?: "me", caption,
+            res.created_at?.let { parseIso(it) } ?: System.currentTimeMillis(), true, media = ref, forwarded = true)
+        append(conversationId, echo)
+        return echo
+    }
+
+    // Local appliers — shared by senders (our own) and inbound (a peer's).
+    fun applyReaction(convId: String, target: String, fromUserId: String, emoji: String?) {
+        val arr = store[convId] ?: return
+        val i = arr.indexOfFirst { it.serverId == target || it.id == target }
+        if (i < 0) return
+        val map = (arr[i].reactions ?: emptyMap()).toMutableMap()
+        if (emoji != null) map[fromUserId] = emoji else map.remove(fromUserId)
+        arr[i] = arr[i].copy(reactions = map.ifEmpty { null })
+        persist()
+    }
+    fun applyDeleteForEveryone(convId: String, target: String) {
+        val arr = store[convId] ?: return
+        val i = arr.indexOfFirst { it.serverId == target || it.id == target }
+        if (i < 0) return
+        arr[i] = arr[i].copy(deletedForEveryone = true, text = "", media = null, reactions = null)
+        persist()
     }
 
     /**

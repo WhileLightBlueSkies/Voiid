@@ -39,6 +39,8 @@ struct EditProfileView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var name = ""
+    @State private var bio = ""
+    @State private var username = ""
     @State private var loaded = false
 
     @State private var photoItem: PhotosPickerItem?
@@ -48,12 +50,28 @@ struct EditProfileView: View {
     @State private var confirmDiscard = false
     @State private var syncWarning: String?
 
+    /// Live username availability. nil = not checked / unchanged; true/false = last result.
+    @State private var usernameAvailable: Bool?
+    @State private var checkingUsername = false
+    @State private var usernameCheckTask: Task<Void, Never>?
+
     private var trimmedName: String {
         name.trimmingCharacters(in: .whitespacesAndNewlines)
     }
+    private var trimmedBio: String { bio.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var trimmedUsername: String {
+        username.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
 
     private var isDirty: Bool {
-        loaded && trimmedName != session.profile.fullName
+        loaded && (trimmedName != session.profile.fullName
+                   || trimmedBio != (session.profile.bio ?? "")
+                   || trimmedUsername != (session.profile.username ?? ""))
+    }
+
+    /// Block save when the chosen username is known-taken.
+    private var usernameBlocksSave: Bool {
+        trimmedUsername != (session.profile.username ?? "") && usernameAvailable == false
     }
 
     var body: some View {
@@ -69,6 +87,40 @@ struct EditProfileView: View {
                     .submitLabel(.done)
                     .onChange(of: name) { _, new in
                         if new.count > 50 { name = String(new.prefix(50)) }
+                    }
+            }
+
+            SettingsSection("Username",
+                            footer: usernameFooter) {
+                HStack(spacing: 4) {
+                    Text("@").foregroundStyle(VoiidColor.textSecondary)
+                    TextField("username", text: $username)
+                        .font(.body)
+                        .foregroundStyle(VoiidColor.textPrimary)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .submitLabel(.done)
+                        .onChange(of: username) { _, new in
+                            // Handle chars only, capped; then debounce an availability check.
+                            let cleaned = new.lowercased().filter { $0.isLetter || $0.isNumber || $0 == "_" }
+                            if cleaned != new { username = String(cleaned.prefix(20)); return }
+                            if new.count > 20 { username = String(new.prefix(20)) }
+                            scheduleUsernameCheck()
+                        }
+                    if checkingUsername { ProgressView().controlSize(.small) }
+                    else if usernameBlocksSave { Image(systemName: "xmark.circle.fill").foregroundStyle(VoiidColor.error) }
+                    else if usernameAvailable == true { Image(systemName: "checkmark.circle.fill").foregroundStyle(VoiidColor.primary) }
+                }
+            }
+
+            SettingsSection("About",
+                            footer: "A short line about you, shown on your profile.") {
+                TextField("Add a few words about you", text: $bio, axis: .vertical)
+                    .font(.body)
+                    .foregroundStyle(VoiidColor.textPrimary)
+                    .lineLimit(1...4)
+                    .onChange(of: bio) { _, new in
+                        if new.count > 140 { bio = String(new.prefix(140)) }
                     }
             }
 
@@ -106,7 +158,7 @@ struct EditProfileView: View {
                 Button("Save") { Task { await save() } }
                     .fontWeight(.semibold)
                     .foregroundStyle(VoiidColor.primary)
-                    .disabled(!isDirty || saving || trimmedName.isEmpty)
+                    .disabled(!isDirty || saving || trimmedName.isEmpty || usernameBlocksSave || checkingUsername)
             }
         }
         .confirmationDialog("Discard changes?",
@@ -118,7 +170,41 @@ struct EditProfileView: View {
         .onAppear {
             guard !loaded else { return }
             name = session.profile.fullName
+            bio = session.profile.bio ?? ""
+            username = session.profile.username ?? ""
             loaded = true
+        }
+    }
+
+    private var usernameFooter: String {
+        if trimmedUsername == (session.profile.username ?? "") {
+            return "Your @handle for Clips. Letters, numbers and underscores."
+        }
+        if trimmedUsername.isEmpty { return "Your @handle for Clips. Letters, numbers and underscores." }
+        if usernameBlocksSave { return "That username is taken. Try another." }
+        if usernameAvailable == true { return "“@\(trimmedUsername)” is available." }
+        return "Checking availability…"
+    }
+
+    /// Debounced live availability check against the server.
+    private func scheduleUsernameCheck() {
+        usernameCheckTask?.cancel()
+        usernameAvailable = nil
+        let candidate = trimmedUsername
+        // Unchanged from the saved value or too short: nothing to check.
+        guard candidate != (session.profile.username ?? ""), candidate.count >= 3 else {
+            checkingUsername = false; return
+        }
+        checkingUsername = true
+        usernameCheckTask = Task {
+            try? await Task.sleep(nanoseconds: 500_000_000)   // 0.5s debounce
+            if Task.isCancelled { return }
+            let result = try? await ProfileService.shared.checkUsername(candidate)
+            if Task.isCancelled { return }
+            await MainActor.run {
+                usernameAvailable = result?.available
+                checkingUsername = false
+            }
         }
     }
 
@@ -170,13 +256,30 @@ struct EditProfileView: View {
         saving = true
         defer { saving = false }
 
+        // Only send fields that actually changed. username unchanged → omit it (avoids a
+        // spurious 409 for re-submitting your own handle).
+        let newBio = trimmedBio
+        let newUsername = trimmedUsername
+        let bioChanged = newBio != (session.profile.bio ?? "")
+        let usernameChanged = newUsername != (session.profile.username ?? "")
+
         // Local first. This is on screen and on disk before the network is touched.
-        session.updateProfile(fullName: newName)
+        session.updateProfile(fullName: newName,
+                              bio: bioChanged ? newBio : nil,
+                              username: usernameChanged ? newUsername : nil)
         do {
-            _ = try await ProfileService.shared.updateProfile(fullName: newName)
+            _ = try await ProfileService.shared.updateProfile(
+                fullName: newName,
+                bio: bioChanged ? newBio : nil,
+                username: usernameChanged ? newUsername : nil)
             syncWarning = nil
             Haptics.success()
             dismiss()
+        } catch let APIError.http(status, _) where status == 409 {
+            // The username was taken between the check and the save.
+            usernameAvailable = false
+            syncWarning = "That username was just taken. Pick another."
+            Haptics.error()
         } catch {
             // Do not pop: the user should see that the local save landed and the sync did
             // not. Be honest about the retry story — there is NO background retry queue for

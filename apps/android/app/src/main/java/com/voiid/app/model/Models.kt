@@ -16,6 +16,8 @@ data class VUser(
     var photoName: String? = null,
     /** Remote avatar: an R2 object key (resolved through a presigned GET), or an absolute URL. */
     var photoURL: String? = null,
+    /** Clips handle (@username), fetched from the server profile. */
+    var username: String? = null,
     var bio: String? = null,
     var statusText: String? = null,
     var isOnline: Boolean = false,

@@ -14,7 +14,10 @@ Companion doc: `OVERNIGHT_AUDIT_2026-07-23.md` (full detail on everything before
 | Stories + Maps (both features): specs, backend, ~80 client files | Backend typechecks; clients written by agents |
 | Stories + Maps **navigation (tab bars)** | Agents were RUNNING at cutoff — check `RootTabView.swift` / Android nav host; finish by hand if partial |
 | Stories + Maps verify phase | DELIBERATELY SKIPPED (budget) — never ran |
-| Reactions / reply / forward / delete-for-everyone | NOT built. Fully scouted + staged (below) — wiring is mechanical now |
+| Reactions / reply / forward / delete-for-everyone — **iOS + Android** | **WIRED both platforms (uncompiled).** Real E2EE delivery: senders in ChatEngine(.kt/.swift), inbound apply, Stores + refresh, persistence. Envelope JSON matches byte-for-byte across platforms. |
+| Profile: fetch REAL server data on login | **DONE both.** Android `loadProfile()` already fetched it; iOS added `AppSession.refreshServerProfile()` (called from ChatsHomeView.task) + `username` on VUser. |
+| OTP → backup restore prompt | Already wired both platforms (iOS OTPScreen.verify, Android OtpScreen). No change needed. |
+| R2 buckets | ONE bucket is enough — backups use `backups/<uid>` prefix, media uses `media/...`. If you add a story auto-delete lifecycle rule, scope it to `media/` only, never `backups/`. |
 
 ## If the Stories/Maps workflow was stopped mid-run
 
@@ -37,10 +40,30 @@ and the Android bottom-nav host in `MainActivity.kt`/`main/` (composables: see
 four envelope types (`MessageReactionEnvelope`, `MessageDeleteEnvelope`, `MessageReplyEnvelope`,
 `ForwardedMediaEnvelope`) + `MessageActionContentType`. Compiles standalone.
 
-**Decided: this will be done BY HAND in a normal session (no workflow — user's budget call).**
-The hook list below is the complete implementation plan; work through it top to bottom. Each
-sender is ~15 lines mirroring `sendStoryReply`; the inbound probe is one switch. Realistic
-effort: iOS ~1–2h, Android mirror ~1–2h.
+**iOS: DONE (uncompiled).** Files changed:
+- `Networking/MessageActionWire.swift` — envelopes + `MessageActionInbound` parser.
+- `Networking/ChatEngine.swift` — `DecryptedMessage` gained `reactions/deletedForEveryone/
+  quotedId/quotedPreview/quotedSender/forwarded/control`; senders `sendReaction`,
+  `sendDeleteForEveryone`, `sendReply`, `forwardMedia`; appliers `applyReaction`/
+  `applyDeleteForEveryone`; inbound probe in `decryptInboundLocked`; `messages()` filters
+  control rows.
+- `Models/Stores.swift` — `react()`/`deleteMessage(forEveryone:)`/`forward()` now deliver over
+  E2EE; `send()` uses `sendReply` for quotes; `refresh()` surfaces the new fields onto VMessage.
+- `Models/Models.swift` — VMessage already had reaction/deletedForEveryone/replyTo*/forwarded;
+  reused as-is (single-emoji display; per-user map is persisted in the engine).
+
+**KNOWN LIMITATIONS to finish later:**
+- Reaction DISPLAY is single-emoji (shows peer's else mine). Per-user multi-emoji rendering
+  needs a `reactions: [String:String]` on VMessage + ChatDetailView chips.
+- GROUPS: reactions/delete wired only for the 1:1 (ChatEngine) path. The MLS group path
+  (GroupEngine.ingestGroupMessage) needs the same inbound probe added.
+- Inbound FORWARD arrives as a normal media message (no "Forwarded" tag on the receiver).
+- NOT COMPILED — build and fix per your rule.
+
+**ANDROID: still pending** — mirror the above in `net/ChatService.kt`/ChatEngine-equivalent,
+`model/Models.kt`, `model/Stores.kt`, `main/ChatDetailView.kt`, Room. Envelope JSON field
+names MUST match iOS byte-for-byte (`t`,`v`,`target`,`emoji`,`text`,`quotedId`,`quotedPreview`,
+`quotedSender`,`media`,`caption`). Realistic effort ~1–2h.
 
 **The hook edits (all in files the Stories agents had locked; mirror `sendStoryReply` at
 `ChatEngine.swift:~1127` for every sender):**

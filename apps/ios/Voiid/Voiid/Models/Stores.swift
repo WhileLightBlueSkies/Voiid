@@ -31,6 +31,28 @@ final class AppSession: ObservableObject {
         // Resume straight to the app if we already hold a valid session token.
         route = AuthService.shared.isAuthenticated ? .main : .onboarding
         loadLocalProfile()
+        // On relaunch of an already-authenticated session, pull the authoritative profile
+        // from the server so a reinstall / new device shows the REAL name, photo, bio and
+        // username — not a stale local copy or a placeholder.
+        if AuthService.shared.isAuthenticated {
+            Task { await refreshServerProfile() }
+        }
+    }
+
+    /// Fetch this account's real profile from the server and merge it into `profile`.
+    ///
+    /// Call after login and on launch. `GET /users/:id` is the source of truth for
+    /// full_name / photo_url / bio / username; the phone number is NOT server-held (it
+    /// comes from the OTP flow), so it is preserved from local state. Every field is
+    /// applied only when the server actually returned it, so this never blanks a value.
+    func refreshServerProfile() async {
+        guard let id = auth.userId else { return }
+        guard let p = try? await ChatService.shared.userProfile(userId: id) else { return }
+        if let n = p.name, !n.isEmpty { profile.fullName = n }
+        if let url = p.photoURL, !url.isEmpty { profile.photoURL = url }
+        if let bio = p.about, !bio.isEmpty { profile.bio = bio }
+        if let u = p.username, !u.isEmpty { profile.username = u }
+        persistLocalProfile()
     }
 
     // MARK: - Own profile
@@ -45,6 +67,7 @@ final class AppSession: ObservableObject {
         var photoURL: String?
         var email: String?
         var bio: String?
+        var username: String?
     }
 
     private func loadLocalProfile() {
@@ -57,6 +80,7 @@ final class AppSession: ObservableObject {
                         email: stored.email,
                         photoName: nil,
                         photoURL: stored.photoURL,
+                        username: stored.username,
                         bio: stored.bio)
     }
 
@@ -65,7 +89,8 @@ final class AppSession: ObservableObject {
                                    phoneNumber: profile.phoneNumber,
                                    photoURL: profile.photoURL,
                                    email: profile.email,
-                                   bio: profile.bio)
+                                   bio: profile.bio,
+                                   username: profile.username)
         if let data = try? JSONEncoder().encode(stored) {
             UserDefaults.standard.set(data, forKey: Self.profileKey)
         }
@@ -74,12 +99,14 @@ final class AppSession: ObservableObject {
     /// Update your profile locally and immediately. Callers sync to the server
     /// separately; a failed sync must not undo what the user sees.
     func updateProfile(fullName: String? = nil, photoURL: String? = nil,
-                       phoneNumber: String? = nil, email: String? = nil, bio: String? = nil) {
+                       phoneNumber: String? = nil, email: String? = nil,
+                       bio: String? = nil, username: String? = nil) {
         if let fullName { profile.fullName = fullName }
         if let photoURL { profile.photoURL = photoURL }
         if let phoneNumber { profile.phoneNumber = phoneNumber }
         if let email { profile.email = email }
         if let bio { profile.bio = bio }
+        if let username { profile.username = username }
         persistLocalProfile()
     }
 
@@ -371,11 +398,22 @@ final class ChatStore: ObservableObject {
                     }
                 }
             } else { status = .read }
-            return VMessage(id: d.serverId ?? d.id, conversationId: convId,
-                            senderId: d.isMine ? "me" : d.senderId,
-                            kind: kind, text: d.text, createdAt: d.createdAt,
-                            status: status, isMine: d.isMine,
-                            mediaRef: d.media, location: locRef)
+            var vm = VMessage(id: d.serverId ?? d.id, conversationId: convId,
+                              senderId: d.isMine ? "me" : d.senderId,
+                              kind: kind, text: d.text, createdAt: d.createdAt,
+                              status: status, isMine: d.isMine,
+                              mediaRef: d.media, location: locRef)
+            // Surface delivered chat actions onto the bubble.
+            vm.deletedForEveryone = d.deletedForEveryone ?? false
+            vm.forwarded = d.forwarded ?? false
+            if let q = d.quotedPreview { vm.replyToText = q; vm.replyToSender = d.quotedSender }
+            // Reactions: display the peer's reaction if any, else our own. (Per-user map is
+            // persisted in the engine; single-emoji display is a UI simplification.)
+            if let reactions = d.reactions, !reactions.isEmpty {
+                let myId = TokenStore.shared.userId
+                vm.reaction = reactions.first(where: { $0.key != myId })?.value ?? reactions.first?.value
+            }
+            return vm
         }
         if !mapped.isEmpty || messagesByConversation[convId] != nil {
             messagesByConversation[convId] = mapped
@@ -485,6 +523,24 @@ final class ChatStore: ObservableObject {
             return
         }
 
+        // A quoted reply travels as its own E2EE envelope so the quote reaches the peer.
+        if let r = replyTo {
+            bumpPreview(conversationId, preview: text)
+            let quotedId = r.id
+            let preview = r.kind == .text ? String(r.text.prefix(80)) : previewFor(r.kind)
+            let sender = r.isMine ? "You" : (r.senderName.isEmpty ? "" : r.senderName)
+            Task {
+                guard let peer = try? await peerUserId(for: conv) else {
+                    loadError = "Couldn’t resolve the recipient."; return
+                }
+                _ = try? await ChatEngine.shared.sendReply(text: text, quotedId: quotedId,
+                                                           quotedPreview: preview, quotedSender: sender,
+                                                           conversationId: conversationId, peerUserId: peer)
+                refresh(conversationId)
+            }
+            return
+        }
+
         // Text: persist as PENDING in the engine store NOW (instant + offline-visible),
         // then flush (send) in the background. The store is the single source of truth.
         _ = ChatEngine.shared.enqueueText(text, conversationId: conversationId)
@@ -589,15 +645,28 @@ final class ChatStore: ObservableObject {
     }
 
     /// Forward a message to one or more conversations (with a Forwarded tag).
+    /// Media is forwarded by RE-SENDING its existing E2EE reference — the ciphertext is
+    /// already in R2, so no re-upload; the media key rides E2E as always.
     func forward(_ message: VMessage, to conversationIds: [String]) {
         for cid in conversationIds {
-            send(message.kind == .text ? message.text : message.text,
-                 kind: message.kind == .poll ? .text : message.kind,
-                 to: cid, forwarded: true)
+            if let ref = message.mediaRef, message.kind == .image || message.kind == .voice || message.kind == .document,
+               let conv = directConversations.first(where: { $0.id == cid }) {
+                Task {
+                    guard let peer = try? await peerUserId(for: conv) else { return }
+                    _ = try? await ChatEngine.shared.forwardMedia(ref, caption: message.text,
+                                                                  conversationId: cid, peerUserId: peer)
+                    refresh(cid)
+                }
+            } else {
+                send(message.text,
+                     kind: message.kind == .poll ? .text : message.kind,
+                     to: cid, forwarded: true)
+            }
         }
     }
 
-    /// Delete a message. forEveryone=true leaves a "deleted" tombstone; otherwise removes it.
+    /// Delete a message. forEveryone=true tombstones it AND tells the peer to do the same;
+    /// otherwise removes it only from this device.
     func deleteMessage(_ messageId: String, in convId: String, forEveryone: Bool) {
         guard var arr = messagesByConversation[convId] else { return }
         if forEveryone {
@@ -605,6 +674,14 @@ final class ChatStore: ObservableObject {
                 arr[i].deletedForEveryone = true
                 arr[i].reaction = nil
                 withAnimation { messagesByConversation[convId] = arr }
+            }
+            // Deliver the delete over E2EE so the peer erases it too (direct chats).
+            if let conv = directConversations.first(where: { $0.id == convId }) {
+                Task {
+                    guard let peer = try? await peerUserId(for: conv) else { return }
+                    try? await ChatEngine.shared.sendDeleteForEveryone(
+                        targetServerId: messageId, conversationId: convId, peerUserId: peer)
+                }
             }
         } else {
             withAnimation { arr.removeAll { $0.id == messageId }; messagesByConversation[convId] = arr }
@@ -633,15 +710,24 @@ final class ChatStore: ObservableObject {
         Haptics.rigid()
     }
 
-    /// Toggle an emoji reaction on a message.
+    /// Toggle an emoji reaction on a message — and DELIVER it to the peer over E2EE.
     func react(messageId: String, emoji: String, in convId: String) {
         guard var arr = messagesByConversation[convId],
               let idx = arr.firstIndex(where: { $0.id == messageId }) else { return }
+        let cleared = (arr[idx].reaction == emoji)
         withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-            arr[idx].reaction = (arr[idx].reaction == emoji) ? nil : emoji
+            arr[idx].reaction = cleared ? nil : emoji     // optimistic local
             messagesByConversation[convId] = arr
         }
         Haptics.tap()
+        // Send over the real E2EE path (direct chats). emoji=nil clears our reaction.
+        guard let conv = directConversations.first(where: { $0.id == convId }) else { return }
+        Task {
+            guard let peer = try? await peerUserId(for: conv) else { return }
+            try? await ChatEngine.shared.sendReaction(targetServerId: messageId,
+                                                      emoji: cleared ? nil : emoji,
+                                                      conversationId: convId, peerUserId: peer)
+        }
     }
 
     /// Send a poll into a conversation.

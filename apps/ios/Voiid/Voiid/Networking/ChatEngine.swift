@@ -89,6 +89,21 @@ struct DecryptedMessage: Codable {
     /// True for a tombstone (decrypt failed). NOT counted as "seen" so it's retried
     /// on later syncs — once the session re-establishes it can finally decrypt.
     var failed: Bool = false
+    /// Per-USER reactions on this message (userId -> emoji). A map, not a single field,
+    /// so two people can react differently and each can change their own. Persisted.
+    var reactions: [String: String]? = nil
+    /// Delete-for-everyone tombstone: the original author asked all recipients to erase it.
+    var deletedForEveryone: Bool? = nil
+    /// Quoted-reply snapshot (server id + a short preview + who sent it), so the quote
+    /// renders even if the original was since deleted.
+    var quotedId: String? = nil
+    var quotedPreview: String? = nil
+    var quotedSender: String? = nil
+    /// "Forwarded" tag.
+    var forwarded: Bool? = nil
+    /// A control message (reaction/delete signal): kept in the store so its id counts as
+    /// "seen" and is never reprocessed, but NEVER rendered as a bubble.
+    var control: Bool? = nil
 }
 
 @MainActor
@@ -158,8 +173,12 @@ final class ChatEngine {
     // MARK: - Public API
 
     /// Locally-stored (already decrypted) messages for a conversation, oldest-first.
+    /// Control rows (reaction/delete signals) are kept in the store for dedup but never
+    /// surfaced as bubbles.
     func messages(conversationId: String) -> [DecryptedMessage] {
-        (store[conversationId] ?? []).sorted { $0.createdAt < $1.createdAt }
+        (store[conversationId] ?? [])
+            .filter { !($0.control ?? false) }
+            .sorted { $0.createdAt < $1.createdAt }
     }
 
     // MARK: - Group (MLS) message store bridge
@@ -359,6 +378,126 @@ final class ChatEngine {
             append(echo, to: conversationId)
             return echo
         }
+    }
+
+    // MARK: - Message actions (reaction / delete-for-everyone / reply / forward)
+    //
+    // Each rides the EXACT same per-device E2EE fan-out as any message; the server sees
+    // only opaque ciphertext + a content_type routing hint. Receivers apply them in
+    // decryptInboundLocked by probing the plaintext `"t"` discriminator.
+
+    /// Send (or clear) a reaction to `targetServerId`. `emoji == nil` clears ours.
+    /// No visible bubble — it decorates the target on both ends.
+    func sendReaction(targetServerId: String, emoji: String?,
+                      conversationId: String, peerUserId: String) async throws {
+        let data = try JSONEncoder().encode(
+            MessageReactionEnvelope(target: targetServerId, emoji: emoji))
+        try await CrossProcessLock.withLock {
+            reloadSharedState()
+            let messages = try await encryptFanout(data, peerUserId: peerUserId)
+            _ = try await api.request(
+                "POST", "messages/send",
+                body: SendBundleBody(conversation_id: conversationId,
+                                     sender_device_id: E2EManager.shared.deviceId,
+                                     messages: messages,
+                                     content_type: MessageActionContentType.reaction)) as SendResponse
+            // Apply our own reaction locally (keyed by OUR user id) and persist.
+            applyReaction(target: targetServerId, from: TokenStore.shared.userId ?? "me",
+                          emoji: emoji, in: conversationId)
+        }
+    }
+
+    /// Ask every recipient to tombstone `targetServerId`. Only meaningful from the
+    /// message's author — receivers enforce that.
+    func sendDeleteForEveryone(targetServerId: String,
+                               conversationId: String, peerUserId: String) async throws {
+        let data = try JSONEncoder().encode(MessageDeleteEnvelope(target: targetServerId))
+        try await CrossProcessLock.withLock {
+            reloadSharedState()
+            let messages = try await encryptFanout(data, peerUserId: peerUserId)
+            _ = try await api.request(
+                "POST", "messages/send",
+                body: SendBundleBody(conversation_id: conversationId,
+                                     sender_device_id: E2EManager.shared.deviceId,
+                                     messages: messages,
+                                     content_type: MessageActionContentType.delete)) as SendResponse
+            applyDeleteForEveryone(target: targetServerId, in: conversationId)
+        }
+    }
+
+    /// Send a text reply quoting another message. Renders as a normal bubble with a quote.
+    @discardableResult
+    func sendReply(text: String, quotedId: String, quotedPreview: String, quotedSender: String,
+                   conversationId: String, peerUserId: String) async throws -> DecryptedMessage {
+        let env = MessageReplyEnvelope(text: text, quotedId: quotedId,
+                                       quotedPreview: quotedPreview, quotedSender: quotedSender)
+        let data = try JSONEncoder().encode(env)
+        return try await CrossProcessLock.withLock {
+            reloadSharedState()
+            let messages = try await encryptFanout(data, peerUserId: peerUserId)
+            let res: SendResponse = try await api.request(
+                "POST", "messages/send",
+                body: SendBundleBody(conversation_id: conversationId,
+                                     sender_device_id: E2EManager.shared.deviceId,
+                                     messages: messages,
+                                     content_type: MessageActionContentType.reply))
+            var echo = DecryptedMessage(id: res.message_id, senderId: TokenStore.shared.userId ?? "me",
+                                        text: text, createdAt: res.created_at.map(parseDate) ?? Date(),
+                                        isMine: true)
+            echo.quotedId = quotedId; echo.quotedPreview = quotedPreview; echo.quotedSender = quotedSender
+            append(echo, to: conversationId)
+            return echo
+        }
+    }
+
+    /// Forward an EXISTING media message without re-uploading — the ciphertext already
+    /// lives in R2, so we just re-send its MediaRef (the key stays E2E as always).
+    @discardableResult
+    func forwardMedia(_ ref: MediaRef, caption: String,
+                      conversationId: String, peerUserId: String) async throws -> DecryptedMessage {
+        let env = ForwardedMediaEnvelope(media: ref, caption: caption)
+        let data = try JSONEncoder().encode(env)
+        return try await CrossProcessLock.withLock {
+            reloadSharedState()
+            let messages = try await encryptFanout(data, peerUserId: peerUserId)
+            let res: SendResponse = try await api.request(
+                "POST", "messages/send",
+                body: SendBundleBody(conversation_id: conversationId,
+                                     sender_device_id: E2EManager.shared.deviceId,
+                                     messages: messages, content_type: MessageActionContentType.media,
+                                     media_url: ref.mediaUrl, media_mime: ref.mime))
+            var echo = DecryptedMessage(id: res.message_id, senderId: TokenStore.shared.userId ?? "me",
+                                        text: caption, createdAt: res.created_at.map(parseDate) ?? Date(),
+                                        isMine: true, media: ref)
+            echo.forwarded = true
+            append(echo, to: conversationId)
+            return echo
+        }
+    }
+
+    // Local appliers — shared by the senders (our own action) and inbound (a peer's).
+
+    /// Set or clear `userId`'s reaction on the message whose serverId (or local id) matches.
+    func applyReaction(target: String, from userId: String, emoji: String?, in convId: String) {
+        guard var arr = store[convId],
+              let i = arr.firstIndex(where: { $0.serverId == target || $0.id == target }) else { return }
+        var map = arr[i].reactions ?? [:]
+        if let emoji { map[userId] = emoji } else { map.removeValue(forKey: userId) }
+        arr[i].reactions = map.isEmpty ? nil : map
+        store[convId] = arr
+        persist()
+    }
+
+    /// Tombstone the target message (delete-for-everyone).
+    func applyDeleteForEveryone(target: String, in convId: String) {
+        guard var arr = store[convId],
+              let i = arr.firstIndex(where: { $0.serverId == target || $0.id == target }) else { return }
+        arr[i].deletedForEveryone = true
+        arr[i].text = ""
+        arr[i].media = nil
+        arr[i].reactions = nil
+        store[convId] = arr
+        persist()
     }
 
     /// Send a location envelope (pin or live-share CONTROL) in a direct chat over the
@@ -584,6 +723,38 @@ final class ChatEngine {
                                                      senderDeviceId: m.sender_device_id)
                 newlyReceived.append(m.id)
                 NSLog("[VOIID] ✅ decrypted inbound id=\(m.id) senderDev=\(m.sender_device_id ?? "nil")")
+                // ACTION envelopes decorate an EXISTING message rather than adding a bubble.
+                // Probe the discriminator; if it's one, apply it and move on (it's now "seen",
+                // so it won't be reprocessed).
+                if let action = MessageActionInbound.parse(plain) {
+                    switch action {
+                    case .reaction(let target, let emoji):
+                        applyReaction(target: target, from: m.sender_id, emoji: emoji, in: conversationId)
+                    case .delete(let target):
+                        // Only the ORIGINAL AUTHOR may delete: honour it only if the target
+                        // was sent by this same peer (i.e. an inbound message from them).
+                        if let arr = store[conversationId],
+                           let t = arr.first(where: { $0.serverId == target || $0.id == target }),
+                           t.senderId == m.sender_id {
+                            applyDeleteForEveryone(target: target, in: conversationId)
+                        }
+                    }
+                    // Keep this control id in the store (seen) but hidden from the UI.
+                    append(DecryptedMessage(id: m.id, senderId: m.sender_id, text: "",
+                                            createdAt: parseDate(m.created_at), isMine: false,
+                                            control: true), to: conversationId)
+                    continue
+                }
+                // A reply is a real bubble that also carries a quote.
+                if let reply = MessageActionInbound.parseReply(plain) {
+                    replace(id: m.id, with:
+                            DecryptedMessage(id: m.id, senderId: m.sender_id, text: reply.text,
+                                             createdAt: parseDate(m.created_at), isMine: false,
+                                             quotedId: reply.quotedId, quotedPreview: reply.quotedPreview,
+                                             quotedSender: reply.quotedSender),
+                           to: conversationId)
+                    continue
+                }
                 // A media message's plaintext is a JSON MediaEnvelope; a text
                 // message is just the string. Detect via the server's content_type
                 // hint, falling back to the decoded shape.

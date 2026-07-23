@@ -75,6 +75,7 @@ class AppSession(app: Application) : AndroidViewModel(app) {
                 fullName = u.full_name ?: profile.fullName,
                 photoURL = u.photo_url ?: profile.photoURL,
                 bio = u.bio ?: profile.bio,
+                username = u.username ?: profile.username,
             )
         }
     }
@@ -84,15 +85,19 @@ class AppSession(app: Application) : AndroidViewModel(app) {
      * attempted, so editing your name offline works and survives a restart. The caller owns
      * the server sync (and reporting its failure); this never blocks on it.
      */
-    fun updateProfile(fullName: String? = null, photoUrl: String? = null, phoneE164: String? = null) {
+    fun updateProfile(fullName: String? = null, photoUrl: String? = null, phoneE164: String? = null,
+                      bio: String? = null, username: String? = null) {
         profile = profile.copy(
             fullName = fullName ?: profile.fullName,
             photoURL = photoUrl ?: profile.photoURL,
             phoneNumber = phoneE164 ?: profile.phoneNumber,
+            bio = bio ?: profile.bio,
+            username = username ?: profile.username,
         )
         val id = userId ?: return
         UserDirectory.upsertFromServer(
             userId = id, fullName = fullName, photoUrl = photoUrl, phoneE164 = phoneE164,
+            bio = bio, username = username,
         )
     }
 
@@ -274,12 +279,18 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                 d.deliveryStatus == "delivered" -> MessageStatus.DELIVERED
                 else -> MessageStatus.SENT
             }
+            // Surface delivered chat actions. Reaction display is single-emoji (peer's else
+            // mine); the per-user map is persisted in the engine.
+            val myId = com.voiid.app.net.TokenStore.get(getApplication()).userId
+            val reaction = d.reactions?.let { m -> m.entries.firstOrNull { it.key != myId }?.value ?: m.values.firstOrNull() }
             VMessage(
                 // Use the server id once known so receipts can match it.
                 id = d.serverId ?: d.id, conversationId = convId,
                 senderId = if (d.isMine) "me" else d.senderId,
                 kind = kind, text = d.text, createdAt = d.createdAt,
                 status = status, isMine = d.isMine, mediaRef = d.media, location = d.location,
+                reaction = reaction, deletedForEveryone = d.deletedForEveryone, forwarded = d.forwarded,
+                replyToText = d.quotedPreview, replyToSender = d.quotedSender,
             )
         }
         if (mapped.isNotEmpty() || messagesByConversation.containsKey(convId)) {
@@ -431,6 +442,24 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
             return
         }
 
+        // A quoted reply travels as its own E2EE envelope so the quote reaches the peer.
+        if (replyTo != null) {
+            bumpPreview(conversationId, text)
+            val quotedId = replyTo.id
+            val preview = if (replyTo.kind == MessageKind.TEXT) replyTo.text.take(80) else previewFor(replyTo.kind)
+            val sender = if (replyTo.isMine) "You" else replyTo.senderName.ifEmpty { "" }
+            viewModelScope.launch {
+                try {
+                    val peer = peerUserId(conv)
+                    engine.sendReply(text, quotedId, preview, sender, conversationId, peer)
+                    refresh(conversationId)
+                } catch (e: Exception) {
+                    loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t resolve the recipient."
+                }
+            }
+            return
+        }
+
         // Text: persist as PENDING in the engine store now (instant + offline-visible),
         // then flush (send) in the background. The store is the single source of truth.
         engine.enqueueText(text, conversationId)
@@ -514,25 +543,39 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         else -> "Message"
     }
 
-    /** Forward a message to one or more conversations (with a Forwarded tag). */
+    /** Forward a message to one or more conversations. Media is forwarded by RE-SENDING its
+     *  E2EE reference — the ciphertext is already in R2, so no re-upload; key stays E2E. */
     fun forward(message: VMessage, conversationIds: List<String>) {
         for (cid in conversationIds) {
-            send(
-                text = message.text,
-                kind = if (message.kind == MessageKind.POLL) MessageKind.TEXT else message.kind,
-                conversationId = cid,
-                forwarded = true,
-            )
+            val ref = message.mediaRef
+            val conv = directConversations.firstOrNull { it.id == cid }
+            if (ref != null && conv != null &&
+                (message.kind == MessageKind.IMAGE || message.kind == MessageKind.VOICE || message.kind == MessageKind.DOCUMENT)) {
+                viewModelScope.launch {
+                    val peer = runCatching { peerUserId(conv) }.getOrNull() ?: return@launch
+                    runCatching { engine.forwardMedia(ref, message.text, cid, peer) }
+                    refresh(cid)
+                }
+            } else {
+                send(text = message.text,
+                     kind = if (message.kind == MessageKind.POLL) MessageKind.TEXT else message.kind,
+                     conversationId = cid, forwarded = true)
+            }
         }
     }
 
-    /** Delete a message. forEveryone=true leaves a "deleted" tombstone; otherwise removes it. */
+    /** Delete a message. forEveryone=true tombstones it AND tells the peer; else local-only. */
     fun deleteMessage(messageId: String, convId: String, forEveryone: Boolean) {
         val arr = messagesByConversation[convId] ?: return
         val idx = arr.indexOfFirst { it.id == messageId }
         if (idx < 0) return
         if (forEveryone) {
             arr[idx] = arr[idx].copy(deletedForEveryone = true, reaction = null)
+            val conv = directConversations.firstOrNull { it.id == convId }
+            if (conv != null) viewModelScope.launch {
+                val peer = runCatching { peerUserId(conv) }.getOrNull() ?: return@launch
+                runCatching { engine.sendDeleteForEveryone(messageId, convId, peer) }
+            }
         } else {
             arr.removeAt(idx)
         }
@@ -554,12 +597,18 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         if (gi >= 0) groupConversations[gi] = groupConversations[gi].copy(lastMessagePreview = null)
     }
 
-    /** Toggle an emoji reaction on a message. */
+    /** Toggle an emoji reaction on a message — and DELIVER it to the peer over E2EE. */
     fun react(messageId: String, emoji: String, convId: String) {
         val arr = messagesByConversation[convId] ?: return
         val idx = arr.indexOfFirst { it.id == messageId }
         if (idx < 0) return
-        arr[idx] = arr[idx].copy(reaction = if (arr[idx].reaction == emoji) null else emoji)
+        val cleared = arr[idx].reaction == emoji
+        arr[idx] = arr[idx].copy(reaction = if (cleared) null else emoji)   // optimistic local
+        val conv = directConversations.firstOrNull { it.id == convId } ?: return
+        viewModelScope.launch {
+            val peer = runCatching { peerUserId(conv) }.getOrNull() ?: return@launch
+            runCatching { engine.sendReaction(messageId, if (cleared) null else emoji, convId, peer) }
+        }
     }
 
     /** Send a poll into a conversation. */

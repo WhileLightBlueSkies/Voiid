@@ -19,6 +19,8 @@ struct VUser: Identifiable, Hashable {
     var photoName: String?       // local asset name for dummy phase
     /// Remote avatar (R2 URL). Distinct from `photoName`, which is a bundled asset.
     var photoURL: String?
+    /// Clips handle (@username). Fetched from the server profile.
+    var username: String?
     var bio: String?
     var statusText: String?
     var isOnline: Bool = false

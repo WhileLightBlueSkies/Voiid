@@ -123,10 +123,24 @@ struct MapTabView: View {
                     contactMarker(p)
                 }
             }
-            if visibility.isVisible { UserAnnotation() }
+            // Your OWN blue dot — always shown, even in Ghost Mode. This is a purely
+            // client-side view of where YOU are; it is unrelated to what you broadcast to
+            // others (that is gated by `visibility`). Ghost mode hides you from others, not
+            // from yourself.
+            UserAnnotation()
         }
-        .mapStyle(.standard(pointsOfInterest: .excludingAll))
+        // Snapchat-style skin: a MUTED, de-emphasised base map so the friend avatars are
+        // the visual focus, not the streets. `.muted` desaturates roads/labels/terrain
+        // (the closest native MapKit lever to Snapchat's custom look — no tile dependency,
+        // no API key). POIs are hidden so the map reads as clean canvas. A soft brand tint
+        // overlay unifies it with the app instead of stock Apple grey-blue.
+        .mapStyle(.standard(elevation: .flat, pointsOfInterest: .excludingAll, emphasis: .muted))
         .mapControls { MapUserLocationButton(); MapCompass() }
+        .overlay(
+            VoiidColor.primary.opacity(0.06)
+                .allowsHitTesting(false)
+                .ignoresSafeArea()
+        )
     }
 
     private func contactMarker(_ p: MapPresence) -> some View {

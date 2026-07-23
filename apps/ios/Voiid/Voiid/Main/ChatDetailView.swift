@@ -271,36 +271,45 @@ struct ChatDetailView: View {
 
     private var normalHeader: some View {
         HStack(spacing: VoiidSpacing.sm) {
+            // A SEPARATE circular back button, distinct from the pill (iOS-26 control style).
             Button { Haptics.tap(); dismiss() } label: {
-                Image(systemName: "chevron.left").font(.system(size: 20, weight: .semibold))
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundColor(VoiidColor.textPrimary)
-            }
-            Button {
-                Haptics.tap(); showInfo = true
-            } label: {
-                HStack(spacing: VoiidSpacing.sm) {
-                    VoiidAvatar(size: 36, imageName: conversation.photoName)
-                        .clipShape(Circle())
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(conversation.title)
-                            .font(VoiidFont.rounded(17, .semibold)).foregroundColor(VoiidColor.textPrimary)
-                        if let presenceText {
-                            Text(presenceText)
-                                .font(VoiidFont.rounded(11, .regular))
-                                .foregroundColor(chat.typingConversations.contains(conversation.id) ? VoiidColor.primary : VoiidColor.textSecondary)
-                        }
-                    }
-                }
+                    .frame(width: 42, height: 42)
+                    .background(VoiidColor.surfaceCard, in: Circle())
             }
             .buttonStyle(.plain)
-            Spacer()
-            HStack(spacing: VoiidSpacing.lg) {
-                Button { Haptics.tap(); startCall(.voice) } label: {
-                    Image(systemName: "phone.fill").font(.system(size: 18)).foregroundColor(VoiidColor.textPrimary)
+            .accessibilityLabel("Back")
+
+            // One big pill holding identity + actions: [avatar · name/presence · 📞 · 🎥 · ⋯].
+            // Works for direct and group chats alike (title/photo/actions are conversation-
+            // agnostic; the ⋯ menu adapts its wording).
+            HStack(spacing: VoiidSpacing.xs) {
+                Button { Haptics.tap(); showInfo = true } label: {
+                    HStack(spacing: VoiidSpacing.sm) {
+                        ProfileAvatarButton(photoURL: conversation.photoURL,
+                                            name: conversation.title, size: 34)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(conversation.title)
+                                .font(VoiidFont.rounded(16, .semibold))
+                                .foregroundColor(VoiidColor.textPrimary)
+                                .lineLimit(1)
+                            if let presenceText {
+                                Text(presenceText)
+                                    .font(VoiidFont.rounded(11, .regular))
+                                    .foregroundColor(chat.typingConversations.contains(conversation.id) ? VoiidColor.primary : VoiidColor.textSecondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
-                Button { Haptics.tap(); startCall(.video) } label: {
-                    Image(systemName: "video.fill").font(.system(size: 19)).foregroundColor(VoiidColor.textPrimary)
-                }
+                .buttonStyle(.plain)
+
+                pillAction("phone.fill", label: "Voice call") { startCall(.voice) }
+                pillAction("video.fill", label: "Video call") { startCall(.video) }
                 Menu {
                     Button { showInfo = true } label: {
                         Label(conversation.type == .group ? "Group info" : "View profile", systemImage: "info.circle")
@@ -312,13 +321,36 @@ struct ChatDetailView: View {
                         Label("Clear chat", systemImage: "trash")
                     }
                 } label: {
-                    Image(systemName: "ellipsis").font(.system(size: 18, weight: .semibold)).foregroundColor(VoiidColor.textPrimary)
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(VoiidColor.textPrimary)
+                        .frame(width: 34, height: 34)
+                        .background(VoiidColor.fieldFill, in: Circle())
                 }
+                .accessibilityLabel("More")
             }
+            .padding(.horizontal, VoiidSpacing.sm)
+            .padding(.vertical, 6)
+            .background(VoiidColor.surfaceCard, in: Capsule())
+            .overlay(Capsule().stroke(VoiidColor.textSecondary.opacity(0.08), lineWidth: 1))
         }
         .padding(.horizontal, VoiidSpacing.md)
         .padding(.vertical, VoiidSpacing.sm)
         .background(VoiidColor.background)
+    }
+
+    /// A round action button sized to sit inside the header pill.
+    private func pillAction(_ systemName: String, label: String,
+                            _ action: @escaping () -> Void) -> some View {
+        Button { Haptics.tap(); action() } label: {
+            Image(systemName: systemName)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(VoiidColor.textPrimary)
+                .frame(width: 34, height: 34)
+                .background(VoiidColor.fieldFill, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
 
     /// Peer user_id read from the live store (resolved lazily after open), not the
