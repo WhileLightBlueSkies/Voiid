@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -22,8 +24,9 @@ android {
         vectorDrawables { useSupportLibrary = true }
 
         // Maps API key is a BUILD-TIME secret supplied by the developer, never committed.
-        // Sources, in order: -PMAPS_API_KEY, local.properties (Gradle folds that file into
-        // project properties), MAPS_API_KEY env var.
+        // Sources, in order: -PMAPS_API_KEY, local.properties (read explicitly below — plain
+        // Gradle does NOT fold this file into project properties; that's an Android Studio
+        // IDE-only convenience for sdk.dir), MAPS_API_KEY env var.
         //
         // An absent key is a SUPPORTED state, not a build failure: with an empty key the
         // Maps SDK renders a blank grey tile grid and logs an auth error nobody sees, which
@@ -31,8 +34,15 @@ android {
         // GoogleMap and render an explicit "Maps aren't set up in this build" card instead,
         // while location sharing itself keeps working end to end (coordinates + Open in Maps).
         // See docs/LOCATION.md §7.
-        val mapsKey = (project.findProperty("MAPS_API_KEY") as String?)
-            ?: System.getenv("MAPS_API_KEY").orEmpty()
+        val localProps = Properties()
+        val localPropsFile = rootProject.file("local.properties")
+        if (localPropsFile.exists()) {
+            localPropsFile.inputStream().use { localProps.load(it) }
+        }
+        val mapsKey: String = (project.findProperty("MAPS_API_KEY") as String?)
+            ?: localProps.getProperty("MAPS_API_KEY")
+            ?: System.getenv("MAPS_API_KEY")
+            ?: ""
         manifestPlaceholders["MAPS_API_KEY"] = mapsKey
         buildConfigField("boolean", "MAPS_CONFIGURED", mapsKey.isNotBlank().toString())
     }
