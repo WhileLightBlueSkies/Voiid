@@ -68,7 +68,9 @@ struct StoryReplyEnvelope: Codable {
 struct DecryptedMessage: Codable {
     let id: String                 // stable LOCAL id (kept across send so the UI is stable)
     let senderId: String
-    let text: String
+    // Mutable: delete-for-everyone tombstones this to "" in place (see
+    // applyDeleteForEveryone) rather than reconstructing the whole record.
+    var text: String
     let createdAt: Date
     let isMine: Bool
     var media: MediaRef? = nil
@@ -733,9 +735,10 @@ final class ChatEngine {
                     case .delete(let target):
                         // Only the ORIGINAL AUTHOR may delete: honour it only if the target
                         // was sent by this same peer (i.e. an inbound message from them).
-                        if let arr = store[conversationId],
-                           let t = arr.first(where: { $0.serverId == target || $0.id == target }),
-                           t.senderId == m.sender_id {
+                        let arr: [DecryptedMessage] = store[conversationId] ?? []
+                        let targetMessage: DecryptedMessage? =
+                            arr.first(where: { $0.serverId == target || $0.id == target })
+                        if targetMessage?.senderId == m.sender_id {
                             applyDeleteForEveryone(target: target, in: conversationId)
                         }
                     }

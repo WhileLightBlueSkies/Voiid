@@ -134,7 +134,7 @@ struct MapTabView: View {
         // (the closest native MapKit lever to Snapchat's custom look — no tile dependency,
         // no API key). POIs are hidden so the map reads as clean canvas. A soft brand tint
         // overlay unifies it with the app instead of stock Apple grey-blue.
-        .mapStyle(.standard(elevation: .flat, pointsOfInterest: .excludingAll, emphasis: .muted))
+        .mapStyle(.standard(elevation: .flat, emphasis: .muted, pointsOfInterest: .excludingAll))
         .mapControls { MapUserLocationButton(); MapCompass() }
         .overlay(
             VoiidColor.primary.opacity(0.06)
