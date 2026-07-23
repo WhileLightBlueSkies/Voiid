@@ -50,6 +50,15 @@ class MediaService(private val tokens: TokenStore) {
         return presign.key
     }
 
+    /**
+     * Profile photo upload. Deliberately NOT encrypted, unlike everything else on this path:
+     * an avatar is shown to anyone who can see the profile, so there is no key that could be
+     * distributed to exactly the right people. Same presigned-PUT transport, plaintext bytes,
+     * and the returned object key goes on the user row as `photo_url`.
+     */
+    suspend fun uploadProfilePhoto(imageData: ByteArray, mime: String = "image/jpeg"): String =
+        upload(imageData, mime)
+
     /** Encrypted download: presigned GET for `key` → fetch the ciphertext bytes. */
     suspend fun download(key: String): ByteArray {
         val body = ApiClient.json.encodeToString(PresignDownloadBody.serializer(), PresignDownloadBody(key))

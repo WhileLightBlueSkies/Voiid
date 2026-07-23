@@ -1,5 +1,6 @@
 package com.voiid.app.main
 
+import kotlinx.coroutines.tasks.await
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
@@ -46,11 +47,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
@@ -108,13 +107,23 @@ fun ChatsHomeView(
     // Ensure E2E identity/prekeys are published (idempotent), then load conversations.
     androidx.compose.runtime.LaunchedEffect(Unit) {
         runCatching { com.voiid.app.net.E2EManager.get(context).bootstrap() }
+        // Wire the location relay seam early + reconcile live shares (docs/LOCATION.md).
+        runCatching { com.voiid.app.net.LocationShareEngine.refresh(context) }
         chat.loadConversations()
+        // Register this device's FCM push token on login (onNewToken may not fire if a
+        // token already exists, e.g. returning user), so wake pushes reach this device.
+        runCatching {
+            val token = com.google.firebase.messaging.FirebaseMessaging.getInstance().token.await()
+            com.voiid.app.net.E2EManager.get(context).registerPushToken(token)
+        }
     }
     var search by remember { mutableStateOf("") }
     var tab by remember { mutableStateOf(ChatTab.CHATS) }
     var deleteTarget by remember { mutableStateOf<VConversation?>(null) }
     var callTarget by remember { mutableStateOf<VConversation?>(null) }
     var showNewChat by remember { mutableStateOf(false) }
+    var showBackup by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
     var allContacts by remember { mutableStateOf<List<VContact>>(emptyList()) }
     val scope = rememberCoroutineScope()
 
@@ -136,9 +145,17 @@ fun ChatsHomeView(
     Column(
         Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding(),
     ) {
-        Header(haptics, onNewChat = { showNewChat = true }, onLogout = { haptics.tap(); session.signOut() })
+        Header(
+            haptics,
+            photoUrl = session.profile.photoURL,
+            myName = session.profile.fullName,
+            onNewChat = { showNewChat = true },
+            onOpenSettings = { showSettings = true },
+        )
         SearchBar(search) { search = it }
         Tabs(tab) { haptics.selection(); tab = it }
+        // Persistent "sharing live location" banner across all chats (docs/LOCATION.md §8.A).
+        LocationBanner()
         if (search.isBlank()) {
             DraggableChatGrid(
                 items = list,
@@ -184,17 +201,50 @@ fun ChatsHomeView(
         }
     }
 
+    // Settings (tap your avatar) — fullscreen dialog, same pattern as the others below.
+    if (showSettings) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showSettings = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            SettingsScreen(
+                session = session,
+                onClose = { showSettings = false },
+                onBackupRecovery = { showBackup = true },
+            )
+        }
+    }
+
+    // Backup & Recovery — fullscreen dialog
+    if (showBackup) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showBackup = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            BackupRecoveryScreen(onBack = { showBackup = false })
+        }
+    }
+
     // New chat (contact discovery) — fullscreen dialog
     if (showNewChat) {
         androidx.compose.ui.window.Dialog(
             onDismissRequest = { showNewChat = false },
             properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
         ) {
-            NewChatScreen(
-                chat = chat,
-                onClose = { showNewChat = false },
-                onOpen = { conv -> showNewChat = false; onOpenConversation(conv) },
-            )
+            // On the GROUPS tab the "+" builds a real E2EE (MLS) group; on CHATS it starts a 1:1.
+            if (tab == ChatTab.GROUPS) {
+                NewGroupScreen(
+                    chat = chat,
+                    onClose = { showNewChat = false },
+                    onOpen = { conv -> showNewChat = false; onOpenConversation(conv) },
+                )
+            } else {
+                NewChatScreen(
+                    chat = chat,
+                    onClose = { showNewChat = false },
+                    onOpen = { conv -> showNewChat = false; onOpenConversation(conv) },
+                )
+            }
         }
     }
 
@@ -222,6 +272,8 @@ fun ChatsHomeView(
                         members = if (c.type == ConversationType.GROUP) DummyData.groupMembers else emptyList(),
                         photoName = c.photoName,
                         kind = kind,
+                        conversationId = c.id,
+                        peerUserId = c.peerUserId,
                     ),
                 )
                 callTarget = null
@@ -460,40 +512,37 @@ private fun SearchContactRow(c: VContact, onClick: () -> Unit) {
     }
 }
 
+/**
+ * Two rows, not one: your own avatar sits alone at the TOP-LEFT and the "Chats" title sits
+ * BELOW it. The avatar is the way into Settings — everything that used to hide behind the
+ * overflow menu (backup, log out) plus the things that had no home at all (profile photo,
+ * display name), so the menu is gone.
+ */
 @Composable
-private fun Header(haptics: com.voiid.app.ui.components.VoiidHaptics, onNewChat: () -> Unit, onLogout: () -> Unit) {
-    var menuOpen by remember { mutableStateOf(false) }
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(top = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text("Chats", style = VoiidFont.rounded(24, FontWeight.Bold), color = VoiidColor.textPrimary)
-        Spacer(Modifier.weight(1f))
-        Icon(
-            Icons.Default.Create, "New chat", tint = VoiidColor.textPrimary,
-            modifier = Modifier.size(24.dp).clip(CircleShape)
-                .clickable { haptics.tap(); onNewChat() }.padding(end = 0.dp),
-        )
-        Spacer(Modifier.width(16.dp))
-        Box {
-            Icon(
-                Icons.Default.Menu, "Menu", tint = VoiidColor.textPrimary,
-                modifier = Modifier.size(24.dp).clip(CircleShape)
-                    .clickable { haptics.tap(); menuOpen = true },
+private fun Header(
+    haptics: com.voiid.app.ui.components.VoiidHaptics,
+    photoUrl: String?,
+    myName: String?,
+    onNewChat: () -> Unit,
+    onOpenSettings: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(top = 8.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            ProfileAvatar(
+                photoUrl = photoUrl,
+                name = myName,
+                size = 38.dp,
+                modifier = Modifier.softClickable(scale = 0.92f) { haptics.tap(); onOpenSettings() },
             )
-            androidx.compose.material3.DropdownMenu(
-                expanded = menuOpen,
-                onDismissRequest = { menuOpen = false },
-            ) {
-                androidx.compose.material3.DropdownMenuItem(
-                    text = { Text("Log out", color = VoiidColor.error) },
-                    leadingIcon = {
-                        Icon(Icons.AutoMirrored.Filled.Logout, null, tint = VoiidColor.error)
-                    },
-                    onClick = { menuOpen = false; onLogout() },
-                )
-            }
+            Spacer(Modifier.weight(1f))
+            Icon(
+                Icons.Default.Create, "New chat", tint = VoiidColor.textPrimary,
+                modifier = Modifier.size(24.dp).clip(CircleShape)
+                    .clickable { haptics.tap(); onNewChat() },
+            )
         }
+        Spacer(Modifier.height(12.dp))
+        Text("Chats", style = VoiidFont.rounded(28, FontWeight.Bold), color = VoiidColor.textPrimary)
     }
 }
 

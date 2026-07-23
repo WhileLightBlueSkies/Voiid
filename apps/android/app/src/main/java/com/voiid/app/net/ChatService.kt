@@ -31,13 +31,20 @@ private data class ConversationsEnvelope(val conversations: List<ConvDTO>)
 @Serializable private data class ConvDetailEnvelope(val conversation: ConvDetailDTO, val members: List<MemberDTO>)
 // Backend returns a FLAT shape: direct → { conversation_id, existed }, group → { conversation_id }.
 @Serializable private data class CreateConvEnvelope(val conversation_id: String, val existed: Boolean = false)
+@Serializable private data class CreateGroupBody(val type: String = "group", val name: String, val member_ids: List<String>)
 
 /** Resolved peer of a direct conversation. */
 data class PeerInfo(val peerUserId: String?, val title: String?, val photoURL: String?)
 
+/** One member of a group conversation (for GroupInfoView). */
+data class GroupMemberInfo(val userId: String, val name: String, val photoURL: String?, val isYou: Boolean)
+
 class ChatService(context: Context) {
+    private val appContext = context.applicationContext
     private val tokens = TokenStore.get(context)
     private val api = ApiClient(tokens)
+
+    init { com.voiid.app.store.UserDirectory.init(appContext) }
 
     /** Fetch the user's real conversations, then enrich direct chats (peer) concurrently. */
     suspend fun fetchConversations(): List<VConversation> = coroutineScope {
@@ -73,6 +80,12 @@ class ChatService(context: Context) {
         val myId = tokens.userId
         val peer = env.members.firstOrNull { it.user_id != myId }
             ?: return PeerInfo(null, env.conversation.name, null)
+        // Every peer resolution feeds the local directory, so a name is available offline and
+        // on the call paths (a ring push carries no caller name — see UserDirectory). Server
+        // fields only: the address-book name this may already hold is left untouched.
+        com.voiid.app.store.UserDirectory.upsertFromServer(
+            userId = peer.user_id, fullName = peer.full_name, photoUrl = peer.photo_url,
+        )
         return PeerInfo(peer.user_id, peer.full_name ?: env.conversation.name, peer.photo_url)
     }
 
@@ -81,6 +94,29 @@ class ChatService(context: Context) {
         val body = """{"type":"direct","member_id":"$memberId"}"""
         val env: CreateConvEnvelope = api.requestAs("POST", "conversations/create", jsonBody = body)
         return env.conversation_id
+    }
+
+    /** Create a GROUP conversation container (mirrors [createDirect]). The MLS crypto
+     *  group is built separately by GroupEngine.createGroup once this id exists. */
+    suspend fun createGroup(name: String, memberIds: List<String>): String {
+        val body = ApiClient.json.encodeToString(
+            CreateGroupBody.serializer(),
+            CreateGroupBody(name = name, member_ids = memberIds),
+        )
+        val env: CreateConvEnvelope = api.requestAs("POST", "conversations/create", jsonBody = body)
+        return env.conversation_id
+    }
+
+    /** All members of a (group) conversation: user_id + display name + photo. */
+    suspend fun fetchMembers(conversationId: String): List<GroupMemberInfo> {
+        val env: ConvDetailEnvelope = api.requestAs("GET", "conversations/$conversationId")
+        val myId = tokens.userId
+        return env.members.map {
+            com.voiid.app.store.UserDirectory.upsertFromServer(
+                userId = it.user_id, fullName = it.full_name, photoUrl = it.photo_url,
+            )
+            GroupMemberInfo(it.user_id, it.full_name ?: "Member", it.photo_url, isYou = it.user_id == myId)
+        }
     }
 
     /** Peer presence (online + last_seen epoch millis) from Redis-backed status. */

@@ -12,7 +12,7 @@
 
 use std::sync::Mutex;
 
-use crate::{api, call, group, keys, media, session};
+use crate::{api, call, group, keys, media, recovery, session};
 
 // ---- Errors ----
 
@@ -143,6 +143,36 @@ impl From<call::SrtpKeys> for SrtpKeys {
         Self {
             master_key: k.master_key,
             master_salt: k.master_salt,
+        }
+    }
+}
+
+/// A master backup secret sealed under a PIN. Opaque to the server; store as-is
+/// and pass back to `unwrap_master_secret_with_pin` with the PIN to recover.
+#[derive(uniffi::Record)]
+pub struct PinWrappedSecret {
+    pub version: u8,
+    pub salt: String,
+    pub nonce: String,
+    pub ciphertext: String,
+}
+impl From<recovery::PinWrappedSecret> for PinWrappedSecret {
+    fn from(w: recovery::PinWrappedSecret) -> Self {
+        Self {
+            version: w.version,
+            salt: w.salt,
+            nonce: w.nonce,
+            ciphertext: w.ciphertext,
+        }
+    }
+}
+impl From<PinWrappedSecret> for recovery::PinWrappedSecret {
+    fn from(w: PinWrappedSecret) -> Self {
+        Self {
+            version: w.version,
+            salt: w.salt,
+            nonce: w.nonce,
+            ciphertext: w.ciphertext,
         }
     }
 }
@@ -337,6 +367,31 @@ impl GroupMember {
             inner: Mutex::new(self.inner.join_group(&welcome, &ratchet_tree)?),
         }))
     }
+
+    /// Serialize this member and ALL its MLS state (signer + KeyPackage privates +
+    /// every group it belongs to) to an opaque blob. Persist it encrypted
+    /// on-device and restore it on the next launch with `restore`. MLS state is
+    /// in-memory only, so WITHOUT persisting this, groups are lost on app restart.
+    /// Re-serialize after every state-changing call (create/join/add/remove/
+    /// encrypt/decrypt).
+    pub fn serialize(&self) -> FfiResult<Vec<u8>> {
+        Ok(self.inner.serialize()?)
+    }
+
+    /// Reconstruct a member (and its full MLS storage) from a `serialize` blob.
+    #[uniffi::constructor]
+    pub fn restore(blob: Vec<u8>) -> FfiResult<std::sync::Arc<Self>> {
+        Ok(std::sync::Arc::new(Self {
+            inner: group::GroupMember::restore(&blob)?,
+        }))
+    }
+
+    /// Re-open a group this member belongs to, by its `group_id`, after restoring.
+    pub fn load_group(&self, group_id: Vec<u8>) -> FfiResult<std::sync::Arc<GroupSession>> {
+        Ok(std::sync::Arc::new(GroupSession {
+            inner: Mutex::new(self.inner.load_group(&group_id)?),
+        }))
+    }
 }
 
 /// Membership in one MLS group (Phase 3).
@@ -382,6 +437,15 @@ impl GroupSession {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .member_count() as u32
+    }
+
+    /// This group's stable id — persist it and pass it to `GroupMember.load_group`
+    /// after a restart to re-open this exact group.
+    pub fn group_id(&self) -> Vec<u8> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .group_id()
     }
 
     pub fn encrypt(&self, member: &GroupMember, plaintext: Vec<u8>) -> FfiResult<Vec<u8>> {
@@ -446,6 +510,62 @@ pub fn encrypt_media(plaintext: Vec<u8>) -> FfiResult<EncryptedMedia> {
 #[uniffi::export]
 pub fn decrypt_media(media_key: MediaKey, ciphertext: Vec<u8>) -> FfiResult<Vec<u8>> {
     Ok(media::decrypt_media(&media_key.into(), &ciphertext)?)
+}
+
+// ---- Account recovery ----
+
+/// Generate a fresh, random 32-byte master backup secret.
+#[uniffi::export]
+pub fn generate_master_secret() -> Vec<u8> {
+    api::generate_master_secret().to_vec()
+}
+
+/// Render a master secret as a 24-word BIP39 recovery phrase.
+#[uniffi::export]
+pub fn master_secret_to_phrase(secret: Vec<u8>) -> FfiResult<String> {
+    let secret = to_key32(&secret)?;
+    Ok(api::master_secret_to_phrase(&secret))
+}
+
+/// Recover a master secret from a BIP39 recovery phrase. Errors on a bad phrase.
+#[uniffi::export]
+pub fn phrase_to_master_secret(phrase: String) -> FfiResult<Vec<u8>> {
+    Ok(api::phrase_to_master_secret(&phrase)?.to_vec())
+}
+
+/// Seal a master secret under a PIN. The result is opaque to the server.
+#[uniffi::export]
+pub fn wrap_master_secret_with_pin(secret: Vec<u8>, pin: String) -> FfiResult<PinWrappedSecret> {
+    let secret = to_key32(&secret)?;
+    Ok(api::wrap_master_secret_with_pin(&secret, &pin)?.into())
+}
+
+/// Recover a master secret from a PIN-wrapped secret using the PIN. A wrong PIN
+/// or tampered wrap errors (GCM auth) rather than returning a wrong secret.
+#[uniffi::export]
+pub fn unwrap_master_secret_with_pin(
+    wrapped: PinWrappedSecret,
+    pin: String,
+) -> FfiResult<Vec<u8>> {
+    Ok(api::unwrap_master_secret_with_pin(&wrapped.into(), &pin)?.to_vec())
+}
+
+/// Seal a backup blob (client-serialized message history) under a key derived from
+/// the master secret. Returns a self-describing byte string to upload as-is; the
+/// server never sees the key or the plaintext.
+#[uniffi::export]
+pub fn encrypt_backup(secret: Vec<u8>, plaintext: Vec<u8>) -> FfiResult<Vec<u8>> {
+    let secret = to_key32(&secret)?;
+    Ok(api::encrypt_backup(&secret, &plaintext)?)
+}
+
+/// Open a backup blob produced by `encrypt_backup` using the master secret. A
+/// wrong secret or tampered blob errors (GCM auth) rather than returning wrong
+/// plaintext.
+#[uniffi::export]
+pub fn decrypt_backup(secret: Vec<u8>, blob: Vec<u8>) -> FfiResult<Vec<u8>> {
+    let secret = to_key32(&secret)?;
+    Ok(api::decrypt_backup(&secret, &blob)?)
 }
 
 /// Generate a fresh 1:1 call secret to send to the peer over a message.

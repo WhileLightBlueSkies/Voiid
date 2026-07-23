@@ -8,7 +8,13 @@
 //   R2_ACCESS_KEY_ID      S3 access key id (R2 API token)
 //   R2_SECRET_ACCESS_KEY  S3 secret access key
 //   R2_BUCKET             bucket name (e.g. voiid-media-dev)
-import { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  DeleteObjectCommand,
+} from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 const endpoint = process.env.R2_ENDPOINT;
@@ -47,6 +53,33 @@ export function presignPut(key: string, contentType = 'application/octet-stream'
 /** Presigned GET URL the client uses to download encrypted bytes at `key`. */
 export function presignGet(key: string): Promise<string> {
   return getSignedUrl(s3(), new GetObjectCommand({ Bucket: R2_BUCKET, Key: key }), { expiresIn: GET_TTL });
+}
+
+/**
+ * Upload already-encrypted bytes to `key` directly from the server.
+ *
+ * Unlike media (which the client PUTs straight to R2 via a presigned URL), the
+ * backup blob is small enough to accept through the API, so the server stores it
+ * here. The bytes are E2E ciphertext — the server never sees plaintext.
+ */
+export async function putObject(key: string, body: Buffer, contentType = 'application/octet-stream'): Promise<void> {
+  await s3().send(new PutObjectCommand({ Bucket: R2_BUCKET, Key: key, Body: body, ContentType: contentType }));
+}
+
+/**
+ * Delete the object at `key`.
+ *
+ * Added for stories, which are the first content in VOIID with a real TTL: a story's
+ * ciphertext must actually leave the bucket 24h (+1h grace) after it was posted, and
+ * the author's explicit Delete must remove it now. S3/R2 DeleteObject is idempotent —
+ * deleting a key that is already gone succeeds — so callers can retry freely.
+ *
+ * THIS IS NOT REVOCATION. Removing the ciphertext does nothing about the copies that
+ * viewers already downloaded and decrypted; no primitive in e2e-core can expire or
+ * rotate a delivered media key. Never present it to a user as "taking it back".
+ */
+export async function deleteObject(key: string): Promise<void> {
+  await s3().send(new DeleteObjectCommand({ Bucket: R2_BUCKET, Key: key }));
 }
 
 /** True if an object exists at `key` (used to confirm an upload completed). */

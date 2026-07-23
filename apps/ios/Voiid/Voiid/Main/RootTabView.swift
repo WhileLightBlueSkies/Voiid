@@ -2,29 +2,60 @@
 //  RootTabView.swift
 //  Voiid
 //
-//  Main app shell — custom bottom nav: AI · Chats · Clips.
+//  Main app shell — custom bottom nav: AI · Chats · Map · Clips.
 //  Elastic menu bar: a pill indicator stretches/snaps between tabs + icon bounce.
+//
+//  The Map tab carries a persistent visibility indicator (§8): a filled accent dot whenever
+//  you are visible on the Map, a hollow ghost glyph when ghosted. It is drawn from every
+//  screen, active or not, so your standing visibility is never something you have to open a
+//  screen to discover.
 //
 
 import SwiftUI
 
 struct RootTabView: View {
     @EnvironmentObject var session: AppSession
+    // Drives the Map tab's always-on visibility badge. `MapVisibilityState` is the same
+    // source the Map surface and Settings read, so the dot can never disagree with them.
+    @ObservedObject private var mapVisibility = MapVisibilityState.shared
+    // Drives the Stories tab's unread dot: any unexpired unviewed story exists. One home,
+    // one truth — there is no story tray above the chat grid (§8.1).
+    @ObservedObject private var storyEngine = StoryEngine.shared
     @State private var tab: Tab = .chat
     @Namespace private var indicator
 
-    enum Tab: CaseIterable { case ai, chat, clips
-        var asset: String { self == .ai ? "TabAI" : self == .chat ? "TabChats" : "TabClips" }
-        var label: String { self == .ai ? "AI" : self == .chat ? "Chats" : "Clips" }
+    // The asset/label ternaries were hardcoded for exactly three cases; with a 4th tab they
+    // become switches so a future 5th tab is a compile error to omit, not a silent wrong icon.
+    enum Tab: CaseIterable { case ai, chat, stories, map, clips
+        var asset: String {
+            switch self {
+            case .ai:      return "TabAI"
+            case .chat:    return "TabChats"
+            case .stories: return "TabStories"
+            case .map:     return "TabMap"     // rendered via SF Symbol (see iconGlyph) — no PNG asset
+            case .clips:   return "TabClips"
+            }
+        }
+        var label: String {
+            switch self {
+            case .ai:      return "AI"
+            case .chat:    return "Chats"
+            case .stories: return "Stories"
+            case .map:     return "Map"
+            case .clips:   return "Clips"
+            }
+        }
     }
 
     var body: some View {
         ZStack(alignment: .bottom) {
             Group {
                 switch tab {
-                case .chat:  ChatsHomeView()
-                case .ai:    AIChatView()
-                case .clips: ClipsFeedView()
+                case .chat:    ChatsHomeView()
+                case .ai:      AIChatView()
+                case .stories: StoriesHomeView()
+                case .map:     MapTabView()
+                case .clips:   ClipsFeedView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -36,12 +67,18 @@ struct RootTabView: View {
         }
         .ignoresSafeArea(.keyboard)
         .animation(.easeInOut(duration: 0.2), value: session.hideTabBar)
+        // Bring the Map engine to life at shell load so inbound encrypted fixes are received
+        // and decrypted even when the Map tab is not the active one — otherwise a contact's
+        // live position would only start updating once you happened to open the Map.
+        .onAppear { _ = MapPresenceEngine.shared }
     }
 
     private var tabBar: some View {
         HStack(spacing: 0) {
             tabItem(.ai)
             tabItem(.chat)
+            tabItem(.stories)
+            tabItem(.map)
             tabItem(.clips)
         }
         .padding(.horizontal, VoiidSpacing.md)
@@ -67,12 +104,22 @@ struct RootTabView: View {
                             .matchedGeometryEffect(id: "tabPill", in: indicator)
                             .frame(width: 54, height: 40)
                     }
-                    Image(t.asset)
-                        .renderingMode(.template)
-                        .resizable().scaledToFit()
+                    iconGlyph(t, active: active)
                         .frame(width: 24, height: 24)
                         .foregroundColor(active ? VoiidColor.primary : VoiidColor.textSecondary)
                         .scaleEffect(active ? 1.12 : 1)
+                        // The Map badge sits at the icon's top-right, drawn whether or not the
+                        // tab is active — visibility must be legible from every screen.
+                        .overlay(alignment: .topTrailing) {
+                            if t == .map { mapVisibilityBadge.offset(x: 6, y: -4) }
+                            // Stories unread dot: any unexpired unviewed story exists (§8.1).
+                            if t == .stories && storyEngine.hasUnviewed {
+                                Circle().fill(VoiidColor.accent)
+                                    .frame(width: 9, height: 9)
+                                    .overlay(Circle().stroke(VoiidColor.background, lineWidth: 1.5))
+                                    .offset(x: 6, y: -4)
+                            }
+                        }
                 }
                 .frame(height: 40)
                 Text(t.label)
@@ -82,5 +129,37 @@ struct RootTabView: View {
             .frame(maxWidth: .infinity)
         }
         .buttonStyle(.plain)
+    }
+
+    /// The Map tab uses an SF Symbol (no bundled `TabMap` PNG exists yet — a designed asset
+    /// can replace this without touching call sites). Every other tab uses its template PNG.
+    @ViewBuilder
+    private func iconGlyph(_ t: Tab, active: Bool) -> some View {
+        if t == .map {
+            Image(systemName: "map")
+                .resizable().scaledToFit()
+                .fontWeight(active ? .semibold : .regular)
+        } else {
+            Image(t.asset)
+                .renderingMode(.template)
+                .resizable().scaledToFit()
+        }
+    }
+
+    /// Filled accent dot while visible; a hollow ghost glyph while ghosted (§8).
+    @ViewBuilder
+    private var mapVisibilityBadge: some View {
+        if mapVisibility.isVisible {
+            Circle()
+                .fill(VoiidColor.primary)
+                .frame(width: 9, height: 9)
+                .overlay(Circle().stroke(VoiidColor.background, lineWidth: 1.5))
+        } else {
+            Image(systemName: "moon.zzz.fill")
+                .font(.system(size: 8, weight: .bold))
+                .foregroundColor(VoiidColor.textSecondary)
+                .padding(1.5)
+                .background(Circle().fill(VoiidColor.background))
+        }
     }
 }

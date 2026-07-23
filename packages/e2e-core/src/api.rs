@@ -13,6 +13,7 @@ use crate::error::E2eError;
 use crate::group::{GroupMember, GroupSession};
 use crate::keys::{IdentityKeys, PublicBundle};
 use crate::media::{EncryptedMedia, MediaKey};
+use crate::recovery::PinWrappedSecret;
 use crate::session::{Session, WireMessage};
 
 /// Create a fresh device identity. Returns an opaque handle the caller stores.
@@ -111,6 +112,61 @@ pub fn session_id(session: &Session) -> String {
 /// re-accepting a PreKey for a session they already hold (libsignal-style dedup).
 pub fn prekey_session_id(message: &WireMessage) -> Option<String> {
     message.prekey_session_id()
+}
+
+// --- Account recovery (master backup secret; see src/recovery.rs) ---
+
+/// Generate a fresh, random 32-byte master backup secret. The caller then wraps
+/// it under a PIN (`wrap_master_secret_with_pin`) and/or shows the user its
+/// recovery phrase (`master_secret_to_phrase`) so it can be restored later.
+pub fn generate_master_secret() -> [u8; 32] {
+    crate::recovery::generate_master_secret()
+}
+
+/// Render a master secret as a 24-word BIP39 recovery phrase for the user to
+/// write down.
+pub fn master_secret_to_phrase(secret: &[u8; 32]) -> String {
+    crate::recovery::master_secret_to_phrase(secret)
+}
+
+/// Recover a master secret from a BIP39 recovery phrase. Errors (does not panic)
+/// on an unknown word, bad checksum, or wrong length.
+pub fn phrase_to_master_secret(phrase: &str) -> Result<[u8; 32], E2eError> {
+    crate::recovery::phrase_to_master_secret(phrase)
+}
+
+/// Seal a master secret under a PIN. The returned [`PinWrappedSecret`] is opaque
+/// to the server (Argon2id + AES-256-GCM), so it can be stored server-side and a
+/// PIN alone recovers the secret on a new device.
+pub fn wrap_master_secret_with_pin(
+    secret: &[u8; 32],
+    pin: &str,
+) -> Result<PinWrappedSecret, E2eError> {
+    crate::recovery::wrap_with_pin(secret, pin)
+}
+
+/// Recover a master secret from a [`PinWrappedSecret`] using the PIN. A wrong PIN
+/// (or tampered wrap) errors via the GCM auth check — it never returns a wrong
+/// secret and never panics.
+pub fn unwrap_master_secret_with_pin(
+    wrapped: &PinWrappedSecret,
+    pin: &str,
+) -> Result<[u8; 32], E2eError> {
+    crate::recovery::unwrap_with_pin(wrapped, pin)
+}
+
+/// Seal a backup blob (the client-serialized message history) under a key derived
+/// from the master secret. Returns a self-describing byte string the server stores
+/// as-is — it never sees the key or the plaintext.
+pub fn encrypt_backup(secret: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, E2eError> {
+    crate::recovery::encrypt_backup(secret, plaintext)
+}
+
+/// Open a backup blob produced by [`encrypt_backup`] using the master secret. A
+/// wrong secret or tampered blob errors via the GCM auth check; never returns
+/// wrong-but-plausible plaintext and never panics.
+pub fn decrypt_backup(secret: &[u8; 32], blob: &[u8]) -> Result<Vec<u8>, E2eError> {
+    crate::recovery::decrypt_backup(secret, blob)
 }
 
 // --- Phase 2: media (images / video / audio files) ---

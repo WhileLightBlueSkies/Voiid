@@ -8,6 +8,7 @@
 //
 
 import SwiftUI
+import WebRTC
 
 enum CallKind { case voice, video }
 
@@ -19,6 +20,43 @@ struct CallRequest: Identifiable {
     let members: [VMember]      // for group grids; empty for 1:1
     let photoName: String?
     let kind: CallKind
+    /// The 1:1 peer's user id — required to actually place a real WebRTC call.
+    /// nil for group calls (which route through LiveKit instead) or previews.
+    var peerUserId: String? = nil
+    /// The conversation this call belongs to. Required for a real group call: it
+    /// resolves both the LiveKit room and the MLS group the E2EE key derives from.
+    /// nil for 1:1 calls and previews.
+    var conversationId: String? = nil
+}
+
+// MARK: - WebRTC video renderer (Metal)
+
+/// Renders an `RTCVideoTrack` in SwiftUI via `RTCMTLVideoView`.
+struct RTCVideoView: UIViewRepresentable {
+    let track: RTCVideoTrack?
+    var mirror: Bool = false
+
+    func makeUIView(context: Context) -> RTCMTLVideoView {
+        let v = RTCMTLVideoView()
+        v.videoContentMode = .scaleAspectFill
+        v.transform = mirror ? CGAffineTransform(scaleX: -1, y: 1) : .identity
+        return v
+    }
+
+    func updateUIView(_ uiView: RTCMTLVideoView, context: Context) {
+        if context.coordinator.track !== track {
+            context.coordinator.track?.remove(uiView)
+            track?.add(uiView)
+            context.coordinator.track = track
+        }
+    }
+
+    static func dismantleUIView(_ uiView: RTCMTLVideoView, coordinator: Coordinator) {
+        coordinator.track?.remove(uiView)
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    final class Coordinator { var track: RTCVideoTrack? }
 }
 
 // MARK: - Voice/Video picker (small branded sheet)
@@ -69,7 +107,9 @@ struct CallTypeSheet: View {
 struct CallScreen: View {
     let request: CallRequest
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var call = CallService.shared
 
+    // Group calls are still simulated (a later increment); 1:1 uses CallService.
     @State private var connected = false
     @State private var seconds = 0
     @State private var muted = false
@@ -77,14 +117,88 @@ struct CallScreen: View {
     @State private var videoOn = true
     @State private var timer: Timer?
 
+    /// A real 1:1 call is one with a peer id and not a group.
+    private var isRealOneToOne: Bool { !request.isGroup && request.peerUserId != nil }
+
+    /// A real group call is one with a conversation id, which we need to resolve the
+    /// LiveKit room and derive the MLS call key. Without it we fall back to the
+    /// simulated screen (previews, and call sites that don't carry the conversation).
+    private var isRealGroup: Bool { request.isGroup && request.conversationId != nil }
+
+    private var liveState: CallState? { isRealOneToOne ? call.active?.state : nil }
+
+    /// Mid-call ICE restart in progress. Surfaced prominently because the
+    /// alternative reading of a frozen call is "it's dead" — and the user hangs
+    /// up on a call that was about to recover.
+    private var isReconnecting: Bool {
+        isRealOneToOne && call.isReconnecting
+            && (liveState == .connected || liveState == .connecting)
+    }
+
     private var statusText: String {
+        if isRealOneToOne {
+            switch call.active?.state {
+            case .some(.connected):
+                if call.isReconnecting { return "Reconnecting…" }
+                if call.isOnHold { return "On hold" }
+                if call.peerOnHold { return "\(request.title) is on hold" }
+                return String(format: "%02d:%02d", call.connectedSeconds / 60, call.connectedSeconds % 60)
+            case .some(.incomingRinging): return request.kind == .video ? "Incoming video call" : "Incoming call"
+            case .some(.connecting): return call.isReconnecting ? "Reconnecting…" : "Connecting…"
+            case .some(.ended), .none: return "Call ended"
+            default: return request.kind == .video ? "Ringing — Video" : "Ringing…"
+            }
+        }
         if !connected { return request.kind == .video ? "Ringing — Video" : "Ringing…" }
         return String(format: "%02d:%02d", seconds / 60, seconds % 60)
     }
 
     var body: some View {
+        // Real group calls hand off to the LiveKit-backed screen entirely; the
+        // simulated path below now only serves previews and 1:1 calls.
+        if isRealGroup, let cid = request.conversationId {
+            GroupCallScreen(conversationId: cid, title: request.title, kind: request.kind)
+        } else {
+            simulatedOrOneToOneBody
+        }
+    }
+
+    private var simulatedOrOneToOneBody: some View {
         ZStack {
             background
+            // Real remote video fills the screen behind the overlay (1:1 video calls).
+            // Rendered through the shared sample-buffer layer rather than
+            // RTCMTLVideoView — RTCMTLVideoView cannot be picture-in-picture'd, and
+            // this is the same layer the system PiP window draws from.
+            if isRealOneToOne, request.kind == .video, call.remoteVideoTrack != nil {
+                CallRemoteVideoView().ignoresSafeArea()
+            }
+            // Minimize: shrink to the in-app floating window, call keeps running.
+            if isRealOneToOne, liveState == .connected || liveState == .connecting {
+                VStack {
+                    HStack {
+                        Button {
+                            Haptics.tap()
+                            call.minimizeCallUI()
+                            dismiss()
+                        } label: {
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundColor(request.kind == .video ? .white : VoiidColor.textPrimary)
+                                .frame(width: 38, height: 38)
+                                .background(request.kind == .video
+                                            ? Color.white.opacity(0.2) : VoiidColor.surfaceCard)
+                                .clipShape(Circle())
+                        }
+                        .accessibilityLabel("Minimize call")
+                        Spacer()
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, VoiidSpacing.lg)
+                .padding(.top, VoiidSpacing.md)
+                .zIndex(1)
+            }
             VStack(spacing: 0) {
                 Spacer().frame(height: 60)
                 // Group call banner card
@@ -115,7 +229,10 @@ struct CallScreen: View {
                     Text(statusText)
                         .font(VoiidFont.rounded(14, .regular))
                         .foregroundColor(request.kind == .video ? .white.opacity(0.85) : VoiidColor.textSecondary)
+                    if isReconnecting { reconnectingBadge }
+                    else if isRealOneToOne, call.isOnHold || call.peerOnHold { holdBadge }
                 }
+                .animation(.easeInOut(duration: 0.2), value: isReconnecting)
 
                 Spacer()
                 // Center content: avatar (voice) or video grid/self
@@ -126,8 +243,68 @@ struct CallScreen: View {
                     .padding(.bottom, VoiidSpacing.xxl)
             }
         }
-        .onAppear { startCall() }
-        .onDisappear { timer?.invalidate() }
+        .onAppear {
+            onAppearStart()
+            if isRealOneToOne { call.setCallUIVisible(true) }
+        }
+        .onDisappear {
+            timer?.invalidate()
+            if isRealOneToOne { call.setCallUIVisible(false) }
+        }
+        .onChange(of: call.active?.state) { _, newState in
+            // A real 1:1 call reached a terminal state → close the screen.
+            if isRealOneToOne, (newState == nil || newState == .ended) {
+                dismiss()
+            }
+        }
+    }
+
+    private func onAppearStart() {
+        if isRealOneToOne {
+            // Outgoing: no active call yet → place it. Incoming: already active → just observe.
+            if call.active == nil, let peer = request.peerUserId {
+                call.startCall(peerUserId: peer, title: request.title,
+                               isVideo: request.kind == .video,
+                               conversationId: request.conversationId)
+            }
+        } else {
+            startCall()   // group: simulated
+        }
+    }
+
+    // MARK: status badges
+
+    /// Subtle, non-alarming: the call is recovering, not failing.
+    private var reconnectingBadge: some View {
+        HStack(spacing: 6) {
+            ProgressView()
+                .progressViewStyle(.circular)
+                .scaleEffect(0.6)
+                .tint(request.kind == .video ? .white : VoiidColor.textSecondary)
+            Text("Reconnecting…")
+                .font(VoiidFont.rounded(11, .medium))
+                .foregroundColor(request.kind == .video ? .white.opacity(0.9) : VoiidColor.textSecondary)
+        }
+        .padding(.horizontal, VoiidSpacing.sm)
+        .padding(.vertical, 4)
+        .background(request.kind == .video ? Color.white.opacity(0.18) : VoiidColor.surfaceCard)
+        .clipShape(Capsule())
+        .accessibilityLabel("Reconnecting")
+        .transition(.opacity)
+    }
+
+    private var holdBadge: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "pause.circle.fill").font(.system(size: 11))
+            Text(call.isOnHold ? "You put this call on hold" : "On hold")
+                .font(VoiidFont.rounded(11, .medium))
+        }
+        .foregroundColor(request.kind == .video ? .white.opacity(0.9) : VoiidColor.textSecondary)
+        .padding(.horizontal, VoiidSpacing.sm)
+        .padding(.vertical, 4)
+        .background(request.kind == .video ? Color.white.opacity(0.18) : VoiidColor.surfaceCard)
+        .clipShape(Capsule())
+        .transition(.opacity)
     }
 
     // MARK: backgrounds
@@ -156,15 +333,21 @@ struct CallScreen: View {
             participantGrid(video: true)
         } else {
             ZStack(alignment: .bottomTrailing) {
-                // remote "video"
-                RoundedRectangle(cornerRadius: 0).fill(.clear)
-                // self preview
-                RoundedRectangle(cornerRadius: VoiidRadius.lg)
-                    .fill(VoiidColor.primary.opacity(0.5))
-                    .frame(width: 110, height: 150)
-                    .overlay(Image(systemName: videoOn ? "person.fill" : "video.slash.fill")
-                        .font(.system(size: 30)).foregroundColor(.white.opacity(0.8)))
-                    .padding(VoiidSpacing.lg)
+                Color.clear
+                // Self preview: real local camera for a live 1:1 call, else placeholder.
+                Group {
+                    if isRealOneToOne, call.videoEnabled, let localTrack = call.localVideoTrack {
+                        RTCVideoView(track: localTrack, mirror: true)
+                    } else {
+                        RoundedRectangle(cornerRadius: VoiidRadius.lg)
+                            .fill(VoiidColor.primary.opacity(0.5))
+                            .overlay(Image(systemName: "video.slash.fill")
+                                .font(.system(size: 30)).foregroundColor(.white.opacity(0.8)))
+                    }
+                }
+                .frame(width: 110, height: 150)
+                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg))
+                .padding(VoiidSpacing.lg)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -200,21 +383,102 @@ struct CallScreen: View {
     }
 
     // MARK: controls
-    private var controls: some View {
-        HStack(spacing: VoiidSpacing.xl) {
-            ctrl(muted ? "mic.slash.fill" : "mic.fill", muted) { muted.toggle() }
-            if request.kind == .video {
-                ctrl(videoOn ? "video.fill" : "video.slash.fill", !videoOn) { videoOn.toggle() }
-                ctrl("arrow.triangle.2.circlepath.camera.fill", false) {}   // flip camera
-            } else {
-                ctrl(speaker ? "speaker.wave.2.fill" : "speaker.fill", speaker) { speaker.toggle() }
+    @ViewBuilder private var controls: some View {
+        // Incoming 1:1 call awaiting the user's decision → Accept / Decline.
+        if isRealOneToOne, liveState == .incomingRinging {
+            HStack(spacing: VoiidSpacing.xxl) {
+                Button { Haptics.rigid(); call.decline() } label: {
+                    Image(systemName: "phone.down.fill").font(.system(size: 26)).foregroundColor(.white)
+                        .frame(width: 64, height: 64).background(VoiidColor.error).clipShape(Circle())
+                }
+                Button { Haptics.tap(); call.accept() } label: {
+                    Image(systemName: request.kind == .video ? "video.fill" : "phone.fill")
+                        .font(.system(size: 26)).foregroundColor(.white)
+                        .frame(width: 64, height: 64).background(Color.green).clipShape(Circle())
+                }
             }
-            // End
-            Button { Haptics.rigid(); dismiss() } label: {
-                Image(systemName: "phone.down.fill").font(.system(size: 26)).foregroundColor(.white)
-                    .frame(width: 64, height: 64).background(VoiidColor.error).clipShape(Circle())
+        } else {
+            // Hold is only offered on a real, connected 1:1 call — there is
+            // nothing to hold before that, and the group path doesn't support it.
+            let showHold = isRealOneToOne && liveState == .connected
+            HStack(spacing: showHold ? VoiidSpacing.md : VoiidSpacing.xl) {
+                let isMuted = isRealOneToOne ? call.muted : muted
+                ctrl(isMuted ? "mic.slash.fill" : "mic.fill", isMuted) {
+                    if isRealOneToOne { call.toggleMute() } else { muted.toggle() }
+                }
+                if request.kind == .video {
+                    let vOn = isRealOneToOne ? call.videoEnabled : videoOn
+                    ctrl(vOn ? "video.fill" : "video.slash.fill", !vOn) {
+                        if isRealOneToOne { call.toggleVideo() } else { videoOn.toggle() }
+                    }
+                    ctrl("arrow.triangle.2.circlepath.camera.fill", false) {
+                        if isRealOneToOne { call.switchCamera() }
+                    }
+                }
+                // Audio-route control on EVERY call, voice and video alike — a video call
+                // needs to reach AirPods just as much as a voice call does.
+                audioRouteControl(isRealOneToOne: isRealOneToOne)
+                if showHold {
+                    ctrl(call.isOnHold ? "play.fill" : "pause.fill", call.isOnHold) {
+                        call.toggleHold()
+                    }
+                }
+                // End
+                Button { Haptics.rigid(); endTapped() } label: {
+                    Image(systemName: "phone.down.fill").font(.system(size: 26)).foregroundColor(.white)
+                        .frame(width: 64, height: 64).background(VoiidColor.error).clipShape(Circle())
+                }
             }
         }
+    }
+
+    private func endTapped() {
+        if isRealOneToOne { call.hangUp() } else { dismiss() }
+    }
+
+    /// Audio-output control.
+    ///
+    /// With only earpiece + speaker available it is a plain speaker toggle (unchanged
+    /// behaviour). The moment a Bluetooth or wired device is connected it becomes a Menu
+    /// listing every route with the live one checked — so the user can send the call to
+    /// their headset, or pull it back to the phone, on any call type.
+    ///
+    /// Group calls route through LiveKit, not CallService's session, so they keep the simple
+    /// local speaker toggle.
+    @ViewBuilder
+    private func audioRouteControl(isRealOneToOne: Bool) -> some View {
+        if isRealOneToOne {
+            let routes = call.audioRoutes
+            let current = call.currentRoute
+            if routes.count > 2 {
+                Menu {
+                    ForEach(routes) { route in
+                        Button {
+                            Haptics.tap(); call.selectAudioRoute(route)
+                        } label: {
+                            Label(route.label, systemImage: route == current ? "checkmark" : route.symbol)
+                        }
+                    }
+                } label: {
+                    routeGlyph(current.symbol, active: current != .earpiece)
+                }
+                .simultaneousGesture(TapGesture().onEnded { Haptics.tap() })
+            } else {
+                ctrl(current == .speaker ? "speaker.wave.2.fill" : "speaker.fill",
+                     current == .speaker) { call.toggleSpeaker() }
+            }
+        } else {
+            ctrl(speaker ? "speaker.wave.2.fill" : "speaker.fill", speaker) { speaker.toggle() }
+        }
+    }
+
+    /// The `ctrl` chrome without a Button, so it can back a Menu label.
+    private func routeGlyph(_ icon: String, active: Bool) -> some View {
+        Image(systemName: icon).font(.system(size: 22))
+            .foregroundColor(active ? VoiidColor.primary : (request.kind == .video ? .white : VoiidColor.textPrimary))
+            .frame(width: 58, height: 58)
+            .background(active ? VoiidColor.textOnPrimary : (request.kind == .video ? .white.opacity(0.2) : VoiidColor.surfaceCard))
+            .clipShape(Circle())
     }
 
     private func ctrl(_ icon: String, _ active: Bool, _ tap: @escaping () -> Void) -> some View {

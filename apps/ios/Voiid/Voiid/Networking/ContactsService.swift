@@ -102,6 +102,25 @@ final class ContactsService {
                                     photoURL: m.photo_url))
         }
 
+        // 4b. Persist the resolved names LOCALLY, keyed by user id.
+        //
+        // Without this the address-book name lived only in the 120s in-memory cache
+        // below, so calls and chat headers had nothing to resolve against and fell
+        // back to showing a raw user id. The address book is authoritative for
+        // `saved_name`; the peer's own `full_name` is recorded separately so neither
+        // source can overwrite the other.
+        UserDirectory.shared.upsertManyFromAddressBook(
+            matched.filter { $0.user_id != myId }.map {
+                (userId: $0.user_id,
+                 savedName: hashToContact[$0.phone_hash]?.name,
+                 phoneE164: hashToContact[$0.phone_hash]?.number)
+            }
+        )
+        for m in matched where m.user_id != myId {
+            UserDirectory.shared.upsertFromServer(userId: m.user_id, fullName: m.full_name,
+                                                  username: nil, photoURL: m.photo_url)
+        }
+
         // 5. Persist the resolved links (user_ids only — never raw numbers).
         if !matches.isEmpty {
             let body = SyncBody(contacts: matches.map {

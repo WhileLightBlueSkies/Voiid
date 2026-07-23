@@ -62,6 +62,15 @@ export function firebaseStatus(): { configured: boolean; project_id: string | nu
   }
 }
 
+/**
+ * The initialized Firebase Admin app (or null if not configured). Exposed so the
+ * push module can REUSE this single init for FCM data (wake) messages instead of
+ * standing up a second app from the same service-account creds.
+ */
+export function getFirebaseAdminApp(): import('firebase-admin/app').App | null {
+  return getAdmin();
+}
+
 export interface VerifiedPhone {
   phone_number: string;
   firebase_uid?: string;

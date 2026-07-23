@@ -33,6 +33,11 @@ class WebSocketClient private constructor(context: Context) {
                 instance ?: WebSocketClient(context.applicationContext).also { instance = it }
             }
         private val json = Json { ignoreUnknownKeys = true }
+
+        /** Upper bound on parked outbound frames during a signaling outage. */
+        private const val MAX_OUTBOX = 256
+        private const val CALL_BACKOFF_CAP_MS = 5_000L
+        private const val IDLE_BACKOFF_CAP_MS = 30_000L
     }
 
     private val tokens = TokenStore.get(context)
@@ -42,9 +47,31 @@ class WebSocketClient private constructor(context: Context) {
     private val scope = CoroutineScope(Dispatchers.Main)
 
     private var socket: WebSocket? = null
+    /** A socket object exists and we have not given up on it (attempting OR established). */
     @Volatile private var connected = false
+    /** The WS handshake actually completed — only then can frames go out on the wire. */
+    @Volatile private var open = false
     @Volatile private var closedByUs = false
     private var heartbeatJob: kotlinx.coroutines.Job? = null
+    private var reconnectJob: kotlinx.coroutines.Job? = null
+    private var reconnectAttempts = 0
+
+    /**
+     * True while a call is up. Media (SRTP) flows peer-to-peer and survives a signaling
+     * outage untouched, so a dropped socket must never end a call — but we do want to get
+     * the relay back fast, because trickle ICE and hangup ride on it. During a call we cap
+     * the backoff far lower than we would for idle chat sync.
+     */
+    @Volatile var callActive = false
+
+    /**
+     * Outbound frames that could not be written because the socket was down. Flushed **in
+     * order** on reconnect — ordering matters for signaling, where an answer must not
+     * overtake the offer it answers. Bounded so a long outage can't grow without limit;
+     * ICE candidates are the bulk of the traffic and stale ones are worthless anyway.
+     */
+    private val outbox = ArrayDeque<String>()
+    private val outboxLock = Any()
 
     /** New message arrived for a conversation -> the app should fetch + decrypt it. */
     var onMessageRef: ((conversationId: String) -> Unit)? = null
@@ -54,6 +81,21 @@ class WebSocketClient private constructor(context: Context) {
     var onReceipt: ((messageId: String, status: String) -> Unit)? = null
     /** Peer couldn't decrypt our message → reset (re-establish) the session for this conversation. */
     var onSessionReset: ((conversationId: String) -> Unit)? = null
+    /** An MLS group control event (welcome/commit) was relayed for one of our groups. */
+    var onMlsEvent: ((conversationId: String?) -> Unit)? = null
+    /** A call-signaling frame (offer/answer/ice/hangup/decline/busy/ringing/hold) was relayed to us. */
+    var onCallSignal: ((CallSignal) -> Unit)? = null
+
+    /** One inbound call-signaling frame. `from_user_id` is server-stamped (authenticated). */
+    data class CallSignal(
+        val type: String,
+        val fromUserId: String,
+        val callId: String,
+        val callKind: String?,
+        val sdp: String?,
+        val candidate: JsonObject?,
+        val conversationId: String?,
+    )
 
     fun connect() {
         if (connected) return
@@ -70,9 +112,11 @@ class WebSocketClient private constructor(context: Context) {
     fun disconnect() {
         closedByUs = true
         heartbeatJob?.cancel(); heartbeatJob = null
+        reconnectJob?.cancel(); reconnectJob = null
         socket?.close(1000, "client closing")
         socket = null
         connected = false
+        open = false
     }
 
     /** Force a fresh socket — call when the chats screen appears, so a stale/dead
@@ -89,36 +133,187 @@ class WebSocketClient private constructor(context: Context) {
         heartbeatJob = scope.launch {
             while (true) {
                 kotlinx.coroutines.delay(25_000)
-                socket?.send("""{"type":"heartbeat"}""")
+                send("""{"type":"heartbeat"}""", queueIfDown = false)
             }
+        }
+    }
+
+    /**
+     * Write a frame now, or park it in the [outbox] if the socket is down.
+     *
+     * [queueIfDown] is false for frames whose value expires immediately (heartbeats, typing
+     * indicators) — replaying those minutes later is noise. Call signaling always queues.
+     */
+    private fun send(frame: String, queueIfDown: Boolean) {
+        val s = socket
+        if (open && s != null && s.send(frame)) return
+        if (!queueIfDown) return
+        synchronized(outboxLock) {
+            if (outbox.size >= MAX_OUTBOX) outbox.removeFirst()
+            outbox.addLast(frame)
+        }
+        // A queued frame means we believe we're live but aren't; make sure a retry is pending.
+        if (!closedByUs && !connected) scheduleReconnect()
+    }
+
+    /** Drain the outbox in FIFO order. Anything that fails to write goes back at the front. */
+    private fun flushOutbox() {
+        val pending: List<String> = synchronized(outboxLock) {
+            if (outbox.isEmpty()) return
+            val copy = outbox.toList()
+            outbox.clear()
+            copy
+        }
+        val s = socket
+        for ((i, frame) in pending.withIndex()) {
+            if (!open || s == null || !s.send(frame)) {
+                synchronized(outboxLock) {
+                    // Re-queue the unsent tail, preserving order.
+                    for (remaining in pending.subList(i, pending.size).reversed()) {
+                        if (outbox.size < MAX_OUTBOX) outbox.addFirst(remaining)
+                    }
+                }
+                return
+            }
+        }
+    }
+
+    /**
+     * Exponential backoff with jitter, capped. The cap is deliberately short while a call is
+     * up: trickle ICE and hangup both need the relay, and a 30 s hole there is user-visible.
+     */
+    private fun scheduleReconnect() {
+        if (closedByUs) return
+        if (reconnectJob?.isActive == true) return
+        val attempt = reconnectAttempts.coerceAtMost(6)
+        val cap = if (callActive) CALL_BACKOFF_CAP_MS else IDLE_BACKOFF_CAP_MS
+        val base = (1_000L shl attempt).coerceAtMost(cap)
+        val delayMs = base / 2 + (Math.random() * base / 2).toLong()
+        reconnectAttempts++
+        reconnectJob = scope.launch {
+            delay(delayMs)
+            reconnectJob = null
+            if (!closedByUs && !open) connect()
         }
     }
 
     fun sendTyping(conversationId: String, recipientIds: List<String>, isStart: Boolean) {
         val recips = recipientIds.joinToString(",") { "\"" + it + "\"" }
         val frame = """{"type":"typing","conversation_id":"$conversationId","recipient_ids":[$recips],"state":"${if (isStart) "start" else "stop"}"}"""
-        socket?.send(frame)
+        send(frame, queueIfDown = false)
+    }
+
+    // ---- Location fixes (docs/LOCATION.md P3) -----------------------------------
+    // The ephemeral position stream. `ciphertext` is an opaque base64 blob (one
+    // ciphertext for the whole audience, encrypted under a shareKey the server never
+    // holds). NOT queued if the socket is down: a stale position is worse than none, and
+    // the server buffers only the latest fix for a genuinely-offline recipient anyway.
+
+    /** Relay one encrypted position fix to the recipient list (P3 stream, never a message row). */
+    fun sendLocUpdate(shareId: String, recipientIds: List<String>, ciphertextB64: String) {
+        val recips = recipientIds.joinToString(",") { enc(it) }
+        send("""{"type":"loc_update","share_id":${enc(shareId)},"recipient_ids":[$recips],"ciphertext":${enc(ciphertextB64)}}""", queueIfDown = false)
+    }
+
+    /** Instant stop for live sockets. The durable stop rides the message path separately. */
+    fun sendLocStop(shareId: String, recipientIds: List<String>) {
+        val recips = recipientIds.joinToString(",") { enc(it) }
+        send("""{"type":"loc_stop","share_id":${enc(shareId)},"recipient_ids":[$recips]}""", queueIfDown = false)
     }
 
     /** Ask the message's sender to re-establish the E2E session (we couldn't decrypt). */
     fun sendSessionReset(conversationId: String, recipientIds: List<String>) {
         val recips = recipientIds.joinToString(",") { "\"" + it + "\"" }
-        socket?.send("""{"type":"session_reset","conversation_id":"$conversationId","recipient_ids":[$recips]}""")
+        send("""{"type":"session_reset","conversation_id":"$conversationId","recipient_ids":[$recips]}""", queueIfDown = true)
     }
 
+    // ---- 1:1 call signaling (relayed; server stamps from_user_id) ---------------
+
+    /** Send an SDP offer to start a call. Values are JSON-escaped (SDP has newlines/quotes). */
+    fun sendCallOffer(toUserId: String, callId: String, kind: com.voiid.app.main.CallKind, sdp: String) {
+        val k = if (kind == com.voiid.app.main.CallKind.VIDEO) "video" else "voice"
+        send("""{"type":"call_offer","to_user_id":${enc(toUserId)},"call_id":${enc(callId)},"call_kind":"$k","sdp":${enc(sdp)}}""", queueIfDown = true)
+    }
+
+    /** Answer an incoming call with our SDP answer. */
+    fun sendCallAnswer(toUserId: String, callId: String, sdp: String) {
+        send("""{"type":"call_answer","to_user_id":${enc(toUserId)},"call_id":${enc(callId)},"sdp":${enc(sdp)}}""", queueIfDown = true)
+    }
+
+    /** Trickle one ICE candidate. [candidateJson] is a ready JSON object string. */
+    fun sendCallIce(toUserId: String, callId: String, candidateJson: String) {
+        send("""{"type":"call_ice","to_user_id":${enc(toUserId)},"call_id":${enc(callId)},"candidate":$candidateJson}""", queueIfDown = true)
+    }
+
+    fun sendCallHangup(toUserId: String, callId: String) {
+        send("""{"type":"call_hangup","to_user_id":${enc(toUserId)},"call_id":${enc(callId)}}""", queueIfDown = true)
+    }
+
+    fun sendCallDecline(toUserId: String, callId: String) {
+        send("""{"type":"call_decline","to_user_id":${enc(toUserId)},"call_id":${enc(callId)}}""", queueIfDown = true)
+    }
+
+    fun sendCallBusy(toUserId: String, callId: String) {
+        send("""{"type":"call_busy","to_user_id":${enc(toUserId)},"call_id":${enc(callId)}}""", queueIfDown = true)
+    }
+
+    /**
+     * "My device is actually alerting now." Sent by the CALLEE the moment the incoming-call
+     * notification / full-screen intent goes up, and it is what starts the caller's ringback.
+     * Deliberately not sent optimistically by the caller on offer — otherwise the caller hears
+     * ringing for a phone that never rang.
+     */
+    fun sendCallRinging(toUserId: String, callId: String) {
+        send("""{"type":"call_ringing","to_user_id":${enc(toUserId)},"call_id":${enc(callId)}}""", queueIfDown = true)
+    }
+
+    /** We put the call on hold — the peer should stop expecting media and show "On hold". */
+    fun sendCallHold(toUserId: String, callId: String) {
+        send("""{"type":"call_hold","to_user_id":${enc(toUserId)},"call_id":${enc(callId)}}""", queueIfDown = true)
+    }
+
+    /** We resumed from hold. */
+    fun sendCallUnhold(toUserId: String, callId: String) {
+        send("""{"type":"call_unhold","to_user_id":${enc(toUserId)},"call_id":${enc(callId)}}""", queueIfDown = true)
+    }
+
+    /** JSON-encode a string as a quoted literal (escapes quotes/newlines). */
+    private fun enc(s: String): String = JsonPrimitive(s).toString()
+
     private val listener = object : WebSocketListener() {
+        override fun onOpen(webSocket: WebSocket, response: Response) {
+            open = true
+            connected = true
+            reconnectAttempts = 0
+            android.util.Log.i("VOIID", "WS open")
+            // Anything that piled up while we were down goes out now, in the order it was made.
+            scope.launch { flushOutbox() }
+        }
+
         override fun onMessage(webSocket: WebSocket, text: String) {
             scope.launch { handle(text) }
         }
+
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             android.util.Log.w("VOIID", "WS disconnected: ${t.message} — reconnecting")
-            connected = false
-            if (!closedByUs) scope.launch { delay(2000); connect() }
+            onDown(webSocket)
         }
+
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-            connected = false
-            if (!closedByUs) scope.launch { delay(2000); connect() }
+            onDown(webSocket)
         }
+    }
+
+    /**
+     * A socket died. Note this never touches call state — the peer connection's SRTP flow is
+     * independent of the relay, so a connected call keeps its audio and video throughout.
+     */
+    private fun onDown(dead: WebSocket) {
+        // Ignore the death rattle of a socket we already replaced.
+        if (socket !== dead) return
+        open = false
+        connected = false
+        if (!closedByUs) scheduleReconnect()
     }
 
     private fun handle(text: String) {
@@ -138,7 +333,41 @@ class WebSocketClient private constructor(context: Context) {
                 val status = obj["status"]?.jsonPrimitive?.contentOrNull ?: return
                 onReceipt?.invoke(mid, status)
             }
+            // Location fixes / stops (docs/LOCATION.md P3). Routed to the shared LocationRelay
+            // seam so BOTH location engines (conversation share + Map) can consume them without
+            // fighting over a single callback. `ciphertext` is copied to the relay verbatim and
+            // never parsed here — the same "treat as opaque" rule as SDP.
+            "loc_update" -> {
+                val sid = obj["share_id"]?.jsonPrimitive?.contentOrNull ?: return
+                val from = obj["from_user_id"]?.jsonPrimitive?.contentOrNull ?: return
+                val ct = obj["ciphertext"]?.jsonPrimitive?.contentOrNull ?: return
+                val ts = obj["ts"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: System.currentTimeMillis()
+                LocationRelay.dispatchFix(sid, from, ct, ts)
+            }
+            "loc_stop" -> {
+                val sid = obj["share_id"]?.jsonPrimitive?.contentOrNull ?: return
+                val from = obj["from_user_id"]?.jsonPrimitive?.contentOrNull ?: return
+                LocationRelay.dispatchStop(sid, from)
+            }
             "session_reset" -> obj["conversation_id"]?.jsonPrimitive?.contentOrNull?.let { onSessionReset?.invoke(it) }
+            "mls_event" -> onMlsEvent?.invoke(obj["conversation_id"]?.jsonPrimitive?.contentOrNull)
+            "call_offer", "call_answer", "call_ice", "call_hangup", "call_decline", "call_busy",
+            "call_ringing", "call_hold", "call_unhold",
+            -> {
+                val from = obj["from_user_id"]?.jsonPrimitive?.contentOrNull ?: return
+                val callId = obj["call_id"]?.jsonPrimitive?.contentOrNull ?: return
+                onCallSignal?.invoke(
+                    CallSignal(
+                        type = t,
+                        fromUserId = from,
+                        callId = callId,
+                        callKind = obj["call_kind"]?.jsonPrimitive?.contentOrNull,
+                        sdp = obj["sdp"]?.jsonPrimitive?.contentOrNull,
+                        candidate = obj["candidate"] as? JsonObject,
+                        conversationId = obj["conversation_id"]?.jsonPrimitive?.contentOrNull,
+                    ),
+                )
+            }
             else -> Unit   // "connected" etc.
         }
     }

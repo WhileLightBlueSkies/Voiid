@@ -16,6 +16,11 @@ import receiptRoutes from './routes/receipts';
 import linkingRoutes from './routes/linking';
 import mediaRoutes from './routes/media';
 import mlsRoutes from './routes/mls';
+import recoveryRoutes from './routes/recovery';
+import backupRoutes from './routes/backup';
+import callsRoutes from './routes/calls';
+import locationRoutes from './routes/location';
+import storiesRoutes from './routes/stories';
 import configRoutes from './routes/config';
 import { forceUpdateGate } from './version';
 
@@ -61,6 +66,23 @@ api.use('/receipts', receiptRoutes);
 api.use('/linking', linkingRoutes);
 api.use('/media', mediaRoutes);
 api.use('/mls', mlsRoutes);
+// Recovery is a sensitive surface: add a tighter per-IP limit on top of the global
+// guard (the existing rateLimit middleware, redis-backed). This slows network-level
+// abuse; per-USER online PIN-guess limiting is enforced inside the route via the
+// recovery_keys.failed_attempts/locked_until lockout.
+api.use('/recovery', rateLimit({ max: 30, windowSeconds: 60, bucket: 'recovery' }), recoveryRoutes);
+api.use('/backup', backupRoutes);
+// Calls: TURN credential issuance + ring push + lean call-history records. Signaling
+// (SDP/ICE) is on the WS relay; media/keys are E2E on-device and never touch here.
+api.use('/calls', callsRoutes);
+// Location: share SESSIONS only (start/stop/extend/revoke). Position fixes never come
+// here — they are E2E-encrypted on-device and relayed over the WS process. No endpoint
+// in this router accepts or returns a coordinate; see routes/location.ts.
+api.use('/location', rateLimit({ max: 60, windowSeconds: 60, bucket: 'location' }), locationRoutes);
+// Stories: 24h ephemeral media. The blob is encrypted on-device and PUT straight to R2;
+// this router only stores the opaque object key plus one opaque per-recipient-DEVICE
+// key envelope, and signs short-lived URLs. It never sees media bytes or a media key.
+api.use('/stories', rateLimit({ max: 120, windowSeconds: 60, bucket: 'stories' }), storiesRoutes);
 
 app.use('/v1', api);
 app.use(api);   // legacy unversioned alias (migration safety) — remove once all clients send /v1

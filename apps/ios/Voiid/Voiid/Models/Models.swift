@@ -17,13 +17,15 @@ struct VUser: Identifiable, Hashable {
     var phoneNumber: String
     var email: String?
     var photoName: String?       // local asset name for dummy phase
+    /// Remote avatar (R2 URL). Distinct from `photoName`, which is a bundled asset.
+    var photoURL: String?
     var bio: String?
     var statusText: String?
     var isOnline: Bool = false
 }
 
 enum MessageStatus: String { case sending, sent, delivered, read, failed }
-enum MessageKind: String { case text, image, voice, document, system, poll }
+enum MessageKind: String { case text, image, voice, document, system, poll, location }
 
 struct VMessage: Identifiable, Hashable {
     let id: String
@@ -48,6 +50,9 @@ struct VMessage: Identifiable, Hashable {
     /// For media messages (.image/.voice): the E2EE reference used to fetch +
     /// decrypt the blob on demand. nil for text/local-echo messages.
     var mediaRef: MediaRef? = nil
+    /// For location messages (kind == .location): the pin / live-share reference used to
+    /// render the map bubble. nil for every other kind. Never holds the shareKey.
+    var location: LocationRef? = nil
 
     /// Stable per-sender accent color for group sender names (WhatsApp-style).
     var senderColor: Color {

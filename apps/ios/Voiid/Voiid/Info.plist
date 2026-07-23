@@ -2,6 +2,47 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Location. Feature (B) — the Map — is FOREGROUND-ONLY and needs only When-In-Use.
+	     In-conversation live sharing (Feature A) has now landed and adds the Always string
+	     below plus the `location` background mode (in UIBackgroundModes), so a user-started,
+	     timer-bounded share keeps updating while Voiid is backgrounded (docs/LOCATION.md §5).
+	     Apple rejects vague strings, so these are specific about WHAT is collected, WHEN, and
+	     that it is end-to-end encrypted. Both strings must be present before Always can ever
+	     be requested (iOS 11+). -->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Voiid uses your location only when you choose to share it in a chat or on the Map. Your location is end-to-end encrypted — Voiid's servers never see it.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Allow Always so live location keeps updating while Voiid is in the background, for as long as you set. Sharing stops automatically when your timer ends.</string>
+	<!-- Contact/dialer linking. Declaring INStartCallIntent is what lets iOS hand a
+	     "call this person on Voiid" back to us: tapping a Voiid entry in Recents or
+	     inside a contact card resumes the app with this activity type, and Siri can
+	     act on "call <name> on Voiid". Without it the donated intents in CallManager
+	     produce suggestions the system cannot deliver anywhere.
+	     The two legacy types keep older call-back entries working. -->
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>INStartCallIntent</string>
+		<string>INStartAudioCallIntent</string>
+		<string>INStartVideoCallIntent</string>
+	</array>
+	<!-- Background modes for calls. NOTE: these must live here, not as
+	     INFOPLIST_KEY_UIBackgroundModes build settings — Xcode's generated-plist
+	     mechanism does not recognise UIBackgroundModes and silently drops it.
+	       voip                – PushKit wakes the app for an incoming call
+	       audio               – keep call audio alive in the background
+	       remote-notification – message pushes / NSE + Firebase Auth silent push
+	       location            – keep a user-started, timer-bounded live location share
+	                             updating while Voiid is backgrounded. allowsBackground-
+	                             LocationUpdates TRAPS without this key; the share is never
+	                             started on launch, only by an explicit user action with an
+	                             explicit end time (docs/LOCATION.md §5). -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>voip</string>
+		<string>audio</string>
+		<string>remote-notification</string>
+		<string>location</string>
+	</array>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -9,15 +50,7 @@
 			<string>Editor</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>com.googleusercontent.apps.1013442267792-24ecrrdekhogrpjkemkcosg78ivd7php</string>
-			</array>
-		</dict>
-		<dict>
-			<key>CFBundleTypeRole</key>
-			<string>Editor</string>
-			<key>CFBundleURLSchemes</key>
-			<array>
-				<string>app-1-1013442267792-ios-9b490eb1b802d0196ba615</string>
+				<string>app-1-104136277519-ios-d155569c969bffc86b6d7a</string>
 			</array>
 		</dict>
 	</array>

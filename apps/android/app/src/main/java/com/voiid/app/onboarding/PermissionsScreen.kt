@@ -42,6 +42,11 @@ fun PermissionsScreen(onContinue: () -> Unit) {
 
     val permissions = buildList {
         add(Manifest.permission.READ_CONTACTS)
+        // Same CONTACTS group as READ_CONTACTS, so this usually rides along in the one
+        // prompt. It is what lets Voiid add the "Voice call (Voiid)" / "Video call (Voiid)"
+        // rows to a contact's card. Refusing it costs those rows and nothing else — see
+        // [com.voiid.app.contacts.VoiidContactsWriter], which checks before every write.
+        add(Manifest.permission.WRITE_CONTACTS)
         add(Manifest.permission.CAMERA)
         add(Manifest.permission.RECORD_AUDIO)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -67,7 +72,7 @@ fun PermissionsScreen(onContinue: () -> Unit) {
             modifier = Modifier.padding(horizontal = 24.dp).padding(top = 6.dp, bottom = 8.dp))
 
         Spacer(Modifier.height(16.dp))
-        Row1(Icons.Default.Contacts, "Contacts", "Find friends already on Voiid (matched on-device, never uploaded).")
+        Row1(Icons.Default.Contacts, "Contacts", "Find friends already on Voiid (matched on-device, never uploaded), and add Voiid call buttons to their contact card.")
         Row1(Icons.Default.CameraAlt, "Camera", "Take photos and videos for chats and clips.")
         Row1(Icons.Default.Mic, "Microphone", "Record voice messages and clips.")
         Row1(Icons.Default.PhotoLibrary, "Photos & media", "Share images and videos.")

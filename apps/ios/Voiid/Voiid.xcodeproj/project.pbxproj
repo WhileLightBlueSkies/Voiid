@@ -8,7 +8,6 @@
 
 /* Begin PBXBuildFile section */
 		0B1613202FE4070E008FC346 /* FirebaseAnalytics in Frameworks */ = {isa = PBXBuildFile; productRef = 0B16131F2FE4070E008FC346 /* FirebaseAnalytics */; };
-		0B1613222FE4070E008FC346 /* FirebaseAnalyticsIdentitySupport in Frameworks */ = {isa = PBXBuildFile; productRef = 0B1613212FE4070E008FC346 /* FirebaseAnalyticsIdentitySupport */; };
 		0B1613242FE4070E008FC346 /* FirebaseAppCheck in Frameworks */ = {isa = PBXBuildFile; productRef = 0B1613232FE4070E008FC346 /* FirebaseAppCheck */; };
 		0B1613262FE4070E008FC346 /* FirebaseAppDistribution-Beta in Frameworks */ = {isa = PBXBuildFile; productRef = 0B1613252FE4070E008FC346 /* FirebaseAppDistribution-Beta */; };
 		0B1613282FE4070E008FC346 /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = 0B1613272FE4070E008FC346 /* FirebaseAuth */; };
@@ -17,14 +16,18 @@
 		0B16132E2FE4070E008FC346 /* FirebaseInAppMessaging-Beta in Frameworks */ = {isa = PBXBuildFile; productRef = 0B16132D2FE4070E008FC346 /* FirebaseInAppMessaging-Beta */; };
 		0B1613302FE4070E008FC346 /* FirebaseMessaging in Frameworks */ = {isa = PBXBuildFile; productRef = 0B16132F2FE4070E008FC346 /* FirebaseMessaging */; };
 		0B1613322FE4070E008FC346 /* FirebasePerformance in Frameworks */ = {isa = PBXBuildFile; productRef = 0B1613312FE4070E008FC346 /* FirebasePerformance */; };
-		0B1613FB2FE40940008FC346 /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = 0B1613FA2FE40940008FC346 /* GoogleService-Info.plist */; };
+		CC0000000000000000000012 /* LiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = CC0000000000000000000011 /* LiveKit */; };
+		CC0000000000000000000022 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = CC0000000000000000000021 /* GRDB */; };
+		CC0000000000000000000024 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = CC0000000000000000000023 /* GRDB */; };
 		E2EC04E000000000000000A1 /* Voiid.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E2EC04E000000000000000A0 /* Voiid.xcframework */; };
+		BB0000000000000000000001 /* WebRTC.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000000 /* WebRTC.xcframework */; };
+		BB0000000000000000000002 /* WebRTC.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000000 /* WebRTC.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		0B1613FA2FE40940008FC346 /* GoogleService-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "GoogleService-Info.plist"; sourceTree = "<group>"; };
 		0B832F1F2FE005110023F558 /* Voiid.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Voiid.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		E2EC04E000000000000000A0 /* Voiid.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Voiid.xcframework; path = Frameworks/Voiid.xcframework; sourceTree = "<group>"; };
+		BB0000000000000000000000 /* WebRTC.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = WebRTC.xcframework; path = ../vendor/WebRTC.xcframework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -32,6 +35,8 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
+				Voiid.entitlements,
+				voiid.swift,
 			);
 			target = 0B832F1E2FE005110023F558 /* Voiid */;
 		};
@@ -54,8 +59,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				E2EC04E000000000000000A1 /* Voiid.xcframework in Frameworks */,
+				BB0000000000000000000001 /* WebRTC.xcframework in Frameworks */,
+				CC0000000000000000000022 /* GRDB in Frameworks */,
 				0B1613302FE4070E008FC346 /* FirebaseMessaging in Frameworks */,
-				0B1613222FE4070E008FC346 /* FirebaseAnalyticsIdentitySupport in Frameworks */,
 				0B1613322FE4070E008FC346 /* FirebasePerformance in Frameworks */,
 				0B1613282FE4070E008FC346 /* FirebaseAuth in Frameworks */,
 				0B1613242FE4070E008FC346 /* FirebaseAppCheck in Frameworks */,
@@ -64,6 +70,7 @@
 				0B1613202FE4070E008FC346 /* FirebaseAnalytics in Frameworks */,
 				0B16132A2FE4070E008FC346 /* FirebaseCore in Frameworks */,
 				0B1613262FE4070E008FC346 /* FirebaseAppDistribution-Beta in Frameworks */,
+				CC0000000000000000000012 /* LiveKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -73,8 +80,8 @@
 		0B832F162FE005110023F558 = {
 			isa = PBXGroup;
 			children = (
-				0B1613FA2FE40940008FC346 /* GoogleService-Info.plist */,
 				E2EC04E000000000000000A0 /* Voiid.xcframework */,
+				BB0000000000000000000000 /* WebRTC.xcframework */,
 				0B832F212FE005110023F558 /* Voiid */,
 				0B832F202FE005110023F558 /* Products */,
 			);
@@ -84,6 +91,7 @@
 			isa = PBXGroup;
 			children = (
 				0B832F1F2FE005110023F558 /* Voiid.app */,
+				AA0000000000000000000001 /* VoiidNSE.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -98,10 +106,13 @@
 				0B832F1B2FE005110023F558 /* Sources */,
 				0B832F1C2FE005110023F558 /* Frameworks */,
 				0B832F1D2FE005110023F558 /* Resources */,
+				BB0000000000000000000003 /* Embed Frameworks */,
+				AA0000000000000000000042 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				AA0000000000000000000061 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				0B832F212FE005110023F558 /* Voiid */,
@@ -109,7 +120,6 @@
 			name = Voiid;
 			packageProductDependencies = (
 				0B16131F2FE4070E008FC346 /* FirebaseAnalytics */,
-				0B1613212FE4070E008FC346 /* FirebaseAnalyticsIdentitySupport */,
 				0B1613232FE4070E008FC346 /* FirebaseAppCheck */,
 				0B1613252FE4070E008FC346 /* FirebaseAppDistribution-Beta */,
 				0B1613272FE4070E008FC346 /* FirebaseAuth */,
@@ -118,6 +128,8 @@
 				0B16132D2FE4070E008FC346 /* FirebaseInAppMessaging-Beta */,
 				0B16132F2FE4070E008FC346 /* FirebaseMessaging */,
 				0B1613312FE4070E008FC346 /* FirebasePerformance */,
+				CC0000000000000000000011 /* LiveKit */,
+				CC0000000000000000000021 /* GRDB */,
 			);
 			productName = Voiid;
 			productReference = 0B832F1F2FE005110023F558 /* Voiid.app */;
@@ -149,6 +161,8 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				0B16131E2FE4070D008FC346 /* XCLocalSwiftPackageReference "firebase-ios-sdk" */,
+				CC0000000000000000000010 /* XCRemoteSwiftPackageReference "client-sdk-swift" */,
+				CC0000000000000000000020 /* XCRemoteSwiftPackageReference "GRDB.swift" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 0B832F202FE005110023F558 /* Products */;
@@ -156,6 +170,7 @@
 			projectRoot = "";
 			targets = (
 				0B832F1E2FE005110023F558 /* Voiid */,
+				AA0000000000000000000050 /* VoiidNSE */,
 			);
 		};
 /* End PBXProject section */
@@ -165,7 +180,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				0B1613FB2FE40940008FC346 /* GoogleService-Info.plist in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -304,6 +318,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_ENTITLEMENTS = Voiid/Voiid.entitlements;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = CV7L84G776;
 				ENABLE_APP_SANDBOX = YES;
@@ -313,6 +328,7 @@
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Frameworks",
+					"$(PROJECT_DIR)/../vendor",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Voiid/Info.plist;
@@ -358,6 +374,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_ENTITLEMENTS = Voiid/Voiid.entitlements;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = CV7L84G776;
 				ENABLE_APP_SANDBOX = YES;
@@ -367,6 +384,7 @@
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Frameworks",
+					"$(PROJECT_DIR)/../vendor",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Voiid/Info.plist;
@@ -436,16 +454,30 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		CC0000000000000000000010 /* XCRemoteSwiftPackageReference "client-sdk-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/livekit/client-sdk-swift.git";
+			requirement = {
+				kind = exactVersion;
+				version = 2.15.2;
+			};
+		};
+		CC0000000000000000000020 /* XCRemoteSwiftPackageReference "GRDB.swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/groue/GRDB.swift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 7.11.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		0B16131F2FE4070E008FC346 /* FirebaseAnalytics */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 0B16131E2FE4070D008FC346 /* XCLocalSwiftPackageReference "firebase-ios-sdk" */;
 			productName = FirebaseAnalytics;
-		};
-		0B1613212FE4070E008FC346 /* FirebaseAnalyticsIdentitySupport */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 0B16131E2FE4070D008FC346 /* XCLocalSwiftPackageReference "firebase-ios-sdk" */;
-			productName = FirebaseAnalyticsIdentitySupport;
 		};
 		0B1613232FE4070E008FC346 /* FirebaseAppCheck */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -487,7 +519,209 @@
 			package = 0B16131E2FE4070D008FC346 /* XCLocalSwiftPackageReference "firebase-ios-sdk" */;
 			productName = FirebasePerformance;
 		};
+		CC0000000000000000000021 /* GRDB */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = CC0000000000000000000020 /* XCRemoteSwiftPackageReference "GRDB.swift" */;
+			productName = GRDB;
+		};
+		CC0000000000000000000023 /* GRDB */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = CC0000000000000000000020 /* XCRemoteSwiftPackageReference "GRDB.swift" */;
+			productName = GRDB;
+		};
+		CC0000000000000000000011 /* LiveKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = CC0000000000000000000010 /* XCRemoteSwiftPackageReference "client-sdk-swift" */;
+			productName = LiveKit;
+		};
 /* End XCSwiftPackageProductDependency section */
+
+/* Begin VoiidNSE additions */
+		AA0000000000000000000001 /* VoiidNSE.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = VoiidNSE.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000002 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = NotificationService.swift; path = VoiidNSE/NotificationService.swift; sourceTree = SOURCE_ROOT; };
+		AA0000000000000000000003 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		AA0000000000000000000004 /* VoiidNSE.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = VoiidNSE.entitlements; sourceTree = "<group>"; };
+		AA0000000000000000000005 /* Voiid.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Voiid/Voiid.entitlements; sourceTree = SOURCE_ROOT; };
+		AA0000000000000000000010 /* voiid.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = voiid.swift; path = Voiid/voiid.swift; sourceTree = SOURCE_ROOT; };
+		AA0000000000000000000011 /* SharedStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SharedStore.swift; path = Voiid/Networking/SharedStore.swift; sourceTree = SOURCE_ROOT; };
+		AA0000000000000000000012 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = APIClient.swift; path = Voiid/Networking/APIClient.swift; sourceTree = SOURCE_ROOT; };
+		AA0000000000000000000013 /* TokenStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TokenStore.swift; path = Voiid/Networking/TokenStore.swift; sourceTree = SOURCE_ROOT; };
+		AA0000000000000000000014 /* E2EManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = E2EManager.swift; path = Voiid/Networking/E2EManager.swift; sourceTree = SOURCE_ROOT; };
+		AA0000000000000000000015 /* ChatEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ChatEngine.swift; path = Voiid/Networking/ChatEngine.swift; sourceTree = SOURCE_ROOT; };
+		AA0000000000000000000016 /* MediaService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MediaService.swift; path = Voiid/Networking/MediaService.swift; sourceTree = SOURCE_ROOT; };
+		AA00000000000000000000F1 /* GroupEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = GroupEngine.swift; path = Voiid/Networking/GroupEngine.swift; sourceTree = SOURCE_ROOT; };
+
+		AA0000000000000000000020 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000002 /* NotificationService.swift */; };
+		AA0000000000000000000021 /* voiid.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000010 /* voiid.swift */; };
+		AA0000000000000000000022 /* SharedStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000011 /* SharedStore.swift */; };
+		AA0000000000000000000023 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000012 /* APIClient.swift */; };
+		AA0000000000000000000024 /* TokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000013 /* TokenStore.swift */; };
+		AA0000000000000000000025 /* E2EManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000014 /* E2EManager.swift */; };
+		AA0000000000000000000026 /* ChatEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000015 /* ChatEngine.swift */; };
+		AA0000000000000000000027 /* MediaService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000016 /* MediaService.swift */; };
+		AA00000000000000000000F2 /* GroupEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000F1 /* GroupEngine.swift */; };
+		AA0000000000000000000030 /* Voiid.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = E2EC04E000000000000000A0 /* Voiid.xcframework */; };
+		AA0000000000000000000031 /* VoiidNSE.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000001 /* VoiidNSE.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+
+		AA0000000000000000000040 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA0000000000000000000020 /* NotificationService.swift in Sources */,
+				AA0000000000000000000021 /* voiid.swift in Sources */,
+				AA0000000000000000000022 /* SharedStore.swift in Sources */,
+				AA0000000000000000000023 /* APIClient.swift in Sources */,
+				AA0000000000000000000024 /* TokenStore.swift in Sources */,
+				AA0000000000000000000025 /* E2EManager.swift in Sources */,
+				AA0000000000000000000026 /* ChatEngine.swift in Sources */,
+				AA0000000000000000000027 /* MediaService.swift in Sources */,
+				AA00000000000000000000F2 /* GroupEngine.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA0000000000000000000041 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA0000000000000000000030 /* Voiid.xcframework in Frameworks */,
+				CC0000000000000000000024 /* GRDB in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA0000000000000000000042 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				AA0000000000000000000031 /* VoiidNSE.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BB0000000000000000000003 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				BB0000000000000000000002 /* WebRTC.xcframework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+
+		AA0000000000000000000050 /* VoiidNSE */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA0000000000000000000051 /* Build configuration list for PBXNativeTarget "VoiidNSE" */;
+			buildPhases = (
+				AA0000000000000000000040 /* Sources */,
+				AA0000000000000000000041 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = VoiidNSE;
+			packageProductDependencies = (
+				CC0000000000000000000023 /* GRDB */,
+			);
+			productName = VoiidNSE;
+			productReference = AA0000000000000000000001 /* VoiidNSE.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+
+		AA0000000000000000000051 /* Build configuration list for PBXNativeTarget "VoiidNSE" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA0000000000000000000052 /* Debug */,
+				AA0000000000000000000053 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA0000000000000000000052 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = VoiidNSE/VoiidNSE.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = CV7L84G776;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Frameworks",
+					"$(PROJECT_DIR)/../vendor",
+				);
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = VoiidNSE/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.voiid.app.VoiidNSE;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		AA0000000000000000000053 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = VoiidNSE/VoiidNSE.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = CV7L84G776;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Frameworks",
+					"$(PROJECT_DIR)/../vendor",
+				);
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = VoiidNSE/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.voiid.app.VoiidNSE;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+
+		AA0000000000000000000060 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 0B832F172FE005110023F558 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AA0000000000000000000050 /* VoiidNSE */;
+			remoteInfo = VoiidNSE;
+		};
+		AA0000000000000000000061 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AA0000000000000000000050 /* VoiidNSE */;
+			targetProxy = AA0000000000000000000060 /* PBXContainerItemProxy */;
+		};
+/* End VoiidNSE additions */
 	};
 	rootObject = 0B832F172FE005110023F558 /* Project object */;
 }

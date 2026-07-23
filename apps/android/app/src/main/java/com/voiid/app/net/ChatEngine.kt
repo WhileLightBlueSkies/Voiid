@@ -56,12 +56,16 @@ class ChatEngine private constructor(context: Context) {
 
     private val prefs = SecurePrefs.open(appContext, "voiid_chat")
 
-    // conversationId -> ALL candidate Olm sessions. During simultaneous initiation
-    // ("glare") both peers create their own session, so a conversation legitimately has
-    // MORE THAN ONE session. We must keep them all: try each on decrypt, and append
-    // (never overwrite) a newly-accepted one — overwriting strands the other side's
-    // early PreKey messages permanently.
-    private val sessions = HashMap<String, MutableList<Session>>()
+    // (peerUserId, deviceId) -> ALL candidate Olm sessions for THAT specific remote
+    // device. Multi-device fan-out: E2EE gives every device its own vodozemac session,
+    // so sessions MUST be keyed per remote device (not per conversation/user) — a peer's
+    // 2nd device can't decrypt the 1st device's ratchet output. The "remote" is either a
+    // conversation peer's device OR one of the sender's own other (linked) devices.
+    // During simultaneous initiation ("glare") both sides create their own session, so a
+    // single device pair legitimately has MORE THAN ONE session. We must keep them all:
+    // try each on decrypt, and append (never overwrite) a newly-accepted one — overwriting
+    // strands the other side's early PreKey messages permanently.
+    private val sessions = HashMap<String, MutableList<Session>>()  // key = sessionKey(userId, deviceId)
     private val store = HashMap<String, MutableList<DecryptedMessage>>() // conversationId -> messages (asc)
     private val media = MediaService(tokens)
 
@@ -91,6 +95,24 @@ class ChatEngine private constructor(context: Context) {
         val sha256: String,
     )
 
+    /**
+     * The RENDERABLE part of a location message (docs/LOCATION.md §4) — a pin, or the live
+     * marker of a `live_start`. This is the keyless projection of a LocationEnvelope: the
+     * shareKey is NEVER stored here (it lives in the secure store; see [LocationShareEngine]),
+     * so persisting this struct in the message file is safe. Parallel to [MediaRef].
+     */
+    @Serializable
+    data class LocationRef(
+        val kind: String,                     // pin | live_start
+        val shareId: String? = null,          // live_start only
+        val lat: Double,
+        val lon: Double,
+        val acc: Double = 0.0,
+        val label: String? = null,
+        val expiresAt: Long? = null,          // millis — live_start only
+        val cadenceSeconds: Int? = null,
+    )
+
     @Serializable
     data class DecryptedMessage(
         val id: String,                 // stable LOCAL id
@@ -99,6 +121,9 @@ class ChatEngine private constructor(context: Context) {
         val createdAt: Long,
         val isMine: Boolean,
         val media: MediaRef? = null,
+        /** Set for a location message (pin / live_start). The live/ended STATE is not stored
+         *  here — it is derived from [LocationShareEngine] + expiresAt (the timer guarantee). */
+        val location: LocationRef? = null,
         /** True until the server accepts it (offline/un-sent) — visible + retried. */
         val pending: Boolean = false,
         /** True if the last send attempt failed (e.g. peer has no prekeys). Still
@@ -139,14 +164,15 @@ class ChatEngine private constructor(context: Context) {
         val pendings = (store[conversationId] ?: emptyList()).filter { it.isMine && it.pending && it.media == null }
         for (p in pendings) {
             try {
-                val session = ensureOutboundSession(conversationId, peerUserId)
-                val wire = session.encrypt(p.text.encodeToByteArray())
-                saveSessions(conversationId)
-                val ciphertext = encodeWire(wire)
-                val body = ApiClient.json.encodeToString(SendBody.serializer(), SendBody(conversationId, ciphertext, device_id = e2e.deviceId))
+                // Fan-out: encrypt ONCE PER TARGET DEVICE (peer's devices + our own other
+                // devices), build the per-device bundle, and POST it in one send.
+                val messages = encryptFanout(p.text.encodeToByteArray(), peerUserId)
+                val body = ApiClient.json.encodeToString(
+                    SendBundleBody.serializer(),
+                    SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "text"))
                 val res: SendResponse = api.requestAs("POST", "messages/send", jsonBody = body)
                 markSent(p.id, conversationId, res.message_id)
-                android.util.Log.i("VOIID", "✅ sent text id=${res.message_id} conv=$conversationId")
+                android.util.Log.i("VOIID", "✅ sent text id=${res.message_id} conv=$conversationId devices=${messages.size}")
             } catch (e: Exception) {
                 // "peer has no available prekeys" means the recipient hasn't published
                 // keys yet (not registered / logged out / momentary race). Olm REQUIRES
@@ -205,18 +231,17 @@ class ChatEngine private constructor(context: Context) {
         // 2. Upload the CIPHERTEXT to R2; get back the opaque object key.
         val key = media.upload(enc.ciphertext, mime)
         val ref = MediaRef(key, mime, enc.mediaKey.key, enc.mediaKey.nonce, enc.mediaKey.ciphertextSha256)
-        // 3. The E2EE message plaintext is a media envelope (key never leaves E2E).
+        // 3. The E2EE message plaintext is a media envelope (key never leaves E2E). The
+        //    SAME envelope is encrypted per target device (fan-out); every device's copy
+        //    references the one shared R2 blob via [key], so the media key stays E2E.
         val envelopeJson = ApiClient.json.encodeToString(MediaEnvelope.serializer(), MediaEnvelope(media = ref, caption = caption))
-        val session = ensureOutboundSession(conversationId, peerUserId)
-        val wire = session.encrypt(envelopeJson.encodeToByteArray())
-        saveSessions(conversationId)
-        val ciphertext = encodeWire(wire)
-        // 4. Send the message, tagging it as media + the opaque ref for the server.
+        val messages = encryptFanout(envelopeJson.encodeToByteArray(), peerUserId)
+        // 4. Send the per-device bundle, tagging it as media + the opaque ref for the server.
         val body = ApiClient.json.encodeToString(
-            SendBody.serializer(),
-            SendBody(conversationId, ciphertext, device_id = e2e.deviceId, content_type = "media", media_url = key, media_mime = mime))
+            SendBundleBody.serializer(),
+            SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "media", media_url = key, media_mime = mime))
         val res: SendResponse = api.requestAs("POST", "messages/send", jsonBody = body)
-        val echo = DecryptedMessage(res.message_id, tokens.userId ?: "me", caption, parseIso(res.created_at), true, ref)
+        val echo = DecryptedMessage(res.message_id, tokens.userId ?: "me", caption, res.created_at?.let { parseIso(it) } ?: System.currentTimeMillis(), true, ref)
         append(conversationId, echo)
         return echo
     }
@@ -232,7 +257,10 @@ class ChatEngine private constructor(context: Context) {
       syncLock(conversationId).withLock {
         flushPending(conversationId, peerUserId)   // push any queued sends first
         lastSyncHadDecryptFailure = false
-        val env: MessagesResponse = api.requestAs("GET", "messages/conversation/$conversationId")
+        // Pass our own device_id so the server hands back only THIS device's per-device
+        // ciphertext (each device has its own session, hence its own ciphertext).
+        val devParam = e2e.deviceId?.let { "?device_id=$it" } ?: ""
+        val env: MessagesResponse = api.requestAs("GET", "messages/conversation/$conversationId$devParam")
         android.util.Log.i("VOIID", "sync conv=$conversationId: server has ${env.messages.size} msgs")
         val myId = tokens.userId
         // "seen" = ALL stored ids INCLUDING tombstones. A decrypt-once Olm message that
@@ -240,7 +268,7 @@ class ChatEngine private constructor(context: Context) {
         // message, not retrying the dead id). Retrying tombstones every sync just re-fails
         // and keeps re-triggering session_reset, which destroys the working session
         // ("no matching session" cascade). So tombstone once, never retry.
-        val seen = (store[conversationId] ?: emptyList()).map { it.id }.toHashSet()
+        val seen = (store[conversationId] ?: emptyList()).map { it.id }.toHashSet().apply { addAll(controlSeenIds()) }
         val newlyReceived = mutableListOf<String>()
         for (m in env.messages.asReversed()) {        // server DESC -> process ASC
             // Our OWN sent message: can't decrypt our ratchet output, but the server
@@ -251,13 +279,32 @@ class ChatEngine private constructor(context: Context) {
                 continue
             }
             if (seen.contains(m.id)) continue
-            val wire = decodeWire(m.ciphertext) ?: continue
+            // A null ciphertext means the server had no per-device blob for us yet (e.g. our
+            // device_id wasn't resolved when this row's fan-out was written, or delivery to
+            // this device is still pending) — skip for now, it'll show up once available.
+            val wire = m.ciphertext?.let { decodeWire(it) } ?: run {
+                android.util.Log.w("VOIID", "⚠️ skipping inbound id=${m.id}: no ciphertext for this device")
+                null
+            } ?: continue
             runCatching {
-                val plain = decryptInbound(wire, conversationId, peerUserId, m.sender_device_id)
+                val plain = decryptInbound(wire, peerUserId, m.sender_device_id)
                 android.util.Log.i("VOIID", "✅ decrypted inbound id=${m.id} senderDev=${m.sender_device_id}")
+                if (m.content_type == "location") {
+                    // Location-protocol message (docs/LOCATION.md §4). Handed to the location
+                    // engines via the shared LocationRelay seam, which decide what to do by its
+                    // `k`: a RENDERABLE kind (pin / live_start) is stored as a bubble by the
+                    // subscribed engine (storeLocationInbound); a SILENT kind (map_key / map_off /
+                    // live_rekey) is consumed and never rendered. Either way the default text
+                    // bubble is suppressed here, and the id is marked control-seen so this
+                    // decrypt-once Olm message is not re-fetched and re-failed on the next sync.
+                    LocationRelay.dispatchControl(plain, m.sender_id, conversationId)
+                    markControlSeen(m.id)
+                    newlyReceived.add(m.id)
+                    return@runCatching
+                }
                 // A media message's plaintext is a JSON MediaEnvelope; text is just
                 // the string. Detect via the server's content_type hint.
-                val (caption, ref) = decodeEnvelope(plain, m.content_type == "media")
+                val (caption, ref) = decodeEnvelope(plain, m.content_type)
                 replace(conversationId, DecryptedMessage(m.id, m.sender_id, caption, parseIso(m.created_at), false, ref))
                 newlyReceived.add(m.id)
             }.onFailure {
@@ -303,15 +350,36 @@ class ChatEngine private constructor(context: Context) {
         runCatching { api.request("POST", "receipts/mark", jsonBody = body) }
     }
 
-    /** Decode a decrypted plaintext into (caption, media?). */
-    private fun decodeEnvelope(plain: String, isMedia: Boolean): Pair<String, MediaRef?> {
-        if (isMedia) {
-            runCatching {
+    /**
+     * Decode a decrypted plaintext into (displayText, media?), keyed off the server's
+     * content_type hint.
+     *
+     * BACK-COMPAT HAZARD (Stories, §5.3): a client that predates a typed content_type only tried
+     * JSON-envelope decoding for "media", so a story_reply's JSON would render as raw text in a
+     * bubble. This is handled TWO ways, both additive: (1) an explicit "story_reply" branch, and
+     * (2) a defensive fallback — if the plaintext is a JSON object carrying a recognised "t", it is
+     * decoded rather than shown verbatim. Never leave a raw JSON blob in a message bubble.
+     */
+    private fun decodeEnvelope(plain: String, contentType: String?): Pair<String, MediaRef?> {
+        when (contentType) {
+            "media" -> runCatching {
                 val env = ApiClient.json.decodeFromString(MediaEnvelope.serializer(), plain)
                 return env.caption to env.media
             }
+            "story_reply" -> runCatching { return decodeStoryReplyText(plain) to null }
+        }
+        // Defensive: a typed envelope that slipped through with the wrong/absent content_type must
+        // still not be shown as raw JSON. A MediaEnvelope has no "t"; a story_reply does.
+        if (plain.startsWith("{") && plain.contains("\"t\"")) {
+            runCatching { return decodeStoryReplyText(plain) to null }
         }
         return plain to null
+    }
+
+    /** Render a story_reply envelope as a chat bubble string (reaction prefix + text). */
+    private fun decodeStoryReplyText(plain: String): String {
+        val env = ApiClient.json.decodeFromString(StoryReplyWire.serializer(), plain)
+        return env.reaction?.let { r -> if (env.text.isBlank()) r else "$r ${env.text}" } ?: env.text
     }
 
     /** Mark all stored inbound messages in a conversation read → server fans out a
@@ -321,15 +389,19 @@ class ChatEngine private constructor(context: Context) {
         markReceipts(ids, "read")
     }
 
-    private suspend fun decryptInbound(wire: WireMessage, conversationId: String, peerUserId: String, senderDeviceId: String?): String {
-        val list = candidateSessions(conversationId)
-        // 1. Try EVERY known session (glare → multiple). A non-matching session fails
-        //    cleanly; the matching one decrypts (including later PreKey msgs of an
-        //    already-accepted session, so no re-accept / no extra OTK consumed).
+    private suspend fun decryptInbound(wire: WireMessage, peerUserId: String, senderDeviceId: String?): String {
+        // Decrypt with the session for the SPECIFIC (peer, sending device) that produced
+        // this ciphertext — the server already handed us only our device's copy, and the
+        // message names which of the sender's devices encrypted it.
+        val devId = senderDeviceId ?: "default"
+        val list = candidateSessions(peerUserId, devId)
+        // 1. Try EVERY known session for that device pair (glare → multiple). A non-matching
+        //    session fails cleanly; the matching one decrypts (including later PreKey msgs of
+        //    an already-accepted session, so no re-accept / no extra OTK consumed).
         for (s in list) {
             val data = runCatching { s.decrypt(wire) }.getOrNull()
             if (data != null) {
-                saveSessions(conversationId)
+                saveSessions(peerUserId, devId)
                 return data.decodeToString()
             }
         }
@@ -343,7 +415,7 @@ class ChatEngine private constructor(context: Context) {
         if (incomingId != null) {
             list.firstOrNull { it.sessionId() == incomingId }?.let { s ->
                 val data = s.decrypt(wire)   // throws if genuinely undecryptable
-                saveSessions(conversationId)
+                saveSessions(peerUserId, devId)
                 return data.decodeToString()
             }
         }
@@ -351,30 +423,243 @@ class ChatEngine private constructor(context: Context) {
         //    vodozemac decrypts before consuming the OTK, so a failed accept is safe;
         //    a successful one consumes exactly one OTK for this distinct PreKey.
         val id = e2e.identity ?: throw ApiError.NotAuthenticated
-        val (peerKey, devId) = peerIdentity(peerUserId, senderDeviceId)
-        verifyAndPinIdentity(peerKey, peerUserId, devId)         // anti-MITM (TOFU, per device)
+        val (peerKey, resolvedDev) = peerIdentity(peerUserId, senderDeviceId)
+        verifyAndPinIdentity(peerKey, peerUserId, resolvedDev)   // anti-MITM (TOFU, per device)
         val accepted = id.acceptSession(peerKey, wire)
         list.add(accepted.session)
-        saveSessions(conversationId)
+        saveSessions(peerUserId, devId)
         e2e.persistIdentity()   // acceptSession consumed a one-time key — save it or the
                                 // first message is lost on restart (resurrected stale OTK).
         return accepted.plaintext.decodeToString()
     }
 
-    // MARK: - Session establishment
+    // MARK: - Multi-device fan-out (encrypt once per target device)
 
-    private suspend fun ensureOutboundSession(conversationId: String, peerUserId: String): Session {
-        // Reuse an existing session for outbound (stable: the first/oldest) so we don't
-        // keep minting new ones; only create one when the conversation has none.
-        candidateSessions(conversationId).firstOrNull()?.let { return it }
+    /** A remote device we must deliver to: a conversation peer's device, or one of our
+     *  own OTHER (linked) devices. [userId] owns [deviceId]. */
+    private data class TargetDevice(val userId: String, val deviceId: String)
+
+    /**
+     * Encrypt [plaintext] ONCE PER TARGET DEVICE and return the per-device bundle
+     * (`[{recipient_device_id, ciphertext}]`). Targets = every active device of the
+     * conversation peer PLUS our own OTHER devices, EXCLUDING this sending device.
+     * Devices we can't build a session for (no published prekey) are skipped + logged
+     * so the rest still deliver; if NOTHING is deliverable we throw a retryable error
+     * so the message stays pending and re-sends once prekeys appear.
+     */
+    private suspend fun encryptFanout(plaintext: ByteArray, peerUserId: String): List<DeviceCiphertext> {
+        val targets = resolveTargets(peerUserId)
+        if (targets.isEmpty()) throw ApiError.Http(409, "no target devices for peer")
+        val out = mutableListOf<DeviceCiphertext>()
+        // Group by owning user so we fetch each user's prekey bundles at most once per
+        // send (each GET consumes a one-time key per device — don't call it per device).
+        for ((userId, devs) in targets.groupBy { it.userId }) {
+            val needBundles = devs.any { candidateSessions(userId, it.deviceId).isEmpty() }
+            val bundles = if (needBundles) runCatching { fetchBundles(userId) }.getOrDefault(emptyMap()) else emptyMap()
+            for (t in devs) {
+                val session = outboundSessionFor(t, bundles)
+                if (session == null) {
+                    android.util.Log.w("VOIID", "⏭️ fan-out skip device=${t.deviceId} user=${t.userId} (no session/prekey)")
+                    continue
+                }
+                val wire = session.encrypt(plaintext)
+                saveSessions(t.userId, t.deviceId)
+                out.add(DeviceCiphertext(t.deviceId, encodeWire(wire)))
+            }
+        }
+        // Nothing deliverable (e.g. peer hasn't published prekeys yet) — retryable, like
+        // the legacy single-device path, so the 4s poll re-sends when keys appear.
+        if (out.isEmpty()) throw ApiError.Http(409, "peer has no available prekeys")
+        return out
+    }
+
+    /** All target devices for a send: peer's active devices + our OWN other devices,
+     *  minus this sending device. */
+    private suspend fun resolveTargets(peerUserId: String): List<TargetDevice> {
+        val targets = mutableListOf<TargetDevice>()
+        val peerDevs: DevicesResponse = api.requestAs("GET", "devices/$peerUserId")
+        peerDevs.devices.forEach { targets.add(TargetDevice(peerUserId, it.id)) }
+        // Our own OTHER devices (linked-device sync of sent messages), excluding this one.
+        val myId = tokens.userId
+        val myDev = e2e.deviceId
+        if (myId != null) {
+            val mine: DevicesResponse = api.requestAs("GET", "devices/$myId")
+            mine.devices.filter { it.id != myDev }.forEach { targets.add(TargetDevice(myId, it.id)) }
+        }
+        return targets
+    }
+
+    /** Get (reuse) or establish the outbound session for one target device. Returns null
+     *  — skip this device — when it has no bundle / no available one-time prekey. */
+    private fun outboundSessionFor(t: TargetDevice, bundles: Map<String, BundleDTO>): Session? {
+        // Reuse the stable (first/oldest) existing session so we don't keep minting new ones.
+        candidateSessions(t.userId, t.deviceId).firstOrNull()?.let { return it }
         val id = e2e.identity ?: throw ApiError.NotAuthenticated
-        val bundle = peerPrekeyBundle(peerUserId)
-        verifyAndPinIdentity(bundle.first, peerUserId, bundle.third)   // anti-MITM (TOFU, per device)
-        val s = id.startSession(bundle.first, bundle.second)
-        candidateSessions(conversationId).add(s)
-        saveSessions(conversationId)
+        val b = bundles[t.deviceId] ?: return null           // no bundle for this device
+        val otk = b.one_time_prekey ?: return null           // no available prekey → skip
+        verifyAndPinIdentity(b.identity_public_key, t.userId, t.deviceId)  // anti-MITM (TOFU, per device)
+        val s = id.startSession(b.identity_public_key, otk.public_key)
+        candidateSessions(t.userId, t.deviceId).add(s)
+        saveSessions(t.userId, t.deviceId)
         return s
     }
+
+    /** Fetch a user's prekey bundles, keyed by device id (one bundle per device; each
+     *  consumes one of that device's one-time prekeys). */
+    private suspend fun fetchBundles(userId: String): Map<String, BundleDTO> {
+        val env: PrekeysResponse = api.requestAs("GET", "prekeys/$userId")
+        return env.bundles.mapNotNull { b -> b.device_id?.let { it to b } }.toMap()
+    }
+
+    // MARK: - Broadcast fan-out (Stories) — encryptFanout widened from one peer to an audience
+    //
+    // Stories reuse ALL of the single-peer fan-out's hard-won correctness (per-remote-device
+    // session keying, OTK fetched once per user, glare tolerance, append-never-overwrite on
+    // accept) rather than reimplementing it, which would produce undecryptable stories. The ONLY
+    // difference is the target set: an arbitrary list of recipient users instead of one peer.
+
+    /** One target device's ciphertext in a broadcast bundle. Public so StoryEngine can consume it. */
+    data class BroadcastCiphertext(val recipientDeviceId: String, val ciphertext: String)
+
+    /**
+     * Encrypt [plaintext] ONCE PER TARGET DEVICE across every active device of [recipientUserIds]
+     * (plus, when [includeOwnDevices], our own OTHER devices — so linked devices see "My story"
+     * and can collect view receipts), EXCLUDING this posting device. Devices with no published
+     * prekey are skipped + logged, never fatal: partial delivery is already the norm on this
+     * transport, and a story that fails entirely because one contact ran dry is worse.
+     */
+    suspend fun encryptBroadcast(
+        plaintext: ByteArray,
+        recipientUserIds: List<String>,
+        includeOwnDevices: Boolean = true,
+    ): List<BroadcastCiphertext> {
+        val myId = tokens.userId
+        val myDev = e2e.deviceId
+        val userIds = LinkedHashSet(recipientUserIds)
+        if (includeOwnDevices && myId != null) userIds.add(myId)
+        val targets = mutableListOf<TargetDevice>()
+        for (uid in userIds) {
+            val devs = runCatching { api.requestAs<DevicesResponse>("GET", "devices/$uid") }.getOrNull() ?: continue
+            for (d in devs.devices) {
+                if (uid == myId && d.id == myDev) continue    // never fan out to the posting device
+                targets.add(TargetDevice(uid, d.id))
+            }
+        }
+        val out = mutableListOf<BroadcastCiphertext>()
+        // One prekey fetch per user (each GET consumes a one-time key per device) — never per device.
+        for ((uid, devs) in targets.groupBy { it.userId }) {
+            val needBundles = devs.any { candidateSessions(uid, it.deviceId).isEmpty() }
+            val bundles = if (needBundles) runCatching { fetchBundles(uid) }.getOrDefault(emptyMap()) else emptyMap()
+            for (t in devs) {
+                val session = outboundSessionFor(t, bundles)
+                if (session == null) {
+                    android.util.Log.w("VOIID", "⏭️ broadcast skip device=${t.deviceId} user=${t.userId} (no prekey)")
+                    continue
+                }
+                val wire = session.encrypt(plaintext)
+                saveSessions(t.userId, t.deviceId)
+                out.add(BroadcastCiphertext(t.deviceId, encodeWire(wire)))
+            }
+        }
+        return out
+    }
+
+    /**
+     * Decrypt a story-key ciphertext from a KNOWN sender (the author). Serialized per sender via
+     * the same [syncLock] the 1:1 sync uses, so two concurrent story deliveries from one author
+     * can't race that author's one-time key and strand the earliest key permanently (§3.5).
+     */
+    suspend fun decryptBroadcast(ciphertextB64: String, senderUserId: String, senderDeviceId: String?): String? =
+        syncLock(senderUserId).withLock {
+            val wire = decodeWire(ciphertextB64) ?: return@withLock null
+            runCatching { decryptInbound(wire, senderUserId, senderDeviceId) }.getOrNull()
+        }
+
+    /**
+     * Decrypt a view receipt whose sender the server deliberately does NOT name (story_receipts
+     * has no viewer_user_id column). We try every ESTABLISHED session we already hold; the one
+     * that MACs the ciphertext decrypts it, exactly like the candidate loop in [decryptInbound]
+     * (a non-matching session fails cleanly without touching its ratchet state). A receipt that
+     * would need a brand-new inbound session accepted can't be attributed without a sender id and
+     * is dropped — acceptable because receipts are opt-in and best-effort, and the session the
+     * author minted while fanning the story out is already in memory for exactly these viewers.
+     */
+    fun decryptStoryReceipt(ciphertextB64: String): String? {
+        val wire = decodeWire(ciphertextB64) ?: return null
+        for (list in sessions.values) for (s in list) {
+            runCatching { s.decrypt(wire) }.getOrNull()?.let { return it.decodeToString() }
+        }
+        return null
+    }
+
+    /**
+     * Send a story reply as an ORDINARY 1:1 message (content_type "story_reply") into the chat
+     * with the author. It appears as a normal message for both parties, gets normal receipts, and
+     * does NOT expire with the story. Reuses the broadcast fan-out (author's devices + our own),
+     * persists a local echo, and returns it.
+     */
+    suspend fun sendStoryReply(
+        conversationId: String, authorId: String,
+        storyId: String, storyCreatedAtMs: Long,
+        text: String, reaction: String?,
+    ): DecryptedMessage {
+        val env = StoryReplyWire(
+            storyId = storyId, storyAuthorId = authorId, storyCreatedAt = storyCreatedAtMs,
+            text = text, reaction = reaction,
+        )
+        val json = ApiClient.json.encodeToString(StoryReplyWire.serializer(), env)
+        val bcast = encryptBroadcast(json.encodeToByteArray(), listOf(authorId), includeOwnDevices = true)
+        if (bcast.isEmpty()) throw ApiError.Http(409, "author has no available prekeys")
+        val messages = bcast.map { DeviceCiphertext(it.recipientDeviceId, it.ciphertext) }
+        val body = ApiClient.json.encodeToString(
+            SendBundleBody.serializer(),
+            SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "story_reply"),
+        )
+        val res: SendResponse = api.requestAs("POST", "messages/send", jsonBody = body)
+        val display = reaction?.let { r -> if (text.isBlank()) r else "$r $text" } ?: text
+        val echo = DecryptedMessage(
+            res.message_id, tokens.userId ?: "me", display,
+            res.created_at?.let { parseIso(it) } ?: System.currentTimeMillis(), true,
+        )
+        append(conversationId, echo)
+        return echo
+    }
+
+    /**
+     * Send a SILENT E2EE location-protocol control envelope (docs/LOCATION.md P2) to a 1:1 peer
+     * over the Double Ratchet — map_key / map_off / live_*. content_type "location" so the server
+     * routes it as an ordinary message (content-free wake push) while the client SUPPRESSES the
+     * bubble (see the `content_type == "location"` intercept in [sync]). Renders NOTHING locally —
+     * this is control, not chat, and [envelopeJson] (which carries the shareKey for a map_key)
+     * never leaves E2E. Mirrors [sendStoryReply]'s broadcast fan-out, recipient-only.
+     */
+    suspend fun sendLocationControl(envelopeJson: String, conversationId: String, peerUserId: String) {
+        val bcast = encryptBroadcast(envelopeJson.encodeToByteArray(), listOf(peerUserId), includeOwnDevices = false)
+        if (bcast.isEmpty()) throw ApiError.Http(409, "peer has no available prekeys")
+        val messages = bcast.map { DeviceCiphertext(it.recipientDeviceId, it.ciphertext) }
+        val body = ApiClient.json.encodeToString(
+            SendBundleBody.serializer(),
+            SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "location"),
+        )
+        api.requestAs<SendResponse>("POST", "messages/send", jsonBody = body)
+    }
+
+    // Ids of consumed silent location-control messages (docs/LOCATION.md P2). Recorded so a
+    // decrypt-once Olm control message is never re-fetched and re-failed into a bogus tombstone
+    // bubble. A handful per share — persisted in the chat prefs, unioned into `seen` on sync.
+    private fun controlSeenIds(): Set<String> = prefs.getStringSet("loc_control_seen", emptySet()) ?: emptySet()
+    private fun markControlSeen(id: String) {
+        val cur = HashSet(controlSeenIds()); cur.add(id)
+        prefs.edit().putStringSet("loc_control_seen", cur).apply()
+    }
+
+    /** Wire shape of a story_reply envelope (kept local so `net` needn't depend on `model`). */
+    @Serializable
+    private data class StoryReplyWire(
+        val v: Int = 1, val t: String = "story_reply",
+        val storyId: String, val storyAuthorId: String, val storyCreatedAt: Long,
+        val text: String, val reaction: String? = null,
+    )
 
     // MARK: - Identity pinning (anti-MITM / "safety numbers", trust-on-first-use)
 
@@ -404,14 +689,71 @@ class ChatEngine private constructor(context: Context) {
         return Pair(d.identity_public_key, d.id)
     }
 
-    private suspend fun peerPrekeyBundle(userId: String): Triple<String, String, String?> {
-        val env: PrekeysResponse = api.requestAs("GET", "prekeys/$userId")
-        // Prefer a device that actually handed out a one-time key — a stale device
-        // (e.g. left over after the peer reinstalled) can return a null prekey.
-        val b = env.bundles.firstOrNull { it.one_time_prekey != null }
-            ?: throw ApiError.Http(409, "peer has no available prekeys")
-        val otk = b.one_time_prekey!!
-        return Triple(b.identity_public_key, otk.public_key, b.device_id)
+    // MARK: - Group message store (MLS)
+    //
+    // Group messages are E2EE via MLS (see GroupEngine), but their DECRYPTED plaintext
+    // lives in the SAME on-disk store as 1:1 messages so the existing chat UI renders
+    // them unchanged. GroupEngine owns the crypto; these helpers only persist results.
+
+    /** True if this conversation already holds a message with [id] (decrypt-once dedup). */
+    fun hasMessage(conversationId: String, id: String): Boolean =
+        store[conversationId]?.any { it.id == id } == true
+
+    /** Persist a local echo of a group message WE just sent (we can't decrypt our own
+     *  MLS ratchet output, so we store the plaintext directly). Returns the stored row. */
+    fun storeGroupOutgoing(conversationId: String, text: String): DecryptedMessage {
+        val msg = DecryptedMessage(
+            id = java.util.UUID.randomUUID().toString(),
+            senderId = tokens.userId ?: "me", text = text,
+            createdAt = System.currentTimeMillis(), isMine = true,
+            // A group send is fire-and-forget over the fan-out relay; mark it delivered
+            // so the UI shows a sent state (no per-member receipts in this increment).
+            deliveryStatus = "sent",
+        )
+        append(conversationId, msg)
+        return msg
+    }
+
+    /** Persist a decrypted INBOUND group message (idempotent by [id]). */
+    fun storeGroupInbound(conversationId: String, id: String, senderId: String, text: String, createdAt: Long) {
+        if (hasMessage(conversationId, id)) return
+        replace(conversationId, DecryptedMessage(id, senderId, text, createdAt, isMine = false))
+        persist()
+    }
+
+    /**
+     * Persist a local echo of a location message WE just sent (pin or the live_start marker), so
+     * it renders as a bubble immediately. The keyless [ref] is safe to store; the shareKey lives
+     * in the secure store. See docs/LOCATION.md §4 / [LocationShareEngine].
+     */
+    fun storeLocationOutgoing(conversationId: String, ref: LocationRef): DecryptedMessage {
+        val msg = DecryptedMessage(
+            id = java.util.UUID.randomUUID().toString(),
+            senderId = tokens.userId ?: "me", text = "",
+            createdAt = System.currentTimeMillis(), isMine = true,
+            location = ref, deliveryStatus = "sent",
+        )
+        append(conversationId, msg)
+        return msg
+    }
+
+    /**
+     * Persist a decrypted INBOUND location bubble (idempotent by [id]). The message itself came
+     * off the ratchet/MLS and was intercepted as content_type "location" (or `_vloc`) and handed
+     * to the location engine via [LocationRelay]; this only records the renderable projection.
+     */
+    fun storeLocationInbound(conversationId: String, id: String, senderId: String, ref: LocationRef, createdAt: Long) {
+        if (hasMessage(conversationId, id)) return
+        replace(conversationId, DecryptedMessage(id, senderId, "", createdAt, isMine = false, location = ref))
+        persist()
+    }
+
+    /** Tombstone a group message we couldn't decrypt so it isn't retried forever
+     *  (an MLS application message can't be safely re-decrypted). */
+    fun storeGroupTombstone(conversationId: String, id: String, senderId: String, createdAt: Long) {
+        if (hasMessage(conversationId, id)) return
+        replace(conversationId, DecryptedMessage(id, senderId, "🔒 Message couldn’t be decrypted", createdAt, isMine = false, failed = true))
+        persist()
     }
 
     // MARK: - Local message store (decrypt-once; encrypted at rest)
@@ -463,38 +805,67 @@ class ChatEngine private constructor(context: Context) {
         }
     }
 
+    /** Serialize the ENTIRE decrypted message store to bytes (backup payload).
+     *  Same JSON shape [loadStore]/[persist] use, so [importStore] can round-trip it. */
+    fun exportStore(): ByteArray =
+        ApiClient.json.encodeToString(storeSerializer, store.mapValues { it.value.toList() }).toByteArray()
+
+    /** Replace the local message store with a restored backup blob, then persist to
+     *  the on-disk file. Bad/empty input is ignored (never crash a restore). */
+    fun importStore(bytes: ByteArray) {
+        if (bytes.isEmpty()) return
+        runCatching {
+            val decoded = ApiClient.json.decodeFromString(storeSerializer, String(bytes))
+            store.clear()
+            decoded.forEach { (k, v) -> store[k] = v.toMutableList() }
+        }.onSuccess {
+            persist()
+            android.util.Log.i("VOIID", "📥 importStore: restored ${store.values.sumOf { it.size }} msgs across ${store.size} convs")
+        }.onFailure {
+            android.util.Log.e("VOIID", "📥 importStore FAILED to parse backup blob", it)
+        }
+    }
+
     // MARK: - Session persistence (pickled, encrypted at rest)
 
     /** True when the last sync had an inbound decrypt failure (caller may ask the
      *  sender to re-establish the session). */
     var lastSyncHadDecryptFailure = false; private set
 
-    /** Drop the cached + persisted sessions so the NEXT outbound message starts fresh. */
-    fun resetSession(conversationId: String) {
-        sessions.remove(conversationId)
-        prefs.edit().remove("sess_$conversationId").apply()
-        android.util.Log.i("VOIID", "session reset for conv=$conversationId")
+    /** In-memory + on-disk key for a remote device's session list. */
+    private fun sessionKey(userId: String, deviceId: String) = "$userId::$deviceId"
+    private fun sessionPrefsKey(userId: String, deviceId: String) = "sess::${sessionKey(userId, deviceId)}"
+
+    /** Drop ALL cached + persisted sessions with [peerUserId] (across every one of that
+     *  peer's devices) so the NEXT outbound message re-establishes fresh sessions. */
+    fun resetSession(peerUserId: String) {
+        val memPrefix = "$peerUserId::"
+        sessions.keys.filter { it.startsWith(memPrefix) }.toList().forEach { sessions.remove(it) }
+        val diskPrefix = "sess::$peerUserId::"
+        val editor = prefs.edit()
+        prefs.all.keys.filter { it.startsWith(diskPrefix) }.forEach { editor.remove(it) }
+        editor.apply()
+        android.util.Log.i("VOIID", "session reset for peer=$peerUserId (all devices)")
     }
 
-    /** All candidate sessions for a conversation (loaded from disk on first access). */
-    private fun candidateSessions(conversationId: String): MutableList<Session> =
-        sessions.getOrPut(conversationId) { restoreSessions(conversationId) }
+    /** All candidate sessions for one (peer, device) pair (loaded from disk on first access). */
+    private fun candidateSessions(userId: String, deviceId: String): MutableList<Session> =
+        sessions.getOrPut(sessionKey(userId, deviceId)) { restoreSessions(userId, deviceId) }
 
-    /** Restore the persisted session list (newline-separated pickles; back-compatible
-     *  with the old single-pickle format). */
-    private fun restoreSessions(conversationId: String): MutableList<Session> {
-        val raw = prefs.getString("sess_$conversationId", null) ?: return mutableListOf()
+    /** Restore a device's persisted session list (newline-separated pickles). */
+    private fun restoreSessions(userId: String, deviceId: String): MutableList<Session> {
+        val raw = prefs.getString(sessionPrefsKey(userId, deviceId), null) ?: return mutableListOf()
         return raw.split("\n").filter { it.isNotBlank() }
             .mapNotNull { runCatching { Session.restore(it, sessionPickleKey()) }.getOrNull() }
             .toMutableList()
     }
 
-    /** Persist all sessions for a conversation as newline-separated pickles. */
-    private fun saveSessions(conversationId: String) {
-        val list = sessions[conversationId] ?: return
+    /** Persist a device's sessions as newline-separated pickles. */
+    private fun saveSessions(userId: String, deviceId: String) {
+        val list = sessions[sessionKey(userId, deviceId)] ?: return
         runCatching {
             val blob = list.joinToString("\n") { it.toPickle(sessionPickleKey()) }
-            prefs.edit().putString("sess_$conversationId", blob).apply()
+            prefs.edit().putString(sessionPrefsKey(userId, deviceId), blob).apply()
         }
     }
 
@@ -524,19 +895,26 @@ class ChatEngine private constructor(context: Context) {
     // MARK: - DTOs
 
     @Serializable private data class MarkReadBody(val message_ids: List<String>, val status: String = "read")
-    @Serializable private data class SendBody(
+    /** One target device's ciphertext in a fan-out bundle. */
+    @Serializable private data class DeviceCiphertext(val recipient_device_id: String, val ciphertext: String)
+    /** Multi-device fan-out send: one ciphertext per TARGET device. */
+    @Serializable private data class SendBundleBody(
         val conversation_id: String,
-        val ciphertext: String,
-        val device_id: String? = null,      // which of OUR devices encrypted this
+        val sender_device_id: String? = null,   // which of OUR devices encrypted these
+        val messages: List<DeviceCiphertext>,    // one entry per target device
         val content_type: String? = null,
         val media_url: String? = null,
         val media_mime: String? = null,
     )
-    @Serializable private data class SendResponse(val message_id: String, val created_at: String)
+    @Serializable private data class SendResponse(
+        val message_id: String,
+        val created_at: String? = null,
+        val delivered_devices: Int = 0,
+    )
     @Serializable private data class MessageDTO(
         val id: String,
         val sender_id: String,
-        val ciphertext: String,
+        val ciphertext: String? = null,
         val created_at: String,
         val sender_device_id: String? = null,   // which of the SENDER's devices encrypted it
         val content_type: String? = null,

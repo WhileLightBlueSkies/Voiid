@@ -74,7 +74,9 @@ fun SignupScreen(session: AppSession, phone: String = "", onBack: () -> Unit, on
             enabled = valid,
             modifier = Modifier.padding(horizontal = 24.dp).padding(bottom = 32.dp),
         ) {
-            session.profile = session.profile.copy(fullName = name, email = email.trim())
+            // Local first (persists into the users table), server sync on the next screen.
+            session.updateProfile(fullName = name)
+            session.profile = session.profile.copy(email = email.trim())
             haptics.tap(); onContinue()
         }
     }

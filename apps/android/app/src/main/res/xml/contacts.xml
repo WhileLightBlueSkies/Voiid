@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  THE FILE THAT MAKES THE ROWS RENDER.
+
+  Referenced from the sync service's android.provider.CONTACTS_STRUCTURE meta-data. Without
+  that meta-data pointing here, the custom-MIME Data rows are written successfully and then
+  simply never appear in any contact card — no error, nothing to debug. It is the single
+  most-forgotten piece of this feature.
+
+  summaryColumn (DATA2) is the row's first line — "Voice call (Voiid)" / "Video call
+  (Voiid)". detailColumn (DATA3) is its second line, the peer's E.164. DATA1 (the peer's
+  Voiid user id) is what CallFromContactActivity reads on tap; it is deliberately NOT
+  displayed.
+
+  ContactsAccountType is the modern root element; AOSP Contacts still accepts the legacy
+  <ContactsSource> spelling for the same content.
+-->
+<ContactsAccountType xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <ContactsDataKind
+        android:mimeType="vnd.android.cursor.item/vnd.com.voiid.app.call"
+        android:icon="@drawable/ic_voiid_voice_call"
+        android:summaryColumn="data2"
+        android:detailColumn="data3" />
+
+    <ContactsDataKind
+        android:mimeType="vnd.android.cursor.item/vnd.com.voiid.app.video"
+        android:icon="@drawable/ic_voiid_video_call"
+        android:summaryColumn="data2"
+        android:detailColumn="data3" />
+
+</ContactsAccountType>

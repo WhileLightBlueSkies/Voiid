@@ -80,9 +80,15 @@ router.post('/create', requireAuth, async (req, res) => {
   return res.status(400).json({ error: "type must be 'direct' or 'group'" });
 });
 
-// GET /conversations — list the caller's active conversations with last-message preview (ciphertext) + unread count.
+// GET /conversations?device_id= — list the caller's active conversations with last-message
+// preview (ciphertext) + unread count. The preview coalesces to THIS device's fan-out ciphertext
+// (message_ciphertexts) so multi-device previews decrypt; legacy single-ciphertext rows fall
+// through unchanged. device_id comes from the JWT claim or ?device_id= (matches prekeys.ts).
 router.get('/', requireAuth, async (req, res) => {
-  const { user_id } = (req as any).auth;
+  const { user_id, device_id: authDeviceId } = (req as any).auth;
+  const deviceId = (typeof authDeviceId === 'string' && authDeviceId)
+    ? authDeviceId
+    : (typeof req.query.device_id === 'string' && req.query.device_id ? req.query.device_id : null);
   const rows = await query(
     `select c.id, c.type, c.name, c.photo_url, c.updated_at,
             lm.last_message_at,
@@ -92,8 +98,10 @@ router.get('/', requireAuth, async (req, res) => {
        from conversations c
        join conversation_members me on me.conversation_id = c.id and me.user_id = $1 and me.left_at is null
        left join lateral (
-         select m.ciphertext, m.content_type, m.created_at as last_message_at
-           from messages m where m.conversation_id = c.id
+         select coalesce(mc.ciphertext, m.ciphertext) as ciphertext, m.content_type, m.created_at as last_message_at
+           from messages m
+           left join message_ciphertexts mc on mc.message_id = m.id and mc.recipient_device_id = $2::uuid
+           where m.conversation_id = c.id
            order by m.created_at desc limit 1
        ) lm on true
        left join lateral (
@@ -104,7 +112,7 @@ router.get('/', requireAuth, async (req, res) => {
           where m.conversation_id = c.id and m.sender_id <> $1 and r.id is null
        ) uc on true
       order by coalesce(lm.last_message_at, c.updated_at) desc`,
-    [user_id]
+    [user_id, deviceId]
   );
   res.json({ conversations: rows });
 });
@@ -132,6 +140,69 @@ router.get('/:id', requireAuth, async (req, res) => {
     [req.params.id]
   );
   res.json({ conversation: conv, members });
+});
+
+// POST /:id/members — add members to a group conversation (admin only). This
+// updates the server-side membership used for message fan-out; the MLS Welcome/
+// Commit that actually lets the new member decrypt is distributed separately by
+// the client via /mls/group-events. Idempotent: re-adding an active member is a
+// no-op; a previously-removed member (left_at set) is reinstated.
+router.post('/:id/members', requireAuth, async (req, res) => {
+  const { user_id } = (req as any).auth;
+  const convId = req.params.id;
+  const userIds: unknown = req.body?.user_ids;
+  if (!Array.isArray(userIds) || userIds.length === 0 || !userIds.every((u) => typeof u === 'string')) {
+    return res.status(400).json({ error: 'user_ids (non-empty string array) required' });
+  }
+
+  const conv = (await query<{ type: string }>(`select type from conversations where id = $1`, [convId]))[0];
+  if (!conv) return res.status(404).json({ error: 'conversation not found' });
+  if (conv.type !== 'group') return res.status(400).json({ error: 'can only add members to a group' });
+
+  // Caller must be an active admin of this group.
+  const caller = (await query<{ role: string }>(
+    `select role from conversation_members where conversation_id = $1 and user_id = $2 and left_at is null`,
+    [convId, user_id]
+  ))[0];
+  if (!caller) return res.status(403).json({ error: 'not a member of this conversation' });
+  if (caller.role !== 'admin') return res.status(403).json({ error: 'only an admin can add members' });
+
+  // Upsert each as an active member. `left_at` reset reinstates a prior member;
+  // role left untouched on conflict so an existing admin stays an admin.
+  for (const uid of userIds as string[]) {
+    await query(
+      `insert into conversation_members (conversation_id, user_id, role) values ($1, $2, 'member')
+         on conflict (conversation_id, user_id) do update set left_at = null`,
+      [convId, uid]
+    );
+  }
+  res.json({ added: (userIds as string[]).length });
+});
+
+// DELETE /:id/members/:userId — remove a member from a group (admin removes
+// anyone; a member may remove themselves to leave). Sets left_at so fan-out stops
+// reaching them; the MLS rekey/Commit that cryptographically removes them is
+// distributed separately by the client.
+router.delete('/:id/members/:userId', requireAuth, async (req, res) => {
+  const { user_id } = (req as any).auth;
+  const convId = req.params.id;
+  const target = req.params.userId;
+
+  const caller = (await query<{ role: string }>(
+    `select role from conversation_members where conversation_id = $1 and user_id = $2 and left_at is null`,
+    [convId, user_id]
+  ))[0];
+  if (!caller) return res.status(403).json({ error: 'not a member of this conversation' });
+  if (target !== user_id && caller.role !== 'admin') {
+    return res.status(403).json({ error: 'only an admin can remove another member' });
+  }
+
+  await query(
+    `update conversation_members set left_at = now()
+       where conversation_id = $1 and user_id = $2 and left_at is null`,
+    [convId, target]
+  );
+  res.json({ removed: true });
 });
 
 export default router;

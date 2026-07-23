@@ -2,6 +2,7 @@ package com.voiid.app.net
 
 import android.content.Context
 import android.provider.ContactsContract
+import com.voiid.app.store.UserDirectory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -22,7 +23,7 @@ data class InviteContact(val name: String, val number: String)
 data class DiscoveryResult(val matches: List<VContact>, val invites: List<InviteContact>)
 
 class ContactsService(context: Context) {
-    private val appContext = context.applicationContext
+    private val appContext = context.applicationContext.also { UserDirectory.init(it) }
     private val tokens = TokenStore.get(context)
     private val api = ApiClient(tokens)
     private val defaultCountryCode = "+91"
@@ -67,6 +68,8 @@ class ContactsService(context: Context) {
         val seenUsers = HashSet<String>()
         val matchedHashes = HashSet<String>()
         val matches = ArrayList<VContact>()
+        // (user_id, saved_name, phone_e164) for one bulk write into the users table below.
+        val directoryEntries = ArrayList<Triple<String, String?, String?>>()
         for (m in matched) {
             if (m.user_id == myId) continue
             matchedHashes.add(m.phone_hash)
@@ -76,8 +79,25 @@ class ContactsService(context: Context) {
             // Remember the saved name + number so the contact profile can show the
             // real number (the backend never returns it — privacy by design).
             ContactDirectory.put(appContext, m.user_id, savedName, saved?.second)
+            directoryEntries.add(Triple(m.user_id, savedName, saved?.second))
+            // The peer's OWN fields, written separately — the address-book pass below must
+            // not carry them, or a re-sync would clobber a name the peer set themselves.
+            UserDirectory.upsertFromServer(m.user_id, fullName = m.full_name, photoUrl = m.photo_url)
             matches.add(VContact(m.user_id, savedName ?: m.full_name ?: "VOIID user", m.photo_url))
         }
+        // The durable half of what used to be a 120s in-memory cache: saved names now survive
+        // a relaunch and are visible to the call UI, which never saw this data at all.
+        UserDirectory.upsertManyFromAddressBook(directoryEntries)
+
+        // This is the ONLY moment a peer can acquire a phone number (the backend matches by
+        // hash and never returns raw numbers), so it is the only moment the "Voice call
+        // (Voiid)" / "Video call (Voiid)" rows can change. Ask the platform to re-run the
+        // contacts sync adapter now rather than at the scheduler's convenience — the rows
+        // appearing minutes after the contact does reads as broken.
+        //
+        // Best-effort by design: no account, no WRITE_CONTACTS, or a user who switched the
+        // sync toggle off all mean "no contact rows", never an error worth surfacing.
+        runCatching { com.voiid.app.contacts.VoiidAccountManager.requestSync(appContext) }
 
         // Persist resolved links (user_ids only).
         if (matches.isNotEmpty()) {

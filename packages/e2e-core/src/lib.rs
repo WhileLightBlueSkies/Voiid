@@ -22,6 +22,7 @@ mod media;
 mod multidevice;
 #[cfg(feature = "pq-1to1-prekeys")]
 mod pqxdh;
+mod recovery;
 mod session;
 mod verify;
 
@@ -36,6 +37,7 @@ pub use media::{EncryptedMedia, MediaKey};
 pub use multidevice::{DeviceFanout, DeviceMessage};
 #[cfg(feature = "pq-1to1-prekeys")]
 pub use pqxdh::PqPrekey;
+pub use recovery::PinWrappedSecret;
 pub use session::{Session, WireMessage};
 
 // Sets up the uniffi scaffolding for the Swift/Kotlin bindings (UDL-less mode).

@@ -20,6 +20,66 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
 
+    <!-- 1:1 voice/video calls: WebRTC media + the foreground service that keeps the
+         call alive (mic + camera) and the full-screen incoming-call notification. -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <!-- API 31+: routing call audio to a Bluetooth headset via
+         AudioManager.setCommunicationDevice() requires BLUETOOTH_CONNECT. Without it,
+         connecting a headset mid-call silently fails to move the audio route. This is a
+         runtime permission — request it before/at call start where relevant. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+
+    <!-- ===== Telecom (system call log + dialer integration) =====================
+         MANAGE_OWN_CALLS is a NORMAL permission: granted at install, no runtime prompt.
+         It is what lets us register a SELF-MANAGED PhoneAccount, so Voiid calls are
+         arbitrated against cellular calls, reach Bluetooth/Wear/Auto, and — with
+         PhoneAccount.EXTRA_LOG_SELF_MANAGED_CALLS — land in the system call log.
+         We are NOT a dialer replacement and deliberately do NOT request READ_CALL_LOG:
+         we only need Telecom to WRITE entries, and asking to read them would drag the
+         app into Play's restricted-permission review for no user benefit.
+
+         FOREGROUND_SERVICE_PHONE_CALL: Android 14+ expects the `phoneCall` FGS type for a
+         Telecom-integrated call. Only legal for the default dialer OR an app holding
+         MANAGE_OWN_CALLS with a self-managed ConnectionService — i.e. exactly us, and
+         only while a Connection actually exists (see CallForegroundService). -->
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+
+    <!-- ===== Location sharing (docs/LOCATION.md) ===============================
+         Deliberately NOT in the onboarding one-shot array: these are requested
+         IN CONTEXT, at the moment of the first share, because that is the only
+         moment the ask is self-explanatory (and it is what App/Play review expects).
+
+         ACCESS_BACKGROUND_LOCATION is API 29+ and — from Android 11 — CANNOT be
+         requested in the same prompt as the foreground pair; the system routes it to
+         the app's Settings page instead. See LocationPermissions.kt, which does the
+         two-step flow and tells the user they are about to leave the app.
+
+         FOREGROUND_SERVICE_LOCATION is API 34+: on 14+ the `location` FGS type is
+         asserted at RUNTIME and rejected outright unless the process holds this
+         permission AND a location runtime grant. Declaring the type on the <service>
+         below is necessary but NOT sufficient — same trap CallForegroundService
+         documents for microphone/camera. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+
+    <!-- ===== Contact-card rows ("Voice call (Voiid)" / "Video call (Voiid)") =====
+         WRITE_CONTACTS is a RUNTIME permission (CONTACTS group, shared with the
+         already-requested READ_CONTACTS). Refused simply means no rows are written; the
+         app is otherwise unaffected. The two sync permissions are normal/install-time.
+         GET_ACCOUNTS is intentionally absent: an app never needs it for accounts it owns
+         itself, and AUTHENTICATE_ACCOUNTS/MANAGE_ACCOUNTS have been dead since API 22. -->
+    <uses-permission android:name="android.permission.WRITE_CONTACTS" />
+    <uses-permission android:name="android.permission.READ_SYNC_SETTINGS" />
+    <uses-permission android:name="android.permission.WRITE_SYNC_SETTINGS" />
+
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
@@ -35,12 +95,151 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"
+            android:launchMode="singleTop"
+            android:supportsPictureInPicture="true"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|keyboardHidden|keyboard|navigation|uiMode|density"
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.Voiid">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- ===== Google Maps (docs/LOCATION.md §7) ================================
+             The key is a BUILD-TIME secret injected via the ${MAPS_API_KEY} placeholder
+             (app/build.gradle.kts, sourced from -PMAPS_API_KEY / local.properties / env).
+             It is NEVER committed. An ABSENT key resolves to an empty string here, and the
+             UI refuses to instantiate GoogleMap when BuildConfig.MAPS_CONFIGURED is false —
+             rendering an explicit "Maps aren't set up" card instead of the SDK's silent grey
+             tile grid. The key must be restricted in Google Cloud to package com.voiid.app,
+             the release + debug signing SHA-1s, and the Maps SDK for Android API only. -->
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="${MAPS_API_KEY}" />
+
+        <!-- FCM: receives the content-free "wake" data push, fetches + decrypts on-device,
+             and posts the notification itself (server never holds plaintext). -->
+        <service
+            android:name=".net.VoiidMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <!-- Ongoing 1:1 call: keeps mic/camera capture alive while backgrounded.
+             `phoneCall` is claimed at runtime ONLY while Telecom owns the call (see
+             CallForegroundService.onStartCommand) — declaring it here is necessary but not
+             sufficient, and asserting it without a live self-managed Connection is a
+             SecurityException on Android 14+. -->
+        <service
+            android:name=".net.CallForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="phoneCall|microphone|camera" />
+
+        <!-- Accept/Decline taps from the incoming-call notification. -->
+        <receiver
+            android:name=".net.CallActionReceiver"
+            android:exported="false" />
+
+        <!-- ===== Location sharing (docs/LOCATION.md §5) ============================
+             Keeps a live share emitting while backgrounded. The `location` FGS type is
+             asserted at RUNTIME on Android 14+ and rejected unless the process holds
+             FOREGROUND_SERVICE_LOCATION AND a location grant — declaring it here is
+             necessary but NOT sufficient (LocationForegroundService degrades rather than
+             crashing, same trap CallForegroundService documents). -->
+        <service
+            android:name=".net.LocationForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
+
+        <!-- Stop-sharing action from the ongoing location notification. -->
+        <receiver
+            android:name=".net.LocationActionReceiver"
+            android:exported="false" />
+
+        <!-- Google Maps SDK key. BUILD-TIME secret from the developer (local.properties /
+             -PMAPS_API_KEY / MAPS_API_KEY env), NEVER committed. An absent key is a supported
+             state: MAPS_CONFIGURED gates GoogleMap instantiation so the UI shows an explicit
+             "Maps aren't set up" card and location sharing still works. -->
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="${MAPS_API_KEY}" />
+
+        <!-- ===== Telecom =======================================================
+             The self-managed ConnectionService Telecom binds when it takes ownership of a
+             call. Exported by necessity (the system binds it from another process) and
+             locked behind BIND_TELECOM_CONNECTION_SERVICE, which only the platform holds. -->
+        <service
+            android:name=".net.VoiidConnectionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE">
+            <intent-filter>
+                <action android:name="android.telecom.ConnectionService" />
+            </intent-filter>
+        </service>
+
+        <!-- Redial from the system call log. This is the Android 16.1+ unified VoIP call
+             history path; per the platform docs, registering this filter is itself part of
+             what makes those entries appear. Pre-16.1 devices use
+             PhoneAccount.EXTRA_LOG_SELF_MANAGED_CALLS instead — we ship both. -->
+        <activity
+            android:name=".net.CallBackActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.telecom.action.CALL_BACK" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- ===== Contact-card rows =============================================
+             Account authenticator: exists only so ContactsContract will accept RawContacts
+             under our account type. Holds no credentials (see VoiidAuthenticator). -->
+        <service
+            android:name=".contacts.VoiidAuthenticatorService"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.accounts.AccountAuthenticator" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accounts.AccountAuthenticator"
+                android:resource="@xml/authenticator" />
+        </service>
+
+        <!-- Contacts sync adapter. The CONTACTS_STRUCTURE meta-data is what makes the
+             custom rows RENDER: without it the Data rows are written successfully and then
+             never appear anywhere, with no error to debug. -->
+        <service
+            android:name=".contacts.VoiidContactsSyncService"
+            android:exported="true"
+            android:permission="android.permission.BIND_SYNC_ADAPTER">
+            <intent-filter>
+                <action android:name="android.content.SyncAdapter" />
+            </intent-filter>
+            <meta-data
+                android:name="android.content.SyncAdapter"
+                android:resource="@xml/contacts_sync_adapter" />
+            <meta-data
+                android:name="android.provider.CONTACTS_STRUCTURE"
+                android:resource="@xml/contacts" />
+        </service>
+
+        <!-- Makes the rows tappable: the Contacts app fires ACTION_VIEW on our Data row. -->
+        <activity
+            android:name=".contacts.CallFromContactActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="vnd.android.cursor.item/vnd.com.voiid.app.call" />
+                <data android:mimeType="vnd.android.cursor.item/vnd.com.voiid.app.video" />
             </intent-filter>
         </activity>
 

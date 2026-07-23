@@ -35,6 +35,38 @@ pub struct GroupMember {
     provider: LibcruxProvider,
     signer: SignatureKeyPair,
     credential: CredentialWithKey,
+    /// The opaque identity label this member was created with (e.g. user::device).
+    /// Kept so the member can be re-serialized and to rebuild the credential on
+    /// restore.
+    identity: Vec<u8>,
+}
+
+/// On-disk form of a [`GroupMember`] plus all of its MLS state.
+///
+/// MLS is stateful (like the 1:1 ratchet): the member's signing key, its
+/// published KeyPackage private keys, and every group it belongs to live in the
+/// OpenMLS storage provider. That state is IN-MEMORY only (`MemoryStorage`), so
+/// without this it is lost on app restart and the group can never be resumed.
+/// We persist the whole provider storage (a flat key/value map) alongside the
+/// signer and identity, so `GroupMember::restore` reconstructs an identical
+/// member and `load_group` can re-open any group from it.
+/// Serialize view — borrows the signer so we don't need `SignatureKeyPair: Clone`
+/// (it isn't `Clone` in this build).
+#[derive(serde::Serialize)]
+struct MemberBlobRef<'a> {
+    identity: &'a [u8],
+    signer: &'a SignatureKeyPair,
+    /// The OpenMLS `MemoryStorage` values map, as a list of (key, value) pairs
+    /// (a `HashMap<Vec<u8>, Vec<u8>>` can't be a JSON object key, so use pairs).
+    storage: Vec<(Vec<u8>, Vec<u8>)>,
+}
+
+/// Owned form for restore.
+#[derive(serde::Deserialize)]
+struct MemberBlob {
+    identity: Vec<u8>,
+    signer: SignatureKeyPair,
+    storage: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
 impl GroupMember {
@@ -57,7 +89,78 @@ impl GroupMember {
             provider,
             signer,
             credential,
+            identity: identity.to_vec(),
         })
+    }
+
+    /// Serialize this member and ALL of its MLS state (signer + published
+    /// KeyPackage private keys + every group it belongs to) to an opaque blob.
+    /// Persist it encrypted on-device (like the 1:1 session pickles) and hand it
+    /// back to [`GroupMember::restore`] on the next launch. Take a fresh blob
+    /// after every state-changing call (`create_group`, `join_group`,
+    /// `add_member`, `remove_member`, `encrypt`, `decrypt`) — each can advance the
+    /// stored key state.
+    pub fn serialize(&self) -> Result<Vec<u8>, E2eError> {
+        let values = self
+            .provider
+            .storage()
+            .values
+            .read()
+            .map_err(|_| E2eError::Serialization)?;
+        let storage: Vec<(Vec<u8>, Vec<u8>)> =
+            values.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        drop(values);
+
+        let blob = MemberBlobRef {
+            identity: &self.identity,
+            signer: &self.signer,
+            storage,
+        };
+        serde_json::to_vec(&blob).map_err(|_| E2eError::Serialization)
+    }
+
+    /// Reconstruct a member (and its full MLS storage) from a blob produced by
+    /// [`GroupMember::serialize`]. After restoring, re-open a specific group with
+    /// [`GroupMember::load_group`].
+    pub fn restore(bytes: &[u8]) -> Result<Self, E2eError> {
+        let blob: MemberBlob =
+            serde_json::from_slice(bytes).map_err(|_| E2eError::Serialization)?;
+
+        let provider = LibcruxProvider::new().map_err(|_| E2eError::Serialization)?;
+        {
+            let mut values = provider
+                .storage()
+                .values
+                .write()
+                .map_err(|_| E2eError::Serialization)?;
+            values.clear();
+            for (k, v) in blob.storage {
+                values.insert(k, v);
+            }
+        }
+
+        let credential = CredentialWithKey {
+            credential: BasicCredential::new(blob.identity.clone()).into(),
+            signature_key: blob.signer.public().into(),
+        };
+
+        Ok(Self {
+            provider,
+            signer: blob.signer,
+            credential,
+            identity: blob.identity,
+        })
+    }
+
+    /// Re-open a group this member belongs to, by its group id (see
+    /// [`GroupSession::group_id`]). Returns `NoSession` if this member's restored
+    /// storage holds no such group.
+    pub fn load_group(&self, group_id: &[u8]) -> Result<GroupSession, E2eError> {
+        let gid = GroupId::from_slice(group_id);
+        let group = MlsGroup::load(self.provider.storage(), &gid)
+            .map_err(|_| E2eError::Serialization)?
+            .ok_or(E2eError::NoSession)?;
+        Ok(GroupSession { group })
     }
 
     /// Produce a public KeyPackage to upload to the backend so others can add
@@ -233,6 +336,12 @@ impl GroupSession {
     /// Number of members currently in the group (from our view of the state).
     pub fn member_count(&self) -> usize {
         self.group.members().count()
+    }
+
+    /// This group's stable id — pass it to [`GroupMember::load_group`] after a
+    /// restart to re-open this exact group from the restored member storage.
+    pub fn group_id(&self) -> Vec<u8> {
+        self.group.group_id().as_slice().to_vec()
     }
 
     /// The current epoch number. Two commits built against the same epoch are
