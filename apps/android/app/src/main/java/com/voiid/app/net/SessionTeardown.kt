@@ -50,5 +50,9 @@ object SessionTeardown {
         // 3 — ChatEngine's own plaintext file store (separate from Room; see its class doc).
         runCatching { java.io.File(appContext.filesDir, "voiid_messages.json").delete() }
         runCatching { java.io.File(appContext.filesDir, "voiid_messages.json.tmp").delete() }
+
+        // 4 — decrypted media cache (memory + disk), or the previous account's photos/voice
+        // notes stay readable on this device behind the login screen.
+        runCatching { com.voiid.app.main.MediaCache.clear(appContext) }
     }
 }

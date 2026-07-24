@@ -164,7 +164,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         directConversations.clear(); groupConversations.clear()
         directConversations.addAll(cached.filter { it.type == ConversationType.DIRECT })
         groupConversations.addAll(cached.filter { it.type == ConversationType.GROUP })
-        cached.forEach { refresh(it.id) }   // decrypted message history from the engine store
+        cached.forEach { previewOnly(it.id) }   // last-message preview only — full history maps lazily on open
     }
 
     /** Suspend reload (so callers like handleIncoming can await it, then sync). */
@@ -182,7 +182,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
             directConversations.addAll(convs.filter { it.type == ConversationType.DIRECT })
             groupConversations.addAll(convs.filter { it.type == ConversationType.GROUP })
             LocalStore.saveConversations(appContext, convs)   // so the next cold launch renders instantly
-            convs.forEach { refresh(it.id) }   // show cached (already-decrypted) messages
+            convs.forEach { previewOnly(it.id) }   // last-message preview only — full history maps lazily on open
             loadError = null
         } catch (e: Exception) {
             loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t load chats."
@@ -263,6 +263,24 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
     }
 
     /** Rebuild a conversation's UI messages from the local (decrypted) store. */
+    /**
+     * Cheap list-preview refresh: derives ONLY the last-message preview, with none of the
+     * full-message mapping (per-message reaction/TokenStore lookups, VMessage construction)
+     * that [refresh] does. Used at cold launch so the chat list paints instantly and offline;
+     * each chat's full message list is mapped lazily by [openConversation] / [syncMessages]
+     * when it's actually opened (WhatsApp-style).
+     */
+    private fun previewOnly(convId: String) {
+        val last = engine.messages(convId).lastOrNull() ?: return
+        val kind = when {
+            last.location != null -> MessageKind.LOCATION
+            last.media == null -> MessageKind.TEXT
+            last.media.mime.startsWith("audio/") -> MessageKind.VOICE
+            else -> MessageKind.IMAGE
+        }
+        bumpPreview(convId, if (kind == MessageKind.TEXT) last.text else previewFor(kind))
+    }
+
     private fun refresh(convId: String) {
         val mapped = engine.messages(convId).map { d ->
             val kind = when {
@@ -322,7 +340,10 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 val peer = peerUserId(conv)
-                engine.sendMedia(data, mime, caption, conversationId, peer)
+                val echo = engine.sendMedia(data, mime, caption, conversationId, peer)
+                // Local-first: cache the ORIGINAL plaintext under the R2 key so this sender
+                // renders its own photo/voice instantly and offline — never re-downloads it.
+                echo.media?.mediaUrl?.let { com.voiid.app.main.MediaCache.putData(appContext, it, data) }
                 removeMessage(tempId, conversationId)
                 refresh(conversationId)
             } catch (e: Exception) {
