@@ -275,7 +275,12 @@ final class ChatStore: ObservableObject {
         guard !convs.isEmpty else { return }
         directConversations = convs.filter { $0.type == .direct }
         groupConversations = convs.filter { $0.type == .group }
-        for c in convs { refresh(c.id) }
+        // Do NOT eagerly map every conversation's full message list here — that re-sorts
+        // every message AND runs reconcileLocationShare DB writes for each location row, per
+        // conversation, on the main thread, which is what made the list take seconds to paint.
+        // Each chat is mapped lazily by openConversation(...) when it's actually opened
+        // (WhatsApp-style). The list only needs the row + the last-message preview computed
+        // above — never the full decrypted array of every chat.
     }
 
     /// Messages currently held for a conversation (decrypted, from the local store).

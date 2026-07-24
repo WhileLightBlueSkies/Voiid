@@ -359,6 +359,9 @@ final class ChatEngine {
         // 2. Upload the CIPHERTEXT to R2; get back the opaque object key.
         let key = try await MediaService.shared.upload(ciphertext: enc.ciphertext, mime: mime)
         NSLog("[VOIID] 🖼️ sendMedia uploaded → key=\(key)")
+        // Local-first: cache the ORIGINAL plaintext under the R2 key so this sender renders
+        // its own photo instantly and offline — it never downloads + decrypts what it just sent.
+        await MainActor.run { MediaCache.shared.setData(data, key) }
         let ref = MediaRef(mediaUrl: key, mime: mime,
                            key: enc.mediaKey.key, nonce: enc.mediaKey.nonce,
                            sha256: enc.mediaKey.ciphertextSha256)

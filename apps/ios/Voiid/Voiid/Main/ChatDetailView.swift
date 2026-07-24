@@ -13,6 +13,7 @@
 import SwiftUI
 import PhotosUI
 import UIKit
+import CryptoKit
 import AVFoundation
 
 struct ChatDetailView: View {
@@ -913,20 +914,67 @@ struct BubbleShape: Shape {
 
 // MARK: - Encrypted media rendering (fetch + decrypt on demand)
 
-/// In-memory cache of decrypted media keyed by the R2 object key, so reopening a
-/// chat doesn't re-download/re-decrypt.
+/// Local-first cache of DECRYPTED media keyed by the R2 object key. Two tiers: an in-memory
+/// map for instant re-render, and an on-disk store in the app-group container so media
+/// survives app restarts and renders WITHOUT the network — the WhatsApp behaviour (a photo
+/// you've seen once, or one you sent, shows instantly and offline). The plaintext bytes are
+/// what's cached, so the render path never re-downloads or re-decrypts after the first time.
 @MainActor final class MediaCache {
     static let shared = MediaCache()
     private var images: [String: UIImage] = [:]
     private var datas: [String: Data] = [:]
-    func image(_ k: String) -> UIImage? { images[k] }
+
+    /// `<app-group>/media/`. Nil only if the entitlement is missing (then memory-only).
+    private let dir: URL? = {
+        guard let base = AppGroup.containerURL else { return nil }
+        let d = base.appendingPathComponent("media", isDirectory: true)
+        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        return d
+    }()
+
+    /// Stable, filesystem-safe filename for an R2 key (which may contain '/').
+    private func fileURL(_ key: String) -> URL? {
+        guard let dir else { return nil }
+        let digest = SHA256.hash(data: Data(key.utf8))
+        let name = digest.map { String(format: "%02x", $0) }.joined()
+        return dir.appendingPathComponent(name)
+    }
+
+    func data(_ k: String) -> Data? {
+        if let d = datas[k] { return d }
+        guard let url = fileURL(k), let d = try? Data(contentsOf: url) else { return nil }
+        datas[k] = d                          // promote disk → memory
+        return d
+    }
+
+    func setData(_ d: Data, _ k: String) {
+        datas[k] = d
+        guard let url = fileURL(k) else { return }
+        // Same protection class as the message store: readable after first unlock (so a
+        // background fetch can write it) but encrypted at rest.
+        try? d.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+    }
+
+    func image(_ k: String) -> UIImage? {
+        if let img = images[k] { return img }
+        guard let d = data(k), let img = UIImage(data: d) else { return nil }
+        images[k] = img                       // derive + memoize from the cached bytes
+        return img
+    }
+
     func set(_ img: UIImage, _ k: String) { images[k] = img }
-    func data(_ k: String) -> Data? { datas[k] }
-    func setData(_ d: Data, _ k: String) { datas[k] = d }
-    /// Drop every decrypted byte. Called by `SessionTeardown` on sign-out: this cache is
-    /// process-lifetime and sign-out does not restart the process, so without it the
-    /// previous account's photos and voice notes stay in memory behind the login screen.
-    func clear() { images.removeAll(); datas.removeAll() }
+
+    /// Drop every decrypted byte, memory AND disk. Called by `SessionTeardown` on sign-out:
+    /// this cache is process-lifetime and sign-out does not restart the process, so without
+    /// this the previous account's photos and voice notes stay readable behind the login
+    /// screen (in memory) and on disk.
+    func clear() {
+        images.removeAll(); datas.removeAll()
+        if let dir {
+            try? FileManager.default.removeItem(at: dir)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+    }
 }
 
 /// An image bubble that fetches + decrypts its blob via ChatEngine on appear.
@@ -957,9 +1005,12 @@ struct AsyncMediaImage: View {
     }
 
     private func load() async {
+        // Local-first: memory → disk → (only then) network. Offline, a photo seen once or
+        // one you sent renders straight from disk with no spinner.
         if let cached = MediaCache.shared.image(ref.mediaUrl) { image = cached; return }
         do {
             let data = try await ChatEngine.shared.fetchMedia(ref)
+            MediaCache.shared.setData(data, ref.mediaUrl)          // persist the plaintext bytes
             if let ui = UIImage(data: data) { MediaCache.shared.set(ui, ref.mediaUrl); image = ui }
             else { failed = true }
         } catch { failed = true }
