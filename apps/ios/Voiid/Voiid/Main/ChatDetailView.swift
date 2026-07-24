@@ -597,8 +597,14 @@ struct MessageBubble: View {
     }
 
     private var bubble: some View {
-        HStack {
+        HStack(alignment: .bottom, spacing: 6) {
             if message.isMine { Spacer(minLength: 56) }
+            // Group, incoming: the sender's real profile photo beside the bubble, so you can
+            // see at a glance who's texting (WhatsApp-style).
+            if isGroup && !message.isMine {
+                ProfileAvatarButton(photoURL: UserDirectory.shared.photoURL(message.senderId),
+                                    name: message.senderName, size: 28)
+            }
             VStack(alignment: .leading, spacing: 3) {
                 // "Forwarded" tag
                 if message.forwarded {
@@ -622,11 +628,20 @@ struct MessageBubble: View {
                     .background(VoiidColor.fieldFill.opacity(0.7))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
-                // Sender name (group, incoming only) — colored per sender
+                // Sender identity (group, incoming only): the saved name (or phone) coloured
+                // per sender, with the @username in a lighter tone so you know exactly who's
+                // texting who.
                 if isGroup && !message.isMine && !message.senderName.isEmpty {
-                    Text(message.senderName)
-                        .font(VoiidFont.rounded(12, .semibold))
-                        .foregroundColor(message.senderColor)
+                    HStack(spacing: 5) {
+                        Text(message.senderName)
+                            .font(VoiidFont.rounded(12, .semibold))
+                            .foregroundColor(message.senderColor)
+                        if let uname = UserDirectory.shared.user(message.senderId)?.username, !uname.isEmpty {
+                            Text("@\(uname)")
+                                .font(VoiidFont.rounded(11, .regular))
+                                .foregroundColor(VoiidColor.textSecondary)
+                        }
+                    }
                 }
                 if message.deletedForEveryone {
                     HStack(spacing: 5) {

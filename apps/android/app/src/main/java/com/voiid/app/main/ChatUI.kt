@@ -192,6 +192,16 @@ fun MessageBubble(
                 )
             }
             if (mine) Spacer(Modifier.width(56.dp))
+            // Group, incoming: the sender's real profile photo beside the bubble, so you can
+            // see at a glance who's texting (WhatsApp-style).
+            if (isGroup && !mine) {
+                ProfileAvatar(
+                    photoUrl = com.voiid.app.store.UserDirectory.photoUrl(message.senderId),
+                    name = message.senderName,
+                    size = 28.dp,
+                    modifier = Modifier.align(Alignment.Bottom).padding(end = 6.dp),
+                )
+            }
             Box(
                 modifier = Modifier.weight(1f),
                 contentAlignment = if (mine) Alignment.CenterEnd else Alignment.CenterStart,
@@ -291,9 +301,15 @@ private fun BubbleInner(message: VMessage, isGroup: Boolean, isLastMine: Boolean
             }
         }
     }
-    // Sender name (group, incoming only) — colored per sender
+    // Sender identity (group, incoming only): saved name (or phone) coloured per sender, with
+    // the @username in a lighter tone so you know exactly who's texting who.
     if (isGroup && !mine && message.senderName.isNotEmpty()) {
-        Text(message.senderName, style = VoiidFont.rounded(12, FontWeight.SemiBold), color = senderColor(message.senderId))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            Text(message.senderName, style = VoiidFont.rounded(12, FontWeight.SemiBold), color = senderColor(message.senderId))
+            com.voiid.app.store.UserDirectory.user(message.senderId)?.username?.takeIf { it.isNotBlank() }?.let {
+                Text("@$it", style = VoiidFont.rounded(11), color = VoiidColor.textSecondary)
+            }
+        }
     }
 
     if (message.deletedForEveryone) {
