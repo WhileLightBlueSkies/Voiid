@@ -41,7 +41,7 @@ import androidx.room.Transaction
         // AFTER location so two concurrent table-adding features don't both own "1 -> 2".
         StoryRow::class, StoryAudienceRow::class, StoryViewRow::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class VoiidDatabase : RoomDatabase() {
@@ -83,7 +83,7 @@ abstract class VoiidDatabase : RoomDatabase() {
                     // every version bump from here on MUST ship an explicit additive Migration
                     // (see MIGRATION_1_2). The fallback stays only as the last-resort guard for
                     // a genuinely corrupt file.
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .fallbackToDestructiveMigration()
                     .build()
                     .also { instance = it }
@@ -132,6 +132,10 @@ data class ConversationRow(
     @ColumnInfo(name = "last_message_at") val lastMessageAt: Long? = null,
     @ColumnInfo(name = "unread_count") val unreadCount: Int = 0,
     @ColumnInfo(name = "updated_at") val updatedAt: Long = 0,
+    // Denormalized last-message snippet so the chat LIST renders from this table alone,
+    // without loading/decoding the message store on the launch path. Kept fresh at write
+    // time (ChatStore.bumpPreview -> LocalStore.updatePreview).
+    @ColumnInfo(name = "last_message_preview") val lastMessagePreview: String? = null,
 )
 
 /**
@@ -296,6 +300,23 @@ abstract class ConversationDao {
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     abstract fun insertIgnore(row: ConversationRow)
+
+    /**
+     * Denormalize the latest message's snippet + time onto the conversation row (creating it
+     * if a message arrived before the conversation sync did). last_message_at only moves
+     * forward. Drives the instant, message-store-free chat list.
+     */
+    @Query(
+        """
+        INSERT INTO conversations (id, kind, last_message_at, last_message_preview, updated_at)
+        VALUES (:id, 'direct', :ts, :preview, :ts)
+        ON CONFLICT(id) DO UPDATE SET
+            last_message_preview = :preview,
+            last_message_at      = MAX(:ts, COALESCE(last_message_at, 0)),
+            updated_at           = :ts
+        """,
+    )
+    abstract fun updatePreview(id: String, preview: String, ts: Long)
 
     @Query(
         """

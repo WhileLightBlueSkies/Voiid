@@ -58,6 +58,7 @@ object LocalStore {
                 id = r.id,
                 type = if (isGroup) ConversationType.GROUP else ConversationType.DIRECT,
                 title = title,
+                lastMessagePreview = r.lastMessagePreview,
                 lastMessageAt = r.lastMessageAt?.let { it * 1000 },
                 unreadCount = r.unreadCount,
                 peerUserId = r.peerUserId,
@@ -88,6 +89,13 @@ object LocalStore {
             )
         }
         scope.launch { runCatching { db(context).conversations().upsertAll(rows) } }
+    }
+
+    /** Persist the last-message preview + time so the chat LIST renders it (and orders by it)
+     *  on the next cold launch straight from Room — no message-store decode on the launch path. */
+    fun updatePreview(context: Context, conversationId: String, preview: String, at: Long) {
+        if (conversationId.isBlank() || preview.isBlank()) return
+        scope.launch { runCatching { db(context).conversations().updatePreview(conversationId, preview, at / 1000) } }
     }
 
     // MARK: - Call history

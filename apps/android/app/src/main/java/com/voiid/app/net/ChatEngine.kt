@@ -69,16 +69,14 @@ class ChatEngine private constructor(context: Context) {
     private val store = HashMap<String, MutableList<DecryptedMessage>>() // conversationId -> messages (asc)
     private val media = MediaService(tokens)
 
-    // NOTE: these MUST be declared BEFORE `init { loadStore() }` — Kotlin initializes
-    // properties in source order, and loadStore() (run from init) uses both. If declared
-    // after init they are null during loadStore → NPE → store never loads.
     private val storeSerializer = MapSerializer(String.serializer(), ListSerializer(DecryptedMessage.serializer()))
     // Decrypt-once plaintext store: a PLAIN app-internal file (sandboxed, excluded from
     // backup) — NOT EncryptedSharedPreferences, whose key can be wiped by SecurePrefs,
     // destroying all history on restart. A file can't be wiped by a key issue.
     private val storeFile = java.io.File(appContext.filesDir, "voiid_messages.json")
 
-    init { loadStore() }
+    // NB: the store is NOT loaded in init anymore — it's decoded lazily on first access
+    // (ensureLoaded), off the launch/list path. The chat list renders from Room instead.
 
     /**
      * The media reference carried INSIDE an E2EE message. The bytes live in R2 as
@@ -167,8 +165,10 @@ class ChatEngine private constructor(context: Context) {
     }
 
     /** Locally-stored (already decrypted) messages for a conversation, oldest-first. */
-    fun messages(conversationId: String): List<DecryptedMessage> =
-        (store[conversationId] ?: emptyList()).filter { !it.control }.sortedBy { it.createdAt }
+    fun messages(conversationId: String): List<DecryptedMessage> {
+        ensureLoaded()
+        return (store[conversationId] ?: emptyList()).filter { !it.control }.sortedBy { it.createdAt }
+    }
 
     /** Queue a text message as PENDING locally (instant + offline + survives restart),
      *  WITHOUT touching the network. Call [flushPending] to actually send. */
@@ -185,6 +185,7 @@ class ChatEngine private constructor(context: Context) {
     /** Try to send every PENDING text message (offline retry). Failures are swallowed
      *  — the message stays pending and is retried on the next flush. */
     suspend fun flushPending(conversationId: String, peerUserId: String) {
+        ensureLoaded()
         val pendings = (store[conversationId] ?: emptyList()).filter { it.isMine && it.pending && it.media == null }
         for (p in pendings) {
             try {
@@ -279,6 +280,7 @@ class ChatEngine private constructor(context: Context) {
     /** Fetch the server list, decrypt only unseen ids, persist, return full convo (asc). */
     suspend fun sync(conversationId: String, peerUserId: String): List<DecryptedMessage> =
       syncLock(conversationId).withLock {
+        ensureLoaded()   // decrypt-once dedup + append below read/write the store
         flushPending(conversationId, peerUserId)   // push any queued sends first
         lastSyncHadDecryptFailure = false
         // Pass our own device_id so the server hands back only THIS device's per-device
@@ -446,6 +448,7 @@ class ChatEngine private constructor(context: Context) {
     /** Mark all stored inbound messages in a conversation read → server fans out a
      *  `receipt` WS event to the senders (blue ticks). */
     suspend fun markRead(conversationId: String) {
+        ensureLoaded()
         val ids = (store[conversationId] ?: emptyList()).filter { !it.isMine }.map { it.id }
         markReceipts(ids, "read")
     }
@@ -844,8 +847,10 @@ class ChatEngine private constructor(context: Context) {
     // them unchanged. GroupEngine owns the crypto; these helpers only persist results.
 
     /** True if this conversation already holds a message with [id] (decrypt-once dedup). */
-    fun hasMessage(conversationId: String, id: String): Boolean =
-        store[conversationId]?.any { it.id == id } == true
+    fun hasMessage(conversationId: String, id: String): Boolean {
+        ensureLoaded()
+        return store[conversationId]?.any { it.id == id } == true
+    }
 
     /** Persist a local echo of a group message WE just sent (we can't decrypt our own
      *  MLS ratchet output, so we store the plaintext directly). Returns the stored row. */
@@ -950,6 +955,7 @@ class ChatEngine private constructor(context: Context) {
     // MARK: - Local message store (decrypt-once; encrypted at rest)
 
     private fun append(convId: String, m: DecryptedMessage, persist: Boolean = true) {
+        ensureLoaded()   // never mutate/persist an unloaded store (would clobber on-disk history)
         val arr = store.getOrPut(convId) { mutableListOf() }
         if (arr.any { it.id == m.id }) return
         arr.add(m)
@@ -959,10 +965,19 @@ class ChatEngine private constructor(context: Context) {
     /** Insert, or REPLACE an existing entry with the same id in place (keeps order).
      *  Lets a tombstone that later decrypts be upgraded to the real message. */
     private fun replace(convId: String, m: DecryptedMessage) {
+        ensureLoaded()
         val arr = store.getOrPut(convId) { mutableListOf() }
         val i = arr.indexOfFirst { it.id == m.id }
         if (i >= 0) arr[i] = m else arr.add(m)
     }
+
+    // The message store is decoded LAZILY on first access, not at init — that whole-file JSON
+    // decode used to run on the app-launch / chat-LIST path. The list now renders from Room
+    // (LocalStore), so the store is only decoded when a chat is opened / synced.
+    @Volatile private var storeLoaded = false
+
+    /** Decode the store on first access. Idempotent. */
+    private fun ensureLoaded() { if (!storeLoaded) loadStore() }
 
     private fun loadStore() {
         // Prefer the file; fall back ONCE to the old encrypted-prefs location to migrate.
@@ -970,6 +985,7 @@ class ChatEngine private constructor(context: Context) {
             ?: prefs.getString("message_store", null)
         if (raw.isNullOrBlank()) {
             android.util.Log.w("VOIID", "📂 loadStore: EMPTY (no persisted messages — fresh install)")
+            storeLoaded = true   // a fresh empty store IS a valid loaded state (safe to persist)
             return
         }
         runCatching {
@@ -978,13 +994,19 @@ class ChatEngine private constructor(context: Context) {
             }
         }.onSuccess {
             android.util.Log.i("VOIID", "📂 loadStore: restored ${store.values.sumOf { it.size }} msgs across ${store.size} convs")
+            storeLoaded = true
             if (!storeFile.exists()) persist()   // migrate old prefs → file
         }.onFailure {
+            // Do NOT mark loaded — a persist() must not clobber a file we failed to parse.
             android.util.Log.e("VOIID", "📂 loadStore FAILED to parse", it)
         }
     }
 
     private fun persist() {
+        if (!storeLoaded) {   // never let an unloaded store overwrite good on-disk history
+            android.util.Log.w("VOIID", "📂 persist skipped — store not loaded")
+            return
+        }
         val raw = ApiClient.json.encodeToString(storeSerializer, store.mapValues { it.value.toList() })
         // Atomic write: tmp file then rename, so a crash mid-write can't corrupt the store.
         runCatching {
@@ -998,13 +1020,16 @@ class ChatEngine private constructor(context: Context) {
 
     /** Serialize the ENTIRE decrypted message store to bytes (backup payload).
      *  Same JSON shape [loadStore]/[persist] use, so [importStore] can round-trip it. */
-    fun exportStore(): ByteArray =
-        ApiClient.json.encodeToString(storeSerializer, store.mapValues { it.value.toList() }).toByteArray()
+    fun exportStore(): ByteArray {
+        ensureLoaded()   // a backup must contain the whole history, not an empty just-launched store
+        return ApiClient.json.encodeToString(storeSerializer, store.mapValues { it.value.toList() }).toByteArray()
+    }
 
     /** Replace the local message store with a restored backup blob, then persist to
      *  the on-disk file. Bad/empty input is ignored (never crash a restore). */
     fun importStore(bytes: ByteArray) {
         if (bytes.isEmpty()) return
+        storeLoaded = true   // we are about to REPLACE the store wholesale; persist must be allowed
         runCatching {
             val decoded = ApiClient.json.decodeFromString(storeSerializer, String(bytes))
             store.clear()

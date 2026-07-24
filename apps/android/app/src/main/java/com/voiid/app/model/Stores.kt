@@ -13,7 +13,9 @@ import com.voiid.app.net.AuthService
 import com.voiid.app.store.LocalStore
 import com.voiid.app.store.UserDirectory
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.UUID
 
 /**
@@ -164,7 +166,33 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         directConversations.clear(); groupConversations.clear()
         directConversations.addAll(cached.filter { it.type == ConversationType.DIRECT })
         groupConversations.addAll(cached.filter { it.type == ConversationType.GROUP })
-        cached.forEach { previewOnly(it.id) }   // last-message preview only — full history maps lazily on open
+        // Previews come from Room (denormalized), so we touch NO message store here — the list
+        // paints instantly and offline regardless of history size. Full history maps lazily on
+        // open; previews stay fresh via bumpPreview at write time.
+        backfillPreviewsIfNeeded()
+    }
+
+    /** One-time backfill of previews for chats that existed BEFORE the preview column, run OFF
+     *  the launch path (IO, after the list is on screen). No-op for fresh installs. */
+    private fun backfillPreviewsIfNeeded() {
+        val prefs = appContext.getSharedPreferences("voiid_flags", android.content.Context.MODE_PRIVATE)
+        if (prefs.getBoolean("previews_backfilled_v1", false)) return
+        val ids = (directConversations + groupConversations).map { it.id }
+        viewModelScope.launch(Dispatchers.IO) {
+            for (id in ids) {
+                val last = engine.messages(id).lastOrNull() ?: continue
+                val kind = when {
+                    last.location != null -> MessageKind.LOCATION
+                    last.media == null -> MessageKind.TEXT
+                    last.media.mime.startsWith("audio/") -> MessageKind.VOICE
+                    else -> MessageKind.IMAGE
+                }
+                val preview = if (kind == MessageKind.TEXT) last.text else previewFor(kind)
+                if (preview.isNotBlank()) LocalStore.updatePreview(appContext, id, preview, last.createdAt)
+            }
+            prefs.edit().putBoolean("previews_backfilled_v1", true).apply()
+            withContext(Dispatchers.Main) { loadLocal() }   // re-render with backfilled previews
+        }
     }
 
     /** Suspend reload (so callers like handleIncoming can await it, then sync). */
@@ -178,11 +206,14 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                     c.copy(title = UserDirectory.displayName(peer, fallback = c.title))
                 } else c
             }
+            // The server payload carries no preview snippet — preserve the denormalized one we
+            // already hold (from Room) so a sync doesn't blank the list previews.
+            val prevMap = (directConversations + groupConversations).associate { it.id to it.lastMessagePreview }
+            val withPreview = convs.map { it.copy(lastMessagePreview = it.lastMessagePreview ?: prevMap[it.id]) }
             directConversations.clear(); groupConversations.clear()
-            directConversations.addAll(convs.filter { it.type == ConversationType.DIRECT })
-            groupConversations.addAll(convs.filter { it.type == ConversationType.GROUP })
-            LocalStore.saveConversations(appContext, convs)   // so the next cold launch renders instantly
-            convs.forEach { previewOnly(it.id) }   // last-message preview only — full history maps lazily on open
+            directConversations.addAll(withPreview.filter { it.type == ConversationType.DIRECT })
+            groupConversations.addAll(withPreview.filter { it.type == ConversationType.GROUP })
+            LocalStore.saveConversations(appContext, convs)   // so the next cold launch renders instantly (preview col preserved by the upsert)
             loadError = null
         } catch (e: Exception) {
             loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t load chats."
@@ -262,24 +293,6 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         cid?.let { refresh(it) }
     }
 
-    /** Rebuild a conversation's UI messages from the local (decrypted) store. */
-    /**
-     * Cheap list-preview refresh: derives ONLY the last-message preview, with none of the
-     * full-message mapping (per-message reaction/TokenStore lookups, VMessage construction)
-     * that [refresh] does. Used at cold launch so the chat list paints instantly and offline;
-     * each chat's full message list is mapped lazily by [openConversation] / [syncMessages]
-     * when it's actually opened (WhatsApp-style).
-     */
-    private fun previewOnly(convId: String) {
-        val last = engine.messages(convId).lastOrNull() ?: return
-        val kind = when {
-            last.location != null -> MessageKind.LOCATION
-            last.media == null -> MessageKind.TEXT
-            last.media.mime.startsWith("audio/") -> MessageKind.VOICE
-            else -> MessageKind.IMAGE
-        }
-        bumpPreview(convId, if (kind == MessageKind.TEXT) last.text else previewFor(kind))
-    }
 
     private fun refresh(convId: String) {
         val mapped = engine.messages(convId).map { d ->
@@ -664,12 +677,15 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         val di = directConversations.indexOfFirst { it.id == convId }
         if (di >= 0) {
             directConversations[di] = directConversations[di].copy(lastMessagePreview = preview, lastMessageAt = now)
-            return
+        } else {
+            val gi = groupConversations.indexOfFirst { it.id == convId }
+            if (gi >= 0) {
+                groupConversations[gi] = groupConversations[gi].copy(lastMessagePreview = preview, lastMessageAt = now)
+            }
         }
-        val gi = groupConversations.indexOfFirst { it.id == convId }
-        if (gi >= 0) {
-            groupConversations[gi] = groupConversations[gi].copy(lastMessagePreview = preview, lastMessageAt = now)
-        }
+        // Persist so the chat LIST shows this snippet + ordering on the next cold launch
+        // straight from Room, without decoding the message store on the launch path.
+        LocalStore.updatePreview(appContext, convId, preview, now)
     }
 }
 
