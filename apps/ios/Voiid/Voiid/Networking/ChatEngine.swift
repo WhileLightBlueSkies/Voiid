@@ -131,7 +131,16 @@ final class ChatEngine {
     /// messages permanently undecryptable. lock()/unlock() serialize per conversation.
     private var syncLocked: Set<String> = []
     private var syncWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
-    private init() { loadStore() }
+    // Do NOT load the whole message store at init: that whole-file JSON decode used to run on
+    // the app-launch / chat-LIST critical path and is what made the list take seconds. The
+    // list now renders entirely from SQLite (LocalStore); the message store is decoded LAZILY
+    // on first access (opening a chat / a sync) via `ensureLoaded()`.
+    private init() {}
+
+    /// Lazily decode the message store on first access. Idempotent. Mutation critical sections
+    /// already force a fresh cross-process reload via `reloadSharedState()` / `reloadStore()`;
+    /// this covers the pure read/append paths so nothing touches an unloaded store.
+    private func ensureLoaded() { if !storeLoaded { loadStore() } }
 
     /// Drop every trace of the signed-in account from MEMORY.
     ///
@@ -178,7 +187,8 @@ final class ChatEngine {
     /// Control rows (reaction/delete signals) are kept in the store for dedup but never
     /// surfaced as bubbles.
     func messages(conversationId: String) -> [DecryptedMessage] {
-        (store[conversationId] ?? [])
+        ensureLoaded()
+        return (store[conversationId] ?? [])
             .filter { !($0.control ?? false) }
             .sorted { $0.createdAt < $1.createdAt }
     }
@@ -199,7 +209,8 @@ final class ChatEngine {
     /// nothing on the error path — whereas treating a tombstone as final would hide a
     /// perfectly decryptable message forever.
     func storedMessageIds(conversationId: String) -> Set<String> {
-        Set((store[conversationId] ?? []).filter { !$0.failed }.map { $0.id })
+        ensureLoaded()
+        return Set((store[conversationId] ?? []).filter { !$0.failed }.map { $0.id })
     }
 
     /// Append an already-decrypted group message into the shared store (dedup by id +
@@ -227,7 +238,8 @@ final class ChatEngine {
 
     /// One stored message by local id or server id (the push carries the server id).
     func storedMessage(id: String, conversationId: String) -> DecryptedMessage? {
-        (store[conversationId] ?? []).first { $0.id == id || $0.serverId == id }
+        ensureLoaded()
+        return (store[conversationId] ?? []).first { $0.id == id || $0.serverId == id }
     }
 
     // MARK: - Backup export / import (the plaintext payload of an encrypted backup)
@@ -236,13 +248,15 @@ final class ChatEngine {
     /// bytes are sealed under the backup master secret before they ever leave the
     /// device (see BackupManager), so the server only sees ciphertext.
     func exportStore() -> Data {
-        (try? JSONEncoder().encode(store)) ?? Data()
+        ensureLoaded()   // a backup must contain the whole history, not an empty just-launched store
+        return (try? JSONEncoder().encode(store)) ?? Data()
     }
 
     /// Merge a restored message store into the current one. Messages are keyed by id
     /// per conversation; existing entries win (never clobber a locally-decrypted
     /// message with a restored copy), restored-only messages are appended. Persists.
     func importStore(_ data: Data) {
+        ensureLoaded()   // merge INTO the real current store, never over an unloaded empty one
         guard let decoded = try? JSONDecoder().decode([String: [DecryptedMessage]].self, from: data) else { return }
         for (conv, msgs) in decoded {
             var arr = store[conv] ?? []
@@ -1034,6 +1048,7 @@ final class ChatEngine {
     // MARK: - Local message store (decrypt-once; plaintext at rest, file-protected)
 
     private func append(_ m: DecryptedMessage, to convId: String, persist doPersist: Bool = true) {
+        ensureLoaded()   // never mutate/persist an unloaded store (would clobber on-disk history)
         var arr = store[convId] ?? []
         guard !arr.contains(where: { $0.id == m.id }) else { return }
         arr.append(m)
@@ -1044,6 +1059,7 @@ final class ChatEngine {
     /// Insert `m`, or REPLACE an existing entry with the same id in place (keeps order).
     /// Used by sync so a tombstone that later decrypts is upgraded to the real message.
     private func replace(id: String, with m: DecryptedMessage, to convId: String) {
+        ensureLoaded()
         var arr = store[convId] ?? []
         if let i = arr.firstIndex(where: { $0.id == id }) { arr[i] = m } else { arr.append(m) }
         store[convId] = arr

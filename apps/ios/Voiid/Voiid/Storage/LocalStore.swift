@@ -35,7 +35,7 @@ enum LocalStore {
         let rows = db.read { database -> [Row] in
             try Row.fetchAll(database, sql: """
                 SELECT id, kind, title, peer_user_id, photo_url,
-                       last_message_at, unread_count
+                       last_message_at, unread_count, last_message_preview
                   FROM conversations
                  ORDER BY COALESCE(last_message_at, 0) DESC
                 """)
@@ -63,7 +63,7 @@ enum LocalStore {
                 type: kind == "group" ? .group : .direct,
                 title: title,
                 photoName: nil,
-                lastMessagePreview: nil,
+                lastMessagePreview: row["last_message_preview"],
                 lastMessageAt: lastAt.map { Date(timeIntervalSince1970: TimeInterval($0)) },
                 unreadCount: row["unread_count"] ?? 0,
                 peerUserId: peerUserId,
@@ -115,6 +115,27 @@ enum LocalStore {
 
     /// Insert a conversation created on this device, before the server knows about it.
     static func upsertConversation(_ c: VConversation) { saveConversations([c]) }
+
+    /// Denormalize the latest message's preview + time onto the conversation row, so the chat
+    /// LIST can render each chat's snippet and order WITHOUT loading the message store. Called
+    /// at message write time. `at` also bumps `last_message_at` (never backwards) so the list
+    /// re-sorts. A row that doesn't exist yet is created (a message can arrive before the
+    /// conversation sync does). Empty/whitespace previews are ignored (e.g. media/control).
+    static func updatePreview(conversationId: String, preview: String, at date: Date) {
+        guard !conversationId.isEmpty else { return }
+        let ts = Int64(date.timeIntervalSince1970)
+        db.write { database in
+            try database.execute(sql: """
+                INSERT INTO conversations (id, kind, last_message_at, last_message_preview, updated_at)
+                VALUES (?, 'direct', ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    last_message_preview = excluded.last_message_preview,
+                    last_message_at      = MAX(COALESCE(excluded.last_message_at, 0),
+                                               COALESCE(conversations.last_message_at, 0)),
+                    updated_at           = excluded.updated_at
+                """, arguments: [conversationId, ts, preview, ts])
+        }
+    }
 
     /// The direct conversation with a peer, if we have one.
     ///

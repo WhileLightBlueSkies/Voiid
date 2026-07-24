@@ -258,29 +258,39 @@ final class ChatStore: ObservableObject {
     /// text at all, making a cold launch look emptier than it actually is even though
     /// every message is right there on disk.
     private func applyLocalConversations() {
-        let convs = LocalStore.conversations().map { conv -> VConversation in
-            var conv = conv
-            guard let last = ChatEngine.shared.messages(conversationId: conv.id).last else { return conv }
-            if let media = last.media {
-                conv.lastMessagePreview = media.mime.hasPrefix("audio/") ? "Voice message" : "Photo"
-            } else if !last.text.isEmpty {
-                conv.lastMessagePreview = last.text
-            }
-            // A conversation whose row predates its messages (e.g. imported from the
-            // legacy blob) has no timestamp — take it from the message itself so the
-            // list still sorts sensibly.
-            if conv.lastMessageAt == nil { conv.lastMessageAt = last.createdAt }
-            return conv
-        }
+        // Render the list STRAIGHT from SQLite: rows + denormalized last-message preview +
+        // ordering, all from the conversations table. This touches NO message store — no whole
+        // JSON decode, no per-conversation message load, no sorting — so the list paints
+        // instantly and offline regardless of how much history exists. Each chat's full
+        // message array is decoded lazily by openConversation(...) when it's actually opened
+        // (WhatsApp-style). Previews stay fresh via bumpPreview at message-write time.
+        let convs = LocalStore.conversations()
         guard !convs.isEmpty else { return }
         directConversations = convs.filter { $0.type == .direct }
         groupConversations = convs.filter { $0.type == .group }
-        // Do NOT eagerly map every conversation's full message list here — that re-sorts
-        // every message AND runs reconcileLocationShare DB writes for each location row, per
-        // conversation, on the main thread, which is what made the list take seconds to paint.
-        // Each chat is mapped lazily by openConversation(...) when it's actually opened
-        // (WhatsApp-style). The list only needs the row + the last-message preview computed
-        // above — never the full decrypted array of every chat.
+        backfillPreviewsIfNeeded()
+    }
+
+    /// One-time backfill of last-message previews for chats that existed BEFORE previews were
+    /// denormalized (the column is new). Runs OFF the launch-critical path (a low-priority
+    /// task, after the list is already on screen) and only once — new activity keeps previews
+    /// fresh from then on. No-op for fresh installs (nothing to backfill).
+    private func backfillPreviewsIfNeeded() {
+        let flag = "voiid.previews.backfilled.v1"
+        guard !UserDefaults.standard.bool(forKey: flag) else { return }
+        let ids = (directConversations + groupConversations).map { $0.id }
+        Task(priority: .utility) {
+            for id in ids {
+                guard let last = ChatEngine.shared.messages(conversationId: id).last else { continue }
+                let preview = !last.text.isEmpty ? last.text
+                    : (last.media.map { $0.mime.hasPrefix("audio/") ? "Voice message" : "Photo" } ?? "")
+                if !preview.isEmpty {
+                    LocalStore.updatePreview(conversationId: id, preview: preview, at: last.createdAt)
+                }
+            }
+            UserDefaults.standard.set(true, forKey: flag)
+            applyLocalConversations()   // re-render with the freshly backfilled previews
+        }
     }
 
     /// Messages currently held for a conversation (decrypted, from the local store).
@@ -789,13 +799,17 @@ final class ChatStore: ObservableObject {
     }
 
     private func bumpPreview(_ convId: String, preview: String) {
+        let now = Date()
         if let i = directConversations.firstIndex(where: { $0.id == convId }) {
             directConversations[i].lastMessagePreview = preview
-            directConversations[i].lastMessageAt = .now
+            directConversations[i].lastMessageAt = now
         } else if let i = groupConversations.firstIndex(where: { $0.id == convId }) {
             groupConversations[i].lastMessagePreview = preview
-            groupConversations[i].lastMessageAt = .now
+            groupConversations[i].lastMessageAt = now
         }
+        // Persist the snippet + time so the chat LIST renders it (and orders by it) on the
+        // NEXT cold launch straight from SQLite — no message-store decode on the launch path.
+        if !preview.isEmpty { LocalStore.updatePreview(conversationId: convId, preview: preview, at: now) }
     }
 }
 

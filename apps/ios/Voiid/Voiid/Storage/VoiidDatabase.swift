@@ -206,6 +206,15 @@ final class VoiidDatabase {
         // (`v2_location`), appended independently; body in Storage/LocationSchema.swift.
         LocationSchema.register(&m)
 
+        // Denormalized last-message preview on the conversation row, so the chat LIST renders
+        // instantly from SQLite alone — it never has to load or decode the message store to
+        // show each chat's snippet. Kept fresh at write time (LocalStore.updatePreview).
+        m.registerMigration("v3_conversation_preview") { db in
+            try db.alter(table: "conversations") { t in
+                t.add(column: "last_message_preview", .text)
+            }
+        }
+
         return m
     }
 
