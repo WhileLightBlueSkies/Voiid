@@ -117,6 +117,9 @@ fun SettingsScreen(
                 }
                 if (bytes == null) "Couldn't read that photo." else {
                     val key = MediaService(TokenStore.get(context)).uploadProfilePhoto(bytes)
+                    // Local-first: cache the bytes we just uploaded under the key so the avatar
+                    // shows INSTANTLY everywhere — no presigned re-download (the 15–20s wait).
+                    MediaCache.putData(context, key, bytes)
                     session.updateProfile(photoUrl = key)   // local first
                     ProfileService(context).updateProfile(photoUrl = key)
                     null
@@ -482,9 +485,13 @@ fun ProfileAvatar(
     LaunchedEffect(photoUrl) {
         val key = photoUrl?.takeIf { it.isNotBlank() && !it.startsWith("http") } ?: return@LaunchedEffect
         if (bitmap != null) return@LaunchedEffect
+        // Local-first: disk (off main thread) → only then network. A photo you uploaded or
+        // saw once renders instantly and offline, no presigned re-download.
+        withContext(Dispatchers.IO) { MediaCache.image(context, key) }?.let { bitmap = it; return@LaunchedEffect }
         runCatching {
             val bytes = MediaService(TokenStore.get(context)).download(key)
-            val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return@runCatching
+            MediaCache.putData(context, key, bytes)   // persist the plaintext bytes
+            val bmp = withContext(Dispatchers.IO) { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) } ?: return@runCatching
             val ib: ImageBitmap = bmp.asImageBitmap()
             MediaCache.putImage(key, ib)
             bitmap = ib

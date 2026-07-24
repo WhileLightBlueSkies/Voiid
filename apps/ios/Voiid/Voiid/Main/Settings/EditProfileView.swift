@@ -296,6 +296,9 @@ struct EditProfileView: View {
         do {
             guard let data = try await item.loadTransferable(type: Data.self) else { return }
             let url = try await MediaService.shared.uploadProfilePhoto(data)
+            // Local-first: cache the bytes we just uploaded under the returned key so the
+            // avatar shows INSTANTLY everywhere — no presigned re-download (the 15–20s wait).
+            if let img = UIImage(data: data) { AvatarCache.store(img, data: data, forKey: url) }
             session.updateProfile(photoURL: url)
             _ = try await ProfileService.shared.updateProfile(photoURL: url)
             syncWarning = nil
