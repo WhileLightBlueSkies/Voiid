@@ -135,10 +135,12 @@ enum SessionTeardown {
             targets.append(URL(fileURLWithPath: db.path + "-wal"))
             targets.append(URL(fileURLWithPath: db.path + "-shm"))
             targets.append(base.appendingPathComponent("voiid_messages.json"))
+            // Phase 2: the per-conversation message shards live under messages/.
+            targets.append(base.appendingPathComponent("messages", isDirectory: true))
         }
 
         for url in targets {
-            try? fm.removeItem(at: url)
+            try? fm.removeItem(at: url)   // removeItem deletes a directory recursively
         }
     }
 
