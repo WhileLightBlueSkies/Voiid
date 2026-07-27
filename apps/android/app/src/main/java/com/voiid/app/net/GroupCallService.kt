@@ -168,6 +168,12 @@ object GroupCallManager {
             return
         }
         val e2eeOptions = runCatching {
+            // CRITICAL ORDERING: E2EEOptions() eagerly constructs a native FrameCryptor key
+            // provider (JNI, in liblkjingle_peerconnection). That native library is only loaded
+            // once LiveKit initializes WebRTC — so on the FIRST group call in a process,
+            // constructing E2EEOptions() BEFORE any LiveKit init threw UnsatisfiedLinkError and
+            // surfaced as "Couldn't set up encryption for this call." Force WebRTC init first.
+            io.livekit.android.LiveKit.init(ctx)
             E2EEOptions().also {
                 it.keyProvider.setSharedKey(keyB64, KEY_INDEX)
                 keyProvider = it.keyProvider

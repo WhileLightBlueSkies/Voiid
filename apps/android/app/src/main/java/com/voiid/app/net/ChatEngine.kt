@@ -103,8 +103,11 @@ class ChatEngine private constructor(context: Context) {
     data class LocationRef(
         val kind: String,                     // pin | live_start
         val shareId: String? = null,          // live_start only
-        val lat: Double,
-        val lon: Double,
+        // Nullable: a live_start from iOS carries NO initial coordinate (iOS shows the live
+        // marker purely from the WS fix stream). The bubble renders a "locating…" state until
+        // the first fix arrives. A pin always has coordinates.
+        val lat: Double? = null,
+        val lon: Double? = null,
         val acc: Double = 0.0,
         val label: String? = null,
         val expiresAt: Long? = null,          // millis — live_start only
@@ -936,10 +939,14 @@ class ChatEngine private constructor(context: Context) {
                 // Same key store LocationShareEngine reads, so the WS fix stream can decrypt
                 // this share once the app is foregrounded.
                 env.key?.let { SecurePrefs.open(appContext, "voiid_location").edit().putString(shareId, it).apply() }
-                val lat = env.lat ?: return; val lon = env.lon ?: return
+                // Do NOT require coordinates: an iOS live_start carries none (iOS drives the
+                // marker purely from the WS fix stream). Store the bubble anyway — it shows a
+                // "locating…" state until the first fix, then the live view (rehydrated from the
+                // server on chat open) drives the moving position. Dropping here was why an iOS
+                // live share never appeared on Android.
                 val expiresAt = env.expiresAt ?: (createdAt + 3_600_000L)
                 storeLocationInbound(conversationId, "loclive_$shareId", senderId,
-                    LocationRef(kind = "live_start", shareId = shareId, lat = lat, lon = lon,
+                    LocationRef(kind = "live_start", shareId = shareId, lat = env.lat, lon = env.lon,
                         acc = env.acc ?: 0.0, expiresAt = expiresAt, cadenceSeconds = env.cadence), createdAt)
             }
             "live_rekey" ->

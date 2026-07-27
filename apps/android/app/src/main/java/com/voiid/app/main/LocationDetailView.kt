@@ -42,6 +42,10 @@ import com.voiid.app.ui.theme.VoiidRadius
 fun LocationDetailView(ref: ChatEngine.LocationRef, onClose: () -> Unit) {
     val context = LocalContext.current
     BackHandler { onClose() }
+    // A live share with no fix yet has no coordinate — the bubble only opens this when it does,
+    // but guard for safety (and to satisfy the nullable type).
+    val lat = ref.lat ?: run { onClose(); return }
+    val lon = ref.lon ?: run { onClose(); return }
     Column(Modifier.fillMaxSize().background(VoiidColor.background)) {
         Row(
             Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 16.dp, vertical = 12.dp),
@@ -56,23 +60,23 @@ fun LocationDetailView(ref: ChatEngine.LocationRef, onClose: () -> Unit) {
         }
 
         // Interactive (non-lite) map, or the coordinate card when Maps isn't configured.
-        LocationMap(lat = ref.lat, lon = ref.lon, lite = false, modifier = Modifier.fillMaxWidth().weight(1f))
+        LocationMap(lat = lat, lon = lon, lite = false, modifier = Modifier.fillMaxWidth().weight(1f))
 
         Column(
             Modifier.fillMaxWidth().background(VoiidColor.surfaceCard).navigationBarsPadding().padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Text("%.5f, %.5f".format(ref.lat, ref.lon), style = VoiidFont.rounded(13, FontWeight.Medium), color = VoiidColor.textSecondary)
+            Text("%.5f, %.5f".format(lat, lon), style = VoiidFont.rounded(13, FontWeight.Medium), color = VoiidColor.textSecondary)
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                DetailAction(Icons.Default.Map, "Open in Maps", Modifier.weight(1f)) { openInMaps(context, ref.lat, ref.lon, ref.label) }
+                DetailAction(Icons.Default.Map, "Open in Maps", Modifier.weight(1f)) { openInMaps(context, lat, lon, ref.label) }
                 DetailAction(Icons.Default.Directions, "Directions", Modifier.weight(1f)) {
                     // Directions is just Open in Maps with a nav intent the system map app resolves.
                     runCatching {
                         context.startActivity(
-                            android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("google.navigation:q=${ref.lat},${ref.lon}"))
+                            android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("google.navigation:q=$lat,$lon"))
                                 .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
                         )
-                    }.onFailure { openInMaps(context, ref.lat, ref.lon, ref.label) }
+                    }.onFailure { openInMaps(context, lat, lon, ref.label) }
                 }
             }
         }
