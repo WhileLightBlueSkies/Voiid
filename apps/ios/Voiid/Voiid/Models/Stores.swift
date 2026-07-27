@@ -16,7 +16,9 @@ import Combine
 final class AppSession: ObservableObject {
     enum Route { case onboarding, main }
     @Published var route: Route
-    @Published var profile = DummyData.me
+    // Empty until the REAL profile loads (loadLocalProfile → refreshServerProfile). Never a
+    // dummy "You / +91 …" placeholder that could flash on screen before the real data arrives.
+    @Published var profile = VUser(id: "me", fullName: "", phoneNumber: "")
     /// Hides the bottom tab bar when a full-screen child (e.g. a chat) is open.
     @Published var hideTabBar = false
 
@@ -160,7 +162,7 @@ final class AppSession: ObservableObject {
         // user's name and photo on the next login.
         UserDefaults.standard.removeObject(forKey: Self.profileKey)
         UserDefaults.standard.removeObject(forKey: Self.verifiedPhoneKey)
-        profile = DummyData.me
+        profile = VUser(id: "me", fullName: "", phoneNumber: "")
         // In-memory stores outlive the session (they are @StateObjects on ContentView),
         // so they have to be told.
         NotificationCenter.default.post(name: .voiidDidSignOut, object: nil)

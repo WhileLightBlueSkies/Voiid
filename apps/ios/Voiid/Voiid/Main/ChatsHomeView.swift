@@ -201,14 +201,25 @@ struct ChatsHomeView: View {
                     let conversationId: String? = (isGroup && GroupEngine.shared.hasGroup(conversationId: conv.id))
                         ? conv.id
                         : nil
-                    activeCall = CallRequest(
-                        title: conv.title,
-                        isGroup: isGroup,
-                        members: isGroup ? DummyData.groupMembers : [],
-                        photoName: conv.photoName,
-                        kind: kind,
-                        peerUserId: isGroup ? nil : conv.peerUserId,
-                        conversationId: conversationId)
+                    // Load REAL members for the group-call tiles (never DummyData), then start.
+                    Task {
+                        var members: [VMember] = []
+                        if isGroup, let cm = try? await ChatService.shared.members(conversationId: conv.id) {
+                            let myId = TokenStore.shared.userId
+                            members = cm.map { m in
+                                VMember(id: m.userId, name: m.name ?? "VOIID user", phone: "", photoName: nil,
+                                        role: m.isAdmin ? .admin : .member, statusText: nil, isYou: m.userId == myId)
+                            }
+                        }
+                        activeCall = CallRequest(
+                            title: conv.title,
+                            isGroup: isGroup,
+                            members: members,
+                            photoName: conv.photoName,
+                            kind: kind,
+                            peerUserId: isGroup ? nil : conv.peerUserId,
+                            conversationId: conversationId)
+                    }
                 }
             }
             .fullScreenCover(item: $activeCall) { CallScreen(request: $0) }

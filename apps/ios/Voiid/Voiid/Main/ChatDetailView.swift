@@ -44,6 +44,9 @@ struct ChatDetailView: View {
     @State private var showBulkDelete = false
     @State private var forwardBulk = false
     @State private var activeCall: CallRequest?
+    /// REAL group members (from the server), used for @mentions and group-call member tiles.
+    /// Empty for 1:1 chats. Loaded on appear — never DummyData.
+    @State private var groupMembers: [VMember] = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -66,6 +69,16 @@ struct ChatDetailView: View {
         .onAppear {
             session.hideTabBar = true
             chat.openConversation(conversation)   // load cached + sync (fetch+decrypt) real messages
+        }
+        .task(id: conversation.id) {
+            // Real group members for @mentions + group-call tiles (never DummyData).
+            guard conversation.type == .group,
+                  let cm = try? await ChatService.shared.members(conversationId: conversation.id) else { return }
+            let myId = TokenStore.shared.userId
+            groupMembers = cm.map { m in
+                VMember(id: m.userId, name: m.name ?? "VOIID user", phone: "", photoName: nil,
+                        role: m.isAdmin ? .admin : .member, statusText: nil, isYou: m.userId == myId)
+            }
         }
         .task(id: conversation.id) {
             // Poll the conversation while it's open — fetch+decrypt new messages, send
@@ -189,7 +202,7 @@ struct ChatDetailView: View {
         activeCall = CallRequest(
             title: conversation.title,
             isGroup: isGroup,
-            members: isGroup ? DummyData.groupMembers : [],
+            members: isGroup ? groupMembers : [],
             photoName: conversation.photoName,
             kind: kind,
             peerUserId: isGroup ? nil : resolvedPeerUserId,
@@ -430,7 +443,7 @@ struct ChatDetailView: View {
     }
     private var mentionSuggestions: [VMember] {
         guard let q = mentionQuery else { return [] }
-        return DummyData.groupMembers.filter { !$0.isYou &&
+        return groupMembers.filter { !$0.isYou &&
             (q.isEmpty || $0.name.localizedCaseInsensitiveContains(q)) }
     }
     private func insertMention(_ m: VMember) {
