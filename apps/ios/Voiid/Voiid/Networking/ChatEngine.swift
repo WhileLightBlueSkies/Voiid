@@ -380,7 +380,10 @@ final class ChatEngine {
         NSLog("[VOIID] 🖼️ sendMedia uploaded → key=\(key)")
         // Local-first: cache the ORIGINAL plaintext under the R2 key so this sender renders
         // its own photo instantly and offline — it never downloads + decrypts what it just sent.
+        // MediaCache lives in the main app target only; sendMedia never runs inside the NSE.
+        #if !NSE_EXTENSION
         await MainActor.run { MediaCache.shared.setData(data, key) }
+        #endif
         let ref = MediaRef(mediaUrl: key, mime: mime,
                            key: enc.mediaKey.key, nonce: enc.mediaKey.nonce,
                            sha256: enc.mediaKey.ciphertextSha256)
