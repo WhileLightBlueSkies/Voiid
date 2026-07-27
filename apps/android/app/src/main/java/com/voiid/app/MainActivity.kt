@@ -129,6 +129,9 @@ class MainActivity : ComponentActivity() {
 
     private fun handleDeepLink(intent: Intent?) {
         intent?.getStringExtra(DeepLinkRouter.EXTRA_CONVERSATION_ID)?.let { DeepLinkRouter.open(it) }
+        intent?.getStringExtra(DeepLinkRouter.EXTRA_GROUP_CALL_CONVERSATION)?.let { conv ->
+            DeepLinkRouter.joinGroupCall(conv, intent.getStringExtra(DeepLinkRouter.EXTRA_GROUP_CALL_KIND) == "video")
+        }
     }
 
     /** Ensure mic/camera/notification permissions for 1:1 voice & video calls. */

@@ -159,6 +159,8 @@ final class ChatEngine {
     /// Must be called BEFORE the files are deleted, so nothing can flush in between.
     func wipeInMemoryState() {
         store.removeAll()
+        dirtyConversations.removeAll()   // nothing pending to flush for the account leaving
+        storeLoaded = false              // next login lazily loads the new account's shards
         sessions.removeAll()
         syncLocked.removeAll()
         // Resume anyone parked on a per-conversation mutex; leaking a continuation would
@@ -239,6 +241,11 @@ final class ChatEngine {
     /// Re-read the shared decrypted-message store from the app-group container. Used by
     /// GroupEngine to make the group path obey the same read-modify-write discipline the
     /// 1:1 path gets from `reloadSharedState`.
+    /// Re-read the WHOLE store from shards. The group path (GroupEngine.reloadSharedState)
+    /// uses this — its `withGroupState` wrapper is conversation-agnostic, so it reloads
+    /// everything rather than one shard. Groups still get the per-message write win (persist
+    /// touches only the changed shard); only their reload stays whole. The 1:1 path uses the
+    /// cheaper per-conversation `reloadSharedState(_:)`.
     func reloadStore() { loadStore() }
 
     /// One stored message by local id or server id (the push carries the server id).
@@ -268,6 +275,7 @@ final class ChatEngine {
             let existing = Set(arr.map { $0.id })
             for m in msgs where !existing.contains(m.id) { arr.append(m) }
             store[conv] = arr
+            markDirty(conv)
         }
         persist()
     }
@@ -290,7 +298,7 @@ final class ChatEngine {
         // Take the cross-process lock + reload shared state so an outbound send never
         // races the NSE's inbound decrypt over the same session keychain item.
         await CrossProcessLock.withLock {
-            reloadSharedState()
+            reloadSharedState(conversationId)
             await flushPendingLocked(conversationId: conversationId, peerUserId: peerUserId)
         }
     }
@@ -341,6 +349,7 @@ final class ChatEngine {
               let i = arr.firstIndex(where: { $0.id == localId }), !arr[i].failed else { return }
         arr[i].failed = true
         store[conversationId] = arr
+        markDirty(conversationId)
         persist()
     }
 
@@ -358,6 +367,7 @@ final class ChatEngine {
         arr[i].failed = false
         arr[i].serverId = serverId
         store[conversationId] = arr
+        markDirty(conversationId)
         persist()
     }
 
@@ -380,7 +390,10 @@ final class ChatEngine {
         NSLog("[VOIID] 🖼️ sendMedia uploaded → key=\(key)")
         // Local-first: cache the ORIGINAL plaintext under the R2 key so this sender renders
         // its own photo instantly and offline — it never downloads + decrypts what it just sent.
+        // MediaCache lives in the main app target only; sendMedia never runs inside the NSE.
+        #if !NSE_EXTENSION
         await MainActor.run { MediaCache.shared.setData(data, key) }
+        #endif
         let ref = MediaRef(mediaUrl: key, mime: mime,
                            key: enc.mediaKey.key, nonce: enc.mediaKey.nonce,
                            sha256: enc.mediaKey.ciphertextSha256)
@@ -392,7 +405,7 @@ final class ChatEngine {
         // Ratchet-mutating section under the cross-process lock (the slow R2 upload
         // above ran OUTSIDE the lock so we don't stall the NSE on a large upload).
         return try await CrossProcessLock.withLock {
-            reloadSharedState()
+            reloadSharedState(conversationId)
             let messages = try await encryptFanout(envelopeData, peerUserId: peerUserId)
             // 4. Send the per-device bundle, tagging it as media + the opaque ref for the server.
             let res: SendResponse = try await api.request(
@@ -422,7 +435,7 @@ final class ChatEngine {
         let data = try JSONEncoder().encode(
             MessageReactionEnvelope(target: targetServerId, emoji: emoji))
         try await CrossProcessLock.withLock {
-            reloadSharedState()
+            reloadSharedState(conversationId)
             let messages = try await encryptFanout(data, peerUserId: peerUserId)
             _ = try await api.request(
                 "POST", "messages/send",
@@ -442,7 +455,7 @@ final class ChatEngine {
                                conversationId: String, peerUserId: String) async throws {
         let data = try JSONEncoder().encode(MessageDeleteEnvelope(target: targetServerId))
         try await CrossProcessLock.withLock {
-            reloadSharedState()
+            reloadSharedState(conversationId)
             let messages = try await encryptFanout(data, peerUserId: peerUserId)
             _ = try await api.request(
                 "POST", "messages/send",
@@ -462,7 +475,7 @@ final class ChatEngine {
                                        quotedPreview: quotedPreview, quotedSender: quotedSender)
         let data = try JSONEncoder().encode(env)
         return try await CrossProcessLock.withLock {
-            reloadSharedState()
+            reloadSharedState(conversationId)
             let messages = try await encryptFanout(data, peerUserId: peerUserId)
             let res: SendResponse = try await api.request(
                 "POST", "messages/send",
@@ -487,7 +500,7 @@ final class ChatEngine {
         let env = ForwardedMediaEnvelope(media: ref, caption: caption)
         let data = try JSONEncoder().encode(env)
         return try await CrossProcessLock.withLock {
-            reloadSharedState()
+            reloadSharedState(conversationId)
             let messages = try await encryptFanout(data, peerUserId: peerUserId)
             let res: SendResponse = try await api.request(
                 "POST", "messages/send",
@@ -514,6 +527,7 @@ final class ChatEngine {
         if let emoji { map[userId] = emoji } else { map.removeValue(forKey: userId) }
         arr[i].reactions = map.isEmpty ? nil : map
         store[convId] = arr
+        markDirty(convId)
         persist()
     }
 
@@ -526,6 +540,7 @@ final class ChatEngine {
         arr[i].media = nil
         arr[i].reactions = nil
         store[convId] = arr
+        markDirty(convId)
         persist()
     }
 
@@ -538,7 +553,7 @@ final class ChatEngine {
                       displayText: String, rendersBubble: Bool) async throws {
         let plaintext = Data(plaintextJSON.utf8)
         try await CrossProcessLock.withLock {
-            reloadSharedState()
+            reloadSharedState(conversationId)
             let messages = try await encryptFanout(plaintext, peerUserId: peerUserId)
             let res: SendResponse = try await api.request(
                 "POST", "messages/send",
@@ -578,7 +593,7 @@ final class ChatEngine {
         // app-group lock across the whole fetch→decrypt→persist span and re-read shared
         // state first, so the app and the NSE can never advance the same ratchet at once.
         return try await CrossProcessLock.withLock {
-            reloadSharedState()
+            reloadSharedState(conversationId)
             return try await runSyncLocked(conversationId: conversationId, peerUserId: peerUserId)
         }
     }
@@ -588,10 +603,19 @@ final class ChatEngine {
     /// app-group file, the identity to pick up one-time-key consumption). MUST be called
     /// at the top of every cross-process-locked critical section — otherwise a stale
     /// cached session/store from before the OTHER process's write would double-decrypt.
-    private func reloadSharedState() {
+    /// Refresh only the cross-process CRYPTO state (sessions + identity). Used by operations
+    /// that don't touch a specific conversation's message store (e.g. story key crypto).
+    private func reloadCryptoState() {
         sessions.removeAll()                    // force candidateSessions to re-read keychain
-        loadStore()                             // pick up messages the NSE/app decrypted
         E2EManager.shared.reloadIdentity()      // pick up one-time-key consumption
+    }
+
+    /// Full per-conversation reload for a conversation critical section: crypto state PLUS
+    /// re-reading just THIS conversation's shard (picking up NSE writes to it), instead of the
+    /// old whole-store re-decode on every sync.
+    private func reloadSharedState(_ conversationId: String) {
+        reloadCryptoState()
+        reloadConversationShard(conversationId)
     }
 
     // MARK: - Notification Service Extension entry point
@@ -631,7 +655,7 @@ final class ChatEngine {
         let decrypted: [DecryptedMessage]
         do {
             decrypted = try await CrossProcessLock.withLock {
-                reloadSharedState()
+                reloadSharedState(conversationId)
                 // Inbound-only: the NSE must NEVER send, so it skips flushPending.
                 return try await decryptInboundLocked(conversationId: conversationId, peerUserId: peerUserId)
             }
@@ -860,6 +884,7 @@ final class ChatEngine {
                         if arr[i].deliveredAt == nil { arr[i].deliveredAt = now }
                     }
                     store[cid] = arr
+                    markDirty(cid)
                     persist()
                 }
                 return cid
@@ -1069,6 +1094,7 @@ final class ChatEngine {
         guard !arr.contains(where: { $0.id == m.id }) else { return }
         arr.append(m)
         store[convId] = arr
+        markDirty(convId)
         if doPersist { persist() }
     }
 
@@ -1079,81 +1105,134 @@ final class ChatEngine {
         var arr = store[convId] ?? []
         if let i = arr.firstIndex(where: { $0.id == id }) { arr[i] = m } else { arr.append(m) }
         store[convId] = arr
+        markDirty(convId)
     }
 
-    /// The decrypted-message store lives in the APP-GROUP container so the NSE (a
-    /// separate process) reads/appends the SAME store — this is what makes decrypt-once
-    /// work across processes. Falls back to the app-private Application Support dir only
-    /// if the app-group container is somehow unavailable (mis-provisioned build).
+    // MARK: - Phase 2: per-conversation SHARDED storage
+    //
+    // The store used to be ONE `voiid_messages.json` holding every conversation. That file was
+    // fully re-decoded on EVERY sync (reloadSharedState) and fully re-encoded on EVERY message
+    // (persist) — O(entire history) work, forever, and the scalability wall. It's now sharded:
+    // one file per conversation under `messages/<convId>.json`. The whole set is still held in
+    // memory (loaded once — no per-conversation lazy-load edge cases, so applyReceipt/export
+    // still see everything), but:
+    //   • persist() writes ONLY the conversations we changed this turn (the dirty set), and
+    //   • reloadSharedState(convId) re-reads ONLY that one conversation's shard.
+    // So the recurring cost is now O(one conversation), not O(all history).
+    //
+    // SAFETY: persist() writes only DIRTY shards, so a stale in-memory copy of a conversation
+    // the NSE wrote concurrently is NEVER written back over it — it's re-read the next time we
+    // touch it. The legacy monolithic blob is migrated once and kept (never deleted) as a
+    // rollback fallback. All I/O is pure Foundation so it compiles in the NSE too.
+
+    /// The legacy monolithic store (kept for migration + rollback), app-group first.
     private var storeURL: URL {
         if let shared = AppGroup.messageStoreURL { return shared }
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("voiid_messages.json")
     }
-
-    /// Legacy app-private store path (pre-app-group). Migrated into the shared
-    /// container once so existing installs keep their history.
     private var legacyStoreURL: URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return dir.appendingPathComponent("voiid_messages.json")
     }
 
-    /// Set once a load has run, so a DECODE FAILURE never lets an empty store overwrite
-    /// real messages on the next persist(). Without this, one incompatible-JSON load wiped
-    /// the whole history the next time anything was saved.
+    /// `<app-group>/messages/` — one JSON shard per conversation.
+    private var messagesDir: URL {
+        let base = AppGroup.containerURL
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let dir = base.appendingPathComponent("messages", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+    /// A conversation id is a UUID (filesystem-safe), so it's a fine file name directly.
+    private func shardURL(_ convId: String) -> URL {
+        messagesDir.appendingPathComponent("\(convId).json")
+    }
+
+    /// Conversations mutated since the last persist — the ONLY shards persist() rewrites.
+    private var dirtyConversations: Set<String> = []
+    private func markDirty(_ convId: String) { dirtyConversations.insert(convId) }
+
+    /// Set once a load has run, so a DECODE FAILURE never lets an empty store overwrite real
+    /// messages on the next persist().
     private var storeLoaded = false
 
     private func loadStore() {
-        // One-time migration: seed the shared store from the legacy app-private file.
+        // Migrate the legacy app-private blob into the app-group blob path once (unchanged).
         if let shared = AppGroup.messageStoreURL,
            !FileManager.default.fileExists(atPath: shared.path),
            FileManager.default.fileExists(atPath: legacyStoreURL.path) {
             try? FileManager.default.copyItem(at: legacyStoreURL, to: shared)
         }
-        guard FileManager.default.fileExists(atPath: storeURL.path) else {
-            NSLog("[VOIID] 📂 message store: no file yet (fresh) at \(storeURL.path)")
-            storeLoaded = true
+
+        let fm = FileManager.default
+        let shardFiles = (try? fm.contentsOfDirectory(at: messagesDir, includingPropertiesForKeys: nil))?
+            .filter { $0.pathExtension == "json" } ?? []
+
+        // ONE-TIME migration: no shards yet but the monolithic blob exists → split it into
+        // shards. Keep the blob (do not delete) so a rollback to pre-shard code still works.
+        if shardFiles.isEmpty, fm.fileExists(atPath: storeURL.path) {
+            if let data = try? Data(contentsOf: storeURL),
+               let decoded = try? JSONDecoder().decode([String: [DecryptedMessage]].self, from: data) {
+                store = decoded
+                for (conv, _) in decoded { persistShard(conv) }
+                storeLoaded = true
+                NSLog("[VOIID] 📂 migrated \(decoded.count) conversations from blob → shards")
+                return
+            }
+            // Blob present but unparseable — do NOT mark loaded (never clobber it).
+            NSLog("[VOIID] ❌ message store DECODE FAILED — refusing to overwrite it")
             return
         }
-        do {
-            let data = try Data(contentsOf: storeURL)
-            let decoded = try JSONDecoder().decode([String: [DecryptedMessage]].self, from: data)
-            store = decoded
-            let total = decoded.values.reduce(0) { $0 + $1.count }
-            NSLog("[VOIID] 📂 message store LOADED: \(decoded.count) conversations, \(total) messages")
-            storeLoaded = true
-        } catch {
-            // DO NOT mark loaded — a persist() must not clobber the on-disk file we failed
-            // to parse. Surface it loudly instead of silently starting empty.
-            NSLog("[VOIID] ❌ message store DECODE FAILED — refusing to overwrite it: \(error)")
+
+        // Normal path: load every shard into memory.
+        var loaded: [String: [DecryptedMessage]] = [:]
+        for url in shardFiles {
+            let conv = url.deletingPathExtension().lastPathComponent
+            if let data = try? Data(contentsOf: url),
+               let msgs = try? JSONDecoder().decode([DecryptedMessage].self, from: data) {
+                loaded[conv] = msgs
+            }
+        }
+        store = loaded
+        storeLoaded = true
+        let total = loaded.values.reduce(0) { $0 + $1.count }
+        NSLog("[VOIID] 📂 message store LOADED (sharded): \(loaded.count) conversations, \(total) messages")
+    }
+
+    /// Re-read ONE conversation's shard from disk into memory — the cheap per-op reload that
+    /// picks up whatever the NSE decrypted for that conversation, without touching the rest.
+    private func reloadConversationShard(_ convId: String) {
+        guard storeLoaded else { loadStore(); return }
+        let url = shardURL(convId)
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        if let data = try? Data(contentsOf: url),
+           let msgs = try? JSONDecoder().decode([DecryptedMessage].self, from: data) {
+            store[convId] = msgs
         }
     }
 
     private func persist() {
-        // Never let an unloaded/failed store overwrite good data on disk.
         guard storeLoaded else {
             NSLog("[VOIID] ⚠️ persist skipped — store not loaded (would clobber on-disk history)")
             return
         }
-        guard let data = try? JSONEncoder().encode(store) else { return }
-        // Protection class MUST match the keychain items this store is kept in step with.
-        // The identity/session/MLS pickles are `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`
-        // (E2EManager), so the NSE can reach them on a locked device — but with
-        // `.completeFileProtection` this file was unreadable in exactly that state. The NSE
-        // would then advance the ratchet in the keychain while failing to record the message
-        // here, and a failed LOAD is the dangerous half: `store` reads back empty and the next
-        // write persists that empty store over real history.
-        //
-        // `.completeFileProtectionUntilFirstUserAuthentication` keeps the file encrypted at
-        // rest until the first unlock after boot, which is the strongest class that still
-        // lets a background extension do its job. Same class as the SQLite database.
+        // Write ONLY the conversations changed this turn.
+        for conv in dirtyConversations { persistShard(conv) }
+        dirtyConversations.removeAll()
+    }
+
+    /// Atomically write one conversation's shard, with the same file-protection class as the
+    /// keychain items it's kept in step with (readable after first unlock, so the NSE works).
+    private func persistShard(_ convId: String) {
+        let arr = store[convId] ?? []
+        guard let data = try? JSONEncoder().encode(arr) else { return }
         do {
-            try data.write(to: storeURL,
+            try data.write(to: shardURL(convId),
                            options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         } catch {
-            // A silently-failing write is exactly "nothing stores locally". Make it visible.
-            NSLog("[VOIID] ❌ message store WRITE FAILED at \(storeURL.path): \(error)")
+            NSLog("[VOIID] ❌ shard WRITE FAILED conv=\(convId): \(error)")
         }
     }
 
@@ -1345,7 +1424,7 @@ final class ChatEngine {
     func encryptStoryKeys(_ envelope: Data, audienceUserIds: [String],
                           includeOwnDevices: Bool) async throws -> [(deviceId: String, ciphertext: String)] {
         return try await CrossProcessLock.withLock {
-            reloadSharedState()
+            reloadCryptoState()
             let targets = try await resolveStoryTargets(audienceUserIds, includeOwnDevices: includeOwnDevices)
             let out = try await fanOut(envelope, targets: targets)
             return out.map { ($0.recipient_device_id, $0.ciphertext) }
@@ -1382,7 +1461,7 @@ final class ChatEngine {
                               authorDeviceId: String?) async -> Data? {
         guard let wire = decodeWire(ciphertextB64) else { return nil }
         return await CrossProcessLock.withLock {
-            reloadSharedState()
+            reloadCryptoState()
             do {
                 let plain = try await decryptInbound(wire, peerUserId: authorUserId, senderDeviceId: authorDeviceId)
                 return Data(plain.utf8)
@@ -1400,7 +1479,7 @@ final class ChatEngine {
     func decryptStoryReceipt(ciphertextB64: String, audienceUserIds: [String]) async -> Data? {
         guard let wire = decodeWire(ciphertextB64) else { return nil }
         return await CrossProcessLock.withLock {
-            reloadSharedState()
+            reloadCryptoState()
             for uid in audienceUserIds {
                 guard let devs: DevicesResponse = try? await api.request("GET", "devices/\(uid)") else { continue }
                 for d in devs.devices {
@@ -1421,7 +1500,7 @@ final class ChatEngine {
                         conversationId: String, peerUserId: String) async throws -> DecryptedMessage {
         let data = try JSONEncoder().encode(envelope)
         return try await CrossProcessLock.withLock {
-            reloadSharedState()
+            reloadSharedState(conversationId)
             let messages = try await encryptFanout(data, peerUserId: peerUserId)
             let res: SendResponse = try await api.request(
                 "POST", "messages/send",

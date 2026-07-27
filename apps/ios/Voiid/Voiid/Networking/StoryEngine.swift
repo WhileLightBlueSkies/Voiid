@@ -94,7 +94,11 @@ final class StoryEngine: ObservableObject {
     private func syncFeed() async {
         guard let deviceId = myDeviceId else { return }
         let rows: [StoryService.FeedStory]
-        do { rows = try await svc.feed(deviceId: deviceId) }
+        // RECOVERY: with no live stories held locally, re-fetch already-delivered rows too, so a
+        // lost local DB (or a past dropped key) still recovers the live feed instead of staying
+        // empty — the deliver-once feed would otherwise return nothing.
+        let includeDelivered = StoryStore.liveContexts().isEmpty
+        do { rows = try await svc.feed(deviceId: deviceId, includeDelivered: includeDelivered) }
         catch { NSLog("[VOIID] story feed fetch failed: \(error)"); return }
 
         for row in rows {

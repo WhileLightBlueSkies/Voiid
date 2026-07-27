@@ -81,6 +81,16 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             completionHandler()
             return
         }
+        // Tapped a "join group call" notification → join the LiveKit room. A group call has no
+        // single callee, so it's a joinable invite (not a CallKit 1:1 report).
+        if userInfo["type"] as? String == "group_call",
+           let conversationId = userInfo["conversation_id"] as? String {
+            let isVideo = (userInfo["call_kind"] as? String) == "video"
+            Task { await GroupCallService.shared.join(conversationId: conversationId,
+                                                      title: "Group call", isVideo: isVideo) }
+            completionHandler()
+            return
+        }
         if let conversationId = userInfo["conversation_id"] as? String {
             NotificationCenter.default.post(name: .voiidOpenConversation, object: conversationId)
         }

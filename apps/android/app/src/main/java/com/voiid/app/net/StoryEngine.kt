@@ -117,9 +117,19 @@ class StoryEngine private constructor(context: Context) {
      *  network call throws to the caller but never touches the already-stored feed. */
     suspend fun syncFeed(): SyncResult {
         val myId = tokens.userId
+        // The address book loads ASYNCHRONOUSLY on Android; without awaiting it the "known
+        // author" gate below runs against an empty directory and DROPS every story (the
+        // "Android stories nobody can see" bug — the drop is permanent because the feed is
+        // deliver-once). iOS loads the directory synchronously, so it never hit this.
+        UserDirectory.ready(appContext)
         val existing = runCatching { StoryLocalStore.liveStories(appContext).map { it.id }.toHashSet() }
             .getOrDefault(HashSet())
-        val rows = service.feed(e2e.deviceId)
+        // RECOVERY: if we hold no live stories at all, re-fetch with include_delivered so a
+        // device whose keys were already marked delivered — a lost local DB, OR a story dropped
+        // by the pre-fix async-directory bug — still gets its live feed back. The normal
+        // (deliver-once) pass would return nothing in that case and the feed would stay empty.
+        val includeDelivered = existing.isEmpty()
+        val rows = service.feed(e2e.deviceId, includeDelivered)
         val fresh = mutableListOf<Story>()
         for (row in rows) {
             if (existing.contains(row.story_id)) continue    // decrypt-once dedup
@@ -154,6 +164,12 @@ class StoryEngine private constructor(context: Context) {
         //    Our OWN stories are always allowed; a story from someone we have never seen is dropped
         //    silently so strangers can't push media into the feed.
         val isMine = env.author_id == myId
+        // Author must be someone we actually know. Note: we only reach here AFTER successfully
+        // decrypting the broadcast key (decryptBroadcast != null), which itself REQUIRES an
+        // established E2E session with the author — a stranger can't forge that. So the
+        // directory check is a secondary filter, not the only guard; with the directory now
+        // loaded (awaited in syncFeed) it passes for real contacts and only drops genuine
+        // strangers who somehow hold a session.
         if (!isMine && UserDirectory.user(env.author_id) == null) {
             android.util.Log.w("VOIID", "🚫 story from unknown author dropped id=${env.story_id}")
             return null

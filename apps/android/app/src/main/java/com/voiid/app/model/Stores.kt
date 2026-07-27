@@ -321,6 +321,8 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                 // Use the server id once known so receipts can match it.
                 id = d.serverId ?: d.id, conversationId = convId,
                 senderId = if (d.isMine) "me" else d.senderId,
+                // Sender's real display name for the group bubble (empty stayed hidden before).
+                senderName = if (d.isMine) "" else com.voiid.app.store.UserDirectory.displayName(d.senderId),
                 kind = kind, text = d.text, createdAt = d.createdAt,
                 status = status, isMine = d.isMine, mediaRef = d.media, location = d.location,
                 reaction = reaction, deletedForEveryone = d.deletedForEveryone, forwarded = d.forwarded,

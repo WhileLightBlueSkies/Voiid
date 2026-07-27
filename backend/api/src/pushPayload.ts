@@ -96,7 +96,10 @@ export function buildApnsAlertPayload(meta?: PushMeta): Record<string, unknown> 
   // fetched and decrypted the envelope LOCALLY, so the only string Apple ever sees is
   // this one, identical for every story from every author.
   const title =
-    meta?.type === 'call' ? 'Incoming call' : meta?.type === 'story' ? 'New update' : 'New message';
+    meta?.type === 'call' ? 'Incoming call'
+      : meta?.type === 'group_call' ? 'Group call · tap to join'
+      : meta?.type === 'story' ? 'New update'
+      : 'New message';
   const payload: Record<string, unknown> = {
     aps: {
       'mutable-content': 1,

@@ -279,10 +279,10 @@ object LocationShareEngine {
                     }
                     inboundViews[shareId] = LiveShareView(shareId, ownerUserId, expiresAt, cadence, initial, endedExplicit = false)
                 }
-                if (env.lat != null && env.lon != null) {
-                    val ref = ChatEngine.LocationRef(kind = LocationEnvelope.K_LIVE_START, shareId = shareId, lat = env.lat, lon = env.lon, acc = env.acc ?: 0.0, expiresAt = expiresAt, cadenceSeconds = cadence)
-                    chat.storeLocationInbound(conversationId, "loclive_$shareId", ownerUserId, ref, createdAt)
-                }
+                // Always store the bubble — even without an initial coordinate (an iOS
+                // live_start carries none). It shows "locating…" until the fix stream lands.
+                val ref = ChatEngine.LocationRef(kind = LocationEnvelope.K_LIVE_START, shareId = shareId, lat = env.lat, lon = env.lon, acc = env.acc ?: 0.0, expiresAt = expiresAt, cadenceSeconds = cadence)
+                chat.storeLocationInbound(conversationId, "loclive_$shareId", ownerUserId, ref, createdAt)
             }
             LocationEnvelope.K_LIVE_REKEY -> {
                 if (shareId == null) return

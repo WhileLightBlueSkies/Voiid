@@ -103,8 +103,11 @@ class ChatEngine private constructor(context: Context) {
     data class LocationRef(
         val kind: String,                     // pin | live_start
         val shareId: String? = null,          // live_start only
-        val lat: Double,
-        val lon: Double,
+        // Nullable: a live_start from iOS carries NO initial coordinate (iOS shows the live
+        // marker purely from the WS fix stream). The bubble renders a "locating…" state until
+        // the first fix arrives. A pin always has coordinates.
+        val lat: Double? = null,
+        val lon: Double? = null,
         val acc: Double = 0.0,
         val label: String? = null,
         val expiresAt: Long? = null,          // millis — live_start only
@@ -166,6 +169,8 @@ class ChatEngine private constructor(context: Context) {
     fun wipeInMemoryState() {
         sessions.clear()
         store.clear()
+        dirtyConversations.clear()
+        storeLoaded = false   // next login lazily loads the new account's shards
     }
 
     /** Locally-stored (already decrypted) messages for a conversation, oldest-first. */
@@ -227,6 +232,7 @@ class ChatEngine private constructor(context: Context) {
         val i = arr.indexOfFirst { it.id == localId }
         if (i < 0 || arr[i].failed) return
         arr[i] = arr[i].copy(failed = true)
+        markDirty(conversationId)
         persist()
     }
 
@@ -242,6 +248,7 @@ class ChatEngine private constructor(context: Context) {
         val i = arr.indexOfFirst { it.id == localId }
         if (i < 0) return
         arr[i] = arr[i].copy(pending = false, failed = false, serverId = serverId)
+        markDirty(conversationId)
         persist()
     }
 
@@ -400,6 +407,7 @@ class ChatEngine private constructor(context: Context) {
                     val delivered = arr[i].deliveredAt ?: if (status == "delivered" || status == "read") now else null
                     val read = arr[i].readAt ?: if (status == "read") now else null
                     arr[i] = arr[i].copy(deliveryStatus = status, deliveredAt = delivered, readAt = read)
+                    markDirty(cid)
                     persist()
                 }
                 return cid
@@ -777,6 +785,7 @@ class ChatEngine private constructor(context: Context) {
         val map = (arr[i].reactions ?: emptyMap()).toMutableMap()
         if (emoji != null) map[fromUserId] = emoji else map.remove(fromUserId)
         arr[i] = arr[i].copy(reactions = map.ifEmpty { null })
+        markDirty(convId)
         persist()
     }
     fun applyDeleteForEveryone(convId: String, target: String) {
@@ -784,6 +793,7 @@ class ChatEngine private constructor(context: Context) {
         val i = arr.indexOfFirst { it.serverId == target || it.id == target }
         if (i < 0) return
         arr[i] = arr[i].copy(deletedForEveryone = true, text = "", media = null, reactions = null)
+        markDirty(convId)
         persist()
     }
 
@@ -936,10 +946,14 @@ class ChatEngine private constructor(context: Context) {
                 // Same key store LocationShareEngine reads, so the WS fix stream can decrypt
                 // this share once the app is foregrounded.
                 env.key?.let { SecurePrefs.open(appContext, "voiid_location").edit().putString(shareId, it).apply() }
-                val lat = env.lat ?: return; val lon = env.lon ?: return
+                // Do NOT require coordinates: an iOS live_start carries none (iOS drives the
+                // marker purely from the WS fix stream). Store the bubble anyway — it shows a
+                // "locating…" state until the first fix, then the live view (rehydrated from the
+                // server on chat open) drives the moving position. Dropping here was why an iOS
+                // live share never appeared on Android.
                 val expiresAt = env.expiresAt ?: (createdAt + 3_600_000L)
                 storeLocationInbound(conversationId, "loclive_$shareId", senderId,
-                    LocationRef(kind = "live_start", shareId = shareId, lat = lat, lon = lon,
+                    LocationRef(kind = "live_start", shareId = shareId, lat = env.lat, lon = env.lon,
                         acc = env.acc ?: 0.0, expiresAt = expiresAt, cadenceSeconds = env.cadence), createdAt)
             }
             "live_rekey" ->
@@ -970,6 +984,7 @@ class ChatEngine private constructor(context: Context) {
         val arr = store.getOrPut(convId) { mutableListOf() }
         if (arr.any { it.id == m.id }) return
         arr.add(m)
+        markDirty(convId)
         if (persist) persist()
     }
 
@@ -980,6 +995,7 @@ class ChatEngine private constructor(context: Context) {
         val arr = store.getOrPut(convId) { mutableListOf() }
         val i = arr.indexOfFirst { it.id == m.id }
         if (i >= 0) arr[i] = m else arr.add(m)
+        markDirty(convId)
     }
 
     // The message store is decoded LAZILY on first access, not at init — that whole-file JSON
@@ -990,27 +1006,52 @@ class ChatEngine private constructor(context: Context) {
     /** Decode the store on first access. Idempotent. */
     private fun ensureLoaded() { if (!storeLoaded) loadStore() }
 
+    // PHASE 2: per-conversation SHARDED storage. The store used to be one voiid_messages.json
+    // re-encoded IN FULL on every message (O(entire history), the scalability wall). It's now
+    // one file per conversation under messages/<convId>.json, and persist() rewrites ONLY the
+    // conversations changed this turn (the dirty set). The whole set is still held in memory
+    // (single process; no cross-process reload), so reads/dedup are unchanged. The legacy blob
+    // is migrated once and KEPT for rollback.
+    private val shardSerializer = ListSerializer(DecryptedMessage.serializer())
+    private val messagesDir = java.io.File(appContext.filesDir, "messages").apply { mkdirs() }
+    private fun shardFile(convId: String) = java.io.File(messagesDir, "$convId.json")
+    private val dirtyConversations = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    private fun markDirty(convId: String) { dirtyConversations.add(convId) }
+
     private fun loadStore() {
-        // Prefer the file; fall back ONCE to the old encrypted-prefs location to migrate.
-        val raw = runCatching { if (storeFile.exists()) storeFile.readText() else null }.getOrNull()
-            ?: prefs.getString("message_store", null)
-        if (raw.isNullOrBlank()) {
-            android.util.Log.w("VOIID", "📂 loadStore: EMPTY (no persisted messages — fresh install)")
-            storeLoaded = true   // a fresh empty store IS a valid loaded state (safe to persist)
+        val shards = messagesDir.listFiles { f -> f.extension == "json" }?.toList() ?: emptyList()
+
+        // ONE-TIME migration: no shards yet but the legacy blob (or old prefs) exists → split
+        // it into shards. Keep the blob (don't delete) so a rollback to pre-shard code works.
+        if (shards.isEmpty()) {
+            val raw = runCatching { if (storeFile.exists()) storeFile.readText() else null }.getOrNull()
+                ?: prefs.getString("message_store", null)
+            if (raw.isNullOrBlank()) {
+                android.util.Log.w("VOIID", "📂 loadStore: EMPTY (fresh install)")
+                storeLoaded = true
+                return
+            }
+            runCatching {
+                ApiClient.json.decodeFromString(storeSerializer, raw).forEach { (k, v) -> store[k] = v.toMutableList() }
+            }.onSuccess {
+                storeLoaded = true
+                store.keys.forEach { persistShard(it) }   // write each conversation as a shard
+                android.util.Log.i("VOIID", "📂 migrated ${store.size} convs from blob → shards")
+            }.onFailure {
+                android.util.Log.e("VOIID", "📂 loadStore FAILED to parse blob", it)   // don't mark loaded
+            }
             return
         }
-        runCatching {
-            ApiClient.json.decodeFromString(storeSerializer, raw).forEach { (k, v) ->
-                store[k] = v.toMutableList()
-            }
-        }.onSuccess {
-            android.util.Log.i("VOIID", "📂 loadStore: restored ${store.values.sumOf { it.size }} msgs across ${store.size} convs")
-            storeLoaded = true
-            if (!storeFile.exists()) persist()   // migrate old prefs → file
-        }.onFailure {
-            // Do NOT mark loaded — a persist() must not clobber a file we failed to parse.
-            android.util.Log.e("VOIID", "📂 loadStore FAILED to parse", it)
+
+        // Normal path: load every shard.
+        shards.forEach { f ->
+            val conv = f.nameWithoutExtension
+            runCatching { ApiClient.json.decodeFromString(shardSerializer, f.readText()) }
+                .onSuccess { store[conv] = it.toMutableList() }
+                .onFailure { android.util.Log.e("VOIID", "📂 shard parse FAILED conv=$conv", it) }
         }
+        storeLoaded = true
+        android.util.Log.i("VOIID", "📂 loadStore (sharded): ${store.values.sumOf { it.size }} msgs across ${store.size} convs")
     }
 
     private fun persist() {
@@ -1018,14 +1059,21 @@ class ChatEngine private constructor(context: Context) {
             android.util.Log.w("VOIID", "📂 persist skipped — store not loaded")
             return
         }
-        val raw = ApiClient.json.encodeToString(storeSerializer, store.mapValues { it.value.toList() })
-        // Atomic write: tmp file then rename, so a crash mid-write can't corrupt the store.
+        // Write ONLY the conversations changed this turn.
+        val snapshot = synchronized(dirtyConversations) { dirtyConversations.toList().also { dirtyConversations.clear() } }
+        for (conv in snapshot) persistShard(conv)
+    }
+
+    /** Atomically write one conversation's shard (tmp + rename). */
+    private fun persistShard(convId: String) {
+        val arr = store[convId]?.toList() ?: emptyList()
+        val raw = ApiClient.json.encodeToString(shardSerializer, arr)
         runCatching {
-            val tmp = java.io.File(storeFile.parentFile, "voiid_messages.json.tmp")
+            val tmp = java.io.File(messagesDir, "$convId.json.tmp")
             tmp.writeText(raw)
-            if (!tmp.renameTo(storeFile)) { storeFile.writeText(raw); tmp.delete() }
+            if (!tmp.renameTo(shardFile(convId))) { shardFile(convId).writeText(raw); tmp.delete() }
         }.onFailure {
-            android.util.Log.e("VOIID", "📂 persist FAILED to write store file", it)
+            android.util.Log.e("VOIID", "📂 shard WRITE FAILED conv=$convId", it)
         }
     }
 
@@ -1046,6 +1094,11 @@ class ChatEngine private constructor(context: Context) {
             store.clear()
             decoded.forEach { (k, v) -> store[k] = v.toMutableList() }
         }.onSuccess {
+            // A restore REPLACES the store wholesale: wipe old shards, then write every
+            // restored conversation as its own shard (persist() only writes DIRTY shards, so
+            // mark them all).
+            runCatching { messagesDir.listFiles()?.forEach { it.delete() } }
+            store.keys.forEach { markDirty(it) }
             persist()
             android.util.Log.i("VOIID", "📥 importStore: restored ${store.values.sumOf { it.size }} msgs across ${store.size} convs")
         }.onFailure {

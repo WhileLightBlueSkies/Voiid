@@ -168,6 +168,12 @@ object GroupCallManager {
             return
         }
         val e2eeOptions = runCatching {
+            // CRITICAL ORDERING: E2EEOptions() eagerly constructs a native FrameCryptor key
+            // provider (JNI, in liblkjingle_peerconnection). That native library is only loaded
+            // once LiveKit initializes WebRTC — so on the FIRST group call in a process,
+            // constructing E2EEOptions() BEFORE any LiveKit init threw UnsatisfiedLinkError and
+            // surfaced as "Couldn't set up encryption for this call." Force WebRTC init first.
+            io.livekit.android.LiveKit.init(ctx)
             E2EEOptions().also {
                 it.keyProvider.setSharedKey(keyB64, KEY_INDEX)
                 keyProvider = it.keyProvider
@@ -210,6 +216,11 @@ object GroupCallManager {
             return
         }
         if (_state.value == null) { teardown(); return }
+
+        // Advertise the call to the other members so they get a "join" notification — without
+        // this the call is join-only and nobody else ever learns it started.
+        runCatching { ringGroup(ctx, conversationId, kind) }
+            .onFailure { Log.w("VOIID", "group call: ring fan-out failed (call still usable)", it) }
 
         // 4) Publish. Mic always; camera only for a video call.
         runCatching { r.localParticipant.setMicrophoneEnabled(true) }
@@ -448,6 +459,16 @@ object GroupCallManager {
         return api.requestAs("POST", "calls/group/token", jsonBody = body)
     }
 
+    /** Fan out a "group call started" push to the other members so they can join. */
+    private suspend fun ringGroup(ctx: Context, conversationId: String, kind: CallKind) {
+        val api = ApiClient(TokenStore.get(ctx))
+        val body = ApiClient.json.encodeToString(
+            GroupRingBody.serializer(),
+            GroupRingBody(conversationId, if (kind == CallKind.VIDEO) "video" else "voice"),
+        )
+        api.request("POST", "calls/group/ring", jsonBody = body)
+    }
+
     /** Key slot in LiveKit's key ring. We only ever use one (the MLS-derived shared key). */
     private const val KEY_INDEX = 0
     private const val ERROR_LINGER_MS = 4000L
@@ -455,6 +476,7 @@ object GroupCallManager {
     private const val EPOCH_DEBOUNCE_MS = 250L
 
     @Serializable private data class GroupTokenBody(val conversation_id: String)
+    @Serializable private data class GroupRingBody(val conversation_id: String, val call_kind: String)
 
     @Serializable
     private data class GroupTokenResponse(

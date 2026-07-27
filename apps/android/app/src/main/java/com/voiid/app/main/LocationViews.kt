@@ -192,17 +192,27 @@ fun LocationPinBubble(message: com.voiid.app.model.VMessage) {
         else -> com.voiid.app.model.ShareState.ENDED
     }
     // The most current coordinate we can show (last live fix if any, else the message's own).
+    // Both may be null for an iOS live_start that hasn't sent its first fix yet.
     val fix = inbound?.lastFix
     val lat = fix?.lat ?: ref.lat
     val lon = fix?.lon ?: ref.lon
     val ended = state == com.voiid.app.model.ShareState.ENDED
+    val hasCoord = lat != null && lon != null
 
-    Column(Modifier.width(220.dp).clip(RoundedCornerShape(VoiidRadius.md)).clickable { showDetail = true }) {
-        LocationMap(
-            lat = lat, lon = lon, lite = true,
-            modifier = Modifier.fillMaxWidth().height(140.dp),
-            desaturated = state == com.voiid.app.model.ShareState.STALE || ended,
-        )
+    Column(Modifier.width(220.dp).clip(RoundedCornerShape(VoiidRadius.md)).clickable { if (hasCoord) showDetail = true }) {
+        if (hasCoord) {
+            LocationMap(
+                lat = lat, lon = lon, lite = true,
+                modifier = Modifier.fillMaxWidth().height(140.dp),
+                desaturated = state == com.voiid.app.model.ShareState.STALE || ended,
+            )
+        } else {
+            // Live share received but no fix yet — a calm "locating" panel until it lands.
+            Box(
+                Modifier.fillMaxWidth().height(140.dp).background(VoiidColor.fieldFill),
+                contentAlignment = Alignment.Center,
+            ) { Text("Locating…", style = VoiidFont.rounded(13), color = VoiidColor.textSecondary) }
+        }
         Row(
             Modifier.fillMaxWidth().background(VoiidColor.surfaceCard).padding(horizontal = 10.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,

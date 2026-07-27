@@ -95,6 +95,17 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
     val callState by com.voiid.app.net.CallManager.state.collectAsState()
     // Group calls run on the LiveKit SFU (GroupCallManager); 1:1 stays peer-to-peer.
     val groupCallState by com.voiid.app.net.GroupCallManager.state.collectAsState()
+    // A tapped "join group call" notification → join the room.
+    val pendingGroupCall by com.voiid.app.net.DeepLinkRouter.pendingGroupCall.collectAsState()
+    androidx.compose.runtime.LaunchedEffect(pendingGroupCall) {
+        pendingGroupCall?.let {
+            com.voiid.app.net.GroupCallManager.join(
+                context, it.conversationId, "Group call",
+                if (it.video) CallKind.VIDEO else CallKind.VOICE,
+            )
+            com.voiid.app.net.DeepLinkRouter.consumeGroupCall()
+        }
+    }
     val startCall: (CallRequest) -> Unit = { req ->
         if (req.isGroup) {
             com.voiid.app.net.GroupCallManager.join(context, req.conversationId, req.title, req.kind)

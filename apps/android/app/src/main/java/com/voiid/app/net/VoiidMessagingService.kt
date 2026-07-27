@@ -82,6 +82,22 @@ class VoiidMessagingService : FirebaseMessagingService() {
             return
         }
 
+        // A group call started — post a "join" notification (a group call has no single callee,
+        // so this is a tappable invite, not a full-screen 1:1 ring).
+        if (data["type"] == "group_call") {
+            val conversationId = data["conversation_id"] ?: return
+            val video = data["call_kind"] == "video"
+            val ctx = applicationContext
+            val name = runBlocking {
+                UserDirectory.ready(ctx)
+                withTimeoutOrNull(6_000L) {
+                    conversationId.let { runCatching { ChatService(ctx).resolvePeer(it).title }.getOrNull() }
+                }?.takeIf { it.isNotBlank() } ?: "Group call"
+            }
+            postGroupCallNotification(ctx, conversationId, name, video)
+            return
+        }
+
         if (data["type"] != "wake") return
         val conversationId = data["conversation_id"] ?: return
         val messageId = data["message_id"]
@@ -242,5 +258,30 @@ object Notifier {
         val notifId = (messageId ?: conversationId).hashCode()
         runCatching { NotificationManagerCompat.from(ctx).notify(notifId, notification) }
             .onFailure { android.util.Log.e("VOIID", "notify failed", it) }
+    }
+
+    /** A tappable "join group call" notification. Tapping opens the app and joins the room. */
+    private fun postGroupCallNotification(ctx: Context, conversationId: String, name: String, video: Boolean) {
+        ensureChannel(ctx, conversationId, name)
+        val intent = Intent(ctx, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra(DeepLinkRouter.EXTRA_GROUP_CALL_CONVERSATION, conversationId)
+            putExtra(DeepLinkRouter.EXTRA_GROUP_CALL_KIND, if (video) "video" else "voice")
+        }
+        val pi = PendingIntent.getActivity(
+            ctx, ("gc_$conversationId").hashCode(), intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = NotificationCompat.Builder(ctx, channelId(conversationId))
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle(name)
+            .setContentText(if (video) "Incoming group video call · tap to join" else "Incoming group call · tap to join")
+            .setAutoCancel(true)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(pi)
+            .build()
+        runCatching { NotificationManagerCompat.from(ctx).notify(("gc_$conversationId").hashCode(), notification) }
+            .onFailure { android.util.Log.e("VOIID", "group-call notify failed", it) }
     }
 }
