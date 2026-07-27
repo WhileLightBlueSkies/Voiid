@@ -129,19 +129,26 @@ fun ContactProfileView(conversation: VConversation, onBack: () -> Unit) {
                 Text(bio ?: "Hey there! I am using Voiid.", style = VoiidFont.rounded(16), color = VoiidColor.textPrimary)
             }
 
-            // Shared media
+            // Shared media — REAL recent photos from the message store (never DummyData).
+            val recentPhotos = remember(conversation.id) {
+                com.voiid.app.net.ChatEngine.get(context).messages(conversation.id)
+                    .mapNotNull { it.media }.filter { it.mime.startsWith("image/") }.reversed().take(6)
+            }
             ProfileCard {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Media, links & docs", style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.textPrimary)
                     Spacer(Modifier.weight(1f))
-                    Text("See all", style = VoiidFont.rounded(13), color = VoiidColor.primary, modifier = Modifier.clickable { haptics.tap(); showAllMedia = true })
+                    if (recentPhotos.isNotEmpty()) {
+                        Text("See all", style = VoiidFont.rounded(13), color = VoiidColor.primary, modifier = Modifier.clickable { haptics.tap(); showAllMedia = true })
+                    }
                 }
-                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    DummyData.sharedMedia.take(6).forEach { _ ->
-                        Box(
-                            Modifier.size(72.dp).clip(RoundedCornerShape(VoiidRadius.md)).background(VoiidColor.accent.copy(alpha = 0.35f)),
-                            contentAlignment = Alignment.Center,
-                        ) { Icon(Icons.Default.Image, null, tint = VoiidColor.primary) }
+                if (recentPhotos.isEmpty()) {
+                    Text("No media shared yet", style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
+                } else {
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        recentPhotos.forEach { ref ->
+                            Box(Modifier.size(72.dp).clip(RoundedCornerShape(VoiidRadius.md))) { SharedMediaThumb(ref) }
+                        }
                     }
                 }
             }
@@ -165,7 +172,7 @@ fun ContactProfileView(conversation: VConversation, onBack: () -> Unit) {
     }
 
     if (showAllMedia) {
-        SharedMediaSheet(onDismiss = { showAllMedia = false })
+        SharedMediaSheet(conversationId = conversation.id, onDismiss = { showAllMedia = false })
     }
     if (viewPhoto) {
         ProfilePhotoViewer(title = conversation.title, onClose = { viewPhoto = false })

@@ -47,8 +47,17 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.voiid.app.model.DummyData
-import com.voiid.app.model.VMediaItem
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import com.voiid.app.net.ChatEngine
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
@@ -59,10 +68,20 @@ private enum class MediaTab(val label: String) { PHOTOS("Photos"), VIDEOS("Video
 /** "See all" shared media — segmented Photos / Videos / Voice / Documents (iOS `SharedMediaSheet`). */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SharedMediaSheet(onDismiss: () -> Unit) {
+fun SharedMediaSheet(conversationId: String, onDismiss: () -> Unit) {
     val haptics = LocalVoiidHaptics.current
+    val context = LocalContext.current
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var tab by remember { mutableStateOf(MediaTab.PHOTOS) }
+
+    // REAL shared media from the decrypted message store, newest first — never DummyData.
+    val refs = remember(conversationId) {
+        ChatEngine.get(context).messages(conversationId).mapNotNull { it.media }.reversed()
+    }
+    val photos = refs.filter { it.mime.startsWith("image/") }
+    val videos = refs.filter { it.mime.startsWith("video/") }
+    val voice = refs.filter { it.mime.startsWith("audio/") }
+    val docs = refs.filter { !it.mime.startsWith("image/") && !it.mime.startsWith("video/") && !it.mime.startsWith("audio/") }
 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState, containerColor = VoiidColor.background, dragHandle = null) {
         Column(Modifier.fillMaxHeight(0.92f)) {
@@ -72,10 +91,10 @@ fun SharedMediaSheet(onDismiss: () -> Unit) {
             )
             Tabs(tab) { haptics.selection(); tab = it }
             when (tab) {
-                MediaTab.PHOTOS -> PhotoGrid(DummyData.sharedPhotos)
-                MediaTab.VIDEOS -> PhotoGrid(DummyData.sharedVideos)
-                MediaTab.VOICE -> MediaList(DummyData.sharedVoice, Icons.Default.Mic)
-                MediaTab.DOCS -> MediaList(DummyData.sharedDocs, Icons.Default.Description)
+                MediaTab.PHOTOS -> MediaGrid(photos, "No photos yet")
+                MediaTab.VIDEOS -> MediaGrid(videos, "No videos yet")
+                MediaTab.VOICE -> RefList(voice, Icons.Default.Mic, "Voice message")
+                MediaTab.DOCS -> RefList(docs, Icons.Default.Description, "Document")
             }
         }
     }
@@ -120,42 +139,25 @@ private fun Tabs(selected: MediaTab, onSelect: (MediaTab) -> Unit) {
 }
 
 @Composable
-private fun PhotoGrid(items: List<VMediaItem>) {
+private fun MediaGrid(refs: List<ChatEngine.MediaRef>, emptyText: String) {
+    if (refs.isEmpty()) { EmptyState(emptyText); return }
     LazyVerticalGrid(
         columns = GridCells.Fixed(3),
         contentPadding = PaddingValues(3.dp),
         horizontalArrangement = Arrangement.spacedBy(3.dp),
         verticalArrangement = Arrangement.spacedBy(3.dp),
     ) {
-        items(items, key = { it.id }) { item ->
-            Box(
-                Modifier.aspectRatio(1f).clip(RoundedCornerShape(4.dp)).background(VoiidColor.accent.copy(alpha = 0.35f)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    if (item.kind == VMediaItem.Kind.VIDEO) Icons.Default.PlayCircle else Icons.Default.Image,
-                    null, tint = VoiidColor.primary, modifier = Modifier.size(24.dp),
-                )
-                if (item.kind == VMediaItem.Kind.VIDEO && item.title.isNotEmpty()) {
-                    Text(
-                        item.title, style = VoiidFont.rounded(10, FontWeight.Medium), color = Color.White,
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(4.dp)
-                            .clip(RoundedCornerShape(999.dp))
-                            .background(Color.Black.copy(alpha = 0.4f))
-                            .padding(horizontal = 4.dp, vertical = 1.dp),
-                    )
-                }
-            }
+        items(refs, key = { it.mediaUrl }) { ref ->
+            Box(Modifier.aspectRatio(1f).clip(RoundedCornerShape(4.dp))) { SharedMediaThumb(ref) }
         }
     }
 }
 
 @Composable
-private fun MediaList(items: List<VMediaItem>, icon: androidx.compose.ui.graphics.vector.ImageVector) {
+private fun RefList(refs: List<ChatEngine.MediaRef>, icon: androidx.compose.ui.graphics.vector.ImageVector, label: String) {
+    if (refs.isEmpty()) { EmptyState("Nothing here yet"); return }
     Column(Modifier.fillMaxWidth().padding(top = 8.dp)) {
-        items.forEach { item ->
+        refs.forEach { _ ->
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -165,10 +167,42 @@ private fun MediaList(items: List<VMediaItem>, icon: androidx.compose.ui.graphic
                     Modifier.size(44.dp).clip(RoundedCornerShape(VoiidRadius.md)).background(VoiidColor.fieldFill),
                     contentAlignment = Alignment.Center,
                 ) { Icon(icon, null, tint = VoiidColor.primary, modifier = Modifier.size(18.dp)) }
-                Text(item.title.ifEmpty { "Item" }, style = VoiidFont.rounded(15), color = VoiidColor.textPrimary, modifier = Modifier.weight(1f))
-                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = VoiidColor.textSecondary, modifier = Modifier.size(18.dp))
+                Text(label, style = VoiidFont.rounded(15), color = VoiidColor.textPrimary, modifier = Modifier.weight(1f))
             }
             HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.3f), modifier = Modifier.padding(start = 72.dp))
+        }
+    }
+}
+
+@Composable
+private fun EmptyState(text: String) {
+    Box(Modifier.fillMaxWidth().padding(top = 60.dp), contentAlignment = Alignment.Center) {
+        Text(text, style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
+    }
+}
+
+/** A real decrypted media thumbnail (local-first via MediaCache), reused by the shared-media
+ *  grid AND the Group Info / Contact Profile "Media, links & docs" strips. */
+@Composable
+fun SharedMediaThumb(ref: ChatEngine.MediaRef) {
+    val context = LocalContext.current
+    var bitmap by remember(ref.mediaUrl) { mutableStateOf<ImageBitmap?>(MediaCache.image(ref.mediaUrl)) }
+    LaunchedEffect(ref.mediaUrl) {
+        if (bitmap != null) return@LaunchedEffect
+        withContext(Dispatchers.IO) { MediaCache.image(context, ref.mediaUrl) }?.let { bitmap = it; return@LaunchedEffect }
+        runCatching {
+            val bytes = ChatEngine.get(context).fetchMedia(ref)
+            MediaCache.putData(context, ref.mediaUrl, bytes)
+            val bmp = withContext(Dispatchers.IO) { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
+            if (bmp != null) { val ib = bmp.asImageBitmap(); MediaCache.putImage(ref.mediaUrl, ib); bitmap = ib }
+        }
+    }
+    val b = bitmap
+    if (b != null) {
+        Image(b, null, modifier = Modifier.fillMaxWidth().aspectRatio(1f), contentScale = ContentScale.Crop)
+    } else {
+        Box(Modifier.fillMaxWidth().aspectRatio(1f).background(VoiidColor.accent.copy(alpha = 0.25f)), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator(color = VoiidColor.primary, modifier = Modifier.size(20.dp))
         }
     }
 }

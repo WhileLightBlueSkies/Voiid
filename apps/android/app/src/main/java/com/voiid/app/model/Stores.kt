@@ -35,7 +35,9 @@ class AppSession(app: Application) : AndroidViewModel(app) {
     // Resume straight to the app if we already hold a session token.
     var route by mutableStateOf(if (auth.isAuthenticated) AppRoute.MAIN else AppRoute.ONBOARDING)
         private set
-    var profile by mutableStateOf(DummyData.me)
+    // Empty until the REAL profile loads (loadProfile → ProfileService). Never a dummy
+    // "You / +91 …" placeholder that could flash before the real data arrives.
+    var profile by mutableStateOf(VUser(id = "me", fullName = "", phoneNumber = ""))
 
     /** Hides the bottom tab bar when a full-screen child (e.g. a chat) is open. */
     var hideTabBar by mutableStateOf(false)
@@ -119,6 +121,7 @@ class AppSession(app: Application) : AndroidViewModel(app) {
     fun signOut() {
         com.voiid.app.net.SessionTeardown.wipeLocalAccountState(appContext)
         auth.logout()
+        profile = VUser(id = "me", fullName = "", phoneNumber = "")   // don't leak into the next login
         route = AppRoute.ONBOARDING
     }
 }

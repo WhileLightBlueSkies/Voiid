@@ -108,6 +108,15 @@ fun ChatDetailView(
     val lastMineId = messages.lastOrNull { it.isMine }?.id
     var showDetails by remember { mutableStateOf(false) }
     var replyingTo by remember { mutableStateOf<VMessage?>(null) }
+    // REAL group members (from the server) for @mentions + group-call tiles — never DummyData.
+    var groupMembers by remember { mutableStateOf<List<VMember>>(emptyList()) }
+    LaunchedEffect(conversation.id) {
+        if (isGroup) {
+            groupMembers = runCatching { com.voiid.app.net.ChatService(context).fetchMembers(conversation.id) }
+                .getOrDefault(emptyList())
+                .map { VMember(id = it.userId, name = it.name, phone = "", role = com.voiid.app.model.MemberRole.MEMBER, isYou = it.isYou) }
+        }
+    }
 
     // overflow / attach menus
     var showOverflow by remember { mutableStateOf(false) }
@@ -132,7 +141,7 @@ fun ChatDetailView(
         onStartCall(
             CallRequest(
                 title = conversation.title, isGroup = isGroup,
-                members = if (isGroup) DummyData.groupMembers else emptyList(),
+                members = if (isGroup) groupMembers else emptyList(),
                 photoName = conversation.photoName, kind = kind,
                 conversationId = conversation.id, peerUserId = conversation.peerUserId,
             ),
@@ -193,7 +202,7 @@ fun ChatDetailView(
         } else null
     } else null
     val mentionSuggestions: List<VMember> = if (mentionQuery != null) {
-        DummyData.groupMembers.filter { !it.isYou && (mentionQuery.isEmpty() || it.name.contains(mentionQuery, ignoreCase = true)) }
+        groupMembers.filter { !it.isYou && (mentionQuery.isEmpty() || it.name.contains(mentionQuery, ignoreCase = true)) }
     } else emptyList()
 
     Box(Modifier.fillMaxSize()) {

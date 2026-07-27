@@ -313,17 +313,22 @@ fun ChatsHomeView(
         CallTypeSheet(
             title = c.title,
             onPick = { kind ->
-                onStartCall(
-                    CallRequest(
-                        title = c.title,
-                        isGroup = c.type == ConversationType.GROUP,
-                        members = if (c.type == ConversationType.GROUP) DummyData.groupMembers else emptyList(),
-                        photoName = c.photoName,
-                        kind = kind,
-                        conversationId = c.id,
-                        peerUserId = c.peerUserId,
-                    ),
-                )
+                val isGroup = c.type == ConversationType.GROUP
+                // Load REAL members for the group-call tiles (never DummyData), then start.
+                scope.launch {
+                    val members = if (isGroup) {
+                        runCatching { com.voiid.app.net.ChatService(context).fetchMembers(c.id) }
+                            .getOrDefault(emptyList())
+                            .map { com.voiid.app.model.VMember(id = it.userId, name = it.name, phone = "", role = com.voiid.app.model.MemberRole.MEMBER, isYou = it.isYou) }
+                    } else emptyList()
+                    onStartCall(
+                        CallRequest(
+                            title = c.title, isGroup = isGroup, members = members,
+                            photoName = c.photoName, kind = kind,
+                            conversationId = c.id, peerUserId = c.peerUserId,
+                        ),
+                    )
+                }
                 callTarget = null
             },
             onDismiss = { callTarget = null },
