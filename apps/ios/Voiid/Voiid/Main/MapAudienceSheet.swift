@@ -26,6 +26,12 @@ struct MapAudienceSheet: View {
     @ObservedObject private var engine = MapPresenceEngine.shared
     @ObservedObject private var directory = UserDirectory.shared
 
+    /// Who your location goes to. Everyone / My Contacts resolve to a concrete allow-list of
+    /// people you can actually reach (the map key rides a 1:1 conversation), so "Everyone" is
+    /// still a bounded set — everyone you've chatted with — never the whole world.
+    enum Scope: String, CaseIterable { case everyone, contacts, selected }
+
+    @State private var scope: Scope = .contacts
     @State private var selected: Set<String> = []
     @State private var working = false
 
@@ -37,6 +43,20 @@ struct MapAudienceSheet: View {
             .reduce(into: [String]()) { acc, id in if !acc.contains(id) { acc.append(id) } }
             .map { (userId: $0, name: directory.displayName($0), photo: directory.photoURL($0)) }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// A candidate is "in my contacts" if the address book gave it a saved name.
+    private func isSavedContact(_ userId: String) -> Bool {
+        directory.user(userId)?.savedName?.isEmpty == false
+    }
+
+    /// The user ids the current scope resolves to.
+    private var resolvedIds: [String] {
+        switch scope {
+        case .everyone: return candidates.map(\.userId)
+        case .contacts: return candidates.filter { isSavedContact($0.userId) }.map(\.userId)
+        case .selected: return Array(selected)
+        }
     }
 
     var body: some View {
@@ -58,7 +78,16 @@ struct MapAudienceSheet: View {
         }
         .tint(VoiidColor.primary)
         .preferredColorScheme(.light)
-        .onAppear { selected = Set(engine.audience.map(\.userId)) }
+        .onAppear {
+            let current = Set(engine.audience.map(\.userId))
+            selected = current
+            // Infer which scope the current audience matches, so re-opening shows the truth.
+            if !current.isEmpty {
+                let all = Set(candidates.map(\.userId))
+                let contactsOnly = Set(candidates.filter { isSavedContact($0.userId) }.map(\.userId))
+                scope = current == all ? .everyone : (current == contactsOnly ? .contacts : .selected)
+            }
+        }
     }
 
     // MARK: - Choose (add / initial pick)
@@ -69,24 +98,47 @@ struct MapAudienceSheet: View {
                 emptyCandidates
             } else {
                 List {
+                    // Scope selector — the redesigned surface.
                     Section {
-                        ForEach(candidates, id: \.userId) { c in
-                            Button {
-                                Haptics.selection()
-                                if selected.contains(c.userId) { selected.remove(c.userId) }
-                                else { selected.insert(c.userId) }
-                            } label: {
-                                HStack(spacing: VoiidSpacing.md) {
-                                    ProfileAvatarButton(photoURL: c.photo, name: c.name, size: 40)
-                                    Text(c.name).font(.body).foregroundStyle(VoiidColor.textPrimary)
-                                    Spacer()
-                                    Image(systemName: selected.contains(c.userId) ? "checkmark.circle.fill" : "circle")
-                                        .foregroundStyle(selected.contains(c.userId) ? VoiidColor.primary : VoiidColor.placeholder)
+                        scopeRow(.everyone, icon: "globe",
+                                 title: "Everyone",
+                                 subtitle: "Everyone you’ve chatted with can see you",
+                                 count: candidates.count)
+                        scopeRow(.contacts, icon: "person.2.fill",
+                                 title: "My Contacts",
+                                 subtitle: "Only people saved in your contacts",
+                                 count: candidates.filter { isSavedContact($0.userId) }.count)
+                        scopeRow(.selected, icon: "person.crop.circle.badge.checkmark",
+                                 title: "Only selected people",
+                                 subtitle: "Pick exactly who can see you",
+                                 count: selected.count)
+                    } header: {
+                        Text("Who can see me on the Map")
+                    } footer: {
+                        Text("They see your approximate location on the Map until you turn Ghost Mode on. You can change this or stop anytime.")
+                    }
+
+                    // When "Only selected", reveal the per-person checklist inline.
+                    if scope == .selected {
+                        Section {
+                            ForEach(candidates, id: \.userId) { c in
+                                Button {
+                                    Haptics.selection()
+                                    if selected.contains(c.userId) { selected.remove(c.userId) }
+                                    else { selected.insert(c.userId) }
+                                } label: {
+                                    HStack(spacing: VoiidSpacing.md) {
+                                        ProfileAvatarButton(photoURL: c.photo, name: c.name, size: 40)
+                                        Text(c.name).font(.body).foregroundStyle(VoiidColor.textPrimary)
+                                        Spacer()
+                                        Image(systemName: selected.contains(c.userId) ? "checkmark.circle.fill" : "circle")
+                                            .foregroundStyle(selected.contains(c.userId) ? VoiidColor.primary : VoiidColor.placeholder)
+                                    }
                                 }
                             }
+                        } footer: {
+                            Text("Only people you’ve chatted with appear here — the Map share needs an existing conversation.")
                         }
-                    } footer: {
-                        Text("Only people you’ve chatted with appear here. Each person you pick can see your approximate location on the Map until you turn Ghost Mode on.")
                     }
                 }
                 .voiidSettingsList()
@@ -95,15 +147,37 @@ struct MapAudienceSheet: View {
         }
     }
 
+    /// A single tappable scope card (radio-style).
+    private func scopeRow(_ s: Scope, icon: String, title: String, subtitle: String, count: Int) -> some View {
+        Button {
+            Haptics.selection()
+            scope = s
+        } label: {
+            HStack(spacing: VoiidSpacing.md) {
+                Image(systemName: icon)
+                    .font(.system(size: 18)).foregroundColor(VoiidColor.primary).frame(width: 26)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(VoiidFont.rounded(16, .semibold)).foregroundColor(VoiidColor.textPrimary)
+                    Text(scope == s && s != .selected ? "\(subtitle) · \(count) \(count == 1 ? "person" : "people")" : subtitle)
+                        .font(VoiidFont.rounded(12, .regular)).foregroundColor(VoiidColor.textSecondary)
+                }
+                Spacer()
+                Image(systemName: scope == s ? "largecircle.fill.circle" : "circle")
+                    .foregroundStyle(scope == s ? VoiidColor.primary : VoiidColor.placeholder)
+            }
+            .contentShape(Rectangle())
+        }
+    }
+
     private var shareButton: some View {
-        VStack(spacing: 6) {
+        let ids = resolvedIds
+        return VStack(spacing: 6) {
             Button {
                 Haptics.rigid()
                 working = true
                 Task {
-                    let ids = Array(selected)
-                    if engine.isVisible { await engine.addToAudience(ids) }
-                    else { await engine.goVisible(to: ids) }
+                    // Going visible REPLACES the audience with exactly this scope's people.
+                    await engine.goVisible(to: ids)
                     working = false
                     dismiss()
                 }
@@ -112,11 +186,13 @@ struct MapAudienceSheet: View {
                     .font(VoiidFont.rounded(16, .semibold))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 14)
-                    .background(Capsule().fill(selected.isEmpty ? VoiidColor.placeholder : VoiidColor.primary))
+                    .background(Capsule().fill(ids.isEmpty ? VoiidColor.placeholder : VoiidColor.primary))
                     .foregroundColor(VoiidColor.textOnPrimary)
             }
-            .disabled(selected.isEmpty || working)
-            Text("You appear to no one until you tap this.")
+            .disabled(ids.isEmpty || working)
+            Text(ids.isEmpty
+                 ? (scope == .contacts ? "No saved contacts you’ve chatted with yet." : "Pick at least one person.")
+                 : "You appear to no one until you tap this.")
                 .font(VoiidFont.rounded(11, .regular))
                 .foregroundColor(VoiidColor.textSecondary)
         }
@@ -222,7 +298,7 @@ struct MapExplainerView: View {
                 .font(VoiidFont.rounded(28, .bold)).foregroundColor(VoiidColor.textPrimary)
             VStack(spacing: VoiidSpacing.md) {
                 explainerRow("eye.slash.fill", "You’re hidden by default",
-                             "No one can see you on the Map until you choose them by name. There’s no ‘share with everyone’.")
+                             "No one sees you until you choose a scope — Everyone you’ve chatted with, just My Contacts, or only people you pick.")
                 explainerRow("lock.fill", "Your location is end-to-end encrypted",
                              "Voiid’s servers never see where you are — only that a share exists and when it ends.")
                 explainerRow("mappin.and.ellipse", "Approximate, and you can stop anytime",

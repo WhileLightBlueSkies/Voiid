@@ -193,6 +193,10 @@ final class MapPresenceEngine: ObservableObject {
             }
         }
 
+        // goVisible SETS the audience to exactly `targets` (the chosen scope), so switching
+        // from "Everyone" to "My Contacts" or a smaller set actually shrinks it — clear first,
+        // then add. "Add more people" uses addToAudience(_:) instead.
+        MapPresenceStore.clearAudience()
         MapPresenceStore.addToAudience(targets)
         reloadFromStore()
 
