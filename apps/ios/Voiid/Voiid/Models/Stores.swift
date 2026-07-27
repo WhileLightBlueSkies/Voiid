@@ -449,6 +449,9 @@ final class ChatStore: ObservableObject {
                               kind: kind, text: d.text, createdAt: d.createdAt,
                               status: status, isMine: d.isMine,
                               mediaRef: d.media, location: locRef)
+            // Sender's real display name (saved name → full name → phone → username) for the
+            // group bubble. Without this senderName stayed "" and the name never showed.
+            if !d.isMine { vm.senderName = UserDirectory.shared.displayName(d.senderId) }
             // Real Delivered / Read times for the Message Info sheet (nil until each receipt).
             vm.deliveredAt = d.deliveredAt
             vm.readAt = d.readAt

@@ -39,21 +39,25 @@ struct MapTabView: View {
 
     var body: some View {
         NavigationStack {
-            ZStack(alignment: .top) {
-                map
-                    .ignoresSafeArea(edges: .bottom)
-
-                VStack(spacing: VoiidSpacing.sm) {
-                    visibilityPill
-                    if !awayContacts.isEmpty || !waitingContacts.isEmpty {
-                        awayStrip
+            map
+                .ignoresSafeArea(edges: .bottom)
+                // A frosted top "wrapper" that HOLDS the visibility bar. Using safeAreaInset (not
+                // a ZStack overlay) means MapKit's own controls — the zoom / user-location button
+                // and compass — are placed BELOW it, so the bar and the recenter button no longer
+                // overlap. The material keeps the pill readable over any map content.
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    VStack(spacing: VoiidSpacing.sm) {
+                        visibilityPill
+                        if !awayContacts.isEmpty || !waitingContacts.isEmpty {
+                            awayStrip
+                        }
                     }
-                    Spacer()
+                    .padding(.horizontal, VoiidSpacing.md)
+                    .padding(.top, VoiidSpacing.sm)
+                    .padding(.bottom, VoiidSpacing.sm)
+                    .background(.ultraThinMaterial)
                 }
-                .padding(.horizontal, VoiidSpacing.md)
-                .padding(.top, VoiidSpacing.sm)
-            }
-            .navigationTitle("Map")
+                .navigationTitle("Map")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
