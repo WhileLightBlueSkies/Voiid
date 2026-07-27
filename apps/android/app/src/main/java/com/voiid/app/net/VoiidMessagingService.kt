@@ -94,7 +94,7 @@ class VoiidMessagingService : FirebaseMessagingService() {
                     conversationId.let { runCatching { ChatService(ctx).resolvePeer(it).title }.getOrNull() }
                 }?.takeIf { it.isNotBlank() } ?: "Group call"
             }
-            postGroupCallNotification(ctx, conversationId, name, video)
+            Notifier.postGroupCallNotification(ctx, conversationId, name, video)
             return
         }
 
@@ -261,7 +261,7 @@ object Notifier {
     }
 
     /** A tappable "join group call" notification. Tapping opens the app and joins the room. */
-    private fun postGroupCallNotification(ctx: Context, conversationId: String, name: String, video: Boolean) {
+    fun postGroupCallNotification(ctx: Context, conversationId: String, name: String, video: Boolean) {
         ensureChannel(ctx, conversationId, name)
         val intent = Intent(ctx, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
