@@ -32,6 +32,11 @@ internal object MapInboundKeyStore {
     }
 
     /** Drop a key on an explicit `map_off` so a resurrected stale frame can't be decrypted. */
+    /** Drop every inbound map key — sign-out only. See SessionTeardown. */
+    fun clear(ctx: Context) {
+        SecurePrefs.open(ctx, NAME).edit().clear().apply()
+    }
+
     fun remove(ctx: Context, shareId: String) {
         SecurePrefs.open(ctx, NAME).edit().remove(shareId).apply()
     }

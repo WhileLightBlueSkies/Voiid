@@ -83,6 +83,7 @@ fun MapTabView(map: MapStore, chat: ChatStore) {
     val subjectsMap by map.subjects.collectAsState()
     val onboarded by map.onboarded.collectAsState()
     val shareError by map.lastError.collectAsState()
+    val waiting by map.waitingSenders.collectAsState()
 
     val subjects = subjectsMap.values.toList()
     val onMap = subjects.filter { it.isOnMap }
@@ -184,8 +185,15 @@ fun MapTabView(map: MapStore, chat: ChatStore) {
 
         // "Not sharing" / aged-out list beneath the map (§8). An age-out KEEPS the last position
         // in the list; an explicit stop erased it entirely and it isn't here at all.
-        if (offMap.isNotEmpty()) {
-            NotSharingList(offMap, context)
+        //
+        // `waitingFor` are contacts who handed us a map_key but whose first fix hasn't landed
+        // yet. Without them the map read as completely empty while friends were in fact
+        // sharing — the position only exists after a live fix decrypts in this process.
+        val onMapIds = onMap.map { it.userId }.toSet()
+        val offMapIds = offMap.map { it.userId }.toSet()
+        val waitingFor = waiting.filter { it !in onMapIds && it !in offMapIds }.sorted()
+        if (offMap.isNotEmpty() || waitingFor.isNotEmpty()) {
+            NotSharingList(offMap, waitingFor, context)
         }
     }
 
@@ -297,11 +305,32 @@ private fun MapCanvas(onMap: List<MapSubject>) {
 }
 
 @Composable
-private fun NotSharingList(offMap: List<MapSubject>, context: android.content.Context) {
+private fun NotSharingList(
+    offMap: List<MapSubject>,
+    waitingFor: List<String>,
+    context: android.content.Context,
+) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp)) {
         Text("Not on the map", style = VoiidFont.rounded(13, FontWeight.SemiBold), color = VoiidColor.textSecondary)
         Spacer(Modifier.size(8.dp))
         LazyColumn(Modifier.fillMaxWidth().heightIn(max = 160.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            // Sharing with us, but no fix has arrived yet. Listed FIRST — this is the state a
+            // friend is in for the first few minutes after they go visible.
+            items(waitingFor, key = { "waiting_$it" }) { uid ->
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            UserDirectory.displayName(uid),
+                            style = VoiidFont.rounded(15, FontWeight.Medium),
+                            color = VoiidColor.textPrimary,
+                        )
+                        Text("Locating…", style = VoiidFont.rounded(12), color = VoiidColor.textSecondary)
+                    }
+                }
+            }
             items(offMap, key = { it.userId }) { s ->
                 val name = UserDirectory.displayName(s.userId)
                 val sub = if (s.state == MapSubjectState.AGED_OUT) "Last seen over 8 hours ago" else "Not sharing"

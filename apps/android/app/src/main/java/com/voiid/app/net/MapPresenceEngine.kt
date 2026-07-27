@@ -75,6 +75,18 @@ object MapPresenceEngine {
     private val _subjects = MutableStateFlow<Map<String, MapSubject>>(emptyMap())
     val subjects: StateFlow<Map<String, MapSubject>> = _subjects.asStateFlow()
 
+    /**
+     * Everyone who has handed us a `map_key` — i.e. who has made themselves visible to us.
+     * Persisted, unlike [_subjects], which only ever gains an entry when a live fix decrypts
+     * IN THIS PROCESS. Without this the map was blank until a friend's next fix happened to
+     * land while the app was open: a contact who was genuinely sharing showed nothing at all,
+     * and nothing survived a restart. iOS has the same set as `inboundSenders`.
+     *
+     * A sender here with no entry in [_subjects] is "sharing, waiting for their first fix".
+     */
+    private val _waitingSenders = MutableStateFlow<Set<String>>(emptySet())
+    val waitingSenders: StateFlow<Set<String>> = _waitingSenders.asStateFlow()
+
     /** True once the user has made the first Browse-only / Choose-who decision (§8 explainer). */
     private val _onboarded = MutableStateFlow(false)
     val onboarded: StateFlow<Boolean> = _onboarded.asStateFlow()
@@ -368,6 +380,10 @@ object MapPresenceEngine {
                 // same key captured while backgrounded. See MapConstants.DEFAULT_KEY_TTL_MS.
                 inbound[id] = InboundShare(fromUserId, key,
                     env.expiresAt ?: (now() + MapConstants.DEFAULT_KEY_TTL_MS))
+                // Record the sender NOW, so they show as "sharing — waiting for location"
+                // immediately, instead of only when their first fix happens to decrypt while
+                // the app is open. This is what made the map look permanently empty.
+                noteWaitingSender(fromUserId)
                 Log.i(TAG, "map_key captured from $fromUserId share=$id")
                 persist()
             }
@@ -450,8 +466,21 @@ object MapPresenceEngine {
     }
 
     private fun eraseSubject(userId: String) {
-        // Explicit stop → the subject disappears with no last position retained.
+        // Explicit stop → the subject disappears with no last position retained, and they are
+        // no longer "waiting" either: they have gone dark, not merely not-yet-fixed.
         _subjects.value = _subjects.value.toMutableMap().apply { remove(userId) }
+        forgetWaitingSender(userId)
+    }
+
+    /** They handed us a key — they are sharing with us, even before their first fix lands. */
+    private fun noteWaitingSender(userId: String) {
+        if (userId.isEmpty() || _waitingSenders.value.contains(userId)) return
+        _waitingSenders.value = _waitingSenders.value + userId
+    }
+
+    private fun forgetWaitingSender(userId: String) {
+        if (!_waitingSenders.value.contains(userId)) return
+        _waitingSenders.value = _waitingSenders.value - userId
     }
 
     /** Re-derive every subject's state from its fix age (§8). Works with zero network. */
@@ -471,6 +500,33 @@ object MapPresenceEngine {
             e.setValue(e.value.copy(state = state))
         }
         _subjects.value = next
+    }
+
+    /**
+     * Sign-out wipe. Ordering mirrors SessionTeardown: stop emitting FIRST, then clear the
+     * in-memory state, then the prefs — otherwise a live provider callback could flush stale
+     * presence back to disk after the delete.
+     */
+    fun resetForSignOut(context: Context) {
+        provider?.stop()
+        wantsVisible = false
+        _visibility.value = MapVisibility.GHOST
+        _ghostUntil.value = 0L
+        _audience.value = emptyList()
+        _subjects.value = emptyMap()
+        _waitingSenders.value = emptySet()
+        _onboarded.value = false
+        _lastError.value = null
+        shareId = null
+        shareKey = null
+        expiresAt = 0L
+        seq = 0L
+        inbound.clear()
+        subjectSeq.clear()
+        runCatching { SecurePrefs.open(context.applicationContext, "voiid_map").edit().clear().apply() }
+        // The background-capture key store is a SEPARATE prefs file and must be cleared too,
+        // or contacts' inbound map keys outlive the account that received them.
+        runCatching { MapInboundKeyStore.clear(context.applicationContext) }
     }
 
     // ---- persistence (encrypted prefs, never SQLite) ------------------------------------
@@ -493,6 +549,9 @@ object MapPresenceEngine {
             .putString("share_key", shareKey?.let { Base64.encodeToString(it, Base64.NO_WRAP) })
             .putLong("expires_at", expiresAt)
             .putString("inbound", inboundJson)
+            // Persisted so a contact who is sharing with us still shows on the map after a
+            // cold start, rather than vanishing until their next fix arrives.
+            .putStringSet("waiting_senders", _waitingSenders.value)
             .apply()
     }
 
@@ -510,6 +569,8 @@ object MapPresenceEngine {
         shareId = p.getString("share_id", null)
         shareKey = p.getString("share_key", null)?.let { runCatching { Base64.decode(it, Base64.NO_WRAP) }.getOrNull() }
         expiresAt = p.getLong("expires_at", 0L)
+        // Copy the set — SharedPreferences forbids mutating the instance it hands back.
+        _waitingSenders.value = p.getStringSet("waiting_senders", null)?.toSet() ?: emptySet()
         p.getString("inbound", null)?.let { j ->
             runCatching { ApiClient.json.decodeFromString(ListSerializer(PersistedInbound.serializer()), j) }.getOrNull()?.forEach {
                 inbound[it.shareId] = InboundShare(it.from, runCatching { Base64.decode(it.key, Base64.NO_WRAP) }.getOrNull() ?: return@forEach, it.expiresAt)
