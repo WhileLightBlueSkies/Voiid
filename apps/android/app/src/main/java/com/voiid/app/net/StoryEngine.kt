@@ -124,7 +124,12 @@ class StoryEngine private constructor(context: Context) {
         UserDirectory.ready(appContext)
         val existing = runCatching { StoryLocalStore.liveStories(appContext).map { it.id }.toHashSet() }
             .getOrDefault(HashSet())
-        val rows = service.feed(e2e.deviceId)
+        // RECOVERY: if we hold no live stories at all, re-fetch with include_delivered so a
+        // device whose keys were already marked delivered — a lost local DB, OR a story dropped
+        // by the pre-fix async-directory bug — still gets its live feed back. The normal
+        // (deliver-once) pass would return nothing in that case and the feed would stay empty.
+        val includeDelivered = existing.isEmpty()
+        val rows = service.feed(e2e.deviceId, includeDelivered)
         val fresh = mutableListOf<Story>()
         for (row in rows) {
             if (existing.contains(row.story_id)) continue    // decrypt-once dedup

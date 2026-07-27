@@ -791,13 +791,29 @@ struct MessageBubble: View {
             Text(VoiidDate.bubbleTime(message.createdAt))
                 .font(VoiidFont.rounded(10, .regular))
                 .foregroundColor(VoiidColor.textSecondary.opacity(0.8))
-            // Clean text status (Sent / Delivered / Seen) — shown only under the
-            // LAST outgoing message (iMessage-style), so older ones don't change.
-            if message.isMine && isLastMine, let label = statusLabel {
-                Text("· \(label)")
-                    .font(VoiidFont.rounded(10, .regular))
-                    .foregroundColor(message.status == .read ? VoiidColor.primary : VoiidColor.textSecondary.opacity(0.8))
-            }
+            // A delivery tick on EVERY outgoing message (WhatsApp-style), not just the last —
+            // ✓ sent · ✓✓ delivered · ✓✓ (blue) seen. So each message shows its OWN true state.
+            if message.isMine { tickView }
+        }
+    }
+
+    @ViewBuilder private var tickView: some View {
+        switch message.status {
+        case .sending:
+            Image(systemName: "clock").font(.system(size: 9))
+                .foregroundColor(VoiidColor.textSecondary.opacity(0.7))
+        case .failed:
+            Image(systemName: "exclamationmark.circle").font(.system(size: 10))
+                .foregroundColor(VoiidColor.error)
+        case .sent:
+            Text("✓").font(.system(size: 11, weight: .semibold))
+                .foregroundColor(VoiidColor.textSecondary.opacity(0.8))
+        case .delivered:
+            Text("✓✓").font(.system(size: 11, weight: .semibold))
+                .foregroundColor(VoiidColor.textSecondary.opacity(0.8))
+        case .read:
+            Text("✓✓").font(.system(size: 11, weight: .semibold))
+                .foregroundColor(VoiidColor.primary)   // blue/brand = Seen
         }
     }
 
