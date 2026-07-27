@@ -838,6 +838,8 @@ final class ChatEngine {
     /// downgraded). Returns the conversation id so the UI can refresh just that chat.
     @discardableResult
     func applyReceipt(messageId: String, status: String) -> String? {
+        ensureLoaded()   // a WS receipt can arrive while on the chat LIST (store not yet lazily
+                         // loaded); without this the tick update would be dropped until re-sync.
         let rank = ["sent": 0, "delivered": 1, "read": 2]
         for (cid, var arr) in store {
             if let i = arr.firstIndex(where: { $0.isMine && ($0.serverId == messageId || $0.id == messageId) }) {
@@ -863,6 +865,7 @@ final class ChatEngine {
     /// Mark all locally-stored inbound messages in a conversation as read. The
     /// server fans out a `receipt` WS event to the original senders (blue ticks).
     func markRead(conversationId: String) async {
+        ensureLoaded()
         let ids = (store[conversationId] ?? []).filter { !$0.isMine }.map { $0.id }
         await markReceipts(ids, status: "read")
     }

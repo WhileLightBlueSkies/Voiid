@@ -382,6 +382,8 @@ class ChatEngine private constructor(context: Context) {
     /** Apply a delivery/read receipt to one of OUR sent messages (persisted, never
      *  downgraded). Returns the conversation id so the UI can refresh just that chat. */
     fun applyReceipt(messageId: String, status: String): String? {
+        ensureLoaded()   // a WS receipt can arrive while on the chat LIST (store not yet lazily
+                         // loaded); without this the tick update would be dropped until re-sync.
         val rank = mapOf("sent" to 0, "delivered" to 1, "read" to 2)
         for ((cid, arr) in store) {
             val i = arr.indexOfFirst { it.isMine && (it.serverId == messageId || it.id == messageId) }
