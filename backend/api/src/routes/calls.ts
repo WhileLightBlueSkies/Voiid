@@ -202,6 +202,56 @@ router.post('/group/token', requireAuth, asyncHandler(async (req, res) => {
   return res.json({ url, token, room, identity, ttl_seconds: LIVEKIT_TOKEN_TTL_SECONDS });
 }));
 
+// POST /calls/group/ring  { conversation_id, call_kind } — advertise that a group call
+// STARTED so the other members can join it. A group call has no single callee, so unlike the
+// 1:1 /ring this fans out to EVERY other active member of the conversation. Without this,
+// group calls were "join-only" — a member only ever discovered a call by independently
+// opening the same chat and tapping call while the starter happened to still be connected,
+// which is why "the call gets sent but no one can join". A WAKE push (NOT VoIP) is used so it
+// surfaces as a tappable "join" notification rather than forcing an iOS CallKit report (a
+// group call has no single peer to report). Foreground clients also receive the data payload.
+router.post('/group/ring', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id } = (req as any).auth;
+  const { conversation_id, call_kind } = req.body ?? {};
+
+  if (typeof conversation_id !== 'string' || !UUID_RE.test(conversation_id)) {
+    return res.status(400).json({ error: 'conversation_id must be a uuid' });
+  }
+  if (call_kind !== 'voice' && call_kind !== 'video') {
+    return res.status(400).json({ error: "call_kind must be 'voice' or 'video'" });
+  }
+
+  // Only an active member may ring the group.
+  const caller = await query<{ one: number }>(
+    `select 1 as one from conversation_members
+       where conversation_id = $1 and user_id = $2 and left_at is null`,
+    [conversation_id, user_id]
+  );
+  if (!caller[0]) return res.status(403).json({ error: 'not a member of this conversation' });
+
+  // Every OTHER active member's push-capable devices.
+  const devices = await query<{ push_token: string; push_provider: string }>(
+    `select d.push_token, d.push_provider
+       from devices d
+       join conversation_members m on m.user_id = d.user_id
+      where m.conversation_id = $1 and m.user_id <> $2 and m.left_at is null
+        and d.revoked_at is null and d.push_token is not null and d.push_provider is not null`,
+    [conversation_id, user_id]
+  );
+
+  const meta = {
+    type: 'group_call',
+    conversation_id,
+    call_kind,
+    caller_id: user_id,
+  } as const;
+
+  const wakeTargets = devices.map((d) => ({ push_token: d.push_token, push_provider: d.push_provider }));
+  if (wakeTargets.length) void sendWakePush(wakeTargets, meta);
+
+  return res.json({ rung_devices: wakeTargets.length });
+}));
+
 // --- Anonymous call-quality metrics (Section 4.14) ---------------------------------
 //
 // WHY THIS EXISTS: "did the call connect, how fast, did it hold up, did it need a

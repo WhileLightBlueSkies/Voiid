@@ -213,6 +213,15 @@ final class GroupCallService: NSObject, ObservableObject {
         configureAudioSession()
         subscribeToEpochChanges(conversationId: conversationId)
         state = .connected
+
+        // Advertise to the other members so they get a "join" notification — without this the
+        // call is join-only and no one else learns it started.
+        struct RingBody: Encodable { let conversation_id: String; let call_kind: String }
+        Task {
+            _ = try? await api.request("POST", "calls/group/ring",
+                body: RingBody(conversation_id: conversationId,
+                               call_kind: isVideo ? "video" : "voice")) as EmptyResponse
+        }
         startTicking()
         refreshParticipants()
     }

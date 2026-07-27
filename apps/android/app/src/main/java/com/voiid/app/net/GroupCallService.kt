@@ -217,6 +217,11 @@ object GroupCallManager {
         }
         if (_state.value == null) { teardown(); return }
 
+        // Advertise the call to the other members so they get a "join" notification — without
+        // this the call is join-only and nobody else ever learns it started.
+        runCatching { ringGroup(ctx, conversationId, kind) }
+            .onFailure { Log.w("VOIID", "group call: ring fan-out failed (call still usable)", it) }
+
         // 4) Publish. Mic always; camera only for a video call.
         runCatching { r.localParticipant.setMicrophoneEnabled(true) }
             .onFailure { Log.e("VOIID", "group call: mic publish failed", it) }
@@ -454,6 +459,16 @@ object GroupCallManager {
         return api.requestAs("POST", "calls/group/token", jsonBody = body)
     }
 
+    /** Fan out a "group call started" push to the other members so they can join. */
+    private suspend fun ringGroup(ctx: Context, conversationId: String, kind: CallKind) {
+        val api = ApiClient(TokenStore.get(ctx))
+        val body = ApiClient.json.encodeToString(
+            GroupRingBody.serializer(),
+            GroupRingBody(conversationId, if (kind == CallKind.VIDEO) "video" else "voice"),
+        )
+        api.request("POST", "calls/group/ring", jsonBody = body)
+    }
+
     /** Key slot in LiveKit's key ring. We only ever use one (the MLS-derived shared key). */
     private const val KEY_INDEX = 0
     private const val ERROR_LINGER_MS = 4000L
@@ -461,6 +476,7 @@ object GroupCallManager {
     private const val EPOCH_DEBOUNCE_MS = 250L
 
     @Serializable private data class GroupTokenBody(val conversation_id: String)
+    @Serializable private data class GroupRingBody(val conversation_id: String, val call_kind: String)
 
     @Serializable
     private data class GroupTokenResponse(
