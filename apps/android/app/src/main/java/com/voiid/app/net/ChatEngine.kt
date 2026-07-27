@@ -132,6 +132,10 @@ class ChatEngine private constructor(context: Context) {
         /** Delivery state of OUR sent message: "sent"/"delivered"/"read". Persisted
          *  so it never regresses when the message list is rebuilt. */
         val deliveryStatus: String? = null,
+        /** When the message reached the recipient / was read (epoch millis) — stamped once
+         *  each as receipts arrive, persisted, so the Message Info sheet shows real times. */
+        val deliveredAt: Long? = null,
+        val readAt: Long? = null,
         /** Per-USER reactions (userId -> emoji), so two people can react differently. */
         val reactions: Map<String, String>? = null,
         /** Delete-for-everyone tombstone from the original author. */
@@ -390,7 +394,12 @@ class ChatEngine private constructor(context: Context) {
             if (i >= 0) {
                 val cur = arr[i].deliveryStatus ?: "sent"
                 if ((rank[status] ?: 0) > (rank[cur] ?: 0)) {
-                    arr[i] = arr[i].copy(deliveryStatus = status)
+                    // Stamp the transition time ONCE (for the Message Info sheet). "read"
+                    // implies delivered, so backfill a missing deliveredAt too.
+                    val now = System.currentTimeMillis()
+                    val delivered = arr[i].deliveredAt ?: if (status == "delivered" || status == "read") now else null
+                    val read = arr[i].readAt ?: if (status == "read") now else null
+                    arr[i] = arr[i].copy(deliveryStatus = status, deliveredAt = delivered, readAt = read)
                     persist()
                 }
                 return cid

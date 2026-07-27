@@ -27,6 +27,9 @@ struct MessageInfoSheet: View {
                 }
 
                 VStack(spacing: 0) {
+                    infoRow(icon: "checkmark", color: VoiidColor.textSecondary,
+                            label: "Sent", time: message.createdAt)
+                    Divider().background(VoiidColor.divider.opacity(0.4))
                     infoRow(icon: "checkmark.circle", color: VoiidColor.textSecondary,
                             label: "Delivered", time: message.deliveredAt)
                     Divider().background(VoiidColor.divider.opacity(0.4))
@@ -71,6 +74,9 @@ struct MessageInfoSheet: View {
     }
 
     private func timeString(_ d: Date) -> String {
-        let f = DateFormatter(); f.dateFormat = "h:mm a"; return f.string(from: d)
+        let f = DateFormatter()
+        // Today → just the time; otherwise date + time, so the metadata is unambiguous.
+        f.dateFormat = Calendar.current.isDateInToday(d) ? "h:mm a" : "d MMM, h:mm a"
+        return f.string(from: d)
     }
 }

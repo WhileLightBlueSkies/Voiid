@@ -174,6 +174,8 @@ fun MessageInfoSheet(message: VMessage, isGroup: Boolean, onDismiss: () -> Unit)
             Column(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(VoiidRadius.lg)).background(VoiidColor.surfaceCard),
             ) {
+                InfoRow(Icons.Default.Check, VoiidColor.textSecondary, "Sent", message.createdAt)
+                HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.4f))
                 InfoRow(Icons.Outlined.Circle, VoiidColor.textSecondary, "Delivered", message.deliveredAt)
                 HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.4f))
                 InfoRow(Icons.Default.CheckCircle, VoiidColor.primary, "Read", message.readAt)

@@ -88,6 +88,11 @@ struct DecryptedMessage: Codable {
     /// Delivery state of OUR sent message: "sent" → "delivered" → "read". Persisted
     /// so it never regresses when the message list is rebuilt.
     var deliveryStatus: String? = nil
+    /// When the message reached the recipient's device / was read — stamped the moment we
+    /// learn of each receipt, and persisted, so the Message Info sheet shows real Delivered /
+    /// Read times (not a placeholder). Only ever set once each (never overwritten).
+    var deliveredAt: Date? = nil
+    var readAt: Date? = nil
     /// True for a tombstone (decrypt failed). NOT counted as "seen" so it's retried
     /// on later syncs — once the session re-establishes it can finally decrypt.
     var failed: Bool = false
@@ -846,6 +851,14 @@ final class ChatEngine {
                 let cur = arr[i].deliveryStatus ?? "sent"
                 if (rank[status] ?? 0) > (rank[cur] ?? 0) {
                     arr[i].deliveryStatus = status
+                    // Stamp the transition time ONCE (for the Message Info sheet). "read"
+                    // implies delivered, so backfill a missing deliveredAt too.
+                    let now = Date()
+                    if status == "delivered", arr[i].deliveredAt == nil { arr[i].deliveredAt = now }
+                    if status == "read" {
+                        if arr[i].readAt == nil { arr[i].readAt = now }
+                        if arr[i].deliveredAt == nil { arr[i].deliveredAt = now }
+                    }
                     store[cid] = arr
                     persist()
                 }

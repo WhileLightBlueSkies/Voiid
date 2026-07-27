@@ -322,6 +322,8 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                 status = status, isMine = d.isMine, mediaRef = d.media, location = d.location,
                 reaction = reaction, deletedForEveryone = d.deletedForEveryone, forwarded = d.forwarded,
                 replyToText = d.quotedPreview, replyToSender = d.quotedSender,
+                // Real Delivered / Read times for the Message Info sheet.
+                deliveredAt = d.deliveredAt, readAt = d.readAt,
             )
         }
         if (mapped.isNotEmpty() || messagesByConversation.containsKey(convId)) {

@@ -447,6 +447,9 @@ final class ChatStore: ObservableObject {
                               kind: kind, text: d.text, createdAt: d.createdAt,
                               status: status, isMine: d.isMine,
                               mediaRef: d.media, location: locRef)
+            // Real Delivered / Read times for the Message Info sheet (nil until each receipt).
+            vm.deliveredAt = d.deliveredAt
+            vm.readAt = d.readAt
             // Surface delivered chat actions onto the bubble.
             vm.deletedForEveryone = d.deletedForEveryone ?? false
             vm.forwarded = d.forwarded ?? false
