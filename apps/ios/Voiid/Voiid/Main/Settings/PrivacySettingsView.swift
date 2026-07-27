@@ -56,6 +56,27 @@ struct PrivacySettingsView: View {
     var body: some View {
         List {
 
+            // MARK: Who can see (server-enforced visibility)
+
+            SettingsSection(
+                "Who can see my info",
+                footer: """
+                    Choose who can see your last seen & online, profile photo, and about. \
+                    “My Contacts” means people you’ve saved. This is enforced on the server — \
+                    other people won’t receive what you hide.
+                    """
+            ) {
+                Picker("Last seen & online", selection: $settings.lastSeenVisibility) {
+                    ForEach(PrivacySettings.Visibility.allCases) { Text($0.label).tag($0) }
+                }
+                Picker("Profile photo", selection: $settings.photoVisibility) {
+                    ForEach(PrivacySettings.Visibility.allCases) { Text($0.label).tag($0) }
+                }
+                Picker("About", selection: $settings.aboutVisibility) {
+                    ForEach(PrivacySettings.Visibility.allCases) { Text($0.label).tag($0) }
+                }
+            }
+
             // MARK: Message receipts
 
             SettingsSection(

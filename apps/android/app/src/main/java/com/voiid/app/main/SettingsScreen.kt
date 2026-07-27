@@ -26,15 +26,17 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.RemoveRedEye
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -72,6 +74,7 @@ import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -89,6 +92,10 @@ fun SettingsScreen(
     session: AppSession,
     onClose: () -> Unit,
     onBackupRecovery: () -> Unit,
+    onPrivacy: () -> Unit,
+    onStorage: () -> Unit,
+    onLinkedDevices: () -> Unit,
+    onAbout: () -> Unit,
 ) {
     val haptics = LocalVoiidHaptics.current
     val context = LocalContext.current
@@ -110,6 +117,9 @@ fun SettingsScreen(
                 }
                 if (bytes == null) "Couldn't read that photo." else {
                     val key = MediaService(TokenStore.get(context)).uploadProfilePhoto(bytes)
+                    // Local-first: cache the bytes we just uploaded under the key so the avatar
+                    // shows INSTANTLY everywhere — no presigned re-download (the 15–20s wait).
+                    MediaCache.putData(context, key, bytes)
                     session.updateProfile(photoUrl = key)   // local first
                     ProfileService(context).updateProfile(photoUrl = key)
                     null
@@ -131,6 +141,43 @@ fun SettingsScreen(
         scope.launch {
             errorText = runCatching { ProfileService(context).updateProfile(fullName = name) }
                 .fold({ null }, { "Saved on this device — will sync when you're back online." })
+        }
+    }
+
+    // --- About / bio ---
+    var editingBio by remember { mutableStateOf(false) }
+    var draftBio by remember { mutableStateOf(session.profile.bio ?: "") }
+    fun saveBio() {
+        val b = draftBio.trim().take(140)
+        session.updateProfile(bio = b)            // local first
+        editingBio = false
+        scope.launch { runCatching { ProfileService(context).updateProfile(bio = b) } }
+    }
+
+    // --- Username (@handle) with live availability ---
+    var editingUsername by remember { mutableStateOf(false) }
+    var draftUsername by remember { mutableStateOf(session.profile.username ?: "") }
+    var usernameAvailable by remember { mutableStateOf<Boolean?>(null) }
+    var checkingUsername by remember { mutableStateOf(false) }
+    // Debounced availability check.
+    LaunchedEffect(draftUsername, editingUsername) {
+        usernameAvailable = null
+        val u = draftUsername.trim().lowercase()
+        if (!editingUsername || u == (session.profile.username ?: "") || u.length < 3) { checkingUsername = false; return@LaunchedEffect }
+        checkingUsername = true
+        delay(500)
+        usernameAvailable = runCatching { ProfileService(context).checkUsername(u).available }.getOrNull()
+        checkingUsername = false
+    }
+    fun saveUsername() {
+        val u = draftUsername.trim().lowercase().filter { it.isLetterOrDigit() || it == '_' }.take(20)
+        if (u == (session.profile.username ?: "")) { editingUsername = false; return }
+        if (usernameAvailable == false) return
+        session.updateProfile(username = u)       // local first
+        editingUsername = false
+        scope.launch {
+            errorText = runCatching { ProfileService(context).updateProfile(username = u) }
+                .fold({ null }, { "That username was just taken. Pick another." })
         }
     }
 
@@ -250,6 +297,63 @@ fun SettingsScreen(
                         style = VoiidFont.rounded(14), color = VoiidColor.textSecondary,
                     )
                 }
+
+                // Username (@handle) — tap to edit, with live availability.
+                if (editingUsername) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("@", style = VoiidFont.rounded(15), color = VoiidColor.textSecondary)
+                        BasicTextField(
+                            value = draftUsername,
+                            onValueChange = { draftUsername = it.lowercase().filter { c -> c.isLetterOrDigit() || c == '_' }.take(20) },
+                            singleLine = true,
+                            textStyle = VoiidFont.rounded(15).copy(color = VoiidColor.textPrimary),
+                            cursorBrush = androidx.compose.ui.graphics.SolidColor(VoiidColor.primary),
+                        )
+                        when {
+                            checkingUsername -> Text("…", style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
+                            usernameAvailable == false -> Text("taken", style = VoiidFont.rounded(12), color = VoiidColor.error)
+                            usernameAvailable == true -> Text("✓", style = VoiidFont.rounded(13), color = VoiidColor.primary)
+                        }
+                        Text("Save", style = VoiidFont.rounded(13, FontWeight.SemiBold),
+                            color = VoiidColor.primary,
+                            modifier = Modifier.softClickable { haptics.tap(); saveUsername() })
+                    }
+                } else {
+                    Text(
+                        if (session.profile.username.isNullOrBlank()) "Add a username" else "@${session.profile.username}",
+                        style = VoiidFont.rounded(14),
+                        color = if (session.profile.username.isNullOrBlank()) VoiidColor.primary else VoiidColor.textSecondary,
+                        modifier = Modifier.softClickable {
+                            haptics.tap(); draftUsername = session.profile.username ?: ""; editingUsername = true
+                        },
+                    )
+                }
+
+                // About / bio — tap to edit.
+                if (editingBio) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        BasicTextField(
+                            value = draftBio,
+                            onValueChange = { draftBio = it.take(140) },
+                            textStyle = VoiidFont.rounded(14).copy(color = VoiidColor.textPrimary, textAlign = TextAlign.Center),
+                            cursorBrush = androidx.compose.ui.graphics.SolidColor(VoiidColor.primary),
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+                        )
+                        Text("Save", style = VoiidFont.rounded(13, FontWeight.SemiBold), color = VoiidColor.primary,
+                            modifier = Modifier.padding(top = 4.dp).softClickable { haptics.tap(); saveBio() })
+                    }
+                } else {
+                    Text(
+                        session.profile.bio?.takeIf { it.isNotBlank() } ?: "Add a few words about you",
+                        style = VoiidFont.rounded(13),
+                        color = if (session.profile.bio.isNullOrBlank()) VoiidColor.primary else VoiidColor.textSecondary,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.softClickable {
+                            haptics.tap(); draftBio = session.profile.bio ?: ""; editingBio = true
+                        },
+                    )
+                }
+
                 errorText?.let {
                     Text(
                         it, style = VoiidFont.rounded(13), color = VoiidColor.error,
@@ -265,9 +369,21 @@ fun SettingsScreen(
             ) {
                 SettingsRow(Icons.Default.VerifiedUser, "Backup & Recovery") { onClose(); onBackupRecovery() }
                 SettingsDivider()
-                SettingsRow(Icons.Default.Notifications, "Notifications") {}
+                SettingsRow(Icons.Default.PhoneAndroid, "Linked Devices") { onClose(); onLinkedDevices() }
                 SettingsDivider()
-                SettingsRow(Icons.Default.Lock, "Privacy") {}
+                // Android owns Voiid's notification behaviour entirely (no in-app toggle
+                // duplicates the OS channel list) — this jumps straight to Voiid's
+                // notification settings pane, mirroring iOS's
+                // UIApplication.openNotificationSettingsURLString deep link.
+                SettingsRow(Icons.Default.Notifications, "Notifications") {
+                    val intent = android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                        .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+                    runCatching { context.startActivity(intent) }
+                }
+                SettingsDivider()
+                SettingsRow(Icons.Default.Lock, "Privacy") { onClose(); onPrivacy() }
+                SettingsDivider()
+                SettingsRow(Icons.Default.Storage, "Storage") { onClose(); onStorage() }
                 SettingsDivider()
                 // Stories: view-receipts opt-in (default OFF). Sending one tells the SERVER you
                 // opened someone's story at time T — a fact it otherwise never learns, with no
@@ -275,7 +391,7 @@ fun SettingsScreen(
                 // none. Written straight to the shared story prefs (see StoryPrefs).
                 StoryReceiptsRow()
                 SettingsDivider()
-                SettingsRow(Icons.AutoMirrored.Filled.HelpOutline, "Help") {}
+                SettingsRow(Icons.Default.Info, "About") { onClose(); onAbout() }
             }
 
             // ---- danger
@@ -369,9 +485,13 @@ fun ProfileAvatar(
     LaunchedEffect(photoUrl) {
         val key = photoUrl?.takeIf { it.isNotBlank() && !it.startsWith("http") } ?: return@LaunchedEffect
         if (bitmap != null) return@LaunchedEffect
+        // Local-first: disk (off main thread) → only then network. A photo you uploaded or
+        // saw once renders instantly and offline, no presigned re-download.
+        withContext(Dispatchers.IO) { MediaCache.image(context, key) }?.let { bitmap = it; return@LaunchedEffect }
         runCatching {
             val bytes = MediaService(TokenStore.get(context)).download(key)
-            val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return@runCatching
+            MediaCache.putData(context, key, bytes)   // persist the plaintext bytes
+            val bmp = withContext(Dispatchers.IO) { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) } ?: return@runCatching
             val ib: ImageBitmap = bmp.asImageBitmap()
             MediaCache.putImage(key, ib)
             bitmap = ib

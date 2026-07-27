@@ -46,7 +46,11 @@ enum LocationKind: String, Codable {
 /// discriminator that makes a location envelope recognisable on the GROUP/MLS path,
 /// where `content_type` is always "group" and cannot be used to tag it.
 struct LocationEnvelope: Codable {
-    var vloc: Int = 1
+    // Optional so decoding SUCCEEDS when `_vloc` is absent — Android omits it from the wire
+    // (encodeDefaults=false), and a non-optional would make Swift's synthesized decoder throw
+    // on the missing key, dropping every Android-sent pin/live/fix. `k` (a required, typed
+    // enum) is the real discriminator. Still emitted as 1 on our own sends.
+    var vloc: Int? = 1
     var k: LocationKind
     var s: String?              // share_id (uuid); omitted for k == .pin
     var t: Double               // epoch MILLIS this envelope was produced
@@ -73,7 +77,7 @@ struct LocationEnvelope: Codable {
     static func parse(_ plain: String) -> LocationEnvelope? {
         guard let data = plain.data(using: .utf8),
               let env = try? JSONDecoder().decode(LocationEnvelope.self, from: data),
-              env.vloc == 1 else { return nil }
+              (env.vloc ?? 1) == 1 else { return nil }
         return env
     }
 

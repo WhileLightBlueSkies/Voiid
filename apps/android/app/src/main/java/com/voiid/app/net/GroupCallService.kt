@@ -153,6 +153,12 @@ object GroupCallManager {
         }
 
         // 2) Derive the MLS call key BEFORE connecting, so the room is E2EE from frame one.
+        //    First process any pending group events (Welcome/Commit): a device that was added
+        //    to the group but hasn't opened the chat yet holds NO local MLS state, so callKey
+        //    would return null and the call would be refused with "encryption not set up".
+        //    Establishing the group here makes the call work without the user first opening
+        //    the chat (which is what the old error message told them to do by hand).
+        runCatching { GroupEngine.get(ctx).syncGroupEvents() }
         val keyB64 = runCatching { GroupEngine.get(ctx).callKey(conversationId) }.getOrNull()
         if (keyB64 == null) {
             // Connecting without E2EE would hand plaintext media to the SFU. That contradicts

@@ -35,12 +35,15 @@ struct GroupInfoView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
         .tint(VoiidColor.primary)
+        // Hide on appear; do NOT reset on disappear — popping back to the CHAT (also a
+        // detail) must keep the bar hidden. It is restored when a root tab page appears
+        // (ChatDetailView.onDisappear + each tab root's onAppear).
         .onAppear { session.hideTabBar = true }
         .task { await loadMembers() }
         .fullScreenCover(isPresented: $viewPhoto) {
             ProfilePhotoViewer(title: conversation.title, imageName: conversation.photoName) { viewPhoto = false }
         }
-        .sheet(isPresented: $showAllMedia) { SharedMediaSheet(title: conversation.title) }
+        .sheet(isPresented: $showAllMedia) { SharedMediaSheet(title: conversation.title, conversationId: conversation.id) }
         .confirmationDialog(memberAction?.name ?? "", isPresented: Binding(
             get: { memberAction != nil }, set: { if !$0 { memberAction = nil } }),
             titleVisibility: .visible) {
@@ -85,22 +88,36 @@ struct GroupInfoView: View {
         .padding(.vertical, VoiidSpacing.md)
     }
 
-    // Shared media / links / docs
+    /// Recent shared PHOTOS in this group, newest first — real, from the message store.
+    private var recentPhotos: [MediaRef] {
+        Array(ChatEngine.shared.messages(conversationId: conversation.id)
+            .compactMap { $0.media }.filter { $0.mime.hasPrefix("image/") }
+            .reversed().prefix(6))
+    }
+
+    // Shared media / links / docs — real conversation media (never dummy).
     private var sharedMediaCard: some View {
         card {
             HStack {
                 Text("Media, links & docs").font(VoiidFont.rounded(15, .semibold)).foregroundColor(VoiidColor.textPrimary)
                 Spacer()
-                Button("See all") { Haptics.tap(); showAllMedia = true }
-                    .font(VoiidFont.rounded(13, .regular)).foregroundColor(VoiidColor.primary)
+                if !recentPhotos.isEmpty {
+                    Button("See all") { Haptics.tap(); showAllMedia = true }
+                        .font(VoiidFont.rounded(13, .regular)).foregroundColor(VoiidColor.primary)
+                }
             }
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: VoiidSpacing.sm) {
-                    ForEach(DummyData.sharedMedia.prefix(6)) { _ in
-                        RoundedRectangle(cornerRadius: VoiidRadius.md)
-                            .fill(VoiidColor.accent.opacity(0.35))
-                            .frame(width: 72, height: 72)
-                            .overlay(Image(systemName: "photo").foregroundColor(VoiidColor.primary))
+            if recentPhotos.isEmpty {
+                Text("No media shared yet")
+                    .font(VoiidFont.rounded(13, .regular)).foregroundColor(VoiidColor.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: VoiidSpacing.sm) {
+                        ForEach(recentPhotos, id: \.mediaUrl) { ref in
+                            SharedMediaThumb(ref: ref)
+                                .frame(width: 72, height: 72).clipped()
+                                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md))
+                        }
                     }
                 }
             }

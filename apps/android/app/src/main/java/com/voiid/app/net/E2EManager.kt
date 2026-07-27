@@ -41,6 +41,20 @@ class E2EManager private constructor(context: Context) {
     val deviceId: String? get() = _deviceId ?: prefs.getString("device_id", null)
     @Volatile private var bootstrapped = false
 
+    /**
+     * Called by [SessionTeardown] before the next account signs in on this device. Without
+     * this, `bootstrapped` stays true and the next account's [bootstrap] returns immediately,
+     * silently reusing the PREVIOUS account's identity — mirrors iOS
+     * `E2EManager.resetForSignOut()`. Wipes the identity pickle, pickle key, device id and
+     * prekey-id counters so the next bootstrap generates a fresh Identity from scratch.
+     */
+    fun resetForSignOut() {
+        bootstrapped = false
+        identity = null
+        _deviceId = null
+        prefs.edit().clear().apply()
+    }
+
     /** Ensure this device has a published e2e-core identity. Idempotent per session. */
     suspend fun bootstrap() {
         if (bootstrapped) return

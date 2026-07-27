@@ -1,6 +1,9 @@
 package com.voiid.app.main
 
+import android.content.Context
 import android.graphics.BitmapFactory
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import android.media.MediaPlayer
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -46,10 +49,53 @@ import java.io.File
 object MediaCache {
     private val images = HashMap<String, ImageBitmap>()
     private val datas = HashMap<String, ByteArray>()
+
+    // In-memory tier (instant re-render within a process).
     fun image(k: String) = images[k]
     fun putImage(k: String, v: ImageBitmap) { images[k] = v }
     fun data(k: String) = datas[k]
-    fun putData(k: String, v: ByteArray) { datas[k] = v }
+
+    // Disk tier: DECRYPTED media persisted under the app's private files dir, so a photo/voice
+    // note seen once (or one you sent) renders instantly and WITHOUT the network across
+    // restarts — the WhatsApp behaviour. The plaintext bytes are cached, so the render path
+    // never re-downloads or re-decrypts.
+    private fun dir(ctx: Context) = java.io.File(ctx.filesDir, "media").apply { mkdirs() }
+    private fun fileFor(ctx: Context, key: String): java.io.File {
+        val name = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(key.toByteArray()).joinToString("") { "%02x".format(it) }
+        return java.io.File(dir(ctx), name)
+    }
+
+    /** Bytes from memory → disk (promoting to memory), or null. Disk read should run off the main thread. */
+    fun data(ctx: Context, k: String): ByteArray? {
+        datas[k]?.let { return it }
+        val f = fileFor(ctx, k)
+        if (!f.exists()) return null
+        val b = runCatching { f.readBytes() }.getOrNull() ?: return null
+        datas[k] = b
+        return b
+    }
+
+    fun putData(ctx: Context, k: String, v: ByteArray) {
+        datas[k] = v
+        runCatching { fileFor(ctx, k).writeBytes(v) }
+    }
+
+    /** Decoded bitmap from memory → disk, or null. Decode should run off the main thread. */
+    fun image(ctx: Context, k: String): ImageBitmap? {
+        images[k]?.let { return it }
+        val b = data(ctx, k) ?: return null
+        val bmp = BitmapFactory.decodeByteArray(b, 0, b.size) ?: return null
+        val ib = bmp.asImageBitmap()
+        images[k] = ib
+        return ib
+    }
+
+    /** Drop every decrypted byte, memory AND disk (called on sign-out). */
+    fun clear(ctx: Context) {
+        images.clear(); datas.clear()
+        runCatching { dir(ctx).deleteRecursively() }
+    }
 }
 
 @Composable
@@ -60,9 +106,13 @@ fun AsyncMediaImage(ref: ChatEngine.MediaRef) {
 
     LaunchedEffect(ref.mediaUrl) {
         if (bitmap != null) return@LaunchedEffect
+        // Local-first: disk (off the main thread) → only then network. Offline, a photo seen
+        // once or one you sent renders straight from disk with no spinner.
+        withContext(Dispatchers.IO) { MediaCache.image(context, ref.mediaUrl) }?.let { bitmap = it; return@LaunchedEffect }
         runCatching {
             val bytes = ChatEngine.get(context).fetchMedia(ref)
-            val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            MediaCache.putData(context, ref.mediaUrl, bytes)   // persist the plaintext bytes
+            val bmp = withContext(Dispatchers.IO) { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
             if (bmp != null) { val ib = bmp.asImageBitmap(); MediaCache.putImage(ref.mediaUrl, ib); bitmap = ib }
             else failed = true
         }.onFailure { failed = true }
@@ -91,7 +141,9 @@ fun AsyncVoiceNote(ref: ChatEngine.MediaRef?, label: String) {
     LaunchedEffect(ref?.mediaUrl) {
         val r = ref ?: return@LaunchedEffect
         if (bytes != null) return@LaunchedEffect
-        runCatching { val d = ChatEngine.get(context).fetchMedia(r); MediaCache.putData(r.mediaUrl, d); bytes = d }
+        // Local-first: disk (off the main thread) → only then network.
+        withContext(Dispatchers.IO) { MediaCache.data(context, r.mediaUrl) }?.let { bytes = it; return@LaunchedEffect }
+        runCatching { val d = ChatEngine.get(context).fetchMedia(r); MediaCache.putData(context, r.mediaUrl, d); bytes = d }
     }
     DisposableEffect(Unit) { onDispose { player?.release() } }
 

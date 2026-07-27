@@ -43,8 +43,18 @@ final class VoiidDatabase {
     private init() {
         do {
             pool = try Self.open()
+            // Loud, unmissable proof the local DB opened, WHERE it lives, and what it holds.
+            // If you ever see "local database UNAVAILABLE" instead, that is why nothing is
+            // storing locally — every read/write silently no-ops on a nil pool.
+            let counts = try? pool?.read { db -> String in
+                let convs = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM conversations") ?? 0
+                let msgs = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM messages") ?? 0
+                let users = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM users") ?? 0
+                return "conversations=\(convs) messages=\(msgs) users=\(users)"
+            }
+            NSLog("[VOIID] ✅ local DB OPEN at \(Self.databaseURL.path) — \(counts ?? "?") | appGroup=\(AppGroup.containerURL != nil)")
         } catch {
-            NSLog("[VOIID] local database unavailable: \(error.localizedDescription)")
+            NSLog("[VOIID] ❌ local database UNAVAILABLE (nothing will persist): \(error)")
             pool = nil
         }
     }
@@ -195,6 +205,15 @@ final class VoiidDatabase {
         // Feature (A) — location IN conversations. Its own identified migration
         // (`v2_location`), appended independently; body in Storage/LocationSchema.swift.
         LocationSchema.register(&m)
+
+        // Denormalized last-message preview on the conversation row, so the chat LIST renders
+        // instantly from SQLite alone — it never has to load or decode the message store to
+        // show each chat's snippet. Kept fresh at write time (LocalStore.updatePreview).
+        m.registerMigration("v3_conversation_preview") { db in
+            try db.alter(table: "conversations") { t in
+                t.add(column: "last_message_preview", .text)
+            }
+        }
 
         return m
     }

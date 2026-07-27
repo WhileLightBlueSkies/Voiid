@@ -218,9 +218,20 @@ private fun VisiblePill(visible: Boolean, audienceCount: Int, onClick: () -> Uni
  */
 @Composable
 private fun MapCanvas(onMap: List<MapSubject>) {
+    val context = LocalContext.current
     var loaded by remember { mutableStateOf(false) }
     var watchdogFired by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { delay(6_000); if (!loaded) watchdogFired = true }
+
+    // The "my location" layer + recenter button need a granted location permission — Google
+    // Maps throws a SecurityException if enabled without it. Ghost Mode does NOT gate this:
+    // seeing your OWN dot is client-side and unrelated to what you broadcast.
+    val hasLocationPermission = androidx.core.content.ContextCompat.checkSelfPermission(
+        context, Manifest.permission.ACCESS_FINE_LOCATION,
+    ) == android.content.pm.PackageManager.PERMISSION_GRANTED ||
+        androidx.core.content.ContextCompat.checkSelfPermission(
+            context, Manifest.permission.ACCESS_COARSE_LOCATION,
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
 
     val first = onMap.firstOrNull()?.fix
     val camera = rememberCameraPositionState {
@@ -234,8 +245,20 @@ private fun MapCanvas(onMap: List<MapSubject>) {
         GoogleMap(
             modifier = Modifier.fillMaxSize(),
             cameraPositionState = camera,
-            properties = MapProperties(mapType = MapType.NORMAL),
-            uiSettings = MapUiSettings(zoomControlsEnabled = false, mapToolbarEnabled = false),
+            // Snapchat-style skin: a muted, de-saturated map so the friend markers are the
+            // focus, not the streets — the Google Maps parallel of iOS's `.emphasis(.muted)`.
+            properties = MapProperties(
+                mapType = MapType.NORMAL,
+                mapStyleOptions = com.google.android.gms.maps.model.MapStyleOptions(VOIID_MAP_STYLE),
+                // Your own blue dot — shown whenever we hold the permission, Ghost Mode or not.
+                isMyLocationEnabled = hasLocationPermission,
+            ),
+            uiSettings = MapUiSettings(
+                zoomControlsEnabled = false,
+                mapToolbarEnabled = false,
+                // Native "recenter on me" button (top-right), enabled with the location layer.
+                myLocationButtonEnabled = hasLocationPermission,
+            ),
             onMapLoaded = { loaded = true },
         ) {
             for (s in onMap) {
@@ -330,3 +353,26 @@ private fun openInMaps(context: android.content.Context, lat: Double, lon: Doubl
     val uri = android.net.Uri.parse("geo:$lat,$lon?q=$lat,$lon(${android.net.Uri.encode(label)})")
     runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, uri)) }
 }
+
+/**
+ * Snapchat-style muted map skin (Google Maps style JSON). De-saturates roads, labels and
+ * landscape and softens water, so the friend avatars/markers are the visual focus rather
+ * than a busy street map. The parallel of iOS MapKit's `.emphasis(.muted)`.
+ */
+private const val VOIID_MAP_STYLE: String = """
+[
+  {"elementType":"geometry","stylers":[{"saturation":-70},{"lightness":10}]},
+  {"elementType":"labels.icon","stylers":[{"visibility":"off"}]},
+  {"elementType":"labels.text.fill","stylers":[{"color":"#8a8a8f"}]},
+  {"elementType":"labels.text.stroke","stylers":[{"color":"#f5f5f7"}]},
+  {"featureType":"poi","stylers":[{"visibility":"off"}]},
+  {"featureType":"transit","stylers":[{"visibility":"off"}]},
+  {"featureType":"road","elementType":"geometry","stylers":[{"color":"#e9e9ec"}]},
+  {"featureType":"road.arterial","elementType":"geometry","stylers":[{"color":"#e2e2e6"}]},
+  {"featureType":"road.highway","elementType":"geometry","stylers":[{"color":"#dcdce0"}]},
+  {"featureType":"road","elementType":"labels","stylers":[{"visibility":"simplified"}]},
+  {"featureType":"landscape","elementType":"geometry","stylers":[{"color":"#f2f2f4"}]},
+  {"featureType":"water","elementType":"geometry","stylers":[{"color":"#cfe3ec"},{"saturation":-40}]},
+  {"featureType":"administrative","elementType":"geometry","stylers":[{"visibility":"off"}]}
+]
+"""

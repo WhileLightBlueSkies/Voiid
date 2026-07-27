@@ -32,7 +32,6 @@ struct ChatsHomeView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                header
                 searchBar
                 tabs
                 // "You are sharing your location" — pinned below the tabs, visible from the
@@ -100,12 +99,50 @@ struct ChatsHomeView: View {
                 }
             }
             .background(VoiidColor.background.ignoresSafeArea())
+            // Native large title + toolbar (replaces the hand-drawn header): the system draws
+            // the "Chats" title and the bar; we only supply the leading profile avatar (→
+            // Settings) and the trailing compose action.
+            .navigationTitle("Chats")
+            .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { Haptics.tap(); showSettings = true } label: {
+                        ProfileAvatarButton(photoURL: session.profile.photoURL,
+                                            name: session.profile.fullName, size: 32)
+                    }
+                    // Show the avatar BARE — no iOS 26 glass ring / button chrome around it.
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Profile and settings")
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        Haptics.tap()
+                        if tab == .groups { showNewGroup = true } else { showNewChat = true }
+                    } label: {
+                        Image(systemName: tab == .groups ? "person.3.fill" : "square.and.pencil")
+                    }
+                    .accessibilityLabel(tab == .groups ? "New group" : "New chat")
+                }
+            }
             .onAppear { session.hideTabBar = false }   // root screen always shows the bar
             .task {
-                try? await E2EManager.shared.bootstrap()   // ensure identity/prekeys published (idempotent)
+                // INSTANT FIRST: render the cached (local) chat list before ANY network or
+                // address-book work. loadConversations() reads local storage synchronously up
+                // front, so the list appears immediately; the network sync inside it continues
+                // after. Nothing slow may run before this — that was the 8–15s "not instant" bug
+                // (contact discovery + profile fetch were awaited ahead of the render).
+                await chat.loadConversations()
+
+                // Everything below is background/best-effort and must NEVER block the list.
                 WebSocketClient.shared.reconnect()         // fresh socket (avoid a stale/dead one missing pushes)
                 LocationShareEngine.shared.configure()     // route inbound live fixes + start the expiry ticker
-                await chat.loadConversations()              // load REAL conversations from backend
+                MapPresenceEngine.shared.configureControlSender()   // hand map_key/map_off to the audience over the ratchet
+                Task { try? await E2EManager.shared.bootstrap() }   // publish identity/prekeys (idempotent)
+                Task { await session.refreshServerProfile() }       // REAL name/photo/bio/username
+                // Contact discovery (rebuilds saved-name map after a restore) — SLOW (address
+                // book + hashing + network), so strictly background; when it finishes it
+                // refreshes names in place via UserDirectory.
+                Task { _ = try? await ContactsService.shared.discover() }
             }
             .navigationDestination(item: $openConversation) { ChatDetailView(conversation: $0) }
             .onReceive(NotificationCenter.default.publisher(for: .voiidOpenConversation)) { note in
@@ -164,14 +201,25 @@ struct ChatsHomeView: View {
                     let conversationId: String? = (isGroup && GroupEngine.shared.hasGroup(conversationId: conv.id))
                         ? conv.id
                         : nil
-                    activeCall = CallRequest(
-                        title: conv.title,
-                        isGroup: isGroup,
-                        members: isGroup ? DummyData.groupMembers : [],
-                        photoName: conv.photoName,
-                        kind: kind,
-                        peerUserId: isGroup ? nil : conv.peerUserId,
-                        conversationId: conversationId)
+                    // Load REAL members for the group-call tiles (never DummyData), then start.
+                    Task {
+                        var members: [VMember] = []
+                        if isGroup, let cm = try? await ChatService.shared.members(conversationId: conv.id) {
+                            let myId = TokenStore.shared.userId
+                            members = cm.map { m in
+                                VMember(id: m.userId, name: m.name ?? "VOIID user", phone: "", photoName: nil,
+                                        role: m.isAdmin ? .admin : .member, statusText: nil, isYou: m.userId == myId)
+                            }
+                        }
+                        activeCall = CallRequest(
+                            title: conv.title,
+                            isGroup: isGroup,
+                            members: members,
+                            photoName: conv.photoName,
+                            kind: kind,
+                            peerUserId: isGroup ? nil : conv.peerUserId,
+                            conversationId: conversationId)
+                    }
                 }
             }
             .fullScreenCover(item: $activeCall) { CallScreen(request: $0) }
@@ -208,53 +256,6 @@ struct ChatsHomeView: View {
                 openConversation = conv
             }
         }
-    }
-
-    // Top bar — profile avatar on its own row (top LEFT), title beneath it.
-    //
-    // Two rows rather than one: the avatar is the entry point to settings and wants to
-    // sit at the very top edge, while the "Chats" title reads better dropped below it
-    // as a section heading. Same shape as the large-title pattern users already expect.
-    private var header: some View {
-        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
-            HStack {
-                Button {
-                    Haptics.tap()
-                    showSettings = true
-                } label: {
-                    ProfileAvatarButton(photoURL: session.profile.photoURL,
-                                        name: session.profile.fullName)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Profile and settings")
-                Spacer()
-                headerActions
-            }
-            Text("Chats")
-                .font(VoiidFont.rounded(28, .bold))
-                .foregroundColor(VoiidColor.textPrimary)
-        }
-        .padding(.horizontal, VoiidSpacing.lg)
-        .padding(.top, VoiidSpacing.sm)
-    }
-
-    // Compose only.
-    //
-    // The overflow (hamburger) menu that used to live here is gone. It held a second
-    // "Backup & Recovery" entry point and an UNCONFIRMED "Log out" — one irreversible
-    // action, one tap, no dialog, sitting next to a routine one. Both now live in the
-    // Settings sheet behind the avatar, which is the single entry point; log-out there
-    // is confirmed and runs the local teardown.
-    private var headerActions: some View {
-        Button {
-            Haptics.tap()
-            if tab == .groups { showNewGroup = true } else { showNewChat = true }
-        } label: {
-            Image(systemName: tab == .groups ? "person.3.fill" : "square.and.pencil")
-                .font(.system(size: 20, weight: .medium))
-                .foregroundColor(VoiidColor.textPrimary)
-        }
-        .accessibilityLabel(tab == .groups ? "New group" : "New chat")
     }
 
     private var searchBar: some View {

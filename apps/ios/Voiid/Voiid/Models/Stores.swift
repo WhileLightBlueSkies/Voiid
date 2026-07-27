@@ -16,7 +16,9 @@ import Combine
 final class AppSession: ObservableObject {
     enum Route { case onboarding, main }
     @Published var route: Route
-    @Published var profile = DummyData.me
+    // Empty until the REAL profile loads (loadLocalProfile → refreshServerProfile). Never a
+    // dummy "You / +91 …" placeholder that could flash on screen before the real data arrives.
+    @Published var profile = VUser(id: "me", fullName: "", phoneNumber: "")
     /// Hides the bottom tab bar when a full-screen child (e.g. a chat) is open.
     @Published var hideTabBar = false
 
@@ -26,11 +28,61 @@ final class AppSession: ObservableObject {
     /// is the right tool — it is read during launch, before the database is touched,
     /// and it must never be the reason a launch blocks.
     private static let profileKey = "voiid.me.profile.v1"
+    /// The VERIFIED E.164 phone from the OTP flow. The server never stores the phone, so
+    /// this UserDefaults key is the only source of the user's REAL number.
+    static let verifiedPhoneKey = "voiid.me.phone.e164"
+
+    /// Called from the OTP screen on a successful verification. The one place the real
+    /// number is known.
+    static func saveVerifiedPhone(_ e164: String) {
+        UserDefaults.standard.set(e164, forKey: verifiedPhoneKey)
+    }
 
     init() {
         // Resume straight to the app if we already hold a valid session token.
         route = AuthService.shared.isAuthenticated ? .main : .onboarding
         loadLocalProfile()
+        // Show the REAL verified number, never DummyData's placeholder. Prefer the value
+        // captured at OTP time; fall back to Firebase's persisted signed-in user (covers
+        // accounts that logged in BEFORE we saved it) and persist that for next launch.
+        // Empty (→ "—" in Settings) only if truly unknown, but NEVER a fake number.
+        if let saved = UserDefaults.standard.string(forKey: Self.verifiedPhoneKey), !saved.isEmpty {
+            profile.phoneNumber = saved
+        } else if let fromFirebase = FirebasePhoneAuth.currentPhoneNumber {
+            profile.phoneNumber = fromFirebase
+            Self.saveVerifiedPhone(fromFirebase)
+        } else {
+            profile.phoneNumber = ""
+        }
+        // On relaunch of an already-authenticated session, pull the authoritative profile
+        // from the server so a reinstall / new device shows the REAL name, photo, bio and
+        // username — not a stale local copy or a placeholder.
+        if AuthService.shared.isAuthenticated {
+            Task { await refreshServerProfile() }
+        }
+    }
+
+    /// Fetch this account's real profile from the server and merge it into `profile`.
+    ///
+    /// Call after login and on launch. `GET /users/:id` is the source of truth for
+    /// full_name / photo_url / bio / username; the phone number is NOT server-held (it
+    /// comes from the OTP flow), so it is preserved from local state. Every field is
+    /// applied only when the server actually returned it, so this never blanks a value.
+    func refreshServerProfile() async {
+        guard let id = auth.userId else { return }
+        guard let p = try? await ChatService.shared.userProfile(userId: id) else { return }
+        if let n = p.name, !n.isEmpty { profile.fullName = n }
+        if let url = p.photoURL, !url.isEmpty { profile.photoURL = url }
+        if let bio = p.about, !bio.isEmpty { profile.bio = bio }
+        if let u = p.username, !u.isEmpty { profile.username = u }
+        // The server returns the phone number ONLY for our own profile — the authoritative,
+        // Firebase-independent source. Use it if we don't already have one (e.g. an account
+        // that logged in before we captured it at OTP), and persist it for offline launches.
+        if profile.phoneNumber.isEmpty, let phone = p.phoneNumber, !phone.isEmpty {
+            profile.phoneNumber = phone
+            Self.saveVerifiedPhone(phone)
+        }
+        persistLocalProfile()
     }
 
     // MARK: - Own profile
@@ -45,6 +97,7 @@ final class AppSession: ObservableObject {
         var photoURL: String?
         var email: String?
         var bio: String?
+        var username: String?
     }
 
     private func loadLocalProfile() {
@@ -57,6 +110,7 @@ final class AppSession: ObservableObject {
                         email: stored.email,
                         photoName: nil,
                         photoURL: stored.photoURL,
+                        username: stored.username,
                         bio: stored.bio)
     }
 
@@ -65,7 +119,8 @@ final class AppSession: ObservableObject {
                                    phoneNumber: profile.phoneNumber,
                                    photoURL: profile.photoURL,
                                    email: profile.email,
-                                   bio: profile.bio)
+                                   bio: profile.bio,
+                                   username: profile.username)
         if let data = try? JSONEncoder().encode(stored) {
             UserDefaults.standard.set(data, forKey: Self.profileKey)
         }
@@ -74,12 +129,14 @@ final class AppSession: ObservableObject {
     /// Update your profile locally and immediately. Callers sync to the server
     /// separately; a failed sync must not undo what the user sees.
     func updateProfile(fullName: String? = nil, photoURL: String? = nil,
-                       phoneNumber: String? = nil, email: String? = nil, bio: String? = nil) {
+                       phoneNumber: String? = nil, email: String? = nil,
+                       bio: String? = nil, username: String? = nil) {
         if let fullName { profile.fullName = fullName }
         if let photoURL { profile.photoURL = photoURL }
         if let phoneNumber { profile.phoneNumber = phoneNumber }
         if let email { profile.email = email }
         if let bio { profile.bio = bio }
+        if let username { profile.username = username }
         persistLocalProfile()
     }
 
@@ -104,7 +161,8 @@ final class AppSession: ObservableObject {
         // Your profile is per-account state; leaving it behind would show the previous
         // user's name and photo on the next login.
         UserDefaults.standard.removeObject(forKey: Self.profileKey)
-        profile = DummyData.me
+        UserDefaults.standard.removeObject(forKey: Self.verifiedPhoneKey)
+        profile = VUser(id: "me", fullName: "", phoneNumber: "")
         // In-memory stores outlive the session (they are @StateObjects on ContentView),
         // so they have to be told.
         NotificationCenter.default.post(name: .voiidDidSignOut, object: nil)
@@ -202,24 +260,39 @@ final class ChatStore: ObservableObject {
     /// text at all, making a cold launch look emptier than it actually is even though
     /// every message is right there on disk.
     private func applyLocalConversations() {
-        let convs = LocalStore.conversations().map { conv -> VConversation in
-            var conv = conv
-            guard let last = ChatEngine.shared.messages(conversationId: conv.id).last else { return conv }
-            if let media = last.media {
-                conv.lastMessagePreview = media.mime.hasPrefix("audio/") ? "Voice message" : "Photo"
-            } else if !last.text.isEmpty {
-                conv.lastMessagePreview = last.text
-            }
-            // A conversation whose row predates its messages (e.g. imported from the
-            // legacy blob) has no timestamp — take it from the message itself so the
-            // list still sorts sensibly.
-            if conv.lastMessageAt == nil { conv.lastMessageAt = last.createdAt }
-            return conv
-        }
+        // Render the list STRAIGHT from SQLite: rows + denormalized last-message preview +
+        // ordering, all from the conversations table. This touches NO message store — no whole
+        // JSON decode, no per-conversation message load, no sorting — so the list paints
+        // instantly and offline regardless of how much history exists. Each chat's full
+        // message array is decoded lazily by openConversation(...) when it's actually opened
+        // (WhatsApp-style). Previews stay fresh via bumpPreview at message-write time.
+        let convs = LocalStore.conversations()
         guard !convs.isEmpty else { return }
         directConversations = convs.filter { $0.type == .direct }
         groupConversations = convs.filter { $0.type == .group }
-        for c in convs { refresh(c.id) }
+        backfillPreviewsIfNeeded()
+    }
+
+    /// One-time backfill of last-message previews for chats that existed BEFORE previews were
+    /// denormalized (the column is new). Runs OFF the launch-critical path (a low-priority
+    /// task, after the list is already on screen) and only once — new activity keeps previews
+    /// fresh from then on. No-op for fresh installs (nothing to backfill).
+    private func backfillPreviewsIfNeeded() {
+        let flag = "voiid.previews.backfilled.v1"
+        guard !UserDefaults.standard.bool(forKey: flag) else { return }
+        let ids = (directConversations + groupConversations).map { $0.id }
+        Task(priority: .utility) {
+            for id in ids {
+                guard let last = ChatEngine.shared.messages(conversationId: id).last else { continue }
+                let preview = !last.text.isEmpty ? last.text
+                    : (last.media.map { $0.mime.hasPrefix("audio/") ? "Voice message" : "Photo" } ?? "")
+                if !preview.isEmpty {
+                    LocalStore.updatePreview(conversationId: id, preview: preview, at: last.createdAt)
+                }
+            }
+            UserDefaults.standard.set(true, forKey: flag)
+            applyLocalConversations()   // re-render with the freshly backfilled previews
+        }
     }
 
     /// Messages currently held for a conversation (decrypted, from the local store).
@@ -371,11 +444,25 @@ final class ChatStore: ObservableObject {
                     }
                 }
             } else { status = .read }
-            return VMessage(id: d.serverId ?? d.id, conversationId: convId,
-                            senderId: d.isMine ? "me" : d.senderId,
-                            kind: kind, text: d.text, createdAt: d.createdAt,
-                            status: status, isMine: d.isMine,
-                            mediaRef: d.media, location: locRef)
+            var vm = VMessage(id: d.serverId ?? d.id, conversationId: convId,
+                              senderId: d.isMine ? "me" : d.senderId,
+                              kind: kind, text: d.text, createdAt: d.createdAt,
+                              status: status, isMine: d.isMine,
+                              mediaRef: d.media, location: locRef)
+            // Real Delivered / Read times for the Message Info sheet (nil until each receipt).
+            vm.deliveredAt = d.deliveredAt
+            vm.readAt = d.readAt
+            // Surface delivered chat actions onto the bubble.
+            vm.deletedForEveryone = d.deletedForEveryone ?? false
+            vm.forwarded = d.forwarded ?? false
+            if let q = d.quotedPreview { vm.replyToText = q; vm.replyToSender = d.quotedSender }
+            // Reactions: display the peer's reaction if any, else our own. (Per-user map is
+            // persisted in the engine; single-emoji display is a UI simplification.)
+            if let reactions = d.reactions, !reactions.isEmpty {
+                let myId = TokenStore.shared.userId
+                vm.reaction = reactions.first(where: { $0.key != myId })?.value ?? reactions.first?.value
+            }
+            return vm
         }
         if !mapped.isEmpty || messagesByConversation[convId] != nil {
             messagesByConversation[convId] = mapped
@@ -485,6 +572,24 @@ final class ChatStore: ObservableObject {
             return
         }
 
+        // A quoted reply travels as its own E2EE envelope so the quote reaches the peer.
+        if let r = replyTo {
+            bumpPreview(conversationId, preview: text)
+            let quotedId = r.id
+            let preview = r.kind == .text ? String(r.text.prefix(80)) : previewFor(r.kind)
+            let sender = r.isMine ? "You" : (r.senderName.isEmpty ? "" : r.senderName)
+            Task {
+                guard let peer = try? await peerUserId(for: conv) else {
+                    loadError = "Couldn’t resolve the recipient."; return
+                }
+                _ = try? await ChatEngine.shared.sendReply(text: text, quotedId: quotedId,
+                                                           quotedPreview: preview, quotedSender: sender,
+                                                           conversationId: conversationId, peerUserId: peer)
+                refresh(conversationId)
+            }
+            return
+        }
+
         // Text: persist as PENDING in the engine store NOW (instant + offline-visible),
         // then flush (send) in the background. The store is the single source of truth.
         _ = ChatEngine.shared.enqueueText(text, conversationId: conversationId)
@@ -589,15 +694,28 @@ final class ChatStore: ObservableObject {
     }
 
     /// Forward a message to one or more conversations (with a Forwarded tag).
+    /// Media is forwarded by RE-SENDING its existing E2EE reference — the ciphertext is
+    /// already in R2, so no re-upload; the media key rides E2E as always.
     func forward(_ message: VMessage, to conversationIds: [String]) {
         for cid in conversationIds {
-            send(message.kind == .text ? message.text : message.text,
-                 kind: message.kind == .poll ? .text : message.kind,
-                 to: cid, forwarded: true)
+            if let ref = message.mediaRef, message.kind == .image || message.kind == .voice || message.kind == .document,
+               let conv = directConversations.first(where: { $0.id == cid }) {
+                Task {
+                    guard let peer = try? await peerUserId(for: conv) else { return }
+                    _ = try? await ChatEngine.shared.forwardMedia(ref, caption: message.text,
+                                                                  conversationId: cid, peerUserId: peer)
+                    refresh(cid)
+                }
+            } else {
+                send(message.text,
+                     kind: message.kind == .poll ? .text : message.kind,
+                     to: cid, forwarded: true)
+            }
         }
     }
 
-    /// Delete a message. forEveryone=true leaves a "deleted" tombstone; otherwise removes it.
+    /// Delete a message. forEveryone=true tombstones it AND tells the peer to do the same;
+    /// otherwise removes it only from this device.
     func deleteMessage(_ messageId: String, in convId: String, forEveryone: Bool) {
         guard var arr = messagesByConversation[convId] else { return }
         if forEveryone {
@@ -605,6 +723,14 @@ final class ChatStore: ObservableObject {
                 arr[i].deletedForEveryone = true
                 arr[i].reaction = nil
                 withAnimation { messagesByConversation[convId] = arr }
+            }
+            // Deliver the delete over E2EE so the peer erases it too (direct chats).
+            if let conv = directConversations.first(where: { $0.id == convId }) {
+                Task {
+                    guard let peer = try? await peerUserId(for: conv) else { return }
+                    try? await ChatEngine.shared.sendDeleteForEveryone(
+                        targetServerId: messageId, conversationId: convId, peerUserId: peer)
+                }
             }
         } else {
             withAnimation { arr.removeAll { $0.id == messageId }; messagesByConversation[convId] = arr }
@@ -633,15 +759,24 @@ final class ChatStore: ObservableObject {
         Haptics.rigid()
     }
 
-    /// Toggle an emoji reaction on a message.
+    /// Toggle an emoji reaction on a message — and DELIVER it to the peer over E2EE.
     func react(messageId: String, emoji: String, in convId: String) {
         guard var arr = messagesByConversation[convId],
               let idx = arr.firstIndex(where: { $0.id == messageId }) else { return }
+        let cleared = (arr[idx].reaction == emoji)
         withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-            arr[idx].reaction = (arr[idx].reaction == emoji) ? nil : emoji
+            arr[idx].reaction = cleared ? nil : emoji     // optimistic local
             messagesByConversation[convId] = arr
         }
         Haptics.tap()
+        // Send over the real E2EE path (direct chats). emoji=nil clears our reaction.
+        guard let conv = directConversations.first(where: { $0.id == convId }) else { return }
+        Task {
+            guard let peer = try? await peerUserId(for: conv) else { return }
+            try? await ChatEngine.shared.sendReaction(targetServerId: messageId,
+                                                      emoji: cleared ? nil : emoji,
+                                                      conversationId: convId, peerUserId: peer)
+        }
     }
 
     /// Send a poll into a conversation.
@@ -669,13 +804,17 @@ final class ChatStore: ObservableObject {
     }
 
     private func bumpPreview(_ convId: String, preview: String) {
+        let now = Date()
         if let i = directConversations.firstIndex(where: { $0.id == convId }) {
             directConversations[i].lastMessagePreview = preview
-            directConversations[i].lastMessageAt = .now
+            directConversations[i].lastMessageAt = now
         } else if let i = groupConversations.firstIndex(where: { $0.id == convId }) {
             groupConversations[i].lastMessagePreview = preview
-            groupConversations[i].lastMessageAt = .now
+            groupConversations[i].lastMessageAt = now
         }
+        // Persist the snippet + time so the chat LIST renders it (and orders by it) on the
+        // NEXT cold launch straight from SQLite — no message-store decode on the launch path.
+        if !preview.isEmpty { LocalStore.updatePreview(conversationId: convId, preview: preview, at: now) }
     }
 }
 

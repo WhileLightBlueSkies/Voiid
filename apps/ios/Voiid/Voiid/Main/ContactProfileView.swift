@@ -53,12 +53,16 @@ struct ContactProfileView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
         .tint(VoiidColor.primary)
+        // Hide the bottom bar on this detail screen. We do NOT reset on disappear: when you
+        // pop back to the CHAT (also a detail screen) its onAppear does not re-fire, so a
+        // reset here would wrongly show the bar over the chat. The bar is restored only when
+        // a ROOT tab page appears (each sets hideTabBar = false).
         .onAppear { session.hideTabBar = true }
         .task { await loadProfile() }
         .fullScreenCover(isPresented: $viewPhoto) {
             ProfilePhotoViewer(title: displayName, imageName: conversation.photoName) { viewPhoto = false }
         }
-        .sheet(isPresented: $showAllMedia) { SharedMediaSheet(title: conversation.title) }
+        .sheet(isPresented: $showAllMedia) { SharedMediaSheet(title: conversation.title, conversationId: conversation.id) }
     }
 
     // Header: photo, name, phone, quick actions (message / call / video)
@@ -110,21 +114,35 @@ struct ContactProfileView: View {
         }
     }
 
+    /// Recent shared PHOTOS in this 1:1 chat, newest first — real, from the message store.
+    private var recentPhotos: [MediaRef] {
+        Array(ChatEngine.shared.messages(conversationId: conversation.id)
+            .compactMap { $0.media }.filter { $0.mime.hasPrefix("image/") }
+            .reversed().prefix(6))
+    }
+
     private var sharedMediaCard: some View {
         card {
             HStack {
                 Text("Media, links & docs").font(VoiidFont.rounded(15, .semibold)).foregroundColor(VoiidColor.textPrimary)
                 Spacer()
-                Button("See all") { Haptics.tap(); showAllMedia = true }
-                    .font(VoiidFont.rounded(13, .regular)).foregroundColor(VoiidColor.primary)
+                if !recentPhotos.isEmpty {
+                    Button("See all") { Haptics.tap(); showAllMedia = true }
+                        .font(VoiidFont.rounded(13, .regular)).foregroundColor(VoiidColor.primary)
+                }
             }
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: VoiidSpacing.sm) {
-                    ForEach(DummyData.sharedMedia.prefix(6)) { _ in
-                        RoundedRectangle(cornerRadius: VoiidRadius.md)
-                            .fill(VoiidColor.accent.opacity(0.35))
-                            .frame(width: 72, height: 72)
-                            .overlay(Image(systemName: "photo").foregroundColor(VoiidColor.primary))
+            if recentPhotos.isEmpty {
+                Text("No media shared yet")
+                    .font(VoiidFont.rounded(13, .regular)).foregroundColor(VoiidColor.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: VoiidSpacing.sm) {
+                        ForEach(recentPhotos, id: \.mediaUrl) { ref in
+                            SharedMediaThumb(ref: ref)
+                                .frame(width: 72, height: 72).clipped()
+                                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md))
+                        }
                     }
                 }
             }

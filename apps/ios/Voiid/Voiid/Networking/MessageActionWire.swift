@@ -74,3 +74,39 @@ enum MessageActionContentType {
     static let reply = "msg_reply"
     static let media = "media"          // forwards reuse the normal media type
 }
+
+/// Inbound parse helpers: turn a decrypted plaintext into a recognised action, so the
+/// receive loop can apply it instead of rendering raw JSON. Only decodes when the `"t"`
+/// discriminator matches — a plain text message never trips these.
+enum MessageActionInbound {
+    /// Actions that DECORATE an existing message rather than adding a bubble.
+    enum Kind {
+        case reaction(target: String, emoji: String?)
+        case delete(target: String)
+    }
+
+    private struct Probe: Decodable { let t: String? }
+
+    static func parse(_ plain: String) -> Kind? {
+        guard let data = plain.data(using: .utf8),
+              let probe = try? JSONDecoder().decode(Probe.self, from: data) else { return nil }
+        switch probe.t {
+        case MessageActionContentType.reaction:
+            guard let e = try? JSONDecoder().decode(MessageReactionEnvelope.self, from: data) else { return nil }
+            return .reaction(target: e.target, emoji: e.emoji)
+        case MessageActionContentType.delete:
+            guard let e = try? JSONDecoder().decode(MessageDeleteEnvelope.self, from: data) else { return nil }
+            return .delete(target: e.target)
+        default:
+            return nil
+        }
+    }
+
+    /// A reply is a real bubble (text + a quote), so it is returned separately.
+    static func parseReply(_ plain: String) -> MessageReplyEnvelope? {
+        guard let data = plain.data(using: .utf8),
+              let probe = try? JSONDecoder().decode(Probe.self, from: data),
+              probe.t == MessageActionContentType.reply else { return nil }
+        return try? JSONDecoder().decode(MessageReplyEnvelope.self, from: data)
+    }
+}

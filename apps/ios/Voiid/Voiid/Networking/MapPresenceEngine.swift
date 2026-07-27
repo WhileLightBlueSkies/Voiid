@@ -88,6 +88,28 @@ final class MapPresenceEngine: ObservableObject {
 
     // MARK: - Wiring
 
+    /// Wire the ratchet control seam so `map_key` / `map_off` actually reach the audience.
+    /// Call ONCE at app start, post-auth. Each control message goes to a single peer over the
+    /// durable 1:1 message path (`content_type: "location"`, key stays end-to-end); the peer's
+    /// direct conversation is resolved (idempotently created) from their user id. Without this
+    /// the sender goes visible locally but never hands out the key, so nobody can decrypt the
+    /// WS fix stream — the "others never appear on my map" bug.
+    func configureControlSender() {
+        controlSender = { envelopeJSON, toUserId in
+            guard let json = String(data: envelopeJSON, encoding: .utf8) else { return false }
+            do {
+                let convId = try await ChatService.shared.createDirect(memberId: toUserId)
+                try await ChatEngine.shared.sendLocation(
+                    plaintextJSON: json, conversationId: convId, peerUserId: toUserId,
+                    displayText: "", rendersBubble: false)   // control only — never a bubble
+                return true
+            } catch {
+                NSLog("[VOIID] map controlSender: send to \(toUserId) FAILED: \(error)")
+                return false
+            }
+        }
+    }
+
     private func wireProvider() {
         provider.onFix = { [weak self] loc in self?.emitFix(loc) }
     }

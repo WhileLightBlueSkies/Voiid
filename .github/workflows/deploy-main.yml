@@ -1,0 +1,49 @@
+name: Deploy MAIN (Vultr)
+
+# Auto-deploy the backend (api + websocket + workers) to the Vultr box on
+# every push to `main`. Reuses infrastructure/deployment/deploy-dev.sh with
+# VOIID_BRANCH=main so both workflows share one script (pull -> npm ci ->
+# build -> migrate -> pm2 restart).
+#
+# Required repo secrets (Settings -> Secrets and variables -> Actions):
+#   VULTR_MAIN_HOST     the box's IP (currently 139.84.218.192 — same box as
+#                       dev; there is no separate prod instance yet)
+#   VULTR_MAIN_USER     root
+#   VULTR_MAIN_SSH_KEY  the PRIVATE key whose public half is in the box's
+#                       ~/.ssh/authorized_keys
+#
+# NOTE: deploy-dev.sh does `git reset --hard`, which discards any local
+# changes made directly on the box (there was drift in
+# backend/api/src/routes/messages.ts as of 2026-07-23 — resolve that before
+# relying on this).
+#
+# Box B (LiveKit, 64.176.97.62) is intentionally NOT part of this workflow —
+# it runs a bare `livekit/livekit-server` Docker container with no code from
+# this repo, so there is nothing for a push to redeploy there.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}   # allow manual "Run workflow" from the Actions tab
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false   # never interrupt a deploy mid-build
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VULTR_MAIN_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${{ secrets.VULTR_MAIN_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy over SSH
+        run: |
+          ssh -i ~/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=yes \
+            "${{ secrets.VULTR_MAIN_USER }}@${{ secrets.VULTR_MAIN_HOST }}" \
+            'VOIID_BRANCH=main bash /opt/voiid/infrastructure/deployment/deploy-dev.sh'

@@ -13,6 +13,7 @@
 import SwiftUI
 import PhotosUI
 import UIKit
+import CryptoKit
 import AVFoundation
 
 struct ChatDetailView: View {
@@ -43,22 +44,41 @@ struct ChatDetailView: View {
     @State private var showBulkDelete = false
     @State private var forwardBulk = false
     @State private var activeCall: CallRequest?
+    /// REAL group members (from the server), used for @mentions and group-call member tiles.
+    /// Empty for 1:1 chats. Loaded on appear — never DummyData.
+    @State private var groupMembers: [VMember] = []
 
     var body: some View {
         VStack(spacing: 0) {
-            header
+            // Multi-select has its own bar; NORMAL mode uses the NATIVE navigation bar +
+            // toolbar — Apple's system back button and `chatToolbar` items. No custom chrome,
+            // no forced background: iOS renders it as Liquid Glass on 26 and its own native
+            // bar on 18 (the native fallback), automatically.
+            if selectionMode { selectionHeader }
             // "You are sharing your location" — pinned at the top of the chat, one-tap Stop.
             LocationBanner(conversationId: conversation.id)
             messageList
             inputBar
         }
         .background(VoiidColor.background.ignoresSafeArea())
-        .navigationBarBackButtonHidden(true)
-        .toolbar(.hidden, for: .navigationBar)
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(selectionMode)
+        .toolbar(selectionMode ? .hidden : .visible, for: .navigationBar)
+        .toolbar { if !selectionMode { chatToolbar } }
         // Hide the bottom tab bar while a chat is open; restore on leave.
         .onAppear {
             session.hideTabBar = true
             chat.openConversation(conversation)   // load cached + sync (fetch+decrypt) real messages
+        }
+        .task(id: conversation.id) {
+            // Real group members for @mentions + group-call tiles (never DummyData).
+            guard conversation.type == .group,
+                  let cm = try? await ChatService.shared.members(conversationId: conversation.id) else { return }
+            let myId = TokenStore.shared.userId
+            groupMembers = cm.map { m in
+                VMember(id: m.userId, name: m.name ?? "VOIID user", phone: "", photoName: nil,
+                        role: m.isAdmin ? .admin : .member, statusText: nil, isYou: m.userId == myId)
+            }
         }
         .task(id: conversation.id) {
             // Poll the conversation while it's open — fetch+decrypt new messages, send
@@ -70,7 +90,11 @@ struct ChatDetailView: View {
             }
         }
         .onDisappear {
-            session.hideTabBar = false
+            // NOTE: do NOT reset hideTabBar here. Pushing the contact/group profile fires
+            // this onDisappear, and if it ran AFTER the profile's onAppear (which hides the
+            // bar) the footer would flash back on over the profile. The bar is instead
+            // restored solely by each ROOT tab's onAppear (hideTabBar = false), so returning
+            // to Chats/Clips/etc. shows it and every detail screen keeps it hidden.
             // Settings → Privacy → "Send typing indicators". With it off we never sent a
             // start frame, so there is nothing to stop.
             if privacy.sendTypingIndicators, let peer = livePeerUserId {
@@ -178,7 +202,7 @@ struct ChatDetailView: View {
         activeCall = CallRequest(
             title: conversation.title,
             isGroup: isGroup,
-            members: isGroup ? DummyData.groupMembers : [],
+            members: isGroup ? groupMembers : [],
             photoName: conversation.photoName,
             kind: kind,
             peerUserId: isGroup ? nil : resolvedPeerUserId,
@@ -236,10 +260,60 @@ struct ChatDetailView: View {
         }
     }
 
-    // MARK: header — normal, or selection bar in multi-select
+    // MARK: header
 
-    @ViewBuilder private var header: some View {
-        if selectionMode { selectionHeader } else { normalHeader }
+    /// The NATIVE chat toolbar. Apple owns the back button and all bar chrome; we only
+    /// supply content — a tappable avatar+name in `.principal` (→ profile / group info) and
+    /// call / video / ⋯ as trailing items. The system renders it: Liquid Glass on iOS 26,
+    /// the classic native bar on iOS 18. Nothing custom, no forced background.
+    @ToolbarContentBuilder
+    private var chatToolbar: some ToolbarContent {
+        ToolbarItem(placement: .principal) {
+            Button { Haptics.tap(); showInfo = true } label: {
+                HStack(spacing: VoiidSpacing.sm) {
+                    ProfileAvatarButton(photoURL: conversation.photoURL,
+                                        name: conversation.title, size: 34)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(conversation.title)
+                            .font(VoiidFont.rounded(17, .semibold))
+                            .foregroundColor(VoiidColor.textPrimary)
+                            .lineLimit(1)
+                        if let presenceText {
+                            Text(presenceText)
+                                .font(VoiidFont.rounded(11, .regular))
+                                .foregroundColor(chat.typingConversations.contains(conversation.id) ? VoiidColor.primary : VoiidColor.textSecondary)
+                                .lineLimit(1)
+                        }
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(conversation.type == .group ? "Group info" : "Contact profile")
+        }
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            Button { Haptics.tap(); startCall(.voice) } label: {
+                Image(systemName: "phone.fill")
+            }
+            .accessibilityLabel("Voice call")
+            Button { Haptics.tap(); startCall(.video) } label: {
+                Image(systemName: "video.fill")
+            }
+            .accessibilityLabel("Video call")
+            Menu {
+                Button { showInfo = true } label: {
+                    Label(conversation.type == .group ? "Group info" : "View profile", systemImage: "info.circle")
+                }
+                Button { withAnimation { selectionMode = true } } label: {
+                    Label("Select messages", systemImage: "checkmark.circle")
+                }
+                Button(role: .destructive) { showClearChat = true } label: {
+                    Label("Clear chat", systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+            }
+            .accessibilityLabel("More")
+        }
     }
 
     private var selectionHeader: some View {
@@ -269,57 +343,6 @@ struct ChatDetailView: View {
         if selectedIDs.contains(id) { selectedIDs.remove(id) } else { selectedIDs.insert(id) }
     }
 
-    private var normalHeader: some View {
-        HStack(spacing: VoiidSpacing.sm) {
-            Button { Haptics.tap(); dismiss() } label: {
-                Image(systemName: "chevron.left").font(.system(size: 20, weight: .semibold))
-                    .foregroundColor(VoiidColor.textPrimary)
-            }
-            Button {
-                Haptics.tap(); showInfo = true
-            } label: {
-                HStack(spacing: VoiidSpacing.sm) {
-                    VoiidAvatar(size: 36, imageName: conversation.photoName)
-                        .clipShape(Circle())
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(conversation.title)
-                            .font(VoiidFont.rounded(17, .semibold)).foregroundColor(VoiidColor.textPrimary)
-                        if let presenceText {
-                            Text(presenceText)
-                                .font(VoiidFont.rounded(11, .regular))
-                                .foregroundColor(chat.typingConversations.contains(conversation.id) ? VoiidColor.primary : VoiidColor.textSecondary)
-                        }
-                    }
-                }
-            }
-            .buttonStyle(.plain)
-            Spacer()
-            HStack(spacing: VoiidSpacing.lg) {
-                Button { Haptics.tap(); startCall(.voice) } label: {
-                    Image(systemName: "phone.fill").font(.system(size: 18)).foregroundColor(VoiidColor.textPrimary)
-                }
-                Button { Haptics.tap(); startCall(.video) } label: {
-                    Image(systemName: "video.fill").font(.system(size: 19)).foregroundColor(VoiidColor.textPrimary)
-                }
-                Menu {
-                    Button { showInfo = true } label: {
-                        Label(conversation.type == .group ? "Group info" : "View profile", systemImage: "info.circle")
-                    }
-                    Button { withAnimation { selectionMode = true } } label: {
-                        Label("Select messages", systemImage: "checkmark.circle")
-                    }
-                    Button(role: .destructive) { showClearChat = true } label: {
-                        Label("Clear chat", systemImage: "trash")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis").font(.system(size: 18, weight: .semibold)).foregroundColor(VoiidColor.textPrimary)
-                }
-            }
-        }
-        .padding(.horizontal, VoiidSpacing.md)
-        .padding(.vertical, VoiidSpacing.sm)
-        .background(VoiidColor.background)
-    }
 
     /// Peer user_id read from the live store (resolved lazily after open), not the
     /// value-copied `conversation` which never updates.
@@ -420,7 +443,7 @@ struct ChatDetailView: View {
     }
     private var mentionSuggestions: [VMember] {
         guard let q = mentionQuery else { return [] }
-        return DummyData.groupMembers.filter { !$0.isYou &&
+        return groupMembers.filter { !$0.isYou &&
             (q.isEmpty || $0.name.localizedCaseInsensitiveContains(q)) }
     }
     private func insertMention(_ m: VMember) {
@@ -587,8 +610,14 @@ struct MessageBubble: View {
     }
 
     private var bubble: some View {
-        HStack {
+        HStack(alignment: .bottom, spacing: 6) {
             if message.isMine { Spacer(minLength: 56) }
+            // Group, incoming: the sender's real profile photo beside the bubble, so you can
+            // see at a glance who's texting (WhatsApp-style).
+            if isGroup && !message.isMine {
+                ProfileAvatarButton(photoURL: UserDirectory.shared.photoURL(message.senderId),
+                                    name: message.senderName, size: 28)
+            }
             VStack(alignment: .leading, spacing: 3) {
                 // "Forwarded" tag
                 if message.forwarded {
@@ -612,11 +641,20 @@ struct MessageBubble: View {
                     .background(VoiidColor.fieldFill.opacity(0.7))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
-                // Sender name (group, incoming only) — colored per sender
+                // Sender identity (group, incoming only): the saved name (or phone) coloured
+                // per sender, with the @username in a lighter tone so you know exactly who's
+                // texting who.
                 if isGroup && !message.isMine && !message.senderName.isEmpty {
-                    Text(message.senderName)
-                        .font(VoiidFont.rounded(12, .semibold))
-                        .foregroundColor(message.senderColor)
+                    HStack(spacing: 5) {
+                        Text(message.senderName)
+                            .font(VoiidFont.rounded(12, .semibold))
+                            .foregroundColor(message.senderColor)
+                        if let uname = UserDirectory.shared.user(message.senderId)?.username, !uname.isEmpty {
+                            Text("@\(uname)")
+                                .font(VoiidFont.rounded(11, .regular))
+                                .foregroundColor(VoiidColor.textSecondary)
+                        }
+                    }
                 }
                 if message.deletedForEveryone {
                     HStack(spacing: 5) {
@@ -904,20 +942,67 @@ struct BubbleShape: Shape {
 
 // MARK: - Encrypted media rendering (fetch + decrypt on demand)
 
-/// In-memory cache of decrypted media keyed by the R2 object key, so reopening a
-/// chat doesn't re-download/re-decrypt.
+/// Local-first cache of DECRYPTED media keyed by the R2 object key. Two tiers: an in-memory
+/// map for instant re-render, and an on-disk store in the app-group container so media
+/// survives app restarts and renders WITHOUT the network — the WhatsApp behaviour (a photo
+/// you've seen once, or one you sent, shows instantly and offline). The plaintext bytes are
+/// what's cached, so the render path never re-downloads or re-decrypts after the first time.
 @MainActor final class MediaCache {
     static let shared = MediaCache()
     private var images: [String: UIImage] = [:]
     private var datas: [String: Data] = [:]
-    func image(_ k: String) -> UIImage? { images[k] }
+
+    /// `<app-group>/media/`. Nil only if the entitlement is missing (then memory-only).
+    private let dir: URL? = {
+        guard let base = AppGroup.containerURL else { return nil }
+        let d = base.appendingPathComponent("media", isDirectory: true)
+        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        return d
+    }()
+
+    /// Stable, filesystem-safe filename for an R2 key (which may contain '/').
+    private func fileURL(_ key: String) -> URL? {
+        guard let dir else { return nil }
+        let digest = SHA256.hash(data: Data(key.utf8))
+        let name = digest.map { String(format: "%02x", $0) }.joined()
+        return dir.appendingPathComponent(name)
+    }
+
+    func data(_ k: String) -> Data? {
+        if let d = datas[k] { return d }
+        guard let url = fileURL(k), let d = try? Data(contentsOf: url) else { return nil }
+        datas[k] = d                          // promote disk → memory
+        return d
+    }
+
+    func setData(_ d: Data, _ k: String) {
+        datas[k] = d
+        guard let url = fileURL(k) else { return }
+        // Same protection class as the message store: readable after first unlock (so a
+        // background fetch can write it) but encrypted at rest.
+        try? d.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+    }
+
+    func image(_ k: String) -> UIImage? {
+        if let img = images[k] { return img }
+        guard let d = data(k), let img = UIImage(data: d) else { return nil }
+        images[k] = img                       // derive + memoize from the cached bytes
+        return img
+    }
+
     func set(_ img: UIImage, _ k: String) { images[k] = img }
-    func data(_ k: String) -> Data? { datas[k] }
-    func setData(_ d: Data, _ k: String) { datas[k] = d }
-    /// Drop every decrypted byte. Called by `SessionTeardown` on sign-out: this cache is
-    /// process-lifetime and sign-out does not restart the process, so without it the
-    /// previous account's photos and voice notes stay in memory behind the login screen.
-    func clear() { images.removeAll(); datas.removeAll() }
+
+    /// Drop every decrypted byte, memory AND disk. Called by `SessionTeardown` on sign-out:
+    /// this cache is process-lifetime and sign-out does not restart the process, so without
+    /// this the previous account's photos and voice notes stay readable behind the login
+    /// screen (in memory) and on disk.
+    func clear() {
+        images.removeAll(); datas.removeAll()
+        if let dir {
+            try? FileManager.default.removeItem(at: dir)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+    }
 }
 
 /// An image bubble that fetches + decrypts its blob via ChatEngine on appear.
@@ -948,9 +1033,12 @@ struct AsyncMediaImage: View {
     }
 
     private func load() async {
+        // Local-first: memory → disk → (only then) network. Offline, a photo seen once or
+        // one you sent renders straight from disk with no spinner.
         if let cached = MediaCache.shared.image(ref.mediaUrl) { image = cached; return }
         do {
             let data = try await ChatEngine.shared.fetchMedia(ref)
+            MediaCache.shared.setData(data, ref.mediaUrl)          // persist the plaintext bytes
             if let ui = UIImage(data: data) { MediaCache.shared.set(ui, ref.mediaUrl); image = ui }
             else { failed = true }
         } catch { failed = true }

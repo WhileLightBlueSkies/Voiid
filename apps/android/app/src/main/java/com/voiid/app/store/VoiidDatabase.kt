@@ -41,7 +41,7 @@ import androidx.room.Transaction
         // AFTER location so two concurrent table-adding features don't both own "1 -> 2".
         StoryRow::class, StoryAudienceRow::class, StoryViewRow::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class VoiidDatabase : RoomDatabase() {
@@ -54,6 +54,17 @@ abstract class VoiidDatabase : RoomDatabase() {
     abstract fun stories(): StoryDao
 
     companion object {
+        /**
+         * Sign-out teardown only (see [com.voiid.app.net.SessionTeardown]) — truncates
+         * EVERY table (users, conversations, messages, call_history, location + story rows)
+         * in one transaction via Room's built-in [RoomDatabase.clearAllTables]. Without this
+         * the next account signed in on this device would render the previous user's chats
+         * and calls, because reads here are local-first (see the class doc above).
+         */
+        fun wipeAllForSignOut(context: Context) {
+            runCatching { get(context).clearAllTables() }
+        }
+
         @Volatile private var instance: VoiidDatabase? = null
 
         fun get(context: Context): VoiidDatabase =
@@ -72,7 +83,7 @@ abstract class VoiidDatabase : RoomDatabase() {
                     // every version bump from here on MUST ship an explicit additive Migration
                     // (see MIGRATION_1_2). The fallback stays only as the last-resort guard for
                     // a genuinely corrupt file.
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .fallbackToDestructiveMigration()
                     .build()
                     .also { instance = it }
@@ -121,6 +132,10 @@ data class ConversationRow(
     @ColumnInfo(name = "last_message_at") val lastMessageAt: Long? = null,
     @ColumnInfo(name = "unread_count") val unreadCount: Int = 0,
     @ColumnInfo(name = "updated_at") val updatedAt: Long = 0,
+    // Denormalized last-message snippet so the chat LIST renders from this table alone,
+    // without loading/decoding the message store on the launch path. Kept fresh at write
+    // time (ChatStore.bumpPreview -> LocalStore.updatePreview).
+    @ColumnInfo(name = "last_message_preview") val lastMessagePreview: String? = null,
 )
 
 /**
@@ -264,6 +279,10 @@ abstract class ConversationDao {
     @Query("SELECT * FROM conversations ORDER BY COALESCE(last_message_at, 0) DESC")
     abstract fun recent(): List<ConversationRow>
 
+    /** Settings -> Storage "Conversations" count — see [com.voiid.app.net.StorageProbe]. */
+    @Query("SELECT COUNT(*) FROM conversations")
+    abstract fun count(): Int
+
     /**
      * The direct conversation with a peer, if we already have one. Used by the calls started
      * from OUTSIDE the app (a contact-card row, a call-log redial): those arrive with a person,
@@ -281,6 +300,23 @@ abstract class ConversationDao {
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     abstract fun insertIgnore(row: ConversationRow)
+
+    /**
+     * Denormalize the latest message's snippet + time onto the conversation row (creating it
+     * if a message arrived before the conversation sync did). last_message_at only moves
+     * forward. Drives the instant, message-store-free chat list.
+     */
+    @Query(
+        """
+        INSERT INTO conversations (id, kind, last_message_at, last_message_preview, updated_at)
+        VALUES (:id, 'direct', :ts, :preview, :ts)
+        ON CONFLICT(id) DO UPDATE SET
+            last_message_preview = :preview,
+            last_message_at      = MAX(:ts, COALESCE(last_message_at, 0)),
+            updated_at           = :ts
+        """,
+    )
+    abstract fun updatePreview(id: String, preview: String, ts: Long)
 
     @Query(
         """
@@ -322,6 +358,10 @@ abstract class MessageDao {
     @Query("SELECT * FROM messages WHERE pending = 1 ORDER BY created_at ASC")
     abstract fun pending(): List<MessageRow>
 
+    /** Settings -> Storage "Messages" count — see [com.voiid.app.net.StorageProbe]. */
+    @Query("SELECT COUNT(*) FROM messages")
+    abstract fun count(): Int
+
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     abstract fun insertIgnore(row: MessageRow)
 
@@ -362,6 +402,10 @@ abstract class CallHistoryDao {
 
     @Query("SELECT * FROM call_history ORDER BY started_at DESC LIMIT :limit")
     abstract fun recent(limit: Int): List<CallHistoryRow>
+
+    /** Settings -> Storage "Calls logged" count — see [com.voiid.app.net.StorageProbe]. */
+    @Query("SELECT COUNT(*) FROM call_history")
+    abstract fun count(): Int
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     abstract fun insertIgnore(row: CallHistoryRow)

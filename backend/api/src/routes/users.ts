@@ -29,20 +29,61 @@ router.get('/username-available', requireAuth, async (req, res) => {
   res.json({ available: rows.length === 0 });
 });
 
-// GET /users/:id — public profile (full_name shown when contact not saved locally).
+// GET /users/:id — public profile, with per-field privacy enforced.
+//   photo_privacy / about_privacy ∈ everyone | contacts | nobody. A 'contacts'-scoped
+//   field is returned only when the VIEWER is someone the OWNER has saved (a contact_sync
+//   row: owner = :id, contact = viewer). 'nobody' hides it from everyone but the owner.
 router.get('/:id', requireAuth, async (req, res) => {
-  const rows = await query(
-    `select id, full_name, photo_url, bio, status_text, username from users where id = $1 and deleted_at is null`,
-    [req.params.id]
+  const viewerId = (req as any).auth.user_id;
+  const targetId = req.params.id;
+  const rows = await query<{
+    id: string; full_name: string | null; photo_url: string | null; bio: string | null;
+    status_text: string | null; username: string | null; phone_number: string | null;
+    photo_privacy: string; about_privacy: string;
+  }>(
+    `select id, full_name, photo_url, bio, status_text, username, phone_number,
+            photo_privacy, about_privacy
+       from users where id = $1 and deleted_at is null`,
+    [targetId]
   );
   if (!rows[0]) return res.status(404).json({ error: 'user not found' });
-  res.json({ user: rows[0] });
+  const u = rows[0];
+
+  // The owner always sees their own fields; otherwise apply the visibility rules.
+  const isOwner = viewerId === targetId;
+  let viewerIsContact = false;
+  if (!isOwner && (u.photo_privacy === 'contacts' || u.about_privacy === 'contacts')) {
+    const c = await query(
+      `select 1 from contact_sync where owner_user_id = $1 and contact_user_id = $2 limit 1`,
+      [targetId, viewerId]
+    );
+    viewerIsContact = c.length > 0;
+  }
+  const allowed = (scope: string) =>
+    isOwner || scope === 'everyone' || (scope === 'contacts' && viewerIsContact);
+
+  res.json({
+    user: {
+      id: u.id,
+      full_name: u.full_name,
+      username: u.username,
+      status_text: u.status_text,
+      photo_url: allowed(u.photo_privacy) ? u.photo_url : null,
+      bio: allowed(u.about_privacy) ? u.bio : null,
+      // The phone number is the account's identity and is returned ONLY to the owner
+      // (self), never to anyone else — it is how a user recovers their own real number on
+      // a device that didn't capture it at OTP time. Others never receive it.
+      phone_number: isOwner ? u.phone_number : undefined,
+    },
+  });
 });
 
 // POST /users/profile/update — { full_name?, email?, photo_url?, bio?, status_text?, username? }
 router.post('/profile/update', requireAuth, async (req, res) => {
   const { user_id } = (req as any).auth;
-  const { full_name, email, photo_url, bio, status_text, username } = req.body ?? {};
+  const { full_name, email, photo_url, bio, status_text, username,
+          photo_privacy, about_privacy, last_seen_privacy } = req.body ?? {};
+  const PRIVACY = new Set(['everyone', 'contacts', 'nobody']);
 
   // Diagnostic (presence only, no values) — shows whether the client actually
   // sends each field. Helps catch "email not saving" = app not sending it.
@@ -59,6 +100,14 @@ router.post('/profile/update', requireAuth, async (req, res) => {
   add('photo_url', photo_url);
   add('bio', bio);
   add('status_text', status_text);
+  // Privacy visibility — validate the enum so a bad value can't corrupt enforcement.
+  for (const [col, v] of [['photo_privacy', photo_privacy], ['about_privacy', about_privacy],
+                          ['last_seen_privacy', last_seen_privacy]] as const) {
+    if (v !== undefined) {
+      if (!PRIVACY.has(String(v))) return res.status(400).json({ error: `invalid ${col}` });
+      add(col, v);
+    }
+  }
 
   // Username (Clips handle): validate format, normalize to lowercase. Uniqueness
   // is enforced by the DB; we translate a unique-violation into a clean 409.
@@ -87,14 +136,33 @@ router.post('/profile/update', requireAuth, async (req, res) => {
   }
 });
 
-// GET /users/status/:id — online + last_seen (metadata, Section 4.8). Sourced from Redis presence.
+// GET /users/status/:id — online + last_seen, with last_seen_privacy enforced.
 router.get('/status/:id', requireAuth, async (req, res) => {
+  const viewerId = (req as any).auth.user_id;
+  const targetId = req.params.id;
   const { redis } = await import('../redis');
-  const online = await redis.get(`user:${req.params.id}:online`);
-  const lastSeen = await redis.get(`user:${req.params.id}:last_seen`);
+
+  // Resolve last-seen visibility for THIS viewer.
+  let showLastSeen = true;
+  if (viewerId !== targetId) {
+    const prow = await query<{ last_seen_privacy: string }>(
+      `select last_seen_privacy from users where id = $1`, [targetId]);
+    const scope = prow[0]?.last_seen_privacy ?? 'everyone';
+    if (scope === 'nobody') showLastSeen = false;
+    else if (scope === 'contacts') {
+      const c = await query(
+        `select 1 from contact_sync where owner_user_id = $1 and contact_user_id = $2 limit 1`,
+        [targetId, viewerId]);
+      showLastSeen = c.length > 0;
+    }
+  }
+
+  const online = await redis.get(`user:${targetId}:online`);
+  const lastSeen = showLastSeen ? await redis.get(`user:${targetId}:last_seen`) : null;
   res.json({
-    user_id: req.params.id,
-    online: online === '1',
+    user_id: targetId,
+    // When last-seen is hidden, online is hidden too (they leak the same info).
+    online: showLastSeen ? online === '1' : false,
     last_seen: lastSeen ? Number(lastSeen) : null,
   });
 });

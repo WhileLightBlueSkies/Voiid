@@ -18,6 +18,15 @@ import Foundation
 import FirebaseAuth
 
 enum FirebasePhoneAuth {
+    /// The verified E.164 phone of the currently signed-in Firebase user, if any.
+    /// Firebase persists the signed-in user across launches, so this recovers the real
+    /// number even for sessions created before we started saving it at OTP time — the
+    /// server never stores the number, so this (or the OTP capture) is the only source.
+    static var currentPhoneNumber: String? {
+        let n = Auth.auth().currentUser?.phoneNumber
+        return (n?.isEmpty == false) ? n : nil
+    }
+
     /// Start verification: Firebase sends the SMS and returns a verification ID.
     static func sendCode(to e164: String) async throws -> String {
         try await withCheckedThrowingContinuation { cont in

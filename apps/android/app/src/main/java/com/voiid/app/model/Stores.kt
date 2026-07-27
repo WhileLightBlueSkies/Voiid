@@ -13,7 +13,9 @@ import com.voiid.app.net.AuthService
 import com.voiid.app.store.LocalStore
 import com.voiid.app.store.UserDirectory
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.UUID
 
 /**
@@ -33,7 +35,9 @@ class AppSession(app: Application) : AndroidViewModel(app) {
     // Resume straight to the app if we already hold a session token.
     var route by mutableStateOf(if (auth.isAuthenticated) AppRoute.MAIN else AppRoute.ONBOARDING)
         private set
-    var profile by mutableStateOf(DummyData.me)
+    // Empty until the REAL profile loads (loadProfile → ProfileService). Never a dummy
+    // "You / +91 …" placeholder that could flash before the real data arrives.
+    var profile by mutableStateOf(VUser(id = "me", fullName = "", phoneNumber = ""))
 
     /** Hides the bottom tab bar when a full-screen child (e.g. a chat) is open. */
     var hideTabBar by mutableStateOf(false)
@@ -75,6 +79,7 @@ class AppSession(app: Application) : AndroidViewModel(app) {
                 fullName = u.full_name ?: profile.fullName,
                 photoURL = u.photo_url ?: profile.photoURL,
                 bio = u.bio ?: profile.bio,
+                username = u.username ?: profile.username,
             )
         }
     }
@@ -84,15 +89,19 @@ class AppSession(app: Application) : AndroidViewModel(app) {
      * attempted, so editing your name offline works and survives a restart. The caller owns
      * the server sync (and reporting its failure); this never blocks on it.
      */
-    fun updateProfile(fullName: String? = null, photoUrl: String? = null, phoneE164: String? = null) {
+    fun updateProfile(fullName: String? = null, photoUrl: String? = null, phoneE164: String? = null,
+                      bio: String? = null, username: String? = null) {
         profile = profile.copy(
             fullName = fullName ?: profile.fullName,
             photoURL = photoUrl ?: profile.photoURL,
             phoneNumber = phoneE164 ?: profile.phoneNumber,
+            bio = bio ?: profile.bio,
+            username = username ?: profile.username,
         )
         val id = userId ?: return
         UserDirectory.upsertFromServer(
             userId = id, fullName = fullName, photoUrl = photoUrl, phoneE164 = phoneE164,
+            bio = bio, username = username,
         )
     }
 
@@ -102,8 +111,17 @@ class AppSession(app: Application) : AndroidViewModel(app) {
         loadProfile()
     }
 
+    /**
+     * Order matters: wipe every local trace of THIS account before clearing the auth
+     * token, mirroring iOS `SettingsSheet.performLogOut()` -> `SessionTeardown` ->
+     * `AppSession.signOut()`. See `SessionTeardown.wipeLocalAccountState` for why —
+     * without it the next account signed in on this device inherited the previous
+     * user's chats, contacts and E2E identity.
+     */
     fun signOut() {
+        com.voiid.app.net.SessionTeardown.wipeLocalAccountState(appContext)
         auth.logout()
+        profile = VUser(id = "me", fullName = "", phoneNumber = "")   // don't leak into the next login
         route = AppRoute.ONBOARDING
     }
 }
@@ -151,7 +169,33 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         directConversations.clear(); groupConversations.clear()
         directConversations.addAll(cached.filter { it.type == ConversationType.DIRECT })
         groupConversations.addAll(cached.filter { it.type == ConversationType.GROUP })
-        cached.forEach { refresh(it.id) }   // decrypted message history from the engine store
+        // Previews come from Room (denormalized), so we touch NO message store here — the list
+        // paints instantly and offline regardless of history size. Full history maps lazily on
+        // open; previews stay fresh via bumpPreview at write time.
+        backfillPreviewsIfNeeded()
+    }
+
+    /** One-time backfill of previews for chats that existed BEFORE the preview column, run OFF
+     *  the launch path (IO, after the list is on screen). No-op for fresh installs. */
+    private fun backfillPreviewsIfNeeded() {
+        val prefs = appContext.getSharedPreferences("voiid_flags", android.content.Context.MODE_PRIVATE)
+        if (prefs.getBoolean("previews_backfilled_v1", false)) return
+        val ids = (directConversations + groupConversations).map { it.id }
+        viewModelScope.launch(Dispatchers.IO) {
+            for (id in ids) {
+                val last = engine.messages(id).lastOrNull() ?: continue
+                val kind = when {
+                    last.location != null -> MessageKind.LOCATION
+                    last.media == null -> MessageKind.TEXT
+                    last.media.mime.startsWith("audio/") -> MessageKind.VOICE
+                    else -> MessageKind.IMAGE
+                }
+                val preview = if (kind == MessageKind.TEXT) last.text else previewFor(kind)
+                if (preview.isNotBlank()) LocalStore.updatePreview(appContext, id, preview, last.createdAt)
+            }
+            prefs.edit().putBoolean("previews_backfilled_v1", true).apply()
+            withContext(Dispatchers.Main) { loadLocal() }   // re-render with backfilled previews
+        }
     }
 
     /** Suspend reload (so callers like handleIncoming can await it, then sync). */
@@ -165,11 +209,14 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                     c.copy(title = UserDirectory.displayName(peer, fallback = c.title))
                 } else c
             }
+            // The server payload carries no preview snippet — preserve the denormalized one we
+            // already hold (from Room) so a sync doesn't blank the list previews.
+            val prevMap = (directConversations + groupConversations).associate { it.id to it.lastMessagePreview }
+            val withPreview = convs.map { it.copy(lastMessagePreview = it.lastMessagePreview ?: prevMap[it.id]) }
             directConversations.clear(); groupConversations.clear()
-            directConversations.addAll(convs.filter { it.type == ConversationType.DIRECT })
-            groupConversations.addAll(convs.filter { it.type == ConversationType.GROUP })
-            LocalStore.saveConversations(appContext, convs)   // so the next cold launch renders instantly
-            convs.forEach { refresh(it.id) }   // show cached (already-decrypted) messages
+            directConversations.addAll(withPreview.filter { it.type == ConversationType.DIRECT })
+            groupConversations.addAll(withPreview.filter { it.type == ConversationType.GROUP })
+            LocalStore.saveConversations(appContext, convs)   // so the next cold launch renders instantly (preview col preserved by the upsert)
             loadError = null
         } catch (e: Exception) {
             loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t load chats."
@@ -202,7 +249,10 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                 groupEngine.syncGroupEvents()
                 groupEngine.receiveGroupMessages(conv.id)
                 refresh(conv.id)
-                engine.markRead(conv.id)
+                // Settings -> Privacy -> "Send read receipts": when off, this device
+                // stops POSTing receipts/mark with status "read" (delivery receipts are
+                // a transport signal and unaffected — see PrivacySettings).
+                if (PrivacySettings.sendReadReceipts(appContext)) engine.markRead(conv.id)
             } catch (e: Exception) {
                 loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t load messages."
             }
@@ -217,7 +267,8 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                 engine.resetSession(peer)
                 ws.sendSessionReset(conv.id, listOf(peer))
             }
-            engine.markRead(conv.id)            // blue ticks for the sender
+            // Settings -> Privacy -> "Send read receipts" (see PrivacySettings doc).
+            if (PrivacySettings.sendReadReceipts(appContext)) engine.markRead(conv.id)
             fetchPresence(conv.id, peer)
         } catch (e: Exception) {
             loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t load messages."
@@ -245,7 +296,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         cid?.let { refresh(it) }
     }
 
-    /** Rebuild a conversation's UI messages from the local (decrypted) store. */
+
     private fun refresh(convId: String) {
         val mapped = engine.messages(convId).map { d ->
             val kind = when {
@@ -262,12 +313,20 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                 d.deliveryStatus == "delivered" -> MessageStatus.DELIVERED
                 else -> MessageStatus.SENT
             }
+            // Surface delivered chat actions. Reaction display is single-emoji (peer's else
+            // mine); the per-user map is persisted in the engine.
+            val myId = com.voiid.app.net.TokenStore.get(getApplication()).userId
+            val reaction = d.reactions?.let { m -> m.entries.firstOrNull { it.key != myId }?.value ?: m.values.firstOrNull() }
             VMessage(
                 // Use the server id once known so receipts can match it.
                 id = d.serverId ?: d.id, conversationId = convId,
                 senderId = if (d.isMine) "me" else d.senderId,
                 kind = kind, text = d.text, createdAt = d.createdAt,
                 status = status, isMine = d.isMine, mediaRef = d.media, location = d.location,
+                reaction = reaction, deletedForEveryone = d.deletedForEveryone, forwarded = d.forwarded,
+                replyToText = d.quotedPreview, replyToSender = d.quotedSender,
+                // Real Delivered / Read times for the Message Info sheet.
+                deliveredAt = d.deliveredAt, readAt = d.readAt,
             )
         }
         if (mapped.isNotEmpty() || messagesByConversation.containsKey(convId)) {
@@ -299,7 +358,10 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 val peer = peerUserId(conv)
-                engine.sendMedia(data, mime, caption, conversationId, peer)
+                val echo = engine.sendMedia(data, mime, caption, conversationId, peer)
+                // Local-first: cache the ORIGINAL plaintext under the R2 key so this sender
+                // renders its own photo/voice instantly and offline — never re-downloads it.
+                echo.media?.mediaUrl?.let { com.voiid.app.main.MediaCache.putData(appContext, it, data) }
                 removeMessage(tempId, conversationId)
                 refresh(conversationId)
             } catch (e: Exception) {
@@ -419,6 +481,24 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
             return
         }
 
+        // A quoted reply travels as its own E2EE envelope so the quote reaches the peer.
+        if (replyTo != null) {
+            bumpPreview(conversationId, text)
+            val quotedId = replyTo.id
+            val preview = if (replyTo.kind == MessageKind.TEXT) replyTo.text.take(80) else previewFor(replyTo.kind)
+            val sender = if (replyTo.isMine) "You" else replyTo.senderName.ifEmpty { "" }
+            viewModelScope.launch {
+                try {
+                    val peer = peerUserId(conv)
+                    engine.sendReply(text, quotedId, preview, sender, conversationId, peer)
+                    refresh(conversationId)
+                } catch (e: Exception) {
+                    loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t resolve the recipient."
+                }
+            }
+            return
+        }
+
         // Text: persist as PENDING in the engine store now (instant + offline-visible),
         // then flush (send) in the background. The store is the single source of truth.
         engine.enqueueText(text, conversationId)
@@ -457,6 +537,9 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
 
     /** Send a typing frame for a direct chat (best-effort). */
     fun sendTyping(conversationId: String, isStart: Boolean) {
+        // Settings -> Privacy -> "Send typing indicators": when off, this device emits
+        // no `typing` WS frames at all (see PrivacySettings).
+        if (!PrivacySettings.sendTypingIndicators(appContext)) return
         val peer = directConversations.firstOrNull { it.id == conversationId }?.peerUserId ?: return
         ws.sendTyping(conversationId, listOf(peer), isStart)
     }
@@ -499,25 +582,39 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         else -> "Message"
     }
 
-    /** Forward a message to one or more conversations (with a Forwarded tag). */
+    /** Forward a message to one or more conversations. Media is forwarded by RE-SENDING its
+     *  E2EE reference — the ciphertext is already in R2, so no re-upload; key stays E2E. */
     fun forward(message: VMessage, conversationIds: List<String>) {
         for (cid in conversationIds) {
-            send(
-                text = message.text,
-                kind = if (message.kind == MessageKind.POLL) MessageKind.TEXT else message.kind,
-                conversationId = cid,
-                forwarded = true,
-            )
+            val ref = message.mediaRef
+            val conv = directConversations.firstOrNull { it.id == cid }
+            if (ref != null && conv != null &&
+                (message.kind == MessageKind.IMAGE || message.kind == MessageKind.VOICE || message.kind == MessageKind.DOCUMENT)) {
+                viewModelScope.launch {
+                    val peer = runCatching { peerUserId(conv) }.getOrNull() ?: return@launch
+                    runCatching { engine.forwardMedia(ref, message.text, cid, peer) }
+                    refresh(cid)
+                }
+            } else {
+                send(text = message.text,
+                     kind = if (message.kind == MessageKind.POLL) MessageKind.TEXT else message.kind,
+                     conversationId = cid, forwarded = true)
+            }
         }
     }
 
-    /** Delete a message. forEveryone=true leaves a "deleted" tombstone; otherwise removes it. */
+    /** Delete a message. forEveryone=true tombstones it AND tells the peer; else local-only. */
     fun deleteMessage(messageId: String, convId: String, forEveryone: Boolean) {
         val arr = messagesByConversation[convId] ?: return
         val idx = arr.indexOfFirst { it.id == messageId }
         if (idx < 0) return
         if (forEveryone) {
             arr[idx] = arr[idx].copy(deletedForEveryone = true, reaction = null)
+            val conv = directConversations.firstOrNull { it.id == convId }
+            if (conv != null) viewModelScope.launch {
+                val peer = runCatching { peerUserId(conv) }.getOrNull() ?: return@launch
+                runCatching { engine.sendDeleteForEveryone(messageId, convId, peer) }
+            }
         } else {
             arr.removeAt(idx)
         }
@@ -539,12 +636,18 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         if (gi >= 0) groupConversations[gi] = groupConversations[gi].copy(lastMessagePreview = null)
     }
 
-    /** Toggle an emoji reaction on a message. */
+    /** Toggle an emoji reaction on a message — and DELIVER it to the peer over E2EE. */
     fun react(messageId: String, emoji: String, convId: String) {
         val arr = messagesByConversation[convId] ?: return
         val idx = arr.indexOfFirst { it.id == messageId }
         if (idx < 0) return
-        arr[idx] = arr[idx].copy(reaction = if (arr[idx].reaction == emoji) null else emoji)
+        val cleared = arr[idx].reaction == emoji
+        arr[idx] = arr[idx].copy(reaction = if (cleared) null else emoji)   // optimistic local
+        val conv = directConversations.firstOrNull { it.id == convId } ?: return
+        viewModelScope.launch {
+            val peer = runCatching { peerUserId(conv) }.getOrNull() ?: return@launch
+            runCatching { engine.sendReaction(messageId, if (cleared) null else emoji, convId, peer) }
+        }
     }
 
     /** Send a poll into a conversation. */
@@ -579,12 +682,15 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         val di = directConversations.indexOfFirst { it.id == convId }
         if (di >= 0) {
             directConversations[di] = directConversations[di].copy(lastMessagePreview = preview, lastMessageAt = now)
-            return
+        } else {
+            val gi = groupConversations.indexOfFirst { it.id == convId }
+            if (gi >= 0) {
+                groupConversations[gi] = groupConversations[gi].copy(lastMessagePreview = preview, lastMessageAt = now)
+            }
         }
-        val gi = groupConversations.indexOfFirst { it.id == convId }
-        if (gi >= 0) {
-            groupConversations[gi] = groupConversations[gi].copy(lastMessagePreview = preview, lastMessageAt = now)
-        }
+        // Persist so the chat LIST shows this snippet + ordering on the next cold launch
+        // straight from Room, without decoding the message store on the launch path.
+        LocalStore.updatePreview(appContext, convId, preview, now)
     }
 }
 

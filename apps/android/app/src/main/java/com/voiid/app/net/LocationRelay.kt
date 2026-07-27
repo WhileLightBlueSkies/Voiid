@@ -68,6 +68,19 @@ object LocationRelay {
      * control envelope worth routing here (rather than rendering as a chat bubble). Matches the
      * discriminator without a full JSON parse. The authoritative parse happens in the engine.
      */
-    fun looksLikeEnvelope(plaintext: String): Boolean =
-        plaintext.length < 4096 && plaintext.contains("\"_vloc\"")
+    fun looksLikeEnvelope(plaintext: String): Boolean {
+        if (plaintext.length >= 4096) return false
+        if (plaintext.contains("\"_vloc\"")) return true
+        // Android omits `_vloc` from the wire (ApiClient.json has encodeDefaults=false), so an
+        // Android-sent envelope carries no `_vloc` substring. Recognise it by its kind
+        // discriminator instead — otherwise an Android→Android (group) location renders as raw
+        // JSON / "Unsupported message". False positives are negligible: a real text message
+        // would have to literally contain one of these `"k":"…"` markers inside a JSON object.
+        val t = plaintext.trimStart()
+        return t.startsWith("{") && (
+            t.contains("\"k\":\"pin\"") || t.contains("\"k\":\"live_start\"") ||
+            t.contains("\"k\":\"live_stop\"") || t.contains("\"k\":\"live_rekey\"") ||
+            t.contains("\"k\":\"map_key\"") || t.contains("\"k\":\"map_off\"")
+        )
+    }
 }

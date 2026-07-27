@@ -68,7 +68,9 @@ struct StoryReplyEnvelope: Codable {
 struct DecryptedMessage: Codable {
     let id: String                 // stable LOCAL id (kept across send so the UI is stable)
     let senderId: String
-    let text: String
+    // Mutable: delete-for-everyone tombstones this to "" in place (see
+    // applyDeleteForEveryone) rather than reconstructing the whole record.
+    var text: String
     let createdAt: Date
     let isMine: Bool
     var media: MediaRef? = nil
@@ -86,9 +88,29 @@ struct DecryptedMessage: Codable {
     /// Delivery state of OUR sent message: "sent" → "delivered" → "read". Persisted
     /// so it never regresses when the message list is rebuilt.
     var deliveryStatus: String? = nil
+    /// When the message reached the recipient's device / was read — stamped the moment we
+    /// learn of each receipt, and persisted, so the Message Info sheet shows real Delivered /
+    /// Read times (not a placeholder). Only ever set once each (never overwritten).
+    var deliveredAt: Date? = nil
+    var readAt: Date? = nil
     /// True for a tombstone (decrypt failed). NOT counted as "seen" so it's retried
     /// on later syncs — once the session re-establishes it can finally decrypt.
     var failed: Bool = false
+    /// Per-USER reactions on this message (userId -> emoji). A map, not a single field,
+    /// so two people can react differently and each can change their own. Persisted.
+    var reactions: [String: String]? = nil
+    /// Delete-for-everyone tombstone: the original author asked all recipients to erase it.
+    var deletedForEveryone: Bool? = nil
+    /// Quoted-reply snapshot (server id + a short preview + who sent it), so the quote
+    /// renders even if the original was since deleted.
+    var quotedId: String? = nil
+    var quotedPreview: String? = nil
+    var quotedSender: String? = nil
+    /// "Forwarded" tag.
+    var forwarded: Bool? = nil
+    /// A control message (reaction/delete signal): kept in the store so its id counts as
+    /// "seen" and is never reprocessed, but NEVER rendered as a bubble.
+    var control: Bool? = nil
 }
 
 @MainActor
@@ -114,7 +136,16 @@ final class ChatEngine {
     /// messages permanently undecryptable. lock()/unlock() serialize per conversation.
     private var syncLocked: Set<String> = []
     private var syncWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
-    private init() { loadStore() }
+    // Do NOT load the whole message store at init: that whole-file JSON decode used to run on
+    // the app-launch / chat-LIST critical path and is what made the list take seconds. The
+    // list now renders entirely from SQLite (LocalStore); the message store is decoded LAZILY
+    // on first access (opening a chat / a sync) via `ensureLoaded()`.
+    private init() {}
+
+    /// Lazily decode the message store on first access. Idempotent. Mutation critical sections
+    /// already force a fresh cross-process reload via `reloadSharedState()` / `reloadStore()`;
+    /// this covers the pure read/append paths so nothing touches an unloaded store.
+    private func ensureLoaded() { if !storeLoaded { loadStore() } }
 
     /// Drop every trace of the signed-in account from MEMORY.
     ///
@@ -158,8 +189,13 @@ final class ChatEngine {
     // MARK: - Public API
 
     /// Locally-stored (already decrypted) messages for a conversation, oldest-first.
+    /// Control rows (reaction/delete signals) are kept in the store for dedup but never
+    /// surfaced as bubbles.
     func messages(conversationId: String) -> [DecryptedMessage] {
-        (store[conversationId] ?? []).sorted { $0.createdAt < $1.createdAt }
+        ensureLoaded()
+        return (store[conversationId] ?? [])
+            .filter { !($0.control ?? false) }
+            .sorted { $0.createdAt < $1.createdAt }
     }
 
     // MARK: - Group (MLS) message store bridge
@@ -178,7 +214,8 @@ final class ChatEngine {
     /// nothing on the error path — whereas treating a tombstone as final would hide a
     /// perfectly decryptable message forever.
     func storedMessageIds(conversationId: String) -> Set<String> {
-        Set((store[conversationId] ?? []).filter { !$0.failed }.map { $0.id })
+        ensureLoaded()
+        return Set((store[conversationId] ?? []).filter { !$0.failed }.map { $0.id })
     }
 
     /// Append an already-decrypted group message into the shared store (dedup by id +
@@ -206,7 +243,8 @@ final class ChatEngine {
 
     /// One stored message by local id or server id (the push carries the server id).
     func storedMessage(id: String, conversationId: String) -> DecryptedMessage? {
-        (store[conversationId] ?? []).first { $0.id == id || $0.serverId == id }
+        ensureLoaded()
+        return (store[conversationId] ?? []).first { $0.id == id || $0.serverId == id }
     }
 
     // MARK: - Backup export / import (the plaintext payload of an encrypted backup)
@@ -215,13 +253,15 @@ final class ChatEngine {
     /// bytes are sealed under the backup master secret before they ever leave the
     /// device (see BackupManager), so the server only sees ciphertext.
     func exportStore() -> Data {
-        (try? JSONEncoder().encode(store)) ?? Data()
+        ensureLoaded()   // a backup must contain the whole history, not an empty just-launched store
+        return (try? JSONEncoder().encode(store)) ?? Data()
     }
 
     /// Merge a restored message store into the current one. Messages are keyed by id
     /// per conversation; existing entries win (never clobber a locally-decrypted
     /// message with a restored copy), restored-only messages are appended. Persists.
     func importStore(_ data: Data) {
+        ensureLoaded()   // merge INTO the real current store, never over an unloaded empty one
         guard let decoded = try? JSONDecoder().decode([String: [DecryptedMessage]].self, from: data) else { return }
         for (conv, msgs) in decoded {
             var arr = store[conv] ?? []
@@ -329,10 +369,18 @@ final class ChatEngine {
     @discardableResult
     func sendMedia(_ data: Data, mime: String, caption: String = "",
                    conversationId: String, peerUserId: String) async throws -> DecryptedMessage {
+        // Bracket logging so a failure is attributable in the console: if "start" prints but
+        // "uploaded" does not, it failed at encrypt or R2 upload; if both print but nothing
+        // arrives, it failed in the fan-out/send below (the caller logs that catch).
+        NSLog("[VOIID] 🖼️ sendMedia start: \(data.count) bytes, mime=\(mime)")
         // 1. Encrypt the blob (e2e-core) → ciphertext + media key.
         let enc = try encryptMedia(plaintext: data)
         // 2. Upload the CIPHERTEXT to R2; get back the opaque object key.
         let key = try await MediaService.shared.upload(ciphertext: enc.ciphertext, mime: mime)
+        NSLog("[VOIID] 🖼️ sendMedia uploaded → key=\(key)")
+        // Local-first: cache the ORIGINAL plaintext under the R2 key so this sender renders
+        // its own photo instantly and offline — it never downloads + decrypts what it just sent.
+        await MainActor.run { MediaCache.shared.setData(data, key) }
         let ref = MediaRef(mediaUrl: key, mime: mime,
                            key: enc.mediaKey.key, nonce: enc.mediaKey.nonce,
                            sha256: enc.mediaKey.ciphertextSha256)
@@ -359,6 +407,126 @@ final class ChatEngine {
             append(echo, to: conversationId)
             return echo
         }
+    }
+
+    // MARK: - Message actions (reaction / delete-for-everyone / reply / forward)
+    //
+    // Each rides the EXACT same per-device E2EE fan-out as any message; the server sees
+    // only opaque ciphertext + a content_type routing hint. Receivers apply them in
+    // decryptInboundLocked by probing the plaintext `"t"` discriminator.
+
+    /// Send (or clear) a reaction to `targetServerId`. `emoji == nil` clears ours.
+    /// No visible bubble — it decorates the target on both ends.
+    func sendReaction(targetServerId: String, emoji: String?,
+                      conversationId: String, peerUserId: String) async throws {
+        let data = try JSONEncoder().encode(
+            MessageReactionEnvelope(target: targetServerId, emoji: emoji))
+        try await CrossProcessLock.withLock {
+            reloadSharedState()
+            let messages = try await encryptFanout(data, peerUserId: peerUserId)
+            _ = try await api.request(
+                "POST", "messages/send",
+                body: SendBundleBody(conversation_id: conversationId,
+                                     sender_device_id: E2EManager.shared.deviceId,
+                                     messages: messages,
+                                     content_type: MessageActionContentType.reaction)) as SendResponse
+            // Apply our own reaction locally (keyed by OUR user id) and persist.
+            applyReaction(target: targetServerId, from: TokenStore.shared.userId ?? "me",
+                          emoji: emoji, in: conversationId)
+        }
+    }
+
+    /// Ask every recipient to tombstone `targetServerId`. Only meaningful from the
+    /// message's author — receivers enforce that.
+    func sendDeleteForEveryone(targetServerId: String,
+                               conversationId: String, peerUserId: String) async throws {
+        let data = try JSONEncoder().encode(MessageDeleteEnvelope(target: targetServerId))
+        try await CrossProcessLock.withLock {
+            reloadSharedState()
+            let messages = try await encryptFanout(data, peerUserId: peerUserId)
+            _ = try await api.request(
+                "POST", "messages/send",
+                body: SendBundleBody(conversation_id: conversationId,
+                                     sender_device_id: E2EManager.shared.deviceId,
+                                     messages: messages,
+                                     content_type: MessageActionContentType.delete)) as SendResponse
+            applyDeleteForEveryone(target: targetServerId, in: conversationId)
+        }
+    }
+
+    /// Send a text reply quoting another message. Renders as a normal bubble with a quote.
+    @discardableResult
+    func sendReply(text: String, quotedId: String, quotedPreview: String, quotedSender: String,
+                   conversationId: String, peerUserId: String) async throws -> DecryptedMessage {
+        let env = MessageReplyEnvelope(text: text, quotedId: quotedId,
+                                       quotedPreview: quotedPreview, quotedSender: quotedSender)
+        let data = try JSONEncoder().encode(env)
+        return try await CrossProcessLock.withLock {
+            reloadSharedState()
+            let messages = try await encryptFanout(data, peerUserId: peerUserId)
+            let res: SendResponse = try await api.request(
+                "POST", "messages/send",
+                body: SendBundleBody(conversation_id: conversationId,
+                                     sender_device_id: E2EManager.shared.deviceId,
+                                     messages: messages,
+                                     content_type: MessageActionContentType.reply))
+            var echo = DecryptedMessage(id: res.message_id, senderId: TokenStore.shared.userId ?? "me",
+                                        text: text, createdAt: res.created_at.map(parseDate) ?? Date(),
+                                        isMine: true)
+            echo.quotedId = quotedId; echo.quotedPreview = quotedPreview; echo.quotedSender = quotedSender
+            append(echo, to: conversationId)
+            return echo
+        }
+    }
+
+    /// Forward an EXISTING media message without re-uploading — the ciphertext already
+    /// lives in R2, so we just re-send its MediaRef (the key stays E2E as always).
+    @discardableResult
+    func forwardMedia(_ ref: MediaRef, caption: String,
+                      conversationId: String, peerUserId: String) async throws -> DecryptedMessage {
+        let env = ForwardedMediaEnvelope(media: ref, caption: caption)
+        let data = try JSONEncoder().encode(env)
+        return try await CrossProcessLock.withLock {
+            reloadSharedState()
+            let messages = try await encryptFanout(data, peerUserId: peerUserId)
+            let res: SendResponse = try await api.request(
+                "POST", "messages/send",
+                body: SendBundleBody(conversation_id: conversationId,
+                                     sender_device_id: E2EManager.shared.deviceId,
+                                     messages: messages, content_type: MessageActionContentType.media,
+                                     media_url: ref.mediaUrl, media_mime: ref.mime))
+            var echo = DecryptedMessage(id: res.message_id, senderId: TokenStore.shared.userId ?? "me",
+                                        text: caption, createdAt: res.created_at.map(parseDate) ?? Date(),
+                                        isMine: true, media: ref)
+            echo.forwarded = true
+            append(echo, to: conversationId)
+            return echo
+        }
+    }
+
+    // Local appliers — shared by the senders (our own action) and inbound (a peer's).
+
+    /// Set or clear `userId`'s reaction on the message whose serverId (or local id) matches.
+    func applyReaction(target: String, from userId: String, emoji: String?, in convId: String) {
+        guard var arr = store[convId],
+              let i = arr.firstIndex(where: { $0.serverId == target || $0.id == target }) else { return }
+        var map = arr[i].reactions ?? [:]
+        if let emoji { map[userId] = emoji } else { map.removeValue(forKey: userId) }
+        arr[i].reactions = map.isEmpty ? nil : map
+        store[convId] = arr
+        persist()
+    }
+
+    /// Tombstone the target message (delete-for-everyone).
+    func applyDeleteForEveryone(target: String, in convId: String) {
+        guard var arr = store[convId],
+              let i = arr.firstIndex(where: { $0.serverId == target || $0.id == target }) else { return }
+        arr[i].deletedForEveryone = true
+        arr[i].text = ""
+        arr[i].media = nil
+        arr[i].reactions = nil
+        store[convId] = arr
+        persist()
     }
 
     /// Send a location envelope (pin or live-share CONTROL) in a direct chat over the
@@ -584,20 +752,70 @@ final class ChatEngine {
                                                      senderDeviceId: m.sender_device_id)
                 newlyReceived.append(m.id)
                 NSLog("[VOIID] ✅ decrypted inbound id=\(m.id) senderDev=\(m.sender_device_id ?? "nil")")
+                // ACTION envelopes decorate an EXISTING message rather than adding a bubble.
+                // Probe the discriminator; if it's one, apply it and move on (it's now "seen",
+                // so it won't be reprocessed).
+                if let action = MessageActionInbound.parse(plain) {
+                    switch action {
+                    case .reaction(let target, let emoji):
+                        applyReaction(target: target, from: m.sender_id, emoji: emoji, in: conversationId)
+                    case .delete(let target):
+                        // Only the ORIGINAL AUTHOR may delete: honour it only if the target
+                        // was sent by this same peer (i.e. an inbound message from them).
+                        let arr: [DecryptedMessage] = store[conversationId] ?? []
+                        let targetMessage: DecryptedMessage? =
+                            arr.first(where: { $0.serverId == target || $0.id == target })
+                        if targetMessage?.senderId == m.sender_id {
+                            applyDeleteForEveryone(target: target, in: conversationId)
+                        }
+                    }
+                    // Keep this control id in the store (seen) but hidden from the UI.
+                    append(DecryptedMessage(id: m.id, senderId: m.sender_id, text: "",
+                                            createdAt: parseDate(m.created_at), isMine: false,
+                                            control: true), to: conversationId)
+                    continue
+                }
+                // A reply is a real bubble that also carries a quote.
+                if let reply = MessageActionInbound.parseReply(plain) {
+                    replace(id: m.id, with:
+                            DecryptedMessage(id: m.id, senderId: m.sender_id, text: reply.text,
+                                             createdAt: parseDate(m.created_at), isMine: false,
+                                             quotedId: reply.quotedId, quotedPreview: reply.quotedPreview,
+                                             quotedSender: reply.quotedSender),
+                           to: conversationId)
+                    continue
+                }
+                // A location envelope (pin / live / map control). LocationWire captures/erases
+                // the shareKey (or the map key) in the Keychain (safe in the NSE too), strips
+                // it from the persisted JSON, and yields a clean display string so no raw JSON
+                // — and NO coordinate — ever reaches a notification body.
+                if let loc = LocationWire.decode(plain, fromUserId: m.sender_id) {
+                    if loc.renders {
+                        // pin / live_start / live_stop → a real bubble.
+                        replace(id: m.id, with:
+                                DecryptedMessage(id: m.id, senderId: m.sender_id, text: loc.text,
+                                                 createdAt: parseDate(m.created_at), isMine: false,
+                                                 locationJSON: loc.json),
+                               to: conversationId)
+                    } else {
+                        // map_key / map_off / live_rekey → SILENT control. Its key/effect is
+                        // already captured; keep the id "seen" (so it isn't reprocessed) but
+                        // hide it from the chat — it must never appear as an empty bubble.
+                        append(DecryptedMessage(id: m.id, senderId: m.sender_id, text: "",
+                                                createdAt: parseDate(m.created_at), isMine: false,
+                                                control: true), to: conversationId)
+                    }
+                    continue
+                }
                 // A media message's plaintext is a JSON MediaEnvelope; a text
                 // message is just the string. Detect via the server's content_type
                 // hint, falling back to the decoded shape.
                 let parsed = decodeEnvelope(plain, contentType: m.content_type)
-                // A location envelope (pin / live control). LocationWire captures/erases the
-                // shareKey in the Keychain (safe in the NSE too), strips it from the persisted
-                // JSON, and yields a clean display string so no raw JSON — and NO coordinate —
-                // ever reaches a notification body.
-                let loc = LocationWire.decode(plain)
                 replace(id: m.id, with:
                         DecryptedMessage(id: m.id, senderId: m.sender_id,
-                                         text: loc?.text ?? parsed.caption,
+                                         text: parsed.caption,
                                          createdAt: parseDate(m.created_at), isMine: false,
-                                         media: parsed.media, locationJSON: loc?.json),
+                                         media: parsed.media),
                        to: conversationId)
             } catch {
                 NSLog("[VOIID] ❌ inbound decrypt FAILED id=\(m.id) senderDev=\(m.sender_device_id ?? "nil"): \(error)")
@@ -625,12 +843,22 @@ final class ChatEngine {
     /// downgraded). Returns the conversation id so the UI can refresh just that chat.
     @discardableResult
     func applyReceipt(messageId: String, status: String) -> String? {
+        ensureLoaded()   // a WS receipt can arrive while on the chat LIST (store not yet lazily
+                         // loaded); without this the tick update would be dropped until re-sync.
         let rank = ["sent": 0, "delivered": 1, "read": 2]
         for (cid, var arr) in store {
             if let i = arr.firstIndex(where: { $0.isMine && ($0.serverId == messageId || $0.id == messageId) }) {
                 let cur = arr[i].deliveryStatus ?? "sent"
                 if (rank[status] ?? 0) > (rank[cur] ?? 0) {
                     arr[i].deliveryStatus = status
+                    // Stamp the transition time ONCE (for the Message Info sheet). "read"
+                    // implies delivered, so backfill a missing deliveredAt too.
+                    let now = Date()
+                    if status == "delivered", arr[i].deliveredAt == nil { arr[i].deliveredAt = now }
+                    if status == "read" {
+                        if arr[i].readAt == nil { arr[i].readAt = now }
+                        if arr[i].deliveredAt == nil { arr[i].deliveredAt = now }
+                    }
                     store[cid] = arr
                     persist()
                 }
@@ -650,6 +878,7 @@ final class ChatEngine {
     /// Mark all locally-stored inbound messages in a conversation as read. The
     /// server fans out a `receipt` WS event to the original senders (blue ticks).
     func markRead(conversationId: String) async {
+        ensureLoaded()
         let ids = (store[conversationId] ?? []).filter { !$0.isMine }.map { $0.id }
         await markReceipts(ids, status: "read")
     }
@@ -835,6 +1064,7 @@ final class ChatEngine {
     // MARK: - Local message store (decrypt-once; plaintext at rest, file-protected)
 
     private func append(_ m: DecryptedMessage, to convId: String, persist doPersist: Bool = true) {
+        ensureLoaded()   // never mutate/persist an unloaded store (would clobber on-disk history)
         var arr = store[convId] ?? []
         guard !arr.contains(where: { $0.id == m.id }) else { return }
         arr.append(m)
@@ -845,6 +1075,7 @@ final class ChatEngine {
     /// Insert `m`, or REPLACE an existing entry with the same id in place (keeps order).
     /// Used by sync so a tombstone that later decrypts is upgraded to the real message.
     private func replace(id: String, with m: DecryptedMessage, to convId: String) {
+        ensureLoaded()
         var arr = store[convId] ?? []
         if let i = arr.firstIndex(where: { $0.id == id }) { arr[i] = m } else { arr.append(m) }
         store[convId] = arr
@@ -868,6 +1099,11 @@ final class ChatEngine {
         return dir.appendingPathComponent("voiid_messages.json")
     }
 
+    /// Set once a load has run, so a DECODE FAILURE never lets an empty store overwrite
+    /// real messages on the next persist(). Without this, one incompatible-JSON load wiped
+    /// the whole history the next time anything was saved.
+    private var storeLoaded = false
+
     private func loadStore() {
         // One-time migration: seed the shared store from the legacy app-private file.
         if let shared = AppGroup.messageStoreURL,
@@ -875,12 +1111,31 @@ final class ChatEngine {
            FileManager.default.fileExists(atPath: legacyStoreURL.path) {
             try? FileManager.default.copyItem(at: legacyStoreURL, to: shared)
         }
-        guard let data = try? Data(contentsOf: storeURL),
-              let decoded = try? JSONDecoder().decode([String: [DecryptedMessage]].self, from: data) else { return }
-        store = decoded
+        guard FileManager.default.fileExists(atPath: storeURL.path) else {
+            NSLog("[VOIID] 📂 message store: no file yet (fresh) at \(storeURL.path)")
+            storeLoaded = true
+            return
+        }
+        do {
+            let data = try Data(contentsOf: storeURL)
+            let decoded = try JSONDecoder().decode([String: [DecryptedMessage]].self, from: data)
+            store = decoded
+            let total = decoded.values.reduce(0) { $0 + $1.count }
+            NSLog("[VOIID] 📂 message store LOADED: \(decoded.count) conversations, \(total) messages")
+            storeLoaded = true
+        } catch {
+            // DO NOT mark loaded — a persist() must not clobber the on-disk file we failed
+            // to parse. Surface it loudly instead of silently starting empty.
+            NSLog("[VOIID] ❌ message store DECODE FAILED — refusing to overwrite it: \(error)")
+        }
     }
 
     private func persist() {
+        // Never let an unloaded/failed store overwrite good data on disk.
+        guard storeLoaded else {
+            NSLog("[VOIID] ⚠️ persist skipped — store not loaded (would clobber on-disk history)")
+            return
+        }
         guard let data = try? JSONEncoder().encode(store) else { return }
         // Protection class MUST match the keychain items this store is kept in step with.
         // The identity/session/MLS pickles are `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`
@@ -893,8 +1148,13 @@ final class ChatEngine {
         // `.completeFileProtectionUntilFirstUserAuthentication` keeps the file encrypted at
         // rest until the first unlock after boot, which is the strongest class that still
         // lets a background extension do its job. Same class as the SQLite database.
-        try? data.write(to: storeURL,
-                        options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        do {
+            try data.write(to: storeURL,
+                           options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        } catch {
+            // A silently-failing write is exactly "nothing stores locally". Make it visible.
+            NSLog("[VOIID] ❌ message store WRITE FAILED at \(storeURL.path): \(error)")
+        }
     }
 
     // MARK: - Session persistence (pickled in Keychain)
@@ -992,18 +1252,34 @@ final class ChatEngine {
     /// recognised `"t"` is decoded, not shown verbatim.
     private func decodeEnvelope(_ plain: String, contentType: String?) -> (caption: String, media: MediaRef?) {
         let data = plain.data(using: .utf8)
-        if contentType == "media", let data,
-           let env = try? JSONDecoder().decode(MediaEnvelope.self, from: data) {
+        // MEDIA — decode by SHAPE, not just the content_type hint. A cross-platform message
+        // (e.g. Android → iOS) whose hint didn't round-trip must STILL render as media, not
+        // as raw JSON. A real MediaEnvelope always has a non-empty media.mediaUrl.
+        if let data,
+           let env = try? JSONDecoder().decode(MediaEnvelope.self, from: data),
+           !env.media.mediaUrl.isEmpty {
             return (env.caption, env.media)
         }
-        // A story reply carries a typed envelope; render its body (reaction or text), and
-        // NEVER leave the raw JSON in a bubble. The `"t"` probe also catches the case where
-        // an older content_type hint is missing but the payload is a recognised envelope.
+        // Story reply: render its body (reaction or text), never the raw JSON.
         if let data, let probe = try? JSONDecoder().decode(EnvelopeProbe.self, from: data),
            probe.t == "story_reply",
            let reply = try? JSONDecoder().decode(StoryReplyEnvelope.self, from: data) {
-            let body = reply.reaction ?? reply.text
-            return (body, nil)
+            return (reply.reaction ?? reply.text, nil)
+        }
+        // A reply envelope reaching here (no probe upstream): show its text, not JSON.
+        if let data, let probe = try? JSONDecoder().decode(EnvelopeProbe.self, from: data),
+           probe.t == MessageActionContentType.reply,
+           let reply = try? JSONDecoder().decode(MessageReplyEnvelope.self, from: data) {
+            return (reply.text, nil)
+        }
+        // Plain text is the normal case (NOT a JSON object). But if the plaintext looks like
+        // a JSON object we don't recognise, NEVER leak it into a bubble — show a safe
+        // placeholder instead. This is the backstop that stopped Android media/envelopes
+        // rendering as literal `{"v":1,...}` text.
+        let trimmed = plain.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("{"), trimmed.hasSuffix("}"),
+           (try? JSONSerialization.jsonObject(with: Data(trimmed.utf8))) != nil {
+            return ("Unsupported message", nil)
         }
         return (plain, nil)
     }
@@ -1181,6 +1457,20 @@ enum LocationWire {
     private static let vault = KeychainData(service: "com.voiid.location.keys")
     private static func keyName(_ shareId: String) -> String { "sharekey_\(shareId)" }
 
+    // Feature (B) — the live Map. Its inbound key is keyed by the SENDER's user id (one key
+    // per contact who is visible to you), not by shareId. We mirror `MapKeyStore`'s exact
+    // Keychain service + naming here so a `map_key` captured on THIS decode path (app OR NSE,
+    // foreground OR background) is the very key `MapKeyStore.inboundKey(forSender:)` later
+    // reads to decrypt that contact's fixes. Without this the receiver holds no key and every
+    // inbound fix is silently dropped — the "I only see my own dot" bug.
+    private static let mapVault = KeychainData(service: "com.voiid.mapkeys")
+    private static func mapInboundName(_ userId: String) -> String { "inbound_map_key.\(userId)" }
+
+    /// Kinds that render a visible chat bubble. Everything else (`map_key`, `map_off`,
+    /// `live_rekey`) is SILENT control — captured for its key/effect but never shown.
+    static let renderKinds: Set<String> = ["pin", "live_start", "live_stop"]
+    static let silentKinds: Set<String> = ["map_key", "map_off", "live_rekey"]
+
     /// Rendered kinds get a bubble; everything else is silent control.
     static func displayText(kind: String, label: String?) -> String {
         switch kind {
@@ -1202,18 +1492,36 @@ enum LocationWire {
     }
 
     /// Full decode: capture/erase the key, and return (clean display text, key-stripped
-    /// JSON). nil when the plaintext is not a location envelope.
-    static func decode(_ plaintext: String) -> (text: String, json: String)? {
+    /// JSON). `fromUserId` is the message SENDER — required to file a Map (`map_key`) key
+    /// under the right contact. nil when the plaintext is not a location envelope.
+    static func decode(_ plaintext: String, fromUserId: String) -> (text: String, json: String, renders: Bool)? {
         guard let data = plaintext.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              (obj["_vloc"] as? Int) == 1,
-              let kind = obj["k"] as? String else { return nil }
+              let kind = obj["k"] as? String,
+              // Recognise by KIND, not by `_vloc`. Android omits `_vloc` from the wire
+              // (encodeDefaults=false), so requiring it made every Android pin/live/map
+              // envelope fall through to the generic decoder and render as "Unsupported
+              // message". The kind string is the reliable, cross-platform discriminator.
+              renderKinds.contains(kind) || silentKinds.contains(kind) else { return nil }
+
+        // Feature (B) Map control — keyed by SENDER, not shareId. Capture/erase here so the
+        // key is present whether this ran in the app or the NSE, foreground or background.
+        switch kind {
+        case "map_key":
+            if let key = obj["key"] as? String, let raw = Data(base64Encoded: key), raw.count == 32,
+               !fromUserId.isEmpty {
+                mapVault.setData(raw, mapInboundName(fromUserId))
+            }
+        case "map_off":
+            if !fromUserId.isEmpty { mapVault.delete(mapInboundName(fromUserId)) }
+        default: break
+        }
 
         if let shareId = obj["s"] as? String {
             switch kind {
-            case "live_start", "live_rekey", "map_key":
+            case "live_start", "live_rekey":
                 if let key = obj["key"] as? String { vault.set(key, keyName(shareId)) }
-            case "live_stop", "map_off":
+            case "live_stop":
                 vault.delete(keyName(shareId))
             default: break
             }
@@ -1226,6 +1534,7 @@ enum LocationWire {
         var stripped = obj; stripped["key"] = nil
         let json = (try? JSONSerialization.data(withJSONObject: stripped))
             .flatMap { String(data: $0, encoding: .utf8) } ?? plaintext
-        return (displayText(kind: kind, label: obj["label"] as? String), json)
+        return (displayText(kind: kind, label: obj["label"] as? String), json,
+                renderKinds.contains(kind))
     }
 }

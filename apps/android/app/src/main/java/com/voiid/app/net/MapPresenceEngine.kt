@@ -285,7 +285,11 @@ object MapPresenceEngine {
 
     private fun onFix(fixShareId: String, fromUserId: String, ciphertextB64: String, ts: Long) {
         // Client-side authorization: a fix for a share we hold no key for is discarded (§9).
-        val share = inbound[fixShareId] ?: return
+        // Fall back to the background-safe key store: the `map_key` may have arrived while the
+        // app was killed/backgrounded (captured by ChatEngine into MapInboundKeyStore), so it
+        // isn't in our in-memory registry yet. Without this, every fix from a contact who
+        // started sharing while we were away is dropped — the "others never appear" bug.
+        val share = inbound[fixShareId] ?: restoreInboundKey(fixShareId) ?: return
         val blob = runCatching { Base64.decode(ciphertextB64, Base64.NO_WRAP) }.getOrNull() ?: return
         val plain = runCatching { decryptBackup(share.key, blob) }.getOrNull() ?: return
         val env = runCatching { ApiClient.json.decodeFromString(MapEnvelope.serializer(), plain.decodeToString()) }.getOrNull() ?: return
@@ -300,6 +304,17 @@ object MapPresenceEngine {
         val fix = MapFix(share.fromUserId, fixShareId, lat, lon, env.acc, n, env.t ?: ts)
         val subject = MapSubject(share.fromUserId, fix, MapSubjectState.LIVE)
         _subjects.value = _subjects.value.toMutableMap().apply { put(share.fromUserId, subject) }
+    }
+
+    /** Lift a background-captured inbound map key into the in-memory registry (and persist it
+     *  into the engine's own store), so subsequent fixes for this share decrypt in-process. */
+    private fun restoreInboundKey(shareId: String): InboundShare? {
+        val c = ctx ?: return null
+        val e = MapInboundKeyStore.get(c, shareId) ?: return null
+        val share = InboundShare(e.fromUserId, e.key, e.expiresAt)
+        inbound[shareId] = share
+        persist()
+        return share
     }
 
     private fun onStop(stopShareId: String, fromUserId: String) {

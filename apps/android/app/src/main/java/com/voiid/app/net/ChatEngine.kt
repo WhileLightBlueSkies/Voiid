@@ -69,16 +69,14 @@ class ChatEngine private constructor(context: Context) {
     private val store = HashMap<String, MutableList<DecryptedMessage>>() // conversationId -> messages (asc)
     private val media = MediaService(tokens)
 
-    // NOTE: these MUST be declared BEFORE `init { loadStore() }` — Kotlin initializes
-    // properties in source order, and loadStore() (run from init) uses both. If declared
-    // after init they are null during loadStore → NPE → store never loads.
     private val storeSerializer = MapSerializer(String.serializer(), ListSerializer(DecryptedMessage.serializer()))
     // Decrypt-once plaintext store: a PLAIN app-internal file (sandboxed, excluded from
     // backup) — NOT EncryptedSharedPreferences, whose key can be wiped by SecurePrefs,
     // destroying all history on restart. A file can't be wiped by a key issue.
     private val storeFile = java.io.File(appContext.filesDir, "voiid_messages.json")
 
-    init { loadStore() }
+    // NB: the store is NOT loaded in init anymore — it's decoded lazily on first access
+    // (ensureLoaded), off the launch/list path. The chat list renders from Room instead.
 
     /**
      * The media reference carried INSIDE an E2EE message. The bytes live in R2 as
@@ -134,6 +132,23 @@ class ChatEngine private constructor(context: Context) {
         /** Delivery state of OUR sent message: "sent"/"delivered"/"read". Persisted
          *  so it never regresses when the message list is rebuilt. */
         val deliveryStatus: String? = null,
+        /** When the message reached the recipient / was read (epoch millis) — stamped once
+         *  each as receipts arrive, persisted, so the Message Info sheet shows real times. */
+        val deliveredAt: Long? = null,
+        val readAt: Long? = null,
+        /** Per-USER reactions (userId -> emoji), so two people can react differently. */
+        val reactions: Map<String, String>? = null,
+        /** Delete-for-everyone tombstone from the original author. */
+        val deletedForEveryone: Boolean = false,
+        /** Quoted-reply snapshot (server id + short preview + who), so it renders even if
+         *  the original was deleted. */
+        val quotedId: String? = null,
+        val quotedPreview: String? = null,
+        val quotedSender: String? = null,
+        /** "Forwarded" tag. */
+        val forwarded: Boolean = false,
+        /** A control message (reaction/delete signal): kept for dedup, never rendered. */
+        val control: Boolean = false,
     )
 
     /** The E2EE plaintext of a media message: the reference + an optional caption. */
@@ -142,9 +157,22 @@ class ChatEngine private constructor(context: Context) {
 
     // MARK: - Public API
 
+    /**
+     * Drop every in-memory session and decrypted message BEFORE the caller deletes the
+     * backing files (see [com.voiid.app.net.SessionTeardown]). Deleting files first would
+     * leave this map to flush its stale contents right back to disk on the next [persist]
+     * (e.g. from a send that raced the sign-out). Does NOT touch the files itself.
+     */
+    fun wipeInMemoryState() {
+        sessions.clear()
+        store.clear()
+    }
+
     /** Locally-stored (already decrypted) messages for a conversation, oldest-first. */
-    fun messages(conversationId: String): List<DecryptedMessage> =
-        (store[conversationId] ?: emptyList()).sortedBy { it.createdAt }
+    fun messages(conversationId: String): List<DecryptedMessage> {
+        ensureLoaded()
+        return (store[conversationId] ?: emptyList()).filter { !it.control }.sortedBy { it.createdAt }
+    }
 
     /** Queue a text message as PENDING locally (instant + offline + survives restart),
      *  WITHOUT touching the network. Call [flushPending] to actually send. */
@@ -161,6 +189,7 @@ class ChatEngine private constructor(context: Context) {
     /** Try to send every PENDING text message (offline retry). Failures are swallowed
      *  — the message stays pending and is retried on the next flush. */
     suspend fun flushPending(conversationId: String, peerUserId: String) {
+        ensureLoaded()
         val pendings = (store[conversationId] ?: emptyList()).filter { it.isMine && it.pending && it.media == null }
         for (p in pendings) {
             try {
@@ -255,6 +284,7 @@ class ChatEngine private constructor(context: Context) {
     /** Fetch the server list, decrypt only unseen ids, persist, return full convo (asc). */
     suspend fun sync(conversationId: String, peerUserId: String): List<DecryptedMessage> =
       syncLock(conversationId).withLock {
+        ensureLoaded()   // decrypt-once dedup + append below read/write the store
         flushPending(conversationId, peerUserId)   // push any queued sends first
         lastSyncHadDecryptFailure = false
         // Pass our own device_id so the server hands back only THIS device's per-device
@@ -289,16 +319,44 @@ class ChatEngine private constructor(context: Context) {
             runCatching {
                 val plain = decryptInbound(wire, peerUserId, m.sender_device_id)
                 android.util.Log.i("VOIID", "✅ decrypted inbound id=${m.id} senderDev=${m.sender_device_id}")
-                if (m.content_type == "location") {
-                    // Location-protocol message (docs/LOCATION.md §4). Handed to the location
-                    // engines via the shared LocationRelay seam, which decide what to do by its
-                    // `k`: a RENDERABLE kind (pin / live_start) is stored as a bubble by the
-                    // subscribed engine (storeLocationInbound); a SILENT kind (map_key / map_off /
-                    // live_rekey) is consumed and never rendered. Either way the default text
-                    // bubble is suppressed here, and the id is marked control-seen so this
-                    // decrypt-once Olm message is not re-fetched and re-failed on the next sync.
+                // Location-protocol message (docs/LOCATION.md §4). Recognise it by
+                // content_type OR by the `_vloc` marker — an iOS envelope that didn't route on
+                // content_type still gets handled instead of rendering as "Unsupported message".
+                if (m.content_type == "location" || LocationRelay.looksLikeEnvelope(plain)) {
+                    // Render/capture DIRECTLY here (like iOS's ChatEngine.sync), not only via
+                    // LocationRelay: the location engines are subscribed ONLY in the foreground,
+                    // so a pin/live/map key arriving in the FCM BACKGROUND process would be lost.
+                    // Renderable kinds (pin / live_start) become an inline bubble; a map_key is
+                    // captured background-safe so the Map can decrypt this contact's fixes even
+                    // if the Map engine was never alive. Then still fan out to any live engines
+                    // for the WS fix stream + share-state timers.
+                    handleLocationInbound(plain, m.sender_id, conversationId, parseIso(m.created_at))
                     LocationRelay.dispatchControl(plain, m.sender_id, conversationId)
                     markControlSeen(m.id)
+                    newlyReceived.add(m.id)
+                    return@runCatching
+                }
+                // ACTION envelopes decorate an EXISTING message rather than adding a bubble.
+                val probeT = runCatching { ApiClient.json.decodeFromString(ActionProbe.serializer(), plain).t }.getOrNull()
+                if (probeT == "msg_reaction" || probeT == "msg_delete") {
+                    if (probeT == "msg_reaction") {
+                        val e = ApiClient.json.decodeFromString(ReactionWire.serializer(), plain)
+                        applyReaction(conversationId, e.target, m.sender_id, e.emoji)
+                    } else {
+                        val e = ApiClient.json.decodeFromString(DeleteWire.serializer(), plain)
+                        // Only the ORIGINAL AUTHOR may delete: the target must be from this peer.
+                        val t = store[conversationId]?.firstOrNull { it.serverId == e.target || it.id == e.target }
+                        if (t != null && t.senderId == m.sender_id) applyDeleteForEveryone(conversationId, e.target)
+                    }
+                    // Keep the control id in the store (seen) but hidden from the UI.
+                    append(conversationId, DecryptedMessage(m.id, m.sender_id, "", parseIso(m.created_at), false, control = true))
+                    newlyReceived.add(m.id)
+                    return@runCatching
+                }
+                if (probeT == "msg_reply") {
+                    val e = ApiClient.json.decodeFromString(ReplyWire.serializer(), plain)
+                    replace(conversationId, DecryptedMessage(m.id, m.sender_id, e.text, parseIso(m.created_at), false,
+                        quotedId = e.quotedId, quotedPreview = e.quotedPreview, quotedSender = e.quotedSender))
                     newlyReceived.add(m.id)
                     return@runCatching
                 }
@@ -328,13 +386,20 @@ class ChatEngine private constructor(context: Context) {
     /** Apply a delivery/read receipt to one of OUR sent messages (persisted, never
      *  downgraded). Returns the conversation id so the UI can refresh just that chat. */
     fun applyReceipt(messageId: String, status: String): String? {
+        ensureLoaded()   // a WS receipt can arrive while on the chat LIST (store not yet lazily
+                         // loaded); without this the tick update would be dropped until re-sync.
         val rank = mapOf("sent" to 0, "delivered" to 1, "read" to 2)
         for ((cid, arr) in store) {
             val i = arr.indexOfFirst { it.isMine && (it.serverId == messageId || it.id == messageId) }
             if (i >= 0) {
                 val cur = arr[i].deliveryStatus ?: "sent"
                 if ((rank[status] ?: 0) > (rank[cur] ?: 0)) {
-                    arr[i] = arr[i].copy(deliveryStatus = status)
+                    // Stamp the transition time ONCE (for the Message Info sheet). "read"
+                    // implies delivered, so backfill a missing deliveredAt too.
+                    val now = System.currentTimeMillis()
+                    val delivered = arr[i].deliveredAt ?: if (status == "delivered" || status == "read") now else null
+                    val read = arr[i].readAt ?: if (status == "read") now else null
+                    arr[i] = arr[i].copy(deliveryStatus = status, deliveredAt = delivered, readAt = read)
                     persist()
                 }
                 return cid
@@ -361,18 +426,27 @@ class ChatEngine private constructor(context: Context) {
      * decoded rather than shown verbatim. Never leave a raw JSON blob in a message bubble.
      */
     private fun decodeEnvelope(plain: String, contentType: String?): Pair<String, MediaRef?> {
-        when (contentType) {
-            "media" -> runCatching {
-                val env = ApiClient.json.decodeFromString(MediaEnvelope.serializer(), plain)
-                return env.caption to env.media
-            }
-            "story_reply" -> runCatching { return decodeStoryReplyText(plain) to null }
+        // MEDIA — decode by SHAPE, not just the content_type hint. A cross-platform message
+        // (iOS → Android) whose hint didn't round-trip must STILL render as media, not raw
+        // JSON. A real MediaEnvelope always has a non-empty media.mediaUrl.
+        runCatching {
+            val env = ApiClient.json.decodeFromString(MediaEnvelope.serializer(), plain)
+            if (env.media.mediaUrl.isNotEmpty()) return env.caption to env.media
         }
-        // Defensive: a typed envelope that slipped through with the wrong/absent content_type must
-        // still not be shown as raw JSON. A MediaEnvelope has no "t"; a story_reply does.
-        if (plain.startsWith("{") && plain.contains("\"t\"")) {
+        // Story reply → its body (reaction/text), never the raw JSON.
+        if (plain.contains("\"story_reply\"")) {
             runCatching { return decodeStoryReplyText(plain) to null }
         }
+        // Text reply envelope reaching here (no probe upstream) → show its text.
+        if (plain.contains("\"msg_reply\"")) {
+            runCatching {
+                return ApiClient.json.decodeFromString(ReplyWire.serializer(), plain).text to null
+            }
+        }
+        // Plain text is the normal case. But NEVER leak an unrecognised JSON object into a
+        // bubble — that is the bug where Android/iOS envelopes rendered as literal `{...}`.
+        val t = plain.trim()
+        if (t.startsWith("{") && t.endsWith("}")) return "Unsupported message" to null
         return plain to null
     }
 
@@ -385,6 +459,7 @@ class ChatEngine private constructor(context: Context) {
     /** Mark all stored inbound messages in a conversation read → server fans out a
      *  `receipt` WS event to the senders (blue ticks). */
     suspend fun markRead(conversationId: String) {
+        ensureLoaded()
         val ids = (store[conversationId] ?: emptyList()).filter { !it.isMine }.map { it.id }
         markReceipts(ids, "read")
     }
@@ -625,6 +700,93 @@ class ChatEngine private constructor(context: Context) {
         return echo
     }
 
+    // MARK: - Message actions (reaction / delete-for-everyone / reply / forward)
+    //
+    // Mirror of iOS MessageActionWire + the ChatEngine senders. Each rides the SAME per-device
+    // E2EE fan-out; the server sees only opaque ciphertext + a content_type hint. Receivers
+    // apply them in [sync] by probing the plaintext "t" discriminator. Envelope JSON field
+    // names MUST match iOS byte-for-byte.
+    @Serializable private data class ReactionWire(val t: String = "msg_reaction", val v: Int = 1, val target: String, val emoji: String? = null)
+    @Serializable private data class DeleteWire(val t: String = "msg_delete", val v: Int = 1, val target: String)
+    @Serializable private data class ReplyWire(val t: String = "msg_reply", val v: Int = 1, val text: String, val quotedId: String, val quotedPreview: String, val quotedSender: String)
+    @Serializable private data class ActionProbe(val t: String? = null)
+
+    /** Send (or clear, emoji=null) a reaction to [targetServerId]. No bubble. */
+    suspend fun sendReaction(targetServerId: String, emoji: String?, conversationId: String, peerUserId: String) {
+        val json = ApiClient.json.encodeToString(ReactionWire.serializer(), ReactionWire(target = targetServerId, emoji = emoji))
+        val bcast = encryptBroadcast(json.encodeToByteArray(), listOf(peerUserId), includeOwnDevices = true)
+        if (bcast.isEmpty()) return
+        val messages = bcast.map { DeviceCiphertext(it.recipientDeviceId, it.ciphertext) }
+        val body = ApiClient.json.encodeToString(SendBundleBody.serializer(),
+            SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "msg_reaction"))
+        api.requestAs<SendResponse>("POST", "messages/send", jsonBody = body)
+        applyReaction(conversationId, targetServerId, tokens.userId ?: "me", emoji)
+    }
+
+    /** Ask recipients to tombstone [targetServerId] (honoured only from the original author). */
+    suspend fun sendDeleteForEveryone(targetServerId: String, conversationId: String, peerUserId: String) {
+        val json = ApiClient.json.encodeToString(DeleteWire.serializer(), DeleteWire(target = targetServerId))
+        val bcast = encryptBroadcast(json.encodeToByteArray(), listOf(peerUserId), includeOwnDevices = true)
+        if (bcast.isEmpty()) return
+        val messages = bcast.map { DeviceCiphertext(it.recipientDeviceId, it.ciphertext) }
+        val body = ApiClient.json.encodeToString(SendBundleBody.serializer(),
+            SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "msg_delete"))
+        api.requestAs<SendResponse>("POST", "messages/send", jsonBody = body)
+        applyDeleteForEveryone(conversationId, targetServerId)
+    }
+
+    /** Send a text reply quoting another message. Renders as a normal bubble with a quote. */
+    suspend fun sendReply(text: String, quotedId: String, quotedPreview: String, quotedSender: String,
+                          conversationId: String, peerUserId: String): DecryptedMessage {
+        val env = ReplyWire(text = text, quotedId = quotedId, quotedPreview = quotedPreview, quotedSender = quotedSender)
+        val json = ApiClient.json.encodeToString(ReplyWire.serializer(), env)
+        val bcast = encryptBroadcast(json.encodeToByteArray(), listOf(peerUserId), includeOwnDevices = true)
+        if (bcast.isEmpty()) throw ApiError.Http(409, "peer has no available prekeys")
+        val messages = bcast.map { DeviceCiphertext(it.recipientDeviceId, it.ciphertext) }
+        val body = ApiClient.json.encodeToString(SendBundleBody.serializer(),
+            SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "msg_reply"))
+        val res: SendResponse = api.requestAs("POST", "messages/send", jsonBody = body)
+        val echo = DecryptedMessage(res.message_id, tokens.userId ?: "me", text,
+            res.created_at?.let { parseIso(it) } ?: System.currentTimeMillis(), true,
+            quotedId = quotedId, quotedPreview = quotedPreview, quotedSender = quotedSender)
+        append(conversationId, echo)
+        return echo
+    }
+
+    /** Forward existing media WITHOUT re-uploading — re-send its MediaRef (key stays E2E). */
+    suspend fun forwardMedia(ref: MediaRef, caption: String, conversationId: String, peerUserId: String): DecryptedMessage {
+        val env = MediaEnvelope(media = ref, caption = caption)
+        val json = ApiClient.json.encodeToString(MediaEnvelope.serializer(), env)
+        val bcast = encryptBroadcast(json.encodeToByteArray(), listOf(peerUserId), includeOwnDevices = true)
+        if (bcast.isEmpty()) throw ApiError.Http(409, "peer has no available prekeys")
+        val messages = bcast.map { DeviceCiphertext(it.recipientDeviceId, it.ciphertext) }
+        val body = ApiClient.json.encodeToString(SendBundleBody.serializer(),
+            SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "media", media_url = ref.mediaUrl, media_mime = ref.mime))
+        val res: SendResponse = api.requestAs("POST", "messages/send", jsonBody = body)
+        val echo = DecryptedMessage(res.message_id, tokens.userId ?: "me", caption,
+            res.created_at?.let { parseIso(it) } ?: System.currentTimeMillis(), true, media = ref, forwarded = true)
+        append(conversationId, echo)
+        return echo
+    }
+
+    // Local appliers — shared by senders (our own) and inbound (a peer's).
+    fun applyReaction(convId: String, target: String, fromUserId: String, emoji: String?) {
+        val arr = store[convId] ?: return
+        val i = arr.indexOfFirst { it.serverId == target || it.id == target }
+        if (i < 0) return
+        val map = (arr[i].reactions ?: emptyMap()).toMutableMap()
+        if (emoji != null) map[fromUserId] = emoji else map.remove(fromUserId)
+        arr[i] = arr[i].copy(reactions = map.ifEmpty { null })
+        persist()
+    }
+    fun applyDeleteForEveryone(convId: String, target: String) {
+        val arr = store[convId] ?: return
+        val i = arr.indexOfFirst { it.serverId == target || it.id == target }
+        if (i < 0) return
+        arr[i] = arr[i].copy(deletedForEveryone = true, text = "", media = null, reactions = null)
+        persist()
+    }
+
     /**
      * Send a SILENT E2EE location-protocol control envelope (docs/LOCATION.md P2) to a 1:1 peer
      * over the Double Ratchet — map_key / map_off / live_*. content_type "location" so the server
@@ -696,8 +858,10 @@ class ChatEngine private constructor(context: Context) {
     // them unchanged. GroupEngine owns the crypto; these helpers only persist results.
 
     /** True if this conversation already holds a message with [id] (decrypt-once dedup). */
-    fun hasMessage(conversationId: String, id: String): Boolean =
-        store[conversationId]?.any { it.id == id } == true
+    fun hasMessage(conversationId: String, id: String): Boolean {
+        ensureLoaded()
+        return store[conversationId]?.any { it.id == id } == true
+    }
 
     /** Persist a local echo of a group message WE just sent (we can't decrypt our own
      *  MLS ratchet output, so we store the plaintext directly). Returns the stored row. */
@@ -748,6 +912,49 @@ class ChatEngine private constructor(context: Context) {
         persist()
     }
 
+    /**
+     * Decrypted-side handling of an inbound location envelope, run in BOTH the foreground and
+     * the FCM background process — mirrors iOS handling directly in ChatEngine.sync. Renders a
+     * pin / live_start as an inline bubble and captures share/map keys, so NOTHING depends on a
+     * foreground-only engine subscription (the cause of iOS location "not coming" / showing as
+     * "Unsupported message", and of live-Map contacts never appearing). Idempotent with
+     * [LocationShareEngine.onControl] — it uses the SAME message ids and key stores, so a
+     * message processed by both paths never double-renders.
+     */
+    private fun handleLocationInbound(plain: String, senderId: String, conversationId: String, createdAt: Long) {
+        val env = runCatching {
+            ApiClient.json.decodeFromString(com.voiid.app.model.LocationEnvelope.serializer(), plain)
+        }.getOrNull() ?: return
+        when (env.k) {
+            "pin" -> {
+                val lat = env.lat ?: return; val lon = env.lon ?: return
+                storeLocationInbound(conversationId, "locpin_${senderId}_${env.t}", senderId,
+                    LocationRef(kind = "pin", lat = lat, lon = lon, acc = env.acc ?: 0.0, label = env.label), createdAt)
+            }
+            "live_start" -> {
+                val shareId = env.s ?: return
+                // Same key store LocationShareEngine reads, so the WS fix stream can decrypt
+                // this share once the app is foregrounded.
+                env.key?.let { SecurePrefs.open(appContext, "voiid_location").edit().putString(shareId, it).apply() }
+                val lat = env.lat ?: return; val lon = env.lon ?: return
+                val expiresAt = env.expiresAt ?: (createdAt + 3_600_000L)
+                storeLocationInbound(conversationId, "loclive_$shareId", senderId,
+                    LocationRef(kind = "live_start", shareId = shareId, lat = lat, lon = lon,
+                        acc = env.acc ?: 0.0, expiresAt = expiresAt, cadenceSeconds = env.cadence), createdAt)
+            }
+            "live_rekey" ->
+                env.s?.let { sid -> env.key?.let { SecurePrefs.open(appContext, "voiid_location").edit().putString(sid, it).apply() } }
+            "map_key" -> {
+                val shareId = env.s ?: return
+                val keyB64 = env.key ?: return
+                MapInboundKeyStore.put(appContext, shareId, senderId, keyB64,
+                    env.expiresAt ?: (System.currentTimeMillis() + 24L * 3600 * 1000))
+            }
+            "map_off" -> env.s?.let { MapInboundKeyStore.remove(appContext, it) }
+            // live_stop → LocationShareEngine ends the inbound view; nothing to render here.
+        }
+    }
+
     /** Tombstone a group message we couldn't decrypt so it isn't retried forever
      *  (an MLS application message can't be safely re-decrypted). */
     fun storeGroupTombstone(conversationId: String, id: String, senderId: String, createdAt: Long) {
@@ -759,6 +966,7 @@ class ChatEngine private constructor(context: Context) {
     // MARK: - Local message store (decrypt-once; encrypted at rest)
 
     private fun append(convId: String, m: DecryptedMessage, persist: Boolean = true) {
+        ensureLoaded()   // never mutate/persist an unloaded store (would clobber on-disk history)
         val arr = store.getOrPut(convId) { mutableListOf() }
         if (arr.any { it.id == m.id }) return
         arr.add(m)
@@ -768,10 +976,19 @@ class ChatEngine private constructor(context: Context) {
     /** Insert, or REPLACE an existing entry with the same id in place (keeps order).
      *  Lets a tombstone that later decrypts be upgraded to the real message. */
     private fun replace(convId: String, m: DecryptedMessage) {
+        ensureLoaded()
         val arr = store.getOrPut(convId) { mutableListOf() }
         val i = arr.indexOfFirst { it.id == m.id }
         if (i >= 0) arr[i] = m else arr.add(m)
     }
+
+    // The message store is decoded LAZILY on first access, not at init — that whole-file JSON
+    // decode used to run on the app-launch / chat-LIST path. The list now renders from Room
+    // (LocalStore), so the store is only decoded when a chat is opened / synced.
+    @Volatile private var storeLoaded = false
+
+    /** Decode the store on first access. Idempotent. */
+    private fun ensureLoaded() { if (!storeLoaded) loadStore() }
 
     private fun loadStore() {
         // Prefer the file; fall back ONCE to the old encrypted-prefs location to migrate.
@@ -779,6 +996,7 @@ class ChatEngine private constructor(context: Context) {
             ?: prefs.getString("message_store", null)
         if (raw.isNullOrBlank()) {
             android.util.Log.w("VOIID", "📂 loadStore: EMPTY (no persisted messages — fresh install)")
+            storeLoaded = true   // a fresh empty store IS a valid loaded state (safe to persist)
             return
         }
         runCatching {
@@ -787,13 +1005,19 @@ class ChatEngine private constructor(context: Context) {
             }
         }.onSuccess {
             android.util.Log.i("VOIID", "📂 loadStore: restored ${store.values.sumOf { it.size }} msgs across ${store.size} convs")
+            storeLoaded = true
             if (!storeFile.exists()) persist()   // migrate old prefs → file
         }.onFailure {
+            // Do NOT mark loaded — a persist() must not clobber a file we failed to parse.
             android.util.Log.e("VOIID", "📂 loadStore FAILED to parse", it)
         }
     }
 
     private fun persist() {
+        if (!storeLoaded) {   // never let an unloaded store overwrite good on-disk history
+            android.util.Log.w("VOIID", "📂 persist skipped — store not loaded")
+            return
+        }
         val raw = ApiClient.json.encodeToString(storeSerializer, store.mapValues { it.value.toList() })
         // Atomic write: tmp file then rename, so a crash mid-write can't corrupt the store.
         runCatching {
@@ -807,13 +1031,16 @@ class ChatEngine private constructor(context: Context) {
 
     /** Serialize the ENTIRE decrypted message store to bytes (backup payload).
      *  Same JSON shape [loadStore]/[persist] use, so [importStore] can round-trip it. */
-    fun exportStore(): ByteArray =
-        ApiClient.json.encodeToString(storeSerializer, store.mapValues { it.value.toList() }).toByteArray()
+    fun exportStore(): ByteArray {
+        ensureLoaded()   // a backup must contain the whole history, not an empty just-launched store
+        return ApiClient.json.encodeToString(storeSerializer, store.mapValues { it.value.toList() }).toByteArray()
+    }
 
     /** Replace the local message store with a restored backup blob, then persist to
      *  the on-disk file. Bad/empty input is ignored (never crash a restore). */
     fun importStore(bytes: ByteArray) {
         if (bytes.isEmpty()) return
+        storeLoaded = true   // we are about to REPLACE the store wholesale; persist must be allowed
         runCatching {
             val decoded = ApiClient.json.decodeFromString(storeSerializer, String(bytes))
             store.clear()

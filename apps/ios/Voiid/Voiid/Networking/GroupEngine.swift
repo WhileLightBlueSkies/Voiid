@@ -336,13 +336,17 @@ final class GroupEngine {
             // dedups against the inbound copy and never double-renders.
             // A location envelope rides the MLS text plaintext; decode it back so the
             // sender sees the pin/live bubble immediately (docs/LOCATION.md §4).
-            let loc = LocationWire.decode(text)
-            let echo = DecryptedMessage(id: res.message_id,
-                                        senderId: TokenStore.shared.userId ?? "me",
-                                        text: loc?.text ?? text,
-                                        createdAt: res.created_at.map(parseDate) ?? Date(),
-                                        isMine: true, locationJSON: loc?.json, deliveryStatus: "sent")
-            ChatEngine.shared.ingestGroupMessage(echo, conversationId: conversationId)
+            let loc = LocationWire.decode(text, fromUserId: TokenStore.shared.userId ?? "")
+            // Silent control (live_rekey) → no echo bubble. Plain text or a rendered location
+            // kind → echo it so the sender sees their own pin/live bubble immediately.
+            if loc?.renders != false {
+                let echo = DecryptedMessage(id: res.message_id,
+                                            senderId: TokenStore.shared.userId ?? "me",
+                                            text: loc?.text ?? text,
+                                            createdAt: res.created_at.map(parseDate) ?? Date(),
+                                            isMine: true, locationJSON: loc?.json, deliveryStatus: "sent")
+                ChatEngine.shared.ingestGroupMessage(echo, conversationId: conversationId)
+            }
             NSLog("[VOIID] MLS sent id=\(res.message_id) conv=\(conversationId) devices=\(messages.count)")
         } catch {
             NSLog("[VOIID] MLS send FAILED conv=\(conversationId): \(error)")
@@ -500,11 +504,19 @@ final class GroupEngine {
                 let text = String(decoding: plain, as: UTF8.self)
                 // Location control (live_start/stop/rekey) carried over MLS: LocationWire
                 // captures its key + strips it, and renders a clean bubble instead of raw JSON.
-                let loc = LocationWire.decode(text)
-                let decrypted = DecryptedMessage(id: msg.id, senderId: msg.sender_id,
+                let loc = LocationWire.decode(text, fromUserId: msg.sender_id)
+                let decrypted: DecryptedMessage
+                if loc?.renders == false {
+                    // Silent control (live_rekey) — keep it seen but hidden, never an empty bubble.
+                    decrypted = DecryptedMessage(id: msg.id, senderId: msg.sender_id, text: "",
+                                                 createdAt: parseDate(msg.created_at),
+                                                 isMine: false, control: true)
+                } else {
+                    decrypted = DecryptedMessage(id: msg.id, senderId: msg.sender_id,
                                                  text: loc?.text ?? text,
                                                  createdAt: parseDate(msg.created_at),
                                                  isMine: false, locationJSON: loc?.json)
+                }
                 ChatEngine.shared.ingestGroupMessage(decrypted, conversationId: conversationId)
             } catch {
                 NSLog("[VOIID] MLS decrypt FAILED id=\(msg.id) conv=\(conversationId): \(error)")

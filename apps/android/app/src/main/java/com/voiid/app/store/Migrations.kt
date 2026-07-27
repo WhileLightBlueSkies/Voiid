@@ -59,3 +59,15 @@ val MIGRATION_1_2 = object : Migration(1, 2) {
         )
     }
 }
+
+/**
+ * v3 -> v4: denormalized last-message preview on the conversation row, so the chat LIST
+ * renders from the `conversations` table alone (no message-store decode on the launch path).
+ * Purely additive — a single nullable TEXT column — so no existing row is at risk. Matches
+ * Room's generated schema for [ConversationRow.lastMessagePreview] exactly.
+ */
+val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `conversations` ADD COLUMN `last_message_preview` TEXT")
+    }
+}
