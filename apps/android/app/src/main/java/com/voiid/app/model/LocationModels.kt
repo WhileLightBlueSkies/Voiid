@@ -1,7 +1,38 @@
 package com.voiid.app.model
 
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.descriptors.PrimitiveKind
+import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
+import kotlin.math.roundToLong
+
+/**
+ * Decodes an epoch-millis field that SHOULD be an integer but may arrive fractional.
+ *
+ * iOS holds `t` / `expiresAt` as `Double` internally and older builds put
+ * `Date().timeIntervalSince1970 * 1000` on the wire verbatim — e.g. `1785154289733.0242`.
+ * A plain `Long` decoder THROWS on that literal, and every inbound call site here wraps
+ * decoding in `runCatching{}`, so the whole message was dropped with no error and no log:
+ * pins, live_start, live_stop and every relayed fix from iOS simply never appeared.
+ *
+ * iOS now rounds at its encode choke point, but builds already installed do not, so this
+ * stays as the permanent tolerant floor. Always ENCODES a clean integer.
+ */
+internal object LenientEpochMillisSerializer : KSerializer<Long> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("EpochMillis", PrimitiveKind.LONG)
+
+    override fun deserialize(decoder: Decoder): Long =
+        // decodeDouble() accepts both `1785154289733` and `1785154289733.0242`; Double holds
+        // millis exactly out to 2^53, far past any real timestamp, so this loses nothing.
+        decoder.decodeDouble().roundToLong()
+
+    override fun serialize(encoder: Encoder, value: Long) = encoder.encodeLong(value)
+}
 
 /**
  * Location sharing models (Feature A — location INSIDE conversations). See docs/LOCATION.md.
@@ -21,8 +52,14 @@ data class LocationEnvelope(
     val k: String,
     /** share_id (uuid) — omitted for k:"pin". */
     val s: String? = null,
+    @Serializable(with = LenientEpochMillisSerializer::class)
     val t: Long = 0,
-    /** Monotonic sequence for a fix, so an out-of-order relay frame is dropped, not drawn. */
+    /**
+     * Monotonic sequence for a fix, so an out-of-order relay frame is dropped, not drawn.
+     * Lenient for the same reason as [t]: iOS seeds it from a timestamp, and a peer that
+     * ever emits it fractional must not silently kill every fix from that share.
+     */
+    @Serializable(with = LenientEpochMillisSerializer::class)
     val n: Long? = null,
     val lat: Double? = null,
     val lon: Double? = null,
@@ -30,6 +67,7 @@ data class LocationEnvelope(
     /** Optional, user-typed. NEVER reverse-geocoded (docs/LOCATION.md §10). */
     val label: String? = null,
     /** Millis. live_start / live_rekey only. */
+    @Serializable(with = LenientEpochMillisSerializer::class)
     val expiresAt: Long? = null,
     /**
      * Base64 32-byte shareKey — live_start / live_rekey ONLY. Comes from

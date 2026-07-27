@@ -22,12 +22,15 @@ class MapStore(app: Application) : AndroidViewModel(app) {
     val audience get() = MapPresenceEngine.audience
     val subjects get() = MapPresenceEngine.subjects
     val onboarded get() = MapPresenceEngine.onboarded
+    /** Non-null when going visible failed — the Map must say so rather than imply it worked. */
+    val lastError get() = MapPresenceEngine.lastError
 
     fun setAudience(contacts: List<MapContact>) = MapPresenceEngine.setAudience(contacts)
     fun goVisible() = MapPresenceEngine.goVisible()
     fun goGhost(until: Long = 0L) = MapPresenceEngine.goGhost(until)
     fun killSwitch() = MapPresenceEngine.killSwitch()
     fun markOnboarded() = MapPresenceEngine.markOnboarded()
+    fun clearError() = MapPresenceEngine.clearError()
     fun onForeground() = MapPresenceEngine.onForeground()
     fun onBackground() = MapPresenceEngine.onBackground()
     fun recomputeSubjects() = MapPresenceEngine.recomputeSubjects()

@@ -28,8 +28,10 @@
 //
 //  THE ONE INTEGRATION SEAM: distributing/receiving the `map_key` and `map_off` control
 //  messages over the ratchet is the shared location substrate owned jointly with Feature
-//  (A). This engine performs that work through `controlSender` (outbound) and
-//  `ingestLocationEnvelope` (inbound). Everything else — audience, ghost, provider, server
+//  (A). This engine performs that work through `controlSender` (outbound) and, inbound, by
+//  observing `.voiidMapControlReceived` — posted by `LocationWire.decode`, which owns the
+//  Keychain write/erase because capture must also work in the NSE with the app not running.
+//  `handleMapControl` applies the effect. Everything else — audience, ghost, provider, server
 //  row, WS fix stream in and out, the render state machine — is self-contained here.
 //
 
@@ -83,6 +85,37 @@ final class MapPresenceEngine: ObservableObject {
 
         NotificationCenter.default.addObserver(forName: .voiidDidSignOut, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.handleSignOut() }
+        }
+
+        // The Map control seam. `LocationWire.decode` writes/erases the Keychain key itself
+        // (it must, so capture also works in the NSE with the app dead), then posts this so
+        // the engine reconciles the VIEW. Without it a contact who goes visible never enters
+        // `inboundSenders`, and a `map_off` left them pinned at a stale position.
+        NotificationCenter.default.addObserver(forName: .voiidMapControlReceived, object: nil, queue: .main) { [weak self] note in
+            guard let info = note.userInfo,
+                  let kind = info["kind"] as? String,
+                  let from = info["fromUserId"] as? String, !from.isEmpty else { return }
+            // The observer block is delivered on .main, and the class is already @MainActor.
+            MainActor.assumeIsolated {
+                self?.handleMapControl(kind: kind, fromUserId: from,
+                                       shareId: info["shareId"] as? String)
+            }
+        }
+    }
+
+    /// Apply a decrypted Map control message to the in-memory + persisted view. The key
+    /// itself is already handled by the decoder — this is purely the effect.
+    func handleMapControl(kind: String, fromUserId: String, shareId: String?) {
+        switch kind {
+        case "map_key":
+            NSLog("[VOIID] map_key received from=\(fromUserId) — now visible to us")
+            noteInboundSender(fromUserId)
+            reloadFromStore()
+        case "map_off":
+            NSLog("[VOIID] map_off received from=\(fromUserId) — erasing cached position")
+            receiveStop(shareId: shareId ?? "", fromUserId: fromUserId)
+        default:
+            break
         }
     }
 
@@ -345,20 +378,48 @@ final class MapPresenceEngine: ObservableObject {
         // authorized target, so the client must. We accept a fix ONLY from a sender who has
         // handed us a `map_key` (an inbound key exists). Anything else decrypts to garbage
         // and is dropped.
-        guard let key = MapKeyStore.inboundKey(forSender: fromUserId),
-              let blob = Data(base64Encoded: ciphertext),
-              let plaintext = try? decryptBackup(secret: key, blob: blob),
-              let env = try? JSONDecoder().decode(MapEnvelope.self, from: plaintext),
-              env.kind == .fix,
-              env.s == shareId,               // the authenticated share id must match the frame
-              let lat = env.lat, let lon = env.lon, let seq = env.n
-        else { return }
+        // Each failure is checked and LOGGED separately. This used to be one collapsed
+        // guard chain ending in a bare `return`, which made "no key yet", "wrong key",
+        // "corrupt frame" and "schema mismatch" indistinguishable AND invisible — a fix
+        // that never drew left no trace anywhere to debug.
+        guard let key = MapKeyStore.inboundKey(forSender: fromUserId) else {
+            NSLog("[VOIID] map fix DROPPED from=\(fromUserId): no inbound map_key (not authorized to us yet)")
+            return
+        }
+        guard let blob = Data(base64Encoded: ciphertext) else {
+            NSLog("[VOIID] map fix DROPPED from=\(fromUserId): ciphertext is not valid base64")
+            return
+        }
+        guard let plaintext = try? decryptBackup(secret: key, blob: blob) else {
+            NSLog("[VOIID] map fix DROPPED from=\(fromUserId): decrypt failed (stale key — sender likely rekeyed)")
+            return
+        }
+        let env: MapEnvelope
+        do {
+            env = try JSONDecoder().decode(MapEnvelope.self, from: plaintext)
+        } catch {
+            NSLog("[VOIID] map fix DROPPED from=\(fromUserId): envelope decode failed: \(error)")
+            return
+        }
+        guard env.kind == .fix else {
+            NSLog("[VOIID] map fix DROPPED from=\(fromUserId): unexpected kind \(env.k)")
+            return
+        }
+        // The authenticated share id must match the frame the relay routed.
+        guard env.s == shareId else {
+            NSLog("[VOIID] map fix DROPPED from=\(fromUserId): share id mismatch frame=\(shareId) env=\(env.s ?? "nil")")
+            return
+        }
+        guard let lat = env.lat, let lon = env.lon, let seq64 = env.n else {
+            NSLog("[VOIID] map fix DROPPED from=\(fromUserId): missing lat/lon/seq")
+            return
+        }
 
         let fixedAt = env.t.map { Date(timeIntervalSince1970: TimeInterval($0) / 1000) } ?? Date()
         let changed = MapPresenceStore.upsertFix(
             senderUserId: fromUserId, shareId: shareId,
             coordinate: CLLocationCoordinate2D(latitude: lat, longitude: lon),
-            accuracy: env.acc ?? 0, seq: seq, fixedAt: fixedAt)
+            accuracy: env.acc ?? 0, seq: Int(clamping: seq64), fixedAt: fixedAt)
         if changed {
             noteInboundSender(fromUserId)
             reloadFromStore()
@@ -376,23 +437,12 @@ final class MapPresenceEngine: ObservableObject {
 
     // MARK: - Control-message plumbing (the ratchet seam)
 
-    /// Feed EVERY inbound `_vloc` location envelope here. Map-relevant kinds (`map_key`,
-    /// `map_off`) are consumed; conversation-share kinds and `fix` are ignored, so this is
-    /// safe to call from a single `_vloc` decode hook shared with Feature (A).
-    func ingestLocationEnvelope(_ json: Data, fromUserId: String) {
-        guard let env = try? JSONDecoder().decode(MapEnvelope.self, from: json) else { return }
-        switch env.kind {
-        case .mapKey:
-            guard let b64 = env.key, let key = Data(base64Encoded: b64), key.count == 32 else { return }
-            MapKeyStore.setInboundKey(key, forSender: fromUserId)
-            noteInboundSender(fromUserId)
-            reloadFromStore()
-        case .mapOff:
-            receiveStop(shareId: env.s ?? "", fromUserId: fromUserId)
-        default:
-            break   // fix (WS-only) / conversation kinds — not the Map's concern
-        }
-    }
+    // NOTE: inbound `map_key` / `map_off` are NOT ingested here. They arrive on the ratchet
+    // decode path in `LocationWire.decode`, which must own the Keychain write/erase so that
+    // capture still works when the message is decrypted by the NSE with the app not running.
+    // That decoder posts `.voiidMapControlReceived`, which this engine observes in `init()`
+    // and applies via `handleMapControl(kind:fromUserId:shareId:)`. There is deliberately no
+    // second ingest entry point — two of them would double-handle every control message.
 
     private func distributeMapKey(_ key: Data, to userIds: [String]) async {
         guard let sid = outboundShareId else { return }

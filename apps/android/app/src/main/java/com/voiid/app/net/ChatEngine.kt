@@ -2,6 +2,7 @@ package com.voiid.app.net
 
 import android.content.Context
 import android.util.Base64
+import com.voiid.app.model.MapConstants
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
@@ -961,8 +962,11 @@ class ChatEngine private constructor(context: Context) {
             "map_key" -> {
                 val shareId = env.s ?: return
                 val keyB64 = env.key ?: return
+                // Shared constant with MapPresenceEngine.onControl — these two capture paths
+                // MUST agree, or the same key expires at different times depending only on
+                // whether the app was foregrounded when it arrived.
                 MapInboundKeyStore.put(appContext, shareId, senderId, keyB64,
-                    env.expiresAt ?: (System.currentTimeMillis() + 24L * 3600 * 1000))
+                    env.expiresAt ?: (System.currentTimeMillis() + MapConstants.DEFAULT_KEY_TTL_MS))
             }
             "map_off" -> env.s?.let { MapInboundKeyStore.remove(appContext, it) }
             // live_stop → LocationShareEngine ends the inbound view; nothing to render here.

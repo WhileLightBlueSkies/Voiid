@@ -392,4 +392,10 @@ extension Notification.Name {
     /// ciphertext (update only).
     static let voiidLocationRelayUpdate = Notification.Name("voiidLocationRelayUpdate")
     static let voiidLocationRelayStop = Notification.Name("voiidLocationRelayStop")
+    /// Posted by `LocationWire.decode` when a Feature (B) Map control message (`map_key` /
+    /// `map_off`) is decrypted, so MapPresenceEngine can reconcile its in-memory view.
+    /// The key itself is already written/erased in the Keychain by the decoder (that has to
+    /// happen in the NSE too); this only carries the EFFECT. userInfo: kind, fromUserId,
+    /// shareId (map_off only).
+    static let voiidMapControlReceived = Notification.Name("voiidMapControlReceived")
 }

@@ -82,7 +82,22 @@ struct LocationEnvelope: Codable {
     }
 
     /// Encode to the compact JSON string that becomes the E2EE message plaintext.
-    func encoded() -> Data { (try? JSONEncoder().encode(self)) ?? Data() }
+    ///
+    /// `t` / `expiresAt` are normalised to WHOLE MILLISECONDS first. They are `Double`
+    /// here only because the internal fix/store plumbing is Double, but the WIRE contract
+    /// is an integer epoch-millis: Android decodes both as `Long`, and kotlinx-serialization
+    /// THROWS on a fractional literal like `1785154289733.0242`. Every Android decode site
+    /// swallows that throw (`runCatching{}.getOrNull()`), so an un-rounded value made every
+    /// iOS pin / live_start / live_stop / fix vanish on Android with no error and no log.
+    /// `Date().timeIntervalSince1970 * 1000` is essentially never integral, so this is not
+    /// an edge case — it is every message. Normalise at the single choke point rather than
+    /// at each call site, so a new sender cannot reintroduce the bug.
+    func encoded() -> Data {
+        var wire = self
+        wire.t = wire.t.rounded()
+        wire.expiresAt = wire.expiresAt?.rounded()
+        return (try? JSONEncoder().encode(wire)) ?? Data()
+    }
 
     /// The reference persisted in the message store (KEY STRIPPED). nil for a fix (fixes
     /// are never messages) — everything else that reaches the store carries one.

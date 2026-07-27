@@ -1590,9 +1590,28 @@ enum LocationWire {
             if let key = obj["key"] as? String, let raw = Data(base64Encoded: key), raw.count == 32,
                !fromUserId.isEmpty {
                 mapVault.setData(raw, mapInboundName(fromUserId))
+                // Writing the Keychain key is NOT enough: MapPresenceEngine also has to learn
+                // that this contact is now sharing, or they never appear in the "waiting for
+                // location" list and only pop into existence when their FIRST fix lands.
+                // Harmless in the NSE (no observers there).
+                // String name (not the typed constant) because this file also compiles into
+                // the NSE target, which does not include LocationShareEngine.swift.
+                NotificationCenter.default.post(name: Notification.Name("voiidMapControlReceived"),
+                                                object: nil,
+                                                userInfo: ["kind": "map_key", "fromUserId": fromUserId])
             }
         case "map_off":
-            if !fromUserId.isEmpty { mapVault.delete(mapInboundName(fromUserId)) }
+            if !fromUserId.isEmpty {
+                mapVault.delete(mapInboundName(fromUserId))
+                // Deleting the key alone leaves the contact PINNED at their last position
+                // until age-out. `map_off` means "I went dark" and must ERASE the cached
+                // position — that erase-vs-age-out distinction is how a viewer tells "they
+                // turned it off" from "their phone died", and it is a safety property.
+                NotificationCenter.default.post(name: Notification.Name("voiidMapControlReceived"),
+                                                object: nil,
+                                                userInfo: ["kind": "map_off", "fromUserId": fromUserId,
+                                                           "shareId": (obj["s"] as? String) ?? ""])
+            }
         default: break
         }
 

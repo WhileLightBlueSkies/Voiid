@@ -82,6 +82,7 @@ fun MapTabView(map: MapStore, chat: ChatStore) {
     val audience by map.audience.collectAsState()
     val subjectsMap by map.subjects.collectAsState()
     val onboarded by map.onboarded.collectAsState()
+    val shareError by map.lastError.collectAsState()
 
     val subjects = subjectsMap.values.toList()
     val onMap = subjects.filter { it.isOnMap }
@@ -147,6 +148,21 @@ fun MapTabView(map: MapStore, chat: ChatStore) {
                 if (ghostOn) map.goGhost()
                 else if (audience.isEmpty()) requestThenPick() else map.goVisible()
             }
+        }
+
+        // Going visible can fail (offline / server down). The pill below reflects the CONFIRMED
+        // state, so without this the toggle would just spring back to Ghost with no explanation.
+        shareError?.let { msg ->
+            Text(
+                msg,
+                style = VoiidFont.rounded(13, FontWeight.Medium),
+                color = VoiidColor.error,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 8.dp)
+                    .clickable { map.clearError() },
+            )
         }
 
         VisiblePill(
