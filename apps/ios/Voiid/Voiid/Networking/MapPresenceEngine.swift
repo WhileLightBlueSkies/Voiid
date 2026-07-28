@@ -229,9 +229,36 @@ final class MapPresenceEngine: ObservableObject {
         // goVisible SETS the audience to exactly `targets` (the chosen scope), so switching
         // from "Everyone" to "My Contacts" or a smaller set actually shrinks it — clear first,
         // then add. "Add more people" uses addToAudience(_:) instead.
+        //
+        // Whoever falls OUT of the audience must be revoked, exactly as removeFromAudience(_:)
+        // does for a single person. The diff is taken BEFORE the store is replaced: afterwards
+        // the dropped people are gone from `audience` and nothing could reach them. Shrinking
+        // the scope while visible used to skip this entirely and lean on the rekey plus the
+        // server superseding the share — which left a dropped viewer never told to stop, still
+        // drawing our last known position until their key aged out.
+        let wasVisible = visibility.isVisible
+        let previousIds = audience.map(\.userId)
+        let droppedIds = previousIds.filter { !targets.contains($0) }
+        let previousShareId = outboundShareId
+
         MapPresenceStore.clearAudience()
         MapPresenceStore.addToAudience(targets)
         reloadFromStore()
+
+        // Revocation is a three-part act (§3), matching Android's setAudience:
+        //   1. loc_stop over WS      — a live viewer erases us immediately
+        //   2. durable map_off       — an offline viewer erases us on their next sync
+        //   3. DELETE /targets/:uid  — the server stops routing to them at all
+        // The fresh key minted below then makes their old key useless for any future fix.
+        if wasVisible, !droppedIds.isEmpty {
+            if let sid = previousShareId {
+                WebSocketClient.shared.sendLocationStop(shareId: sid, recipientIds: droppedIds)
+                await distributeMapOff(shareId: sid, to: droppedIds)
+                for id in droppedIds {
+                    await MapShareAPI.revokeTarget(shareId: sid, userId: id)
+                }
+            }
+        }
 
         // 2. Fresh key — never the backup master secret (see MapKeyStore).
         let key = MapKeyStore.mintOutboundKey()

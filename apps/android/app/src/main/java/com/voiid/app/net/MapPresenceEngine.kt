@@ -198,6 +198,20 @@ object MapPresenceEngine {
         }
     }
 
+    /**
+     * Drop ONE person from the allow-list — the manage sheet's per-person Remove.
+     *
+     * Deliberately routed through [setAudience] rather than editing `_audience` directly, so a
+     * single removal gets the exact same three-part revocation (loc_stop, durable map_off,
+     * DELETE /targets) plus rekey as a bulk change. A separate code path here would be a second
+     * place for revocation to be forgotten.
+     */
+    fun removeFromAudience(userId: String) {
+        val next = _audience.value.filterNot { it.userId == userId }
+        if (next.size == _audience.value.size) return
+        setAudience(next)
+    }
+
     fun markOnboarded() { _onboarded.value = true; persist() }
 
     // ---- visibility ---------------------------------------------------------------------

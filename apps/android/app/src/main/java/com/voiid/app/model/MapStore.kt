@@ -28,6 +28,7 @@ class MapStore(app: Application) : AndroidViewModel(app) {
     val lastError get() = MapPresenceEngine.lastError
 
     fun setAudience(contacts: List<MapContact>) = MapPresenceEngine.setAudience(contacts)
+    fun removeFromAudience(userId: String) = MapPresenceEngine.removeFromAudience(userId)
     fun goVisible() = MapPresenceEngine.goVisible()
     fun goGhost(until: Long = 0L) = MapPresenceEngine.goGhost(until)
     fun killSwitch() = MapPresenceEngine.killSwitch()

@@ -126,6 +126,9 @@ fun MapTabView(map: MapStore, chat: ChatStore, onOpenChatWithUser: ((String) -> 
     }
 
     var showAudience by remember { mutableStateOf(false) }
+    /** Which face the audience sheet opens on. Reset to CHOOSE by every entry point that is
+     *  picking an audience, so a previous MANAGE opening can never leak into it. */
+    var audienceMode by remember { mutableStateOf(MapAudienceMode.CHOOSE) }
 
     // ---- place search (Feature 4) -------------------------------------------------------
     var searchQuery by remember { mutableStateOf("") }
@@ -161,7 +164,8 @@ fun MapTabView(map: MapStore, chat: ChatStore, onOpenChatWithUser: ((String) -> 
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { grants ->
         val granted = grants.values.any { it }
-        if (granted) showAudience = true
+        // This path is always "I want to pick who sees me" — force the chooser.
+        if (granted) { audienceMode = MapAudienceMode.CHOOSE; showAudience = true }
     }
     val requestThenPick: () -> Unit = {
         permLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
@@ -222,7 +226,16 @@ fun MapTabView(map: MapStore, chat: ChatStore, onOpenChatWithUser: ((String) -> 
         VisiblePill(
             visible = visibility == MapVisibility.VISIBLE,
             audienceCount = audience.size,
-            onClick = { if (visibility == MapVisibility.VISIBLE) showAudience = true else requestThenPick() },
+            // Already visible → MANAGE (who can see me now, remove, stop all). Not yet visible
+            // → the permission prompt, then the scope CHOOSER.
+            onClick = {
+                if (visibility == MapVisibility.VISIBLE) {
+                    audienceMode = MapAudienceMode.MANAGE
+                    showAudience = true
+                } else {
+                    requestThenPick()
+                }
+            },
         )
 
         // Place search (Feature 4). Gated with everything else behind MAPS_CONFIGURED: a build
@@ -267,11 +280,17 @@ fun MapTabView(map: MapStore, chat: ChatStore, onOpenChatWithUser: ((String) -> 
         MapAudienceSheet(
             directConversations = chat.directConversations,
             current = audience,
+            mode = audienceMode,
+            isVisible = visibility == MapVisibility.VISIBLE,
             onConfirm = { picked ->
                 map.setAudience(picked)
                 if (picked.isNotEmpty() && visibility == MapVisibility.GHOST) map.goVisible()
                 showAudience = false
             },
+            // setAudience() (which removeFromAudience routes through) revokes and rekeys, so the
+            // sheet stays open and simply re-renders the shorter list from the audience flow.
+            onRemove = { userId -> map.removeFromAudience(userId) },
+            onStopAll = { map.killSwitch(); showAudience = false },
             onDismiss = { showAudience = false },
         )
     }
@@ -493,7 +512,7 @@ private fun MapExplainer(onBrowseOnly: () -> Unit, onChoose: () -> Unit) {
         Text("The Map", style = VoiidFont.rounded(26, FontWeight.Bold), color = VoiidColor.textPrimary)
         Spacer(Modifier.size(12.dp))
         Text(
-            "You appear to no one until you choose individual people. Voiid’s servers know that a share exists and when it ends — they never know where you are. Your location is end-to-end encrypted.",
+            "You appear to no one until you choose a scope — everyone you’ve chatted with, just your contacts, or only people you pick. Voiid’s servers know that a share exists and when it ends — they never know where you are. Your location is end-to-end encrypted.",
             style = VoiidFont.rounded(14),
             color = VoiidColor.textSecondary,
             modifier = Modifier.padding(horizontal = 8.dp),
