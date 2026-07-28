@@ -69,6 +69,14 @@ struct ChatDetailView: View {
         .onAppear {
             session.hideTabBar = true
             chat.openConversation(conversation)   // load cached + sync (fetch+decrypt) real messages
+            // Call bubbles come from the local call_history table, not the message store, so
+            // they are loaded alongside the transcript rather than arriving through sync.
+            chat.loadCallLogs(conversation.id)
+        }
+        // A call placed from THIS chat must leave its bubble behind as soon as it ends, not
+        // only on the next open. CallService clears `active` when the call is fully torn down.
+        .onChange(of: CallService.shared.active == nil) { _, _ in
+            chat.loadCallLogs(conversation.id)
         }
         .task(id: conversation.id) {
             // Real group members for @mentions + group-call tiles (never DummyData).
@@ -415,7 +423,9 @@ struct ChatDetailView: View {
                           onInfo: { infoMessage = msg },
                           onDelete: { deleteMessage = msg },
                           selectionMode: selectionMode,
-                          onSelectTap: { toggleSelect(msg.id) })
+                          onSelectTap: { toggleSelect(msg.id) },
+                          // Tap a call bubble to call back with the SAME kind.
+                          onCallBack: { isVideo in startCall(isVideo ? .video : .voice) })
         }
     }
 
@@ -572,6 +582,77 @@ struct ChatDetailView: View {
 
 // MARK: - Message bubble with ticks + timestamp
 
+/// A finished call, in the transcript (WhatsApp/Signal style).
+///
+/// Sided like a real bubble — outgoing right, incoming left — because a call IS attributable
+/// to one party, unlike a system announcement. Tapping calls back with the same kind.
+///
+/// A MISSED incoming call is the one state that gets colour: it is the only one the user may
+/// still need to act on. Everything else stays quiet so a long call history does not shout.
+struct CallLogBubble: View {
+    let log: VCallLog
+    var onCallBack: () -> Void
+
+    private var missed: Bool { log.incoming && !log.answered }
+
+    private var title: String {
+        if log.answered { return log.isVideo ? "Video call" : "Voice call" }
+        switch log.outcome {
+        case "declined": return log.incoming ? "Declined call" : "Call declined"
+        case "failed":   return "Call failed"
+        default:
+            if log.incoming { return log.isVideo ? "Missed video call" : "Missed voice call" }
+            return "No answer"
+        }
+    }
+
+    /// Duration only when there IS one — an unanswered call has no elapsed time to report.
+    private var durationText: String? {
+        guard let s = log.durationSeconds else { return nil }
+        let m = s / 60
+        return m >= 60
+            ? String(format: "%d:%02d:%02d", m / 60, m % 60, s % 60)
+            : String(format: "%d:%02d", m, s % 60)
+    }
+
+    var body: some View {
+        HStack {
+            if !log.incoming { Spacer(minLength: 56) }
+            Button {
+                Haptics.tap()
+                onCallBack()
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: log.isVideo ? "video.fill" : "phone.fill")
+                        .font(.system(size: 16))
+                        .foregroundColor(missed ? VoiidColor.error : VoiidColor.textSecondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title)
+                            .font(VoiidFont.rounded(14, .semibold))
+                            .foregroundColor(VoiidColor.textPrimary)
+                        HStack(spacing: 6) {
+                            Text(log.startedAt, style: .time)
+                                .font(VoiidFont.rounded(11, .regular))
+                                .foregroundColor(VoiidColor.textSecondary)
+                            if let durationText {
+                                Text("· \(durationText)")
+                                    .font(VoiidFont.rounded(11, .regular))
+                                    .foregroundColor(VoiidColor.textSecondary)
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 14).padding(.vertical, 10)
+                .background(log.incoming ? VoiidColor.surfaceCard : VoiidColor.bubbleReceived)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            if log.incoming { Spacer(minLength: 56) }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
 struct MessageBubble: View {
     let message: VMessage
     let isGroup: Bool
@@ -586,6 +667,8 @@ struct MessageBubble: View {
     var onDelete: () -> Void = {}
     var selectionMode: Bool = false
     var onSelectTap: () -> Void = {}
+    /// Tap a call bubble to call back, with that call's kind (true = video).
+    var onCallBack: (Bool) -> Void = { _ in }
 
     @State private var swipeX: CGFloat = 0
     @State private var showReactions = false
@@ -594,8 +677,12 @@ struct MessageBubble: View {
     static let reactionSet = ["👍", "❤️", "😂", "😮", "😢", "🙏"]
 
     var body: some View {
-        // System message — centered pill (e.g. "You added Priyanshu").
-        if message.kind == .system {
+        // A finished call (WhatsApp-style): its own sided, tappable bubble — NOT a centered
+        // system pill, because it is an action you can repeat, not an announcement.
+        if let log = message.call {
+            CallLogBubble(log: log) { onCallBack(log.isVideo) }
+        } else if message.kind == .system {
+            // System message — centered pill (e.g. "You added Priyanshu").
             Text(message.text)
                 .font(VoiidFont.rounded(11, .medium))
                 .foregroundColor(VoiidColor.textSecondary)

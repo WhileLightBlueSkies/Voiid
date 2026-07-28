@@ -218,6 +218,40 @@ enum LocalStore {
         }
     }
 
+    /// One conversation's finished calls, oldest first — the transcript's call bubbles.
+    ///
+    /// Timestamps are stored as epoch SECONDS here while VMessage.createdAt is a Date; the
+    /// conversion happens at the call site that builds the bubble.
+    static func callsForConversation(_ conversationId: String) -> [CallHistoryEntry] {
+        (try? db.read { database in
+            try Row.fetchAll(database, sql: """
+                SELECT id, kind, direction, outcome, started_at, ended_at
+                  FROM call_history
+                 WHERE conversation_id = ?
+                 ORDER BY started_at ASC
+                """, arguments: [conversationId]).map { row in
+                CallHistoryEntry(
+                    id: row["id"],
+                    kind: row["kind"],
+                    direction: row["direction"],
+                    outcome: row["outcome"],
+                    startedAt: Date(timeIntervalSince1970: TimeInterval(row["started_at"] as Int64)),
+                    endedAt: (row["ended_at"] as Int64?).map { Date(timeIntervalSince1970: TimeInterval($0)) }
+                )
+            }
+        }) ?? []
+    }
+
+    /// A row of `call_history`, as read back for the transcript.
+    struct CallHistoryEntry {
+        let id: String
+        let kind: String        // voice | video
+        let direction: String   // incoming | outgoing
+        let outcome: String     // answered | missed | declined | failed
+        let startedAt: Date
+        let endedAt: Date?
+    }
+
     // MARK: - Legacy import
     //
     // The previous store was `[conversationId: [DecryptedMessage]]` in one JSON file

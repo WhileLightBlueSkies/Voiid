@@ -195,6 +195,10 @@ final class ChatStore: ObservableObject {
     @Published var directConversations: [VConversation] = []
     @Published var groupConversations: [VConversation] = []
     @Published var messagesByConversation: [String: [VMessage]] = [:]
+    /// Finished calls per conversation, as transcript bubbles. Kept SEPARATE from the message
+    /// map and merged on read: a call log is not a message, is never sent over the wire, and
+    /// must not be persisted into the message store, previewed, or counted as unread.
+    @Published var callLogsByConversation: [String: [VMessage]] = [:]
     @Published var typingConversations: Set<String> = []
     @Published var loadError: String?
 
@@ -304,10 +308,39 @@ final class ChatStore: ObservableObject {
         }
     }
 
-    /// Messages currently held for a conversation (decrypted, from the local store).
-    /// No dummy seeding — a chat with no decrypted messages shows empty.
+    /// The transcript: real messages with this conversation's call bubbles merged in by time.
+    ///
+    /// Merging HERE rather than inserting into the message list keeps call logs out of the
+    /// message store, the chat-list preview and the unread count, while every existing caller
+    /// picks them up for free. No dummy seeding — a chat with nothing decrypted shows empty.
     func messages(for id: String) -> [VMessage] {
-        messagesByConversation[id] ?? []
+        let msgs = messagesByConversation[id] ?? []
+        let calls = callLogsByConversation[id] ?? []
+        if calls.isEmpty { return msgs }
+        return (msgs + calls).sorted { $0.createdAt < $1.createdAt }
+    }
+
+    /// Load this conversation's call history into the transcript. Call on chat open, and again
+    /// whenever a call ends so a call placed from this chat leaves its bubble immediately.
+    func loadCallLogs(_ conversationId: String) {
+        callLogsByConversation[conversationId] = LocalStore.callsForConversation(conversationId).map { r in
+            let incoming = r.direction == "incoming"
+            return VMessage(
+                id: "call:\(r.id)",
+                conversationId: conversationId,
+                senderId: incoming ? (directConversations.first { $0.id == conversationId }?.peerUserId ?? "") : "me",
+                kind: .call,
+                text: "",
+                createdAt: r.startedAt,
+                isMine: !incoming,
+                call: VCallLog(callId: r.id,
+                               isVideo: r.kind == "video",
+                               incoming: incoming,
+                               outcome: r.outcome,
+                               startedAt: r.startedAt,
+                               endedAt: r.endedAt)
+            )
+        }
     }
 
     /// Start (or reopen) a 1:1 chat with a discovered contact. Creates the

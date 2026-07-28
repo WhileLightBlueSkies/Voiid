@@ -136,6 +136,12 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
     val directConversations = mutableStateListOf<VConversation>()
     val groupConversations = mutableStateListOf<VConversation>()
     private val messagesByConversation = mutableStateMapOf<String, androidx.compose.runtime.snapshots.SnapshotStateList<VMessage>>()
+    /**
+     * Finished calls per conversation, as transcript bubbles. Kept SEPARATE from the message
+     * map and merged on read: a call log is not a message, is never sent over the wire, and
+     * must not be persisted into the message store, previewed, or counted as unread.
+     */
+    private val callLogsByConversation = mutableStateMapOf<String, List<VMessage>>()
     val typingConversations = mutableStateListOf<String>()
     var loadError by mutableStateOf<String?>(null)
 
@@ -223,7 +229,47 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun messages(id: String): List<VMessage> = messagesByConversation[id] ?: emptyList()
+    /**
+     * The transcript: real messages with this conversation's call bubbles merged in by time.
+     *
+     * Merging HERE rather than inserting into the message list keeps call logs out of the
+     * message store, the chat-list preview and the unread count, while every existing caller
+     * (the chat screen, search, jump-to-message) picks them up for free.
+     */
+    fun messages(id: String): List<VMessage> {
+        val msgs = messagesByConversation[id] ?: emptyList()
+        val calls = callLogsByConversation[id] ?: emptyList()
+        if (calls.isEmpty()) return msgs
+        return (msgs + calls).sortedBy { it.createdAt }
+    }
+
+    /** Load this conversation's call history into the transcript. Call on chat open. */
+    fun loadCallLogs(conversationId: String) {
+        viewModelScope.launch {
+            val rows = LocalStore.callsForConversation(appContext, conversationId)
+            callLogsByConversation[conversationId] = rows.map { r ->
+                VMessage(
+                    id = "call:${r.id}",
+                    conversationId = conversationId,
+                    senderId = if (r.direction == "incoming") (r.peerUserId ?: "") else "me",
+                    kind = MessageKind.CALL,
+                    text = "",
+                    // call_history stores SECONDS; VMessage.createdAt is MILLIS. Without this
+                    // conversion every call bubble would sort to 1970 and pile up at the top.
+                    createdAt = r.startedAt * 1000L,
+                    isMine = r.direction != "incoming",
+                    call = VCallLog(
+                        callId = r.id,
+                        isVideo = r.kind == "video",
+                        incoming = r.direction == "incoming",
+                        outcome = r.outcome,
+                        startedAt = r.startedAt * 1000L,
+                        endedAt = r.endedAt?.let { it * 1000L },
+                    ),
+                )
+            }
+        }
+    }
 
     private fun list(id: String) = messagesByConversation.getOrPut(id) { mutableStateListOf() }
 

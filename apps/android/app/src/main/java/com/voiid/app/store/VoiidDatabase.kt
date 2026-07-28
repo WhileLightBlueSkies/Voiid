@@ -403,6 +403,10 @@ abstract class CallHistoryDao {
     @Query("SELECT * FROM call_history ORDER BY started_at DESC LIMIT :limit")
     abstract fun recent(limit: Int): List<CallHistoryRow>
 
+    /** Calls in ONE conversation, oldest first — the transcript's call bubbles. */
+    @Query("SELECT * FROM call_history WHERE conversation_id = :conversationId ORDER BY started_at ASC")
+    abstract fun forConversation(conversationId: String): List<CallHistoryRow>
+
     /** Settings -> Storage "Calls logged" count — see [com.voiid.app.net.StorageProbe]. */
     @Query("SELECT COUNT(*) FROM call_history")
     abstract fun count(): Int
