@@ -102,6 +102,29 @@ final class UserDirectory: ObservableObject {
 
     func photoURL(_ userId: String) -> String? { byId[userId]?.photoURL }
 
+    /// Everyone a story can actually REACH: the address-book directory UNION every 1:1
+    /// conversation peer.
+    ///
+    /// The directory alone is the wrong set. It is populated by address-book matching
+    /// (upsertFromAddressBook) and a few profile fetches, so someone you chat with every day
+    /// but never SAVED as a contact is absent from it — and the story composer, which built
+    /// its audience from `byId` alone, could not even offer them. Their story never reached
+    /// that person, and the reason was invisible.
+    ///
+    /// Android has always used conversation peers (StoriesStore.candidateAudience), so this
+    /// also removes a real cross-platform asymmetry in who can receive a story. The union is
+    /// the honest answer: a story ride needs an established 1:1 session, which either source
+    /// implies. Ids with no directory row still resolve a name via `displayName(_:)`.
+    func storyReachableUserIds() -> Set<String> {
+        let me = TokenStore.shared.userId
+        var ids = Set(byId.keys)
+        for c in LocalStore.conversations() where c.type == .direct {
+            if let peer = c.peerUserId, !peer.isEmpty { ids.insert(peer) }
+        }
+        if let me { ids.remove(me) }
+        return ids
+    }
+
     /// Forget everyone. Called on sign-out: the directory holds address-book names, phone
     /// numbers and photos for the previous account's contacts, and the process does not
     /// restart, so without this the next user's call screens and chat headers would resolve

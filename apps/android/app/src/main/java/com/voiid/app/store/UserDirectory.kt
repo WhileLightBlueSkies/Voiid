@@ -108,6 +108,17 @@ object UserDirectory {
     fun photoUrl(userId: String): String? = byId[userId]?.photoUrl
 
     /**
+     * Every user id in the local directory (address-book matches + resolved profiles).
+     *
+     * Used with the 1:1 conversation peers to build the set a story can REACH — see
+     * `StoriesStore.candidateAudience` and `StoryEngine.validate`. Neither source alone is
+     * right: the directory misses people you chat with but never saved, and the conversation
+     * list misses saved contacts you have not messaged yet. iOS mirrors this in
+     * `UserDirectory.storyReachableUserIds()`.
+     */
+    fun knownUserIds(): Set<String> = byId.keys.toSet()
+
+    /**
      * The peer's number in strict E.164, or null.
      *
      * Null is the NORMAL case for a peer met by username, or one we have not seen in a

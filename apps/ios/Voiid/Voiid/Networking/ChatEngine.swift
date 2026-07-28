@@ -1444,7 +1444,26 @@ final class ChatEngine {
         let myDev = E2EManager.shared.deviceId
         let myId = TokenStore.shared.userId
         for uid in userIds {
-            let devs: DevicesResponse = (try? await api.request("GET", "devices/\(uid)")) ?? DevicesResponse(devices: [])
+            // Retried, then LOGGED. A `try?` here meant a transient network blip silently
+            // resolved ZERO devices for that recipient: the post then "succeeded" while that
+            // person simply never received the story, with nothing to explain why.
+            var devs: DevicesResponse?
+            for attempt in 0..<2 {
+                do {
+                    devs = try await api.request("GET", "devices/\(uid)") as DevicesResponse
+                    break
+                } catch {
+                    if attempt == 1 {
+                        NSLog("[VOIID] story fan-out: device lookup FAILED for \(uid) — they will NOT receive this story: \(error)")
+                    } else {
+                        try? await Task.sleep(nanoseconds: 300_000_000)
+                    }
+                }
+            }
+            guard let devs else { continue }
+            if devs.devices.isEmpty {
+                NSLog("[VOIID] story fan-out: \(uid) has no active devices — they will NOT receive this story")
+            }
             for d in devs.devices where d.id != myDev && seen.insert(d.id).inserted {
                 targets.append(TargetDevice(userId: uid, deviceId: d.id))
             }

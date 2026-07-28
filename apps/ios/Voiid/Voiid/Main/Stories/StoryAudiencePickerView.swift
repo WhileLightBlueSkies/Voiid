@@ -18,9 +18,23 @@ struct StoryAudiencePickerView: View {
     @Binding var selected: Set<String>
     @Environment(\.dismiss) private var dismiss
 
-    private var everyone: [DirectoryUser] {
-        UserDirectory.shared.byId.values
-            .filter { $0.userId != TokenStore.shared.userId }
+    /// One selectable recipient. Not `DirectoryUser`: a reachable peer may have NO directory
+    /// row at all (you chat with them but never saved them), and such a person must still be
+    /// offered — excluding them is exactly the bug this replaced.
+    private struct Candidate: Identifiable {
+        let userId: String
+        let displayName: String
+        let photoURL: String?
+        var id: String { userId }
+    }
+
+    private var everyone: [Candidate] {
+        UserDirectory.shared.storyReachableUserIds()
+            .map { id in
+                Candidate(userId: id,
+                          displayName: UserDirectory.shared.displayName(id),
+                          photoURL: UserDirectory.shared.photoURL(id))
+            }
             .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
     }
 

@@ -139,10 +139,16 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
      */
     suspend fun candidateAudience(): List<AudienceEntry> {
         val convs = runCatching { LocalStore.conversations(appContext) }.getOrDefault(emptyList())
-        return convs.asSequence()
+        val peers = convs.asSequence()
             .filter { it.type == ConversationType.DIRECT }
             .mapNotNull { it.peerUserId }
+        // UNION with the address-book directory. Conversation peers alone missed every saved
+        // contact you have not messaged yet; the directory alone (what iOS used to do) missed
+        // everyone you chat with but never saved. Both platforms now offer the same set.
+        val me = com.voiid.app.net.TokenStore.get(appContext).userId
+        return (peers + UserDirectory.knownUserIds())
             .distinct()
+            .filter { it.isNotEmpty() && it != me }
             .map { AudienceEntry(it, UserDirectory.displayName(it), UserDirectory.photoUrl(it)) }
             .sortedBy { it.name.lowercase() }
             .toList()

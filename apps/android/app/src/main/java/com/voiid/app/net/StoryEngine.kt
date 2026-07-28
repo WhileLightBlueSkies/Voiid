@@ -122,14 +122,22 @@ class StoryEngine private constructor(context: Context) {
         // "Android stories nobody can see" bug — the drop is permanent because the feed is
         // deliver-once). iOS loads the directory synchronously, so it never hit this.
         UserDirectory.ready(appContext)
-        val existing = runCatching { StoryLocalStore.liveStories(appContext).map { it.id }.toHashSet() }
-            .getOrDefault(HashSet())
+        val live = runCatching { StoryLocalStore.liveStories(appContext) }.getOrDefault(emptyList())
+        val existing = live.map { it.id }.toHashSet()
+        // Rows that came from the SERVER. A failed post leaves an optimistic "pending-<uuid>"
+        // row behind (StoriesStore.post) which lives for 24h — and because it made the local
+        // feed look non-empty, it silently disabled the include_delivered recovery below for a
+        // whole day. One failed post must not cost you every recoverable story.
+        val serverBacked = live.count { !it.id.startsWith("pending-") }
         // RECOVERY: if we hold no live stories at all, re-fetch with include_delivered so a
         // device whose keys were already marked delivered — a lost local DB, OR a story dropped
         // by the pre-fix async-directory bug — still gets its live feed back. The normal
         // (deliver-once) pass would return nothing in that case and the feed would stay empty.
-        val includeDelivered = existing.isEmpty()
+        val includeDelivered = serverBacked == 0
         val rows = service.feed(e2e.deviceId, includeDelivered)
+        // Computed ONCE for the batch: it reads the conversations table, and validate() is not
+        // a suspend function, so it cannot do this per row.
+        val reachable = reachableAuthors()
         val fresh = mutableListOf<Story>()
         for (row in rows) {
             if (existing.contains(row.story_id)) continue    // decrypt-once dedup
@@ -144,7 +152,7 @@ class StoryEngine private constructor(context: Context) {
                 .onFailure { android.util.Log.w("VOIID", "🚫 story DROPPED id=${row.story_id} from=${row.author_id}: envelope decode failed", it) }
                 .getOrNull()
                 ?: continue
-            val story = validate(env, row, myId) ?: continue
+            val story = validate(env, row, myId, reachable) ?: continue
             StoryLocalStore.upsert(appContext, story)
             fresh.add(story)
         }
@@ -152,10 +160,25 @@ class StoryEngine private constructor(context: Context) {
     }
 
     /**
+     * Everyone whose story we accept: the address-book directory UNION every 1:1 conversation
+     * peer. The same set the composer offers (StoriesStore.candidateAudience) and the same
+     * rule iOS applies (UserDirectory.storyReachableUserIds) — send and receive must agree, or
+     * a story is offered to someone who will silently discard it.
+     */
+    private suspend fun reachableAuthors(): Set<String> {
+        val convs = runCatching { com.voiid.app.store.LocalStore.conversations(appContext) }
+            .getOrDefault(emptyList())
+        val peers = convs.asSequence()
+            .filter { it.type == com.voiid.app.model.ConversationType.DIRECT }
+            .mapNotNull { it.peerUserId }
+        return (peers + UserDirectory.knownUserIds()).filter { it.isNotEmpty() }.toSet()
+    }
+
+    /**
      * Receiver-side validation (§1.5) — the server does NOT do this for you; any authenticated user
      * can POST a story targeting your device id. Returns the Story to store, or null to DROP.
      */
-    private fun validate(env: StoryEnvelope, row: StoryService.FeedStory, myId: String?): Story? {
+    private fun validate(env: StoryEnvelope, row: StoryService.FeedStory, myId: String?, reachable: Set<String>): Story? {
         // Each drop is LOGGED. A silent `return null` here made "the story never arrived"
         // indistinguishable from "it was rejected by rule 1/2/3", with nothing in logcat.
         if (env.story_id != row.story_id) {                                 // 1. id must bind
@@ -185,8 +208,12 @@ class StoryEngine private constructor(context: Context) {
         // directory check is a secondary filter, not the only guard; with the directory now
         // loaded (awaited in syncFeed) it passes for real contacts and only drops genuine
         // strangers who somehow hold a session.
-        if (!isMine && UserDirectory.user(env.author_id) == null) {
-            android.util.Log.w("VOIID", "🚫 story from unknown author dropped id=${env.story_id}")
+        // "Known" is REACHABLE — in the address book OR someone we have a 1:1 chat with — not
+        // directory-only. You can chat with someone daily without ever saving them, and their
+        // story was being discarded; the feed is deliver-once, so that drop was permanent.
+        // Matches the send side (candidateAudience) and iOS (storyReachableUserIds).
+        if (!isMine && env.author_id !in reachable) {
+            android.util.Log.w("VOIID", "🚫 story DROPPED id=${env.story_id}: author=${env.author_id} is neither a contact nor someone you have a chat with")
             return null
         }
         return Story(

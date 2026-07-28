@@ -32,8 +32,11 @@ struct StoryComposerView: View {
     // Audience: pre-selected with every contact you can reach (§2.2), or the last custom set.
     @State private var audience: Set<String> = []
 
+    /// Everyone reachable — the directory UNION 1:1 conversation peers. Using the directory
+    /// alone silently excluded anyone you chat with but never saved as a contact, so their
+    /// story never reached them. See UserDirectory.storyReachableUserIds().
     private var everyoneIds: Set<String> {
-        Set(UserDirectory.shared.byId.keys.filter { $0 != TokenStore.shared.userId })
+        UserDirectory.shared.storyReachableUserIds()
     }
     private var audienceLabel: String {
         audience.count == everyoneIds.count ? "My Contacts (\(audience.count))" : "Custom (\(audience.count))"
