@@ -13,6 +13,16 @@
 
 import SwiftUI
 
+/// Carries the custom tab bar's measured height up to RootTabView, which republishes it on
+/// `AppSession` for pages that place their own bottom chrome. Defaults to 0 so a tree with
+/// no tab bar (a full-screen child) reports no reserved space.
+struct TabBarHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 struct RootTabView: View {
     @EnvironmentObject var session: AppSession
     // Drives the Map tab's always-on visibility badge. `MapVisibilityState` is the same
@@ -62,8 +72,25 @@ struct RootTabView: View {
 
             if !session.hideTabBar {
                 tabBar
+                    // Publish the bar's REAL height so pages can hold their own bottom
+                    // chrome clear of it. The bar is painted over the page (ZStack), not
+                    // inserted into its safe area, so without this a bottom-anchored
+                    // overlay renders underneath the bar. Measured, not hardcoded: the
+                    // height varies with the home-indicator inset across devices.
+                    .background(
+                        GeometryReader { geo in
+                            Color.clear.preference(key: TabBarHeightKey.self,
+                                                   value: geo.size.height)
+                        }
+                    )
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+        }
+        // When the bar is hidden the height collapses to 0 — a full-screen child must not
+        // inherit a phantom gap. (No `tabBar` in the tree means no preference is emitted,
+        // so the key falls back to its 0 default.)
+        .onPreferenceChange(TabBarHeightKey.self) { h in
+            session.tabBarHeight = h
         }
         .ignoresSafeArea(.keyboard)
         .animation(.easeInOut(duration: 0.2), value: session.hideTabBar)

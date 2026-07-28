@@ -21,6 +21,15 @@ final class AppSession: ObservableObject {
     @Published var profile = VUser(id: "me", fullName: "", phoneNumber: "")
     /// Hides the bottom tab bar when a full-screen child (e.g. a chat) is open.
     @Published var hideTabBar = false
+    /// The MEASURED height of the custom bottom tab bar, including its home-indicator
+    /// padding — published by RootTabView, which is the only view that knows it.
+    ///
+    /// The bar is NOT a TabView bar: RootTabView draws it as a ZStack sibling painted
+    /// OVER the active page, so it contributes nothing to any page's safe area. A page
+    /// that anchors its own chrome to the bottom therefore lands UNDERNEATH the bar
+    /// unless it insets by this value. `0` whenever the bar is hidden, so a full-screen
+    /// child inherits no phantom gap.
+    @Published var tabBarHeight: CGFloat = 0
 
     private let auth = AuthService.shared
 

@@ -78,10 +78,14 @@ struct MapTabView: View {
                 //
                 // safeAreaInset, NOT overlay(alignment: .bottom): the map above deliberately
                 // ignores the bottom safe area so tiles run under the chrome, which means a
-                // bottom-aligned overlay anchors to the SCREEN edge and lands underneath the
-                // app's tab bar — the card was rendering behind it. An inset reserves real
-                // layout space instead, so the card always sits clear of the bar (matching
-                // Android, where the card is a sibling above the nav bar).
+                // bottom-aligned overlay anchors to the SCREEN edge.
+                //
+                // The inset alone is NOT enough. Unlike a TabView, the app's bar is drawn by
+                // RootTabView as a ZStack sibling painted OVER this page — it is absent from
+                // our safe area entirely, so an inset flush to the screen bottom still lands
+                // behind it. `session.tabBarHeight` is that bar's measured height (0 while it
+                // is hidden), so adding it is what actually holds the card clear. Measured
+                // rather than a constant: the home-indicator inset differs per device.
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     // A searched place takes precedence over a contact card — it is the thing
                     // the user just explicitly asked for.
@@ -96,7 +100,7 @@ struct MapTabView: View {
                         }
                     }
                     .padding(.horizontal, VoiidSpacing.md)
-                    .padding(.bottom, VoiidSpacing.sm)
+                    .padding(.bottom, VoiidSpacing.sm + session.tabBarHeight)
                 }
                 .animation(.easeOut(duration: 0.2), value: selectedContact)
                 .animation(.easeOut(duration: 0.2), value: search.selected)
