@@ -23,6 +23,10 @@ playServicesAuth = "20.7.0"
 # for a 10–15 s cadence; the platform LocationManager does none of that.
 playServicesMaps     = "19.0.0"
 mapsCompose          = "6.4.1"
+# Places SDK — Map-tab place search only. Autocomplete is billed per SESSION (not per
+# keystroke) as long as a session token is passed through predictions→fetch, which
+# MapPlaceSearch does. Requires "Places API (New)" enabled on the same Maps key.
+places               = "4.1.0"
 playServicesLocation = "21.3.0"
 ksp = "2.0.21-1.0.28"
 room = "2.6.1"
@@ -59,6 +63,7 @@ play-services-auth = { group = "com.google.android.gms", name = "play-services-a
 play-services-maps     = { group = "com.google.android.gms",  name = "play-services-maps",     version.ref = "playServicesMaps" }
 play-services-location = { group = "com.google.android.gms",  name = "play-services-location", version.ref = "playServicesLocation" }
 maps-compose           = { group = "com.google.maps.android", name = "maps-compose",           version.ref = "mapsCompose" }
+places                 = { group = "com.google.android.libraries.places", name = "places",      version.ref = "places" }
 androidx-room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
 androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
 androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }

@@ -844,7 +844,11 @@ struct MessageBubble: View {
         case .poll:
             if let poll = message.poll { PollBubble(poll: poll, onVote: onVote) }
         case .location:
-            if let ref = message.location { LocationPinBubble(ref: ref) }
+            // The conversation goes with it so the full-screen detail can draw EVERY sharer in
+            // this chat on one map, not just the person whose bubble was tapped.
+            if let ref = message.location {
+                LocationPinBubble(ref: ref, conversationId: message.conversationId)
+            }
             else { styledText(message.text) }
         default:
             styledText(message.text)

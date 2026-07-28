@@ -59,6 +59,21 @@ class MediaService(private val tokens: TokenStore) {
     suspend fun uploadProfilePhoto(imageData: ByteArray, mime: String = "image/jpeg"): String =
         upload(imageData, mime)
 
+    /**
+     * Plain GET of an ABSOLUTE url — no presign, no auth header, no decryption.
+     *
+     * For avatars only ([AvatarCache]): a `photo_url` may be an opaque R2 key (use [download])
+     * or an absolute CDN url from an older profile write. Same blob client so the timeouts and
+     * connection pool are shared rather than standing up a second OkHttp instance per face.
+     */
+    suspend fun fetchAbsolute(url: String): ByteArray = withContext(Dispatchers.IO) {
+        val req = Request.Builder().url(url).get().build()
+        blobClient.newCall(req).execute().use {
+            if (!it.isSuccessful) throw ApiError.Http(it.code, "avatar fetch failed (${it.code})")
+            it.body?.bytes() ?: ByteArray(0)
+        }
+    }
+
     /** Encrypted download: presigned GET for `key` → fetch the ciphertext bytes. */
     suspend fun download(key: String): ByteArray {
         val body = ApiClient.json.encodeToString(PresignDownloadBody.serializer(), PresignDownloadBody(key))

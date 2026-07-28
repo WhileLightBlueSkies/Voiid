@@ -167,6 +167,9 @@ dependencies {
     implementation(libs.play.services.location)
     implementation(libs.play.services.maps)
     implementation(libs.maps.compose)
+    // Map-tab place search. Uses the SAME api key as Maps; needs "Places API (New)" enabled
+    // on that key or every request fails (see MapPlaceSearch, which degrades quietly).
+    implementation(libs.places)
 
     // E2E core (Rust via uniffi). The generated Kotlin in uniffi/voiid/voiid.kt
     // uses JNA to call into jniLibs/<abi>/libvoiid_e2e_core.so. Must be the @aar

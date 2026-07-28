@@ -22,7 +22,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -46,15 +48,21 @@ import com.google.maps.android.compose.MapProperties
 import com.google.maps.android.compose.MapType
 import com.google.maps.android.compose.MapUiSettings
 import com.google.maps.android.compose.Marker
+import com.google.maps.android.compose.MarkerComposable
 import com.google.maps.android.compose.MarkerState
 import com.google.maps.android.compose.rememberCameraPositionState
 import com.voiid.app.BuildConfig
 import com.voiid.app.model.ChatStore
+import com.voiid.app.model.LiveShareView
 import com.voiid.app.model.MapContact
+import com.voiid.app.model.MapFix
 import com.voiid.app.model.MapStore
 import com.voiid.app.model.MapSubject
 import com.voiid.app.model.MapSubjectState
 import com.voiid.app.model.MapVisibility
+import com.voiid.app.model.ShareState
+import com.voiid.app.net.LocationShareEngine
+import com.voiid.app.net.MapPlaceSearch
 import com.voiid.app.store.UserDirectory
 import com.voiid.app.ui.components.VoiidPrimaryButton
 import com.voiid.app.ui.components.VoiidToggle
@@ -76,7 +84,7 @@ import kotlinx.coroutines.delay
  *    list, never a silent grey grid or a crash.
  */
 @Composable
-fun MapTabView(map: MapStore, chat: ChatStore) {
+fun MapTabView(map: MapStore, chat: ChatStore, onOpenChatWithUser: ((String) -> Unit)? = null) {
     val context = LocalContext.current
     val visibility by map.visibility.collectAsState()
     val audience by map.audience.collectAsState()
@@ -85,7 +93,25 @@ fun MapTabView(map: MapStore, chat: ChatStore) {
     val shareError by map.lastError.collectAsState()
     val waiting by map.waitingSenders.collectAsState()
 
-    val subjects = subjectsMap.values.toList()
+    // 1 s tick so a conversation share's freshness (and its LIVE→STALE decay) is re-derived
+    // without waiting for the 30 s presence recompute below. No network, no new wakeups.
+    var now by remember { androidx.compose.runtime.mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) { delay(1_000); now = System.currentTimeMillis() }
+    }
+
+    // Two sources, one map (docs/LOCATION.md §5 + §7):
+    //   (B) presence — ambient, coarse, 5 min / 250 m. Everyone who chose to be visible to us.
+    //   (A) conversation live shares — someone actively sharing WITH ME from a chat, at
+    //       10–15 s cadence. Their fixes are already decrypted and in memory for the bubble;
+    //       drawing them here publishes nothing new and changes no cadence for anyone.
+    // Dedupe by userId with the CONVERSATION share winning: it is strictly fresher than the
+    // ambient one, so a friend who is live-sharing with you moves in near-real-time instead of
+    // being pinned to their last 5-minute presence fix.
+    val liveSubjects = LocationShareEngine.inboundViews.values
+        .mapNotNull { it.asMapSubject(now) }
+    val subjects = (subjectsMap.values.associateBy { it.userId } + liveSubjects.associateBy { it.userId })
+        .values.toList()
     val onMap = subjects.filter { it.isOnMap }
     val offMap = subjects.filter { !it.isOnMap }
 
@@ -100,6 +126,33 @@ fun MapTabView(map: MapStore, chat: ChatStore) {
     }
 
     var showAudience by remember { mutableStateOf(false) }
+
+    // ---- place search (Feature 4) -------------------------------------------------------
+    var searchQuery by remember { mutableStateOf("") }
+    var suggestions by remember { mutableStateOf<List<MapPlaceSearch.Suggestion>>(emptyList()) }
+    var pickedSuggestion by remember { mutableStateOf<MapPlaceSearch.Suggestion?>(null) }
+    var selectedPlace by remember { mutableStateOf<MapPlaceSearch.Resolved?>(null) }
+    // ONE token per "type, refine, pick" interaction keeps autocomplete in the per-session
+    // billing tier; a new one is minted after each resolve (see MapPlaceSearch).
+    var sessionToken by remember { mutableStateOf(MapPlaceSearch.newSession()) }
+
+    // Debounced so a fast typist produces one request per pause, not one per keystroke. An
+    // empty query issues nothing at all — an idle Map tab makes no Places calls.
+    LaunchedEffect(searchQuery) {
+        val q = searchQuery.trim()
+        if (q.isEmpty()) { suggestions = emptyList(); return@LaunchedEffect }
+        if (pickedSuggestion?.title == q) return@LaunchedEffect   // don't re-search what we just picked
+        delay(250)
+        suggestions = MapPlaceSearch.predictions(context, q, sessionToken)
+    }
+
+    LaunchedEffect(pickedSuggestion) {
+        val picked = pickedSuggestion ?: return@LaunchedEffect
+        suggestions = emptyList()
+        selectedPlace = MapPlaceSearch.fetchPlace(context, picked.placeId, sessionToken)
+        sessionToken = MapPlaceSearch.newSession()   // the fetch closed the billed session
+        pickedSuggestion = null
+    }
 
     // FINE/COARSE foreground grant, requested IN CONTEXT at opt-in — never at onboarding, and
     // never bundled with ACCESS_BACKGROUND_LOCATION (the Map runs foreground-only, so it does
@@ -172,9 +225,22 @@ fun MapTabView(map: MapStore, chat: ChatStore) {
             onClick = { if (visibility == MapVisibility.VISIBLE) showAudience = true else requestThenPick() },
         )
 
+        // Place search (Feature 4). Gated with everything else behind MAPS_CONFIGURED: a build
+        // with no Maps key shows no search field at all, and the unavailable card below is
+        // unchanged.
+        if (BuildConfig.MAPS_CONFIGURED) {
+            MapSearchBar(
+                query = searchQuery,
+                onQueryChange = { searchQuery = it },
+                suggestions = suggestions,
+                onPick = { s -> pickedSuggestion = s; searchQuery = s.title },
+                onClear = { searchQuery = ""; suggestions = emptyList(); selectedPlace = null },
+            )
+        }
+
         Box(Modifier.fillMaxWidth().weight(1f)) {
             if (BuildConfig.MAPS_CONFIGURED) {
-                MapCanvas(onMap)
+                MapCanvas(onMap, now, onOpenChatWithUser, selectedPlace) { selectedPlace = null }
             } else {
                 MapUnavailableCard(
                     headline = "Maps aren’t set up in this build",
@@ -241,10 +307,18 @@ private fun VisiblePill(visible: Boolean, audienceCount: Int, onClick: () -> Uni
  * never fires onMapLoaded, so after 6 s of silence we swap in the unavailable card.
  */
 @Composable
-private fun MapCanvas(onMap: List<MapSubject>) {
+private fun MapCanvas(
+    onMap: List<MapSubject>,
+    now: Long,
+    onOpenChat: ((String) -> Unit)? = null,
+    place: MapPlaceSearch.Resolved? = null,
+    onDismissPlace: (() -> Unit)? = null,
+) {
     val context = LocalContext.current
     var loaded by remember { mutableStateOf(false) }
     var watchdogFired by remember { mutableStateOf(false) }
+    /** userId whose card is open — a tap on a face, dismissed by tapping the map. */
+    var selected by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) { delay(6_000); if (!loaded) watchdogFired = true }
 
     // The "my location" layer + recenter button need a granted location permission — Google
@@ -263,6 +337,16 @@ private fun MapCanvas(onMap: List<MapSubject>) {
             first?.let { LatLng(it.lat, it.lon) } ?: LatLng(20.0, 0.0),
             if (first != null) 13f else 2f,
         )
+    }
+
+    // Fly to a place the moment it resolves.
+    LaunchedEffect(place) {
+        place?.let {
+            camera.animate(
+                com.google.android.gms.maps.CameraUpdateFactory.newLatLngZoom(LatLng(it.lat, it.lon), 16f),
+                800,
+            )
+        }
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -284,14 +368,52 @@ private fun MapCanvas(onMap: List<MapSubject>) {
                 myLocationButtonEnabled = hasLocationPermission,
             ),
             onMapLoaded = { loaded = true },
+            onMapClick = { selected = null },   // tap the map to dismiss an open contact card
         ) {
             for (s in onMap) {
                 val fix = s.fix ?: continue
-                Marker(
+                // A FACE, not the stock red pin: the same marker language as iOS's
+                // `contactMarker` and the live-location detail. The ring colour carries the
+                // LIVE/STALE state; a photo-less friend falls back to initials on a stable
+                // colour, never a generic pin that makes two people indistinguishable.
+                MarkerComposable(
+                    keys = arrayOf(s.userId, s.state),
                     state = MarkerState(position = LatLng(fix.lat, fix.lon)),
                     title = UserDirectory.displayName(s.userId),
-                    snippet = if (s.state == MapSubjectState.STALE) "Last seen a while ago · may have lost signal" else "Updated recently",
-                    alpha = if (s.state == MapSubjectState.STALE) 0.5f else 1f,
+                    onClick = { selected = s.userId; false },
+                ) {
+                    AvatarPin(userId = s.userId, stale = s.state == MapSubjectState.STALE)
+                }
+            }
+            // A searched place — the stock pin here is correct: it must NOT look like a person.
+            place?.let {
+                Marker(
+                    state = MarkerState(position = LatLng(it.lat, it.lon)),
+                    title = it.name,
+                    snippet = it.address,
+                )
+            }
+        }
+        // A resolved place takes precedence over a contact card — it is the thing the user
+        // just explicitly asked for.
+        if (place != null) {
+            MapPlaceCard(
+                place = place,
+                modifier = Modifier.align(Alignment.BottomCenter),
+                onDismiss = { onDismissPlace?.invoke() },
+            )
+        }
+        // Tapping a face opens a small card instead of the SDK's default info window (which is
+        // a bare title/snippet bubble with no avatar and no way to act on it).
+        else selected?.let { uid ->
+            val subject = onMap.firstOrNull { it.userId == uid }
+            if (subject != null) {
+                MapContactCard(
+                    subject = subject,
+                    now = now,
+                    modifier = Modifier.align(Alignment.BottomCenter),
+                    onOpenChat = onOpenChat?.let { open -> { open(uid) } },
+                    onDismiss = { selected = null },
                 )
             }
         }
@@ -421,3 +543,260 @@ private const val VOIID_MAP_STYLE: String = """
   {"featureType":"administrative","elementType":"geometry","stylers":[{"visibility":"off"}]}
 ]
 """
+
+/**
+ * Project a conversation live share (A) onto the Map's subject shape (B), so both sources can
+ * be drawn by one renderer (docs/LOCATION.md §5, §7).
+ *
+ * This publishes NOTHING and changes no cadence: the fixes are already decrypted in memory for
+ * the in-chat bubble, and this only makes them visible on the Map tab too — a friend who is
+ * actively live-sharing with you moves at the share's 10–15 s cadence, while everyone else
+ * keeps moving at the ambient 5-minute presence cadence.
+ *
+ * Null once the share has ENDED (it must leave the map, same as the bubble's terminal state)
+ * or before its first fix has landed (nothing to draw yet — the presence entry, if any, still
+ * shows and the "waiting" list already covers this case).
+ */
+private fun LiveShareView.asMapSubject(now: Long): MapSubject? {
+    val fix = lastFix ?: return null
+    val mapped = when (state(now)) {
+        ShareState.LIVE -> MapSubjectState.LIVE
+        ShareState.STALE -> MapSubjectState.STALE
+        ShareState.ENDED -> return null
+    }
+    return MapSubject(
+        userId = ownerUserId,
+        fix = MapFix(
+            subjectUserId = ownerUserId, shareId = shareId,
+            lat = fix.lat, lon = fix.lon, acc = fix.acc, seq = fix.seq, fixedAt = fix.fixedAt,
+        ),
+        state = mapped,
+    )
+}
+
+/**
+ * The card shown when you tap a friend's face on the Map. Replaces the SDK's default info
+ * window, which is a bare title/snippet bubble with no avatar and nothing to act on.
+ *
+ * Deliberately minimal: who, how fresh their position is, and one way to reach them. No
+ * address (we never reverse-geocode — docs/LOCATION.md §10) and no coordinates readout.
+ */
+@Composable
+private fun MapContactCard(
+    subject: MapSubject,
+    now: Long,
+    modifier: Modifier = Modifier,
+    onOpenChat: (() -> Unit)?,
+    onDismiss: () -> Unit,
+) {
+    Row(
+        modifier
+            .fillMaxWidth()
+            .padding(16.dp)
+            .clip(RoundedCornerShape(VoiidRadius.lg))
+            .background(VoiidColor.surfaceCard)
+            .clickable { onDismiss() }
+            .padding(14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        AvatarPin(userId = subject.userId, stale = subject.state == MapSubjectState.STALE, size = 46.dp)
+        Column(Modifier.weight(1f)) {
+            Text(
+                UserDirectory.displayName(subject.userId),
+                style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.textPrimary, maxLines = 1,
+            )
+            val age = subject.fix?.let { now - it.fixedAt }
+            Text(
+                when {
+                    subject.state == MapSubjectState.STALE -> "May have lost signal"
+                    age == null -> "Location unknown"
+                    age < 60_000 -> "Updated just now"
+                    age < 3_600_000 -> "Updated ${age / 60_000} min ago"
+                    else -> "Updated ${age / 3_600_000} h ago"
+                },
+                style = VoiidFont.rounded(12), color = VoiidColor.textSecondary, maxLines = 1,
+            )
+            // Same honesty line as the chat bubble/detail: a Map pin is an area, not a doorstep.
+            Text(
+                accuracyNote(subject.fix?.acc),
+                style = VoiidFont.rounded(10), color = VoiidColor.textSecondary, maxLines = 1,
+            )
+        }
+        if (onOpenChat != null) {
+            Text(
+                "Open chat",
+                style = VoiidFont.rounded(13, FontWeight.SemiBold), color = VoiidColor.primary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(VoiidRadius.pill))
+                    .background(VoiidColor.fieldFill)
+                    .clickable { onOpenChat() }
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+            )
+        }
+    }
+}
+
+/**
+ * Map-tab place search field + autocomplete list (Feature 4). Matches the visibility pill's
+ * shape so the top chrome reads as one family.
+ *
+ * The whole thing is only ever composed when `BuildConfig.MAPS_CONFIGURED` is true, and
+ * [MapPlaceSearch] degrades to an empty suggestion list when the key lacks "Places API (New)"
+ * — so the worst case is a search box that finds nothing, never an error over the map.
+ */
+@Composable
+private fun MapSearchBar(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    suggestions: List<MapPlaceSearch.Suggestion>,
+    onPick: (MapPlaceSearch.Suggestion) -> Unit,
+    onClear: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+        val shape = RoundedCornerShape(VoiidRadius.pill)
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clip(shape)
+                .background(VoiidColor.surfaceCard)
+                .border(1.dp, VoiidColor.fieldBorder, shape)
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(
+                androidx.compose.material.icons.Icons.Default.Search, null,
+                tint = VoiidColor.textSecondary, modifier = Modifier.size(18.dp),
+            )
+            androidx.compose.foundation.text.BasicTextField(
+                value = query,
+                onValueChange = onQueryChange,
+                singleLine = true,
+                textStyle = VoiidFont.rounded(15).merge(
+                    androidx.compose.ui.text.TextStyle(color = VoiidColor.textPrimary),
+                ),
+                cursorBrush = androidx.compose.ui.graphics.SolidColor(VoiidColor.primary),
+                modifier = Modifier.weight(1f),
+                decorationBox = { inner ->
+                    if (query.isEmpty()) {
+                        Text("Search places", style = VoiidFont.rounded(15), color = VoiidColor.placeholder)
+                    }
+                    inner()
+                },
+            )
+            if (query.isNotEmpty()) {
+                Icon(
+                    androidx.compose.material.icons.Icons.Default.Close, "Clear search",
+                    tint = VoiidColor.textSecondary,
+                    modifier = Modifier.size(18.dp).clickable { onClear() },
+                )
+            }
+        }
+
+        if (suggestions.isNotEmpty()) {
+            Spacer(Modifier.size(6.dp))
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(VoiidRadius.md))
+                    .background(VoiidColor.surfaceCard),
+            ) {
+                for (s in suggestions) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { onPick(s) }
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Icon(
+                            Icons.Default.LocationOn, null,
+                            tint = VoiidColor.primary, modifier = Modifier.size(18.dp),
+                        )
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                s.title, style = VoiidFont.rounded(14, FontWeight.Medium),
+                                color = VoiidColor.textPrimary, maxLines = 1,
+                            )
+                            if (s.subtitle.isNotBlank()) {
+                                Text(
+                                    s.subtitle, style = VoiidFont.rounded(11),
+                                    color = VoiidColor.textSecondary, maxLines = 1,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Bottom card for a resolved place: name, address, and the two system handoffs.
+ *
+ * Directions is a HANDOFF to the system maps app, never in-app routing (docs/LOCATION.md
+ * §10.10) — it reuses the same [openDirections] helper the location detail uses, so there is
+ * one nav intent in the codebase rather than a copy per screen.
+ */
+@Composable
+private fun MapPlaceCard(
+    place: MapPlaceSearch.Resolved,
+    modifier: Modifier = Modifier,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    Column(
+        modifier
+            .fillMaxWidth()
+            .padding(16.dp)
+            .clip(RoundedCornerShape(VoiidRadius.lg))
+            .background(VoiidColor.surfaceCard)
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    place.name, style = VoiidFont.rounded(16, FontWeight.SemiBold),
+                    color = VoiidColor.textPrimary, maxLines = 2,
+                )
+                place.address?.let {
+                    Text(it, style = VoiidFont.rounded(12), color = VoiidColor.textSecondary, maxLines = 2)
+                }
+            }
+            Icon(
+                androidx.compose.material.icons.Icons.Default.Close, "Close",
+                tint = VoiidColor.textSecondary,
+                modifier = Modifier.size(20.dp).clickable { onDismiss() },
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            PlaceAction("Directions", Modifier.weight(1f), filled = true) {
+                openDirections(context, place.lat, place.lon, place.name)
+            }
+            PlaceAction("Open in Maps", Modifier.weight(1f), filled = false) {
+                openInMaps(context, place.lat, place.lon, place.name)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaceAction(label: String, modifier: Modifier, filled: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier
+            .clip(RoundedCornerShape(VoiidRadius.pill))
+            .background(if (filled) VoiidColor.primary else VoiidColor.fieldFill)
+            .clickable { onClick() }
+            .padding(vertical = 11.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label, style = VoiidFont.rounded(14, FontWeight.SemiBold),
+            color = if (filled) VoiidColor.textOnPrimary else VoiidColor.textPrimary,
+        )
+    }
+}

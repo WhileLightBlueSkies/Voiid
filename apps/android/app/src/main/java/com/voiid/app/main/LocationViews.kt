@@ -6,6 +6,7 @@ import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,6 +34,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -86,6 +88,7 @@ fun LocationMap(
     lite: Boolean,
     modifier: Modifier = Modifier,
     desaturated: Boolean = false,
+    onClick: (() -> Unit)? = null,
 ) {
     if (!BuildConfig.MAPS_CONFIGURED) {
         MapUnavailableCard(modifier, lat, lon)
@@ -122,6 +125,20 @@ fun LocationMap(
         if (desaturated) {
             // Stale marker: dim the last-known map so "lost signal" reads differently from live.
             Box(Modifier.fillMaxSize().clip(RoundedCornerShape(VoiidRadius.md)).background(VoiidColor.background.copy(alpha = 0.35f)))
+        }
+        if (lite && onClick != null) {
+            // Lite mode's DOCUMENTED default tap action is to launch the external Google Maps
+            // app, and the GoogleMap child consumes the touch before any parent `clickable`
+            // ever sees it — which is why tapping a bubble used to leave Voiid instead of
+            // opening our own LocationDetailView. Swallow input in an overlay ABOVE the map
+            // (and above the desaturation scrim) and invoke the caller's handler ourselves.
+            // The external app must only ever be reachable from the explicit "Open in Maps" /
+            // "Directions" buttons in the detail view.
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .pointerInput(onClick) { detectTapGestures { onClick() } },
+            )
         }
     }
 }
@@ -178,7 +195,9 @@ fun LocationPinBubble(message: com.voiid.app.model.VMessage) {
         androidx.compose.ui.window.Dialog(
             onDismissRequest = { showDetail = false },
             properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
-        ) { LocationDetailView(ref) { showDetail = false } }
+            // Pass the conversation so the detail can draw EVERY sharer in this chat on one
+            // map, not just the person whose bubble was tapped.
+        ) { LocationDetailView(ref, message.conversationId) { showDetail = false } }
     }
 
     val isLive = ref.kind == com.voiid.app.model.LocationEnvelope.K_LIVE_START
@@ -205,6 +224,9 @@ fun LocationPinBubble(message: com.voiid.app.model.VMessage) {
                 lat = lat, lon = lon, lite = true,
                 modifier = Modifier.fillMaxWidth().height(140.dp),
                 desaturated = state == com.voiid.app.model.ShareState.STALE || ended,
+                // The map surface swallows taps, so it opens the detail itself; the Column's
+                // clickable below stays as the handler for the non-map ("Locating…") states.
+                onClick = { showDetail = true },
             )
         } else {
             // Live share received but no fix yet — a calm "locating" panel until it lands.
@@ -231,10 +253,18 @@ fun LocationPinBubble(message: com.voiid.app.model.VMessage) {
                     isLive && ended -> "ended ${VoiidDate.bubbleTime(ref.expiresAt ?: message.createdAt)}"
                     isLive && state == com.voiid.app.model.ShareState.STALE -> "may have lost signal"
                     isLive -> "Live · ${minutesLeft(ref.expiresAt, now)} left"
-                    ref.acc > 100 -> "Accurate to ~${ref.acc.toInt()} m"
                     else -> "Tap to open"
                 }
                 Text(sub, style = VoiidFont.rounded(11), color = VoiidColor.textSecondary, maxLines = 1)
+                // The pin is an estimate, not a doorstep — say so on the bubble itself rather
+                // than only once the detail is opened. Uses the accuracy the sender's device
+                // reported for this fix (see accuracyNote).
+                if (hasCoord && !ended) {
+                    Text(
+                        accuracyNote(fix?.acc ?: ref.acc.takeIf { it > 0 }),
+                        style = VoiidFont.rounded(10), color = VoiidColor.textSecondary, maxLines = 1,
+                    )
+                }
             }
             // Inline Stop on MY own live bubble while it is still running.
             if (isLive && message.isMine && engine.isMineActive(ref.shareId) && !ended) {

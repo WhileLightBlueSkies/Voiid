@@ -137,7 +137,15 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                         onCompose = { showStoryComposer = true },
                     )
                     Tab.CLIPS -> ClipsFeedView(clips, onOpenClip = { openClip = it }, onNewClip = { showNewClip = true })
-                    Tab.MAP -> MapTabView(map, chat)
+                    // "Open chat" on a map contact card jumps straight into that conversation,
+                    // the same push the chat list performs.
+                    Tab.MAP -> MapTabView(
+                        map, chat,
+                        onOpenChatWithUser = { uid ->
+                            chat.directConversations.firstOrNull { it.peerUserId == uid }
+                                ?.let { tab = Tab.CHAT; openConversation = it }
+                        },
+                    )
                 }
             }
             TabBar(

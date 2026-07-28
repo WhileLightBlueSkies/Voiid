@@ -326,6 +326,18 @@ final class LocationShareEngine: ObservableObject {
     /// The most recent known coordinate for a share (for the live marker / frozen pin).
     func lastFix(shareId: String) -> LocationFix? { LocationStore.lastFix(shareId: shareId)?.fix }
 
+    /// Every inbound conversation share still running, in any chat, that has NOT ended.
+    ///
+    /// The Map tab merges these with ambient presence so a contact actively live-sharing with
+    /// you moves at the share's 10–15 s cadence instead of the 5-minute presence cadence. This
+    /// only reads state that already exists for the in-chat bubble — nothing is published and
+    /// no cadence changes.
+    func activeInboundShares() -> [(shareId: String, ownerUserId: String, expiresAt: Date, cadence: Int)] {
+        LocationStore.activeInboundAll().filter {
+            shareState(shareId: $0.shareId, expiresAt: $0.expiresAt, cadence: $0.cadence) != .ended
+        }
+    }
+
     /// Is this my own outbound share (renders an inline Stop on the live bubble)?
     func isEmitting(_ shareId: String) -> Bool { emitting[shareId] != nil }
 
