@@ -44,6 +44,8 @@ export const STORY_TTL_SECONDS = 86400; // 24h — matches stories.expires_at
 export const ALLOWED_PUSH_KEYS = [
   'aps',
   'mutable-content',
+  // Silent control-message wake (no banner) — see `silent` in PushMeta.
+  'content-available',
   'alert',
   'title',
   'sound',
@@ -91,6 +93,19 @@ export function buildFcmData(meta?: PushMeta): Record<string, string> {
  * here is a generic constant and never carries a sender or a body.
  */
 export function buildApnsAlertPayload(meta?: PushMeta): Record<string, unknown> {
+  // CONTROL MESSAGES DRAW NO BANNER. A map_key / map_off rides the ordinary message
+  // route so it can use the ratchet, but the user never sent it and must never see it.
+  // `content-available: 1` with NO `alert` and NO `sound` wakes the app to fetch and
+  // decrypt silently. This must be decided HERE, not in the NSE: the extension can only
+  // replace a placeholder alert, never suppress one, so anything alert-shaped that
+  // reaches it is already a visible notification.
+  if (meta?.silent) {
+    const payload: Record<string, unknown> = { aps: { 'content-available': 1 } };
+    if (meta.type) payload.type = meta.type;
+    if (meta.message_id) payload.message_id = meta.message_id;
+    if (meta.conversation_id) payload.conversation_id = meta.conversation_id;
+    return payload;
+  }
   // Constant placeholder per type — never an author name, caption, or thumbnail.
   // "New update" for a story is deliberately vague: the NSE replaces it after it has
   // fetched and decrypted the envelope LOCALLY, so the only string Apple ever sees is
@@ -151,8 +166,12 @@ export function buildApnsAlertHeaders(args: {
     ':path': `/3/device/${args.token}`,
     authorization: `bearer ${args.auth}`,
     'apns-topic': args.topic,
-    'apns-push-type': 'alert', // alert delivery (reliable; triggers the NSE)
-    'apns-priority': '10', // deliver immediately
+    // A `content-available` payload MUST be sent as push-type `background`, and APNs
+    // rejects `background` at priority 10 (BadPriority) — so a silent control wake goes
+    // out at 5. Mismatching either header against the payload is an APNs 400, i.e. the
+    // map key would never arrive at all.
+    'apns-push-type': args.meta?.silent ? 'background' : 'alert',
+    'apns-priority': args.meta?.silent ? '5' : '10',
     'apns-expiration': String(expiration),
   };
 }

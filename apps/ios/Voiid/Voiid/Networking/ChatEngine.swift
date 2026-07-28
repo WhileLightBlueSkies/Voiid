@@ -53,12 +53,16 @@ struct MediaRef: Codable, Equatable, Hashable {
 /// `decodeEnvelope` below decodes this type while the NSE decrypts an inbound push. Every
 /// wire type ChatEngine touches lives here for exactly that reason (cf. MediaRef, MediaEnvelope).
 struct StoryReplyEnvelope: Codable {
-    var v: Int = 1
-    var t: String = "story_reply"
+    // Optional, not defaulted: Swift's synthesized Codable throws keyNotFound rather than
+    // applying a property default, and Android's kotlinx omits default-valued fields
+    // (encodeDefaults = false). A reply carrying only a reaction omits `text` too, so an
+    // Android emoji-reaction reply failed to decode on iOS entirely. See StoryEnvelope.
+    var v: Int? = 1
+    var t: String? = "story_reply"
     let storyId: String
     let storyAuthorId: String
     let storyCreatedAt: Int64    // epoch ms
-    var text: String = ""        // the reply body
+    var text: String? = ""       // the reply body
     var reaction: String?        // a single emoji for the quick-tap rail, or nil
 }
 
@@ -1343,7 +1347,7 @@ final class ChatEngine {
         if let data, let probe = try? JSONDecoder().decode(EnvelopeProbe.self, from: data),
            probe.t == "story_reply",
            let reply = try? JSONDecoder().decode(StoryReplyEnvelope.self, from: data) {
-            return (reply.reaction ?? reply.text, nil)
+            return (reply.reaction ?? reply.text ?? "", nil)
         }
         // A reply envelope reaching here (no probe upstream): show its text, not JSON.
         if let data, let probe = try? JSONDecoder().decode(EnvelopeProbe.self, from: data),
@@ -1507,7 +1511,7 @@ final class ChatEngine {
                 body: SendBundleBody(conversation_id: conversationId,
                                      sender_device_id: E2EManager.shared.deviceId,
                                      messages: messages, content_type: "story_reply"))
-            let body = envelope.reaction ?? envelope.text
+            let body = envelope.reaction ?? envelope.text ?? ""
             let echo = DecryptedMessage(id: res.message_id, senderId: TokenStore.shared.userId ?? "me",
                                         text: body, createdAt: res.created_at.map(parseDate) ?? Date(),
                                         isMine: true)

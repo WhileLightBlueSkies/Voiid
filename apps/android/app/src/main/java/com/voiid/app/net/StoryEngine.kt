@@ -138,7 +138,11 @@ class StoryEngine private constructor(context: Context) {
                 android.util.Log.w("VOIID", "⚠️ story key undecryptable id=${row.story_id}")
                 continue
             }
-            val env = runCatching { ApiClient.json.decodeFromString(StoryEnvelope.serializer(), plain) }.getOrNull()
+            // Logged, not silent: a wire-shape mismatch here (the iOS→Android direction of the
+            // encodeDefaults/Codable bug) would otherwise drop the story with no trace at all.
+            val env = runCatching { ApiClient.json.decodeFromString(StoryEnvelope.serializer(), plain) }
+                .onFailure { android.util.Log.w("VOIID", "🚫 story DROPPED id=${row.story_id} from=${row.author_id}: envelope decode failed", it) }
+                .getOrNull()
                 ?: continue
             val story = validate(env, row, myId) ?: continue
             StoryLocalStore.upsert(appContext, story)
@@ -152,9 +156,20 @@ class StoryEngine private constructor(context: Context) {
      * can POST a story targeting your device id. Returns the Story to store, or null to DROP.
      */
     private fun validate(env: StoryEnvelope, row: StoryService.FeedStory, myId: String?): Story? {
-        if (env.story_id != row.story_id) return null                       // 1. id must bind
-        if (env.author_id != row.author_id) return null                     // 2. no reattribution
-        if (env.media.mediaUrl != row.r2_key) return null                   // 3. object key must match
+        // Each drop is LOGGED. A silent `return null` here made "the story never arrived"
+        // indistinguishable from "it was rejected by rule 1/2/3", with nothing in logcat.
+        if (env.story_id != row.story_id) {                                 // 1. id must bind
+            android.util.Log.w("VOIID", "🚫 story DROPPED id=${row.story_id}: envelope story_id mismatch (${env.story_id})")
+            return null
+        }
+        if (env.author_id != row.author_id) {                               // 2. no reattribution
+            android.util.Log.w("VOIID", "🚫 story DROPPED id=${row.story_id}: author mismatch (${env.author_id} vs ${row.author_id})")
+            return null
+        }
+        if (env.media.mediaUrl != row.r2_key) {                             // 3. object key must match
+            android.util.Log.w("VOIID", "🚫 story DROPPED id=${row.story_id}: media ref does not match the feed row's r2_key")
+            return null
+        }
         val createdAt = parseTs(row.created_at) ?: env.created_at
         // 4. clamp the author's expiry claim to created_at + 24h (+60s skew).
         val serverExpiry = parseTs(row.expires_at)

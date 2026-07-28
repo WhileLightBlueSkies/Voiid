@@ -107,12 +107,32 @@ final class StoryEngine: ObservableObject {
                     ciphertextB64: row.ciphertext,
                     authorUserId: row.author_id,
                     authorDeviceId: row.author_device_id) else { continue }
-            guard let env = try? JSONDecoder().decode(StoryEnvelope.self, from: plain) else { continue }
+            // Decode failures are LOGGED, never silent. This exact line silently dropped every
+            // story sent from Android: kotlinx omits default-valued fields and Swift's
+            // synthesized Codable throws keyNotFound instead of applying the property default,
+            // so the whole feed vanished with no trace. The feed is deliver-once, so each drop
+            // was permanent. (Fixed at the type level in StoryEnvelope; the log stays so the
+            // next wire mismatch is visible in seconds rather than invisible for weeks.)
+            let env: StoryEnvelope
+            do { env = try JSONDecoder().decode(StoryEnvelope.self, from: plain) }
+            catch {
+                NSLog("[VOIID] story DROPPED id=\(row.story_id) from=\(row.author_id): envelope decode failed: \(error)")
+                continue
+            }
 
             // Receiver-side validation (§1.5) — the server does none of this for us.
-            guard env.story_id == row.story_id else { continue }                 // 1
-            guard env.author_id == row.author_id else { continue }               // 2
-            guard env.media.mediaUrl == row.r2_key else { continue }             // 3
+            guard env.story_id == row.story_id else {
+                NSLog("[VOIID] story DROPPED id=\(row.story_id): envelope story_id mismatch (\(env.story_id))")
+                continue
+            }
+            guard env.author_id == row.author_id else {
+                NSLog("[VOIID] story DROPPED id=\(row.story_id): author mismatch (\(env.author_id) vs \(row.author_id))")
+                continue
+            }
+            guard env.media.mediaUrl == row.r2_key else {
+                NSLog("[VOIID] story DROPPED id=\(row.story_id): media ref does not match the feed row's r2_key")
+                continue
+            }
             let created = parseServerDate(row.created_at)
             // 4: clamp a claimed expiry beyond created+24h+skew to the server's value.
             let serverExpires = parseServerDate(row.expires_at)

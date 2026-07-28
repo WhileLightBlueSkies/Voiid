@@ -21,18 +21,26 @@ import Foundation
 /// AEAD in e2e-core, so story_id / author_id / expiry are bound HERE and the receiver
 /// MUST validate them against the feed row before showing anything (§1.5).
 struct StoryEnvelope: Codable {
-    var v: Int = 1
-    var t: String = "story"
+    // OPTIONAL, NOT `= 1`. Swift's synthesized Codable does NOT fall back to a property's
+    // default when the key is absent — it throws `keyNotFound`. Android's kotlinx `Json` has
+    // `encodeDefaults = false` (ApiClient.kt), so it OMITS every field still at its default:
+    // `v`, `t`, `caption` and `allowsReplies` are simply not on the wire for a typical story.
+    // With non-optional properties here, EVERY Android→iOS story threw and was swallowed by
+    // the `try?` in StoryEngine.syncFeed — the feed is deliver-once, so each one was lost for
+    // good. The location envelopes (MapModels/LocationModels) were already fixed this way and
+    // carry the same note; the story envelopes were missed.
+    var v: Int? = 1
+    var t: String? = "story"
     let story_id: String
     let author_id: String
     let created_at: Int64        // epoch ms
     let expires_at: Int64        // author's claim; server value wins for freshness
     let media: MediaRef          // the EXISTING MediaRef shape, verbatim
-    var caption: String = ""
+    var caption: String? = ""
     var durationMs: Int?         // video only; drives the segment timer
     var width: Int?
     var height: Int?
-    var allowsReplies: Bool = true
+    var allowsReplies: Bool? = true
 }
 
 // StoryReplyEnvelope is defined in Networking/ChatEngine.swift, NOT here: ChatEngine.swift
@@ -43,8 +51,11 @@ struct StoryEnvelope: Codable {
 /// A view receipt's ratchet plaintext (§4.3). The viewer identity lives INSIDE this
 /// encrypted payload — the server never gets a viewer_user_id column.
 struct StoryViewEnvelope: Codable {
-    var v: Int = 1
-    var t: String = "story_view"
+    // Optional for the same reason as StoryEnvelope above: Android omits default-valued
+    // fields, and a non-optional here throws keyNotFound instead of using the default —
+    // which silently dropped every inbound view receipt from an Android viewer.
+    var v: Int? = 1
+    var t: String? = "story_view"
     let story_id: String
     let viewer_id: String
     let viewed_at: Int64         // epoch ms

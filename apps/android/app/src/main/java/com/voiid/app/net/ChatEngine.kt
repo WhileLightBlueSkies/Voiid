@@ -820,6 +820,16 @@ class ChatEngine private constructor(context: Context) {
     // Ids of consumed silent location-control messages (docs/LOCATION.md P2). Recorded so a
     // decrypt-once Olm control message is never re-fetched and re-failed into a bogus tombstone
     // bubble. A handful per share — persisted in the chat prefs, unioned into `seen` on sync.
+    /**
+     * True if [messageId] was consumed as a silent location-protocol control envelope
+     * (map_key / map_off / live_*) rather than becoming a chat message.
+     *
+     * The FCM path needs this to tell "the wake carried a control envelope, post NOTHING"
+     * apart from "decrypt failed, post the generic fallback" — both leave the store without
+     * a new message, so without this a map_key surfaced as a phantom "New message".
+     */
+    fun wasControlMessage(messageId: String): Boolean = controlSeenIds().contains(messageId)
+
     private fun controlSeenIds(): Set<String> = prefs.getStringSet("loc_control_seen", emptySet()) ?: emptySet()
     private fun markControlSeen(id: String) {
         val cur = HashSet(controlSeenIds()); cur.add(id)
