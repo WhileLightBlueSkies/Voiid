@@ -64,6 +64,10 @@ struct PrivacySettingsView: View {
                     Choose who can see your last seen & online, profile photo, and about. \
                     “My Contacts” means people you’ve saved. This is enforced on the server — \
                     other people won’t receive what you hide.
+
+                    Your messages, calls, and the photos, videos and voice notes you send are \
+                    end-to-end encrypted — Voiid can’t read them. Your profile photo is not: \
+                    it’s stored on Voiid’s servers so anyone you allow can load it.
                     """
             ) {
                 Picker("Last seen & online", selection: $settings.lastSeenVisibility) {

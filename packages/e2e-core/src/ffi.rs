@@ -512,6 +512,36 @@ pub fn decrypt_media(media_key: MediaKey, ciphertext: Vec<u8>) -> FfiResult<Vec<
     Ok(media::decrypt_media(&media_key.into(), &ciphertext)?)
 }
 
+/// A fresh long-lived PROFILE KEY, for encrypting a user's avatar.
+///
+/// Avatars cannot use `encrypt_media`'s per-attachment key: a chat photo has one known
+/// audience and its key rides the ratchet with the message, but an avatar is shown to anyone
+/// who might contact you — including someone who found your @username and has never had a
+/// session with you. There is no single message to attach a key to, so the key is per-USER,
+/// long-lived, and wrapped to each contact over the ratchet as you talk to them.
+#[uniffi::export]
+pub fn generate_profile_key() -> String {
+    media::generate_profile_key()
+}
+
+/// Encrypt with a key the caller ALREADY HOLDS, instead of minting a fresh one.
+///
+/// This is the primitive avatars need and `encrypt_media` cannot provide — that function
+/// always generates a new key, which is right for single-use attachments and useless for
+/// anything long-lived.
+///
+/// A fresh nonce is still generated internally on every call, which is not optional: AES-GCM
+/// fails catastrophically on nonce reuse under one key, and a profile key is reused on every
+/// re-upload.
+#[uniffi::export]
+pub fn encrypt_media_with_key(key_b64: String, plaintext: Vec<u8>) -> FfiResult<EncryptedMedia> {
+    let enc = media::encrypt_media_with_key(&key_b64, &plaintext)?;
+    Ok(EncryptedMedia {
+        ciphertext: enc.ciphertext,
+        media_key: enc.media_key.into(),
+    })
+}
+
 // ---- Account recovery ----
 
 /// Generate a fresh, random 32-byte master backup secret.
