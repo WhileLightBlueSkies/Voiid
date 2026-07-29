@@ -113,16 +113,6 @@ enum DummyData {
         .init(id: "o3", text: "Home", votes: 1),
     ])
 
-    static let clips: [VClip] = [
-        VClip(id: "cl1", authorName: "Michael Lingston", heading: "Clip's Heading or main caption", caption: "Clip's sub caption or descriptions........", likes: 50000, comments: 1000),
-        VClip(id: "cl2", authorName: "Priyanshu", heading: "Another great clip", caption: "Short form vibes", likes: 1200, comments: 45),
-    ]
-
-    static let clipComments: [VClipComment] = [
-        VClipComment(id: "cc1", authorName: "Michael Lingston", text: "Well typical internet comment hahahahhahaha"),
-        VClipComment(id: "cc2", authorName: "Nehal", text: "🔥🔥🔥"),
-    ]
-
     static let aiMessages: [VAIMessage] = [
         VAIMessage(id: "ai1", text: "Whats good? How can i Help you today?", isUser: false),
         VAIMessage(id: "ai2", text: "Yoooo", isUser: true),

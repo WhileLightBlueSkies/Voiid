@@ -147,6 +147,16 @@ dependencies {
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)
 
+    // Media3 — Clips: ExoPlayer for the reels player, Transformer + Effect for the
+    // editor's trim/filter export. See docs/CLIPS.md §5.3 for why this is the correct
+    // counterpart to iOS's AVFoundation + Core Image (there is no API on either
+    // platform that enumerates the system photo-app filters).
+    implementation(libs.androidx.media3.exoplayer)
+    implementation(libs.androidx.media3.ui)
+    implementation(libs.androidx.media3.transformer)
+    implementation(libs.androidx.media3.effect)
+    implementation(libs.androidx.media3.common)
+
     // Firebase Phone Auth (OTP sender/verifier on-device)
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.auth)

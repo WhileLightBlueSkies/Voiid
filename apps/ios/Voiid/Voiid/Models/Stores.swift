@@ -891,17 +891,7 @@ final class AIStore: ObservableObject {
 }
 
 // MARK: - Clips store
-
-@MainActor
-final class ClipsStore: ObservableObject {
-    @Published var clips: [VClip] = DummyData.clips
-    @Published var comments: [VClipComment] = DummyData.clipComments
-
-    func toggleLike(_ clip: VClip) {
-        guard let i = clips.firstIndex(of: clip) else { return }
-        clips[i].likes += 1
-    }
-    func addComment(_ text: String) {
-        comments.insert(VClipComment(id: UUID().uuidString, authorName: "You", text: text), at: 0)
-    }
-}
+//
+// REMOVED. Clips are a real, server-backed feature now — see ClipsEngine (paging,
+// uploads, optimistic-but-reconciled likes/comments) and ClipService. The old store
+// here held DummyData arrays whose likes and comments were lost on every relaunch.

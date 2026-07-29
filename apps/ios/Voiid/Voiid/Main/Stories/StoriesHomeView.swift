@@ -105,7 +105,7 @@ struct StoriesHomeView: View {
     private var mySubtitle: String {
         if engine.posting.count > 0 { return "Posting…" }
         if let first = engine.myStories.first, engine.failedPosts.contains(first.id) { return "Failed — tap to retry" }
-        if engine.myStories.isEmpty { return "Add to your story" }
+        if engine.myStories.isEmpty { return "Add to your moment" }
         let n = engine.myStories.count
         return n == 1 ? "1 update · \(relative(engine.myStories[0].createdAt))" : "\(n) updates"
     }

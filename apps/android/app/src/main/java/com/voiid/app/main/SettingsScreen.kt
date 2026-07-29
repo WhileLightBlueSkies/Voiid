@@ -435,7 +435,7 @@ private fun SettingsRow(icon: ImageVector, title: String, tint: Color = VoiidCol
 }
 
 /**
- * "Story view receipts" — an inline toggle row (the app has no settings sub-navigation). Copy is
+ * "Moment view receipts" — an inline toggle row (the app has no settings sub-navigation). Copy is
  * verbatim from the spec so nobody softens the reciprocity.
  */
 @Composable

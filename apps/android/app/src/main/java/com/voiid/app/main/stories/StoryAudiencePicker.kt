@@ -71,7 +71,7 @@ fun StoryAudiencePicker(
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Icon(Icons.Default.Lock, null, tint = VoiidColor.textSecondary, modifier = Modifier.size(14.dp))
                 Text(
-                    "Voiid can't read your story, but it does see who you send it to.",
+                    "Voiid can't read your moment, but it does see who you send it to.",
                     style = VoiidFont.rounded(12), color = VoiidColor.textSecondary,
                 )
             }

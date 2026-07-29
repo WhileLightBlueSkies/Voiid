@@ -23,6 +23,7 @@ import locationRoutes from './routes/location';
 import storiesRoutes from './routes/stories';
 import reachabilityRoutes from './routes/reachability';
 import profileKeyRoutes from './routes/profileKeys';
+import clipsRoutes from './routes/clips';
 import configRoutes from './routes/config';
 import { forceUpdateGate } from './version';
 
@@ -94,6 +95,12 @@ api.use('/reachability', rateLimit({ max: 30, windowSeconds: 60, bucket: 'reacha
 // per-device ciphertext only — the server never holds a profile key. A rotation fans out one
 // envelope per contact device, so the ceiling is higher than the reachability router's.
 api.use('/profile-keys', rateLimit({ max: 120, windowSeconds: 60, bucket: 'profile-keys' }), profileKeyRoutes);
+// Clips: short-form PUBLIC video. Unlike every router above it, this content is NOT
+// end-to-end encrypted — the media is plaintext in R2 and the server attributes
+// view/like/comment counts. That is a deliberate, scoped exception (a broadcast has
+// no fixed recipient set to encrypt to); see the header of routes/clips.ts and
+// 022_clips.sql. It does not touch the message/call/location/story paths.
+api.use('/clips', rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), clipsRoutes);
 
 app.use('/v1', api);
 app.use(api);   // legacy unversioned alias (migration safety) — remove once all clients send /v1

@@ -57,7 +57,7 @@ struct StoryAudiencePickerView: View {
                         .listRowBackground(VoiidColor.surfaceCard)
                     }
                 } footer: {
-                    Text("Voiid can't read your story, but it does see who you send it to.")
+                    Text("Voiid can't read your moment, but it does see who you send it to.")
                         .font(.footnote).foregroundColor(VoiidColor.textSecondary)
                 }
             }

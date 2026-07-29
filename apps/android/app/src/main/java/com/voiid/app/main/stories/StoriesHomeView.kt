@@ -74,7 +74,7 @@ fun StoriesHomeView(
                     name = "Your moment",
                     photoUrl = mine?.photoUrl,
                     subtitle = when {
-                        mine == null -> "Add to your story"
+                        mine == null -> "Add to your moment"
                         mine.newest?.uploadState == StoryUploadState.UPLOADING -> "Posting…"
                         mine.newest?.uploadState == StoryUploadState.FAILED -> "Failed — tap to retry"
                         else -> "${mine.stories.size} ${if (mine.stories.size == 1) "story" else "stories"}"
@@ -109,7 +109,7 @@ fun StoriesHomeView(
             Modifier.align(Alignment.BottomEnd).padding(24.dp).size(60.dp).clip(CircleShape)
                 .background(VoiidColor.primary).softClickable(scale = 0.9f, onClick = onCompose),
             contentAlignment = Alignment.Center,
-        ) { Icon(Icons.Default.Add, "New story", tint = VoiidColor.textOnPrimary, modifier = Modifier.size(28.dp)) }
+        ) { Icon(Icons.Default.Add, "New moment", tint = VoiidColor.textOnPrimary, modifier = Modifier.size(28.dp)) }
 
         if (stories.posting) {
             Box(Modifier.align(Alignment.TopEnd).padding(20.dp)) {

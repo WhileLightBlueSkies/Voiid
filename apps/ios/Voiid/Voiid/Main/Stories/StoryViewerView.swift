@@ -148,12 +148,12 @@ private struct StoryContextPlayer: View {
             } else if let url = fileURL, let img = UIImage(contentsOfFile: url.path) {
                 Image(uiImage: img).resizable().scaledToFit()
             } else {
-                failureText("This story couldn't be loaded")
+                failureText("This moment couldn't be loaded")
             }
         case .failed:
-            failureText("This story couldn't be loaded")
+            failureText("This moment couldn't be loaded")
         case .gone:
-            failureText("This story is no longer available")
+            failureText("This moment is no longer available")
         }
     }
 
@@ -171,7 +171,7 @@ private struct StoryContextPlayer: View {
             ProfileAvatarButton(photoURL: UserDirectory.shared.photoURL(context.authorId),
                                 name: UserDirectory.shared.displayName(context.authorId), size: 34)
             VStack(alignment: .leading, spacing: 0) {
-                Text(context.isMine ? "Your story" : UserDirectory.shared.displayName(context.authorId))
+                Text(context.isMine ? "Your moment" : UserDirectory.shared.displayName(context.authorId))
                     .font(VoiidFont.headline).foregroundColor(.white)
                 if let s = current {
                     Text(relative(s.createdAt)).font(VoiidFont.caption).foregroundColor(.white.opacity(0.7))

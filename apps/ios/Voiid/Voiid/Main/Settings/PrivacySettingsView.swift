@@ -116,16 +116,16 @@ struct PrivacySettingsView: View {
                     .accessibilityHint("Shows the online and last-seen line at the top of a chat")
             }
 
-            // MARK: Stories
+            // MARK: Moments
 
             // Default OFF and reciprocal: sending a receipt tells the Voiid SERVER you opened
-            // someone's story (it has no other way to learn that, and there is no sealed
+            // someone's moment (it has no other way to learn that, and there is no sealed
             // sender to hide it). So the privacy-preserving default is that the viewer list
             // starts empty until you opt in — and opting out hides your own viewers too.
             SettingsSection(
                 "Moments",
                 footer: """
-                    If you turn this off, people won’t know when you’ve viewed their story — \
+                    If you turn this off, people won’t know when you’ve viewed their moment — \
                     and you won’t see who viewed yours.
                     """
             ) {

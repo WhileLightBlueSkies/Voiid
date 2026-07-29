@@ -772,17 +772,7 @@ class AIStore : ViewModel() {
 }
 
 // MARK: - Clips store
-
-class ClipsStore : ViewModel() {
-    val clips = mutableStateListOf<VClip>().apply { addAll(DummyData.clips) }
-    val comments = mutableStateListOf<VClipComment>().apply { addAll(DummyData.clipComments) }
-
-    fun toggleLike(clip: VClip) {
-        val i = clips.indexOfFirst { it.id == clip.id }
-        if (i >= 0) clips[i] = clips[i].copy(likes = clips[i].likes + 1)
-    }
-
-    fun addComment(text: String) {
-        comments.add(0, VClipComment(id = UUID.randomUUID().toString(), authorName = "You", text = text))
-    }
-}
+//
+// REMOVED. Clips are a real, server-backed feature now — see model/ClipsStore.kt (paging,
+// uploads, optimistic-but-reconciled likes/comments) and net/ClipService.kt. The store
+// here held DummyData arrays whose likes and comments were lost on every relaunch.

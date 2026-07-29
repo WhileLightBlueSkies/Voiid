@@ -37,7 +37,7 @@ enum VoiidColor {
 
     /// Build a token that resolves per interface style. Light value first — it is the one a
     /// reader is most likely to be picturing.
-    private static func dyn(_ light: UInt32, _ dark: UInt32) -> Color {
+    private static func dyn(_ light: UInt, _ dark: UInt) -> Color {
         Color(UIColor { $0.userInterfaceStyle == .dark
             ? UIColor(Color(hex: dark)) : UIColor(Color(hex: light)) })
     }
