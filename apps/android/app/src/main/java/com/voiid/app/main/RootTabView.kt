@@ -31,6 +31,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -273,6 +279,18 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
     }
 }
 
+/**
+ * The bottom nav.
+ *
+ * FIVE TABS FIT, THE REST SCROLL. With seven destinations a fixed `weight(1f)` row squeezed
+ * every item to ~52dp, which is what made the bar feel cluttered and put the icons closer
+ * together than a thumb can reliably separate. Each slot is now a FIXED fifth of the screen
+ * and the row scrolls horizontally, so item size stays constant no matter how many tabs exist
+ * — adding an eighth costs nothing but a scroll.
+ *
+ * The bar is also taller (64dp of content vs 46dp): a 48dp minimum touch target plus the
+ * label needs the room, and the extra breathing space is most of what "cluttered" meant.
+ */
 @Composable
 private fun TabBar(
     selected: Tab,
@@ -282,6 +300,9 @@ private fun TabBar(
     onSelect: (Tab) -> Unit,
 ) {
     val haptics = LocalVoiidHaptics.current
+    val scroll = rememberScrollState()
+    val density = LocalDensity.current
+
     Column(
         Modifier
             .fillMaxWidth()
@@ -289,56 +310,74 @@ private fun TabBar(
             .navigationBarsPadding(),
     ) {
         Box(Modifier.fillMaxWidth().height(0.5.dp).background(VoiidColor.divider.copy(alpha = 0.6f)))
-        BoxWithConstraints(
-            Modifier.fillMaxWidth().padding(horizontal = 8.dp).padding(top = 9.dp, bottom = 4.dp),
-        ) {
-            // ELASTIC indicator, kept — but as an underline rather than a filled pill.
-            //
-            // The pill covered the glyph it was meant to highlight; an underline states the
-            // selection and leaves the icon alone. The stretch is preserved: the LEADING edge
-            // springs faster than the trailing one, so the bar elongates in the direction of
-            // travel and snaps back. Damping is raised from 0.55 to 0.82 — enough to keep the
-            // elasticity readable without the wobble that made it look amateur.
-            //
-            // Slot maths divides by the ACTUAL tab count, so adding a tab keeps it aligned
-            // with no edit here.
-            val slot = maxWidth / Tab.entries.size
-            val barW = 20.dp
-            val leftTarget = slot * selected.ordinal + (slot - barW) / 2
-            val rightTarget = leftTarget + barW
 
-            var prevIndex by remember { mutableStateOf(selected.ordinal) }
-            val movingRight = selected.ordinal >= prevIndex
-            SideEffect { prevIndex = selected.ordinal }
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            // Exactly five slots visible; everything past that is reachable by scrolling.
+            val slotW = maxWidth / VISIBLE_TABS
 
-            val fast = spring<androidx.compose.ui.unit.Dp>(dampingRatio = 0.82f, stiffness = Spring.StiffnessMedium)
-            val slow = spring<androidx.compose.ui.unit.Dp>(dampingRatio = 0.82f, stiffness = Spring.StiffnessLow)
-            val leftX by animateDpAsState(leftTarget, if (movingRight) slow else fast, label = "tabIndicatorL")
-            val rightX by animateDpAsState(rightTarget, if (movingRight) fast else slow, label = "tabIndicatorR")
-            Box(
-                Modifier
-                    .offset(x = leftX, y = 26.dp)
-                    .size(width = (rightX - leftX).coerceAtLeast(barW), height = 3.dp)
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(VoiidColor.primary),
-            )
-            Row(Modifier.fillMaxWidth()) {
-                Tab.entries.forEach { t ->
-                    TabItem(
-                        t,
-                        active = selected == t,
-                        showLabel = Tab.entries.size <= TAB_LABEL_LIMIT,
-                        // Reuse the generic tab dot: accent when you're visible on the Map, or when
-                        // any unexpired unviewed story exists (one home, one unread truth — no rail).
-                        showVisibleDot = (t == Tab.MAP && mapVisible) || (t == Tab.STORIES && storiesUnread),
-                        onLongPress = if (t == Tab.MAP) onLongPressMap else null,
-                        modifier = Modifier.weight(1f),
-                    ) { haptics.selection(); onSelect(t) }
+            // Keep the selected tab on screen — a tab chosen by a deep link (a notification
+            // opening Chats, say) must not sit silently off the edge.
+            LaunchedEffect(selected) {
+                val target = with(density) { (slotW * selected.ordinal).toPx() }
+                val centred = target - with(density) { (slotW * (VISIBLE_TABS - 1) / 2).toPx() }
+                scroll.animateScrollTo(centred.toInt().coerceAtLeast(0))
+            }
+
+            Box(Modifier.horizontalScroll(scroll)) {
+                Box(Modifier.width(slotW * Tab.entries.size)) {
+                    // ELASTIC indicator — an underline, not a filled pill (the pill covered
+                    // the glyph it was meant to highlight). The stretch is preserved: the
+                    // LEADING edge springs faster than the trailing one, so the bar elongates
+                    // in the direction of travel and snaps back. Damping is 0.82, up from the
+                    // original 0.55 that overshot and wobbled on every tap.
+                    //
+                    // It lives INSIDE the scrolling content, so it tracks the row rather than
+                    // detaching from its tab when the bar is scrolled.
+                    val barW = 20.dp
+                    val leftTarget = slotW * selected.ordinal + (slotW - barW) / 2
+                    val rightTarget = leftTarget + barW
+
+                    var prevIndex by remember { mutableStateOf(selected.ordinal) }
+                    val movingRight = selected.ordinal >= prevIndex
+                    SideEffect { prevIndex = selected.ordinal }
+
+                    val fast = spring<androidx.compose.ui.unit.Dp>(dampingRatio = 0.82f, stiffness = Spring.StiffnessMedium)
+                    val slow = spring<androidx.compose.ui.unit.Dp>(dampingRatio = 0.82f, stiffness = Spring.StiffnessLow)
+                    val leftX by animateDpAsState(leftTarget, if (movingRight) slow else fast, label = "tabIndicatorL")
+                    val rightX by animateDpAsState(rightTarget, if (movingRight) fast else slow, label = "tabIndicatorR")
+
+                    Box(
+                        Modifier
+                            .offset(x = leftX, y = 56.dp)
+                            .size(width = (rightX - leftX).coerceAtLeast(barW), height = 3.dp)
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(VoiidColor.primary),
+                    )
+
+                    Row {
+                        Tab.entries.forEach { t ->
+                            TabItem(
+                                t,
+                                active = selected == t,
+                                // Labels always show now: a fixed slot is wide enough for
+                                // them, which is the point of scrolling rather than squeezing.
+                                showLabel = true,
+                                // Reuse the generic dot: you are visible on the Map, or an
+                                // unviewed story exists (one home, one unread truth).
+                                showVisibleDot = (t == Tab.MAP && mapVisible) || (t == Tab.STORIES && storiesUnread),
+                                onLongPress = if (t == Tab.MAP) onLongPressMap else null,
+                                modifier = Modifier.width(slotW),
+                            ) { haptics.selection(); onSelect(t) }
+                        }
+                    }
                 }
             }
         }
     }
 }
+
+/** How many tabs are visible at once; the rest scroll. */
+private const val VISIBLE_TABS = 5
 
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
@@ -352,21 +391,24 @@ private fun TabItem(
     onClick: () -> Unit,
 ) {
     Column(
-        modifier = modifier.combinedClickable(
+        modifier = modifier
+            .height(64.dp)   // 48dp min touch target + label + the indicator's 3dp track
+            .combinedClickable(
             interactionSource = remember { MutableInteractionSource() },
             indication = null,
             onClick = onClick,
             onLongClick = onLongPress,
         ),
         horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
     ) {
-        Box(Modifier.height(26.dp), contentAlignment = Alignment.Center) {
+        Box(Modifier.height(28.dp), contentAlignment = Alignment.Center) {
             // Outline → filled on selection, so the state reads without depending on colour
             // alone. No scale-pop: the old 1.12 spring made every tap wobble.
             Icon(
                 imageVector = if (active) t.iconFilled else t.icon,
                 contentDescription = t.label,
-                modifier = Modifier.size(23.dp),
+                modifier = Modifier.size(24.dp),
                 tint = if (active) VoiidColor.primary else VoiidColor.textSecondary,
             )
             // Persistent indicator: you are visible on the Map, or an unviewed story exists.

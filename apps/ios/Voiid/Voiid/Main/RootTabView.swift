@@ -5,8 +5,9 @@
 //  Main app shell — the custom bottom nav.
 //
 //  The bar renders `Tab.allCases`: adding a tab is one enum case plus one line in the body's
-//  switch. Labels drop automatically past five tabs (see `labelLimit`) so growth degrades
-//  gracefully instead of truncating.
+//  switch. Five tabs are visible at a time and the row scrolls horizontally past that, so
+//  every item keeps a constant width however many destinations exist — growth costs a scroll
+//  rather than squeezing the glyphs together.
 //
 //  Icons are SF Symbols throughout, outline when inactive and filled when selected. They
 //  replaced four bundled PNGs mixed with one symbol — a combination that could never look
@@ -150,23 +151,37 @@ struct RootTabView: View {
     }
 
     /// The bar renders `Tab.allCases`, so ADDING A TAB IS ONE LINE — a new case in the enum
-    /// with its two symbols and a label, plus its screen in the switch above. Nothing here
-    /// needs touching.
+    /// with its two symbols and a label, plus its screen in the switch above.
     ///
-    /// It is built to survive that growth. Labels hide automatically past `labelLimit` tabs,
-    /// because five is where a 10pt label stops fitting on a small phone (SE width ÷ 6 ≈ 54pt
-    /// of usable space per item) and truncated labels look far worse than none. Icons alone
-    /// with a selection underline stay legible to eight or so; beyond that this should become
-    /// a "More" overflow rather than growing thinner, and that is the point to revisit.
+    /// FIVE TABS FIT, THE REST SCROLL. With seven destinations an equal-width row squeezed
+    /// every item to ~52pt, which is what made the bar feel cluttered and put the glyphs
+    /// closer together than a thumb can reliably separate. Each slot is now a FIXED fifth of
+    /// the screen and the row scrolls horizontally, so item size stays constant however many
+    /// tabs exist — an eighth costs nothing but a scroll, and labels never have to be dropped.
     private var tabBar: some View {
-        let tabs = Tab.allCases
-        return HStack(spacing: 0) {
-            ForEach(tabs, id: \.self) { t in
-                tabItem(t, showLabel: tabs.count <= Self.labelLimit)
+        GeometryReader { geo in
+            let slotW = geo.size.width / CGFloat(Self.visibleTabs)
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 0) {
+                        ForEach(Tab.allCases, id: \.self) { t in
+                            tabItem(t)
+                                .frame(width: slotW)
+                                .id(t)
+                        }
+                    }
+                }
+                // Keep the selected tab on screen — a tab chosen by a deep link (a
+                // notification opening Chats, say) must not sit silently off the edge.
+                .onChange(of: tab) { _, t in
+                    withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(t, anchor: .center) }
+                }
+                .onAppear { proxy.scrollTo(tab, anchor: .center) }
             }
         }
-        .padding(.horizontal, VoiidSpacing.sm)
-        .padding(.top, 9)
+        // 48pt minimum touch target + label + the indicator's track. The old bar gave the
+        // content 46pt total, and the extra breathing room is most of what "cluttered" meant.
+        .frame(height: Self.barContentHeight)
         .padding(.bottom, VoiidSpacing.xs)
         // `.bar` material rather than a flat fill: content scrolling underneath blurs through
         // it, which is what makes an iOS tab bar feel native instead of pasted on.
@@ -174,10 +189,12 @@ struct RootTabView: View {
         .overlay(VoiidColor.divider.opacity(0.6).frame(height: 0.5), alignment: .top)
     }
 
-    /// Past this many tabs, labels are dropped and the bar goes icon-only.
-    private static let labelLimit = 5
+    /// How many tabs are visible at once; the rest scroll.
+    private static let visibleTabs = 5
+    /// Height of the bar's content, above the home-indicator inset.
+    private static let barContentHeight: CGFloat = 64
 
-    private func tabItem(_ t: Tab, showLabel: Bool) -> some View {
+    private func tabItem(_ t: Tab) -> some View {
         let active = tab == t
         return Button {
             Haptics.selection()
@@ -217,7 +234,7 @@ struct RootTabView: View {
                         // frame: SF Symbols are optically sized, and stretching them to a box
                         // is what made the old icons look inconsistently heavy next to
                         // each other.
-                        .font(.system(size: 21, weight: active ? .semibold : .regular))
+                        .font(.system(size: 22, weight: active ? .semibold : .regular))
                         .foregroundStyle(active ? VoiidColor.primary : VoiidColor.textSecondary)
                         // The Map badge sits at the icon's top-right, drawn whether or not the
                         // tab is active — visibility must be legible from every screen.
@@ -234,17 +251,18 @@ struct RootTabView: View {
                             }
                         }
                 }
-                .frame(height: 26)
-                if showLabel {
-                    Text(t.label)
-                        // The active label steps up in weight rather than only in colour, so
-                        // selection survives for a colour-blind user and in bright sunlight.
-                        .font(VoiidFont.rounded(10, active ? .semibold : .medium))
-                        .foregroundStyle(active ? VoiidColor.primary : VoiidColor.textSecondary)
-                        .lineLimit(1)
-                }
+                .frame(height: 28)
+                // Labels always show now: a fixed slot is wide enough for them, which is the
+                // point of scrolling rather than squeezing.
+                Text(t.label)
+                    // The active label steps up in weight rather than only in colour, so
+                    // selection survives for a colour-blind user and in bright sunlight.
+                    .font(VoiidFont.rounded(10, active ? .semibold : .medium))
+                    .foregroundStyle(active ? VoiidColor.primary : VoiidColor.textSecondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
             }
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
