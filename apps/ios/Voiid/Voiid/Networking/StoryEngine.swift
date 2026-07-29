@@ -279,7 +279,17 @@ final class StoryEngine: ObservableObject {
             StoryStore.setDownload(storyId, state: .ready, localPath: localPath)
             StoryStore.saveAudience(storyId: storyId, userIds: audienceUserIds)
             posting.remove(storyId)
-            NSLog("[VOIID] ✅ posted story \(storyId) to \(keys.count) device(s)")
+            // WHO, not just how many. "posted to 3 devices" cannot distinguish "reached the
+            // Android phone" from "reached only my own linked devices" — which is exactly the
+            // ambiguity behind an iOS→Android moment that never arrives. Logging the audience
+            // and the per-user device count makes the two cases obvious in one line.
+            let perUser = Dictionary(grouping: keys, by: { $0.recipient_device_id })
+            NSLog("[VOIID] ✅ posted story \(storyId): \(keys.count) device envelope(s) across \(perUser.count) device id(s); audience=\(audienceUserIds)")
+            if keys.count <= 1 {
+                // One envelope means it went to our own device only — nobody else will ever
+                // see it. Silent before this.
+                NSLog("[VOIID] ⚠️ story \(storyId) reached NO other device — audience empty or peers have no active devices")
+            }
         } catch {
             posting.remove(storyId)
             failedPosts.insert(storyId)

@@ -135,6 +135,16 @@ class StoryEngine private constructor(context: Context) {
         // (deliver-once) pass would return nothing in that case and the feed would stay empty.
         val includeDelivered = serverBacked == 0
         val rows = service.feed(e2e.deviceId, includeDelivered)
+        // How many envelopes the SERVER had for this device. Zero is the single most useful
+        // fact when a moment "never arrives": it proves nothing was ever addressed here, so
+        // the fault is on the SEND side (audience, or the sender's device lookup) rather than
+        // anywhere in the decrypt/validate path below. Without this the two are
+        // indistinguishable from the receiving phone.
+        android.util.Log.i(
+            "VOIID",
+            "story feed: ${rows.size} envelope(s) for device=${e2e.deviceId} " +
+                "(includeDelivered=$includeDelivered, ${existing.size} already local)",
+        )
         // Computed ONCE for the batch: it reads the conversations table, and validate() is not
         // a suspend function, so it cannot do this per row.
         val reachable = reachableAuthors()
@@ -155,6 +165,11 @@ class StoryEngine private constructor(context: Context) {
             val story = validate(env, row, myId, reachable) ?: continue
             StoryLocalStore.upsert(appContext, story)
             fresh.add(story)
+        }
+        if (rows.isNotEmpty() && fresh.isEmpty()) {
+            // Envelopes arrived but none survived. Every drop above logs its own reason; this
+            // line is the summary that says "look up" rather than assuming nothing was sent.
+            android.util.Log.w("VOIID", "🚫 story feed: ${rows.size} envelope(s) arrived, 0 stored — see the DROPPED lines above")
         }
         return SyncResult(fresh)
     }
