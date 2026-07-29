@@ -416,7 +416,13 @@ struct ChatDetailView: View {
                     }
                 }
                 .padding(.horizontal, VoiidSpacing.md)
-                .padding(.vertical, VoiidSpacing.md)
+                // Extra headroom at the TOP: the navigation bar is translucent, so the
+                // transcript scrolls under it. With symmetric 16pt padding the first bubble
+                // sat beneath the bar and was clipped — visible in the screenshot as a
+                // half-hidden call log. The bar's own material still blurs whatever passes
+                // behind it; this just stops content STARTING there.
+                .padding(.top, VoiidSpacing.xl)
+                .padding(.bottom, VoiidSpacing.md)
             }
             .onChange(of: chat.messages(for: conversation.id).count) { _, _ in
                 withAnimation { proxy.scrollTo(lastID, anchor: .bottom) }
@@ -642,8 +648,20 @@ struct ChatDetailView: View {
                 // what you had typed above the cap.
                 .lineLimit(1...6)
                 .fixedSize(horizontal: false, vertical: false)
-                .frame(minHeight: 32)
-                .padding(.horizontal, 2)
+                .frame(minHeight: 20)
+                // The FIELD carries the pill, not the whole row. Putting the background on
+                // the row meant a 6-line paragraph inflated the entire container into a tall
+                // blob with the buttons stranded in its bottom corners — visible in the
+                // screenshot. Now the pill grows with the text and the buttons sit beside it,
+                // fixed, exactly as they do when the field is one line.
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background(VoiidColor.fieldFill)
+                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .stroke(VoiidColor.fieldBorder, lineWidth: 1)
+                )
                 .onChange(of: draft) { _, newValue in
                     // Settings → Privacy → "Send typing indicators".
                     guard privacy.sendTypingIndicators, let peer = livePeerUserId else { return }
@@ -685,10 +703,6 @@ struct ChatDetailView: View {
                 .transition(.scale.combined(with: .opacity))
             }
         }
-        .padding(4)
-        .background(VoiidColor.fieldFill)
-        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.pill, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: VoiidRadius.pill).stroke(VoiidColor.fieldBorder, lineWidth: 1))
         .padding(.horizontal, VoiidSpacing.md)
         .padding(.top, 6)
         .padding(.bottom, 6)

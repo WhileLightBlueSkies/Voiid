@@ -31,6 +31,9 @@ struct VoiceRecordButton: View {
     @State private var recorder: AVAudioRecorder?
     @State private var fileURL: URL?
     @State private var tooShort = false
+    /// Times the press-and-hold. A bare DragGesture fires on touch-down, so the "hold" is
+    /// enforced here rather than by a LongPressGesture — see the gesture comment.
+    @State private var holdTimer: Timer?
 
     var body: some View {
         // A 32pt CIRCLE, matching send and the other composer actions. It was a bare
@@ -57,25 +60,61 @@ struct VoiceRecordButton: View {
                 }
             }
             .contentShape(Circle())
+            // ONE DragGesture with minimumDistance 0, not a LongPress `.sequenced(before:)`.
+            //
+            // The sequenced form did not work: it wraps the inner drag in a
+            // SequenceGesture.Value, so `.onChanged`/`.onEnded` attached to that inner drag are
+            // never delivered. The drag callbacks simply never fired, which is why slide-to-
+            // cancel did nothing — the bar never saw the finger move and the release always
+            // took the send path.
+            //
+            // A bare drag fires from touch-down, so the hold is timed here instead: a 0.25s
+            // timer starts recording, and a release before it fires is a tap.
             .gesture(
-                LongPressGesture(minimumDuration: 0.2)
-                    .onEnded { _ in start() }
-                    .sequenced(before: DragGesture(minimumDistance: 0)
-                        .onChanged { value in
-                            // Report the drag so the bar can track the finger. Only while
-                            // actually recording — a drag before the long-press fires is just
-                            // a scroll attempt.
-                            guard recording else { return }
-                            onDrag(min(0, value.translation.width))
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        if !recording && holdTimer == nil {
+                            // Touch down: arm the hold. Cancelled on an early release below.
+                            armHold()
                         }
-                        .onEnded { value in
-                            // Past the threshold, releasing DISCARDS. Without this the only
-                            // way out of a recording was to send it.
-                            let cancelled = value.translation.width <= RecordingBar.cancelThreshold
-                            finish(cancelled: cancelled)
-                        })
+                        guard recording else { return }
+                        // Only leftward travel matters; rightward is noise from the thumb
+                        // rolling on the glass.
+                        onDrag(min(0, value.translation.width))
+                    }
+                    .onEnded { value in
+                        holdTimer?.invalidate()
+                        holdTimer = nil
+                        guard recording else {
+                            // Released before the hold armed — a tap, not a recording.
+                            showTooShort()
+                            return
+                        }
+                        finish(cancelled: value.translation.width <= RecordingBar.cancelThreshold)
+                    }
             )
             .animation(.spring(response: 0.3), value: tooShort)
+    }
+
+    /// Start the hold countdown. Recording begins only if the finger is still down at 0.25s.
+    private func armHold() {
+        holdTimer?.invalidate()
+        holdTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { _ in
+            Task { @MainActor in
+                holdTimer = nil
+                start()
+            }
+        }
+    }
+
+    /// "Hold to record" — the one thing a mic glyph cannot say. Shown on a too-short tap so it
+    /// teaches on failure rather than nagging permanently.
+    private func showTooShort() {
+        Haptics.tap()
+        withAnimation { tooShort = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+            withAnimation { tooShort = false }
+        }
     }
 
     private func start() {
@@ -103,14 +142,7 @@ struct VoiceRecordButton: View {
 
         // Under half a second is a mis-tap, not a message. It used to fail SILENTLY, so the
         // user pressed the mic, nothing happened, and nothing explained why.
-        guard dur >= 0.5 else {
-            Haptics.tap()
-            withAnimation { tooShort = true }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
-                withAnimation { tooShort = false }
-            }
-            return
-        }
+        guard dur >= 0.5 else { showTooShort(); return }
         guard let url, let data = try? Data(contentsOf: url) else { return }
         Haptics.success()
         onSend(data, dur)
