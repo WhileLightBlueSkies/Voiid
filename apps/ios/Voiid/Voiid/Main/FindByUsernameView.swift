@@ -191,7 +191,12 @@ struct FindByUsernameView: View {
                 error = status == 403 ? "That PIN isn’t correct."
                       : status == 429 ? "Too many attempts. Try again later."
                       : (message.isEmpty ? "Couldn’t send that request." : message)
-            } catch {
+            } catch let failure {
+                // Bind the caught error explicitly: a bare `catch` introduces an implicit
+                // `error` constant that shadows this view's `@State var error`, so the
+                // assignment below was targeting the immutable caught value and would not
+                // compile. Naming it `failure` keeps the state property reachable.
+                _ = failure
                 error = "Couldn’t send that request. Check your connection."
             }
             sending = false
