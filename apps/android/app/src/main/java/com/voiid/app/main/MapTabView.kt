@@ -299,7 +299,7 @@ fun MapTabView(map: MapStore, chat: ChatStore, onOpenChatWithUser: ((String) -> 
 /** The persistent, unmissable visibility indicator (§8). Never absent, never ambiguous. */
 @Composable
 private fun VisiblePill(visible: Boolean, audienceCount: Int, onClick: () -> Unit) {
-    val bg = if (visible) VoiidColor.accent else Color(0xFFB8B0B4)
+    val bg = if (visible) VoiidColor.primary else VoiidColor.fieldFill
     val label = if (visible) {
         if (audienceCount == 1) "Visible to 1 person" else "Visible to $audienceCount people"
     } else "Ghost Mode — hidden from everyone"
@@ -313,7 +313,7 @@ private fun VisiblePill(visible: Boolean, audienceCount: Int, onClick: () -> Uni
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.size(9.dp).clip(CircleShape).background(if (visible) VoiidColor.primary else Color(0xFF6E6670)))
+        Box(Modifier.size(9.dp).clip(CircleShape).background(if (visible) VoiidColor.textOnPrimary else VoiidColor.textSecondary))
         Spacer(Modifier.size(10.dp))
         Text(label, style = VoiidFont.rounded(14, FontWeight.SemiBold), color = VoiidColor.textPrimary, modifier = Modifier.weight(1f))
         Text(if (visible) "Edit" else "Choose", style = VoiidFont.rounded(13, FontWeight.Medium), color = VoiidColor.textPrimary)

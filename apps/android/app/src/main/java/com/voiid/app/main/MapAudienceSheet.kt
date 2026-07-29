@@ -287,7 +287,7 @@ private fun ScopeCard(
             Modifier
                 .size(22.dp)
                 .clip(CircleShape)
-                .border(2.dp, if (isSelected) VoiidColor.primary else Color(0x33000000), CircleShape),
+                .border(2.dp, if (isSelected) VoiidColor.primary else VoiidColor.fieldBorder, CircleShape),
             contentAlignment = Alignment.Center,
         ) {
             if (isSelected) {
@@ -320,7 +320,7 @@ private fun PersonRow(userId: String, isSelected: Boolean, onToggle: () -> Unit)
             Modifier
                 .size(24.dp)
                 .clip(CircleShape)
-                .background(if (isSelected) VoiidColor.primary else Color(0x22000000)),
+                .background(if (isSelected) VoiidColor.primary else VoiidColor.fieldFill),
             contentAlignment = Alignment.Center,
         ) {
             if (isSelected) Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(16.dp))

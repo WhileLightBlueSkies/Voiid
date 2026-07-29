@@ -122,7 +122,8 @@ struct LocationDetailView: View {
             header
             controls
         }
-        .preferredColorScheme(.light)
+        // No colour-scheme pin: Peacock tokens resolve per theme, and a sheet that
+        // forced light would be the one bright rectangle in a dark app.
         .onReceive(ticker) { now = $0 }
         // Follow the sharer until the user takes the camera over. `focus` changes on every new
         // fix, so this is what makes the camera track a friend who is walking.
@@ -251,7 +252,7 @@ struct LocationDetailView: View {
     private func actionButton(_ title: String, _ icon: String, _ tap: @escaping () -> Void) -> some View {
         Button(action: { Haptics.tap(); tap() }) {
             Label(title, systemImage: icon)
-                .font(VoiidFont.rounded(15, .semibold)).foregroundColor(.white)
+                .font(VoiidFont.rounded(15, .semibold)).foregroundColor(VoiidColor.textOnPrimary)
                 .frame(maxWidth: .infinity).padding(.vertical, 14)
                 .background(VoiidColor.primary).clipShape(Capsule())
         }

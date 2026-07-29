@@ -1,8 +1,8 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <!--
-      VOIID is a fixed light design (background #DFDFDF in both light & dark).
-      Compose draws the whole UI; this theme only provides the window background
-      (to avoid a white launch flash) + light system-bar icons. NoActionBar.
+      LIGHT launch window. Compose draws the whole UI; this theme only supplies the window
+      background (so a cold start does not flash white) and dark system-bar icons for the
+      warm off-white ground. The dark counterpart is values-night/themes.xml.
     -->
     <style name="Theme.Voiid" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@color/voiid_background</item>

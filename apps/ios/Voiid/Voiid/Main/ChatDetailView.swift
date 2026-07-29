@@ -3,7 +3,7 @@
 //  Voiid
 //
 //  1:1 / group chat. Full experience on dummy data:
-//   • bubbles: sent = light pink (#FCF4F8), received = white (#FFFFFF)
+//   • bubbles: sent = filled peacock teal, received = `bubbleReceived` (card surface)
 //   • refined receipts: tap a bubble for its time; Sent/Delivered/Read only under last sent msg
 //   • date separators (Today / Yesterday / date) + typing indicator
 //   • voice notes (record + send + playback), images (pick + send + fullscreen)

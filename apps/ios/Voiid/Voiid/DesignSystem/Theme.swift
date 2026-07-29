@@ -15,40 +15,104 @@ import UIKit
 
 // MARK: - Colors (Section 6.1)
 
+/// PEACOCK — the Voiid colour system.
+///
+/// Every token here is THEME-RESOLVING: it is a `UIColor` built from a trait closure, so one
+/// value renders correctly in light and dark without any call site knowing which is active.
+/// That is what let the whole app gain dark mode from this one file — roughly 740 references
+/// to `VoiidColor.*` on iOS all follow automatically.
+///
+/// The system has a spine and a set of domain hues:
+///  - PEACOCK teal carries every primary action. It LIFTS in dark (#0E6F68 → #3FBFB2) because
+///    a single fixed accent always fails one of the two grounds.
+///  - SPARK is the one warm counterweight — unread badges, live indicators, missed calls. It
+///    appears rarely by design; that scarcity is what makes it read as urgent.
+///  - Domain hues (stories/map/calls/payments) are rotations of ONE lightness and chroma, so
+///    five colours still read as one family. They are for section identity only — icons,
+///    empty states, headers — never bubbles or body text.
+///
+/// Replaces the previous fixed-light palette, whose sent bubble (#C8C8C8 on #DFDFDF) sat at
+/// 1.26:1 and was effectively invisible on a mid-tier LCD in daylight.
 enum VoiidColor {
-    // Locked tokens — fixed in BOTH light & dark (background stays #DFDFDF always).
-    static let primary      = Color(hex: 0x4D3E47)   // brand plum
-    static let background   = Color(hex: 0xDFDFDF)   // app base surface — same light/dark
-    static let fieldBorder  = Color(hex: 0xE3BED8)
-    static let fieldFill    = Color(hex: 0xFCF4F8)   // light pink — same light/dark
-    static let bubbleSent   = Color(hex: 0xC8C8C8)
 
-    // Derived tokens (Section 6.1 "derived — confirm")
-    static let bubbleReceived = Color(hex: 0xFCF4F8)
-    static let surfaceCard    = Color(hex: 0xFFFFFF)
+    /// Build a token that resolves per interface style. Light value first — it is the one a
+    /// reader is most likely to be picturing.
+    private static func dyn(_ light: UInt32, _ dark: UInt32) -> Color {
+        Color(UIColor { $0.userInterfaceStyle == .dark
+            ? UIColor(Color(hex: dark)) : UIColor(Color(hex: light)) })
+    }
 
-    // Fixed text colors (background is fixed light, so text stays dark in both modes).
-    static let textPrimary    = Color(hex: 0x4D3E47)   // brand plum
-    static let textSecondary  = Color(hex: 0x7A6E74)   // muted plum
-    static let textOnPrimary  = Color(hex: 0xFCF4F8)
-    // Placeholder: clearly muted on the light pink field (NOT white).
-    static let placeholder    = Color(hex: 0x9B8F95)
-    static let divider        = Color(hex: 0xE3BED8)
-    static let accent         = Color(hex: 0xE3BED8)
+    // MARK: Spine
 
-    /// Theme-aware text — ONLY for the country selector / verified-number field
-    /// (dark plum in light mode, light #FCF4F8 in dark mode). Everything else stays fixed.
-    static let adaptiveText = Color(UIColor { trait in
-        trait.userInterfaceStyle == .dark
-            ? UIColor(Color(hex: 0xFCF4F8))
-            : UIColor(Color(hex: 0x4D3E47))
-    })
+    /// Peacock teal — every primary action, and the brand colour.
+    static let primary      = dyn(0x0E6F68, 0x3FBFB2)
+    /// The app ground. Warm off-white in light; near-black with a violet cast in dark, which
+    /// is what stops an OLED panel from looking flat and dead.
+    static let background   = dyn(0xF8F5F1, 0x0C0A10)
+    /// Cards, sheets, raised rows — one step up from the ground.
+    static let surfaceCard  = dyn(0xFFFFFF, 0x1A171D)
 
-    // Status
-    static let success = Color(hex: 0x3E9E6E)
-    static let error   = Color(hex: 0xC0556B)
-    static let warning = Color(hex: 0xD8A24A)
-    static let info    = Color(hex: 0x4D3E47)
+    // MARK: Bubbles
+
+    /// YOUR message. A filled teal bubble at 4.6:1 against the ground — unmistakably separate,
+    /// which is the specific failure this palette was chosen to fix.
+    static let bubbleSent     = dyn(0x0E6F68, 0x0E6F68)
+    /// Text on your own bubble. Fixed light in both themes because the bubble itself is fixed.
+    static let textOnBubble   = Color(hex: 0xF0FAF8)
+    /// THEIR message — the quiet one, so the eye tracks your own thread down the screen.
+    static let bubbleReceived = dyn(0xFFFFFF, 0x1A171D)
+
+    // MARK: Text
+
+    static let textPrimary   = dyn(0x12101A, 0xEEEAF0)
+    static let textSecondary = dyn(0x5A5362, 0xA49CAB)
+    /// On a filled primary-teal surface.
+    static let textOnPrimary = dyn(0xF0FAF8, 0x06211E)
+    static let placeholder   = dyn(0x8A8292, 0x786F80)
+
+    // MARK: Lines
+
+    /// A divider must RECEDE. Previously identical to `accent`, so nothing in the UI had
+    /// hierarchy — every rule shouted as loudly as every highlight.
+    static let divider     = dyn(0xE4DED6, 0x29242F)
+    static let fieldBorder = dyn(0xD9D2CA, 0x38323E)
+    /// Input backgrounds and inert chips.
+    static let fieldFill   = dyn(0xF1EDE7, 0x16131B)
+
+    // MARK: Accents
+
+    /// SPARK — the warm counterweight. Unread badges, live dots, the one thing that must be
+    /// seen. Use sparingly; its power is entirely in its rarity.
+    ///
+    /// THEME-SPLIT, unlike its appearance in the palette study. The bright #E8825A measured
+    /// only 2.49:1 against the light ground — under the 3:1 a UI surface needs — so an unread
+    /// badge would have been hard to pick out in light mode, and white text on it failed
+    /// outright at 2.70:1. Light uses a deeper burnt orange (4.33:1 surface, 4.70:1 for white
+    /// text); dark keeps the bright value, which already measured 7.29:1 there.
+    static let accent = dyn(0xC25022, 0xE8825A)
+
+    // MARK: Domain hues (section identity only — never bubbles or body text)
+
+    static let domainChat     = dyn(0x0E6F68, 0x3FBFB2)
+    static let domainStories  = dyn(0x7B4B8A, 0xB98BC7)
+    static let domainMap      = dyn(0x1F6091, 0x7FB6DE)
+    static let domainCalls    = dyn(0x2E7D5B, 0x5FBE8D)
+    static let domainPayments = dyn(0xA85C2B, 0xD9884A)
+
+    // MARK: Status
+    //
+    // Semantic, and deliberately separate from the accent. NOTE: state must never be carried
+    // by hue ALONE — roughly 1 in 12 men has a colour-vision deficiency, so a missed call is
+    // red AND carries its icon and label.
+
+    static let success = dyn(0x1F7A52, 0x63C78D)
+    static let error   = dyn(0xC0392F, 0xEF7A6B)
+    static let warning = dyn(0xB07818, 0xE0A83C)
+    static let info    = dyn(0x1F6091, 0x7FB6DE)
+
+    /// Retained for call sites that predate the theme-aware tokens; now simply the primary
+    /// text colour, which resolves correctly on its own.
+    static let adaptiveText = textPrimary
 }
 
 // MARK: - Spacing (Section 6.3)

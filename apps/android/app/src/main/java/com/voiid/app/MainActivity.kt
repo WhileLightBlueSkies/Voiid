@@ -65,6 +65,10 @@ class MainActivity : ComponentActivity() {
         // A notification tap (cold start) delivers the conversation id here.
         handleDeepLink(intent)
         ensureContactsAccount()
+        // Load the Light/Dark/System choice BEFORE the first composition, or the app paints
+        // one light frame and then snaps to dark.
+        com.voiid.app.ui.theme.VoiidThemeStore.load(this)
+        com.voiid.app.ui.theme.VoiidThemeStore.applyToSystem(this)
         setContent {
             VoiidTheme {
                 CompositionLocalProvider(LocalVoiidHaptics provides rememberVoiidHaptics()) {

@@ -53,7 +53,7 @@ struct OnboardingFlow: View {
     }
 }
 
-// MARK: - Splash (exact Figma — Urbanist logo, embossed on #DFDFDF)
+// MARK: - Splash (Urbanist logo, embossed on the Voiid ground)
 
 struct SplashScreen: View {
     var logoNS: Namespace.ID
@@ -98,7 +98,7 @@ struct TermsScreen: View {
                             .stroke(VoiidColor.textSecondary, lineWidth: 1)
                             .background(agreed ? VoiidColor.primary : Color.clear)
                             .frame(width: 16, height: 16)
-                            .overlay(agreed ? Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundColor(.white) : nil)
+                            .overlay(agreed ? Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundColor(VoiidColor.textOnPrimary) : nil)
                             .clipShape(RoundedRectangle(cornerRadius: 3))
                     }
                     // SF Pro Rounded; "Terms & Conditions" emphasized like the design

@@ -117,7 +117,7 @@ struct VoiidPrimaryButton: View {
     }
 }
 
-// MARK: - Text field (fill #FCF4F8, border #E3BED8, focus = primary)
+// MARK: - Text field (fieldFill / fieldBorder tokens, focus = primary)
 
 struct VoiidTextField: View {
     let placeholder: String
@@ -129,7 +129,7 @@ struct VoiidTextField: View {
         TextField("", text: $text, prompt:
             Text(placeholder).foregroundColor(VoiidColor.placeholder))
             .font(VoiidFont.body)
-            .foregroundColor(VoiidColor.textPrimary)   // adaptive: plum (light) / #FCF4F8 (dark)
+            .foregroundColor(VoiidColor.textPrimary)   // theme-resolving (see VoiidColor)
             .keyboardType(keyboard)
             .focused($focused)
             .padding(.horizontal, VoiidSpacing.md)

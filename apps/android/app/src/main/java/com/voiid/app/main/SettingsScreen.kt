@@ -6,6 +6,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -37,6 +38,7 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.RemoveRedEye
 import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -385,6 +387,11 @@ fun SettingsScreen(
                 SettingsDivider()
                 SettingsRow(Icons.Default.Storage, "Storage") { onClose(); onStorage() }
                 SettingsDivider()
+                // Appearance is INLINE, not a pushed screen: there are three options and the
+                // result is visible the instant you tap, so navigating away to choose and back
+                // to see the effect would be strictly worse.
+                AppearanceRow()
+                SettingsDivider()
                 // Stories: view-receipts opt-in (default OFF). Sending one tells the SERVER you
                 // opened someone's story at time T — a fact it otherwise never learns, with no
                 // sealed sender to hide it. The opt-out is reciprocal: OFF = you send none AND see
@@ -431,6 +438,51 @@ private fun SettingsRow(icon: ImageVector, title: String, tint: Color = VoiidCol
  * "Story view receipts" — an inline toggle row (the app has no settings sub-navigation). Copy is
  * verbatim from the spec so nobody softens the reciprocity.
  */
+@Composable
+private fun AppearanceRow() {
+    val context = LocalContext.current
+    val current = com.voiid.app.ui.theme.VoiidThemeStore.mode
+    val haptics = LocalVoiidHaptics.current
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.DarkMode, null, tint = VoiidColor.textPrimary, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.size(14.dp))
+            Text("Appearance", style = VoiidFont.rounded(16), color = VoiidColor.textPrimary)
+        }
+        Spacer(Modifier.size(10.dp))
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(VoiidRadius.md))
+                .background(VoiidColor.fieldFill)
+                .padding(3.dp),
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            com.voiid.app.ui.theme.VoiidThemeMode.entries.forEach { m ->
+                val selected = m == current
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(VoiidRadius.sm))
+                        .background(if (selected) VoiidColor.primary else Color.Transparent)
+                        .clickable {
+                            haptics.selection()
+                            com.voiid.app.ui.theme.VoiidThemeStore.set(context, m)
+                        }
+                        .padding(vertical = 9.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        m.name.lowercase().replaceFirstChar { it.uppercase() },
+                        style = VoiidFont.rounded(13, if (selected) FontWeight.SemiBold else FontWeight.Medium),
+                        color = if (selected) VoiidColor.textOnPrimary else VoiidColor.textSecondary,
+                    )
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun StoryReceiptsRow() {
     val context = LocalContext.current

@@ -190,7 +190,7 @@ private fun IncomingCallUi(state: CallManager.CallState) {
                 }
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Box(
-                        Modifier.size(72.dp).clip(CircleShape).background(Color(0xFF34C759))
+                        Modifier.size(72.dp).clip(CircleShape).background(VoiidColor.success)
                             .softClickable { haptics.tap(); CallManager.accept() },
                         contentAlignment = Alignment.Center,
                     ) {
@@ -405,7 +405,7 @@ private fun PulsingDot() {
         animationSpec = infiniteRepeatable(tween(750), RepeatMode.Reverse),
         label = "reconnectingAlpha",
     )
-    Box(Modifier.size(8.dp).clip(CircleShape).background(Color(0xFFFFB020).copy(alpha = alpha)))
+    Box(Modifier.size(8.dp).clip(CircleShape).background(VoiidColor.warning.copy(alpha = alpha)))
 }
 
 /**

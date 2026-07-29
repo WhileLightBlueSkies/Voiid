@@ -106,6 +106,7 @@ private fun initials(name: String): String =
  * A stable colour per user id, so a photo-less friend keeps the same disc colour everywhere and
  * across launches (a random colour per composition would flicker as markers recompose).
  */
+@Composable
 private fun discColor(userId: String?): Color {
     if (userId == null) return VoiidColor.textSecondary
     val hues = listOf(0xFF5B8DEF, 0xFFE0685A, 0xFF3FAE7A, 0xFFB06BD6, 0xFFE2A33C, 0xFF4BA8C9)

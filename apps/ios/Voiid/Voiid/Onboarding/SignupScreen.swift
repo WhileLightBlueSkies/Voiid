@@ -54,7 +54,7 @@ struct SignupScreen: View {
                 .padding(.horizontal, VoiidSpacing.lg)
                 .frame(height: pillHeight)
                 .frame(maxWidth: .infinity)
-                .background(VoiidColor.bubbleSent)   // grey fill (#C8C8C8) = verified/locked
+                .background(VoiidColor.fieldFill)   // inert fill = verified/locked
                 .clipShape(RoundedRectangle(cornerRadius: pillRadius, style: .continuous))
                 .padding(.horizontal, VoiidSpacing.lg)
 

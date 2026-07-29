@@ -77,7 +77,8 @@ struct MapAudienceSheet: View {
             }
         }
         .tint(VoiidColor.primary)
-        .preferredColorScheme(.light)
+        // No colour-scheme pin: Peacock tokens resolve per theme, and a sheet that
+        // forced light would be the one bright rectangle in a dark app.
         .onAppear {
             let current = Set(engine.audience.map(\.userId))
             selected = current

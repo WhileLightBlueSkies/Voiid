@@ -308,6 +308,7 @@ private fun liveSubtitle(state: ShareState?, share: LiveShareView?, expiresAt: L
     return parts.joinToString(" · ")
 }
 
+@Composable
 private fun subtitleColor(state: ShareState?) =
     if (state == ShareState.STALE || state == ShareState.ENDED) VoiidColor.textSecondary else VoiidColor.primary
 

@@ -3,7 +3,8 @@
 //  Voiid
 //
 //  In-app AI assistant (Figma Screen-8). ChatGPT-style conversation on dummy responses.
-//  User bubbles right (#C8C8C8), AI bubbles left (#FCF4F8), with a "thinking" indicator.
+//  User bubbles right (teal `bubbleSent`), AI bubbles left (`bubbleReceived`), with a
+//  "thinking" indicator.
 //
 
 import SwiftUI

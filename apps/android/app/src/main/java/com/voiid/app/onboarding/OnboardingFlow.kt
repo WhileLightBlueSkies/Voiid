@@ -158,7 +158,7 @@ fun OnboardingFlow(session: AppSession) {
     }
 }
 
-// MARK: - Splash (Urbanist logomark, embossed on #DFDFDF)
+// MARK: - Splash (Urbanist logomark, embossed on the Voiid ground)
 
 @Composable
 fun SplashScreen() {

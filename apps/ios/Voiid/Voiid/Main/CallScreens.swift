@@ -4,7 +4,7 @@
 //
 //  Call type picker + simulated Voice/Video call screens (1:1 + group).
 //  Dummy: Ringing -> Connected with a running timer; controls toggle visually.
-//  Follows the VOIID design (background #DFDFDF, SF Pro Rounded, plum/pink palette).
+//  Follows the VOIID design (Peacock tokens, SF Pro Rounded).
 //
 
 import SwiftUI

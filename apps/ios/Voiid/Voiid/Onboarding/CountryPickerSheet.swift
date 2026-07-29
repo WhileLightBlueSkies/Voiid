@@ -93,6 +93,7 @@ struct CountryPickerSheet: View {
             .scrollDismissesKeyboard(.immediately)
         }
         .background(VoiidColor.background.ignoresSafeArea())
-        .preferredColorScheme(.light)   // fixed appearance — looks the same in light & dark
+        // No colour-scheme pin: Peacock tokens resolve per theme, and a sheet that
+        // forced light would be the one bright rectangle in a dark app.
     }
 }
