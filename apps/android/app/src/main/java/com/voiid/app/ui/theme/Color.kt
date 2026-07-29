@@ -130,55 +130,59 @@ object VoiidColor {
  * Prefer [VoiidColor] anywhere you are inside a composable.
  */
 object VoiidPalette {
-    // Spine
-    val PrimaryLight = Color(0xFF0E6F68)      // peacock teal
-    val PrimaryDark = Color(0xFF3FBFB2)       // lifted so it stays vivid on black
-    val BackgroundLight = Color(0xFFF8F5F1)   // warm off-white, not grey
-    val BackgroundDark = Color(0xFF0C0A10)    // near-black with a violet cast
+    // Spine — NOCTURNE (testing). Dark-first: deep aubergine + a single warm amber.
+    val PrimaryLight = Color(0xFF2E2440)     // aubergine
+    val PrimaryDark = Color(0xFFB59BE0)      // lifted so it reads as TEXT on near-black
+    val BackgroundLight = Color(0xFFF1EEF5)
+    val BackgroundDark = Color(0xFF0D0B14)   // the DESIGNED state; light is the variant
     val SurfaceLight = Color(0xFFFFFFFF)
-    val SurfaceDark = Color(0xFF1A171D)
+    val SurfaceDark = Color(0xFF1C1826)
 
-    // Bubbles. Dark is nudged brighter so YOUR bubble separates from THEIRS (3.61:1 vs
-    // #1A171D) while white text on it still clears AA at 4.62:1.
-    val BubbleSentLight = Color(0xFF0E6F68)
-    val BubbleSentDark = Color(0xFF117E76)
-    val TextOnBubble = Color(0xFFF0FAF8)
+    // Bubbles. Dark is #7862A6, NOT the palette study's #4A3B66: that measured 1.96:1 against
+    // the ground and 1.75:1 against THEIR bubble, so consecutive messages had no visible
+    // boundary at all.
+    val BubbleSentLight = Color(0xFF2E2440)
+    val BubbleSentDark = Color(0xFF7862A6)
+    // A touch brighter than the study's #F2ECFA: that measured 4.43:1 on the dark bubble —
+    // just under AA — because lifting the bubble to #7862A6 also lifted what the text must
+    // beat. 4.75:1 now, 13.49:1 on light.
+    val TextOnBubble = Color(0xFFF8F5FC)
     val BubbleRecvLight = Color(0xFFFFFFFF)
-    val BubbleRecvDark = Color(0xFF1A171D)
+    val BubbleRecvDark = Color(0xFF1C1826)
 
     // Text
-    val TextPrimaryLight = Color(0xFF12101A)
-    val TextPrimaryDark = Color(0xFFEEEAF0)
-    val TextSecondaryLight = Color(0xFF5A5362)
-    val TextSecondaryDark = Color(0xFFA49CAB)
-    val TextOnPrimaryLight = Color(0xFFF0FAF8)
-    val TextOnPrimaryDark = Color(0xFF06211E)
-    val PlaceholderLight = Color(0xFF8A8292)
-    val PlaceholderDark = Color(0xFF786F80)
+    val TextPrimaryLight = Color(0xFF241D33)
+    val TextPrimaryDark = Color(0xFFE6E1EF)
+    val TextSecondaryLight = Color(0xFF5F5570)
+    val TextSecondaryDark = Color(0xFFA79CBD)
+    val TextOnPrimaryLight = Color(0xFFEFEAF7)
+    val TextOnPrimaryDark = Color(0xFF14101F)
+    val PlaceholderLight = Color(0xFF8A82A0)
+    val PlaceholderDark = Color(0xFF7A7190)
 
     // Lines
-    val DividerLight = Color(0xFFE4DED6)
-    val DividerDark = Color(0xFF29242F)
-    val FieldBorderLight = Color(0xFFD9D2CA)
-    val FieldBorderDark = Color(0xFF38323E)
-    val FieldFillLight = Color(0xFFF1EDE7)
-    val FieldFillDark = Color(0xFF16131B)
+    val DividerLight = Color(0xFFE3DEEC)
+    val DividerDark = Color(0xFF241F2F)
+    val FieldBorderLight = Color(0xFFD6CFE4)
+    val FieldBorderDark = Color(0xFF342D42)
+    val FieldFillLight = Color(0xFFEAE5F2)
+    val FieldFillDark = Color(0xFF171320)
 
-    // Accent. THEME-SPLIT: the bright value measured only 2.49:1 on the light ground (under
-    // the 3:1 a UI surface needs) and white text on it failed at 2.70:1, so light uses a
-    // deeper burnt orange. Dark keeps the bright value, already 7.29:1 there.
-    val SparkLight = Color(0xFFC25022)
-    val SparkDark = Color(0xFFE8825A)
+    // Accent — AMBER, theme-split. The bright value measured only 1.88:1 on the light ground
+    // (an unread badge that effectively vanished) and failed white text at 2.16:1, so light
+    // uses a deeper amber. Dark keeps the bright one, already 9.06:1 there.
+    val SparkLight = Color(0xFFB57210)
+    val SparkDark = Color(0xFFE8A33D)
 
     // Domain hues
     val StoriesLight = Color(0xFF7B4B8A)
-    val StoriesDark = Color(0xFFB98BC7)
-    val MapLight = Color(0xFF1F6091)
-    val MapDark = Color(0xFF7FB6DE)
+    val StoriesDark = Color(0xFFC98BD8)
+    val MapLight = Color(0xFF2A5B8F)
+    val MapDark = Color(0xFF7FB0E0)
     val CallsLight = Color(0xFF2E7D5B)
     val CallsDark = Color(0xFF5FBE8D)
-    val PaymentsLight = Color(0xFFA85C2B)
-    val PaymentsDark = Color(0xFFD9884A)
+    val PaymentsLight = Color(0xFFA9690C)
+    val PaymentsDark = Color(0xFFE8A33D)
 
     // Status
     val SuccessLight = Color(0xFF1F7A52)

@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!--
-      PEACOCK brand tokens, DARK. Mirrors ui/theme/Color.kt (VoiidPalette *Dark values).
+      NOCTURNE brand tokens, DARK. Mirrors ui/theme/Color.kt (VoiidPalette *Dark values).
       Without this file the launch window paints the LIGHT ground for a frame before Compose
       takes over — a white flash on every cold start in dark mode.
     -->
-    <color name="voiid_primary">#3FBFB2</color>       <!-- teal, lifted for dark -->
-    <color name="voiid_background">#0C0A10</color>    <!-- near-black, violet cast -->
-    <color name="voiid_field_fill">#16131B</color>
+    <color name="voiid_primary">#B59BE0</color>       <!-- aubergine, lifted for dark -->
+    <color name="voiid_background">#0D0B14</color>    <!-- near-black aubergine -->
+    <color name="voiid_field_fill">#171320</color>
 </resources>

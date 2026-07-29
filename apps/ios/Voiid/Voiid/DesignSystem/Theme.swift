@@ -15,24 +15,23 @@ import UIKit
 
 // MARK: - Colors (Section 6.1)
 
-/// PEACOCK — the Voiid colour system.
+/// NOCTURNE — the Voiid colour system (TESTING).
 ///
-/// Every token here is THEME-RESOLVING: it is a `UIColor` built from a trait closure, so one
-/// value renders correctly in light and dark without any call site knowing which is active.
-/// That is what let the whole app gain dark mode from this one file — roughly 740 references
-/// to `VoiidColor.*` on iOS all follow automatically.
+/// Dark-first: deep aubergine and a single warm amber, with light as the variant rather than
+/// the default. Replaces Peacock while this direction is evaluated; the token NAMES are
+/// unchanged, so every call site follows automatically and reverting is a one-file change.
 ///
-/// The system has a spine and a set of domain hues:
-///  - PEACOCK teal carries every primary action. It LIFTS in dark (#0E6F68 → #3FBFB2) because
-///    a single fixed accent always fails one of the two grounds.
-///  - SPARK is the one warm counterweight — unread badges, live indicators, missed calls. It
-///    appears rarely by design; that scarcity is what makes it read as urgent.
-///  - Domain hues (stories/map/calls/payments) are rotations of ONE lightness and chroma, so
-///    five colours still read as one family. They are for section identity only — icons,
-///    empty states, headers — never bubbles or body text.
+/// Every token is THEME-RESOLVING — a `UIColor` built from a trait closure, so one value
+/// renders correctly in light and dark without any call site knowing which is active.
 ///
-/// Replaces the previous fixed-light palette, whose sent bubble (#C8C8C8 on #DFDFDF) sat at
-/// 1.26:1 and was effectively invisible on a mid-tier LCD in daylight.
+/// FOUR VALUES DIFFER FROM THE PALETTE STUDY, because the study's swatches were never
+/// measured against each other. All four failed WCAG and are corrected here; the character
+/// (aubergine ground, amber accent) is untouched:
+///   - dark bubble  #4A3B66 → #7862A6: it sat at 1.96:1 against the ground and 1.75:1 against
+///     THEIR bubble, so consecutive messages had no visible boundary at all.
+///   - light accent #E8A33D → #B57210: 1.88:1 on the light ground, i.e. an unread badge that
+///     effectively vanished, and white text on it failed outright at 2.16:1.
+/// Dark keeps the bright #E8A33D, which already measured 9.06:1 there.
 enum VoiidColor {
 
     /// Build a token that resolves per interface style. Light value first — it is the one a
@@ -44,71 +43,60 @@ enum VoiidColor {
 
     // MARK: Spine
 
-    /// Peacock teal — every primary action, and the brand colour.
-    static let primary      = dyn(0x0E6F68, 0x3FBFB2)
-    /// The app ground. Warm off-white in light; near-black with a violet cast in dark, which
-    /// is what stops an OLED panel from looking flat and dead.
-    static let background   = dyn(0xF8F5F1, 0x0C0A10)
+    /// Deep aubergine — every primary action, and the brand colour. Lifts in dark so it stays
+    /// legible as TEXT on a near-black ground.
+    static let primary      = dyn(0x2E2440, 0xB59BE0)
+    /// The app ground. Dark is the DESIGNED state here; light is the variant.
+    static let background   = dyn(0xF1EEF5, 0x0D0B14)
     /// Cards, sheets, raised rows — one step up from the ground.
-    static let surfaceCard  = dyn(0xFFFFFF, 0x1A171D)
+    static let surfaceCard  = dyn(0xFFFFFF, 0x1C1826)
 
     // MARK: Bubbles
 
-    /// YOUR message — a filled teal bubble.
+    /// YOUR message. Dark is #7862A6 rather than the study's #4A3B66 — see the type note.
+    static let bubbleSent     = dyn(0x2E2440, 0x7862A6)
+    /// Text on your own bubble. Fixed in both themes because the fill is dark in both.
     ///
-    /// It does NOT lift to `primary`'s dark value (#3FBFB2). `primary` lifts because it draws
-    /// TEXT on the ground, where the dark teal would be unreadable. This is a FILL with text
-    /// ON it: at #3FBFB2 the near-white `textOnBubble` measures 2.12:1 and disappears. Keeping
-    /// the text readable is the constraint that pins this token.
-    ///
-    /// Dark is nudged one step brighter than light for a different reason — the pairing that
-    /// actually matters in a transcript is YOUR bubble against THEIRS, not against the ground.
-    /// At #0E6F68 on #1A171D that was 2.95:1, just under the 3:1 two adjacent surfaces need,
-    /// so the boundary between consecutive messages went soft in dark mode. #117E76 gives
-    /// 3.61:1 there while white text still clears AA at 4.62:1.
-    static let bubbleSent     = dyn(0x0E6F68, 0x117E76)
-    /// Text on your own bubble. Fixed in both themes because the fill is dark in both —
-    /// 5.65:1 on light's fill, 4.62:1 on dark's.
-    static let textOnBubble   = Color(hex: 0xF0FAF8)
+    /// #F8F5FC, a touch brighter than the study's #F2ECFA: that measured 4.43:1 on the dark
+    /// bubble — just under AA — because lifting the bubble to #7862A6 (to separate it from the
+    /// ground) also lifted what the text has to beat. 4.75:1 now, 13.49:1 on light.
+    static let textOnBubble   = Color(hex: 0xF8F5FC)
     /// THEIR message — the quiet one, so the eye tracks your own thread down the screen.
-    static let bubbleReceived = dyn(0xFFFFFF, 0x1A171D)
+    static let bubbleReceived = dyn(0xFFFFFF, 0x1C1826)
 
     // MARK: Text
 
-    static let textPrimary   = dyn(0x12101A, 0xEEEAF0)
-    static let textSecondary = dyn(0x5A5362, 0xA49CAB)
-    /// On a filled primary-teal surface.
-    static let textOnPrimary = dyn(0xF0FAF8, 0x06211E)
-    static let placeholder   = dyn(0x8A8292, 0x786F80)
+    static let textPrimary   = dyn(0x241D33, 0xE6E1EF)
+    static let textSecondary = dyn(0x5F5570, 0xA79CBD)
+    /// On a filled primary surface.
+    static let textOnPrimary = dyn(0xEFEAF7, 0x14101F)
+    static let placeholder   = dyn(0x8A82A0, 0x7A7190)
 
     // MARK: Lines
 
-    /// A divider must RECEDE. Previously identical to `accent`, so nothing in the UI had
-    /// hierarchy — every rule shouted as loudly as every highlight.
-    static let divider     = dyn(0xE4DED6, 0x29242F)
-    static let fieldBorder = dyn(0xD9D2CA, 0x38323E)
+    /// A divider must RECEDE — quieter than an accent, or nothing in the UI has hierarchy.
+    static let divider     = dyn(0xE3DEEC, 0x241F2F)
+    static let fieldBorder = dyn(0xD6CFE4, 0x342D42)
     /// Input backgrounds and inert chips.
-    static let fieldFill   = dyn(0xF1EDE7, 0x16131B)
+    static let fieldFill   = dyn(0xEAE5F2, 0x171320)
 
     // MARK: Accents
 
-    /// SPARK — the warm counterweight. Unread badges, live dots, the one thing that must be
-    /// seen. Use sparingly; its power is entirely in its rarity.
+    /// AMBER — the one warm counterweight. Unread badges, live dots, the one thing that must
+    /// be seen. Used sparingly; its power is entirely in its rarity.
     ///
-    /// THEME-SPLIT, unlike its appearance in the palette study. The bright #E8825A measured
-    /// only 2.49:1 against the light ground — under the 3:1 a UI surface needs — so an unread
-    /// badge would have been hard to pick out in light mode, and white text on it failed
-    /// outright at 2.70:1. Light uses a deeper burnt orange (4.33:1 surface, 4.70:1 for white
-    /// text); dark keeps the bright value, which already measured 7.29:1 there.
-    static let accent = dyn(0xC25022, 0xE8825A)
+    /// THEME-SPLIT: the bright #E8A33D measured 1.88:1 on the light ground — under the 3:1 a
+    /// UI surface needs — so light uses a deeper amber (3.40:1 surface, 4.14:1 for dark text
+    /// on it). Dark keeps the bright value at 9.06:1.
+    static let accent = dyn(0xB57210, 0xE8A33D)
 
     // MARK: Domain hues (section identity only — never bubbles or body text)
 
-    static let domainChat     = dyn(0x0E6F68, 0x3FBFB2)
-    static let domainStories  = dyn(0x7B4B8A, 0xB98BC7)
-    static let domainMap      = dyn(0x1F6091, 0x7FB6DE)
+    static let domainChat     = dyn(0x2E2440, 0xB59BE0)
+    static let domainStories  = dyn(0x7B4B8A, 0xC98BD8)
+    static let domainMap      = dyn(0x2A5B8F, 0x7FB0E0)
     static let domainCalls    = dyn(0x2E7D5B, 0x5FBE8D)
-    static let domainPayments = dyn(0xA85C2B, 0xD9884A)
+    static let domainPayments = dyn(0xA9690C, 0xE8A33D)
 
     // MARK: Status
     //
@@ -119,7 +107,7 @@ enum VoiidColor {
     static let success = dyn(0x1F7A52, 0x63C78D)
     static let error   = dyn(0xC0392F, 0xEF7A6B)
     static let warning = dyn(0xB07818, 0xE0A83C)
-    static let info    = dyn(0x1F6091, 0x7FB6DE)
+    static let info    = dyn(0x2A5B8F, 0x7FB0E0)
 
     /// Retained for call sites that predate the theme-aware tokens; now simply the primary
     /// text colour, which resolves correctly on its own.

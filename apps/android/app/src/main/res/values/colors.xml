@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!--
-      PEACOCK brand tokens, LIGHT. Mirrors ui/theme/Color.kt (VoiidPalette) — keep the two in
+      NOCTURNE brand tokens, LIGHT. Mirrors ui/theme/Color.kt (VoiidPalette) — keep the two in
       step; these exist because the launch window is drawn by the platform before Compose is
       alive, so it cannot read the Kotlin tokens.
     -->
-    <color name="voiid_primary">#0E6F68</color>       <!-- peacock teal -->
-    <color name="voiid_background">#F8F5F1</color>    <!-- warm off-white ground -->
-    <color name="voiid_field_fill">#F1EDE7</color>
+    <color name="voiid_primary">#2E2440</color>       <!-- aubergine -->
+    <color name="voiid_background">#F1EEF5</color>    <!-- light variant ground -->
+    <color name="voiid_field_fill">#EAE5F2</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
 </resources>
