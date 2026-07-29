@@ -551,34 +551,60 @@ struct ChatDetailView: View {
     /// Height dropped from 46pt minimum + 8pt vertical padding to a 38pt field in a pill with
     /// 4pt padding. Same tap targets (the buttons are 32pt, above the 44pt-with-padding
     /// threshold once the pill's own padding is counted), noticeably less chrome.
+    /// The composer.
+    ///
+    /// ONE mic button, mounted ONCE, never swapped. The previous version rendered the normal
+    /// row and the recording bar as alternatives in an `if`, which meant SwiftUI TORE DOWN the
+    /// VoiceRecordButton the instant recording began and mounted a different instance inside
+    /// the bar. The active gesture died with it and the new instance had no recorder — so
+    /// recording, hold-to-record and slide-to-cancel all failed together. That is one bug, not
+    /// three.
+    ///
+    /// The fix is identity: the button lives at a fixed position in the tree, and the
+    /// RECORDING BAR is layered over the rest of the row instead of replacing it. The gesture
+    /// therefore survives, because from SwiftUI's point of view nothing moved.
     private var inputRow: some View {
-        Group {
-            if isRecording {
-                // Recording REPLACES the row. It is a modal state that needs the full width —
-                // trying to fit a live waveform, a timer and a cancel affordance beside the
-                // text field is what made the old inline version look cramped and broken.
-                // The mic button stays mounted underneath (opacity 0) so its gesture keeps
-                // receiving the drag; unmounting it would end the recording on the first move.
-                ZStack(alignment: .trailing) {
-                    RecordingBar(seconds: recordSeconds, dragX: recordDragX) {
-                        withAnimation { isRecording = false }
-                    }
-                    micGestureHost.opacity(0.001)
+        HStack(alignment: .bottom, spacing: 4) {
+            // Everything except the mic collapses while recording — same slot, zero width, so
+            // the view identities survive and only the layout changes.
+            HStack(alignment: .bottom, spacing: 4) {
+                if !isRecording {
+                    attachButton
+                    gifButton
                 }
-                .padding(.horizontal, VoiidSpacing.md)
-                .padding(.vertical, 6)
-                .background(.bar)
-                .overlay(VoiidColor.divider.opacity(0.6).frame(height: 0.5), alignment: .top)
-                .transition(.opacity)
-            } else {
-                normalInputRow
+                ZStack(alignment: .leading) {
+                    if isRecording {
+                        RecordingBar(seconds: recordSeconds, dragX: recordDragX) {
+                            withAnimation { isRecording = false }
+                        }
+                    } else {
+                        messageField
+                    }
+                }
+                if !isRecording && hasText { sendButton }
             }
+            .frame(maxWidth: .infinity)
+
+            // The mic. ALWAYS in the tree, at the same position — this is what keeps the
+            // gesture alive across the state change. Hidden (not removed) while recording,
+            // because the bar shows the state and a second mic beside it would be noise.
+            micButton
+                .opacity(isRecording ? 0 : 1)
+                .frame(width: isRecording ? 0 : 32)
+                .allowsHitTesting(true)
         }
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.top, 6)
+        .padding(.bottom, 6)
+        // `.bar` material + a hairline, so the transcript blurs UNDER the composer as it
+        // scrolls instead of sliding behind a flat opaque slab.
+        .background(.bar)
+        .overlay(VoiidColor.divider.opacity(0.6).frame(height: 0.5), alignment: .top)
+        .animation(.easeOut(duration: 0.18), value: isRecording)
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: hasText)
     }
 
-    /// The mic, mounted invisibly under the recording bar so its long-press/drag gesture
-    /// survives the row swapping out from under it.
-    private var micGestureHost: some View {
+    private var micButton: some View {
         VoiceRecordButton(
             onSend: { data, duration in
                 chat.sendMedia(data, mime: "audio/m4a",
@@ -592,126 +618,106 @@ struct ChatDetailView: View {
             onTick: { recordSeconds = $0 })
     }
 
-    private var normalInputRow: some View {
-        HStack(alignment: .bottom, spacing: 4) {
-            // Attach — photo / location / poll.
-            Menu {
-                Button { pickPhoto = true } label: { Label("Photo", systemImage: "photo") }
-                Button { showLocationCompose = true } label: { Label("Location", systemImage: "location") }
-                if conversation.type == .group {
-                    Button { showPollCompose = true } label: { Label("Poll", systemImage: "chart.bar") }
-                }
-            } label: {
-                // A tinted DISC, matching the mic and send buttons. These two were bare
-                // glyphs sitting beside two filled circles, which is what made the row look
-                // unbalanced — four actions, two of them shapes and two of them floating ink.
-                Image(systemName: "plus")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(VoiidColor.textSecondary)
-                    .frame(width: 32, height: 32)
-                    .background(VoiidColor.textSecondary.opacity(0.10))
-                    .clipShape(Circle())
+    private var attachButton: some View {
+        // Attach — photo / location / poll.
+        Menu {
+            Button { pickPhoto = true } label: { Label("Photo", systemImage: "photo") }
+            Button { showLocationCompose = true } label: { Label("Location", systemImage: "location") }
+            if conversation.type == .group {
+                Button { showPollCompose = true } label: { Label("Poll", systemImage: "chart.bar") }
             }
-            .photosPicker(isPresented: $pickPhoto, selection: $photoItem, matching: .images)
-            .onChange(of: photoItem) { _, item in
-                Task {
-                    if let data = try? await item?.loadTransferable(type: Data.self) {
-                        // Encrypt + upload the real bytes (E2EE), not a placeholder.
-                        chat.sendMedia(data, mime: "image/jpeg", to: conversation.id)
-                    }
-                    photoItem = nil
+        } label: {
+            // A tinted DISC, matching the mic and send buttons. These two were bare
+            // glyphs sitting beside two filled circles, which is what made the row look
+            // unbalanced — four actions, two of them shapes and two of them floating ink.
+            Image(systemName: "plus")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(VoiidColor.textSecondary)
+                .frame(width: 32, height: 32)
+                .background(VoiidColor.textSecondary.opacity(0.10))
+                .clipShape(Circle())
+        }
+        .photosPicker(isPresented: $pickPhoto, selection: $photoItem, matching: .images)
+        .onChange(of: photoItem) { _, item in
+            Task {
+                if let data = try? await item?.loadTransferable(type: Data.self) {
+                    // Encrypt + upload the real bytes (E2EE), not a placeholder.
+                    chat.sendMedia(data, mime: "image/jpeg", to: conversation.id)
                 }
+                photoItem = nil
             }
+        }
+    }
 
-            // GIF. A first-class button rather than buried in the attach menu — it is the one
-            // people reach for most, and a menu tap between them and it is friction for
-            // nothing.
+    private var gifButton: some View {
+        // GIF. A first-class button rather than buried in the attach menu — it is the one
+        // people reach for most, and a menu tap between them and it is friction for
+        // nothing.
+        Button {
+            Haptics.tap()
+            showGifPicker = true
+        } label: {
+            Image(systemName: "face.smiling")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(VoiidColor.textSecondary)
+                .frame(width: 32, height: 32)
+                .background(VoiidColor.textSecondary.opacity(0.10))
+                .clipShape(Circle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var messageField: some View {
+        TextField("Message", text: $draft, axis: .vertical)
+            .font(VoiidFont.rounded(16, .regular))
+            .foregroundColor(VoiidColor.textPrimary)
+            // Grows to 6 lines, then SCROLLS INTERNALLY instead of pushing the composer up
+            // the screen. `lineLimit(1...5)` alone caps the visible height but leaves the
+            // field scrollless, so a long paragraph became unreadable — you could not see
+            // what you had typed above the cap.
+            .lineLimit(1...6)
+            .fixedSize(horizontal: false, vertical: false)
+            .frame(minHeight: 20)
+            // The FIELD carries the pill, not the whole row. Putting the background on
+            // the row meant a 6-line paragraph inflated the entire container into a tall
+            // blob with the buttons stranded in its bottom corners — visible in the
+            // screenshot. Now the pill grows with the text and the buttons sit beside it,
+            // fixed, exactly as they do when the field is one line.
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .background(VoiidColor.fieldFill)
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .stroke(VoiidColor.fieldBorder, lineWidth: 1)
+            )
+            .onChange(of: draft) { _, newValue in
+                // Settings → Privacy → "Send typing indicators".
+                guard privacy.sendTypingIndicators, let peer = livePeerUserId else { return }
+                WebSocketClient.shared.sendTyping(conversationId: conversation.id,
+                                                  recipientIds: [peer],
+                                                  isStart: !newValue.isEmpty)
+            }
+    }
+
+    private var sendButton: some View {
             Button {
                 Haptics.tap()
-                showGifPicker = true
+                chat.send(draft.trimmingCharacters(in: .whitespaces), to: conversation.id, replyTo: replyingTo)
+                draft = ""
+                withAnimation { replyingTo = nil }
             } label: {
-                Image(systemName: "face.smiling")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(VoiidColor.textSecondary)
+                // A FILLED circle: send is the primary action here and should look like a
+                // button, not a loose glyph with no tap target to aim at.
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundColor(VoiidColor.textOnPrimary)
                     .frame(width: 32, height: 32)
-                    .background(VoiidColor.textSecondary.opacity(0.10))
+                    .background(VoiidColor.primary)
                     .clipShape(Circle())
             }
             .buttonStyle(.plain)
-
-            TextField("Message", text: $draft, axis: .vertical)
-                .font(VoiidFont.rounded(16, .regular))
-                .foregroundColor(VoiidColor.textPrimary)
-                // Grows to 6 lines, then SCROLLS INTERNALLY instead of pushing the composer up
-                // the screen. `lineLimit(1...5)` alone caps the visible height but leaves the
-                // field scrollless, so a long paragraph became unreadable — you could not see
-                // what you had typed above the cap.
-                .lineLimit(1...6)
-                .fixedSize(horizontal: false, vertical: false)
-                .frame(minHeight: 20)
-                // The FIELD carries the pill, not the whole row. Putting the background on
-                // the row meant a 6-line paragraph inflated the entire container into a tall
-                // blob with the buttons stranded in its bottom corners — visible in the
-                // screenshot. Now the pill grows with the text and the buttons sit beside it,
-                // fixed, exactly as they do when the field is one line.
-                .padding(.horizontal, 14)
-                .padding(.vertical, 9)
-                .background(VoiidColor.fieldFill)
-                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .stroke(VoiidColor.fieldBorder, lineWidth: 1)
-                )
-                .onChange(of: draft) { _, newValue in
-                    // Settings → Privacy → "Send typing indicators".
-                    guard privacy.sendTypingIndicators, let peer = livePeerUserId else { return }
-                    WebSocketClient.shared.sendTyping(conversationId: conversation.id,
-                                                      recipientIds: [peer],
-                                                      isStart: !newValue.isEmpty)
-                }
-
-            if hasText {
-                Button {
-                    Haptics.tap()
-                    chat.send(draft.trimmingCharacters(in: .whitespaces), to: conversation.id, replyTo: replyingTo)
-                    draft = ""
-                    withAnimation { replyingTo = nil }
-                } label: {
-                    // A FILLED circle: send is the primary action here and should look like a
-                    // button, not a loose glyph with no tap target to aim at.
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundColor(VoiidColor.textOnPrimary)
-                        .frame(width: 32, height: 32)
-                        .background(VoiidColor.primary)
-                        .clipShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .transition(.scale.combined(with: .opacity))
-            } else {
-                VoiceRecordButton(
-                    onSend: { data, duration in
-                        chat.sendMedia(data, mime: "audio/m4a",
-                                       caption: "Voice · \(Int(duration))s", to: conversation.id)
-                    },
-                    onRecordingChange: { active in
-                        withAnimation(.easeOut(duration: 0.18)) { isRecording = active }
-                        if !active { recordSeconds = 0; recordDragX = 0 }
-                    },
-                    onDrag: { recordDragX = $0 },
-                    onTick: { recordSeconds = $0 })
-                .transition(.scale.combined(with: .opacity))
-            }
-        }
-        .padding(.horizontal, VoiidSpacing.md)
-        .padding(.top, 6)
-        .padding(.bottom, 6)
-        // `.bar` material + a hairline, so the transcript blurs UNDER the composer as it
-        // scrolls instead of sliding behind a flat opaque slab. Same treatment as the tab bar,
-        // which is what makes the two read as one piece of chrome.
-        .background(.bar)
-        .overlay(VoiidColor.divider.opacity(0.6).frame(height: 0.5), alignment: .top)
-        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: hasText)
+            .transition(.scale.combined(with: .opacity))
     }
 }
 
@@ -1175,7 +1181,8 @@ struct MessageBubble: View {
                     .overlay(ProgressView())
             }
         case .voice:
-            AsyncVoiceNote(ref: message.mediaRef, label: message.text)
+            AsyncVoiceNote(ref: message.mediaRef, label: message.text,
+                           onOwnBubble: message.isMine)
         case .poll:
             if let poll = message.poll { PollBubble(poll: poll, onVote: onVote) }
         case .location:
@@ -1401,54 +1408,177 @@ struct AsyncMediaImage: View {
 }
 
 /// A voice-note bubble that fetches + decrypts its audio and plays it back.
+/// A sent/received voice note.
+///
+/// The previous version was barely a player: a static formula-drawn waveform with no progress,
+/// no elapsed time, no way to seek, and colours that assumed a light bubble — on YOUR filled
+/// teal bubble the play button used `VoiidColor.primary`, the same teal, so it nearly
+/// disappeared. Pause-then-resume was also broken: a delayed reset was scheduled from the
+/// ORIGINAL start, so resuming a paused note reset the button early.
 struct AsyncVoiceNote: View {
     let ref: MediaRef?
     let label: String
+    /// Drawn on the sender's filled bubble, so every element has to invert.
+    var onOwnBubble: Bool = false
+
     @State private var data: Data?
     @State private var player: AVAudioPlayer?
     @State private var playing = false
+    @State private var progress: Double = 0
+    @State private var elapsed: TimeInterval = 0
+    @State private var duration: TimeInterval = 0
+    @State private var ticker: Timer?
+    @State private var scrubbing = false
+
+    /// Deterministic per-message bar heights, seeded from the media key.
+    ///
+    /// Not `Int.random`: a random pattern reshuffles on every redraw, so the waveform of a
+    /// message you are looking at visibly changes as the list scrolls. Seeding from the ref
+    /// means one message always draws the same shape — and different messages differ, which is
+    /// the only thing the pattern is really for.
+    private var bars: [CGFloat] {
+        let seed = abs((ref?.mediaUrl ?? label).hashValue)
+        return (0..<26).map { i in
+            let v = (seed &>> (i % 12)) &+ (i &* 37)
+            return CGFloat(6 + (v % 16))
+        }
+    }
+
+    private var tint: Color { onOwnBubble ? VoiidColor.textOnBubble : VoiidColor.primary }
+    private var trackTint: Color {
+        onOwnBubble ? VoiidColor.textOnBubble.opacity(0.35) : VoiidColor.primary.opacity(0.28)
+    }
+    private var metaTint: Color {
+        onOwnBubble ? VoiidColor.textOnBubble.opacity(0.75) : VoiidColor.textSecondary
+    }
 
     var body: some View {
-        HStack(spacing: VoiidSpacing.sm) {
+        HStack(spacing: 10) {
+            // A FILLED disc, so the control reads as a button on either bubble colour.
             Button { toggle() } label: {
-                Image(systemName: playing ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.system(size: 30)).foregroundColor(VoiidColor.primary)
+                ZStack {
+                    Circle()
+                        .fill(onOwnBubble ? VoiidColor.textOnBubble.opacity(0.18)
+                                          : VoiidColor.primary.opacity(0.12))
+                        .frame(width: 34, height: 34)
+                    if data == nil {
+                        ProgressView().scaleEffect(0.6).tint(tint)
+                    } else {
+                        Image(systemName: playing ? "pause.fill" : "play.fill")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(tint)
+                            // Nudge the play triangle right so it sits optically centred —
+                            // a centred triangle always reads as left-heavy.
+                            .offset(x: playing ? 0 : 1)
+                    }
+                }
             }
             .buttonStyle(.plain)
             .disabled(data == nil)
-            HStack(spacing: 2) {
-                ForEach(0..<18, id: \.self) { i in
-                    Capsule().fill(VoiidColor.primary.opacity(0.5))
-                        .frame(width: 2.5, height: CGFloat(6 + (i * 7) % 18))
+
+            VStack(alignment: .leading, spacing: 5) {
+                waveform
+                Text(timeLabel)
+                    .font(VoiidFont.rounded(10, .medium))
+                    .monospacedDigit()
+                    .foregroundColor(metaTint)
+            }
+        }
+        .frame(minWidth: 168)
+        .task(id: ref?.mediaUrl) { await load() }
+        .onDisappear { ticker?.invalidate(); player?.pause(); playing = false }
+    }
+
+    /// Tappable and draggable — the waveform IS the scrubber. Previously it was decoration.
+    private var waveform: some View {
+        GeometryReader { geo in
+            HStack(alignment: .center, spacing: 2) {
+                ForEach(bars.indices, id: \.self) { i in
+                    Capsule()
+                        .fill(Double(i) / Double(bars.count) <= progress ? tint : trackTint)
+                        .frame(width: 2.5, height: bars[i])
                 }
             }
-            if data == nil { ProgressView().scaleEffect(0.7) }
+            .frame(width: geo.size.width, height: 24, alignment: .leading)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { v in
+                        guard duration > 0 else { return }
+                        scrubbing = true
+                        progress = min(1, max(0, v.location.x / geo.size.width))
+                        elapsed = progress * duration
+                    }
+                    .onEnded { _ in
+                        guard duration > 0, let player else { scrubbing = false; return }
+                        player.currentTime = progress * duration
+                        scrubbing = false
+                    }
+            )
         }
-        .frame(minWidth: 160)
-        .task(id: ref?.mediaUrl) { await load() }
+        .frame(height: 24)
+    }
+
+    /// Elapsed while playing or scrubbing, total otherwise — the same convention as the
+    /// system music controls, and it means the bubble always shows a real number rather than
+    /// the hardcoded "0:03" the old one fell back to.
+    private var timeLabel: String {
+        let t = (playing || scrubbing) ? elapsed : (duration > 0 ? duration : elapsed)
+        return String(format: "%d:%02d", Int(t) / 60, Int(t) % 60)
     }
 
     private func load() async {
         guard let ref else { return }
-        if let cached = MediaCache.shared.data(ref.mediaUrl) { data = cached; return }
+        if let cached = MediaCache.shared.data(ref.mediaUrl) { data = cached; prepare(cached); return }
         if let d = try? await ChatEngine.shared.fetchMedia(ref) {
-            MediaCache.shared.setData(d, ref.mediaUrl); data = d
+            MediaCache.shared.setData(d, ref.mediaUrl)
+            data = d
+            prepare(d)
         }
     }
 
+    /// Build the player as soon as the bytes land, so the DURATION shows before first play.
+    private func prepare(_ d: Data) {
+        guard player == nil else { return }
+        player = try? AVAudioPlayer(data: d)
+        duration = player?.duration ?? 0
+    }
+
     private func toggle() {
-        if playing { player?.pause(); playing = false; return }
         guard let data else { return }
-        if player == nil {
-            try? AVAudioSession.sharedInstance().setCategory(.playback)
-            try? AVAudioSession.sharedInstance().setActive(true)
-            player = try? AVAudioPlayer(data: data)
+        if playing {
+            player?.pause()
+            ticker?.invalidate()
+            playing = false
+            return
         }
-        player?.play(); playing = true
-        // Reset the button when playback finishes.
-        let dur = player?.duration ?? 0
-        if dur > 0 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + dur) { playing = false }
+        if player == nil { prepare(data) }
+        // `.playback` so a voice note is audible with the ringer switch off, and
+        // `.duckOthers` so it lowers music instead of stopping it.
+        try? AVAudioSession.sharedInstance().setCategory(.playback, options: [.duckOthers])
+        try? AVAudioSession.sharedInstance().setActive(true)
+        // Finished? Start over rather than resuming at the very end.
+        if let p = player, p.currentTime >= p.duration - 0.05 { player?.currentTime = 0 }
+        player?.play()
+        playing = true
+
+        // POLL the player instead of scheduling a reset from the start time. The old
+        // asyncAfter(now + duration) fired on the original schedule, so pausing and resuming
+        // reset the button early and left it out of sync with the audio.
+        ticker?.invalidate()
+        ticker = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
+            guard let p = player else { return }
+            if !scrubbing {
+                elapsed = p.currentTime
+                progress = p.duration > 0 ? p.currentTime / p.duration : 0
+            }
+            if !p.isPlaying && p.currentTime >= p.duration - 0.05 {
+                playing = false
+                progress = 0
+                elapsed = 0
+                ticker?.invalidate()
+                ticker = nil
+            }
         }
     }
 }
