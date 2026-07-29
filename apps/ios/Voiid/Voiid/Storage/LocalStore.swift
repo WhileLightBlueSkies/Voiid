@@ -243,7 +243,7 @@ enum LocalStore {
     }
 
     /// A row of `call_history`, as read back for the transcript.
-    struct CallHistoryEntry {
+    struct CallHistoryEntry: Identifiable {
         let id: String
         let kind: String        // voice | video
         let direction: String   // incoming | outgoing

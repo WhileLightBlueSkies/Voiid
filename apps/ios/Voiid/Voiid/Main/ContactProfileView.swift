@@ -55,6 +55,7 @@ struct ContactProfileView: View {
                 headerCard
                 aboutCard
                 sharedMediaCard
+                callHistoryCard
                 settingsCard
                 dangerCard
             }
@@ -257,36 +258,111 @@ struct ContactProfileView: View {
         }
     }
 
-    /// A designed empty state, not a bare grey sentence.
+    /// The empty state.
     ///
-    /// This card is empty for most contacts most of the time, so it is the state the user
-    /// actually sees — treating it as an afterthought made the whole screen look unfinished.
+    /// GHOST TILES, not a floating icon in a void. The previous version centred a disc and two
+    /// lines in an otherwise blank card, which read as a hole in the layout rather than an
+    /// empty shelf. Showing the SHAPE the content will take — three dashed squares the size of
+    /// real thumbnails — makes the card look designed-but-empty, and tells the user at a
+    /// glance what would appear here.
     private var mediaEmptyState: some View {
-        VStack(spacing: VoiidSpacing.sm) {
-            ZStack {
-                Circle()
-                    .fill(VoiidColor.primary.opacity(0.08))
-                    .frame(width: 52, height: 52)
-                Image(systemName: "photo.on.rectangle.angled")
-                    .font(.system(size: 21))
-                    .foregroundColor(VoiidColor.primary.opacity(0.65))
+        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+            HStack(spacing: VoiidSpacing.sm) {
+                ForEach(0..<3, id: \.self) { i in
+                    RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
+                        .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+                        .foregroundStyle(VoiidColor.divider)
+                        .frame(width: 76, height: 76)
+                        .overlay {
+                            Image(systemName: i == 0 ? "photo" : (i == 1 ? "video" : "doc"))
+                                .font(.system(size: 18))
+                                .foregroundStyle(VoiidColor.placeholder.opacity(0.5))
+                        }
+                }
+                Spacer(minLength: 0)
             }
-            Text("No media yet")
-                .font(VoiidFont.rounded(14, .semibold))
-                .foregroundColor(VoiidColor.textPrimary)
-            Text("Photos and videos you share with \(displayName) appear here.")
+            Text("Photos, videos and files you share with \(displayName) appear here.")
                 .font(VoiidFont.rounded(12, .regular))
-                .foregroundColor(VoiidColor.textSecondary)
-                .multilineTextAlignment(.center)
+                .foregroundStyle(VoiidColor.textSecondary)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, VoiidSpacing.lg)
+        .padding(.vertical, 2)
     }
 
-    /// "Search in chat" and "Wallpaper" used to live here as EMPTY closures — rows that
-    /// looked tappable and did nothing, which reads as a broken app rather than an unbuilt
-    /// feature. Neither has an implementation anywhere in the codebase, so they are gone
-    /// until they do.
+    /// Recent calls with this person, from the local `call_history` table.
+    ///
+    /// The transcript already shows call bubbles, but a profile is where you go to answer
+    /// "how often do we actually talk?" — and scrolling a whole chat to reconstruct that is
+    /// not an answer. Same data, different question.
+    private var recentCalls: [LocalStore.CallHistoryEntry] {
+        Array(LocalStore.callsForConversation(conversation.id).reversed().prefix(4))
+    }
+
+    @ViewBuilder
+    private var callHistoryCard: some View {
+        // Hidden entirely when there are none: an empty "Calls" card on a contact you have
+        // only ever texted is an affordance to nothing.
+        if !recentCalls.isEmpty {
+            card {
+                HStack {
+                    Text("Calls")
+                        .font(VoiidFont.rounded(15, .semibold))
+                        .foregroundStyle(VoiidColor.textPrimary)
+                    Spacer()
+                }
+                ForEach(Array(recentCalls.enumerated()), id: \.element.id) { index, entry in
+                    if index > 0 {
+                        Divider().background(VoiidColor.divider.opacity(0.4))
+                    }
+                    callRow(entry)
+                }
+            }
+        }
+    }
+
+    private func callRow(_ entry: LocalStore.CallHistoryEntry) -> some View {
+        let incoming = entry.direction == "incoming"
+        let missed = incoming && entry.outcome != "answered"
+        return HStack(spacing: VoiidSpacing.md) {
+            // Same arrow language as the transcript bubble, so the two surfaces teach the
+            // same vocabulary rather than each inventing one.
+            Image(systemName: missed ? "phone.arrow.down.left"
+                                     : (incoming ? "arrow.down.left" : "arrow.up.right"))
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(missed ? VoiidColor.error : VoiidColor.textSecondary)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(callTitle(entry))
+                    .font(VoiidFont.rounded(15, .regular))
+                    .foregroundStyle(missed ? VoiidColor.error : VoiidColor.textPrimary)
+                Text(entry.startedAt, style: .date)
+                    .font(VoiidFont.rounded(11, .regular))
+                    .foregroundStyle(VoiidColor.textSecondary)
+            }
+            Spacer()
+            Image(systemName: entry.kind == "video" ? "video.fill" : "phone.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(VoiidColor.placeholder)
+        }
+        .padding(.vertical, 3)
+    }
+
+    private func callTitle(_ entry: LocalStore.CallHistoryEntry) -> String {
+        let incoming = entry.direction == "incoming"
+        switch entry.outcome {
+        case "answered":
+            guard let ended = entry.endedAt else { return incoming ? "Incoming" : "Outgoing" }
+            let secs = max(0, Int(ended.timeIntervalSince(entry.startedAt)))
+            let mins = secs / 60
+            let duration = mins >= 60
+                ? String(format: "%d:%02d:%02d", mins / 60, mins % 60, secs % 60)
+                : String(format: "%d:%02d", mins, secs % 60)
+            return (incoming ? "Incoming · " : "Outgoing · ") + duration
+        case "declined": return incoming ? "Declined" : "Call declined"
+        case "failed":   return "Call failed"
+        default:         return incoming ? "Missed" : "No answer"
+        }
+    }
+
     private var settingsCard: some View {
         card {
             Toggle(isOn: $muted) {

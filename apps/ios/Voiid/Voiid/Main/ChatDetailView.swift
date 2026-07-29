@@ -34,6 +34,11 @@ struct ChatDetailView: View {
     @State private var showLocationCompose = false   // location share compose sheet
     @State private var pickPhoto = false
     @State private var showGifPicker = false
+    /// Recording takes over the WHOLE composer row — see RecordingBar. Kept here rather than
+    /// in the mic button because the bar is a sibling of the text field, not its child.
+    @State private var isRecording = false
+    @State private var recordSeconds: TimeInterval = 0
+    @State private var recordDragX: CGFloat = 0
     @State private var replyingTo: VMessage?  // reply preview above input
     @State private var infoMessage: VMessage? // Message Info sheet
     @State private var forwardMessage: VMessage? // forward chat-picker
@@ -541,6 +546,47 @@ struct ChatDetailView: View {
     /// 4pt padding. Same tap targets (the buttons are 32pt, above the 44pt-with-padding
     /// threshold once the pill's own padding is counted), noticeably less chrome.
     private var inputRow: some View {
+        Group {
+            if isRecording {
+                // Recording REPLACES the row. It is a modal state that needs the full width —
+                // trying to fit a live waveform, a timer and a cancel affordance beside the
+                // text field is what made the old inline version look cramped and broken.
+                // The mic button stays mounted underneath (opacity 0) so its gesture keeps
+                // receiving the drag; unmounting it would end the recording on the first move.
+                ZStack(alignment: .trailing) {
+                    RecordingBar(seconds: recordSeconds, dragX: recordDragX) {
+                        withAnimation { isRecording = false }
+                    }
+                    micGestureHost.opacity(0.001)
+                }
+                .padding(.horizontal, VoiidSpacing.md)
+                .padding(.vertical, 6)
+                .background(.bar)
+                .overlay(VoiidColor.divider.opacity(0.6).frame(height: 0.5), alignment: .top)
+                .transition(.opacity)
+            } else {
+                normalInputRow
+            }
+        }
+    }
+
+    /// The mic, mounted invisibly under the recording bar so its long-press/drag gesture
+    /// survives the row swapping out from under it.
+    private var micGestureHost: some View {
+        VoiceRecordButton(
+            onSend: { data, duration in
+                chat.sendMedia(data, mime: "audio/m4a",
+                               caption: "Voice · \(Int(duration))s", to: conversation.id)
+            },
+            onRecordingChange: { active in
+                withAnimation(.easeOut(duration: 0.18)) { isRecording = active }
+                if !active { recordSeconds = 0; recordDragX = 0 }
+            },
+            onDrag: { recordDragX = $0 },
+            onTick: { recordSeconds = $0 })
+    }
+
+    private var normalInputRow: some View {
         HStack(alignment: .bottom, spacing: 4) {
             // Attach — photo / location / poll.
             Menu {
@@ -550,10 +596,15 @@ struct ChatDetailView: View {
                     Button { showPollCompose = true } label: { Label("Poll", systemImage: "chart.bar") }
                 }
             } label: {
+                // A tinted DISC, matching the mic and send buttons. These two were bare
+                // glyphs sitting beside two filled circles, which is what made the row look
+                // unbalanced — four actions, two of them shapes and two of them floating ink.
                 Image(systemName: "plus")
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(VoiidColor.textSecondary)
                     .frame(width: 32, height: 32)
+                    .background(VoiidColor.textSecondary.opacity(0.10))
+                    .clipShape(Circle())
             }
             .photosPicker(isPresented: $pickPhoto, selection: $photoItem, matching: .images)
             .onChange(of: photoItem) { _, item in
@@ -574,16 +625,23 @@ struct ChatDetailView: View {
                 showGifPicker = true
             } label: {
                 Image(systemName: "face.smiling")
-                    .font(.system(size: 17, weight: .medium))
+                    .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(VoiidColor.textSecondary)
                     .frame(width: 32, height: 32)
+                    .background(VoiidColor.textSecondary.opacity(0.10))
+                    .clipShape(Circle())
             }
             .buttonStyle(.plain)
 
             TextField("Message", text: $draft, axis: .vertical)
                 .font(VoiidFont.rounded(16, .regular))
                 .foregroundColor(VoiidColor.textPrimary)
-                .lineLimit(1...5)
+                // Grows to 6 lines, then SCROLLS INTERNALLY instead of pushing the composer up
+                // the screen. `lineLimit(1...5)` alone caps the visible height but leaves the
+                // field scrollless, so a long paragraph became unreadable — you could not see
+                // what you had typed above the cap.
+                .lineLimit(1...6)
+                .fixedSize(horizontal: false, vertical: false)
                 .frame(minHeight: 32)
                 .padding(.horizontal, 2)
                 .onChange(of: draft) { _, newValue in
@@ -613,9 +671,17 @@ struct ChatDetailView: View {
                 .buttonStyle(.plain)
                 .transition(.scale.combined(with: .opacity))
             } else {
-                VoiceRecordButton { data, duration in
-                    chat.sendMedia(data, mime: "audio/m4a", caption: "Voice · \(Int(duration))s", to: conversation.id)
-                }
+                VoiceRecordButton(
+                    onSend: { data, duration in
+                        chat.sendMedia(data, mime: "audio/m4a",
+                                       caption: "Voice · \(Int(duration))s", to: conversation.id)
+                    },
+                    onRecordingChange: { active in
+                        withAnimation(.easeOut(duration: 0.18)) { isRecording = active }
+                        if !active { recordSeconds = 0; recordDragX = 0 }
+                    },
+                    onDrag: { recordDragX = $0 },
+                    onTick: { recordSeconds = $0 })
                 .transition(.scale.combined(with: .opacity))
             }
         }
@@ -650,6 +716,14 @@ struct CallLogBubble: View {
 
     private var missed: Bool { log.incoming && !log.answered }
 
+    /// The call-log arrow. Direction first, medium second: whether it was video is already in
+    /// the title text, but whether YOU called THEM is not stated anywhere else.
+    private var directionIcon: String {
+        if missed { return "phone.arrow.down.left" }          // arrived, unanswered
+        if log.outcome == "declined" { return "phone.down.fill" }
+        return log.incoming ? "arrow.down.left" : "arrow.up.right"
+    }
+
     /// Outgoing sits on filled teal, so everything on it inverts.
     private var bodyTint: Color { log.incoming ? VoiidColor.textPrimary : VoiidColor.textOnBubble }
     private var subTint: Color {
@@ -658,7 +732,13 @@ struct CallLogBubble: View {
     private var iconTint: Color { log.incoming ? VoiidColor.primary : VoiidColor.textOnBubble }
 
     private var title: String {
-        if log.answered { return log.isVideo ? "Video call" : "Voice call" }
+        // "Incoming"/"Outgoing" is stated, not implied. An answered call read only "Voice
+        // call" regardless of who placed it, so the transcript could not tell you whether you
+        // called them or they called you — the single most useful fact in a call log.
+        if log.answered {
+            let medium = log.isVideo ? "video call" : "voice call"
+            return (log.incoming ? "Incoming " : "Outgoing ") + medium
+        }
         switch log.outcome {
         case "declined": return log.incoming ? "Declined call" : "Call declined"
         case "failed":   return "Call failed"
@@ -692,8 +772,13 @@ struct CallLogBubble: View {
                         Circle()
                             .fill(missed ? VoiidColor.error.opacity(0.15) : iconTint.opacity(0.15))
                             .frame(width: 34, height: 34)
-                        Image(systemName: log.isVideo ? "video.fill" : "phone.fill")
-                            .font(.system(size: 15))
+                        // DIRECTION, which was missing entirely — every call drew the same
+                        // phone glyph, so incoming and outgoing were indistinguishable and the
+                        // bubble's side was the only clue. These are the standard call-log
+                        // arrows: up-right leaving, down-left arriving, and a distinct
+                        // "missed" variant so a missed call is not just a red tint.
+                        Image(systemName: directionIcon)
+                            .font(.system(size: 15, weight: .semibold))
                             .foregroundColor(missed ? VoiidColor.error : iconTint)
                     }
                     VStack(alignment: .leading, spacing: 2) {
