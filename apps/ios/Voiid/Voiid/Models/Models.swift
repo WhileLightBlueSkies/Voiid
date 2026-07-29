@@ -111,23 +111,9 @@ struct VConversation: Identifiable, Hashable {
     var lastSeenAt: Date? = nil
 }
 
-struct VClip: Identifiable, Hashable {
-    let id: String
-    var authorName: String
-    var authorPhoto: String?
-    var heading: String
-    var caption: String
-    var likes: Int
-    var comments: Int
-    var thumbnailName: String?
-}
-
-struct VClipComment: Identifiable, Hashable {
-    let id: String
-    var authorName: String
-    var authorPhoto: String?
-    var text: String
-}
+// VClip / VClipComment removed — the mock shapes for the dummy Clips feed. The real
+// models are `Clip` and `ClipComment` in Networking/ClipsEngine.swift, built from the
+// server rows in ClipService.
 
 struct VAIMessage: Identifiable, Hashable {
     let id: String

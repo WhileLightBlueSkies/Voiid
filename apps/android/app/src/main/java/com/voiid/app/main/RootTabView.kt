@@ -99,7 +99,7 @@ private enum class Tab(
 ) {
     AI(Icons.Outlined.AutoAwesome, Icons.Filled.AutoAwesome, "AI"),
     CHAT(Icons.Outlined.ChatBubbleOutline, Icons.Filled.ChatBubble, "Chats"),
-    STORIES(Icons.Outlined.Circle, Icons.Filled.Album, "Stories"),   // chat-adjacent: replies land in chats
+    STORIES(Icons.Outlined.Circle, Icons.Filled.Album, "Moments"),   // chat-adjacent: replies land in chats
     COMMUNITIES(Icons.Outlined.Groups, Icons.Filled.Groups, "Communities"),
     MAP(Icons.Outlined.Map, Icons.Filled.Map, "Map"),                // Feature (B) — docs/LOCATION.md §7
     GAMES(Icons.Outlined.SportsEsports, Icons.Filled.SportsEsports, "Games"),
@@ -117,7 +117,9 @@ private const val TAB_LABEL_LIMIT = 5
 fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voiid.app.model.StoriesStore) {
     var tab by remember { mutableStateOf(Tab.CHAT) }
     var openConversation by remember { mutableStateOf<VConversation?>(null) }
-    var openClip by remember { mutableStateOf<VClip?>(null) }
+    // The INDEX into the loaded feed page, not a clip: the fullscreen player is a pager
+    // over the whole page, so it has to know where to start.
+    var openClip by remember { mutableStateOf<Int?>(null) }
     var showNewClip by remember { mutableStateOf(false) }
     // Stories viewer + composer are full-screen overlay siblings (they must cover the tab bar),
     // driven by nullable state exactly like the clip overlay above.
@@ -188,7 +190,11 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                         onOpenContext = { openStoryContext = it },
                         onCompose = { showStoryComposer = true },
                     )
-                    Tab.CLIPS -> ClipsFeedView(clips, onOpenClip = { openClip = it }, onNewClip = { showNewClip = true })
+                    Tab.CLIPS -> com.voiid.app.main.clips.ClipsFeedView(
+                        clips,
+                        onOpenClip = { openClip = it },
+                        onNewClip = { showNewClip = true },
+                    )
                     // "Open chat" on a map contact card jumps straight into that conversation,
                     // the same push the chat list performs.
                     Tab.MAP -> MapTabView(
@@ -230,8 +236,14 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
             enter = slideInVertically { it } + fadeIn(),
             exit = slideOutVertically { it } + fadeOut(),
         ) {
-            openClip?.let { clip ->
-                ClipFullscreenView(clip = clip, clips = clips, onClose = { openClip = null })
+            openClip?.let { index ->
+                com.voiid.app.main.clips.ClipFullscreenView(
+                    clips = clips,
+                    startIndex = index,
+                    myUserId = clips.myUserId,
+                    myName = clips.myName,
+                    onClose = { openClip = null },
+                )
             }
         }
 
@@ -272,7 +284,12 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
     }
 
     if (showNewClip) {
-        NewClipSheet(onDismiss = { showNewClip = false })
+        com.voiid.app.main.clips.ClipComposerFlow(
+            clips = clips,
+            myUserId = clips.myUserId,
+            myName = clips.myName,
+            onClose = { showNewClip = false },
+        )
     }
     if (showStoryComposer) {
         com.voiid.app.main.stories.StoryComposerSheet(stories = stories, onDismiss = { showStoryComposer = false })

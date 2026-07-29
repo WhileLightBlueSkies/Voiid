@@ -98,23 +98,8 @@ data class VConversation(
     var lastSeenAt: Long? = null,
 )
 
-data class VClip(
-    val id: String,
-    var authorName: String,
-    var authorPhoto: String? = null,
-    var heading: String,
-    var caption: String,
-    var likes: Int,
-    var comments: Int,
-    var thumbnailName: String? = null,
-)
-
-data class VClipComment(
-    val id: String,
-    var authorName: String,
-    var authorPhoto: String? = null,
-    var text: String,
-)
+// VClip / VClipComment removed — the mock shapes for the dummy Clips feed. The real
+// models live in model/ClipsStore.kt, built from the server rows in net/ClipService.kt.
 
 data class VAIMessage(
     val id: String,

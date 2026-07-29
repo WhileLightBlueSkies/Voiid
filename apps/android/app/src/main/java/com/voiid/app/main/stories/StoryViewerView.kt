@@ -181,7 +181,7 @@ private fun ContextPage(
             loadState == StoryDownloadState.READY && p != null ->
                 StoryMediaFrame(localPath = p, isVideo = story.isVideo, paused = paused, muted = muted)
             loadState == StoryDownloadState.GONE ->
-                CenterMessage(if (story.downloadState == StoryDownloadState.GONE) "This story is no longer available" else "This story couldn't be loaded")
+                CenterMessage(if (story.downloadState == StoryDownloadState.GONE) "This moment is no longer available" else "This moment couldn't be loaded")
             else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(color = Color.White)
             }

@@ -102,7 +102,7 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
             engine.sweep()
             loadLocal()
             runCatching { engine.syncFeed() }
-                .onFailure { loadError = "Couldn't refresh stories." }
+                .onFailure { loadError = "Couldn't refresh moments." }
             loadLocal()
             runCatching { deliveredCounts.putAll(engine.mineCounts()) }
             runCatching { engine.fetchReceipts(receiptsEnabled) }
@@ -210,7 +210,7 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
                 StoryLocalStore.deleteStory(appContext, tempId)   // real row replaces the placeholder
             } catch (e: Exception) {
                 StoryLocalStore.setUpload(appContext, tempId, StoryUploadState.FAILED)
-                loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn't post your story."
+                loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn't post your moment."
             } finally {
                 posting = false
                 loadLocal()

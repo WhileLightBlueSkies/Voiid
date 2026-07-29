@@ -45,7 +45,7 @@ struct StoriesHomeView: View {
                 composeButton
             }
             .background(VoiidColor.background.ignoresSafeArea())
-            .navigationTitle("Stories")
+            .navigationTitle("Moments")
             .onAppear { session.hideTabBar = false; Task { await engine.refresh() } }
             .refreshable { await engine.refresh() }
             .sheet(isPresented: $showComposer) { StoryComposerView() }
@@ -84,7 +84,7 @@ struct StoriesHomeView: View {
             .buttonStyle(.plain)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("Your story").font(VoiidFont.headline).foregroundColor(VoiidColor.textPrimary)
+                Text("Your moment").font(VoiidFont.headline).foregroundColor(VoiidColor.textPrimary)
                 Text(mySubtitle).font(VoiidFont.caption).foregroundColor(VoiidColor.textSecondary)
             }
             Spacer()
@@ -105,7 +105,7 @@ struct StoriesHomeView: View {
     private var mySubtitle: String {
         if engine.posting.count > 0 { return "Posting…" }
         if let first = engine.myStories.first, engine.failedPosts.contains(first.id) { return "Failed — tap to retry" }
-        if engine.myStories.isEmpty { return "Add to your story" }
+        if engine.myStories.isEmpty { return "Add to your moment" }
         let n = engine.myStories.count
         return n == 1 ? "1 update · \(relative(engine.myStories[0].createdAt))" : "\(n) updates"
     }
@@ -161,7 +161,7 @@ struct StoriesHomeView: View {
     private var emptyState: some View {
         VStack(spacing: VoiidSpacing.sm) {
             Image(systemName: "circle.dashed").font(.system(size: 44)).foregroundColor(VoiidColor.textSecondary.opacity(0.5))
-            Text("No stories yet").font(VoiidFont.headline).foregroundColor(VoiidColor.textPrimary)
+            Text("No moments yet").font(VoiidFont.headline).foregroundColor(VoiidColor.textPrimary)
             Text("Share a photo or video with your contacts.\nIt disappears after 24 hours.")
                 .font(VoiidFont.subhead).foregroundColor(VoiidColor.textSecondary)
                 .multilineTextAlignment(.center)

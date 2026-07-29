@@ -52,7 +52,7 @@ struct StoryViewersSheet: View {
     private var reciprocityCopy: some View {
         VStack(spacing: VoiidSpacing.md) {
             Image(systemName: "eye.slash").font(.system(size: 40)).foregroundColor(VoiidColor.textSecondary)
-            Text("If you turn this off, people won't know when you've viewed their story — and you won't see who viewed yours.")
+            Text("If you turn this off, people won't know when you've viewed their moment — and you won't see who viewed yours.")
                 .font(VoiidFont.subhead).foregroundColor(VoiidColor.textSecondary)
                 .multilineTextAlignment(.center)
             Text("Turn on view receipts in Settings → Privacy.")
