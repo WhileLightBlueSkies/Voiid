@@ -33,6 +33,7 @@ struct ChatDetailView: View {
     @State private var showPollCompose = false
     @State private var showLocationCompose = false   // location share compose sheet
     @State private var pickPhoto = false
+    @State private var showGifPicker = false
     @State private var replyingTo: VMessage?  // reply preview above input
     @State private var infoMessage: VMessage? // Message Info sheet
     @State private var forwardMessage: VMessage? // forward chat-picker
@@ -126,6 +127,15 @@ struct ChatDetailView: View {
             } else {
                 ContactProfileView(conversation: conversation, pendingCall: $pendingCall)
             }
+        }
+        .sheet(isPresented: $showGifPicker) {
+            GifPickerSheet { data in
+                // A GIF is ORDINARY E2EE MEDIA once it reaches here — same encrypt-and-upload
+                // path as a photo. The recipient never contacts Tenor, so no third party
+                // learns who received what, and the GIF survives the provider deleting it.
+                chat.sendMedia(data, mime: "image/gif", to: conversation.id)
+            }
+            .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $showPollCompose) {
             PollComposeSheet { q, opts in
@@ -520,8 +530,19 @@ struct ChatDetailView: View {
         }
     }
 
+    /// The composer.
+    ///
+    /// The attach button and GIF button live INSIDE the pill, not beside it. Previously the
+    /// plus sat outside, so the pill could never use the full width and the row carried two
+    /// sets of padding — the wasted space in the original. Everything is now one container:
+    /// actions on the left, text in the middle, send on the right.
+    ///
+    /// Height dropped from 46pt minimum + 8pt vertical padding to a 38pt field in a pill with
+    /// 4pt padding. Same tap targets (the buttons are 32pt, above the 44pt-with-padding
+    /// threshold once the pill's own padding is counted), noticeably less chrome.
     private var inputRow: some View {
-        HStack(spacing: VoiidSpacing.sm) {
+        HStack(alignment: .bottom, spacing: 4) {
+            // Attach — photo / location / poll.
             Menu {
                 Button { pickPhoto = true } label: { Label("Photo", systemImage: "photo") }
                 Button { showLocationCompose = true } label: { Label("Location", systemImage: "location") }
@@ -529,9 +550,10 @@ struct ChatDetailView: View {
                     Button { showPollCompose = true } label: { Label("Poll", systemImage: "chart.bar") }
                 }
             } label: {
-                Image(systemName: "plus.circle")
-                    .font(.system(size: 26, weight: .regular))
-                    .foregroundColor(VoiidColor.textPrimary)
+                Image(systemName: "plus")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(VoiidColor.textSecondary)
+                    .frame(width: 32, height: 32)
             }
             .photosPicker(isPresented: $pickPhoto, selection: $photoItem, matching: .images)
             .onChange(of: photoItem) { _, item in
@@ -544,12 +566,26 @@ struct ChatDetailView: View {
                 }
             }
 
+            // GIF. A first-class button rather than buried in the attach menu — it is the one
+            // people reach for most, and a menu tap between them and it is friction for
+            // nothing.
+            Button {
+                Haptics.tap()
+                showGifPicker = true
+            } label: {
+                Image(systemName: "face.smiling")
+                    .font(.system(size: 17, weight: .medium))
+                    .foregroundStyle(VoiidColor.textSecondary)
+                    .frame(width: 32, height: 32)
+            }
+            .buttonStyle(.plain)
+
             TextField("Message", text: $draft, axis: .vertical)
                 .font(VoiidFont.rounded(16, .regular))
                 .foregroundColor(VoiidColor.textPrimary)
                 .lineLimit(1...5)
-                .padding(.horizontal, VoiidSpacing.md)
-                .frame(minHeight: 46)
+                .frame(minHeight: 32)
+                .padding(.horizontal, 2)
                 .onChange(of: draft) { _, newValue in
                     // Settings → Privacy → "Send typing indicators".
                     guard privacy.sendTypingIndicators, let peer = livePeerUserId else { return }
@@ -565,34 +601,31 @@ struct ChatDetailView: View {
                     draft = ""
                     withAnimation { replyingTo = nil }
                 } label: {
-                    // A FILLED circle, not a bare glyph floating in the pill. Send is the
-                    // primary action on this screen and should look like a button; the loose
-                    // paperplane read as decoration and gave no tap target to aim at.
+                    // A FILLED circle: send is the primary action here and should look like a
+                    // button, not a loose glyph with no tap target to aim at.
                     Image(systemName: "arrow.up")
-                        .font(.system(size: 17, weight: .bold))
+                        .font(.system(size: 15, weight: .bold))
                         .foregroundColor(VoiidColor.textOnPrimary)
-                        .frame(width: 34, height: 34)
+                        .frame(width: 32, height: 32)
                         .background(VoiidColor.primary)
                         .clipShape(Circle())
-                        .padding(.trailing, 5)
                 }
+                .buttonStyle(.plain)
                 .transition(.scale.combined(with: .opacity))
             } else {
                 VoiceRecordButton { data, duration in
                     chat.sendMedia(data, mime: "audio/m4a", caption: "Voice · \(Int(duration))s", to: conversation.id)
                 }
-                .padding(.trailing, VoiidSpacing.sm)
                 .transition(.scale.combined(with: .opacity))
             }
         }
-        .padding(.vertical, 5)
-        .padding(.leading, VoiidSpacing.sm)
+        .padding(4)
         .background(VoiidColor.fieldFill)
         .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.pill, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: VoiidRadius.pill).stroke(VoiidColor.fieldBorder, lineWidth: 1))
         .padding(.horizontal, VoiidSpacing.md)
-        .padding(.top, VoiidSpacing.sm)
-        .padding(.bottom, VoiidSpacing.sm)
+        .padding(.top, 6)
+        .padding(.bottom, 6)
         // `.bar` material + a hairline, so the transcript blurs UNDER the composer as it
         // scrolls instead of sliding behind a flat opaque slab. Same treatment as the tab bar,
         // which is what makes the two read as one piece of chrome.

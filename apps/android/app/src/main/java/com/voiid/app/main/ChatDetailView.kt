@@ -40,6 +40,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.outlined.Mood
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Call
@@ -125,6 +128,7 @@ fun ChatDetailView(
 
     // sheets / dialogs
     var showPollCompose by remember { mutableStateOf(false) }
+    var showGifPicker by remember { mutableStateOf(false) }
     var showLocation by remember { mutableStateOf(false) }
     var infoMessage by remember { mutableStateOf<VMessage?>(null) }
     var forwardMessage by remember { mutableStateOf<VMessage?>(null) }
@@ -389,14 +393,14 @@ fun ChatDetailView(
                         .clip(pillShape)
                         .background(VoiidColor.fieldFill)
                         .border(1.dp, VoiidColor.fieldBorder, pillShape)
-                        .padding(start = 8.dp, top = 4.dp, bottom = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        .padding(4.dp),
+                    verticalAlignment = Alignment.Bottom,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     Box {
                         Icon(
-                            Icons.Outlined.AddCircleOutline, "Attach", tint = VoiidColor.textPrimary,
-                            modifier = Modifier.size(26.dp).clickable { showAttach = true },
+                            Icons.Default.Add, "Attach", tint = VoiidColor.textSecondary,
+                            modifier = Modifier.size(22.dp).clickable { showAttach = true },
                         )
                         DropdownMenu(expanded = showAttach, onDismissRequest = { showAttach = false }) {
                             DropdownMenuItem(
@@ -421,29 +425,57 @@ fun ChatDetailView(
                             }
                         }
                     }
-                    BasicTextField(
-                        value = draft,
-                        onValueChange = { draft = it },
-                        textStyle = VoiidFont.rounded(16).merge(TextStyle(color = VoiidColor.textPrimary)),
-                        cursorBrush = SolidColor(VoiidColor.primary),
-                        maxLines = 5,
-                        modifier = Modifier.weight(1f).heightIn(min = 46.dp).padding(horizontal = 16.dp),
+                    // GIF — a FIRST-CLASS button, not buried in the attach menu. It is the
+                    // thing people reach for most, and a menu tap in front of it is friction
+                    // for nothing.
+                    Icon(
+                        Icons.Outlined.Mood, "GIFs", tint = VoiidColor.textSecondary,
+                        modifier = Modifier.size(22.dp).clickable { haptics.tap(); showGifPicker = true },
                     )
-                    if (hasText) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.Send, "Send", tint = VoiidColor.primary,
-                            modifier = Modifier.size(20.dp).clickable {
-                                haptics.tap()
-                                chat.send(draft.trim(), conversationId = conversation.id, replyTo = replyingTo)
-                                draft = ""; replyingTo = null
-                            },
+                    Box(Modifier.weight(1f)) {
+                        // A PLACEHOLDER: the field was empty with no prompt, so the composer
+                        // read as a blank pill with no affordance.
+                        if (draft.isEmpty()) {
+                            Text(
+                                "Message",
+                                style = VoiidFont.rounded(16),
+                                color = VoiidColor.placeholder,
+                            )
+                        }
+                        BasicTextField(
+                            value = draft,
+                            onValueChange = { draft = it },
+                            textStyle = VoiidFont.rounded(16).merge(TextStyle(color = VoiidColor.textPrimary)),
+                            cursorBrush = SolidColor(VoiidColor.primary),
+                            maxLines = 5,
+                            // 32dp, not 46 — the pill's own padding carries the rest of the
+                            // touch target, and 46 + outer padding was most of the wasted
+                            // vertical space.
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 32.dp),
                         )
+                    }
+                    if (hasText) {
+                        // A FILLED circle: send is the primary action and should look like a
+                        // button, not a loose glyph with no tap target to aim at.
+                        Box(
+                            Modifier.size(32.dp).clip(CircleShape).background(VoiidColor.primary)
+                                .clickable {
+                                    haptics.tap()
+                                    chat.send(draft.trim(), conversationId = conversation.id, replyTo = replyingTo)
+                                    draft = ""; replyingTo = null
+                                },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.Default.ArrowUpward, "Send",
+                                tint = VoiidColor.textOnPrimary, modifier = Modifier.size(17.dp),
+                            )
+                        }
                     } else {
                         VoiceRecordButton { bytes, duration ->
                             chat.sendMedia(bytes, "audio/m4a", caption = "Voice · ${duration.toInt()}s", conversationId = conversation.id)
                         }
                     }
-                    Spacer(Modifier.size(8.dp))
                 }
             }
         }
@@ -469,6 +501,17 @@ fun ChatDetailView(
     }
 
     // Sheets
+    if (showGifPicker) {
+        GifPickerSheet(
+            onDismiss = { showGifPicker = false },
+            onPick = { bytes ->
+                // A GIF is ORDINARY E2EE MEDIA once it reaches here — same encrypt-and-upload
+                // path as a photo. The recipient never contacts Tenor, so no third party learns
+                // who received what, and the GIF survives the provider deleting it.
+                chat.sendMedia(bytes, "image/gif", conversationId = conversation.id)
+            },
+        )
+    }
     if (showPollCompose) {
         PollComposeSheet(onSend = { q, opts -> chat.sendPoll(q, opts, conversation.id) }, onDismiss = { showPollCompose = false })
     }

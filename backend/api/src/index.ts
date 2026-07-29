@@ -23,6 +23,7 @@ import locationRoutes from './routes/location';
 import storiesRoutes from './routes/stories';
 import reachabilityRoutes from './routes/reachability';
 import profileKeyRoutes from './routes/profileKeys';
+import gifRoutes from './routes/gifs';
 import clipsRoutes from './routes/clips';
 import configRoutes from './routes/config';
 import { forceUpdateGate } from './version';
@@ -101,6 +102,11 @@ api.use('/profile-keys', rateLimit({ max: 120, windowSeconds: 60, bucket: 'profi
 // no fixed recipient set to encrypt to); see the header of routes/clips.ts and
 // 022_clips.sql. It does not touch the message/call/location/story paths.
 api.use('/clips', rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), clipsRoutes);
+// GIF search: a thin proxy in front of Tenor so the API key never ships in the app and users'
+// searches don't go straight to Google with their IP. Returns URLs only — the CLIENT downloads
+// the chosen GIF, encrypts it, and sends it as ordinary E2EE media, so recipients never touch
+// Tenor. Typing in a search box is bursty, hence the higher ceiling.
+api.use('/gifs', rateLimit({ max: 180, windowSeconds: 60, bucket: 'gifs' }), gifRoutes);
 
 app.use('/v1', api);
 app.use(api);   // legacy unversioned alias (migration safety) — remove once all clients send /v1
