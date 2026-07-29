@@ -163,15 +163,30 @@ struct DraggableChatGrid: View {
                     GridPeerImage(photoURL: conv.photoURL, photoName: conv.photoName)
                 }
                 .aspectRatio(1, contentMode: .fit)
+                .clipped()
                 .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
+
+                // Badges sit INSIDE the tile. They were pushed OUT past its edge
+                // (offset x: 6, y: -6), which broke the grid's alignment and let a badge
+                // overlap the tile beside it. Online goes bottom-leading so the two can
+                // never collide.
                 if conv.isOnline {
-                    Circle().fill(VoiidColor.success).frame(width: 13, height: 13)
-                        .overlay(Circle().stroke(VoiidColor.background, lineWidth: 2)).offset(x: -6, y: 6)
+                    Circle().fill(VoiidColor.success)
+                        .frame(width: 12, height: 12)
+                        .overlay(Circle().stroke(VoiidColor.background, lineWidth: 2))
+                        .padding(6)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
                 }
                 if conv.unreadCount > 0 {
-                    Text("\(conv.unreadCount)").font(VoiidFont.rounded(11, .bold)).foregroundColor(VoiidColor.textOnPrimary)
-                        .frame(minWidth: 20, minHeight: 20).background(VoiidColor.error).clipShape(Circle())
-                        .offset(x: 6, y: -6)
+                    // Spark, not error-red: a count is not a failure state.
+                    Text("\(conv.unreadCount)")
+                        .font(VoiidFont.rounded(11, .bold))
+                        .foregroundColor(VoiidColor.textOnPrimary)
+                        .frame(minWidth: 20, minHeight: 20)
+                        .background(VoiidColor.accent)
+                        .clipShape(Circle())
+                        .overlay(Circle().stroke(VoiidColor.background, lineWidth: 1.5))
+                        .padding(5)
                 }
             }
             Text(conv.title).font(VoiidFont.rounded(13, .regular)).foregroundColor(VoiidColor.textPrimary).lineLimit(1)
@@ -197,13 +212,38 @@ private struct GridPeerImage: View {
     @State private var resolved: UIImage?
 
     var body: some View {
-        Group {
-            if let resolved {
-                Image(uiImage: resolved).resizable().scaledToFill()
-            } else if let name = photoName, let ui = UIImage(named: name) {
-                Image(uiImage: ui).resizable().scaledToFill()
-            } else {
-                Image("VoiidWordmark").resizable().scaledToFit().frame(width: 56).opacity(0.22)
+        // GeometryReader gives the image an explicit box to fill.
+        //
+        // `scaledToFill()` alone sizes from the image's INTRINSIC dimensions and only then
+        // fills, so a 3000px upload rendered at 3000px and spilled far outside the tile — the
+        // "full profile image instead of the square" bug. Pinning an exact frame and clipping
+        // to it is what actually constrains it; the parent's clipShape runs too late to help,
+        // because the oversized image has already claimed the layout.
+        GeometryReader { geo in
+            Group {
+                if let resolved {
+                    Image(uiImage: resolved)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .clipped()
+                } else if let name = photoName, let ui = UIImage(named: name) {
+                    Image(uiImage: ui)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .clipped()
+                } else {
+                    // Sized RELATIVE to the tile, not a fixed 56pt: the grid is three columns
+                    // of whatever the device is wide, so a constant looked oversized on an SE
+                    // and lost on a Max.
+                    Image("VoiidWordmark")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: geo.size.width * 0.52)
+                        .opacity(0.22)
+                        .frame(width: geo.size.width, height: geo.size.height)
+                }
             }
         }
         .task(id: photoURL) {
