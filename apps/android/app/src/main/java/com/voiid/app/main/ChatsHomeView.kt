@@ -51,6 +51,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Create
+import androidx.compose.material.icons.filled.AlternateEmail
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Inbox
+import com.voiid.app.net.ContactPinService
+
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
@@ -128,6 +133,17 @@ fun ChatsHomeView(
     var deleteTarget by remember { mutableStateOf<VConversation?>(null) }
     var callTarget by remember { mutableStateOf<VConversation?>(null) }
     var showNewChat by remember { mutableStateOf(false) }
+    var showFindByUsername by remember { mutableStateOf(false) }
+    var showRequests by remember { mutableStateOf(false) }
+    /** Inbound requests waiting to be accepted. Zero hides the banner entirely rather than
+     *  showing an affordance to an empty screen. */
+    var pendingRequestCount by remember { mutableStateOf(0) }
+    val reachScope = androidx.compose.runtime.rememberCoroutineScope()
+
+    suspend fun refreshRequestCount() {
+        pendingRequestCount = runCatching { ContactPinService(context).pending().size }.getOrDefault(0)
+    }
+    androidx.compose.runtime.LaunchedEffect(Unit) { refreshRequestCount() }
     var showBackup by remember { mutableStateOf(false) }
     var showPrivacy by remember { mutableStateOf(false) }
     var showStorage by remember { mutableStateOf(false) }
@@ -160,10 +176,36 @@ fun ChatsHomeView(
             photoUrl = session.profile.photoURL,
             myName = session.profile.fullName,
             onNewChat = { showNewChat = true },
+            onFindByUsername = { showFindByUsername = true },
             onOpenSettings = { showSettings = true },
         )
         SearchBar(search) { search = it }
         Tabs(tab) { haptics.selection(); tab = it }
+        // "N message requests" — the ONLY surface for them. GET /conversations filters pending
+        // ones out, so without this a stranger's held-back message would be invisible until
+        // they gave up.
+        if (pendingRequestCount > 0) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp)
+                    .padding(top = 12.dp)
+                    .clip(RoundedCornerShape(VoiidRadius.md))
+                    .background(VoiidColor.surfaceCard)
+                    .clickable { haptics.tap(); showRequests = true }
+                    .padding(horizontal = 14.dp, vertical = 11.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Default.Inbox, null, tint = VoiidColor.primary, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    if (pendingRequestCount == 1) "1 message request" else "$pendingRequestCount message requests",
+                    style = VoiidFont.rounded(14, FontWeight.Medium), color = VoiidColor.textPrimary,
+                )
+                Spacer(Modifier.weight(1f))
+                Icon(Icons.Default.ChevronRight, null, tint = VoiidColor.textSecondary, modifier = Modifier.size(16.dp))
+            }
+        }
         // Persistent "sharing live location" banner across all chats (docs/LOCATION.md §8.A).
         LocationBanner()
         if (search.isBlank()) {
@@ -280,6 +322,47 @@ fun ChatsHomeView(
     }
 
     // New chat (contact discovery) — fullscreen dialog
+    if (showFindByUsername) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showFindByUsername = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            FindByUsernameScreen(
+                onClose = { showFindByUsername = false },
+                onOpen = { conversationId, pending ->
+                    showFindByUsername = false
+                    reachScope.launch {
+                        chat.loadConversations()
+                        // A PENDING request has no chat to open yet — navigating in would show
+                        // an empty transcript that looks broken.
+                        if (!pending) {
+                            chat.directConversations.firstOrNull { it.id == conversationId }
+                                ?.let(onOpenConversation)
+                        }
+                    }
+                },
+            )
+        }
+    }
+    if (showRequests) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showRequests = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            MessageRequestsScreen(
+                onClose = { showRequests = false; reachScope.launch { refreshRequestCount() } },
+                onAccepted = { conversationId ->
+                    showRequests = false
+                    reachScope.launch {
+                        chat.loadConversations()
+                        refreshRequestCount()
+                        chat.directConversations.firstOrNull { it.id == conversationId }
+                            ?.let(onOpenConversation)
+                    }
+                },
+            )
+        }
+    }
     if (showNewChat) {
         androidx.compose.ui.window.Dialog(
             onDismissRequest = { showNewChat = false },
@@ -583,6 +666,7 @@ private fun Header(
     photoUrl: String?,
     myName: String?,
     onNewChat: () -> Unit,
+    onFindByUsername: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(top = 8.dp)) {
@@ -594,6 +678,15 @@ private fun Header(
                 modifier = Modifier.softClickable(scale = 0.92f) { haptics.tap(); onOpenSettings() },
             )
             Spacer(Modifier.weight(1f))
+            // Two distinct ways to start a chat: browse people you already have, or reach a
+            // stranger by the handle they gave you. Separate affordances, because folding the
+            // second into the contact list would put strangers among your contacts.
+            Icon(
+                Icons.Default.AlternateEmail, "Find by username", tint = VoiidColor.textPrimary,
+                modifier = Modifier.size(22.dp).clip(CircleShape)
+                    .clickable { haptics.tap(); onFindByUsername() },
+            )
+            Spacer(Modifier.width(18.dp))
             Icon(
                 Icons.Default.Create, "New chat", tint = VoiidColor.textPrimary,
                 modifier = Modifier.size(24.dp).clip(CircleShape)

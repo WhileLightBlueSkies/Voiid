@@ -18,6 +18,11 @@ struct ChatsHomeView: View {
     @State private var callTarget: VConversation?
     @State private var activeCall: CallRequest?
     @State private var showNewChat = false
+    @State private var showFindByUsername = false
+    @State private var showRequests = false
+    /// Inbound requests waiting to be accepted. Drives the banner below the header; a count of
+    /// zero hides it entirely rather than showing an empty affordance.
+    @State private var pendingRequestCount = 0
     @State private var showNewGroup = false
     @State private var showSettings = false
     @State private var allContacts: [VContact] = []   // discovered VOIID contacts (for search)
@@ -67,6 +72,7 @@ struct ChatsHomeView: View {
                 } else {
                     // Search results — existing chats grid + contacts you can start a chat with.
                     ScrollView {
+                        requestsBanner
                         if !items.isEmpty {
                             sectionLabel("Chats")
                             LazyVGrid(columns: columns, spacing: VoiidSpacing.lg) {
@@ -115,16 +121,32 @@ struct ChatsHomeView: View {
                     .accessibilityLabel("Profile and settings")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        Haptics.tap()
-                        if tab == .groups { showNewGroup = true } else { showNewChat = true }
-                    } label: {
-                        Image(systemName: tab == .groups ? "person.3.fill" : "square.and.pencil")
+                    if tab == .groups {
+                        Button {
+                            Haptics.tap(); showNewGroup = true
+                        } label: { Image(systemName: "person.3.fill") }
+                        .accessibilityLabel("New group")
+                    } else {
+                        // A MENU, not a single action: there are now two distinct ways to start
+                        // a chat — browse people you already have, or reach a stranger by the
+                        // handle they gave you. Those are different enough that folding the
+                        // second into the contact list would put strangers among your contacts.
+                        Menu {
+                            Button {
+                                Haptics.tap(); showNewChat = true
+                            } label: { Label("From contacts", systemImage: "person.crop.circle") }
+                            Button {
+                                Haptics.tap(); showFindByUsername = true
+                            } label: { Label("Find by username", systemImage: "at") }
+                        } label: {
+                            Image(systemName: "square.and.pencil")
+                        }
+                        .accessibilityLabel("New chat")
                     }
-                    .accessibilityLabel(tab == .groups ? "New group" : "New chat")
                 }
             }
             .onAppear { session.hideTabBar = false }   // root screen always shows the bar
+            .task { await refreshRequestCount() }
             .task {
                 // INSTANT FIRST: render the cached (local) chat list before ANY network or
                 // address-book work. loadConversations() reads local storage synchronously up
@@ -161,6 +183,29 @@ struct ChatsHomeView: View {
             }
             .sheet(isPresented: $showSettings) {
                 SettingsSheet()
+            }
+            .sheet(isPresented: $showFindByUsername) {
+                FindByUsernameView { conversationId, pending in
+                    // A PENDING request has no chat to open yet — the recipient has not
+                    // accepted, so navigating into it would show an empty transcript that
+                    // looks broken. Refresh the list instead; it appears once accepted.
+                    guard !pending else { Task { await chat.loadConversations() }; return }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                        Task {
+                            await chat.loadConversations()
+                            openConversation = chat.directConversations.first { $0.id == conversationId }
+                        }
+                    }
+                }
+            }
+            .sheet(isPresented: $showRequests) {
+                MessageRequestsView { conversationId in
+                    Task {
+                        await chat.loadConversations()
+                        await refreshRequestCount()
+                        openConversation = chat.directConversations.first { $0.id == conversationId }
+                    }
+                }
             }
             .sheet(isPresented: $showNewChat) {
                 NewChatView { conv in
@@ -330,6 +375,51 @@ struct ChatsHomeView: View {
         }
         .contentShape(Rectangle())
         .padding(.vertical, VoiidSpacing.sm)
+    }
+
+    /// Count of inbound requests, for the banner.
+    ///
+    /// Deliberately a COUNT and not a live list: the banner only needs to know whether to
+    /// appear and with what number, and fetching the full list on every chat-home appearance
+    /// would be a request per launch for a screen most users never open.
+    private func refreshRequestCount() async {
+        pendingRequestCount = (try? await ContactPinService.shared.pending().count) ?? 0
+    }
+
+    /// "N message requests" — shown only when there ARE some.
+    ///
+    /// This is the only surface for requests: `GET /conversations` filters pending ones out,
+    /// so without this banner a stranger's accepted-pending message would be invisible until
+    /// they gave up. An empty state here would be an affordance to nowhere, so it hides.
+    @ViewBuilder
+    private var requestsBanner: some View {
+        if pendingRequestCount > 0 {
+            Button {
+                Haptics.tap()
+                showRequests = true
+            } label: {
+                HStack(spacing: VoiidSpacing.sm) {
+                    Image(systemName: "tray.fill")
+                        .font(.system(size: 14))
+                        .foregroundStyle(VoiidColor.primary)
+                    Text(pendingRequestCount == 1 ? "1 message request"
+                                                  : "\(pendingRequestCount) message requests")
+                        .font(VoiidFont.rounded(14, .medium))
+                        .foregroundStyle(VoiidColor.textPrimary)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(VoiidColor.textSecondary)
+                }
+                .padding(.horizontal, VoiidSpacing.md)
+                .padding(.vertical, 11)
+                .background(VoiidColor.surfaceCard)
+                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, VoiidSpacing.md)
+            .padding(.bottom, VoiidSpacing.sm)
+        }
     }
 
     private func gridCard(_ conv: VConversation) -> some View {

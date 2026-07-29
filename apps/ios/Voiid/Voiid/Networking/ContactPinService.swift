@@ -21,7 +21,9 @@
 import Foundation
 
 @MainActor
-final class ContactPinService: ObservableObject {
+// Not ObservableObject: nothing here is @Published. Callers own their own state and
+// await these calls, so conformance would be inert weight.
+final class ContactPinService {
     static let shared = ContactPinService()
     private init() {}
 
