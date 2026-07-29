@@ -83,6 +83,17 @@ class WebSocketClient private constructor(context: Context) {
     var onSessionReset: ((conversationId: String) -> Unit)? = null
     /** An MLS group control event (welcome/commit) was relayed for one of our groups. */
     var onMlsEvent: ((conversationId: String?) -> Unit)? = null
+
+    /**
+     * A story arrived, was viewed, or was deleted — the signal to re-sync the story feed.
+     *
+     * Android had NO handler for these frames: they fell through to `else -> Unit`, so a story
+     * only ever appeared when the user manually opened the Stories tab (a one-shot
+     * `LaunchedEffect(Unit)`). iOS has consumed them since day one via `.voiidStorySignal`.
+     * Carries no payload because the client re-fetches through the authenticated feed anyway —
+     * the frame is a nudge, not data.
+     */
+    var onStorySignal: (() -> Unit)? = null
     /** A call-signaling frame (offer/answer/ice/hangup/decline/busy/ringing/hold) was relayed to us. */
     var onCallSignal: ((CallSignal) -> Unit)? = null
 
@@ -349,6 +360,10 @@ class WebSocketClient private constructor(context: Context) {
                 val from = obj["from_user_id"]?.jsonPrimitive?.contentOrNull ?: return
                 LocationRelay.dispatchStop(sid, from)
             }
+            // A story was posted to us, viewed, or deleted. All three mean the same thing to
+            // this client — re-sync the feed — so they share one seam, exactly as iOS routes
+            // all three to `.voiidStorySignal`.
+            "story", "story_receipt", "story_deleted" -> onStorySignal?.invoke()
             "session_reset" -> obj["conversation_id"]?.jsonPrimitive?.contentOrNull?.let { onSessionReset?.invoke(it) }
             "mls_event" -> onMlsEvent?.invoke(obj["conversation_id"]?.jsonPrimitive?.contentOrNull)
             "call_offer", "call_answer", "call_ice", "call_hangup", "call_decline", "call_busy",

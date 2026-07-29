@@ -32,8 +32,11 @@ struct StoryComposerView: View {
     // Audience: pre-selected with every contact you can reach (§2.2), or the last custom set.
     @State private var audience: Set<String> = []
 
+    /// Everyone reachable — the directory UNION 1:1 conversation peers. Using the directory
+    /// alone silently excluded anyone you chat with but never saved as a contact, so their
+    /// story never reached them. See UserDirectory.storyReachableUserIds().
     private var everyoneIds: Set<String> {
-        Set(UserDirectory.shared.byId.keys.filter { $0 != TokenStore.shared.userId })
+        UserDirectory.shared.storyReachableUserIds()
     }
     private var audienceLabel: String {
         audience.count == everyoneIds.count ? "My Contacts (\(audience.count))" : "Custom (\(audience.count))"
@@ -58,7 +61,7 @@ struct StoryComposerView: View {
             }
             .padding(VoiidSpacing.lg)
             .background(VoiidColor.background.ignoresSafeArea())
-            .navigationTitle("New Story").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("New Moment").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } } }
             .onAppear { if audience.isEmpty { audience = Set(StorySettings.shared.lastCustomAudience ?? Array(everyoneIds)) } }
             .onChange(of: pickerItem) { _, item in Task { await loadPicked(item) } }
@@ -134,7 +137,7 @@ struct StoryComposerView: View {
         if let photo, let img = UIImage(data: photo) { previewImage = img; pickedVideoURL = nil }
         else if let video {
             let seconds = try? await AVURLAsset(url: video).load(.duration).seconds
-            if let seconds, seconds > 31 { errorText = "Stories can be up to 30 seconds"; pickedVideoURL = nil; return }
+            if let seconds, seconds > 31 { errorText = "Moments can be up to 30 seconds"; pickedVideoURL = nil; return }
             pickedVideoURL = video; previewImage = nil
         }
     }
@@ -185,7 +188,7 @@ struct StoryComposerView: View {
     private func encodeVideo(_ url: URL) async throws -> (Data, Int?, Int?, Int) {
         let asset = AVURLAsset(url: url)
         let duration = (try? await asset.load(.duration).seconds) ?? 0
-        guard duration <= 31 else { throw CapError.tooBig("Stories can be up to 30 seconds") }
+        guard duration <= 31 else { throw CapError.tooBig("Moments can be up to 30 seconds") }
         let out = FileManager.default.temporaryDirectory.appendingPathComponent("story_out_\(UUID().uuidString).mp4")
         try? FileManager.default.removeItem(at: out)
         guard let export = AVAssetExportSession(asset: asset, presetName: AVAssetExportPreset1280x720) else {

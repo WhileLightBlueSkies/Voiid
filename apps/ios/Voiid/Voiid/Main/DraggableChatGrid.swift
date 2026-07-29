@@ -169,7 +169,7 @@ struct DraggableChatGrid: View {
                         .overlay(Circle().stroke(VoiidColor.background, lineWidth: 2)).offset(x: -6, y: 6)
                 }
                 if conv.unreadCount > 0 {
-                    Text("\(conv.unreadCount)").font(VoiidFont.rounded(11, .bold)).foregroundColor(.white)
+                    Text("\(conv.unreadCount)").font(VoiidFont.rounded(11, .bold)).foregroundColor(VoiidColor.textOnPrimary)
                         .frame(minWidth: 20, minHeight: 20).background(VoiidColor.error).clipShape(Circle())
                         .offset(x: 6, y: -6)
                 }

@@ -24,7 +24,31 @@ data class VUser(
 )
 
 enum class MessageStatus { SENDING, SENT, DELIVERED, READ, FAILED }
-enum class MessageKind { TEXT, IMAGE, VOICE, DOCUMENT, SYSTEM, POLL, LOCATION }
+enum class MessageKind { TEXT, IMAGE, VOICE, DOCUMENT, SYSTEM, POLL, LOCATION, CALL }
+
+/**
+ * A finished call, rendered as a bubble in the transcript (WhatsApp/Signal style).
+ *
+ * NOT a message and never sent over the wire. Both endpoints already learn the outcome from
+ * the signaling they exchanged, so each side renders this from its OWN local `call_history`
+ * row — exactly how Signal and WhatsApp do it. Sending a log message instead would add a
+ * failure mode (caller dies mid-call → no log for anyone) and a second source of truth for
+ * something both sides already know.
+ */
+data class VCallLog(
+    val callId: String,
+    val isVideo: Boolean,
+    val incoming: Boolean,
+    /** answered | missed | declined | failed — the vocabulary written by CallService. */
+    val outcome: String,
+    val startedAt: Long,
+    val endedAt: Long?,
+) {
+    val answered: Boolean get() = outcome == "answered"
+    /** Seconds of connected time; null unless the call was actually answered. */
+    val durationSeconds: Long?
+        get() = if (answered && endedAt != null) ((endedAt - startedAt) / 1000).coerceAtLeast(0) else null
+}
 
 data class VMessage(
     val id: String,
@@ -50,6 +74,8 @@ data class VMessage(
     val mediaRef: com.voiid.app.net.ChatEngine.MediaRef? = null,
     /** For LOCATION messages: the keyless pin / live_start projection (docs/LOCATION.md §4). */
     val location: com.voiid.app.net.ChatEngine.LocationRef? = null,
+    /** Set when kind == CALL: the finished call this bubble reports. Local-only. */
+    val call: VCallLog? = null,
 )
 
 enum class ConversationType { DIRECT, GROUP }
@@ -72,23 +98,8 @@ data class VConversation(
     var lastSeenAt: Long? = null,
 )
 
-data class VClip(
-    val id: String,
-    var authorName: String,
-    var authorPhoto: String? = null,
-    var heading: String,
-    var caption: String,
-    var likes: Int,
-    var comments: Int,
-    var thumbnailName: String? = null,
-)
-
-data class VClipComment(
-    val id: String,
-    var authorName: String,
-    var authorPhoto: String? = null,
-    var text: String,
-)
+// VClip / VClipComment removed — the mock shapes for the dummy Clips feed. The real
+// models live in model/ClipsStore.kt, built from the server rows in net/ClipService.kt.
 
 data class VAIMessage(
     val id: String,

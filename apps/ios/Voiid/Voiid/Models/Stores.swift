@@ -20,7 +20,22 @@ final class AppSession: ObservableObject {
     // dummy "You / +91 …" placeholder that could flash on screen before the real data arrives.
     @Published var profile = VUser(id: "me", fullName: "", phoneNumber: "")
     /// Hides the bottom tab bar when a full-screen child (e.g. a chat) is open.
+    ///
+    /// OPT-OUT, and that is the flaw: every pushed screen has to remember to set this true,
+    /// and every root tab has to remember to set it back to false. Miss either and the bar
+    /// leaks into a chat or vanishes from a tab. `RootTabView` therefore ALSO forces it false
+    /// whenever the selected tab changes, so a forgotten reset self-heals on the next tab tap
+    /// rather than stranding the user with no navigation.
     @Published var hideTabBar = false
+    /// The MEASURED height of the custom bottom tab bar, including its home-indicator
+    /// padding — published by RootTabView, which is the only view that knows it.
+    ///
+    /// The bar is NOT a TabView bar: RootTabView draws it as a ZStack sibling painted
+    /// OVER the active page, so it contributes nothing to any page's safe area. A page
+    /// that anchors its own chrome to the bottom therefore lands UNDERNEATH the bar
+    /// unless it insets by this value. `0` whenever the bar is hidden, so a full-screen
+    /// child inherits no phantom gap.
+    @Published var tabBarHeight: CGFloat = 0
 
     private let auth = AuthService.shared
 
@@ -186,6 +201,10 @@ final class ChatStore: ObservableObject {
     @Published var directConversations: [VConversation] = []
     @Published var groupConversations: [VConversation] = []
     @Published var messagesByConversation: [String: [VMessage]] = [:]
+    /// Finished calls per conversation, as transcript bubbles. Kept SEPARATE from the message
+    /// map and merged on read: a call log is not a message, is never sent over the wire, and
+    /// must not be persisted into the message store, previewed, or counted as unread.
+    @Published var callLogsByConversation: [String: [VMessage]] = [:]
     @Published var typingConversations: Set<String> = []
     @Published var loadError: String?
 
@@ -295,10 +314,39 @@ final class ChatStore: ObservableObject {
         }
     }
 
-    /// Messages currently held for a conversation (decrypted, from the local store).
-    /// No dummy seeding — a chat with no decrypted messages shows empty.
+    /// The transcript: real messages with this conversation's call bubbles merged in by time.
+    ///
+    /// Merging HERE rather than inserting into the message list keeps call logs out of the
+    /// message store, the chat-list preview and the unread count, while every existing caller
+    /// picks them up for free. No dummy seeding — a chat with nothing decrypted shows empty.
     func messages(for id: String) -> [VMessage] {
-        messagesByConversation[id] ?? []
+        let msgs = messagesByConversation[id] ?? []
+        let calls = callLogsByConversation[id] ?? []
+        if calls.isEmpty { return msgs }
+        return (msgs + calls).sorted { $0.createdAt < $1.createdAt }
+    }
+
+    /// Load this conversation's call history into the transcript. Call on chat open, and again
+    /// whenever a call ends so a call placed from this chat leaves its bubble immediately.
+    func loadCallLogs(_ conversationId: String) {
+        callLogsByConversation[conversationId] = LocalStore.callsForConversation(conversationId).map { r in
+            let incoming = r.direction == "incoming"
+            return VMessage(
+                id: "call:\(r.id)",
+                conversationId: conversationId,
+                senderId: incoming ? (directConversations.first { $0.id == conversationId }?.peerUserId ?? "") : "me",
+                kind: .call,
+                text: "",
+                createdAt: r.startedAt,
+                isMine: !incoming,
+                call: VCallLog(callId: r.id,
+                               isVideo: r.kind == "video",
+                               incoming: incoming,
+                               outcome: r.outcome,
+                               startedAt: r.startedAt,
+                               endedAt: r.endedAt)
+            )
+        }
     }
 
     /// Start (or reopen) a 1:1 chat with a discovered contact. Creates the
@@ -843,17 +891,7 @@ final class AIStore: ObservableObject {
 }
 
 // MARK: - Clips store
-
-@MainActor
-final class ClipsStore: ObservableObject {
-    @Published var clips: [VClip] = DummyData.clips
-    @Published var comments: [VClipComment] = DummyData.clipComments
-
-    func toggleLike(_ clip: VClip) {
-        guard let i = clips.firstIndex(of: clip) else { return }
-        clips[i].likes += 1
-    }
-    func addComment(_ text: String) {
-        comments.insert(VClipComment(id: UUID().uuidString, authorName: "You", text: text), at: 0)
-    }
-}
+//
+// REMOVED. Clips are a real, server-backed feature now — see ClipsEngine (paging,
+// uploads, optimistic-but-reconciled likes/comments) and ClipService. The old store
+// here held DummyData arrays whose likes and comments were lost on every relaunch.

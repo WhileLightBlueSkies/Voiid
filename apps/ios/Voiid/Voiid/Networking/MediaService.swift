@@ -25,9 +25,14 @@ final class MediaService {
     private struct PresignDownloadBody: Encodable { let key: String }
     private struct PresignDownloadResp: Decodable { let download_url: String }
 
-    /// Encrypted upload: get a presigned PUT, push the ciphertext to R2, return
-    /// the opaque object key (which the caller embeds in the E2EE message).
-    func upload(ciphertext: Data, mime: String) async throws -> String {
+    /// Push `body` to R2 via a presigned PUT and return the opaque object key.
+    ///
+    /// The parameter is `body`, NOT `ciphertext`. It used to be the latter, which asserted at
+    /// every call site that the bytes were already encrypted — and the avatar path passed a
+    /// raw JPEG straight into it. The name made that read as correct, which is exactly why the
+    /// plaintext-avatar bug survived review. This transport is agnostic: whether the bytes are
+    /// encrypted is the CALLER's responsibility, and the two callers now say which they are.
+    func upload(body: Data, mime: String) async throws -> String {
         let presign: PresignUploadResp = try await api.request(
             "POST", "media/presign-upload", body: PresignUploadBody(mime: mime))
         guard let url = URL(string: presign.upload_url) else {
@@ -36,7 +41,7 @@ final class MediaService {
         var req = URLRequest(url: url)
         req.httpMethod = "PUT"
         req.setValue(mime, forHTTPHeaderField: "Content-Type")
-        req.httpBody = ciphertext
+        req.httpBody = body
         let (_, resp) = try await URLSession.shared.data(for: req)
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
@@ -45,16 +50,22 @@ final class MediaService {
         return presign.key
     }
 
-    /// Profile photo upload.
+    /// Profile photo upload — ⚠️ NOT ENCRYPTED. The server can read these bytes.
     ///
-    /// Deliberately NOT E2E encrypted, unlike message media: an avatar has to be
-    /// viewable by everyone you talk to, and there is no shared per-conversation key
-    /// to wrap it with. It rides the same presigned-PUT path, so the bytes still land
-    /// in our R2 bucket and are only reachable through a short-lived signed URL.
+    /// Unlike message media, an avatar has no fixed audience: it is shown to anyone who might
+    /// contact you, including a stranger who found your @username and has never had a ratchet
+    /// session with you. There is therefore no established channel to deliver a key over.
     ///
-    /// Returns the opaque object key, which is what gets stored as `photo_url`.
+    /// The fix is a Signal-style PROFILE KEY — one long-lived key per user, wrapped to each
+    /// contact over the ratchet. It is blocked on `encryptMediaWithKey` (e2e-core has only
+    /// `encryptMedia`, which always mints a fresh key) and on regenerated uniffi bindings.
+    /// See `generate_profile_key` / `encrypt_media_with_key` in packages/e2e-core/src/media.rs.
+    ///
+    /// Until that ships, the privacy copy must NOT claim avatars are encrypted. It does not.
     func uploadProfilePhoto(_ imageData: Data, mime: String = "image/jpeg") async throws -> String {
-        try await upload(ciphertext: imageData, mime: mime)
+        // Named local: the plaintext-ness is stated where it happens, not inferred.
+        let plaintextJpeg = imageData
+        return try await upload(body: plaintextJpeg, mime: mime)
     }
 
     /// Encrypted download: get a presigned GET for `key`, fetch the ciphertext.

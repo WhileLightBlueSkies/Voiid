@@ -147,6 +147,16 @@ dependencies {
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)
 
+    // Media3 — Clips: ExoPlayer for the reels player, Transformer + Effect for the
+    // editor's trim/filter export. See docs/CLIPS.md §5.3 for why this is the correct
+    // counterpart to iOS's AVFoundation + Core Image (there is no API on either
+    // platform that enumerates the system photo-app filters).
+    implementation(libs.androidx.media3.exoplayer)
+    implementation(libs.androidx.media3.ui)
+    implementation(libs.androidx.media3.transformer)
+    implementation(libs.androidx.media3.effect)
+    implementation(libs.androidx.media3.common)
+
     // Firebase Phone Auth (OTP sender/verifier on-device)
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.auth)
@@ -167,6 +177,9 @@ dependencies {
     implementation(libs.play.services.location)
     implementation(libs.play.services.maps)
     implementation(libs.maps.compose)
+    // Map-tab place search. Uses the SAME api key as Maps; needs "Places API (New)" enabled
+    // on that key or every request fails (see MapPlaceSearch, which degrades quietly).
+    implementation(libs.places)
 
     // E2E core (Rust via uniffi). The generated Kotlin in uniffi/voiid/voiid.kt
     // uses JNA to call into jniLibs/<abi>/libvoiid_e2e_core.so. Must be the @aar

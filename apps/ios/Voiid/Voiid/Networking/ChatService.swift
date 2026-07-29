@@ -50,6 +50,11 @@ struct UserProfile {
     let name: String?
     let photoURL: String?
     let about: String?
+    /// The one-line status, DISTINCT from `about`. These were being collapsed into a single
+    /// field (`bio ?? status_text`), so whichever the user had set showed up as their About
+    /// and the other was silently discarded — a user with a status but no bio appeared to
+    /// have written a bio, and one with both lost the status entirely.
+    let statusText: String?
     let username: String?
     /// Only ever populated for the OWN profile (the server returns it only to the owner).
     let phoneNumber: String?
@@ -150,7 +155,8 @@ final class ChatService {
         }
         let env: Envelope = try await api.request("GET", "users/\(userId)")
         return UserProfile(name: env.user.full_name, photoURL: env.user.photo_url,
-                           about: env.user.bio ?? env.user.status_text, username: env.user.username,
+                           about: env.user.bio, statusText: env.user.status_text,
+                           username: env.user.username,
                            phoneNumber: env.user.phone_number)
     }
 

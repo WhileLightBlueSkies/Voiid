@@ -3,8 +3,8 @@
 //  Voiid
 //
 //  1:1 / group chat. Full experience on dummy data:
-//   • bubbles: sent = light pink (#FCF4F8), received = white (#FFFFFF)
-//   • refined receipts: tap a bubble for its time; Sent/Delivered/Read only under last sent msg
+//   • bubbles: sent = filled peacock teal, received = the quiet card surface with a hairline
+//   • receipts are WORDS — Sent · Delivered · Seen — on every outgoing message, not ticks
 //   • date separators (Today / Yesterday / date) + typing indicator
 //   • voice notes (record + send + playback), images (pick + send + fullscreen)
 //   • no bottom tab bar here (hidden via session.hideTabBar)
@@ -44,6 +44,9 @@ struct ChatDetailView: View {
     @State private var showBulkDelete = false
     @State private var forwardBulk = false
     @State private var activeCall: CallRequest?
+    /// Set by ContactProfileView's Call / Video buttons. Placed once that screen has popped —
+    /// starting a call while a navigation transition is in flight drops the CallKit UI.
+    @State private var pendingCall: CallKind?
     /// REAL group members (from the server), used for @mentions and group-call member tiles.
     /// Empty for 1:1 chats. Loaded on appear — never DummyData.
     @State private var groupMembers: [VMember] = []
@@ -69,6 +72,14 @@ struct ChatDetailView: View {
         .onAppear {
             session.hideTabBar = true
             chat.openConversation(conversation)   // load cached + sync (fetch+decrypt) real messages
+            // Call bubbles come from the local call_history table, not the message store, so
+            // they are loaded alongside the transcript rather than arriving through sync.
+            chat.loadCallLogs(conversation.id)
+        }
+        // A call placed from THIS chat must leave its bubble behind as soon as it ends, not
+        // only on the next open. CallService clears `active` when the call is fully torn down.
+        .onChange(of: CallService.shared.active == nil) { _, _ in
+            chat.loadCallLogs(conversation.id)
         }
         .task(id: conversation.id) {
             // Real group members for @mentions + group-call tiles (never DummyData).
@@ -101,11 +112,19 @@ struct ChatDetailView: View {
                 WebSocketClient.shared.sendTyping(conversationId: conversation.id, recipientIds: [peer], isStart: false)
             }
         }
+        // The profile screen asks for a call by setting `pendingCall`; it is placed once the
+        // push has finished unwinding, so ChatDetailView remains the single owner of call
+        // setup rather than duplicating peer resolution and the group-call lock.
+        .onChange(of: showInfo) { _, isShowing in
+            guard !isShowing, let kind = pendingCall else { return }
+            pendingCall = nil
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { startCall(kind) }
+        }
         .navigationDestination(isPresented: $showInfo) {
             if conversation.type == .group {
                 GroupInfoView(conversation: conversation)
             } else {
-                ContactProfileView(conversation: conversation)
+                ContactProfileView(conversation: conversation, pendingCall: $pendingCall)
             }
         }
         .sheet(isPresented: $showPollCompose) {
@@ -415,7 +434,9 @@ struct ChatDetailView: View {
                           onInfo: { infoMessage = msg },
                           onDelete: { deleteMessage = msg },
                           selectionMode: selectionMode,
-                          onSelectTap: { toggleSelect(msg.id) })
+                          onSelectTap: { toggleSelect(msg.id) },
+                          // Tap a call bubble to call back with the SAME kind.
+                          onCallBack: { isVideo in startCall(isVideo ? .video : .voice) })
         }
     }
 
@@ -523,7 +544,7 @@ struct ChatDetailView: View {
                 }
             }
 
-            TextField("", text: $draft, axis: .vertical)
+            TextField("Message", text: $draft, axis: .vertical)
                 .font(VoiidFont.rounded(16, .regular))
                 .foregroundColor(VoiidColor.textPrimary)
                 .lineLimit(1...5)
@@ -544,9 +565,16 @@ struct ChatDetailView: View {
                     draft = ""
                     withAnimation { replyingTo = nil }
                 } label: {
-                    Image(systemName: "paperplane.fill")
-                        .font(.system(size: 20)).foregroundColor(VoiidColor.primary)
-                        .padding(.trailing, VoiidSpacing.sm)
+                    // A FILLED circle, not a bare glyph floating in the pill. Send is the
+                    // primary action on this screen and should look like a button; the loose
+                    // paperplane read as decoration and gave no tap target to aim at.
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 17, weight: .bold))
+                        .foregroundColor(VoiidColor.textOnPrimary)
+                        .frame(width: 34, height: 34)
+                        .background(VoiidColor.primary)
+                        .clipShape(Circle())
+                        .padding(.trailing, 5)
                 }
                 .transition(.scale.combined(with: .opacity))
             } else {
@@ -557,7 +585,7 @@ struct ChatDetailView: View {
                 .transition(.scale.combined(with: .opacity))
             }
         }
-        .padding(.vertical, VoiidSpacing.xs)
+        .padding(.vertical, 5)
         .padding(.leading, VoiidSpacing.sm)
         .background(VoiidColor.fieldFill)
         .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.pill, style: .continuous))
@@ -565,12 +593,112 @@ struct ChatDetailView: View {
         .padding(.horizontal, VoiidSpacing.md)
         .padding(.top, VoiidSpacing.sm)
         .padding(.bottom, VoiidSpacing.sm)
-        .background(VoiidColor.background)
+        // `.bar` material + a hairline, so the transcript blurs UNDER the composer as it
+        // scrolls instead of sliding behind a flat opaque slab. Same treatment as the tab bar,
+        // which is what makes the two read as one piece of chrome.
+        .background(.bar)
+        .overlay(VoiidColor.divider.opacity(0.6).frame(height: 0.5), alignment: .top)
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: hasText)
     }
 }
 
-// MARK: - Message bubble with ticks + timestamp
+// MARK: - Message bubble
+
+/// A finished call, in the transcript (WhatsApp/Signal style).
+///
+/// Sided like a real bubble — outgoing right, incoming left — because a call IS attributable
+/// to one party, unlike a system announcement. Tapping calls back with the same kind.
+///
+/// A MISSED incoming call is the one state that gets colour: it is the only one the user may
+/// still need to act on. Everything else stays quiet so a long call history does not shout.
+struct CallLogBubble: View {
+    let log: VCallLog
+    var onCallBack: () -> Void
+
+    private var missed: Bool { log.incoming && !log.answered }
+
+    /// Outgoing sits on filled teal, so everything on it inverts.
+    private var bodyTint: Color { log.incoming ? VoiidColor.textPrimary : VoiidColor.textOnBubble }
+    private var subTint: Color {
+        log.incoming ? VoiidColor.textSecondary : VoiidColor.textOnBubble.opacity(0.75)
+    }
+    private var iconTint: Color { log.incoming ? VoiidColor.primary : VoiidColor.textOnBubble }
+
+    private var title: String {
+        if log.answered { return log.isVideo ? "Video call" : "Voice call" }
+        switch log.outcome {
+        case "declined": return log.incoming ? "Declined call" : "Call declined"
+        case "failed":   return "Call failed"
+        default:
+            if log.incoming { return log.isVideo ? "Missed video call" : "Missed voice call" }
+            return "No answer"
+        }
+    }
+
+    /// Duration only when there IS one — an unanswered call has no elapsed time to report.
+    private var durationText: String? {
+        guard let s = log.durationSeconds else { return nil }
+        let m = s / 60
+        return m >= 60
+            ? String(format: "%d:%02d:%02d", m / 60, m % 60, s % 60)
+            : String(format: "%d:%02d", m, s % 60)
+    }
+
+    var body: some View {
+        HStack {
+            if !log.incoming { Spacer(minLength: 56) }
+            Button {
+                Haptics.tap()
+                onCallBack()
+            } label: {
+                HStack(spacing: 10) {
+                    // The glyph sits on a soft disc so the row has an anchor, and so a
+                    // MISSED call's red is a filled badge rather than a lone tinted icon
+                    // that is easy to miss in a scrolling transcript.
+                    ZStack {
+                        Circle()
+                            .fill(missed ? VoiidColor.error.opacity(0.15) : iconTint.opacity(0.15))
+                            .frame(width: 34, height: 34)
+                        Image(systemName: log.isVideo ? "video.fill" : "phone.fill")
+                            .font(.system(size: 15))
+                            .foregroundColor(missed ? VoiidColor.error : iconTint)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title)
+                            .font(VoiidFont.rounded(14, .semibold))
+                            .foregroundColor(bodyTint)
+                        HStack(spacing: 5) {
+                            Text(log.startedAt, style: .time)
+                            if let durationText { Text("· \(durationText)") }
+                        }
+                        .font(VoiidFont.rounded(11, .regular))
+                        .foregroundColor(subTint)
+                    }
+                    Spacer(minLength: 8)
+                    // Tapping calls back, so say so — a bare row gives no hint it is tappable.
+                    Image(systemName: "arrow.up.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(subTint)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 10)
+                // Outgoing is FILLED teal exactly like a sent message; incoming is the quiet
+                // card. A call log is part of the transcript, so it has to obey the same
+                // sided colour language rather than inventing its own.
+                .background(log.incoming ? VoiidColor.bubbleReceived : VoiidColor.bubbleSent)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay(
+                    log.incoming
+                        ? RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(VoiidColor.divider, lineWidth: 0.5)
+                        : nil
+                )
+            }
+            .buttonStyle(.plain)
+            if log.incoming { Spacer(minLength: 56) }
+        }
+        .padding(.vertical, 2)
+    }
+}
 
 struct MessageBubble: View {
     let message: VMessage
@@ -586,6 +714,8 @@ struct MessageBubble: View {
     var onDelete: () -> Void = {}
     var selectionMode: Bool = false
     var onSelectTap: () -> Void = {}
+    /// Tap a call bubble to call back, with that call's kind (true = video).
+    var onCallBack: (Bool) -> Void = { _ in }
 
     @State private var swipeX: CGFloat = 0
     @State private var showReactions = false
@@ -594,8 +724,12 @@ struct MessageBubble: View {
     static let reactionSet = ["👍", "❤️", "😂", "😮", "😢", "🙏"]
 
     var body: some View {
-        // System message — centered pill (e.g. "You added Priyanshu").
-        if message.kind == .system {
+        // A finished call (WhatsApp-style): its own sided, tappable bubble — NOT a centered
+        // system pill, because it is an action you can repeat, not an announcement.
+        if let log = message.call {
+            CallLogBubble(log: log) { onCallBack(log.isVideo) }
+        } else if message.kind == .system {
+            // System message — centered pill (e.g. "You added Priyanshu").
             Text(message.text)
                 .font(VoiidFont.rounded(11, .medium))
                 .foregroundColor(VoiidColor.textSecondary)
@@ -623,22 +757,25 @@ struct MessageBubble: View {
                 if message.forwarded {
                     Label("Forwarded", systemImage: "arrowshape.turn.up.right")
                         .font(VoiidFont.rounded(11, .regular).italic())
-                        .foregroundColor(VoiidColor.textSecondary)
+                        .foregroundColor(bubbleTextSecondary)
                 }
                 // Quoted reply
                 if let rt = message.replyToText {
                     HStack(spacing: 6) {
-                        RoundedRectangle(cornerRadius: 2).fill(VoiidColor.primary).frame(width: 3)
+                        RoundedRectangle(cornerRadius: 2).fill(bubbleAccent).frame(width: 3)
                         VStack(alignment: .leading, spacing: 1) {
                             if let s = message.replyToSender, !s.isEmpty {
-                                Text(s).font(VoiidFont.rounded(11, .semibold)).foregroundColor(VoiidColor.primary)
+                                Text(s).font(VoiidFont.rounded(11, .semibold)).foregroundColor(bubbleAccent)
                             }
-                            Text(rt).font(VoiidFont.rounded(12, .regular)).foregroundColor(VoiidColor.textSecondary).lineLimit(2)
+                            Text(rt).font(VoiidFont.rounded(12, .regular)).foregroundColor(bubbleTextSecondary).lineLimit(2)
                         }
                     }
                     .padding(6)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(VoiidColor.fieldFill.opacity(0.7))
+                    // A translucent white scrim reads correctly on BOTH the filled teal and
+                    // the light card; `fieldFill` is a light token and vanished on teal.
+                    .background((message.isMine ? Color.white.opacity(0.16)
+                                                : VoiidColor.fieldFill.opacity(0.7)))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
                 // Sender identity (group, incoming only): the saved name (or phone) coloured
@@ -661,7 +798,7 @@ struct MessageBubble: View {
                         Image(systemName: "slash.circle").font(.system(size: 13))
                         Text("This message was deleted").italic()
                     }
-                    .font(VoiidFont.rounded(14, .regular)).foregroundColor(VoiidColor.textSecondary)
+                    .font(VoiidFont.rounded(14, .regular)).foregroundColor(bubbleTextSecondary)
                 } else if message.kind == .text {
                     textWithMeta
                 } else {
@@ -669,10 +806,21 @@ struct MessageBubble: View {
                     metaRow.padding(.top, 2)
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(message.isMine ? VoiidColor.bubbleReceived : VoiidColor.surfaceCard)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            // YOUR bubble is filled peacock teal; theirs is the quiet card surface. This was
+            // backwards — `isMine` drew `bubbleReceived` (white) and theirs drew `surfaceCard`
+            // (also white), so the two sides were nearly indistinguishable and the eye could
+            // not track its own thread down the screen. The filled side is also what carries
+            // the 5.53:1 separation the palette was chosen for.
+            .background(message.isMine ? VoiidColor.bubbleSent : VoiidColor.bubbleReceived)
             .clipShape(BubbleShape(isMine: message.isMine))
+            // Their bubble is near-white on a near-white ground in LIGHT mode, so it needs a
+            // hairline to hold its edge. Mine is filled and needs none.
+            .overlay(
+                message.isMine ? nil :
+                    BubbleShape(isMine: false).stroke(VoiidColor.divider, lineWidth: 0.5)
+            )
             .overlay(alignment: message.isMine ? .bottomLeading : .bottomTrailing) {
                 if let r = message.reaction {
                     Text(r).font(.system(size: 15))
@@ -767,8 +915,9 @@ struct MessageBubble: View {
 
     // Text bubble: message + (time · tick) flowing at the end, compact like WhatsApp.
     private var textWithMeta: some View {
-        HStack(alignment: .bottom, spacing: 6) {
+        HStack(alignment: .bottom, spacing: 8) {
             styledText(message.text)
+                .foregroundColor(bubbleText)
             metaRow
         }
     }
@@ -786,35 +935,76 @@ struct MessageBubble: View {
         }
     }
 
+    // MARK: - Bubble-aware colours
+    //
+    // YOUR bubble is filled peacock teal, so anything drawn on it must invert. Reading these
+    // from the token directly would put dark-plum text on a dark-teal fill — legible in light
+    // mode by luck, unreadable in dark.
+
+    /// Body text on this bubble.
+    private var bubbleText: Color {
+        message.isMine ? VoiidColor.textOnBubble : VoiidColor.textPrimary
+    }
+    /// Secondary text (timestamps, "Forwarded", quoted body) on this bubble.
+    private var bubbleTextSecondary: Color {
+        message.isMine ? VoiidColor.textOnBubble.opacity(0.75) : VoiidColor.textSecondary
+    }
+    /// The accent used for a quoted-reply rail and its author line.
+    private var bubbleAccent: Color {
+        message.isMine ? VoiidColor.textOnBubble.opacity(0.9) : VoiidColor.primary
+    }
+
     private var metaRow: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 5) {
             Text(VoiidDate.bubbleTime(message.createdAt))
                 .font(VoiidFont.rounded(10, .regular))
-                .foregroundColor(VoiidColor.textSecondary.opacity(0.8))
-            // A delivery tick on EVERY outgoing message (WhatsApp-style), not just the last —
-            // ✓ sent · ✓✓ delivered · ✓✓ (blue) seen. So each message shows its OWN true state.
-            if message.isMine { tickView }
+                .foregroundColor(bubbleTextSecondary)
+            if message.isMine { statusView }
         }
     }
 
-    @ViewBuilder private var tickView: some View {
+    /// Delivery state as a WORD — Sent · Delivered · Seen — not a tick.
+    ///
+    /// Ticks are a convention people have to learn, and one tick versus two is a distinction
+    /// of a few pixels that colour-blind users cannot resolve at all (WhatsApp's blue-vs-grey
+    /// double tick is the canonical example). A word is unambiguous at a glance, needs no
+    /// legend, and reads correctly to VoiceOver without extra labelling.
+    ///
+    /// Shown on EVERY outgoing message, so each one reports its own true state rather than
+    /// only the last one in the thread.
+    @ViewBuilder private var statusView: some View {
         switch message.status {
         case .sending:
-            Image(systemName: "clock").font(.system(size: 9))
-                .foregroundColor(VoiidColor.textSecondary.opacity(0.7))
+            // Still a glyph: "Sending" is transient and would make the row jump in width the
+            // instant it resolved.
+            Image(systemName: "clock")
+                .font(.system(size: 9))
+                .foregroundColor(bubbleTextSecondary)
         case .failed:
-            Image(systemName: "exclamationmark.circle").font(.system(size: 10))
-                .foregroundColor(VoiidColor.error)
+            // The one state that gets colour AND an icon — it is the only one the user must
+            // act on, and state must never be carried by hue alone.
+            HStack(spacing: 3) {
+                Image(systemName: "exclamationmark.circle.fill").font(.system(size: 9))
+                Text("Failed").font(VoiidFont.rounded(10, .semibold))
+            }
+            .foregroundColor(VoiidColor.error)
         case .sent:
-            Text("✓").font(.system(size: 11, weight: .semibold))
-                .foregroundColor(VoiidColor.textSecondary.opacity(0.8))
+            statusLabel("Sent")
         case .delivered:
-            Text("✓✓").font(.system(size: 11, weight: .semibold))
-                .foregroundColor(VoiidColor.textSecondary.opacity(0.8))
+            statusLabel("Delivered")
         case .read:
-            Text("✓✓").font(.system(size: 11, weight: .semibold))
-                .foregroundColor(VoiidColor.primary)   // blue/brand = Seen
+            // Seen steps up in WEIGHT rather than changing colour, so the distinction survives
+            // for a colour-blind user and in bright sunlight.
+            Text("Seen")
+                .font(VoiidFont.rounded(10, .bold))
+                .foregroundColor(message.isMine ? VoiidColor.textOnBubble : VoiidColor.primary)
         }
+    }
+
+    private func statusLabel(_ s: String) -> some View {
+        Text(s)
+            .font(VoiidFont.rounded(10, .medium))
+            .foregroundColor(bubbleTextSecondary)
     }
 
     private var statusLabel: String? {
@@ -844,7 +1034,11 @@ struct MessageBubble: View {
         case .poll:
             if let poll = message.poll { PollBubble(poll: poll, onVote: onVote) }
         case .location:
-            if let ref = message.location { LocationPinBubble(ref: ref) }
+            // The conversation goes with it so the full-screen detail can draw EVERY sharer in
+            // this chat on one map, not just the person whose bubble was tapped.
+            if let ref = message.location {
+                LocationPinBubble(ref: ref, conversationId: message.conversationId)
+            }
             else { styledText(message.text) }
         default:
             styledText(message.text)

@@ -14,12 +14,16 @@
 //
 //  The design decision underneath it
 //  ---------------------------------
-//  The app is pinned to light mode (`ContentView.preferredColorScheme(.light)`), and in
-//  light mode iOS draws `.insetGrouped` row backgrounds with `systemBackground` =
-//  #FFFFFF = `VoiidColor.surfaceCard`, exactly. So the native List *is* the Voiid card
-//  idiom, byte-identical — and it brings correct separators, Dynamic Type restacking,
-//  swipe actions and VoiceOver grouping for free. Two brand cues are layered on top:
-//  the #DFDFDF gutter (supplied by the caller, see below) and pink separators.
+//  The native `.insetGrouped` List *is* the Voiid card idiom — it brings correct separators,
+//  Dynamic Type restacking, swipe actions and VoiceOver grouping for free. Brand cues are
+//  layered on top: the background gutter (supplied by the caller, see below) and Voiid
+//  separators.
+//
+//  HISTORICAL NOTE: this used to lean on the app being pinned to light mode, where iOS drew
+//  row backgrounds with `systemBackground` = #FFFFFF, which happened to equal the old
+//  `surfaceCard` byte for byte. The app now supports both themes (Peacock), so that
+//  coincidence is gone and `voiidSettingsList()` pins `listRowBackground` to the token
+//  explicitly — otherwise Settings would be the one screen drifting off-palette in dark.
 //
 //  Typography note (deliberate, documented deviation from Theme.swift)
 //  ------------------------------------------------------------------
@@ -52,7 +56,7 @@ import SwiftUI
 ///  * `.listRowBackground(VoiidColor.surfaceCard)` on every row (states the white
 ///    explicitly rather than inheriting it from the system);
 ///  * `.listRowSeparatorTint(VoiidColor.divider.opacity(0.6))` — separators on brand
-///    pink `#E3BED8` instead of system grey;
+///    the Voiid `divider` token instead of system grey;
 ///  * header typography: `.footnote.weight(.semibold)`, `VoiidColor.textSecondary`,
 ///    `.textCase(nil)` so headers read as sentence case, not shouty uppercase;
 ///  * footer typography: `.footnote`, `VoiidColor.textSecondary`.
@@ -129,7 +133,7 @@ extension View {
     /// ```swift
     /// List { … }
     ///     .voiidSettingsList()
-    ///     .background(VoiidColor.background.ignoresSafeArea())   // the #DFDFDF gutter
+    ///     .background(VoiidColor.background.ignoresSafeArea())   // the ground gutter
     ///     .navigationTitle("Privacy")
     /// ```
     ///
@@ -143,6 +147,12 @@ extension View {
         self
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
+            // Rows are pinned to the Voiid card token rather than left to the platform's
+            // `systemBackground`. That default was only ever correct because the app was
+            // pinned to light, where systemBackground happened to equal the card colour
+            // exactly. Now that both themes exist, the platform's dark grey would not match
+            // Peacock's `surfaceCard`, so Settings alone would drift off-palette.
+            .listRowBackground(VoiidColor.surfaceCard)
             .fontDesign(.rounded)
             .navigationBarTitleDisplayMode(.inline)
     }

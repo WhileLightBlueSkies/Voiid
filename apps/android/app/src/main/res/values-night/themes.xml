@@ -1,10 +1,14 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <!-- VOIID stays the same fixed light design in dark mode (identical to values/themes.xml). -->
-    <style name="Theme.Voiid" parent="android:Theme.Material.Light.NoActionBar">
+    <!--
+      DARK launch window. `windowBackground` resolves to the values-night colour, and the
+      system-bar icons flip to LIGHT so they stay legible on the near-black ground — the
+      opposite of values/themes.xml, and the reason this file cannot simply be deleted.
+    -->
+    <style name="Theme.Voiid" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">@color/voiid_background</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
-        <item name="android:windowLightStatusBar" tools:targetApi="m">true</item>
-        <item name="android:windowLightNavigationBar" tools:targetApi="o_mr1">true</item>
+        <item name="android:windowLightStatusBar" tools:targetApi="m">false</item>
+        <item name="android:windowLightNavigationBar" tools:targetApi="o_mr1">false</item>
     </style>
 </resources>

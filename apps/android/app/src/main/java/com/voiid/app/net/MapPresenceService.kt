@@ -1,5 +1,6 @@
 package com.voiid.app.net
 
+import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.Serializable
 
 /**
@@ -20,7 +21,13 @@ class MapPresenceService(private val tokens: TokenStore) {
 
     @Serializable
     private data class CreateBody(
-        val kind: String = "map",
+        // @EncodeDefault is LOAD-BEARING: ApiClient's Json has `encodeDefaults = false` (the
+        // kotlinx default), so a property left at its default value is OMITTED from the request
+        // body. Without this annotation `kind` never reached the server and every Map
+        // "go visible" failed with 400 `kind must be 'conversation' or 'map'`, surfacing as
+        // "Couldn't start sharing your location. Check your connection and try again." — which
+        // pointed at the network and hid a serialization bug.
+        @EncodeDefault val kind: String = "map",
         val target_user_ids: List<String>,
         val duration_seconds: Long,
     )

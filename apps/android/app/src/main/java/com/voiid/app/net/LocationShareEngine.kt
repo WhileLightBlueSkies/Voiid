@@ -73,6 +73,14 @@ object LocationShareEngine {
     /** shareId -> the live view a recipient's bubble observes. */
     val inboundViews = mutableStateMapOf<String, LiveShareView>()
 
+    /**
+     * shareId -> the conversation it arrived in. [LiveShareView] deliberately carries no
+     * conversation id (it is what a single bubble observes), but the full-screen detail needs
+     * to find every sharer in ONE chat — see [inboundForConversation]. Kept next to
+     * [inboundViews] and written on the same two paths that create an inbound view.
+     */
+    private val inboundConversation = ConcurrentHashMap<String, String>()
+
     private val outbound = ConcurrentHashMap<String, Outbound>()
 
     private data class Outbound(
@@ -278,6 +286,7 @@ object LocationShareEngine {
                         initial?.let { dao.upsertLastFix(LocationLastFixRow(shareId, ownerUserId, it.lat, it.lon, it.acc, 0, it.fixedAt / 1000)) }
                     }
                     inboundViews[shareId] = LiveShareView(shareId, ownerUserId, expiresAt, cadence, initial, endedExplicit = false)
+                    inboundConversation[shareId] = conversationId
                 }
                 // Always store the bubble — even without an initial coordinate (an iOS
                 // live_start carries none). It shows "locating…" until the fix stream lands.
@@ -342,6 +351,7 @@ object LocationShareEngine {
                 val last = runCatching { withContext(Dispatchers.IO) { dao.lastFix(s.share_id) } }.getOrNull()
                 val fix = last?.let { LocationFix(it.shareId, it.senderUserId, it.lat, it.lon, it.acc, it.seq, it.fixedAt * 1000) }
                 inboundViews[s.share_id] = LiveShareView(s.share_id, s.owner_user_id, parseIso(s.expires_at), LIVE_CADENCE_SECONDS, fix, endedExplicit = false)
+                s.conversation_id?.let { inboundConversation[s.share_id] = it }
             }
         }
     }
@@ -360,6 +370,21 @@ object LocationShareEngine {
 
     /** One decoded inbound share for a bubble to observe (null = we hold no key / never started). */
     fun inbound(shareId: String?): LiveShareView? = shareId?.let { inboundViews[it] }
+
+    /**
+     * Every still-running inbound share in ONE conversation, so the full-screen detail can draw
+     * all of a group's sharers on a single map instead of one frozen pin per bubble.
+     *
+     * Reads [inboundViews] (a snapshot state map), so a caller in a composition recomposes as
+     * fixes land. Ended shares are filtered out — a stopped share must leave the map, which is
+     * the same timer guarantee the bubble applies.
+     */
+    fun inboundForConversation(conversationId: String?, now: Long = System.currentTimeMillis()): List<LiveShareView> {
+        if (conversationId == null) return emptyList()
+        return inboundViews.values
+            .filter { inboundConversation[it.shareId] == conversationId && it.state(now) != com.voiid.app.model.ShareState.ENDED }
+            .sortedBy { it.shareId }   // stable marker order across recompositions
+    }
 
     /** Whether shareId is one of MY active outbound shares (drives the Stop button on my bubble). */
     fun isMineActive(shareId: String?): Boolean = shareId != null && outbound.containsKey(shareId)

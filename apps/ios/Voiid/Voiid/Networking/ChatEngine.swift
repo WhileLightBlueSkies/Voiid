@@ -53,12 +53,16 @@ struct MediaRef: Codable, Equatable, Hashable {
 /// `decodeEnvelope` below decodes this type while the NSE decrypts an inbound push. Every
 /// wire type ChatEngine touches lives here for exactly that reason (cf. MediaRef, MediaEnvelope).
 struct StoryReplyEnvelope: Codable {
-    var v: Int = 1
-    var t: String = "story_reply"
+    // Optional, not defaulted: Swift's synthesized Codable throws keyNotFound rather than
+    // applying a property default, and Android's kotlinx omits default-valued fields
+    // (encodeDefaults = false). A reply carrying only a reaction omits `text` too, so an
+    // Android emoji-reaction reply failed to decode on iOS entirely. See StoryEnvelope.
+    var v: Int? = 1
+    var t: String? = "story_reply"
     let storyId: String
     let storyAuthorId: String
     let storyCreatedAt: Int64    // epoch ms
-    var text: String = ""        // the reply body
+    var text: String? = ""       // the reply body
     var reaction: String?        // a single emoji for the quick-tap rail, or nil
 }
 
@@ -386,7 +390,7 @@ final class ChatEngine {
         // 1. Encrypt the blob (e2e-core) → ciphertext + media key.
         let enc = try encryptMedia(plaintext: data)
         // 2. Upload the CIPHERTEXT to R2; get back the opaque object key.
-        let key = try await MediaService.shared.upload(ciphertext: enc.ciphertext, mime: mime)
+        let key = try await MediaService.shared.upload(body: enc.ciphertext, mime: mime)
         NSLog("[VOIID] 🖼️ sendMedia uploaded → key=\(key)")
         // Local-first: cache the ORIGINAL plaintext under the R2 key so this sender renders
         // its own photo instantly and offline — it never downloads + decrypts what it just sent.
@@ -1343,7 +1347,7 @@ final class ChatEngine {
         if let data, let probe = try? JSONDecoder().decode(EnvelopeProbe.self, from: data),
            probe.t == "story_reply",
            let reply = try? JSONDecoder().decode(StoryReplyEnvelope.self, from: data) {
-            return (reply.reaction ?? reply.text, nil)
+            return (reply.reaction ?? reply.text ?? "", nil)
         }
         // A reply envelope reaching here (no probe upstream): show its text, not JSON.
         if let data, let probe = try? JSONDecoder().decode(EnvelopeProbe.self, from: data),
@@ -1440,7 +1444,26 @@ final class ChatEngine {
         let myDev = E2EManager.shared.deviceId
         let myId = TokenStore.shared.userId
         for uid in userIds {
-            let devs: DevicesResponse = (try? await api.request("GET", "devices/\(uid)")) ?? DevicesResponse(devices: [])
+            // Retried, then LOGGED. A `try?` here meant a transient network blip silently
+            // resolved ZERO devices for that recipient: the post then "succeeded" while that
+            // person simply never received the story, with nothing to explain why.
+            var devs: DevicesResponse?
+            for attempt in 0..<2 {
+                do {
+                    devs = try await api.request("GET", "devices/\(uid)") as DevicesResponse
+                    break
+                } catch {
+                    if attempt == 1 {
+                        NSLog("[VOIID] story fan-out: device lookup FAILED for \(uid) — they will NOT receive this story: \(error)")
+                    } else {
+                        try? await Task.sleep(nanoseconds: 300_000_000)
+                    }
+                }
+            }
+            guard let devs else { continue }
+            if devs.devices.isEmpty {
+                NSLog("[VOIID] story fan-out: \(uid) has no active devices — they will NOT receive this story")
+            }
             for d in devs.devices where d.id != myDev && seen.insert(d.id).inserted {
                 targets.append(TargetDevice(userId: uid, deviceId: d.id))
             }
@@ -1456,7 +1479,7 @@ final class ChatEngine {
 
     /// Decrypt a story key envelope THIS device received from the feed. `authorDeviceId`
     /// selects the author device whose session produced it. Returns nil to DROP (the caller
-    /// surfaces "This story couldn't be loaded", never a blank frame).
+    /// surfaces "This moment couldn't be loaded", never a blank frame).
     func decryptStoryEnvelope(ciphertextB64: String, authorUserId: String,
                               authorDeviceId: String?) async -> Data? {
         guard let wire = decodeWire(ciphertextB64) else { return nil }
@@ -1507,7 +1530,7 @@ final class ChatEngine {
                 body: SendBundleBody(conversation_id: conversationId,
                                      sender_device_id: E2EManager.shared.deviceId,
                                      messages: messages, content_type: "story_reply"))
-            let body = envelope.reaction ?? envelope.text
+            let body = envelope.reaction ?? envelope.text ?? ""
             let echo = DecryptedMessage(id: res.message_id, senderId: TokenStore.shared.userId ?? "me",
                                         text: body, createdAt: res.created_at.map(parseDate) ?? Date(),
                                         isMine: true)
@@ -1590,9 +1613,28 @@ enum LocationWire {
             if let key = obj["key"] as? String, let raw = Data(base64Encoded: key), raw.count == 32,
                !fromUserId.isEmpty {
                 mapVault.setData(raw, mapInboundName(fromUserId))
+                // Writing the Keychain key is NOT enough: MapPresenceEngine also has to learn
+                // that this contact is now sharing, or they never appear in the "waiting for
+                // location" list and only pop into existence when their FIRST fix lands.
+                // Harmless in the NSE (no observers there).
+                // String name (not the typed constant) because this file also compiles into
+                // the NSE target, which does not include LocationShareEngine.swift.
+                NotificationCenter.default.post(name: Notification.Name("voiidMapControlReceived"),
+                                                object: nil,
+                                                userInfo: ["kind": "map_key", "fromUserId": fromUserId])
             }
         case "map_off":
-            if !fromUserId.isEmpty { mapVault.delete(mapInboundName(fromUserId)) }
+            if !fromUserId.isEmpty {
+                mapVault.delete(mapInboundName(fromUserId))
+                // Deleting the key alone leaves the contact PINNED at their last position
+                // until age-out. `map_off` means "I went dark" and must ERASE the cached
+                // position — that erase-vs-age-out distinction is how a viewer tells "they
+                // turned it off" from "their phone died", and it is a safety property.
+                NotificationCenter.default.post(name: Notification.Name("voiidMapControlReceived"),
+                                                object: nil,
+                                                userInfo: ["kind": "map_off", "fromUserId": fromUserId,
+                                                           "shareId": (obj["s"] as? String) ?? ""])
+            }
         default: break
         }
 

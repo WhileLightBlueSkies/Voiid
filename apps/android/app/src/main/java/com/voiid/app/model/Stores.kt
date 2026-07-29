@@ -39,7 +39,18 @@ class AppSession(app: Application) : AndroidViewModel(app) {
     // "You / +91 …" placeholder that could flash before the real data arrives.
     var profile by mutableStateOf(VUser(id = "me", fullName = "", phoneNumber = ""))
 
-    /** Hides the bottom tab bar when a full-screen child (e.g. a chat) is open. */
+    /**
+     * UNUSED on Android, and deliberately so — do not start writing to it.
+     *
+     * iOS gates its bar on an equivalent flag, which is opt-out: every pushed screen must
+     * remember to set it, and every root tab to clear it. Android instead draws chat detail,
+     * clips, stories, and both call screens as full-screen `AnimatedVisibility` overlays ON
+     * TOP of the column that holds the bar, so those screens COVER it structurally. A new
+     * overlay therefore cannot leak the bar by forgetting a flag — which is the failure mode
+     * this field would reintroduce.
+     *
+     * Kept only so the two platforms' AppSession shapes still line up.
+     */
     var hideTabBar by mutableStateOf(false)
 
     /** The authenticated user's id (our backend id), once logged in. */
@@ -136,6 +147,12 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
     val directConversations = mutableStateListOf<VConversation>()
     val groupConversations = mutableStateListOf<VConversation>()
     private val messagesByConversation = mutableStateMapOf<String, androidx.compose.runtime.snapshots.SnapshotStateList<VMessage>>()
+    /**
+     * Finished calls per conversation, as transcript bubbles. Kept SEPARATE from the message
+     * map and merged on read: a call log is not a message, is never sent over the wire, and
+     * must not be persisted into the message store, previewed, or counted as unread.
+     */
+    private val callLogsByConversation = mutableStateMapOf<String, List<VMessage>>()
     val typingConversations = mutableStateListOf<String>()
     var loadError by mutableStateOf<String?>(null)
 
@@ -223,7 +240,47 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun messages(id: String): List<VMessage> = messagesByConversation[id] ?: emptyList()
+    /**
+     * The transcript: real messages with this conversation's call bubbles merged in by time.
+     *
+     * Merging HERE rather than inserting into the message list keeps call logs out of the
+     * message store, the chat-list preview and the unread count, while every existing caller
+     * (the chat screen, search, jump-to-message) picks them up for free.
+     */
+    fun messages(id: String): List<VMessage> {
+        val msgs = messagesByConversation[id] ?: emptyList()
+        val calls = callLogsByConversation[id] ?: emptyList()
+        if (calls.isEmpty()) return msgs
+        return (msgs + calls).sortedBy { it.createdAt }
+    }
+
+    /** Load this conversation's call history into the transcript. Call on chat open. */
+    fun loadCallLogs(conversationId: String) {
+        viewModelScope.launch {
+            val rows = LocalStore.callsForConversation(appContext, conversationId)
+            callLogsByConversation[conversationId] = rows.map { r ->
+                VMessage(
+                    id = "call:${r.id}",
+                    conversationId = conversationId,
+                    senderId = if (r.direction == "incoming") (r.peerUserId ?: "") else "me",
+                    kind = MessageKind.CALL,
+                    text = "",
+                    // call_history stores SECONDS; VMessage.createdAt is MILLIS. Without this
+                    // conversion every call bubble would sort to 1970 and pile up at the top.
+                    createdAt = r.startedAt * 1000L,
+                    isMine = r.direction != "incoming",
+                    call = VCallLog(
+                        callId = r.id,
+                        isVideo = r.kind == "video",
+                        incoming = r.direction == "incoming",
+                        outcome = r.outcome,
+                        startedAt = r.startedAt * 1000L,
+                        endedAt = r.endedAt?.let { it * 1000L },
+                    ),
+                )
+            }
+        }
+    }
 
     private fun list(id: String) = messagesByConversation.getOrPut(id) { mutableStateListOf() }
 
@@ -715,17 +772,7 @@ class AIStore : ViewModel() {
 }
 
 // MARK: - Clips store
-
-class ClipsStore : ViewModel() {
-    val clips = mutableStateListOf<VClip>().apply { addAll(DummyData.clips) }
-    val comments = mutableStateListOf<VClipComment>().apply { addAll(DummyData.clipComments) }
-
-    fun toggleLike(clip: VClip) {
-        val i = clips.indexOfFirst { it.id == clip.id }
-        if (i >= 0) clips[i] = clips[i].copy(likes = clips[i].likes + 1)
-    }
-
-    fun addComment(text: String) {
-        comments.add(0, VClipComment(id = UUID.randomUUID().toString(), authorName = "You", text = text))
-    }
-}
+//
+// REMOVED. Clips are a real, server-backed feature now — see model/ClipsStore.kt (paging,
+// uploads, optimistic-but-reconciled likes/comments) and net/ClipService.kt. The store
+// here held DummyData arrays whose likes and comments were lost on every relaunch.

@@ -528,7 +528,62 @@ a silent, baffling failure and is unacceptable. So:
 4. **Never invent, guess, or hardcode a key.** `local.properties` is gitignored; verify before shipping.
    The key must be restricted in Google Cloud to package `com.voiid.app`, to the release signing SHA-1
    **and the debug keystore SHA-1** (omit the latter and every developer sees grey tiles), and to the
-   *Maps SDK for Android* API only.
+   *Maps SDK for Android* + *Places API (New)* APIs only (see the next section for Places).
+
+### Android: `kind` must be encoded explicitly on `POST /location/shares`
+
+`ApiClient`'s `Json` uses `encodeDefaults = false` (the kotlinx default), which **omits any
+property still sitting at its default value**. `MapPresenceService.CreateBody` declares
+`kind: String = "map"`, so `kind` was silently dropped from the request body and every Map
+"go visible" failed with `400 kind must be 'conversation' or 'map'`. The UI surfaced that as
+*"Couldn't start sharing your location. Check your connection and try again."* — pointing the
+user at their network while the real fault was serialization.
+
+The field is annotated `@EncodeDefault`. **Any future request body that relies on a Kotlin
+default value to carry a constant must do the same**, or it will not reach the server. iOS is
+unaffected: `LocationAPI`/`MapShareAPI` pass `kind` explicitly and Swift's `Encodable` always
+emits it.
+
+### Accuracy is stated on every location surface
+
+A marker drawn as a single point reads as an exact doorstep, and it is not. Every surface that
+draws a position — chat bubble, full-screen detail, Map contact card — carries
+*"Accurate to about N m — GPS is approximate"*, produced by ONE helper per platform
+(`LocationAccuracy.note` on iOS, `accuracyNote` in `LocationDetailView.kt` on Android) so the
+wording cannot drift.
+
+`N` is the accuracy **the sender's device reported for that fix**, not a fixed marketing
+figure, rounded so it reads as an estimate (never "37 m"). A payload carrying no accuracy falls
+back to 30 m. Note the two features legitimately differ and the copy must not paper over it:
+conversation live share (A) carries real device accuracy (typically 10–30 m), while Map
+presence (B) coarsens accuracy to **≥100 m before transmission** (§5), so the Map honestly
+reads "about 100 m". This is unrelated to the 5-decimal coordinate rounding (≈1 m), which is a
+privacy measure far finer than the fix's own error.
+
+### Place search — one Cloud Console step is required
+
+The Map tab's place search (`MapPlaceSearch.kt`, `MapSearchBar`) uses the **Places SDK for Android**
+(`com.google.android.libraries.places:places`) against the **same key** as Maps. It needs one console
+change that cannot be made from the repo:
+
+1. Enable **Places API (New)** on the project.
+2. Add **Places API (New)** to that key's *API restrictions* list — a key restricted to "Maps SDK for
+   Android" only will fail every Places call while the map itself keeps rendering, which looks like a
+   code bug and is not one.
+
+Until that is done the feature degrades quietly and deliberately: `MapPlaceSearch` catches the failure,
+logs a hint to logcat, and returns **an empty suggestion list**, so the worst case is a search box that
+finds nothing — never a crash or an error dialog over the map. With no key at all,
+`BuildConfig.MAPS_CONFIGURED` is false and the search field is not composed in the first place.
+
+**Billing.** Autocomplete is billed per *session*, not per keystroke, when a single
+`AutocompleteSessionToken` spans predictions → fetch. `MapTabView` mints one token per search
+interaction and mints a fresh one after each resolve; requests are additionally debounced 250 ms, and an
+empty query issues no request at all. `FetchPlaceRequest` asks for `ID`, `NAME`, `LAT_LNG`, `ADDRESS`
+only — more fields would move the call into a pricier SKU for data we do not render.
+
+**iOS needs none of this**: it uses `MKLocalSearchCompleter`/`MKLocalSearch` (`MapSearchModel.swift`),
+which requires no key, no billing and no backend proxy.
 
 ---
 
@@ -778,8 +833,12 @@ workstream**. Re-read each immediately before editing and keep to the named sing
 
 1. **Location history, trails, breadcrumbs.** Only the single most recent fix is ever stored.
 2. Geofences, arrival/departure alerts, "notify me when X gets home".
-3. **Place search / geocoding / reverse-geocoding to a street address** — it leaks the coordinate to the
-   geocoder. The pin carries an optional **user-typed** label only.
+3. **Reverse-geocoding a shared coordinate to a street address** — it would leak a *friend's* position to
+   a geocoder. A location pin carries an optional **user-typed** label only, and we never resolve an
+   address for one.
+   *(Amended: forward **place search** on the Map tab IS now shipped — `MapSearchModel.swift` /
+   `MapPlaceSearch.kt`. The distinction is load-bearing: a search sends the user's OWN typed query for a
+   public place, never a contact's coordinate. §7 covers the Android key requirement.)*
 4. Sharing to a non-contact, or link-based sharing.
 5. Self-hosted or offline vector tiles (§4's third-party leak stands, disclosed and switchable).
 6. Web / desktop clients.

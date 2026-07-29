@@ -2,6 +2,7 @@ package com.voiid.app.net
 
 import android.content.Context
 import android.util.Base64
+import com.voiid.app.model.MapConstants
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
@@ -622,7 +623,20 @@ class ChatEngine private constructor(context: Context) {
         if (includeOwnDevices && myId != null) userIds.add(myId)
         val targets = mutableListOf<TargetDevice>()
         for (uid in userIds) {
-            val devs = runCatching { api.requestAs<DevicesResponse>("GET", "devices/$uid") }.getOrNull() ?: continue
+            // Retried, then LOGGED. A bare `?: continue` meant a transient network blip
+            // silently resolved ZERO devices for that recipient: the post "succeeded" while
+            // that person never received it, with nothing to explain why.
+            var devs = runCatching { api.requestAs<DevicesResponse>("GET", "devices/$uid") }.getOrNull()
+            if (devs == null) {
+                kotlinx.coroutines.delay(300)
+                devs = runCatching { api.requestAs<DevicesResponse>("GET", "devices/$uid") }
+                    .onFailure { android.util.Log.w("VOIID", "⏭️ broadcast: device lookup FAILED for $uid — they will NOT receive this", it) }
+                    .getOrNull()
+            }
+            if (devs == null) continue
+            if (devs.devices.isEmpty()) {
+                android.util.Log.w("VOIID", "⏭️ broadcast: $uid has no active devices — they will NOT receive this")
+            }
             for (d in devs.devices) {
                 if (uid == myId && d.id == myDev) continue    // never fan out to the posting device
                 targets.add(TargetDevice(uid, d.id))
@@ -819,6 +833,16 @@ class ChatEngine private constructor(context: Context) {
     // Ids of consumed silent location-control messages (docs/LOCATION.md P2). Recorded so a
     // decrypt-once Olm control message is never re-fetched and re-failed into a bogus tombstone
     // bubble. A handful per share — persisted in the chat prefs, unioned into `seen` on sync.
+    /**
+     * True if [messageId] was consumed as a silent location-protocol control envelope
+     * (map_key / map_off / live_*) rather than becoming a chat message.
+     *
+     * The FCM path needs this to tell "the wake carried a control envelope, post NOTHING"
+     * apart from "decrypt failed, post the generic fallback" — both leave the store without
+     * a new message, so without this a map_key surfaced as a phantom "New message".
+     */
+    fun wasControlMessage(messageId: String): Boolean = controlSeenIds().contains(messageId)
+
     private fun controlSeenIds(): Set<String> = prefs.getStringSet("loc_control_seen", emptySet()) ?: emptySet()
     private fun markControlSeen(id: String) {
         val cur = HashSet(controlSeenIds()); cur.add(id)
@@ -961,8 +985,11 @@ class ChatEngine private constructor(context: Context) {
             "map_key" -> {
                 val shareId = env.s ?: return
                 val keyB64 = env.key ?: return
+                // Shared constant with MapPresenceEngine.onControl — these two capture paths
+                // MUST agree, or the same key expires at different times depending only on
+                // whether the app was foregrounded when it arrived.
                 MapInboundKeyStore.put(appContext, shareId, senderId, keyB64,
-                    env.expiresAt ?: (System.currentTimeMillis() + 24L * 3600 * 1000))
+                    env.expiresAt ?: (System.currentTimeMillis() + MapConstants.DEFAULT_KEY_TTL_MS))
             }
             "map_off" -> env.s?.let { MapInboundKeyStore.remove(appContext, it) }
             // live_stop → LocationShareEngine ends the inbound view; nothing to render here.

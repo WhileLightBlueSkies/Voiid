@@ -19,6 +19,20 @@ const router = Router();
 // Content-free wake push to a set of devices (Section 4.14): the Redis relay only reaches
 // devices holding a live socket; a silent, data-only push nudges the rest to fetch pending +
 // decrypt locally. Fire-and-forget — the HTTP response must NOT wait on push delivery.
+/**
+ * Content types that are PROTOCOL CONTROL, not chat: the user never sent them and must
+ * never be notified about them. `location` carries map_key / map_off / live_* (see
+ * docs/LOCATION.md P2) and is routed as an ordinary message purely so it rides the
+ * Double Ratchet — the clients already suppress its bubble.
+ *
+ * Enabling Map visibility fans a map_key out to every person in the audience, so without
+ * this each of them got a "New message" banner for a message that does not exist. The
+ * push must still be SENT (the peer has to wake and fetch the key) — just silently.
+ */
+function isControlContentType(contentType?: string | null): boolean {
+  return contentType === 'location';
+}
+
 function scheduleWakePush(whereSql: string, params: unknown[], meta?: PushMeta): void {
   query<{ push_token: string; push_provider: string }>(
     `select push_token, push_provider from devices
@@ -117,6 +131,7 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
       scheduleWakePush('id = any($1::uuid[])', [deviceIds], {
         message_id: message.id,
         conversation_id,
+        silent: isControlContentType(content_type),
       });
     }
 
@@ -162,6 +177,7 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
     scheduleWakePush('user_id = any($1::uuid[])', [members.map((m) => m.user_id)], {
       message_id: message.id,
       conversation_id,
+      silent: isControlContentType(content_type),
     });
   }
 

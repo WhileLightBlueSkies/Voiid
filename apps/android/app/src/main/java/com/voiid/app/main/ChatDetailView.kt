@@ -61,6 +61,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -177,6 +178,12 @@ fun ChatDetailView(
 
     // Load cached + sync (fetch + decrypt) the real E2EE messages on open.
     LaunchedEffect(conversation.id) { chat.openConversation(conversation) }
+    // Call bubbles come from the local call_history table, not the message store, so they are
+    // loaded alongside the transcript rather than arriving through sync. Re-loaded whenever a
+    // call finishes (state → null) so a call made from THIS chat leaves its bubble behind
+    // immediately, instead of only on the next open.
+    val callState by com.voiid.app.net.CallManager.state.collectAsState()
+    LaunchedEffect(conversation.id, callState == null) { chat.loadCallLogs(conversation.id) }
 
     // Location: wire the relay seam + reconcile any live shares for this chat (docs/LOCATION.md).
     LaunchedEffect(conversation.id) { com.voiid.app.net.LocationShareEngine.refresh(context) }
@@ -311,6 +318,8 @@ fun ChatDetailView(
                             onForward = { forwardMessage = msg },
                             onReact = { e -> chat.react(msg.id, e, conversation.id); haptics.tap() },
                             onCopy = { clipboard.setText(AnnotatedString(msg.text)) },
+                            // Tap a call bubble to call back with the SAME kind.
+                            onCallBack = { isVideo -> startCall(if (isVideo) CallKind.VIDEO else CallKind.VOICE) },
                             onInfo = { infoMessage = msg },
                             onDelete = { deleteMessage = msg },
                             onVote = { optId -> chat.vote(msg.id, optId, conversation.id) },
@@ -448,7 +457,13 @@ fun ChatDetailView(
             if (isGroup) {
                 GroupInfoView(conversation = conversation, chat = chat, onBack = { showDetails = false })
             } else {
-                ContactProfileView(conversation = conversation, onBack = { showDetails = false })
+                ContactProfileView(
+                    conversation = conversation,
+                    onBack = { showDetails = false },
+                    // The profile asks the CHAT to place the call — ChatDetailView already owns
+                    // peer resolution and the group-call lock, so this stays one code path.
+                    onStartCall = { kind -> showDetails = false; startCall(kind) },
+                )
             }
         }
     }

@@ -53,7 +53,7 @@ fun StoryViewersSheet(
                     Text("Views hidden", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
                 }
                 Text(
-                    "If you turn this off, people won't know when you've viewed their story — and you " +
+                    "If you turn this off, people won't know when you've viewed their moment — and you " +
                         "won't see who viewed yours.",
                     style = VoiidFont.rounded(14), color = VoiidColor.textSecondary,
                 )

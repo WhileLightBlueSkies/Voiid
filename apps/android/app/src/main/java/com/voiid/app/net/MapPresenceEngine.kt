@@ -2,6 +2,7 @@ package com.voiid.app.net
 
 import android.content.Context
 import android.util.Base64
+import android.util.Log
 import com.voiid.app.model.MapConstants
 import com.voiid.app.model.MapContact
 import com.voiid.app.model.MapEnvelope
@@ -46,6 +47,8 @@ import uniffi.voiid.generateMasterSecret
  */
 object MapPresenceEngine {
 
+    private const val TAG = "VoiidMap"
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Volatile private var ctx: Context? = null
@@ -72,11 +75,41 @@ object MapPresenceEngine {
     private val _subjects = MutableStateFlow<Map<String, MapSubject>>(emptyMap())
     val subjects: StateFlow<Map<String, MapSubject>> = _subjects.asStateFlow()
 
+    /**
+     * Everyone who has handed us a `map_key` — i.e. who has made themselves visible to us.
+     * Persisted, unlike [_subjects], which only ever gains an entry when a live fix decrypts
+     * IN THIS PROCESS. Without this the map was blank until a friend's next fix happened to
+     * land while the app was open: a contact who was genuinely sharing showed nothing at all,
+     * and nothing survived a restart. iOS has the same set as `inboundSenders`.
+     *
+     * A sender here with no entry in [_subjects] is "sharing, waiting for their first fix".
+     */
+    private val _waitingSenders = MutableStateFlow<Set<String>>(emptySet())
+    val waitingSenders: StateFlow<Set<String>> = _waitingSenders.asStateFlow()
+
     /** True once the user has made the first Browse-only / Choose-who decision (§8 explainer). */
     private val _onboarded = MutableStateFlow(false)
     val onboarded: StateFlow<Boolean> = _onboarded.asStateFlow()
 
+    /**
+     * Last user-facing failure from the share lifecycle, or null. The Map MUST NOT claim you
+     * are visible when the share row never opened — that is a safety lie: the user believes
+     * chosen contacts can see them while nothing is published. Cleared on the next success.
+     */
+    private val _lastError = MutableStateFlow<String?>(null)
+    val lastError: StateFlow<String?> = _lastError.asStateFlow()
+
+    fun clearError() { _lastError.value = null }
+
     // ---- outbound share state -----------------------------------------------------------
+
+    /**
+     * The user's INTENT to be visible, kept separate from [_visibility] (which is the
+     * CONFIRMED state — the server row exists). A failed create leaves intent true and
+     * visibility GHOST, so [onForeground] retries without ever having lied to the user.
+     * Cleared only by an explicit ghost/kill-switch.
+     */
+    @Volatile private var wantsVisible: Boolean = false
 
     @Volatile private var shareId: String? = null
     @Volatile private var shareKey: ByteArray? = null       // my current outbound shareKey
@@ -125,11 +158,58 @@ object MapPresenceEngine {
      */
     fun setAudience(contacts: List<MapContact>) {
         val deduped = contacts.distinctBy { it.userId }
+        val previous = _audience.value
+        // Diff BEFORE replacing the list: a removed contact is no longer in `_audience`, and
+        // broadcastControl() only reaches the current audience, so they would never be told.
+        val removed = previous.filter { old -> deduped.none { it.userId == old.userId } }
+        val wasVisible = _visibility.value == MapVisibility.VISIBLE
+        val activeShareId = shareId
+
         _audience.value = deduped
         persist()
-        if (_visibility.value == MapVisibility.VISIBLE) {
+
+        if (wasVisible && removed.isNotEmpty()) {
+            // Revocation is a three-part act (§3), and Android previously did NONE of it —
+            // it just re-opened the share and relied on the server superseding it. That left
+            // the removed contact holding a working key, never told to stop, still rendering
+            // our last known position. All three parts matter:
+            //   1. loc_stop over WS      — a live viewer erases us immediately
+            //   2. durable map_off       — an offline viewer erases us when they next sync
+            //   3. DELETE /targets/:uid  — the server stops routing to them at all
+            // The rekey in openShare(rekey = true) below then makes their key useless for
+            // any FUTURE fix. (Revocation cannot un-see a fix already delivered.)
+            val removedIds = removed.map { it.userId }
+            if (activeShareId != null) {
+                ws?.sendLocStop(activeShareId, removedIds)
+                sendControlTo(MapEnvelope(k = "map_off", s = activeShareId, t = now()), removed)
+                scope.launch {
+                    for (id in removedIds) {
+                        runCatching { service?.revokeTarget(activeShareId, id) }
+                            .onFailure { Log.w(TAG, "map revokeTarget failed for $id", it) }
+                    }
+                }
+            }
+            Log.i(TAG, "map audience: revoked ${removedIds.size} contact(s), rekeying")
+        }
+
+        if (wasVisible) {
+            // Rekey on ANY change so a removed contact's key decrypts nothing further.
             if (deduped.isEmpty()) goGhost(0L) else scope.launch { openShare(rekey = true) }
         }
+    }
+
+    /**
+     * Drop ONE person from the allow-list — the manage sheet's per-person Remove.
+     *
+     * Deliberately routed through [setAudience] rather than editing `_audience` directly, so a
+     * single removal gets the exact same three-part revocation (loc_stop, durable map_off,
+     * DELETE /targets) plus rekey as a bulk change. A separate code path here would be a second
+     * place for revocation to be forgotten.
+     */
+    fun removeFromAudience(userId: String) {
+        val next = _audience.value.filterNot { it.userId == userId }
+        if (next.size == _audience.value.size) return
+        setAudience(next)
     }
 
     fun markOnboarded() { _onboarded.value = true; persist() }
@@ -143,7 +223,12 @@ object MapPresenceEngine {
      */
     fun goVisible() {
         if (_audience.value.isEmpty()) return
-        _visibility.value = MapVisibility.VISIBLE
+        _lastError.value = null
+        wantsVisible = true
+        // Do NOT flip to VISIBLE here. openShare() sets it only once the server row exists,
+        // so a failed create can never leave the UI claiming "you are visible" while nothing
+        // is being published. `_ghostUntil` is cleared up-front because the user's INTENT to
+        // stop ghosting is real regardless of whether the network call succeeds.
         _ghostUntil.value = 0L
         persist()
         scope.launch { openShare(rekey = true) }
@@ -155,6 +240,9 @@ object MapPresenceEngine {
      * [until] is epoch millis for a timed ghost, or 0 for "until I turn it off".
      */
     fun goGhost(until: Long) {
+        // MUST clear the intent, or the next onForeground() would re-open a share and put the
+        // user back on the map after they explicitly went dark.
+        wantsVisible = false
         _visibility.value = MapVisibility.GHOST
         _ghostUntil.value = until
         provider?.stop()
@@ -184,12 +272,17 @@ object MapPresenceEngine {
             _ghostUntil.value = 0L
             persist()
         }
-        if (_visibility.value == MapVisibility.VISIBLE) {
+        // Retry on INTENT, not on confirmed visibility — a create that failed while offline
+        // leaves us intent-visible but state-ghost, and this is the retry that recovers it.
+        if (wantsVisible) {
             val id = shareId
-            if (id != null) {
+            if (id != null && _visibility.value == MapVisibility.VISIBLE) {
                 scope.launch {
                     runCatching { service?.extend(id, MapConstants.MAP_MAX_DURATION_SECONDS.toLong()) }
-                        ?.getOrNull()?.let { expiresAt = now() + MapConstants.MAP_MAX_DURATION_SECONDS * 1000L }
+                        .onSuccess { expiresAt = now() + MapConstants.MAP_MAX_DURATION_SECONDS * 1000L }
+                        // A silently-failed extend used to let the server-side ceiling lapse
+                        // while we kept emitting against an expired row.
+                        .onFailure { Log.w(TAG, "map share extend failed for $id", it) }
                 }
                 provider?.requestSingle { lat, lon, acc -> emitFix(lat, lon, acc) }
             } else {
@@ -214,13 +307,19 @@ object MapPresenceEngine {
         if (rekey || shareKey == null) shareKey = generateMasterSecret()
         val resp = runCatching {
             svc.create(contacts.map { it.userId }, MapConstants.MAP_MAX_DURATION_SECONDS.toLong())
-        }.getOrNull() ?: run {
-            // Row couldn't be created (offline / server down). We keep the intent VISIBLE and
-            // retry on the next foreground — never crash, never silently drop the state.
+        }.getOrElse { e ->
+            // Row couldn't be created (offline / server down). Report it and stay GHOST: the
+            // user must not be told they are visible when nothing is published. Retried on the
+            // next foreground, which re-enters here while the intent is still VISIBLE.
+            Log.w(TAG, "map share create FAILED — staying ghost", e)
+            _lastError.value = "Couldn't start sharing your location. Check your connection and try again."
             return
         }
         shareId = resp.share_id
         expiresAt = now() + MapConstants.MAP_MAX_DURATION_SECONDS * 1000L
+        // Only NOW is the claim true: the server row exists and the key is about to go out.
+        _visibility.value = MapVisibility.VISIBLE
+        _lastError.value = null
         persist()
         // Distribute the fresh key to each contact over their 1:1 ratchet.
         val keyB64 = Base64.encodeToString(shareKey, Base64.NO_WRAP)
@@ -250,25 +349,56 @@ object MapPresenceEngine {
     }
 
     /** Send a durable control envelope to every contact over their 1:1 ratchet (silent, no bubble). */
-    private fun broadcastControl(env: MapEnvelope) {
+    private fun broadcastControl(env: MapEnvelope) = sendControlTo(env, _audience.value)
+
+    /**
+     * Send a durable control envelope to an EXPLICIT recipient list. Needed for revocation,
+     * where the target has already been removed from `_audience` and so cannot be reached by
+     * [broadcastControl] — the reason a removed contact was never told to erase us.
+     */
+    private fun sendControlTo(env: MapEnvelope, recipients: List<MapContact>) {
         val engine = chat ?: return
         val json = ApiClient.json.encodeToString(MapEnvelope.serializer(), env)
-        for (c in _audience.value) {
-            scope.launch { runCatching { engine.sendLocationControl(json, c.conversationId, c.userId) } }
+        for (c in recipients) {
+            scope.launch {
+                runCatching { engine.sendLocationControl(json, c.conversationId, c.userId) }
+                    // A failed map_key means that contact can never decrypt us; a failed
+                    // map_off means they keep showing a stale position. Both were silent.
+                    .onFailure { Log.w(TAG, "map ${env.k} send to ${c.userId} failed", it) }
+            }
         }
     }
 
     // ---- inbound: decode others' presence ----------------------------------------------
 
     private fun onControl(plaintextJson: String, fromUserId: String) {
-        val env = runCatching { ApiClient.json.decodeFromString(MapEnvelope.serializer(), plaintextJson) }.getOrNull() ?: return
-        if (env.vloc != 1) return
+        val env = runCatching { ApiClient.json.decodeFromString(MapEnvelope.serializer(), plaintextJson) }
+            .getOrElse {
+                Log.w(TAG, "map control from $fromUserId: envelope decode failed", it)
+                return
+            }
+        // Discriminate on KIND, not on _vloc. `vloc` is only a version hint, and rejecting on
+        // it means a future peer bumping the version silently kills every control message with
+        // no trace. iOS made the same field tolerant for exactly this reason.
+        if (env.vloc != 1) Log.w(TAG, "map control from $fromUserId: unexpected _vloc=${env.vloc}, processing anyway")
         when (env.k) {
             "map_key" -> {
-                val id = env.s ?: return
-                val keyB64 = env.key ?: return
-                val key = runCatching { Base64.decode(keyB64, Base64.NO_WRAP) }.getOrNull() ?: return
-                inbound[id] = InboundShare(fromUserId, key, env.expiresAt ?: (now() + MapConstants.STALE_MAX_AGE_MS))
+                val id = env.s ?: run { Log.w(TAG, "map_key from $fromUserId: missing share id"); return }
+                val keyB64 = env.key ?: run { Log.w(TAG, "map_key from $fromUserId: missing key"); return }
+                val key = runCatching { Base64.decode(keyB64, Base64.NO_WRAP) }.getOrElse {
+                    Log.w(TAG, "map_key from $fromUserId: key is not valid base64", it)
+                    return
+                }
+                // Same fallback as the background capture path in ChatEngine — these MUST
+                // agree, or a key captured in the foreground expires hours before the very
+                // same key captured while backgrounded. See MapConstants.DEFAULT_KEY_TTL_MS.
+                inbound[id] = InboundShare(fromUserId, key,
+                    env.expiresAt ?: (now() + MapConstants.DEFAULT_KEY_TTL_MS))
+                // Record the sender NOW, so they show as "sharing — waiting for location"
+                // immediately, instead of only when their first fix happens to decrypt while
+                // the app is open. This is what made the map look permanently empty.
+                noteWaitingSender(fromUserId)
+                Log.i(TAG, "map_key captured from $fromUserId share=$id")
                 persist()
             }
             "map_off" -> {
@@ -289,17 +419,42 @@ object MapPresenceEngine {
         // app was killed/backgrounded (captured by ChatEngine into MapInboundKeyStore), so it
         // isn't in our in-memory registry yet. Without this, every fix from a contact who
         // started sharing while we were away is dropped — the "others never appear" bug.
-        val share = inbound[fixShareId] ?: restoreInboundKey(fixShareId) ?: return
-        val blob = runCatching { Base64.decode(ciphertextB64, Base64.NO_WRAP) }.getOrNull() ?: return
-        val plain = runCatching { decryptBackup(share.key, blob) }.getOrNull() ?: return
-        val env = runCatching { ApiClient.json.decodeFromString(MapEnvelope.serializer(), plain.decodeToString()) }.getOrNull() ?: return
-        if (env.k != "fix" || env.vloc != 1) return
-        val lat = env.lat ?: return
-        val lon = env.lon ?: return
+        // Every step below is logged on failure. This whole chain used to be
+        // `runCatching{}.getOrNull() ?: return` with no logging at all, which made "no key
+        // yet", "stale key after a rekey", "corrupt frame" and "schema mismatch" completely
+        // indistinguishable AND invisible — a fix that never drew left no trace to debug.
+        val share = inbound[fixShareId] ?: restoreInboundKey(fixShareId) ?: run {
+            Log.w(TAG, "map fix DROPPED share=$fixShareId from=$fromUserId: no inbound key held")
+            return
+        }
+        val blob = runCatching { Base64.decode(ciphertextB64, Base64.NO_WRAP) }.getOrElse {
+            Log.w(TAG, "map fix DROPPED share=$fixShareId: ciphertext not valid base64", it)
+            return
+        }
+        val plain = runCatching { decryptBackup(share.key, blob) }.getOrElse {
+            Log.w(TAG, "map fix DROPPED share=$fixShareId: decrypt failed (stale key — sender likely rekeyed)", it)
+            return
+        }
+        val env = runCatching { ApiClient.json.decodeFromString(MapEnvelope.serializer(), plain.decodeToString()) }
+            .getOrElse {
+                Log.w(TAG, "map fix DROPPED share=$fixShareId: envelope decode failed", it)
+                return
+            }
+        if (env.k != "fix") {
+            Log.w(TAG, "map fix DROPPED share=$fixShareId: unexpected kind ${env.k}")
+            return
+        }
+        // Version is a hint, not a gate — see onControl.
+        if (env.vloc != 1) Log.w(TAG, "map fix share=$fixShareId: unexpected _vloc=${env.vloc}, processing anyway")
+        val lat = env.lat ?: run { Log.w(TAG, "map fix DROPPED share=$fixShareId: no lat"); return }
+        val lon = env.lon ?: run { Log.w(TAG, "map fix DROPPED share=$fixShareId: no lon"); return }
         val n = env.n ?: 0L
         // Drop an out-of-order relay frame rather than rendering a jump backwards.
         val last = subjectSeq[fixShareId] ?: -1L
-        if (n <= last) return
+        if (n <= last) {
+            Log.d(TAG, "map fix ignored share=$fixShareId: out-of-order seq $n <= $last")
+            return
+        }
         subjectSeq[fixShareId] = n
         val fix = MapFix(share.fromUserId, fixShareId, lat, lon, env.acc, n, env.t ?: ts)
         val subject = MapSubject(share.fromUserId, fix, MapSubjectState.LIVE)
@@ -325,8 +480,21 @@ object MapPresenceEngine {
     }
 
     private fun eraseSubject(userId: String) {
-        // Explicit stop → the subject disappears with no last position retained.
+        // Explicit stop → the subject disappears with no last position retained, and they are
+        // no longer "waiting" either: they have gone dark, not merely not-yet-fixed.
         _subjects.value = _subjects.value.toMutableMap().apply { remove(userId) }
+        forgetWaitingSender(userId)
+    }
+
+    /** They handed us a key — they are sharing with us, even before their first fix lands. */
+    private fun noteWaitingSender(userId: String) {
+        if (userId.isEmpty() || _waitingSenders.value.contains(userId)) return
+        _waitingSenders.value = _waitingSenders.value + userId
+    }
+
+    private fun forgetWaitingSender(userId: String) {
+        if (!_waitingSenders.value.contains(userId)) return
+        _waitingSenders.value = _waitingSenders.value - userId
     }
 
     /** Re-derive every subject's state from its fix age (§8). Works with zero network. */
@@ -346,6 +514,33 @@ object MapPresenceEngine {
             e.setValue(e.value.copy(state = state))
         }
         _subjects.value = next
+    }
+
+    /**
+     * Sign-out wipe. Ordering mirrors SessionTeardown: stop emitting FIRST, then clear the
+     * in-memory state, then the prefs — otherwise a live provider callback could flush stale
+     * presence back to disk after the delete.
+     */
+    fun resetForSignOut(context: Context) {
+        provider?.stop()
+        wantsVisible = false
+        _visibility.value = MapVisibility.GHOST
+        _ghostUntil.value = 0L
+        _audience.value = emptyList()
+        _subjects.value = emptyMap()
+        _waitingSenders.value = emptySet()
+        _onboarded.value = false
+        _lastError.value = null
+        shareId = null
+        shareKey = null
+        expiresAt = 0L
+        seq = 0L
+        inbound.clear()
+        subjectSeq.clear()
+        runCatching { SecurePrefs.open(context.applicationContext, "voiid_map").edit().clear().apply() }
+        // The background-capture key store is a SEPARATE prefs file and must be cleared too,
+        // or contacts' inbound map keys outlive the account that received them.
+        runCatching { MapInboundKeyStore.clear(context.applicationContext) }
     }
 
     // ---- persistence (encrypted prefs, never SQLite) ------------------------------------
@@ -368,12 +563,18 @@ object MapPresenceEngine {
             .putString("share_key", shareKey?.let { Base64.encodeToString(it, Base64.NO_WRAP) })
             .putLong("expires_at", expiresAt)
             .putString("inbound", inboundJson)
+            // Persisted so a contact who is sharing with us still shows on the map after a
+            // cold start, rather than vanishing until their next fix arrives.
+            .putStringSet("waiting_senders", _waitingSenders.value)
             .apply()
     }
 
     private fun restore() {
         val p = prefs() ?: return
         _visibility.value = runCatching { MapVisibility.valueOf(p.getString("visibility", null) ?: "GHOST") }.getOrDefault(MapVisibility.GHOST)
+        // A restored VISIBLE state means the user had asked to be visible, so the intent must
+        // survive the restart too — otherwise onForeground() would never re-open the share.
+        wantsVisible = _visibility.value == MapVisibility.VISIBLE
         _ghostUntil.value = p.getLong("ghost_until", 0L)
         _onboarded.value = p.getBoolean("onboarded", false)
         p.getString("audience", null)?.let { j ->
@@ -382,6 +583,8 @@ object MapPresenceEngine {
         shareId = p.getString("share_id", null)
         shareKey = p.getString("share_key", null)?.let { runCatching { Base64.decode(it, Base64.NO_WRAP) }.getOrNull() }
         expiresAt = p.getLong("expires_at", 0L)
+        // Copy the set — SharedPreferences forbids mutating the instance it hands back.
+        _waitingSenders.value = p.getStringSet("waiting_senders", null)?.toSet() ?: emptySet()
         p.getString("inbound", null)?.let { j ->
             runCatching { ApiClient.json.decodeFromString(ListSerializer(PersistedInbound.serializer()), j) }.getOrNull()?.forEach {
                 inbound[it.shareId] = InboundShare(it.from, runCatching { Base64.decode(it.key, Base64.NO_WRAP) }.getOrNull() ?: return@forEach, it.expiresAt)

@@ -336,36 +336,87 @@ struct ChatsHomeView: View {
         VStack(spacing: VoiidSpacing.sm) {
             ZStack(alignment: .topTrailing) {
                 // Avatar fills the column width as a square (scales per device).
+                // The avatar is clipped to the tile HERE, before anything is layered on top.
+                // `scaledToFill` deliberately overflows its frame to cover the square, so
+                // without a clip bound to the tile itself the photo spilled past the rounded
+                // corners and over the neighbouring column.
                 ZStack {
                     RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
                         .fill(VoiidColor.fieldFill)
-                    if let name = conv.photoName, let ui = UIImage(named: name) {
-                        Image(uiImage: ui).resizable().scaledToFill()
-                    } else {
-                        Image("VoiidWordmark").resizable().scaledToFit()
-                            .frame(width: 56).opacity(0.22)
-                    }
+                    GridCardAvatar(conv: conv)
                 }
                 .aspectRatio(1, contentMode: .fit)
+                .clipped()
                 .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
 
+                // Badges sit INSIDE the tile. They used to be pushed OUT past its edge
+                // (offset x: 6, y: -6), which broke the grid's alignment and let a badge
+                // overlap the tile beside it.
                 if conv.isOnline {
                     Circle().fill(VoiidColor.success)
-                        .frame(width: 13, height: 13)
+                        .frame(width: 12, height: 12)
                         .overlay(Circle().stroke(VoiidColor.background, lineWidth: 2))
-                        .offset(x: -6, y: 6)
+                        .padding(6)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
                 }
                 if conv.unreadCount > 0 {
                     Text("\(conv.unreadCount)")
-                        .font(VoiidFont.rounded(11, .bold)).foregroundColor(.white)
+                        .font(VoiidFont.rounded(11, .bold)).foregroundColor(VoiidColor.textOnPrimary)
                         .frame(minWidth: 20, minHeight: 20)
-                        .background(VoiidColor.error).clipShape(Circle())
-                        .offset(x: 6, y: -6)
+                        .background(VoiidColor.accent).clipShape(Circle())
+                        .overlay(Circle().stroke(VoiidColor.background, lineWidth: 1.5))
+                        .padding(5)
                 }
             }
             Text(conv.title)
                 .font(VoiidFont.rounded(13, .regular)).foregroundColor(VoiidColor.textPrimary)
                 .lineLimit(1)
+        }
+    }
+}
+
+/// The face on a chat-home grid tile.
+///
+/// WHY THIS EXISTS: the grid used to render `UIImage(named: conv.photoName)` — a BUNDLED
+/// ASSET name left over from the dummy data. Real peers have no bundled asset, so every
+/// real conversation fell through to the wordmark and no peer photo ever appeared. Real
+/// photos live at `photo_url` (an absolute URL or an R2 object key) on the user directory,
+/// which this consults through `AvatarCache` — the same cache the profile button, chat
+/// header and map markers use, so a face is fetched once per launch and then painted from
+/// memory/disk everywhere (and offline).
+///
+/// Groups have no peer, so they keep the wordmark until group photos exist as a feature.
+private struct GridCardAvatar: View {
+    let conv: VConversation
+    @ObservedObject private var directory = UserDirectory.shared
+
+    /// Seeded synchronously from the cache so a known face paints on the FIRST frame —
+    /// no flash of wordmark when scrolling back to a tile we already resolved.
+    @State private var image: UIImage?
+
+    /// Directory first (authoritative, and republishes on a contacts sync), then the members
+    /// payload carried on the conversation itself.
+    private var ref: String? {
+        if let peer = conv.peerUserId, let url = directory.photoURL(peer) { return url }
+        return conv.photoURL
+    }
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image).resizable().scaledToFill()
+            } else if let name = conv.photoName, let ui = UIImage(named: name) {
+                // Legacy bundled-asset path, kept so seeded/demo conversations still render.
+                Image(uiImage: ui).resizable().scaledToFill()
+            } else {
+                Image("VoiidWordmark").resizable().scaledToFit()
+                    .frame(width: 56).opacity(0.22)
+            }
+        }
+        .onAppear { if image == nil { image = AvatarCache.cached(ref) } }
+        .task(id: ref) {
+            if image == nil { image = AvatarCache.cached(ref) }
+            if image == nil, let ref { image = await AvatarCache.resolve(ref) }
         }
     }
 }

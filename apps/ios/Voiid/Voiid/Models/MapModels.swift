@@ -51,7 +51,11 @@ struct MapEnvelope: Codable {
     var lat: Double? = nil
     var lon: Double? = nil
     var acc: Double? = nil
-    var n: Int? = nil        // monotonic fix sequence — an out-of-order relay frame is dropped
+    // Int64 (not Int) to match Android's `Long` exactly. The whole guard chain in
+    // receiveFix() hard-requires `n`, and a decode throw there returns silently with no log,
+    // so a width mismatch would drop every fix from that peer invisibly — the same failure
+    // shape as the t/expiresAt bug. Narrowed to the store's Int at the boundary.
+    var n: Int64? = nil      // monotonic fix sequence — an out-of-order relay frame is dropped
     var expiresAt: Int64? = nil   // map_key only
     var key: String? = nil        // map_key only — base64 of the 32-byte shareKey
     var cadence: Int? = nil       // seconds; map_key only
@@ -85,7 +89,7 @@ extension MapEnvelope {
             // Accuracy is coarsened too — a precise accuracy ring leaks precision the
             // rounded coordinate was meant to remove.
             acc: max(accuracy, 100).rounded(),
-            n: seq
+            n: Int64(seq)
         )
     }
 }

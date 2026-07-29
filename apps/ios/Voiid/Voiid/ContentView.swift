@@ -11,8 +11,9 @@ struct ContentView: View {
     @StateObject private var session = AppSession()
     @StateObject private var chat = ChatStore()
     @StateObject private var ai = AIStore()
-    @StateObject private var clips = ClipsStore()
     @ObservedObject private var call = CallService.shared
+    /// Drives the app-wide Light / Dark / System choice (Settings → Appearance).
+    @ObservedObject private var theme = ThemePreference.shared
     /// Set when the user taps the PiP window (or the in-app floating window) to
     /// come back to a call whose screen is no longer presented.
     @State private var restoreCallUIRequested = false
@@ -29,9 +30,11 @@ struct ContentView: View {
         .environmentObject(session)
         .environmentObject(chat)
         .environmentObject(ai)
-        .environmentObject(clips)
         .tint(VoiidColor.primary)
-        .preferredColorScheme(.light)   // fixed light design — identical in light & dark mode
+        // The app is no longer pinned to light: every VoiidColor token resolves per theme
+        // (Peacock), so this follows the user's Light / Dark / System choice. `.system`
+        // yields nil, which SwiftUI reads as "inherit from the OS".
+        .preferredColorScheme(theme.mode.colorScheme)
         // Global incoming-call surface: an inbound 1:1 call (offer received over the
         // socket) presents the call screen over whatever is on screen.
         .fullScreenCover(isPresented: incomingCallPresented) {

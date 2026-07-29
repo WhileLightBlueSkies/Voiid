@@ -30,11 +30,17 @@ data class MapEnvelope(
     @SerialName("_vloc") val vloc: Int = 1,
     val k: String,                       // map_key | map_off | fix
     val s: String? = null,               // share_id (uuid)
+    // t / n / expiresAt use the lenient decoder for the same reason as LocationEnvelope: a
+    // peer that puts a fractional literal on the wire must not silently kill the whole frame.
+    // See LenientEpochMillisSerializer.
+    @Serializable(with = LenientEpochMillisSerializer::class)
     val t: Long? = null,                 // fix wall-clock millis
+    @Serializable(with = LenientEpochMillisSerializer::class)
     val n: Long? = null,                 // monotonic seq — drops an out-of-order relay frame
     val lat: Double? = null,
     val lon: Double? = null,
     val acc: Double? = null,
+    @Serializable(with = LenientEpochMillisSerializer::class)
     val expiresAt: Long? = null,         // map_key only — the guarantee both sides hold locally
     val key: String? = null,            // map_key only — base64 32-byte shareKey (NEVER a backup secret)
     val cadence: Int? = null,            // seconds — map_key only
@@ -98,6 +104,17 @@ object MapConstants {
 
     // Hard 24-hour auto-ghost (§3): visibility is never something you forget about for a week.
     const val MAP_MAX_DURATION_SECONDS = 24 * 60 * 60
+
+    /**
+     * Fallback lifetime for an inbound `map_key` that arrived with no `expiresAt`.
+     *
+     * MUST be used by BOTH capture paths — MapPresenceEngine.onControl (foreground) and
+     * ChatEngine's background capture. They previously disagreed (8 h vs 24 h), so the exact
+     * same key expired 16 h early depending only on whether the app happened to be open when
+     * it arrived. Anchored to the share ceiling, which is the real upper bound on how long a
+     * sender's share can live.
+     */
+    const val DEFAULT_KEY_TTL_MS = MAP_MAX_DURATION_SECONDS * 1000L
 
     // Map presence coordinates are rounded to 3 decimals (~110 m) BEFORE encryption (§4).
     const val PRESENCE_COORD_DECIMALS = 3

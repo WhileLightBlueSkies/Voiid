@@ -42,10 +42,12 @@ import androidx.compose.material.icons.automirrored.filled.Forward
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Image
@@ -81,6 +83,7 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import com.voiid.app.model.MessageKind
 import com.voiid.app.model.MessageStatus
+import com.voiid.app.model.VCallLog
 import com.voiid.app.model.VMessage
 import com.voiid.app.model.VPoll
 import com.voiid.app.ui.components.LocalVoiidHaptics
@@ -126,7 +129,16 @@ fun MessageBubble(
     onInfo: () -> Unit = {},
     onDelete: () -> Unit = {},
     onVote: (String) -> Unit = {},
+    /** Tap a call bubble to call back, with that call's kind (true = video). */
+    onCallBack: (Boolean) -> Unit = {},
 ) {
+    // A finished call (WhatsApp-style): its own sided, tappable bubble — NOT a centered
+    // system pill, because it is an action you can repeat, not an announcement.
+    message.call?.let { log ->
+        CallLogBubble(log, onCallBack = { onCallBack(log.isVideo) })
+        return
+    }
+
     // System message — centered pill (e.g. "You added Priyanshu").
     if (message.kind == MessageKind.SYSTEM) {
         Box(Modifier.fillMaxWidth().padding(vertical = 2.dp), contentAlignment = Alignment.Center) {
@@ -366,6 +378,68 @@ private fun BubbleInner(message: VMessage, isGroup: Boolean, isLastMine: Boolean
                 modifier = Modifier.weight(1f, fill = false),
             )
             MetaRow(message, isLastMine)
+        }
+    }
+}
+
+/**
+ * A finished call, in the transcript (WhatsApp/Signal style).
+ *
+ * Sided like a real bubble — outgoing right, incoming left — because a call IS attributable
+ * to one party, unlike a system announcement. Tapping calls back with the same kind.
+ *
+ * A MISSED incoming call is the one state that gets colour: it is the only one the user may
+ * still need to act on. Everything else stays quiet so a long call history does not shout.
+ */
+@Composable
+private fun CallLogBubble(log: VCallLog, onCallBack: () -> Unit) {
+    val haptics = LocalVoiidHaptics.current
+    val missed = log.incoming && !log.answered
+    val tint = if (missed) VoiidColor.error else VoiidColor.textSecondary
+    val icon = when {
+        log.isVideo -> Icons.Default.Videocam
+        else -> Icons.Default.Call
+    }
+    val title = when {
+        log.answered -> if (log.isVideo) "Video call" else "Voice call"
+        log.outcome == "declined" -> if (log.incoming) "Declined call" else "Call declined"
+        log.outcome == "failed" -> "Call failed"
+        log.incoming -> if (log.isVideo) "Missed video call" else "Missed voice call"
+        else -> "No answer"
+    }
+    // Duration only when there IS one — an unanswered call has no elapsed time to report.
+    val subtitle = log.durationSeconds?.let { s ->
+        val m = s / 60
+        if (m >= 60) "%d:%02d:%02d".format(m / 60, m % 60, s % 60) else "%d:%02d".format(m, s % 60)
+    }
+
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        horizontalArrangement = if (log.incoming) Arrangement.Start else Arrangement.End,
+    ) {
+        Row(
+            Modifier
+                .clip(RoundedCornerShape(16.dp))
+                .background(if (log.incoming) VoiidColor.bubbleReceived else VoiidColor.bubbleSent)
+                .clickable { haptics.tap(); onCallBack() }
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(icon, null, tint = tint, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.size(10.dp))
+            Column {
+                Text(title, style = VoiidFont.rounded(14, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        VoiidDate.bubbleTime(log.startedAt),
+                        style = VoiidFont.rounded(11),
+                        color = VoiidColor.textSecondary,
+                    )
+                    subtitle?.let {
+                        Text("· $it", style = VoiidFont.rounded(11), color = VoiidColor.textSecondary)
+                    }
+                }
+            }
         }
     }
 }

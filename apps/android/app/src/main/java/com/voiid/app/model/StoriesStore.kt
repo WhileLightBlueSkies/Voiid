@@ -12,6 +12,7 @@ import com.voiid.app.model.ConversationType
 import com.voiid.app.net.ChatEngine
 import com.voiid.app.net.ChatService
 import com.voiid.app.net.StoryEngine
+import com.voiid.app.net.WebSocketClient
 import com.voiid.app.store.LocalStore
 import com.voiid.app.store.StoryLocalStore
 import com.voiid.app.store.UserDirectory
@@ -80,6 +81,18 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
     val myContext: StoryContext? get() = contexts.firstOrNull { it.isMine }
     val othersContexts: List<StoryContext> get() = contexts.filter { !it.isMine }
 
+    init {
+        // LIVE feed updates. Without this the ONLY trigger was StoriesHomeView's one-shot
+        // `LaunchedEffect(Unit)`, so a story that arrived while the app was open simply did not
+        // show — no tray entry, no unread dot — until the tab was re-composed. The server has
+        // always published `story` / `story_receipt` / `story_deleted` and iOS has always
+        // consumed them; Android just had no handler (the frames hit `else -> Unit`).
+        //
+        // The frame carries no payload on purpose: it is a nudge to re-sync through the
+        // authenticated feed, never story data over the socket.
+        WebSocketClient.get(app).onStorySignal = { refresh() }
+    }
+
     // MARK: - Load / sync
 
     /** Render local first, then sweep expired, then sync the feed + counts + receipts. */
@@ -89,7 +102,7 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
             engine.sweep()
             loadLocal()
             runCatching { engine.syncFeed() }
-                .onFailure { loadError = "Couldn't refresh stories." }
+                .onFailure { loadError = "Couldn't refresh moments." }
             loadLocal()
             runCatching { deliveredCounts.putAll(engine.mineCounts()) }
             runCatching { engine.fetchReceipts(receiptsEnabled) }
@@ -126,10 +139,16 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
      */
     suspend fun candidateAudience(): List<AudienceEntry> {
         val convs = runCatching { LocalStore.conversations(appContext) }.getOrDefault(emptyList())
-        return convs.asSequence()
+        val peers = convs.asSequence()
             .filter { it.type == ConversationType.DIRECT }
             .mapNotNull { it.peerUserId }
+        // UNION with the address-book directory. Conversation peers alone missed every saved
+        // contact you have not messaged yet; the directory alone (what iOS used to do) missed
+        // everyone you chat with but never saved. Both platforms now offer the same set.
+        val me = com.voiid.app.net.TokenStore.get(appContext).userId
+        return (peers + UserDirectory.knownUserIds())
             .distinct()
+            .filter { it.isNotEmpty() && it != me }
             .map { AudienceEntry(it, UserDirectory.displayName(it), UserDirectory.photoUrl(it)) }
             .sortedBy { it.name.lowercase() }
             .toList()
@@ -191,7 +210,7 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
                 StoryLocalStore.deleteStory(appContext, tempId)   // real row replaces the placeholder
             } catch (e: Exception) {
                 StoryLocalStore.setUpload(appContext, tempId, StoryUploadState.FAILED)
-                loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn't post your story."
+                loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn't post your moment."
             } finally {
                 posting = false
                 loadLocal()

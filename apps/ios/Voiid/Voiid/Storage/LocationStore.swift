@@ -147,6 +147,30 @@ enum LocationStore {
         }
     }
 
+    /// Every still-running inbound share, across ALL conversations.
+    ///
+    /// For the Map tab (docs/LOCATION.md §5): a contact who is live-sharing with you from any
+    /// chat should also appear on the Map, moving at the share's cadence. Same rows as
+    /// `activeInbound(conversationId:)` without the conversation filter — no new state, and
+    /// nothing is published as a result of reading this.
+    static func activeInboundAll() -> [(shareId: String, ownerUserId: String, expiresAt: Date, cadence: Int)] {
+        let now = nowSeconds()
+        let rows = db.read { database -> [Row] in
+            try Row.fetchAll(database, sql: """
+                SELECT id, peer_user_id, expires_at, cadence_seconds
+                  FROM location_shares
+                 WHERE direction = 'in' AND ended_at IS NULL AND expires_at > ?
+                """, arguments: [now])
+        } ?? []
+        return rows.compactMap { row in
+            guard let owner: String = row["peer_user_id"] else { return nil }
+            let id: String = row["id"]
+            let expSecs: Int64 = row["expires_at"] ?? now
+            let cadence: Int = row["cadence_seconds"] ?? 15
+            return (id, owner, Date(timeIntervalSince1970: TimeInterval(expSecs)), cadence)
+        }
+    }
+
     /// True when this device holds an active inbound share with this id — the CLIENT-SIDE
     /// authorization check for a relayed loc_update (docs/LOCATION.md §9): a frame whose
     /// share_id is unknown is dropped.

@@ -199,7 +199,7 @@ private fun SourceChooser(
 ) {
     Column(Modifier.fillMaxSize().statusBarsPadding().padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("New story", style = VoiidFont.rounded(22, FontWeight.Bold), color = VoiidColor.textPrimary)
+            Text("New moment", style = VoiidFont.rounded(22, FontWeight.Bold), color = VoiidColor.textPrimary)
             Spacer(Modifier.weight(1f))
             Icon(Icons.Default.Close, "Close", tint = VoiidColor.textPrimary, modifier = Modifier.size(26.dp).softClickable(scale = 0.9f) { onClose() })
         }
@@ -262,7 +262,7 @@ private fun prepareVideo(context: Context, uri: Uri, bytes: ByteArray, mime: Str
     return runCatching {
         retriever.setDataSource(context, uri)
         val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-        if (durationMs > MAX_VIDEO_MS) return null to "Stories can be up to 30 seconds."
+        if (durationMs > MAX_VIDEO_MS) return null to "Moments can be up to 30 seconds."
         val w = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull()
         val h = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull()
         val frame = retriever.getFrameAtTime(0)

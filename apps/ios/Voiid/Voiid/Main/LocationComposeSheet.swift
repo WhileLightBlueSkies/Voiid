@@ -59,7 +59,8 @@ struct LocationComposeSheet: View {
                 if engine.authorizationStatus == .notDetermined { engine.requestWhenInUse() }
             }
         }
-        .preferredColorScheme(.light)
+        // No colour-scheme pin: Peacock tokens resolve per theme, and a sheet that
+        // forced light would be the one bright rectangle in a dark app.
         .tint(VoiidColor.primary)
     }
 

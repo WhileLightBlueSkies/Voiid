@@ -1,9 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- VOIID brand tokens (Master Spec 6.1) — fixed light design. -->
-    <color name="voiid_primary">#4D3E47</color>
-    <color name="voiid_background">#DFDFDF</color>
-    <color name="voiid_field_fill">#FCF4F8</color>
+    <!--
+      PEACOCK brand tokens, LIGHT. Mirrors ui/theme/Color.kt (VoiidPalette) — keep the two in
+      step; these exist because the launch window is drawn by the platform before Compose is
+      alive, so it cannot read the Kotlin tokens.
+    -->
+    <color name="voiid_primary">#0E6F68</color>       <!-- peacock teal -->
+    <color name="voiid_background">#F8F5F1</color>    <!-- warm off-white ground -->
+    <color name="voiid_field_fill">#F1EDE7</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
 </resources>

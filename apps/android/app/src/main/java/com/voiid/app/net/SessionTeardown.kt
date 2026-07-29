@@ -56,5 +56,10 @@ object SessionTeardown {
         // 4 — decrypted media cache (memory + disk), or the previous account's photos/voice
         // notes stay readable on this device behind the login screen.
         runCatching { com.voiid.app.main.MediaCache.clear(appContext) }
+
+        // 5 — the Map's presence state. Without this the previous account's allow-list, its
+        // outbound share key, and every INBOUND map key (i.e. contacts' decryptable positions)
+        // survived sign-out into the next account on the device.
+        runCatching { MapPresenceEngine.resetForSignOut(appContext) }
     }
 }

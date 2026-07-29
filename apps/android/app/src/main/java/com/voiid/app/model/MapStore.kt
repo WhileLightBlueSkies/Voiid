@@ -21,13 +21,19 @@ class MapStore(app: Application) : AndroidViewModel(app) {
     val ghostUntil get() = MapPresenceEngine.ghostUntil
     val audience get() = MapPresenceEngine.audience
     val subjects get() = MapPresenceEngine.subjects
+    /** People sharing with us who have no fix yet — shown as "waiting for location". */
+    val waitingSenders get() = MapPresenceEngine.waitingSenders
     val onboarded get() = MapPresenceEngine.onboarded
+    /** Non-null when going visible failed — the Map must say so rather than imply it worked. */
+    val lastError get() = MapPresenceEngine.lastError
 
     fun setAudience(contacts: List<MapContact>) = MapPresenceEngine.setAudience(contacts)
+    fun removeFromAudience(userId: String) = MapPresenceEngine.removeFromAudience(userId)
     fun goVisible() = MapPresenceEngine.goVisible()
     fun goGhost(until: Long = 0L) = MapPresenceEngine.goGhost(until)
     fun killSwitch() = MapPresenceEngine.killSwitch()
     fun markOnboarded() = MapPresenceEngine.markOnboarded()
+    fun clearError() = MapPresenceEngine.clearError()
     fun onForeground() = MapPresenceEngine.onForeground()
     fun onBackground() = MapPresenceEngine.onBackground()
     fun recomputeSubjects() = MapPresenceEngine.recomputeSubjects()

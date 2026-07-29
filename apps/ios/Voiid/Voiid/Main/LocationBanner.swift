@@ -47,7 +47,7 @@ struct LocationBanner: View {
                 if shares.count == 1 { stop(shares[0].id) } else { confirmStopAll = true }
             } label: {
                 Text(shares.count == 1 ? "Stop" : "Stop all")
-                    .font(VoiidFont.rounded(13, .semibold)).foregroundColor(.white)
+                    .font(VoiidFont.rounded(13, .semibold)).foregroundColor(VoiidColor.textOnPrimary)
                     .padding(.horizontal, VoiidSpacing.md).padding(.vertical, 6)
                     .background(VoiidColor.error).clipShape(Capsule())
             }

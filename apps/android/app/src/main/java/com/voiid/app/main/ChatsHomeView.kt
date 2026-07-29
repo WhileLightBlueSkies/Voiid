@@ -10,6 +10,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -38,6 +39,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.clip
+import com.voiid.app.net.AvatarCache
 import com.voiid.app.net.ContactsService
 import com.voiid.app.net.VContact
 import kotlinx.coroutines.launch
@@ -56,6 +58,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -72,8 +75,10 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -83,6 +88,7 @@ import com.voiid.app.model.ChatStore
 import com.voiid.app.model.ConversationType
 import com.voiid.app.model.DummyData
 import com.voiid.app.model.VConversation
+import com.voiid.app.store.UserDirectory
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.VoiidWordmark
 import com.voiid.app.ui.components.softClickable
@@ -677,6 +683,18 @@ private fun Tabs(selected: ChatTab, onSelect: (ChatTab) -> Unit) {
 
 @Composable
 private fun GridCard(conv: VConversation, modifier: Modifier) {
+    val context = LocalContext.current
+    // The peer's real face. Directory first (authoritative + recomposes on a contacts sync),
+    // then the members payload carried on the conversation. Groups have no peer, so they keep
+    // the wordmark until group photos exist as a feature.
+    val photoRef = conv.peerUserId?.let { UserDirectory.photoUrl(it) } ?: conv.photoURL
+    // Memory hit paints on the FIRST frame (no flash of wordmark on a cached face); the
+    // LaunchedEffect only runs for a genuine miss, and AvatarCache single-flights it.
+    var avatar by remember(photoRef) { mutableStateOf(AvatarCache.cached(photoRef)) }
+    LaunchedEffect(photoRef) {
+        if (avatar == null) avatar = AvatarCache.resolve(context, photoRef)
+    }
+
     Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
         Box(Modifier.fillMaxWidth().aspectRatio(1f)) {
             Box(
@@ -686,15 +704,28 @@ private fun GridCard(conv: VConversation, modifier: Modifier) {
                     .background(VoiidColor.fieldFill),
                 contentAlignment = Alignment.Center,
             ) {
-                // iOS renders the wordmark image at width 56pt (~52% of card), very faint.
-                VoiidWordmark(fontSize = 23, alpha = 0.15f)
+                val bmp = avatar
+                if (bmp != null) {
+                    Image(
+                        bitmap = bmp,
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop,
+                    )
+                } else {
+                    // iOS renders the wordmark image at width 56pt (~52% of card), very faint.
+                    VoiidWordmark(fontSize = 23, alpha = 0.15f)
+                }
             }
+            // Badges sit INSIDE the tile. They used to be pushed OUT past its edge (offset
+            // x 6, y -6), which broke the grid's alignment and let a badge overlap the tile
+            // beside it. Matches iOS ChatsHomeView.gridCard.
             if (conv.isOnline) {
                 Box(
                     Modifier
-                        .align(Alignment.TopEnd)
-                        .offset(x = (-6).dp, y = 6.dp)
-                        .size(13.dp)
+                        .align(Alignment.BottomStart)
+                        .padding(6.dp)
+                        .size(12.dp)
                         .clip(CircleShape)
                         .background(VoiidColor.background)
                         .padding(2.dp)
@@ -706,13 +737,17 @@ private fun GridCard(conv: VConversation, modifier: Modifier) {
                 Box(
                     Modifier
                         .align(Alignment.TopEnd)
-                        .offset(x = 6.dp, y = (-6).dp)
+                        .padding(5.dp)
                         .size(20.dp)
                         .clip(CircleShape)
-                        .background(VoiidColor.error),
+                        .background(VoiidColor.accent),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text("${conv.unreadCount}", style = VoiidFont.rounded(11, FontWeight.Bold), color = Color.White)
+                    Text(
+                        "${conv.unreadCount}",
+                        style = VoiidFont.rounded(11, FontWeight.Bold),
+                        color = VoiidColor.textOnPrimary,
+                    )
                 }
             }
         }

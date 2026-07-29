@@ -94,10 +94,26 @@ class VoiidMessagingService : FirebaseMessagingService() {
                     conversationId.let { runCatching { ChatService(ctx).resolvePeer(it).title }.getOrNull() }
                 }?.takeIf { it.isNotBlank() } ?: "Group call"
             }
-            postGroupCallNotification(ctx, conversationId, name, video)
+            Notifier.postGroupCallNotification(ctx, conversationId, name, video)
             return
         }
 
+        // A story wake (`type: "story"`, story_id only — no content) was IGNORED here, so a
+        // story arriving while the app was backgrounded/killed did not sync until the user
+        // happened to open the Stories tab. Sync the feed so the tray is already correct when
+        // they next look. No notification is posted: a story is ambient, and the tray's unread
+        // dot is the surface for it (matching iOS, whose NSE does not draw one either).
+        if (data["type"] == "story") {
+            val ctx = applicationContext
+            if (!TokenStore.get(ctx).isAuthenticated) return
+            runBlocking {
+                withTimeoutOrNull(20_000L) {
+                    runCatching { StoryEngine.get(ctx).syncFeed() }
+                        .onFailure { android.util.Log.w("VOIID", "story wake sync failed", it) }
+                }
+            }
+            return
+        }
         if (data["type"] != "wake") return
         val conversationId = data["conversation_id"] ?: return
         val messageId = data["message_id"]
@@ -111,7 +127,15 @@ class VoiidMessagingService : FirebaseMessagingService() {
                 runCatching { fetchAndDecrypt(ctx, conversationId, messageId) }.getOrNull()
             }
             if (outcome != null) {
-                Notifier.postMessage(ctx, conversationId, messageId, outcome.title, outcome.body)
+                // A protocol control message (map_key/map_off/live_*) is NOT a message: the
+                // user never sent it and must never be told about it. Enabling Map visibility
+                // fans a map_key out to the whole audience, and each one used to surface as a
+                // "New message" for a message that does not exist. The wake still did its job
+                // — the envelope was fetched and decrypted above — so there is simply nothing
+                // left to post.
+                if (!outcome.isControl) {
+                    Notifier.postMessage(ctx, conversationId, messageId, outcome.title, outcome.body)
+                }
             } else {
                 // Not logged in? Then don't surface anything (avoid noise for a signed-out app).
                 if (TokenStore.get(ctx).isAuthenticated) {
@@ -121,8 +145,15 @@ class VoiidMessagingService : FirebaseMessagingService() {
         }
     }
 
-    /** The bits we need to render a notification, all derived on-device. */
-    private data class Preview(val title: String?, val body: String?)
+    /**
+     * The bits we need to render a notification, all derived on-device.
+     *
+     * [isControl] distinguishes "this wake carried a silent protocol envelope, post nothing"
+     * from "we fetched but couldn't decrypt, post the generic fallback". Both leave [body]
+     * null, so without the flag a map_key was indistinguishable from a failed decrypt and
+     * produced a phantom "New message".
+     */
+    private data class Preview(val title: String?, val body: String?, val isControl: Boolean = false)
 
     /**
      * Reuse the app's real receive path: ensure the E2E identity is ready, resolve the
@@ -155,6 +186,16 @@ class VoiidMessagingService : FirebaseMessagingService() {
             val p = runCatching { chatService.resolvePeer(conversationId) }.getOrNull()
             p?.peerUserId?.let { engine.sync(conversationId, it) }
             p
+        }
+
+        // The sync above consumed the pushed message as a silent location-protocol control
+        // envelope (map_key / map_off / live_*) — it deliberately never becomes a chat
+        // message. Stop here: falling through would pick the newest UNRELATED inbound message
+        // as `target` and re-notify about an old chat, or post the generic fallback for a
+        // message the user never received. Enabling Map visibility fans one of these to every
+        // person in the audience.
+        if (messageId != null && engine.wasControlMessage(messageId)) {
+            return Preview(title = null, body = null, isControl = true)
         }
 
         val after = engine.messages(conversationId)
@@ -261,7 +302,7 @@ object Notifier {
     }
 
     /** A tappable "join group call" notification. Tapping opens the app and joins the room. */
-    private fun postGroupCallNotification(ctx: Context, conversationId: String, name: String, video: Boolean) {
+    fun postGroupCallNotification(ctx: Context, conversationId: String, name: String, video: Boolean) {
         ensureChannel(ctx, conversationId, name)
         val intent = Intent(ctx, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP

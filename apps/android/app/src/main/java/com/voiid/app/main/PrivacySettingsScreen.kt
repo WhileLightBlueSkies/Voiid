@@ -66,7 +66,10 @@ fun PrivacySettingsScreen(onBack: () -> Unit) {
         PrivacySection(
             header = "Who can see my info",
             footer = "Choose who can see your last seen & online, profile photo, and about. " +
-                "\"My Contacts\" means people you've saved. This is enforced on the server.",
+                "\"My Contacts\" means people you've saved. This is enforced on the server.\n\n" +
+                "Your messages, calls, and the photos, videos and voice notes you send are " +
+                "end-to-end encrypted — Voiid can't read them. Your profile photo is not: it's " +
+                "stored on Voiid's servers so anyone you allow can load it.",
         ) {
             PrivacyVisibilityRow("Last seen & online", lastSeenVis) {
                 lastSeenVis = it; PrivacySettings.setLastSeenVisibility(context, it)

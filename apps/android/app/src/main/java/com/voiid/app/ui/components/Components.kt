@@ -127,7 +127,7 @@ fun VoiidPrimaryButton(
     }
 }
 
-/** Text field (fill #FCF4F8, border #E3BED8, focus = primary) — iOS `VoiidTextField`. */
+/** Text field (fieldFill / fieldBorder tokens, focus = primary) — iOS `VoiidTextField`. */
 @Composable
 fun VoiidTextField(
     placeholder: String,
@@ -228,7 +228,7 @@ fun VoiidToggle(checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
     val haptics = LocalVoiidHaptics.current
     val thumbX by animateDpAsState(if (checked) 20.dp else 0.dp, label = "toggleThumb")
     val track by animateColorAsState(
-        if (checked) VoiidColor.primary else Color(0xFFE9E9EA), label = "toggleTrack",
+        if (checked) VoiidColor.primary else VoiidColor.fieldBorder, label = "toggleTrack",
     )
     Box(
         Modifier

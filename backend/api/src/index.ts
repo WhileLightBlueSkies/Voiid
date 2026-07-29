@@ -21,6 +21,8 @@ import backupRoutes from './routes/backup';
 import callsRoutes from './routes/calls';
 import locationRoutes from './routes/location';
 import storiesRoutes from './routes/stories';
+import reachabilityRoutes from './routes/reachability';
+import clipsRoutes from './routes/clips';
 import configRoutes from './routes/config';
 import { forceUpdateGate } from './version';
 
@@ -83,6 +85,17 @@ api.use('/location', rateLimit({ max: 60, windowSeconds: 60, bucket: 'location' 
 // this router only stores the opaque object key plus one opaque per-recipient-DEVICE
 // key envelope, and signs short-lived URLs. It never sees media bytes or a media key.
 api.use('/stories', rateLimit({ max: 120, windowSeconds: 60, bucket: 'stories' }), storiesRoutes);
+// Reachability: who may open a 1:1 with you (docs 020_reachability.sql). Username lookup,
+// PIN-gated requests, Accept/Decline. A LOW ceiling on purpose — this router is the surface
+// an attacker would use to enumerate handles or grind a 6-digit PIN, and the per-target
+// throttle inside the route is backed up by this per-IP one.
+api.use('/reachability', rateLimit({ max: 30, windowSeconds: 60, bucket: 'reachability' }), reachabilityRoutes);
+// Clips: short-form PUBLIC video. Unlike every router above it, this content is NOT
+// end-to-end encrypted — the media is plaintext in R2 and the server attributes
+// view/like/comment counts. That is a deliberate, scoped exception (a broadcast has
+// no fixed recipient set to encrypt to); see the header of routes/clips.ts and
+// 022_clips.sql. It does not touch the message/call/location/story paths.
+api.use('/clips', rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), clipsRoutes);
 
 app.use('/v1', api);
 app.use(api);   // legacy unversioned alias (migration safety) — remove once all clients send /v1

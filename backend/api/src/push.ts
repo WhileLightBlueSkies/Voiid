@@ -59,6 +59,18 @@ export interface PushMeta {
   // thumbnail, author display name, media key, or R2 key here is a privacy-rule
   // violation and must be rejected in review.
   story_id?: string;
+  /**
+   * True for a PROTOCOL CONTROL message that the user never sent and must never see —
+   * map_key / map_off / live_* (docs/LOCATION.md P2), routed as an ordinary message so
+   * it rides the ratchet. Without this, enabling Map visibility fired a "New message"
+   * banner at everyone in the audience: the NSE can only REPLACE a placeholder alert,
+   * never withhold one, so a control message it cannot render as chat was delivered as
+   * the generic placeholder.
+   *
+   * A silent push still WAKES the device (that is the point — the peer must fetch and
+   * decrypt the map key); it simply draws no banner. Never set on a real message.
+   */
+  silent?: boolean;
 }
 
 // --- APNs config (token-based .p8 auth over HTTP/2) --------------------------------

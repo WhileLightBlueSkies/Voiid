@@ -138,6 +138,8 @@ enum SettingsRoute: Hashable {
 
 struct SettingsSheet: View {
     @EnvironmentObject var session: AppSession
+    /// Light / Dark / System, applied app-wide at ContentView.
+    @ObservedObject private var theme = ThemePreference.shared
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
 
@@ -207,7 +209,8 @@ struct SettingsSheet: View {
         // Sheets do not reliably inherit the root tint, and the app is a fixed light
         // design — "correct in dark mode" here means "identical in dark mode".
         .tint(VoiidColor.primary)
-        .preferredColorScheme(.light)
+        // No colour-scheme pin: Peacock tokens resolve per theme, and a sheet that
+        // forced light would be the one bright rectangle in a dark app.
         // Ask the server whether a backup actually exists, so the log-out warning and the
         // Backup row state describe reality rather than the presence of a keychain item.
         // Failure leaves it nil, which makes both surfaces promise nothing.
@@ -336,6 +339,24 @@ struct SettingsSheet: View {
             NavigationLink(value: SettingsRoute.storage) {
                 rowLabel("Storage", systemImage: "internaldrive")
             }
+
+            // Appearance is INLINE, not a pushed screen: there are exactly three options and
+            // the result is visible the instant you tap, so navigating away to choose and
+            // then back to see the effect would be worse.
+            VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+                rowLabel("Appearance", systemImage: "circle.lefthalf.filled")
+                Picker("Appearance", selection: Binding(
+                    get: { theme.mode },
+                    set: { Haptics.selection(); theme.mode = $0 }
+                )) {
+                    ForEach(ThemePreference.Mode.allCases) { m in
+                        Text(m.label).tag(m)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+            .padding(.vertical, 2)
         }
     }
 

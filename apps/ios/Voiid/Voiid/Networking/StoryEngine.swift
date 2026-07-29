@@ -97,9 +97,16 @@ final class StoryEngine: ObservableObject {
         // RECOVERY: with no live stories held locally, re-fetch already-delivered rows too, so a
         // lost local DB (or a past dropped key) still recovers the live feed instead of staying
         // empty — the deliver-once feed would otherwise return nothing.
-        let includeDelivered = StoryStore.liveContexts().isEmpty
+        // Gate on stories RECEIVED FROM OTHERS, not on the whole feed. Your own posted story
+        // made the feed non-empty and so silently disabled this recovery — meaning the moment
+        // you posted anything, a story previously lost to a dropped key became unrecoverable.
+        let includeDelivered = !StoryStore.liveContexts().contains { !$0.isMine }
         do { rows = try await svc.feed(deviceId: deviceId, includeDelivered: includeDelivered) }
         catch { NSLog("[VOIID] story feed fetch failed: \(error)"); return }
+
+        // Computed ONCE for the whole batch: it reads the conversations table, and doing that
+        // per row would be a DB hit per story.
+        let reachable = UserDirectory.shared.storyReachableUserIds()
 
         for row in rows {
             if StoryStore.exists(row.story_id) { continue }   // dedup / decrypt-once (§1.5.6)
@@ -107,20 +114,59 @@ final class StoryEngine: ObservableObject {
                     ciphertextB64: row.ciphertext,
                     authorUserId: row.author_id,
                     authorDeviceId: row.author_device_id) else { continue }
-            guard let env = try? JSONDecoder().decode(StoryEnvelope.self, from: plain) else { continue }
+            // Decode failures are LOGGED, never silent. This exact line silently dropped every
+            // story sent from Android: kotlinx omits default-valued fields and Swift's
+            // synthesized Codable throws keyNotFound instead of applying the property default,
+            // so the whole feed vanished with no trace. The feed is deliver-once, so each drop
+            // was permanent. (Fixed at the type level in StoryEnvelope; the log stays so the
+            // next wire mismatch is visible in seconds rather than invisible for weeks.)
+            let env: StoryEnvelope
+            do { env = try JSONDecoder().decode(StoryEnvelope.self, from: plain) }
+            catch {
+                NSLog("[VOIID] story DROPPED id=\(row.story_id) from=\(row.author_id): envelope decode failed: \(error)")
+                continue
+            }
 
             // Receiver-side validation (§1.5) — the server does none of this for us.
-            guard env.story_id == row.story_id else { continue }                 // 1
-            guard env.author_id == row.author_id else { continue }               // 2
-            guard env.media.mediaUrl == row.r2_key else { continue }             // 3
+            guard env.story_id == row.story_id else {
+                NSLog("[VOIID] story DROPPED id=\(row.story_id): envelope story_id mismatch (\(env.story_id))")
+                continue
+            }
+            guard env.author_id == row.author_id else {
+                NSLog("[VOIID] story DROPPED id=\(row.story_id): author mismatch (\(env.author_id) vs \(row.author_id))")
+                continue
+            }
+            guard env.media.mediaUrl == row.r2_key else {
+                NSLog("[VOIID] story DROPPED id=\(row.story_id): media ref does not match the feed row's r2_key")
+                continue
+            }
+            // Fall back to the author's CLAIM (authenticated inside the envelope) when the
+            // server's rendering is unparseable — never to `Date()`, which meant "expired now".
             let created = parseServerDate(row.created_at)
-            // 4: clamp a claimed expiry beyond created+24h+skew to the server's value.
-            let serverExpires = parseServerDate(row.expires_at)
-            // 5: author must be a known, non-blocked contact. We have no block-list, so
-            // "known contact" = present in the local directory. A stranger is dropped
-            // silently rather than pushing media into your feed.
-            guard UserDirectory.shared.user(env.author_id) != nil || env.author_id == myUserId else {
-                NSLog("[VOIID] dropping story from unknown author=\(env.author_id)")
+                ?? Date(timeIntervalSince1970: TimeInterval(env.created_at) / 1000)
+            // 4: clamp the expiry to created + 24h + 60s skew. The comment here has always
+            // described this clamp; it was never actually applied, so a peer claiming a
+            // week-long expiry got one. Now it is enforced, on the server value and the
+            // envelope claim alike.
+            let cap = created.addingTimeInterval(24 * 3600 + 60)
+            let claimed = parseServerDate(row.expires_at)
+                ?? Date(timeIntervalSince1970: TimeInterval(env.expires_at) / 1000)
+            let serverExpires = min(claimed, cap)
+            // 5: author must be someone we actually know. "Known" is REACHABLE — the
+            // address-book directory OR an existing 1:1 conversation — not directory-only.
+            //
+            // Directory-only was both wrong and asymmetric: you can chat with someone daily
+            // without ever saving them to your address book, and their story was silently
+            // discarded. Because the feed is deliver-once, that drop was PERMANENT. It also
+            // disagreed with the send side, which now offers exactly this same set.
+            //
+            // This is not the real security boundary anyway: we only reach here after
+            // decryptStoryEnvelope succeeded, which REQUIRES an established E2E session with
+            // the author — a stranger cannot forge that. The check is a secondary filter
+            // against someone who somehow holds a session, so widening it to "reachable"
+            // costs nothing. (Android's equivalent gate carries the same reasoning.)
+            guard reachable.contains(env.author_id) || env.author_id == myUserId else {
+                NSLog("[VOIID] story DROPPED id=\(row.story_id): author=\(env.author_id) is neither a contact nor someone you have a chat with")
                 continue
             }
 
@@ -132,11 +178,15 @@ final class StoryEngine: ObservableObject {
                 createdAt: created,
                 expiresAt: serverExpires,
                 media: env.media,
-                caption: env.caption,
+                // `caption`/`allowsReplies` are OPTIONAL on the wire (a sender on the other
+                // platform may omit them entirely) but non-optional on the model. Fall back to
+                // the same defaults the envelope declares, so a missing field is a normal
+                // absent value rather than a dropped story.
+                caption: env.caption ?? "",
                 durationMs: env.durationMs,
                 width: env.width,
                 height: env.height,
-                allowsReplies: env.allowsReplies,
+                allowsReplies: env.allowsReplies ?? true,
                 viewedAt: nil,
                 localPath: nil,
                 downloadState: .none)
@@ -205,8 +255,12 @@ final class StoryEngine: ObservableObject {
             // Persist the authoritative row (server expiry wins) with the plaintext already cached.
             let story = Story(id: storyId, authorId: myUserId, authorDeviceId: myDeviceId,
                               isMine: true,
-                              createdAt: parseServerDate(res.created_at),
-                              expiresAt: parseServerDate(res.expires_at),
+                              // Explicit fallbacks: an unparseable server timestamp must not
+                              // make YOUR OWN just-posted story expire immediately (which is
+                              // what the old `?? Date()` inside the parser did to expires_at).
+                              createdAt: parseServerDate(res.created_at) ?? Date(),
+                              expiresAt: parseServerDate(res.expires_at)
+                                  ?? Date().addingTimeInterval(24 * 3600),
                               media: ref, caption: caption, durationMs: durationMs,
                               width: width, height: height, allowsReplies: true,
                               viewedAt: Date(), localPath: localPath, downloadState: .ready)
@@ -364,8 +418,30 @@ final class StoryEngine: ObservableObject {
     private static let isoFrac: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f
     }()
-    private func parseServerDate(_ s: String) -> Date {
-        Self.isoFrac.date(from: s) ?? ISO8601DateFormatter().date(from: s) ?? Date()
+    /// Parse a server timestamp, or nil if BOTH formatters reject it.
+    ///
+    /// This used to fall back to `Date()`, which was silently catastrophic for `expires_at`:
+    /// an unparseable value became "expires now", so the story was stored and then immediately
+    /// filtered out by `liveContexts()` (expires_at > now). The symptom was "posted, nothing
+    /// appears" with nothing wrong in the logs. Postgres can render timestamptz as
+    /// "2026-07-28 12:00:00+00" (space separator, no T), which neither ISO8601 formatter
+    /// accepts — so this was reachable, not theoretical.
+    ///
+    /// Callers now decide the fallback explicitly. Android's parseTs has always returned null
+    /// here for the same reason.
+    private func parseServerDate(_ s: String) -> Date? {
+        if let d = Self.isoFrac.date(from: s) { return d }
+        if let d = ISO8601DateFormatter().date(from: s) { return d }
+        // Postgres' space-separated rendering, as a last resort before giving up.
+        let fallback = DateFormatter()
+        fallback.locale = Locale(identifier: "en_US_POSIX")
+        fallback.timeZone = TimeZone(secondsFromGMT: 0)
+        for format in ["yyyy-MM-dd HH:mm:ss.SSSSSSZ", "yyyy-MM-dd HH:mm:ssZ", "yyyy-MM-dd HH:mm:ss"] {
+            fallback.dateFormat = format
+            if let d = fallback.date(from: s) { return d }
+        }
+        NSLog("[VOIID] story: UNPARSEABLE server timestamp '\(s)' — falling back to the envelope's claim")
+        return nil
     }
 
     enum StoryError: Error { case noRecipients, badURL }

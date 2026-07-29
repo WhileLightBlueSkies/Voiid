@@ -66,6 +66,8 @@ final class MapSnapshotCache {
 /// shares, from `LocationShareEngine`'s live state.
 struct LocationPinBubble: View {
     let ref: LocationRef
+    /// Passed to the detail view so it can show every sharer in this conversation (G5).
+    var conversationId: String?
     @ObservedObject private var engine = LocationShareEngine.shared
     @State private var showDetail = false
 
@@ -95,7 +97,9 @@ struct LocationPinBubble: View {
             .fullScreenCover(isPresented: $showDetail) {
                 if let coordinate {
                     LocationDetailView(coordinate: coordinate, label: ref.label, live: isLive,
-                                       state: state, shareId: ref.shareId)
+                                       state: state, shareId: ref.shareId,
+                                       conversationId: conversationId,
+                                       accuracy: currentAccuracy)
                 }
             }
     }
@@ -168,6 +172,15 @@ struct LocationPinBubble: View {
                 Text(sub).font(VoiidFont.rounded(11, .regular))
                     .foregroundColor(state == .ended ? VoiidColor.textSecondary : VoiidColor.primary)
             }
+            // The pin is an estimate, not a doorstep — stated on the bubble itself rather than
+            // only once the detail is opened. Uses the accuracy of the latest fix when a live
+            // stream is running, else the one the message carried.
+            if coordinate != nil, state != .ended {
+                Text(LocationAccuracy.note(currentAccuracy))
+                    .font(VoiidFont.rounded(10, .regular))
+                    .foregroundColor(VoiidColor.textSecondary)
+                    .lineLimit(1)
+            }
             if isLive, state != .ended, engine.isEmitting(ref.shareId ?? "") {
                 Button {
                     Haptics.rigid()
@@ -197,9 +210,17 @@ struct LocationPinBubble: View {
             case .ended: return "ended \(clock(endedClock))"
             }
         }
-        // Static pin: honesty about a coarse fix.
-        if let acc = ref.acc, acc > 100 { return "Accurate to ~250 m" }
+        // Accuracy is no longer folded in here — it has its own always-visible line in the
+        // footer (see `currentAccuracy`), instead of the old hardcoded "~250 m" that was
+        // printed regardless of what the fix actually reported.
         return nil
+    }
+
+    /// Accuracy of the position being drawn: the live fix's when a stream is running, else
+    /// whatever the message itself carried.
+    private var currentAccuracy: Double? {
+        if isLive, let sid = ref.shareId, let fix = engine.lastFix(shareId: sid) { return fix.acc }
+        return ref.acc
     }
 
     /// For an ended share, prefer the last fix's time, else the expiry.

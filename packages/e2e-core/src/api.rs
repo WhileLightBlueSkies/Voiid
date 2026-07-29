@@ -182,6 +182,16 @@ pub fn decrypt_media(media_key: &MediaKey, ciphertext: &[u8]) -> Result<Vec<u8>,
     crate::media::decrypt_media(media_key, ciphertext)
 }
 
+/// A fresh long-lived PROFILE KEY for encrypting a user's avatar. See `media::generate_profile_key`.
+pub fn generate_profile_key() -> String {
+    crate::media::generate_profile_key()
+}
+
+/// Encrypt with a key the caller already holds (avatars), rather than minting a fresh one.
+pub fn encrypt_media_with_key(key_b64: &str, plaintext: &[u8]) -> Result<EncryptedMedia, E2eError> {
+    crate::media::encrypt_media_with_key(key_b64, plaintext)
+}
+
 // --- Phase 4: calls (SRTP key derivation) ---
 
 /// Generate a fresh 1:1 call secret. Send it to the peer over a Phase-1 E2EE

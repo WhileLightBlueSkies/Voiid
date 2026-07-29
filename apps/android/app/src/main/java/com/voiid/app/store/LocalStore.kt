@@ -137,4 +137,10 @@ object LocalStore {
         withContext(Dispatchers.IO) {
             runCatching { db(context).calls().recent(limit) }.getOrDefault(emptyList())
         }
+
+    /** Calls belonging to ONE conversation, oldest first — merged into that chat's transcript. */
+    suspend fun callsForConversation(context: Context, conversationId: String): List<CallHistoryRow> =
+        withContext(Dispatchers.IO) {
+            runCatching { db(context).calls().forConversation(conversationId) }.getOrDefault(emptyList())
+        }
 }

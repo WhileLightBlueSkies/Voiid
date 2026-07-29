@@ -27,7 +27,31 @@ struct VUser: Identifiable, Hashable {
 }
 
 enum MessageStatus: String { case sending, sent, delivered, read, failed }
-enum MessageKind: String { case text, image, voice, document, system, poll, location }
+enum MessageKind: String { case text, image, voice, document, system, poll, location, call }
+
+/// A finished call, rendered as a bubble in the transcript (WhatsApp/Signal style).
+///
+/// NOT a message and never sent over the wire. Both endpoints already learn the outcome from
+/// the signaling they exchanged, so each side renders this from its OWN local `call_history`
+/// row — exactly how Signal and WhatsApp do it. Sending a log message instead would add a
+/// failure mode (caller dies mid-call → no log for anyone) and a second source of truth for
+/// something both sides already know.
+struct VCallLog: Hashable {
+    let callId: String
+    var isVideo: Bool
+    var incoming: Bool
+    /// answered | missed | declined | failed — the vocabulary written by CallService.
+    var outcome: String
+    var startedAt: Date
+    var endedAt: Date?
+
+    var answered: Bool { outcome == "answered" }
+    /// Seconds of connected time; nil unless the call was actually answered.
+    var durationSeconds: Int? {
+        guard answered, let endedAt else { return nil }
+        return max(0, Int(endedAt.timeIntervalSince(startedAt)))
+    }
+}
 
 struct VMessage: Identifiable, Hashable {
     let id: String
@@ -55,6 +79,8 @@ struct VMessage: Identifiable, Hashable {
     /// For location messages (kind == .location): the pin / live-share reference used to
     /// render the map bubble. nil for every other kind. Never holds the shareKey.
     var location: LocationRef? = nil
+    /// Set when kind == .call: the finished call this bubble reports. Local-only.
+    var call: VCallLog? = nil
 
     /// Stable per-sender accent color for group sender names (WhatsApp-style).
     var senderColor: Color {
@@ -85,23 +111,9 @@ struct VConversation: Identifiable, Hashable {
     var lastSeenAt: Date? = nil
 }
 
-struct VClip: Identifiable, Hashable {
-    let id: String
-    var authorName: String
-    var authorPhoto: String?
-    var heading: String
-    var caption: String
-    var likes: Int
-    var comments: Int
-    var thumbnailName: String?
-}
-
-struct VClipComment: Identifiable, Hashable {
-    let id: String
-    var authorName: String
-    var authorPhoto: String?
-    var text: String
-}
+// VClip / VClipComment removed — the mock shapes for the dummy Clips feed. The real
+// models are `Clip` and `ClipComment` in Networking/ClipsEngine.swift, built from the
+// server rows in ClipService.
 
 struct VAIMessage: Identifiable, Hashable {
     let id: String

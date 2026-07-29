@@ -73,7 +73,7 @@ fun AIChatView(ai: AIStore) {
             Icon(Icons.Default.AutoAwesome, null, tint = VoiidColor.primary, modifier = Modifier.size(20.dp))
             Text("Voiid AI", style = VoiidFont.headline, color = VoiidColor.textPrimary)
         }
-        Box(Modifier.fillMaxWidth().height(0.5.dp).background(Color(0xFF3C3C43).copy(alpha = 0.29f)))  // iOS system Divider (.separator)
+        Box(Modifier.fillMaxWidth().height(0.5.dp).background(VoiidColor.divider))
 
         // Messages
         LazyColumn(
@@ -87,7 +87,7 @@ fun AIChatView(ai: AIStore) {
         }
 
         // Input bar
-        Box(Modifier.fillMaxWidth().height(0.5.dp).background(Color(0xFF3C3C43).copy(alpha = 0.29f)))  // iOS system Divider (.separator)
+        Box(Modifier.fillMaxWidth().height(0.5.dp).background(VoiidColor.divider))
         Row(
             Modifier
                 .fillMaxWidth()
