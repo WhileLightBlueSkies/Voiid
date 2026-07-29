@@ -41,9 +41,11 @@ router.get('/:id', requireAuth, async (req, res) => {
     status_text: string | null; username: string | null; phone_number: string | null;
     photo_privacy: string; about_privacy: string;
     contact_pin_hash: string | null; contact_pin_set_at: string | null;
+    encrypted_photo_url: string | null; profile_key_version: number;
   }>(
     `select id, full_name, photo_url, bio, status_text, username, phone_number,
-            photo_privacy, about_privacy, contact_pin_hash, contact_pin_set_at
+            photo_privacy, about_privacy, contact_pin_hash, contact_pin_set_at,
+            encrypted_photo_url, profile_key_version
        from users where id = $1 and deleted_at is null`,
     [targetId]
   );
@@ -70,6 +72,14 @@ router.get('/:id', requireAuth, async (req, res) => {
       username: u.username,
       status_text: u.status_text,
       photo_url: allowed(u.photo_privacy) ? u.photo_url : null,
+      // The ENCRYPTED avatar object, plus the key version it was encrypted under. A client
+      // holding an older version knows its wrapped key is stale and re-fetches, rather than
+      // failing a decrypt and being unable to tell that apart from corruption.
+      //
+      // Both are useless without the wrapped key, which only reaches devices the owner has an
+      // established session with — so exposing them here leaks nothing.
+      encrypted_photo_url: allowed(u.photo_privacy) ? u.encrypted_photo_url : null,
+      profile_key_version: u.profile_key_version,
       bio: allowed(u.about_privacy) ? u.bio : null,
       // The phone number is the account's identity and is returned ONLY to the owner
       // (self), never to anyone else — it is how a user recovers their own real number on

@@ -22,6 +22,7 @@ import callsRoutes from './routes/calls';
 import locationRoutes from './routes/location';
 import storiesRoutes from './routes/stories';
 import reachabilityRoutes from './routes/reachability';
+import profileKeyRoutes from './routes/profileKeys';
 import configRoutes from './routes/config';
 import { forceUpdateGate } from './version';
 
@@ -89,6 +90,10 @@ api.use('/stories', rateLimit({ max: 120, windowSeconds: 60, bucket: 'stories' }
 // an attacker would use to enumerate handles or grind a 6-digit PIN, and the per-target
 // throttle inside the route is backed up by this per-IP one.
 api.use('/reachability', rateLimit({ max: 30, windowSeconds: 60, bucket: 'reachability' }), reachabilityRoutes);
+// Profile keys: encrypted-avatar key distribution (021_profile_keys.sql). Moves opaque
+// per-device ciphertext only — the server never holds a profile key. A rotation fans out one
+// envelope per contact device, so the ceiling is higher than the reachability router's.
+api.use('/profile-keys', rateLimit({ max: 120, windowSeconds: 60, bucket: 'profile-keys' }), profileKeyRoutes);
 
 app.use('/v1', api);
 app.use(api);   // legacy unversioned alias (migration safety) — remove once all clients send /v1
