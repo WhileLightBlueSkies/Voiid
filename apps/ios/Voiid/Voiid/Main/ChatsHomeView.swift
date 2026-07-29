@@ -336,26 +336,36 @@ struct ChatsHomeView: View {
         VStack(spacing: VoiidSpacing.sm) {
             ZStack(alignment: .topTrailing) {
                 // Avatar fills the column width as a square (scales per device).
+                // The avatar is clipped to the tile HERE, before anything is layered on top.
+                // `scaledToFill` deliberately overflows its frame to cover the square, so
+                // without a clip bound to the tile itself the photo spilled past the rounded
+                // corners and over the neighbouring column.
                 ZStack {
                     RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
                         .fill(VoiidColor.fieldFill)
                     GridCardAvatar(conv: conv)
                 }
                 .aspectRatio(1, contentMode: .fit)
+                .clipped()
                 .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
 
+                // Badges sit INSIDE the tile. They used to be pushed OUT past its edge
+                // (offset x: 6, y: -6), which broke the grid's alignment and let a badge
+                // overlap the tile beside it.
                 if conv.isOnline {
                     Circle().fill(VoiidColor.success)
-                        .frame(width: 13, height: 13)
+                        .frame(width: 12, height: 12)
                         .overlay(Circle().stroke(VoiidColor.background, lineWidth: 2))
-                        .offset(x: -6, y: 6)
+                        .padding(6)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
                 }
                 if conv.unreadCount > 0 {
                     Text("\(conv.unreadCount)")
                         .font(VoiidFont.rounded(11, .bold)).foregroundColor(VoiidColor.textOnPrimary)
                         .frame(minWidth: 20, minHeight: 20)
-                        .background(VoiidColor.error).clipShape(Circle())
-                        .offset(x: 6, y: -6)
+                        .background(VoiidColor.accent).clipShape(Circle())
+                        .overlay(Circle().stroke(VoiidColor.background, lineWidth: 1.5))
+                        .padding(5)
                 }
             }
             Text(conv.title)

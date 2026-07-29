@@ -717,12 +717,15 @@ private fun GridCard(conv: VConversation, modifier: Modifier) {
                     VoiidWordmark(fontSize = 23, alpha = 0.15f)
                 }
             }
+            // Badges sit INSIDE the tile. They used to be pushed OUT past its edge (offset
+            // x 6, y -6), which broke the grid's alignment and let a badge overlap the tile
+            // beside it. Matches iOS ChatsHomeView.gridCard.
             if (conv.isOnline) {
                 Box(
                     Modifier
-                        .align(Alignment.TopEnd)
-                        .offset(x = (-6).dp, y = 6.dp)
-                        .size(13.dp)
+                        .align(Alignment.BottomStart)
+                        .padding(6.dp)
+                        .size(12.dp)
                         .clip(CircleShape)
                         .background(VoiidColor.background)
                         .padding(2.dp)
@@ -734,13 +737,17 @@ private fun GridCard(conv: VConversation, modifier: Modifier) {
                 Box(
                     Modifier
                         .align(Alignment.TopEnd)
-                        .offset(x = 6.dp, y = (-6).dp)
+                        .padding(5.dp)
                         .size(20.dp)
                         .clip(CircleShape)
-                        .background(VoiidColor.error),
+                        .background(VoiidColor.accent),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text("${conv.unreadCount}", style = VoiidFont.rounded(11, FontWeight.Bold), color = Color.White)
+                    Text(
+                        "${conv.unreadCount}",
+                        style = VoiidFont.rounded(11, FontWeight.Bold),
+                        color = VoiidColor.textOnPrimary,
+                    )
                 }
             }
         }
