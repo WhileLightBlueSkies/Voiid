@@ -64,6 +64,7 @@ import com.voiid.app.ui.components.softClickable
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -660,29 +661,42 @@ object ClipExporter {
             .setEffects(Effects(ImmutableList.of(), ImmutableList.copyOf(videoEffects)))
             .build()
 
-        val ok = suspendCancellableCoroutine { cont ->
-            val transformer = Transformer.Builder(context)
-                .setVideoMimeType(MimeTypes.VIDEO_H264)
-                .addListener(object : Transformer.Listener {
-                    override fun onCompleted(composition: Composition, result: ExportResult) {
-                        if (cont.isActive) cont.resume(true)
-                    }
+        // Transformer MUST be built, started and cancelled on ONE thread — the one whose
+        // Looper it captured at build time — and it enforces that with
+        // `verifyApplicationThread()`. Calling start() from Dispatchers.IO threw
+        // `IllegalStateException: Transformer is accessed on the wrong thread` and killed the
+        // process, which is why Android clip upload never worked at all. withContext(Main)
+        // pins the whole lifecycle to the main thread; the actual transcode still runs on
+        // Transformer's own internal worker threads, so this does NOT block the UI.
+        val ok = withContext(Dispatchers.Main) {
+            suspendCancellableCoroutine { cont ->
+                val transformer = Transformer.Builder(context)
+                    .setVideoMimeType(MimeTypes.VIDEO_H264)
+                    .addListener(object : Transformer.Listener {
+                        override fun onCompleted(composition: Composition, result: ExportResult) {
+                            if (cont.isActive) cont.resume(true)
+                        }
 
-                    override fun onError(
-                        composition: Composition,
-                        result: ExportResult,
-                        exception: ExportException,
-                    ) {
-                        android.util.Log.w(
-                            "VOIID",
-                            "clip export ${quality.wire} failed: ${exception.message}",
-                        )
-                        if (cont.isActive) cont.resume(false)
-                    }
-                })
-                .build()
-            transformer.start(editedItem, out.absolutePath)
-            cont.invokeOnCancellation { transformer.cancel() }
+                        override fun onError(
+                            composition: Composition,
+                            result: ExportResult,
+                            exception: ExportException,
+                        ) {
+                            android.util.Log.w(
+                                "VOIID",
+                                "clip export ${quality.wire} failed: ${exception.message}",
+                            )
+                            if (cont.isActive) cont.resume(false)
+                        }
+                    })
+                    .build()
+                transformer.start(editedItem, out.absolutePath)
+                cont.invokeOnCancellation {
+                    // cancel() is thread-confined too — hop back to Main rather than calling
+                    // it from whatever thread cancelled the coroutine.
+                    CoroutineScope(Dispatchers.Main.immediate).launch { transformer.cancel() }
+                }
+            }
         }
         if (!ok || !out.exists()) return null
 
