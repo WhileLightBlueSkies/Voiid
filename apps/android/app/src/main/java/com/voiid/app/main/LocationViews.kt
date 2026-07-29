@@ -49,6 +49,7 @@ import com.google.maps.android.compose.MarkerState
 import com.google.maps.android.compose.rememberCameraPositionState
 import com.voiid.app.BuildConfig
 import com.voiid.app.net.ChatEngine
+import com.voiid.app.ui.theme.LocalVoiidDark
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
@@ -117,6 +118,12 @@ fun LocationMap(
             properties = com.google.maps.android.compose.MapProperties(
                 mapType = MapType.NORMAL,
                 isBuildingEnabled = false,
+                // The in-chat bubble used NO style at all — a stock Google basemap sitting
+                // inside a Peacock transcript, and a glaring white rectangle in dark mode.
+                // Same two styles the Map tab uses, so a pin looks identical in both places.
+                mapStyleOptions = com.google.android.gms.maps.model.MapStyleOptions(
+                    if (LocalVoiidDark.current) VOIID_MAP_STYLE_DARK else VOIID_MAP_STYLE_LIGHT,
+                ),
             ),
             onMapLoaded = { loaded = true },
         ) {

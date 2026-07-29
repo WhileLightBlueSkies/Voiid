@@ -66,6 +66,7 @@ import com.voiid.app.net.MapPlaceSearch
 import com.voiid.app.store.UserDirectory
 import com.voiid.app.ui.components.VoiidPrimaryButton
 import com.voiid.app.ui.components.VoiidToggle
+import com.voiid.app.ui.theme.LocalVoiidDark
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
@@ -376,7 +377,12 @@ private fun MapCanvas(
             // focus, not the streets — the Google Maps parallel of iOS's `.emphasis(.muted)`.
             properties = MapProperties(
                 mapType = MapType.NORMAL,
-                mapStyleOptions = com.google.android.gms.maps.model.MapStyleOptions(VOIID_MAP_STYLE),
+                // Tiles follow the RESOLVED theme (the in-app Light/Dark/System choice), not
+                // the system setting — otherwise picking Dark on a light phone leaves a white
+                // basemap under dark chrome.
+                mapStyleOptions = com.google.android.gms.maps.model.MapStyleOptions(
+                    if (LocalVoiidDark.current) VOIID_MAP_STYLE_DARK else VOIID_MAP_STYLE_LIGHT,
+                ),
                 // Your own blue dot — shown whenever we hold the permission, Ghost Mode or not.
                 isMyLocationEnabled = hasLocationPermission,
             ),
@@ -545,20 +551,56 @@ private fun openInMaps(context: android.content.Context, lat: Double, lon: Doubl
  * landscape and softens water, so the friend avatars/markers are the visual focus rather
  * than a busy street map. The parallel of iOS MapKit's `.emphasis(.muted)`.
  */
-private const val VOIID_MAP_STYLE: String = """
+internal const val VOIID_MAP_STYLE_LIGHT: String = """
 [
   {"elementType":"geometry","stylers":[{"saturation":-70},{"lightness":10}]},
   {"elementType":"labels.icon","stylers":[{"visibility":"off"}]},
-  {"elementType":"labels.text.fill","stylers":[{"color":"#8a8a8f"}]},
-  {"elementType":"labels.text.stroke","stylers":[{"color":"#f5f5f7"}]},
+  {"elementType":"labels.text.fill","stylers":[{"color":"#8a8292"}]},
+  {"elementType":"labels.text.stroke","stylers":[{"color":"#f8f5f1"}]},
   {"featureType":"poi","stylers":[{"visibility":"off"}]},
   {"featureType":"transit","stylers":[{"visibility":"off"}]},
-  {"featureType":"road","elementType":"geometry","stylers":[{"color":"#e9e9ec"}]},
-  {"featureType":"road.arterial","elementType":"geometry","stylers":[{"color":"#e2e2e6"}]},
-  {"featureType":"road.highway","elementType":"geometry","stylers":[{"color":"#dcdce0"}]},
+  {"featureType":"road","elementType":"geometry","stylers":[{"color":"#efece7"}]},
+  {"featureType":"road.arterial","elementType":"geometry","stylers":[{"color":"#e8e4de"}]},
+  {"featureType":"road.highway","elementType":"geometry","stylers":[{"color":"#e0dbd3"}]},
   {"featureType":"road","elementType":"labels","stylers":[{"visibility":"simplified"}]},
-  {"featureType":"landscape","elementType":"geometry","stylers":[{"color":"#f2f2f4"}]},
-  {"featureType":"water","elementType":"geometry","stylers":[{"color":"#cfe3ec"},{"saturation":-40}]},
+  {"featureType":"landscape","elementType":"geometry","stylers":[{"color":"#f8f5f1"}]},
+  {"featureType":"water","elementType":"geometry","stylers":[{"color":"#cfe4e2"}]},
+  {"featureType":"administrative","elementType":"geometry","stylers":[{"visibility":"off"}]}
+]
+"""
+
+/**
+ * The DARK basemap. Deliberately a hand-tuned mirror of the light style rather than a stock
+ * "night mode": the tiles have to belong to Peacock, not to Google.
+ *
+ * Without this the map was the one surface that ignored the theme entirely — a bright white
+ * basemap under dark chrome, which is exactly where a half-done dark mode shows.
+ *
+ * The choices that matter:
+ *  - Landscape is the app's own ground (#0C0A10), so the map reads as part of the screen
+ *    rather than a bright rectangle punched into it.
+ *  - Roads step UP in lightness from the ground (#1c1a22 → #2a2731 for highways), inverting
+ *    the light style where they step down. Depth ordering is preserved either way.
+ *  - Water is tinted toward peacock (#10302f) instead of the usual navy — the single place
+ *    the brand hue appears in the tiles, and what stops this looking like a generic dark map.
+ *  - POIs, transit and administrative borders stay off, and label icons stay hidden, exactly
+ *    as in light: the avatars are the content, and a busy basemap competes with them.
+ */
+internal const val VOIID_MAP_STYLE_DARK: String = """
+[
+  {"elementType":"geometry","stylers":[{"color":"#16131b"}]},
+  {"elementType":"labels.icon","stylers":[{"visibility":"off"}]},
+  {"elementType":"labels.text.fill","stylers":[{"color":"#7a7180"}]},
+  {"elementType":"labels.text.stroke","stylers":[{"color":"#0c0a10"}]},
+  {"featureType":"poi","stylers":[{"visibility":"off"}]},
+  {"featureType":"transit","stylers":[{"visibility":"off"}]},
+  {"featureType":"road","elementType":"geometry","stylers":[{"color":"#1c1a22"}]},
+  {"featureType":"road.arterial","elementType":"geometry","stylers":[{"color":"#232028"}]},
+  {"featureType":"road.highway","elementType":"geometry","stylers":[{"color":"#2a2731"}]},
+  {"featureType":"road","elementType":"labels","stylers":[{"visibility":"simplified"}]},
+  {"featureType":"road","elementType":"labels.text.fill","stylers":[{"color":"#8a8292"}]},
+  {"featureType":"landscape","elementType":"geometry","stylers":[{"color":"#0c0a10"}]},
+  {"featureType":"water","elementType":"geometry","stylers":[{"color":"#10302f"}]},
   {"featureType":"administrative","elementType":"geometry","stylers":[{"visibility":"off"}]}
 ]
 """

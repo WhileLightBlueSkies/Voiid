@@ -14,8 +14,10 @@
 //     people" on accent, or "Ghost Mode — hidden from everyone" on grey.
 //   - Ghost Mode is one tap, and it is a hard local gate — while ghosted, no fix is taken.
 //
-//  MapKit only (no dependency; `import MapKit` auto-links). The app is pinned to light, so
-//  the standard light map with POIs excluded is the calm, on-brand surface. No background
+//  MapKit only (no dependency; `import MapKit` auto-links). `.standard(emphasis: .muted)`
+//  with POIs excluded is the calm, on-brand surface; MapKit resolves it against the
+//  environment's colorScheme, which ContentView sets from the user's Light/Dark/System
+//  choice — so the tiles theme themselves without a second style definition. No background
 //  location for the Map ever — so no blue system pill is expected here; if one appears, it
 //  is a bug (§8).
 //
@@ -25,6 +27,8 @@ import MapKit
 
 struct MapTabView: View {
     @EnvironmentObject var session: AppSession
+    /// Drives the map's brand-tint strength — a wash tuned for light muddies dark tiles.
+    @Environment(\.colorScheme) private var colorScheme
     @ObservedObject private var engine = MapPresenceEngine.shared
     @ObservedObject private var visibility = MapVisibilityState.shared
     @ObservedObject private var directory = UserDirectory.shared
@@ -234,8 +238,11 @@ struct MapTabView: View {
         .onMapCameraChange(frequency: .onEnd) { context in
             search.setRegion(context.region)
         }
+        // A soft brand wash unifies MapKit's stock palette with the app. It has to be LIGHTER
+        // in dark: the same 6% teal that warms a light basemap only muddies an already-dark
+        // one, turning crisp tiles into grey soup. 3% keeps the tint legible as a tint.
         .overlay(
-            VoiidColor.primary.opacity(0.06)
+            VoiidColor.primary.opacity(colorScheme == .dark ? 0.03 : 0.06)
                 .allowsHitTesting(false)
                 .ignoresSafeArea()
         )

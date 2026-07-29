@@ -162,7 +162,12 @@ struct LocationDetailView: View {
                 }
             }
         }
-        .mapStyle(.standard(pointsOfInterest: .excludingAll))
+        // Same skin as the Map tab — `.muted` de-emphasises roads and terrain so the avatar
+        // pin is the focus. This screen was missing it, so a live share opened into a busier,
+        // more saturated map than the tab it was launched from. MapKit's `.standard` follows
+        // the environment colorScheme, which ContentView sets from the user's Light/Dark/System
+        // choice, so the tiles theme themselves.
+        .mapStyle(.standard(elevation: .flat, emphasis: .muted, pointsOfInterest: .excludingAll))
         .animation(.easeInOut(duration: 1.0), value: focus.latitude)
         .animation(.easeInOut(duration: 1.0), value: focus.longitude)
         // Pan detection: a DRAG is unambiguously the user taking the camera over, whereas
