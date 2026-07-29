@@ -97,6 +97,11 @@ router.get('/', requireAuth, async (req, res) => {
             coalesce(uc.unread, 0)::int as unread_count
        from conversations c
        join conversation_members me on me.conversation_id = c.id and me.user_id = $1 and me.left_at is null
+            -- Pending and declined requests are NOT chats. They live in the Requests inbox
+            -- (GET /reachability/pending) until accepted; without this filter a stranger's
+            -- first message would appear in the main list, which is the entire thing the
+            -- Accept/Decline gate exists to prevent.
+            and me.request_state = 'accepted'
        left join lateral (
          select coalesce(mc.ciphertext, m.ciphertext) as ciphertext, m.content_type, m.created_at as last_message_at
            from messages m

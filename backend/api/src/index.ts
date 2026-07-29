@@ -21,6 +21,7 @@ import backupRoutes from './routes/backup';
 import callsRoutes from './routes/calls';
 import locationRoutes from './routes/location';
 import storiesRoutes from './routes/stories';
+import reachabilityRoutes from './routes/reachability';
 import configRoutes from './routes/config';
 import { forceUpdateGate } from './version';
 
@@ -83,6 +84,11 @@ api.use('/location', rateLimit({ max: 60, windowSeconds: 60, bucket: 'location' 
 // this router only stores the opaque object key plus one opaque per-recipient-DEVICE
 // key envelope, and signs short-lived URLs. It never sees media bytes or a media key.
 api.use('/stories', rateLimit({ max: 120, windowSeconds: 60, bucket: 'stories' }), storiesRoutes);
+// Reachability: who may open a 1:1 with you (docs 020_reachability.sql). Username lookup,
+// PIN-gated requests, Accept/Decline. A LOW ceiling on purpose — this router is the surface
+// an attacker would use to enumerate handles or grind a 6-digit PIN, and the per-target
+// throttle inside the route is backed up by this per-IP one.
+api.use('/reachability', rateLimit({ max: 30, windowSeconds: 60, bucket: 'reachability' }), reachabilityRoutes);
 
 app.use('/v1', api);
 app.use(api);   // legacy unversioned alias (migration safety) — remove once all clients send /v1
