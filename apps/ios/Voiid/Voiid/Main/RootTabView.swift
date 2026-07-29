@@ -143,6 +143,12 @@ struct RootTabView: View {
             session.tabBarHeight = h
         }
         .ignoresSafeArea(.keyboard)
+        // SELF-HEAL. `hideTabBar` is opt-out — every pushed screen sets it true and every root
+        // tab is supposed to set it back — so one screen forgetting either half strands the
+        // user with a missing bar, or leaks the bar into a chat. Switching tabs always lands
+        // on a ROOT screen, so the bar must be visible by definition; forcing it here means a
+        // forgotten reset costs one tab tap instead of an app restart.
+        .onChange(of: tab) { _, _ in session.hideTabBar = false }
         .animation(.easeInOut(duration: 0.2), value: session.hideTabBar)
         // Bring the Map engine to life at shell load so inbound encrypted fixes are received
         // and decrypted even when the Map tab is not the active one — otherwise a contact's

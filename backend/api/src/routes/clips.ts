@@ -1,7 +1,7 @@
 // Clips backend — short-form public video (grid feed + reels player).
 //
 // ============================ NOT END-TO-END ENCRYPTED ============================
-// Read the header of 020_clips.sql before touching this file. Clips are PUBLIC
+// Read the header of 022_clips.sql before touching this file. Clips are PUBLIC
 // broadcast content: the media is plaintext in R2, and this server can read the
 // video, the caption, and who liked/viewed what. That is a deliberate, scoped
 // exception — there is no fixed recipient set to encrypt to, and the product

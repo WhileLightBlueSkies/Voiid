@@ -141,6 +141,6 @@ Steps 2 and 4 are safe to do now. Step 3 is the one that must wait for client ro
 
 Clips are **deliberately not encrypted** — they are public broadcast content, and that decision is
 documented in [CLIPS.md](./CLIPS.md) §0 and the header of
-[020_clips.sql](../database/migrations/020_clips.sql). Nothing in this audit changes that, and the
+[022_clips.sql](../database/migrations/022_clips.sql). Nothing in this audit changes that, and the
 clips composer tells users so in plain language. Messages, calls, locations and moments are
 unaffected by the clips work and remain E2EE.

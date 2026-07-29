@@ -1,4 +1,4 @@
--- 020_clips.sql — Clips: short-form public video (the grid feed + reels player).
+-- 022_clips.sql — Clips: short-form public video (the grid feed + reels player).
 --
 -- ============================ NOT END-TO-END ENCRYPTED ============================
 -- This is a DELIBERATE, SCOPED exception to the app's "server never sees plaintext"

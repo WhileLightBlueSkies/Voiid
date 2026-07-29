@@ -457,7 +457,13 @@ fun ChatDetailView(
             if (isGroup) {
                 GroupInfoView(conversation = conversation, chat = chat, onBack = { showDetails = false })
             } else {
-                ContactProfileView(conversation = conversation, onBack = { showDetails = false })
+                ContactProfileView(
+                    conversation = conversation,
+                    onBack = { showDetails = false },
+                    // The profile asks the CHAT to place the call — ChatDetailView already owns
+                    // peer resolution and the group-call lock, so this stays one code path.
+                    onStartCall = { kind -> showDetails = false; startCall(kind) },
+                )
             }
         }
     }

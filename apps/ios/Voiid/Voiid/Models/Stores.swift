@@ -20,6 +20,12 @@ final class AppSession: ObservableObject {
     // dummy "You / +91 …" placeholder that could flash on screen before the real data arrives.
     @Published var profile = VUser(id: "me", fullName: "", phoneNumber: "")
     /// Hides the bottom tab bar when a full-screen child (e.g. a chat) is open.
+    ///
+    /// OPT-OUT, and that is the flaw: every pushed screen has to remember to set this true,
+    /// and every root tab has to remember to set it back to false. Miss either and the bar
+    /// leaks into a chat or vanishes from a tab. `RootTabView` therefore ALSO forces it false
+    /// whenever the selected tab changes, so a forgotten reset self-heals on the next tab tap
+    /// rather than stranding the user with no navigation.
     @Published var hideTabBar = false
     /// The MEASURED height of the custom bottom tab bar, including its home-indicator
     /// padding — published by RootTabView, which is the only view that knows it.

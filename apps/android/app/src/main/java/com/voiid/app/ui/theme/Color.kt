@@ -48,10 +48,17 @@ object VoiidColor {
     // ---- Bubbles -----------------------------------------------------------------------
 
     /**
-     * YOUR message. A filled teal bubble at 4.6:1 against the ground — unmistakably separate,
-     * which is the specific failure this palette was chosen to fix.
+     * YOUR message — a filled teal bubble.
+     *
+     * It does NOT lift to [primary]'s dark value. `primary` lifts because it draws TEXT on the
+     * ground; this is a FILL with text ON it, and at #3FBFB2 the near-white [textOnBubble]
+     * measures 2.12:1 and disappears.
+     *
+     * Dark is one step brighter than light because the pairing that matters in a transcript is
+     * YOUR bubble against THEIRS, not against the ground: #0E6F68 on #1A171D was 2.95:1, under
+     * the 3:1 two adjacent surfaces need, so consecutive messages blurred together in dark.
      */
-    val bubbleSent: Color @Composable @ReadOnlyComposable get() = VoiidPalette.BubbleSent
+    val bubbleSent: Color @Composable @ReadOnlyComposable get() = pick(VoiidPalette.BubbleSentLight, VoiidPalette.BubbleSentDark)
 
     /** Text on your own bubble. Fixed in both themes because the bubble itself is fixed. */
     val textOnBubble: Color @Composable @ReadOnlyComposable get() = VoiidPalette.TextOnBubble
@@ -131,8 +138,10 @@ object VoiidPalette {
     val SurfaceLight = Color(0xFFFFFFFF)
     val SurfaceDark = Color(0xFF1A171D)
 
-    // Bubbles
-    val BubbleSent = Color(0xFF0E6F68)
+    // Bubbles. Dark is nudged brighter so YOUR bubble separates from THEIRS (3.61:1 vs
+    // #1A171D) while white text on it still clears AA at 4.62:1.
+    val BubbleSentLight = Color(0xFF0E6F68)
+    val BubbleSentDark = Color(0xFF117E76)
     val TextOnBubble = Color(0xFFF0FAF8)
     val BubbleRecvLight = Color(0xFFFFFFFF)
     val BubbleRecvDark = Color(0xFF1A171D)

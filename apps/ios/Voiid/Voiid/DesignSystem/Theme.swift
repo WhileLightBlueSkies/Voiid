@@ -37,7 +37,7 @@ enum VoiidColor {
 
     /// Build a token that resolves per interface style. Light value first — it is the one a
     /// reader is most likely to be picturing.
-    private static func dyn(_ light: UInt32, _ dark: UInt32) -> Color {
+    private static func dyn(_ light: UInt, _ dark: UInt) -> Color {
         Color(UIColor { $0.userInterfaceStyle == .dark
             ? UIColor(Color(hex: dark)) : UIColor(Color(hex: light)) })
     }
@@ -54,10 +54,21 @@ enum VoiidColor {
 
     // MARK: Bubbles
 
-    /// YOUR message. A filled teal bubble at 4.6:1 against the ground — unmistakably separate,
-    /// which is the specific failure this palette was chosen to fix.
-    static let bubbleSent     = dyn(0x0E6F68, 0x0E6F68)
-    /// Text on your own bubble. Fixed light in both themes because the bubble itself is fixed.
+    /// YOUR message — a filled teal bubble.
+    ///
+    /// It does NOT lift to `primary`'s dark value (#3FBFB2). `primary` lifts because it draws
+    /// TEXT on the ground, where the dark teal would be unreadable. This is a FILL with text
+    /// ON it: at #3FBFB2 the near-white `textOnBubble` measures 2.12:1 and disappears. Keeping
+    /// the text readable is the constraint that pins this token.
+    ///
+    /// Dark is nudged one step brighter than light for a different reason — the pairing that
+    /// actually matters in a transcript is YOUR bubble against THEIRS, not against the ground.
+    /// At #0E6F68 on #1A171D that was 2.95:1, just under the 3:1 two adjacent surfaces need,
+    /// so the boundary between consecutive messages went soft in dark mode. #117E76 gives
+    /// 3.61:1 there while white text still clears AA at 4.62:1.
+    static let bubbleSent     = dyn(0x0E6F68, 0x117E76)
+    /// Text on your own bubble. Fixed in both themes because the fill is dark in both —
+    /// 5.65:1 on light's fill, 4.62:1 on dark's.
     static let textOnBubble   = Color(hex: 0xF0FAF8)
     /// THEIR message — the quiet one, so the eye tracks your own thread down the screen.
     static let bubbleReceived = dyn(0xFFFFFF, 0x1A171D)

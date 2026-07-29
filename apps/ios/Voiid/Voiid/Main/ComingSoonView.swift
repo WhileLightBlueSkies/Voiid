@@ -17,6 +17,7 @@
 import SwiftUI
 
 struct ComingSoonView: View {
+    @EnvironmentObject var session: AppSession
     let icon: String
     let title: String
     let blurb: String
@@ -62,5 +63,9 @@ struct ComingSoonView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(VoiidColor.background.ignoresSafeArea())
+        // A ROOT tab, so it claims the bar exactly like ChatsHomeView / MapTabView do. Without
+        // this, arriving here from a chat (which set hideTabBar = true) would leave the user on
+        // a root screen with no navigation at all.
+        .onAppear { session.hideTabBar = false }
     }
 }

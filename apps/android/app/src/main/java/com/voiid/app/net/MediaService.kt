@@ -10,9 +10,16 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
 /**
- * Media blob transport (mirrors iOS MediaService). The blob is encrypted
- * ON-DEVICE (e2e-core encryptMedia) before it ever leaves; the server only signs
- * short-lived R2 URLs and never sees the bytes or the media key. This service:
+ * Media blob transport (mirrors iOS MediaService).
+ *
+ * MESSAGE media is encrypted ON-DEVICE (e2e-core encryptMedia) before it leaves; the server
+ * only signs short-lived R2 URLs and never sees those bytes or the media key.
+ *
+ * PROFILE PHOTOS ARE THE EXCEPTION and are stored in the clear — see [uploadProfilePhoto].
+ * This header used to claim the blanket "never sees the bytes", which is why the plaintext
+ * avatar path read as intentional-and-safe rather than as a gap.
+ *
+ * This service:
  *   - asks the backend for a presigned PUT url (POST /media/presign-upload)
  *   - PUTs the CIPHERTEXT straight to R2
  *   - asks for a presigned GET url (POST /media/presign-download) and downloads
@@ -34,14 +41,22 @@ class MediaService(private val tokens: TokenStore) {
     @Serializable private data class PresignDownloadBody(val key: String)
     @Serializable private data class PresignDownloadResp(val download_url: String)
 
-    /** Encrypted upload: presigned PUT → push ciphertext to R2 → return object key. */
-    suspend fun upload(ciphertext: ByteArray, mime: String): String {
+    /**
+     * Push [payload] to R2 via a presigned PUT and return the opaque object key.
+     *
+     * The parameter is `payload`, NOT `ciphertext`. It used to be the latter, which asserted at
+     * every call site that the bytes were already encrypted — and the avatar path passed a raw
+     * JPEG straight into it. The name made that read as correct, which is exactly why the
+     * plaintext-avatar bug survived review. This transport is agnostic: whether the bytes are
+     * encrypted is the CALLER's responsibility, and the two callers now say which they are.
+     */
+    suspend fun upload(payload: ByteArray, mime: String): String {
         val body = ApiClient.json.encodeToString(PresignUploadBody.serializer(), PresignUploadBody(mime))
         val presign: PresignUploadResp = api.requestAs("POST", "media/presign-upload", jsonBody = body)
         withContext(Dispatchers.IO) {
             val req = Request.Builder()
                 .url(presign.upload_url)
-                .put(ciphertext.toRequestBody(mime.toMediaType()))
+                .put(payload.toRequestBody(mime.toMediaType()))
                 .build()
             blobClient.newCall(req).execute().use {
                 if (!it.isSuccessful) throw ApiError.Http(it.code, "media upload failed (${it.code})")
@@ -51,13 +66,24 @@ class MediaService(private val tokens: TokenStore) {
     }
 
     /**
-     * Profile photo upload. Deliberately NOT encrypted, unlike everything else on this path:
-     * an avatar is shown to anyone who can see the profile, so there is no key that could be
-     * distributed to exactly the right people. Same presigned-PUT transport, plaintext bytes,
-     * and the returned object key goes on the user row as `photo_url`.
+     * Profile photo upload — ⚠️ NOT ENCRYPTED. The server can read these bytes.
+     *
+     * Unlike message media, an avatar has no fixed audience: it is shown to anyone who might
+     * contact you, including a stranger who found your @username and has never had a ratchet
+     * session with you. There is therefore no established channel to deliver a key over.
+     *
+     * The fix is a Signal-style PROFILE KEY — one long-lived key per user, wrapped to each
+     * contact over the ratchet. It is blocked on `encryptMediaWithKey` (e2e-core has only
+     * `encryptMedia`, which always mints a fresh key) and on regenerated uniffi bindings. See
+     * `generate_profile_key` / `encrypt_media_with_key` in packages/e2e-core/src/media.rs.
+     *
+     * Until that ships, the privacy copy must NOT claim avatars are encrypted. They are not.
      */
-    suspend fun uploadProfilePhoto(imageData: ByteArray, mime: String = "image/jpeg"): String =
-        upload(imageData, mime)
+    suspend fun uploadProfilePhoto(imageData: ByteArray, mime: String = "image/jpeg"): String {
+        // Named local: the plaintext-ness is stated where it happens, not inferred.
+        val plaintextJpeg = imageData
+        return upload(plaintextJpeg, mime)
+    }
 
     /**
      * Plain GET of an ABSOLUTE url — no presign, no auth header, no decryption.

@@ -52,7 +52,7 @@ Everything below assumes the non-E2EE broadcast model.
 
 ## 1. Backend — new, does not exist yet
 
-### 1.1 Database: `database/migrations/020_clips.sql`
+### 1.1 Database: `database/migrations/022_clips.sql`
 
 (`020` is the next free number — `019_privacy.sql` is current head. If Games lands first, this becomes `021`.)
 
@@ -362,7 +362,7 @@ Each phase is independently shippable and leaves the app working.
 
 ### Three renditions, produced on-device
 
-Migration `021_clips_renditions.sql` adds `r2_key_sd` / `_hd` / `_fhd` (+ per-rendition sizes) and
+Migration `023_clips_renditions.sql` adds `r2_key_sd` / `_hd` / `_fhd` (+ per-rendition sizes) and
 `cover_source`. All are **nullable**: the exporter never upscales, so a 720p source simply produces
 no 1080p rung, and `r2_key` remains the always-present baseline every playback falls back to.
 
@@ -415,7 +415,7 @@ surprise they cannot undo.
 
 | Layer | Files |
 | --- | --- |
-| DB | `database/migrations/020_clips.sql` (+ mirrored into `supabase/migrations/`) |
+| DB | `database/migrations/022_clips.sql` (+ mirrored into `supabase/migrations/`) |
 | API | `backend/api/src/routes/clips.ts`, mounted in `index.ts` at `/clips` (rate-limited 240/min) |
 | iOS transport/state | `Networking/ClipService.swift`, `Networking/ClipsEngine.swift` |
 | iOS UI | `Main/Clips/ClipsFeedView.swift`, `ClipFullscreenView.swift`, `ClipComposerFlow.swift`, `ClipEditor.swift`, `ClipsUIKit.swift` |
@@ -448,7 +448,7 @@ the app previously had no video player at all.
 - (Re-verified after the renditions + cover-picker work.)
 
 **NOT verified — these still need doing:**
-1. **`020_clips.sql` has never been executed.** No Postgres was available in this environment
+1. **`022_clips.sql` has never been executed.** No Postgres was available in this environment
    (no `psql`, no Docker). The SQL is unrun; syntax and constraint behaviour are unconfirmed.
 2. **No endpoint has been called.** Every route is untested against a live DB — the keyset
    pagination, the `on conflict do nothing … returning` idempotency in `/view` and `/like`, and the
@@ -464,7 +464,7 @@ the app previously had no video player at all.
    three chances to bite. Check specifically that a portrait clip comes out portrait —
    `Presentation.createForHeight` assumes portrait sources, which is right for clips but would
    letterbox a landscape one.
-5. **`021_clips_renditions.sql` is also unrun**, for the same reason as `020`.
+5. **`023_clips_renditions.sql` is also unrun**, for the same reason as `020`.
 
 Suggested first real test: run the migration on dev, `POST /clips/presign-upload`, then drive one
 upload end-to-end from a signed-in device.

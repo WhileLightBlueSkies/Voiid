@@ -178,11 +178,15 @@ final class StoryEngine: ObservableObject {
                 createdAt: created,
                 expiresAt: serverExpires,
                 media: env.media,
-                caption: env.caption,
+                // `caption`/`allowsReplies` are OPTIONAL on the wire (a sender on the other
+                // platform may omit them entirely) but non-optional on the model. Fall back to
+                // the same defaults the envelope declares, so a missing field is a normal
+                // absent value rather than a dropped story.
+                caption: env.caption ?? "",
                 durationMs: env.durationMs,
                 width: env.width,
                 height: env.height,
-                allowsReplies: env.allowsReplies,
+                allowsReplies: env.allowsReplies ?? true,
                 viewedAt: nil,
                 localPath: nil,
                 downloadState: .none)

@@ -39,7 +39,18 @@ class AppSession(app: Application) : AndroidViewModel(app) {
     // "You / +91 …" placeholder that could flash before the real data arrives.
     var profile by mutableStateOf(VUser(id = "me", fullName = "", phoneNumber = ""))
 
-    /** Hides the bottom tab bar when a full-screen child (e.g. a chat) is open. */
+    /**
+     * UNUSED on Android, and deliberately so — do not start writing to it.
+     *
+     * iOS gates its bar on an equivalent flag, which is opt-out: every pushed screen must
+     * remember to set it, and every root tab to clear it. Android instead draws chat detail,
+     * clips, stories, and both call screens as full-screen `AnimatedVisibility` overlays ON
+     * TOP of the column that holds the bar, so those screens COVER it structurally. A new
+     * overlay therefore cannot leak the bar by forgetting a flag — which is the failure mode
+     * this field would reintroduce.
+     *
+     * Kept only so the two platforms' AppSession shapes still line up.
+     */
     var hideTabBar by mutableStateOf(false)
 
     /** The authenticated user's id (our backend id), once logged in. */

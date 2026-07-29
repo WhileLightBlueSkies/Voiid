@@ -40,9 +40,10 @@ router.get('/:id', requireAuth, async (req, res) => {
     id: string; full_name: string | null; photo_url: string | null; bio: string | null;
     status_text: string | null; username: string | null; phone_number: string | null;
     photo_privacy: string; about_privacy: string;
+    contact_pin_hash: string | null; contact_pin_set_at: string | null;
   }>(
     `select id, full_name, photo_url, bio, status_text, username, phone_number,
-            photo_privacy, about_privacy
+            photo_privacy, about_privacy, contact_pin_hash, contact_pin_set_at
        from users where id = $1 and deleted_at is null`,
     [targetId]
   );
@@ -74,6 +75,15 @@ router.get('/:id', requireAuth, async (req, res) => {
       // (self), never to anyone else — it is how a user recovers their own real number on
       // a device that didn't capture it at OTP time. Others never receive it.
       phone_number: isOwner ? u.phone_number : undefined,
+      // Contact PIN state — OWNER ONLY, and never the PIN itself. The hash is one-way, so
+      // the digits genuinely cannot be re-read; revealing it means rotating it
+      // (POST /reachability/contact-pin/rotate), which is the point.
+      //
+      // Leaking `has_contact_pin` to a non-owner would be a small but real oracle: it tells
+      // a stranger whether the account is reachable by handle at all. That answer belongs to
+      // GET /reachability/by-username, which is the deliberate, rate-limited door for it.
+      has_contact_pin: isOwner ? !!u.contact_pin_hash : undefined,
+      contact_pin_set_at: isOwner ? u.contact_pin_set_at : undefined,
     },
   });
 });

@@ -1,4 +1,4 @@
--- 021_clips_renditions.sql — three video renditions per clip + explicit cover source.
+-- 023_clips_renditions.sql — three video renditions per clip + explicit cover source.
 --
 -- WHY THREE RENDITIONS: a clip is watched in two very different places. The grid never
 -- plays video at all (it draws `thumb_r2_key`), but the fullscreen player runs on
@@ -12,7 +12,7 @@
 -- clip with only `r2_key_sd` still plays. `r2_key` (the original column) stays the
 -- REQUIRED baseline so every pre-existing row keeps working untouched.
 --
--- The bytes are PLAINTEXT, exactly as in 020_clips.sql — clips are public broadcast
+-- The bytes are PLAINTEXT, exactly as in 022_clips.sql — clips are public broadcast
 -- content and deliberately not E2EE. Nothing here changes that decision.
 
 alter table clips add column if not exists r2_key_sd  text;   -- ~480p
