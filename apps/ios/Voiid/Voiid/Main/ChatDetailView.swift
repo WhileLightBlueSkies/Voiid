@@ -44,6 +44,9 @@ struct ChatDetailView: View {
     @State private var showBulkDelete = false
     @State private var forwardBulk = false
     @State private var activeCall: CallRequest?
+    /// Set by ContactProfileView's Call / Video buttons. Placed once that screen has popped —
+    /// starting a call while a navigation transition is in flight drops the CallKit UI.
+    @State private var pendingCall: CallKind?
     /// REAL group members (from the server), used for @mentions and group-call member tiles.
     /// Empty for 1:1 chats. Loaded on appear — never DummyData.
     @State private var groupMembers: [VMember] = []
@@ -109,11 +112,19 @@ struct ChatDetailView: View {
                 WebSocketClient.shared.sendTyping(conversationId: conversation.id, recipientIds: [peer], isStart: false)
             }
         }
+        // The profile screen asks for a call by setting `pendingCall`; it is placed once the
+        // push has finished unwinding, so ChatDetailView remains the single owner of call
+        // setup rather than duplicating peer resolution and the group-call lock.
+        .onChange(of: showInfo) { _, isShowing in
+            guard !isShowing, let kind = pendingCall else { return }
+            pendingCall = nil
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { startCall(kind) }
+        }
         .navigationDestination(isPresented: $showInfo) {
             if conversation.type == .group {
                 GroupInfoView(conversation: conversation)
             } else {
-                ContactProfileView(conversation: conversation)
+                ContactProfileView(conversation: conversation, pendingCall: $pendingCall)
             }
         }
         .sheet(isPresented: $showPollCompose) {
