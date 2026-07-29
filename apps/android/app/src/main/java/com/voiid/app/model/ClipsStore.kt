@@ -353,10 +353,11 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
                 setProgress(clipId, 0.05f)
                 svc.uploadBlob(presign.thumb_upload_url, ladder.thumbnailJpeg, "image/jpeg")
 
-                // Baseline is REQUIRED — it is what every playback falls back to.
-                val baselineBytes = withContext(Dispatchers.IO) { ladder.baseline.readBytes() }
+                // Baseline is REQUIRED — it is what every playback falls back to. Streamed from
+                // disk (never readBytes) so a 100 MB clip cannot OOM the process.
+                val baselineSize = ladder.baseline.length()
                 setProgress(clipId, 0.15f)
-                svc.uploadBlob(presign.upload_url, baselineBytes, "video/mp4")
+                svc.uploadBlob(presign.upload_url, ladder.baseline, "video/mp4")
 
                 // Renditions are BEST-EFFORT. A failed rung is dropped from the row rather
                 // than failing the post: the clip still plays from the baseline, and losing
@@ -375,8 +376,7 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
                         val rendition = ladder.renditions[quality]
                         if (rendition != null) {
                             runCatching {
-                                val bytes = withContext(Dispatchers.IO) { rendition.first.readBytes() }
-                                svc.uploadBlob(target.upload_url, bytes, "video/mp4")
+                                svc.uploadBlob(target.upload_url, rendition.first, "video/mp4")
                             }.onSuccess {
                                 keys[quality] = target.key
                                 sizes[quality] = rendition.second
@@ -401,7 +401,7 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
                     durationMs = ladder.durationMs.toInt(),
                     width = ladder.width,
                     height = ladder.height,
-                    byteSize = baselineBytes.size.toLong(),
+                    byteSize = baselineSize,
                     renditionKeys = keys,
                     renditionSizes = sizes,
                     coverSource = ladder.coverSource,

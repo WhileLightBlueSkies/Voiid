@@ -165,9 +165,20 @@ final class StoryEngine: ObservableObject {
             // the author — a stranger cannot forge that. The check is a secondary filter
             // against someone who somehow holds a session, so widening it to "reachable"
             // costs nothing. (Android's equivalent gate carries the same reasoning.)
-            guard reachable.contains(env.author_id) || env.author_id == myUserId else {
+            //
+            // NOT enforced when `reachable` is EMPTY. That set is built from the local
+            // conversation list + directory, both legitimately empty on a fresh install or
+            // right after sign-in, and the feed is deliver-once — so dropping there loses a
+            // real contact's moment permanently. Empty means "not synced yet", not "stranger".
+            // (Android's equivalent gate carries the same carve-out.)
+            guard reachable.isEmpty
+                    || reachable.contains(env.author_id)
+                    || env.author_id == myUserId else {
                 NSLog("[VOIID] story DROPPED id=\(row.story_id): author=\(env.author_id) is neither a contact nor someone you have a chat with")
                 continue
+            }
+            if reachable.isEmpty && env.author_id != myUserId {
+                NSLog("[VOIID] story ACCEPTED id=\(row.story_id) with a cold reachability cache — directory not yet synced")
             }
 
             let story = Story(

@@ -187,6 +187,8 @@ private fun ClipPlayerPage(
     onBack: () -> Unit,
 ) {
     var ready by remember(player) { mutableStateOf(false) }
+    /** Non-null while the user holds one side of the screen (Instagram-style scrub speed). */
+    var heldSpeed by remember(player) { mutableStateOf<Float?>(null) }
 
     DisposableEffect(player) {
         val p = player ?: return@DisposableEffect onDispose { }
@@ -197,14 +199,43 @@ private fun ClipPlayerPage(
         }
         p.addListener(listener)
         if (p.playbackState == Player.STATE_READY) ready = true
-        onDispose { p.removeListener(listener) }
+        onDispose {
+            p.removeListener(listener)
+            // Never leave a recycled player stuck at 2x for the next clip.
+            p.setPlaybackSpeed(1f)
+        }
     }
 
     Box(
         Modifier
             .fillMaxSize()
             .background(Color.Black)
-            .pointerInput(Unit) { detectTapGestures(onTap = { onToggleMute() }) },
+            // Hold the LEFT third for 0.5x, the RIGHT third for 2x; release restores 1x.
+            // onPress + tryAwaitRelease gives press/release, and onTap still fires for a
+            // plain tap so the mute toggle keeps working.
+            .pointerInput(compact) {
+                detectTapGestures(
+                    onPress = { offset ->
+                        val third = size.width / 3f
+                        val speed = when {
+                            compact -> null
+                            offset.x < third -> 0.5f
+                            offset.x > size.width - third -> 2f
+                            else -> null
+                        }
+                        if (speed != null) {
+                            heldSpeed = speed
+                            player?.setPlaybackSpeed(speed)
+                        }
+                        tryAwaitRelease()
+                        if (speed != null) {
+                            heldSpeed = null
+                            player?.setPlaybackSpeed(1f)
+                        }
+                    },
+                    onTap = { onToggleMute() },
+                )
+            },
     ) {
         if (player != null && ready) {
             AndroidView(
@@ -212,7 +243,10 @@ private fun ClipPlayerPage(
                     PlayerView(ctx).apply {
                         useController = false
                         this.player = player
-                        resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                        // FIT, not ZOOM. ZOOM crops to fill, so any clip whose aspect ratio
+                        // does not match the screen loses its edges — the same "clip comes
+                        // cropped" complaint reported on iOS, for a different reason.
+                        resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
                     }
                 },
                 update = { it.player = player },
@@ -225,6 +259,26 @@ private fun ClipPlayerPage(
                 localThumbPath = clip.localThumbPath,
                 modifier = Modifier.fillMaxSize(),
             )
+        }
+
+        // Visible feedback while a speed hold is active — without it the change in playback
+        // rate is easy to mistake for the app glitching.
+        heldSpeed?.let { speed ->
+            Box(
+                Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(top = 16.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+            ) {
+                Text(
+                    if (speed == 2f) "2x" else "0.5x",
+                    style = VoiidFont.rounded(15, FontWeight.SemiBold),
+                    color = Color.White,
+                )
+            }
         }
 
         // Chrome

@@ -328,10 +328,14 @@ final class ClipsEngine: ObservableObject {
                 try await Self.putToR2(presign.thumb_upload_url,
                                        body: ladder.thumbnailJPEG, contentType: "image/jpeg")
 
-                // Baseline is REQUIRED — it is what every playback falls back to.
-                let baselineData = try Data(contentsOf: ladder.baseline)
+                // Baseline is REQUIRED — it is what every playback falls back to. Uploaded
+                // FROM FILE so URLSession streams it off disk instead of holding the whole
+                // video in memory (Android hit a hard OOM doing the byte-array equivalent).
+                let baselineSize = (try? FileManager.default
+                    .attributesOfItem(atPath: ladder.baseline.path)[.size] as? Int) ?? 0
                 self.setUploadProgress(clipId, 0.15)
-                try await Self.putToR2(presign.upload_url, body: baselineData, contentType: "video/mp4")
+                try await Self.putFileToR2(presign.upload_url, file: ladder.baseline,
+                                           contentType: "video/mp4")
 
                 // Renditions are BEST-EFFORT. A failed rung is dropped from the row rather
                 // than failing the post: the clip still plays from the baseline, and losing
@@ -348,8 +352,8 @@ final class ClipsEngine: ObservableObject {
                         defer { progress += step; self.setUploadProgress(clipId, progress) }
                         guard let rendition = ladder.renditions[quality] else { continue }
                         do {
-                            let data = try Data(contentsOf: rendition.url)
-                            try await Self.putToR2(target.upload_url, body: data, contentType: "video/mp4")
+                            try await Self.putFileToR2(target.upload_url, file: rendition.url,
+                                                       contentType: "video/mp4")
                             uploadedKeys[quality] = target.key
                             uploadedSizes[quality] = rendition.size
                         } catch {
@@ -363,7 +367,7 @@ final class ClipsEngine: ObservableObject {
                                            thumbKey: presign.thumb_key, caption: caption,
                                            durationMs: ladder.durationMs,
                                            width: ladder.width, height: ladder.height,
-                                           byteSize: baselineData.count,
+                                           byteSize: baselineSize,
                                            renditionKeys: uploadedKeys,
                                            renditionSizes: uploadedSizes,
                                            coverSource: ladder.coverSource.rawValue)
@@ -408,7 +412,24 @@ final class ClipsEngine: ObservableObject {
         clips[i].uploadState = .uploading(progress: p)
     }
 
+    /// Small in-memory payloads only — the cover JPEG. Video must use `putFileToR2`.
     private static func putToR2(_ urlString: String, body: Data, contentType: String) async throws {
+        let (req, _) = try uploadRequest(urlString, contentType: contentType)
+        let (_, resp) = try await URLSession.shared.upload(for: req, from: body)
+        try check(resp)
+    }
+
+    /// Streams the file off disk rather than loading it. A clip is capped at 100 MB and the
+    /// ladder uploads up to four of them; holding those in memory is what OOM-killed the
+    /// Android process, and there is no reason for iOS to carry the same risk.
+    private static func putFileToR2(_ urlString: String, file: URL, contentType: String) async throws {
+        let (req, _) = try uploadRequest(urlString, contentType: contentType)
+        let (_, resp) = try await URLSession.shared.upload(for: req, fromFile: file)
+        try check(resp)
+    }
+
+    private static func uploadRequest(_ urlString: String,
+                                      contentType: String) throws -> (URLRequest, URL) {
         guard let url = URL(string: urlString) else {
             throw APIError.http(status: 0, message: "Bad upload URL")
         }
@@ -417,7 +438,10 @@ final class ClipsEngine: ObservableObject {
         req.setValue(contentType, forHTTPHeaderField: "Content-Type")
         // A 100 MB clip on a slow connection needs far more than APIClient's 20s.
         req.timeoutInterval = 300
-        let (_, resp) = try await URLSession.shared.upload(for: req, from: body)
+        return (req, url)
+    }
+
+    private static func check(_ resp: URLResponse) throws {
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
             throw APIError.http(status: status, message: "clip upload failed (\(status))")

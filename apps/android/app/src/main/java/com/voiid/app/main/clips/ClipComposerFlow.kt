@@ -15,9 +15,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
@@ -32,10 +34,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.core.net.toUri
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -119,11 +125,28 @@ fun ClipComposerFlow(
     // The in-app CameraX stack (StoryCameraView) is IMAGE-ONLY — it binds ImageCapture,
     // not VideoCapture — so it cannot record a clip. The system camera intent is used
     // instead rather than growing a second capture stack here.
+    //
+    // The target URI is rememberSaveable, NOT a file-level `var`. Launching the system
+    // camera routinely kills this process on low-memory devices; when it is recreated to
+    // deliver the result, a plain global is back to null and the recording is dropped with
+    // no error at all. That was the "record, release, nothing happens, camera opens again"
+    // bug. rememberSaveable survives process death via the saved-instance bundle.
+    var pendingCaptureUri by rememberSaveable { mutableStateOf<String?>(null) }
+
     val cameraLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CaptureVideo()
     ) { ok ->
-        val uri = pendingCaptureUri
-        if (ok && uri != null) accept(uri)
+        val saved = pendingCaptureUri
+        pendingCaptureUri = null
+        when {
+            // Cancelled/back — not an error, say nothing.
+            !ok -> Unit
+            // The URI is gone (process death lost it, or MediaStore refused the insert).
+            // Report it: a silent no-op here is indistinguishable from a broken camera.
+            saved.isNullOrEmpty() ->
+                errorText = "Couldn't save that recording. Please try again."
+            else -> accept(saved.toUri())
+        }
     }
 
     Column(Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding()) {
@@ -162,9 +185,17 @@ fun ClipComposerFlow(
                 errorText = errorText,
                 onCamera = {
                     haptics.tap()
+                    // A failed MediaStore insert used to return Uri.EMPTY, which is non-null
+                    // and sailed through every check before failing much later with nothing
+                    // useful shown. Fail here, where we can still say why.
                     val uri = newCaptureUri(context)
-                    pendingCaptureUri = uri
-                    cameraLauncher.launch(uri)
+                    if (uri == null) {
+                        errorText = "Couldn't access storage for the recording."
+                    } else {
+                        errorText = null
+                        pendingCaptureUri = uri.toString()
+                        cameraLauncher.launch(uri)
+                    }
                 },
                 onGallery = {
                     haptics.tap()
@@ -213,17 +244,19 @@ fun ClipComposerFlow(
     }
 }
 
-/** Set immediately before launching the capture intent; read back in its callback. */
-private var pendingCaptureUri: Uri? = null
-
-private fun newCaptureUri(context: Context): Uri {
+/**
+ * Allocate a MediaStore row for the recording. Returns null when the insert fails — the
+ * caller must surface that, NOT substitute Uri.EMPTY (which is non-null and therefore
+ * defeats every downstream null check).
+ */
+private fun newCaptureUri(context: Context): Uri? {
     val values = android.content.ContentValues().apply {
         put(MediaStore.Video.Media.DISPLAY_NAME, "voiid_clip_${UUID.randomUUID()}.mp4")
         put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
     }
-    return context.contentResolver
-        .insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-        ?: Uri.EMPTY
+    return runCatching {
+        context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+    }.getOrNull()
 }
 
 @Composable
@@ -237,15 +270,26 @@ private fun SourceScreen(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text(
-            "Record something new, or pick a video you already have.",
-            style = VoiidFont.rounded(15),
-            color = VoiidColor.textSecondary,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+        Column(Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
+            Text(
+                "Create a clip",
+                style = VoiidFont.rounded(28, FontWeight.Bold),
+                color = VoiidColor.textPrimary,
+            )
+            Text(
+                "Record something new, or pick a video you already have.",
+                style = VoiidFont.rounded(15),
+                color = VoiidColor.textSecondary,
+            )
+        }
+        SourceCard(
+            Icons.Default.Videocam, "Camera", "Record up to 90 seconds",
+            listOf(VoiidColor.primary, VoiidColor.primary.copy(alpha = 0.72f)), onCamera,
         )
-        SourceCard(Icons.Default.Videocam, "Camera", "Record up to 90 seconds", onCamera)
-        SourceCard(Icons.Default.PhotoLibrary, "Gallery", "Choose an existing video", onGallery)
+        SourceCard(
+            Icons.Default.PhotoLibrary, "Gallery", "Choose an existing video",
+            listOf(VoiidColor.accent, VoiidColor.accent.copy(alpha = 0.72f)), onGallery,
+        )
 
         if (preparing) {
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -264,35 +308,44 @@ private fun SourceScreen(
     }
 }
 
+/**
+ * A tall gradient tile rather than a plain list row. The two sources are the entire first
+ * screen of the flow, so they should read as the choice — a thin row with a chevron reads
+ * as settings. Mirrors the iOS `sourceCardLabel`.
+ */
 @Composable
-private fun SourceCard(icon: ImageVector, title: String, subtitle: String, onTap: () -> Unit) {
-    Row(
+private fun SourceCard(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    tint: List<Color>,
+    onTap: () -> Unit,
+) {
+    Column(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(VoiidRadius.lg))
-            .background(VoiidColor.surfaceCard)
+            .height(168.dp)
+            .clip(RoundedCornerShape(22.dp))
+            .background(Brush.linearGradient(tint))
             .softClickable(scale = 0.98f) { onTap() }
-            .padding(16.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
+            .padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Box(
             Modifier
-                .size(52.dp)
-                .clip(RoundedCornerShape(VoiidRadius.md))
-                .background(VoiidColor.primary.copy(alpha = 0.12f)),
+                .size(56.dp)
+                .clip(CircleShape)
+                .background(Color.White.copy(alpha = 0.22f)),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(icon, null, tint = VoiidColor.primary, modifier = Modifier.size(22.dp))
+            Icon(icon, null, tint = Color.White, modifier = Modifier.size(26.dp))
         }
-        Column(Modifier.weight(1f)) {
-            Text(title, style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
-            Text(subtitle, style = VoiidFont.rounded(12), color = VoiidColor.textSecondary)
-        }
-        Icon(
-            Icons.Default.KeyboardArrowRight, null,
-            tint = VoiidColor.textSecondary.copy(alpha = 0.6f),
-            modifier = Modifier.size(20.dp),
+        Spacer(Modifier.weight(1f))
+        Text(title, style = VoiidFont.rounded(20, FontWeight.Bold), color = Color.White)
+        Text(
+            subtitle,
+            style = VoiidFont.rounded(12),
+            color = Color.White.copy(alpha = 0.85f),
         )
     }
 }

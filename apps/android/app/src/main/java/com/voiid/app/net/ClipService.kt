@@ -6,7 +6,9 @@ import kotlinx.serialization.Serializable
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.File
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
@@ -137,6 +139,30 @@ class ClipService(private val tokens: TokenStore) {
         )
 
     /** Raw PUT straight to R2. Bytes never transit the Voiid API. */
+    /**
+     * PUT a FILE straight to R2, streamed.
+     *
+     * Takes a [File], never a ByteArray: a clip is capped at 100 MB and the ladder uploads up
+     * to four of them, so `file.readBytes()` allocated the whole video as one JVM array and
+     * OOM-killed the process on most devices — that was the "upload does nothing, app crashes"
+     * bug. `asRequestBody` streams from disk with a fixed buffer, so peak heap is a few KB
+     * regardless of clip size.
+     */
+    suspend fun uploadBlob(url: String, file: File, contentType: String) =
+        withContext(Dispatchers.IO) {
+            val req = Request.Builder()
+                .url(url)
+                .put(file.asRequestBody(contentType.toMediaType()))
+                .build()
+            blobClient.newCall(req).execute().use {
+                if (!it.isSuccessful) throw ApiError.Http(it.code, "clip upload failed (${it.code})")
+            }
+        }
+
+    /**
+     * Small in-memory payloads only — the cover JPEG, which is bounded to ~1080px q0.8 (tens of
+     * KB). Anything video-sized must use the [File] overload above.
+     */
     suspend fun uploadBlob(url: String, bytes: ByteArray, contentType: String) =
         withContext(Dispatchers.IO) {
             val req = Request.Builder()

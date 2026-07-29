@@ -45,7 +45,15 @@ class ApiClient(
     private val http: OkHttpClient = defaultClient,
 ) {
     companion object {
-        val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
+        // coerceInputValues: an explicit `"field": null` on the wire for a property that has
+        // a default falls back to that default instead of throwing. iOS's JSONEncoder emits
+        // explicit nulls for nil Optionals, so without this every iOS→Android envelope with
+        // an absent caption/allowsReplies threw and the item was dropped silently.
+        val json = Json {
+            ignoreUnknownKeys = true
+            explicitNulls = false
+            coerceInputValues = true
+        }
         private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
         private val defaultClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)

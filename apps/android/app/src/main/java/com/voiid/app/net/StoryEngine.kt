@@ -212,15 +212,26 @@ class StoryEngine private constructor(context: Context) {
         // directory-only. You can chat with someone daily without ever saving them, and their
         // story was being discarded; the feed is deliver-once, so that drop was permanent.
         // Matches the send side (candidateAudience) and iOS (storyReachableUserIds).
-        if (!isMine && env.author_id !in reachable) {
+        // NOT a hard drop when the local cache is COLD. reachable is built from the local
+        // conversation list + address-book directory, both of which are legitimately EMPTY on
+        // a fresh install or right after sign-in — and the feed is deliver-once, so discarding
+        // here loses a real contact's moment permanently. That was the iOS→Android
+        // "moments never arrive" bug. An empty set means "we don't know yet", not "stranger".
+        if (!isMine && reachable.isNotEmpty() && env.author_id !in reachable) {
             android.util.Log.w("VOIID", "🚫 story DROPPED id=${env.story_id}: author=${env.author_id} is neither a contact nor someone you have a chat with")
             return null
         }
+        if (!isMine && reachable.isEmpty()) {
+            android.util.Log.i("VOIID", "story ACCEPTED id=${env.story_id} with a cold reachability cache — directory not yet synced")
+        }
         return Story(
             id = env.story_id, authorId = env.author_id, isMine = isMine,
-            createdAt = createdAt, expiresAt = expiresAt, media = env.media, caption = env.caption,
+            createdAt = createdAt, expiresAt = expiresAt, media = env.media,
+            // Coalesce the now-nullable wire fields to the envelope's declared defaults: an
+            // absent or explicitly-null caption is a normal empty value, not a dropped story.
+            caption = env.caption ?: "",
             durationMs = env.durationMs, width = env.width, height = env.height,
-            allowsReplies = env.allowsReplies, viewedAt = null, localPath = null,
+            allowsReplies = env.allowsReplies ?: true, viewedAt = null, localPath = null,
             downloadState = StoryDownloadState.NONE, uploadState = StoryUploadState.NONE,
         )
     }

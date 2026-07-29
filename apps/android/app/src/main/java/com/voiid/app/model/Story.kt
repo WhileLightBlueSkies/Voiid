@@ -107,18 +107,23 @@ data class StoryViewer(val userId: String, val name: String, val viewedAtMs: Lon
 
 @Serializable
 data class StoryEnvelope(
-    val v: Int = 1,
-    val t: String = "story",
+    val v: Int? = 1,
+    val t: String? = "story",
     val story_id: String,
     val author_id: String,
     val created_at: Long,       // epoch MILLIS
     val expires_at: Long,       // epoch MILLIS (author's claim)
     val media: ChatEngine.MediaRef,   // the SAME MediaRef shape used for chat media — the real mime lives here
-    val caption: String = "",
+    // NULLABLE, not just defaulted. Kotlin defaults cover an ABSENT key, but iOS's
+    // JSONEncoder emits `"caption": null` explicitly for a nil Optional, and kotlinx
+    // throws on an explicit null for a non-nullable property. That threw on every
+    // iOS→Android moment and the story was dropped for good (the feed is deliver-once).
+    // The mirror of the Android→iOS bug already fixed in iOS's Story.swift.
+    val caption: String? = "",
     val durationMs: Long? = null,
     val width: Int? = null,
     val height: Int? = null,
-    val allowsReplies: Boolean = true,
+    val allowsReplies: Boolean? = true,
 )
 
 /** A reply to a story — sent as an ORDINARY 1:1 message with content_type "story_reply". */

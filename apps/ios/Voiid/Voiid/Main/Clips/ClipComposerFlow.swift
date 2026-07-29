@@ -82,22 +82,30 @@ struct ClipComposerFlow: View {
             .padding(.horizontal, VoiidSpacing.md)
             .padding(.top, VoiidSpacing.md)
 
-            Text("Record something new, or pick a video you already have.")
-                .font(VoiidFont.subhead)
-                .foregroundColor(VoiidColor.textSecondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, VoiidSpacing.xl)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Create a clip")
+                    .font(VoiidFont.rounded(28, .bold))
+                    .foregroundColor(VoiidColor.textPrimary)
+                Text("Record something new, or pick a video you already have.")
+                    .font(VoiidFont.subhead)
+                    .foregroundColor(VoiidColor.textSecondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, VoiidSpacing.md)
 
             VStack(spacing: VoiidSpacing.md) {
                 sourceCard(icon: "camera.fill", title: "Camera",
-                           subtitle: "Record up to 90 seconds") {
+                           subtitle: "Record up to 90 seconds",
+                           tint: [VoiidColor.primary, VoiidColor.primary.opacity(0.72)]) {
                     Haptics.tap()
                     showCamera = true
                 }
                 PhotosPicker(selection: $pickerItem, matching: .videos) {
                     sourceCardLabel(icon: "photo.on.rectangle.angled", title: "Gallery",
-                                    subtitle: "Choose an existing video")
+                                    subtitle: "Choose an existing video",
+                                    tint: [VoiidColor.accent, VoiidColor.accent.opacity(0.72)])
                 }
+                .buttonStyle(SoftPressStyle())
             }
             .padding(.horizontal, VoiidSpacing.md)
 
@@ -118,33 +126,43 @@ struct ClipComposerFlow: View {
     }
 
     private func sourceCard(icon: String, title: String, subtitle: String,
-                            tap: @escaping () -> Void) -> some View {
-        Button(action: tap) { sourceCardLabel(icon: icon, title: title, subtitle: subtitle) }
-            .buttonStyle(.plain)
+                            tint: [Color], tap: @escaping () -> Void) -> some View {
+        Button(action: tap) {
+            sourceCardLabel(icon: icon, title: title, subtitle: subtitle, tint: tint)
+        }
+        .buttonStyle(SoftPressStyle())
     }
 
-    private func sourceCardLabel(icon: String, title: String, subtitle: String) -> some View {
-        HStack(spacing: VoiidSpacing.md) {
+    /// A tall gradient tile rather than a plain list row. The two sources are the entire
+    /// first screen of the flow, so they should read as the choice — a thin row with a
+    /// chevron reads as settings.
+    private func sourceCardLabel(icon: String, title: String, subtitle: String,
+                                 tint: [Color]) -> some View {
+        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
             ZStack {
-                RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
-                    .fill(VoiidColor.primary.opacity(0.12))
-                    .frame(width: 52, height: 52)
+                Circle()
+                    .fill(.white.opacity(0.22))
+                    .frame(width: 56, height: 56)
                 Image(systemName: icon)
-                    .font(.system(size: 22))
-                    .foregroundColor(VoiidColor.primary)
+                    .font(.system(size: 26, weight: .semibold))
+                    .foregroundColor(.white)
             }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(VoiidFont.headline).foregroundColor(VoiidColor.textPrimary)
-                Text(subtitle).font(VoiidFont.caption).foregroundColor(VoiidColor.textSecondary)
-            }
-            Spacer()
-            Image(systemName: "chevron.right")
-                .font(.system(size: 14))
-                .foregroundColor(VoiidColor.textSecondary.opacity(0.6))
+            Spacer(minLength: VoiidSpacing.sm)
+            Text(title)
+                .font(VoiidFont.rounded(20, .bold))
+                .foregroundColor(.white)
+            Text(subtitle)
+                .font(VoiidFont.caption)
+                .foregroundColor(.white.opacity(0.85))
         }
-        .padding(VoiidSpacing.md)
-        .background(VoiidColor.surfaceCard)
-        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(VoiidSpacing.lg)
+        .frame(height: 168)
+        .background(
+            LinearGradient(colors: tint, startPoint: .topLeading, endPoint: .bottomTrailing)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .shadow(color: tint.first?.opacity(0.28) ?? .clear, radius: 12, y: 6)
     }
 
     // MARK: - Intake
