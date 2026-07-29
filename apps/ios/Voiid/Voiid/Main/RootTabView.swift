@@ -88,7 +88,7 @@ struct RootTabView: View {
             switch self {
             case .ai:      return "AI"
             case .chat:    return "Chats"
-            case .stories:     return "Stories"
+            case .stories:     return "Moments"
             case .communities: return "Communities"
             case .map:         return "Map"
             case .games:       return "Games"

@@ -99,7 +99,7 @@ private enum class Tab(
 ) {
     AI(Icons.Outlined.AutoAwesome, Icons.Filled.AutoAwesome, "AI"),
     CHAT(Icons.Outlined.ChatBubbleOutline, Icons.Filled.ChatBubble, "Chats"),
-    STORIES(Icons.Outlined.Circle, Icons.Filled.Album, "Stories"),   // chat-adjacent: replies land in chats
+    STORIES(Icons.Outlined.Circle, Icons.Filled.Album, "Moments"),   // chat-adjacent: replies land in chats
     COMMUNITIES(Icons.Outlined.Groups, Icons.Filled.Groups, "Communities"),
     MAP(Icons.Outlined.Map, Icons.Filled.Map, "Map"),                // Feature (B) — docs/LOCATION.md §7
     GAMES(Icons.Outlined.SportsEsports, Icons.Filled.SportsEsports, "Games"),

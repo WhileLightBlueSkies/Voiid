@@ -119,15 +119,15 @@ struct PrivacySettingsView: View {
             // sender to hide it). So the privacy-preserving default is that the viewer list
             // starts empty until you opt in — and opting out hides your own viewers too.
             SettingsSection(
-                "Stories",
+                "Moments",
                 footer: """
                     If you turn this off, people won’t know when you’ve viewed their story — \
                     and you won’t see who viewed yours.
                     """
             ) {
-                Toggle("Story view receipts", isOn: $storySettings.sendViewReceipts)
+                Toggle("Moment view receipts", isOn: $storySettings.sendViewReceipts)
                     .tint(VoiidColor.primary)
-                    .accessibilityHint("Lets people see that you viewed their story, and shows you who viewed yours")
+                    .accessibilityHint("Lets people see that you viewed their moment, and shows you who viewed yours")
             }
 
             // MARK: Map location

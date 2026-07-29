@@ -62,7 +62,7 @@ fun StoriesHomeView(
             item {
                 Spacer(Modifier.windowInsetsTopHeight(WindowInsets.statusBars))
                 Text(
-                    "Stories", style = VoiidFont.rounded(28, FontWeight.Bold), color = VoiidColor.textPrimary,
+                    "Moments", style = VoiidFont.rounded(28, FontWeight.Bold), color = VoiidColor.textPrimary,
                     modifier = Modifier.padding(vertical = 12.dp),
                 )
             }
@@ -71,7 +71,7 @@ fun StoriesHomeView(
             item {
                 val mine = stories.myContext
                 StoryRow(
-                    name = "Your story",
+                    name = "Your moment",
                     photoUrl = mine?.photoUrl,
                     subtitle = when {
                         mine == null -> "Add to your story"
@@ -164,7 +164,7 @@ private fun EmptyState() {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text("No stories yet", style = VoiidFont.rounded(18, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+        Text("No moments yet", style = VoiidFont.rounded(18, FontWeight.SemiBold), color = VoiidColor.textPrimary)
         Text(
             "Share a photo or video that disappears in 24 hours.",
             style = VoiidFont.rounded(14), color = VoiidColor.textSecondary,

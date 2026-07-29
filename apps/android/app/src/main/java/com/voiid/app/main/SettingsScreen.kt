@@ -494,9 +494,9 @@ private fun StoryReceiptsRow() {
     ) {
         Icon(Icons.Default.RemoveRedEye, null, tint = VoiidColor.primary, modifier = Modifier.size(22.dp))
         Column(Modifier.weight(1f)) {
-            Text("Story view receipts", style = VoiidFont.rounded(16), color = VoiidColor.textPrimary)
+            Text("Moment view receipts", style = VoiidFont.rounded(16), color = VoiidColor.textPrimary)
             Text(
-                "If you turn this off, people won't know when you've viewed their story — and you " +
+                "If you turn this off, people won't know when you've viewed their moment — and you " +
                     "won't see who viewed yours.",
                 style = VoiidFont.rounded(12), color = VoiidColor.textSecondary,
             )

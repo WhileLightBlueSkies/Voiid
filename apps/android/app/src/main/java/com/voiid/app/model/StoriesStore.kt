@@ -102,7 +102,7 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
             engine.sweep()
             loadLocal()
             runCatching { engine.syncFeed() }
-                .onFailure { loadError = "Couldn't refresh stories." }
+                .onFailure { loadError = "Couldn't refresh moments." }
             loadLocal()
             runCatching { deliveredCounts.putAll(engine.mineCounts()) }
             runCatching { engine.fetchReceipts(receiptsEnabled) }

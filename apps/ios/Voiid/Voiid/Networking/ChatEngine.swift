@@ -1479,7 +1479,7 @@ final class ChatEngine {
 
     /// Decrypt a story key envelope THIS device received from the feed. `authorDeviceId`
     /// selects the author device whose session produced it. Returns nil to DROP (the caller
-    /// surfaces "This story couldn't be loaded", never a blank frame).
+    /// surfaces "This moment couldn't be loaded", never a blank frame).
     func decryptStoryEnvelope(ciphertextB64: String, authorUserId: String,
                               authorDeviceId: String?) async -> Data? {
         guard let wire = decodeWire(ciphertextB64) else { return nil }
