@@ -922,17 +922,30 @@ struct MessageBubble: View {
         }
     }
 
-    /// Renders text with @mentions highlighted in the brand primary color.
+    /// Renders text with @mentions highlighted.
+    ///
+    /// Colours are BUBBLE-AWARE and set per word HERE, not by the caller. Every word carried
+    /// `VoiidColor.textPrimary` — dark ink — applied INSIDE the `Text`, which beats the outer
+    /// `.foregroundColor(bubbleText)` the caller was setting. So a sent message drew dark plum
+    /// on the filled teal bubble: barely legible in light mode, and the actual bug reported as
+    /// "text shows black in the bubble".
+    ///
+    /// A mention on YOUR bubble also cannot use `VoiidColor.primary` — that IS the bubble's
+    /// fill, so the word would vanish entirely. It uses the on-bubble ink at full strength
+    /// instead, with weight carrying the emphasis.
     private func styledText(_ text: String) -> Text {
-        text.split(separator: " ", omittingEmptySubsequences: false).enumerated().reduce(Text("")) { acc, pair in
-            let (i, word) = pair
-            let space = i == 0 ? "" : " "
-            let isMention = word.hasPrefix("@") && word.count > 1
-            let piece = Text(space + String(word))
-                .font(VoiidFont.rounded(15, isMention ? .semibold : .regular))
-                .foregroundColor(isMention ? VoiidColor.primary : VoiidColor.textPrimary)
-            return acc + piece
-        }
+        let base = message.isMine ? VoiidColor.textOnBubble : VoiidColor.textPrimary
+        let mention = message.isMine ? VoiidColor.textOnBubble : VoiidColor.primary
+        return text.split(separator: " ", omittingEmptySubsequences: false).enumerated()
+            .reduce(Text("")) { acc, pair in
+                let (i, word) = pair
+                let space = i == 0 ? "" : " "
+                let isMention = word.hasPrefix("@") && word.count > 1
+                let piece = Text(space + String(word))
+                    .font(VoiidFont.rounded(15, isMention ? .semibold : .regular))
+                    .foregroundColor(isMention ? mention : base)
+                return acc + piece
+            }
     }
 
     // MARK: - Bubble-aware colours

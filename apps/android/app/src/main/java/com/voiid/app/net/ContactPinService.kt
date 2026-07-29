@@ -1,0 +1,116 @@
+package com.voiid.app.net
+
+import android.content.Context
+import kotlinx.serialization.Serializable
+
+/**
+ * The CONTACT PIN — how someone who found you by @username is allowed to message you
+ * (see 020_reachability.sql and routes/reachability.ts). Mirrors iOS `ContactPinService.swift`.
+ *
+ * Address-book discovery used to BE the gate: the only way to learn someone's user id was to
+ * have their number. Username search removes that, so a 6-digit PIN takes its place — you give
+ * it out of band ("my Voiid is @nehal, PIN 418302") and it lets that person open a REQUEST,
+ * which you still have to accept.
+ *
+ * IT IS NOT A PASSWORD and must never gate account access. Knowing it does exactly one thing:
+ * permits a request. Two independent gates, so a leaked PIN alone is not enough.
+ *
+ * The PIN is stored HASHED on the server and returned exactly ONCE, at rotation — there is no
+ * endpoint that can read it back. Revealing it means rotating it, which is what makes a leaked
+ * PIN recoverable at all.
+ */
+class ContactPinService(context: Context) {
+    private val api = ApiClient(TokenStore.get(context))
+
+    /** Whether a PIN exists and when it was set. Never the PIN itself. */
+    @Serializable
+    data class PinState(val has_pin: Boolean = false, val set_at: String? = null)
+
+    @Serializable private data class RotateResponse(val pin: String)
+
+    suspend fun state(): PinState = api.requestAs("GET", "reachability/contact-pin")
+
+    /**
+     * Mint a NEW PIN and return it. The plaintext exists outside the owner's head only in this
+     * return value — never persisted locally, never re-fetchable.
+     *
+     * Rotating invalidates the old PIN immediately for everyone who had it, and clears the
+     * server's failed-attempt ledger so a sender previously locked out by throttling gets a
+     * fresh start against the NEW secret.
+     */
+    suspend fun rotate(): String =
+        api.requestAs<RotateResponse>("POST", "reachability/contact-pin/rotate").pin
+
+    // ---- Reaching someone by username ---------------------------------------------------
+
+    /**
+     * A public profile resolved from a handle. Deliberately carries NO phone number: this
+     * endpoint is the boundary between Voiid's private and public identity planes, and a
+     * stranger who knows @nehal must not be able to reach a number.
+     */
+    @Serializable
+    data class PublicProfile(
+        val user_id: String,
+        val username: String? = null,
+        val full_name: String? = null,
+        val photo_url: String? = null,
+        val bio: String? = null,
+        val is_mutual_contact: Boolean = false,
+        /** True when a PIN is needed. False for mutual contacts, who already proved acquaintance. */
+        val requires_pin: Boolean = false,
+        /** False when they never set a PIN — unreachable by handle, and the UI should say so. */
+        val reachable_by_username: Boolean = false,
+    )
+
+    @Serializable
+    private data class RequestResponse(
+        val conversation_id: String,
+        val existed: Boolean = false,
+        val pending: Boolean = false,
+    )
+
+    suspend fun lookup(username: String): PublicProfile =
+        api.requestAs("GET", "reachability/by-username?username=$username")
+
+    /**
+     * Open a chat by handle. [pin] may be null for a mutual contact. Returns the conversation
+     * id and whether the recipient's side is still PENDING, so the caller can show "waiting to
+     * be accepted" rather than a normal chat.
+     */
+    suspend fun requestChat(username: String, pin: String?): Pair<String, Boolean> {
+        @Serializable data class Body(val username: String, val pin: String?)
+        val body = ApiClient.json.encodeToString(Body.serializer(), Body(username, pin))
+        val res: RequestResponse = api.requestAs("POST", "reachability/request", jsonBody = body)
+        return res.conversation_id to res.pending
+    }
+
+    // ---- Inbound requests ----------------------------------------------------------------
+
+    @Serializable
+    data class PendingRequest(
+        val conversation_id: String,
+        val opened_via: String? = null,
+        val sender_id: String,
+        val username: String? = null,
+        val full_name: String? = null,
+        val photo_url: String? = null,
+    )
+
+    @Serializable private data class PendingResponse(val requests: List<PendingRequest> = emptyList())
+
+    suspend fun pending(): List<PendingRequest> =
+        api.requestAs<PendingResponse>("GET", "reachability/pending").requests
+
+    suspend fun accept(conversationId: String) {
+        api.requestAs<Unit>("POST", "reachability/$conversationId/accept")
+    }
+
+    /**
+     * Decline. The sender is NEVER told — if "declined" were distinguishable from "not opened
+     * yet", a request would become a presence oracle telling a stranger whether an account is
+     * live and attended.
+     */
+    suspend fun decline(conversationId: String) {
+        api.requestAs<Unit>("POST", "reachability/$conversationId/decline")
+    }
+}

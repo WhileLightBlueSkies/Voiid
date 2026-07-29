@@ -402,15 +402,38 @@ private struct GridCardAvatar: View {
     }
 
     var body: some View {
-        Group {
-            if let image {
-                Image(uiImage: image).resizable().scaledToFill()
-            } else if let name = conv.photoName, let ui = UIImage(named: name) {
-                // Legacy bundled-asset path, kept so seeded/demo conversations still render.
-                Image(uiImage: ui).resizable().scaledToFill()
-            } else {
-                Image("VoiidWordmark").resizable().scaledToFit()
-                    .frame(width: 56).opacity(0.22)
+        // GeometryReader gives the image an explicit box to fill.
+        //
+        // `scaledToFill()` alone sizes the image from its INTRINSIC dimensions first and only
+        // then fills — so a 3000px upload rendered at 3000px and spilled far outside the tile,
+        // which is the "full profile image instead of the square" bug. Pinning an exact frame
+        // and clipping to it is what actually constrains it.
+        GeometryReader { geo in
+            Group {
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .clipped()
+                } else if let name = conv.photoName, let ui = UIImage(named: name) {
+                    // Legacy bundled-asset path, kept so seeded/demo conversations still render.
+                    Image(uiImage: ui)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .clipped()
+                } else {
+                    // The placeholder is sized RELATIVE to the tile, not to a fixed 56pt — the
+                    // grid is three columns of whatever the device is wide, so a constant here
+                    // looked oversized on an SE and lost on a Max.
+                    Image("VoiidWordmark")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: geo.size.width * 0.52)
+                        .opacity(0.22)
+                        .frame(width: geo.size.width, height: geo.size.height)
+                }
             }
         }
         .onAppear { if image == nil { image = AvatarCache.cached(ref) } }

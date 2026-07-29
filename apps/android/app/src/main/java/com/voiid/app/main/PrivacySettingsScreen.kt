@@ -25,6 +25,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.voiid.app.model.PrivacySettings
 import com.voiid.app.model.MapVisibility
+import com.voiid.app.net.ContactPinService
+import kotlinx.coroutines.launch
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.size
 import com.voiid.app.net.MapPresenceEngine
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.VoiidToggle
@@ -57,9 +61,140 @@ fun PrivacySettingsScreen(onBack: () -> Unit) {
     var aboutVis by remember { mutableStateOf(PrivacySettings.aboutVisibility(context)) }
     val mapVisibility by MapPresenceEngine.visibility.collectAsState()
     val haptics = LocalVoiidHaptics.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+
+    // Contact PIN — how someone who finds you by @username is allowed to message you.
+    var pinSet by remember { mutableStateOf<Boolean?>(null) }
+    var revealedPin by remember { mutableStateOf<String?>(null) }
+    var pinBusy by remember { mutableStateOf(false) }
+    var pinError by remember { mutableStateOf<String?>(null) }
+    var confirmRotate by remember { mutableStateOf(false) }
+
+    // Only whether a PIN EXISTS — the hash is one-way, so the digits genuinely cannot be
+    // re-read. Revealing means rotating.
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        pinSet = runCatching { ContactPinService(context).state().has_pin }.getOrNull()
+    }
+
+    fun rotatePin() {
+        pinBusy = true
+        pinError = null
+        scope.launch {
+            runCatching { ContactPinService(context).rotate() }
+                .onSuccess { revealedPin = it; pinSet = true }
+                // Say what failed: a silent no-op on a security control is worse than an error.
+                .onFailure { pinError = "Couldn't generate a PIN. Check your connection and try again." }
+            pinBusy = false
+        }
+    }
+
+    if (confirmRotate) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmRotate = false },
+            containerColor = VoiidColor.surfaceCard,
+            title = { Text("Generate a new PIN?", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary) },
+            text = {
+                Text(
+                    "Anyone who has your current PIN will no longer be able to reach you with it.",
+                    style = VoiidFont.rounded(14), color = VoiidColor.textSecondary,
+                )
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = { confirmRotate = false; rotatePin() }) {
+                    Text("Generate", color = VoiidColor.error)
+                }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { confirmRotate = false }) {
+                    Text("Cancel", color = VoiidColor.textSecondary)
+                }
+            },
+        )
+    }
 
     BackupScaffold(title = "Privacy", onBack = onBack) {
         Spacer(Modifier.height(8.dp))
+
+        PrivacySection(
+            header = "Contact PIN",
+            footer = "People who find you by @username need this 6-digit PIN before they can " +
+                "send you anything — and you still choose whether to accept. Share it the way " +
+                "you'd share your number.\n\n" +
+                "Anyone saved in your contacts (who has also saved you) can message you " +
+                "without it.\n\n" +
+                "Voiid stores only a hash, so the PIN can't be shown again after this. " +
+                "Generating a new one immediately stops the old one working for everyone who " +
+                "had it.",
+        ) {
+            val pin = revealedPin
+            if (pin != null) {
+                // The ONE moment the plaintext exists outside the owner's head. No endpoint
+                // can read it back, which is what makes rotation a real revocation.
+                Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                    Text("Your new PIN", style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        pin.toCharArray().joinToString(" "),
+                        style = VoiidFont.rounded(30, FontWeight.SemiBold),
+                        color = VoiidColor.primary,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Write this down now — it can't be shown again.",
+                        style = VoiidFont.rounded(12), color = VoiidColor.warning,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        "Done",
+                        style = VoiidFont.rounded(15, FontWeight.SemiBold),
+                        color = VoiidColor.primary,
+                        modifier = Modifier.clickable { revealedPin = null },
+                    )
+                }
+            } else {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Contact PIN", style = VoiidFont.rounded(16), color = VoiidColor.textPrimary)
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        if (pinSet == true) "Set" else "Not set",
+                        style = VoiidFont.rounded(14), color = VoiidColor.textSecondary,
+                    )
+                }
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable(enabled = !pinBusy) {
+                            haptics.tap()
+                            // Replacing an existing PIN locks out everyone holding the old
+                            // one, so it is confirmed. The first one cannot break anything.
+                            if (pinSet == true) confirmRotate = true else rotatePin()
+                        }
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        if (pinSet == true) "Generate a new PIN" else "Create a PIN",
+                        style = VoiidFont.rounded(16), color = VoiidColor.primary,
+                    )
+                    if (pinBusy) {
+                        Spacer(Modifier.weight(1f))
+                        androidx.compose.material3.CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = VoiidColor.primary,
+                        )
+                    }
+                }
+            }
+            pinError?.let {
+                Text(
+                    it, style = VoiidFont.rounded(12), color = VoiidColor.error,
+                    modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 12.dp),
+                )
+            }
+        }
+        Spacer(Modifier.height(24.dp))
 
         // Server-enforced "who can see". GET /users/:id and /users/status/:id apply these
         // (via the contact_sync relationship) so other people don't receive what you hide.
