@@ -2,8 +2,16 @@
 //  RootTabView.swift
 //  Voiid
 //
-//  Main app shell — custom bottom nav: AI · Chats · Map · Clips.
-//  Elastic menu bar: a pill indicator stretches/snaps between tabs + icon bounce.
+//  Main app shell — the custom bottom nav.
+//
+//  The bar renders `Tab.allCases`: adding a tab is one enum case plus one line in the body's
+//  switch. Labels drop automatically past five tabs (see `labelLimit`) so growth degrades
+//  gracefully instead of truncating.
+//
+//  Icons are SF Symbols throughout, outline when inactive and filled when selected. They
+//  replaced four bundled PNGs mixed with one symbol — a combination that could never look
+//  consistent, since the PNGs differed in detail level, were single-resolution, and did not
+//  share the symbol's stroke weight or optical sizing.
 //
 //  The Map tab carries a persistent visibility indicator (§8): a filled accent dot whenever
 //  you are visible on the Map, a hollow ghost glyph when ghosted. It is drawn from every
@@ -33,26 +41,57 @@ struct RootTabView: View {
     @ObservedObject private var storyEngine = StoryEngine.shared
     @State private var tab: Tab = .chat
     @Namespace private var indicator
+    /// True for the moment the indicator is travelling between tabs — drives its stretch.
+    @State private var isSliding = false
 
     // The asset/label ternaries were hardcoded for exactly three cases; with a 4th tab they
     // become switches so a future 5th tab is a compile error to omit, not a silent wrong icon.
-    enum Tab: CaseIterable { case ai, chat, stories, map, clips
-        var asset: String {
+    enum Tab: CaseIterable { case ai, chat, stories, communities, map, games, clips
+
+        /// SF Symbols, OUTLINE weight — the inactive state.
+        ///
+        /// These replace four bundled PNGs (tab-ai/chats/stories/clips) that were mixed with
+        /// one SF Symbol for Map. That mix was the reason the bar looked unfinished: the PNGs
+        /// were drawn at different detail levels (3.2 KB vs 640 B), shipped at a single
+        /// resolution so they softened on a 3× screen, and could not match the symbol's stroke
+        /// weight or optical sizing. One family fixes all of it at once, and vector glyphs also
+        /// tint correctly in dark mode for free.
+        var icon: String {
             switch self {
-            case .ai:      return "TabAI"
-            case .chat:    return "TabChats"
-            case .stories: return "TabStories"
-            case .map:     return "TabMap"     // rendered via SF Symbol (see iconGlyph) — no PNG asset
-            case .clips:   return "TabClips"
+            case .ai:      return "sparkles"
+            case .chat:    return "bubble.left.and.bubble.right"
+            case .stories:     return "circle.dashed"
+            case .communities: return "person.3"
+            case .map:         return "map"
+            case .games:       return "gamecontroller"
+            case .clips:       return "play.rectangle"
             }
         }
+
+        /// FILLED counterpart — the active state. Apple's own tab bars swap outline→filled
+        /// rather than only recolouring, which is what makes selection read at a glance
+        /// instead of relying on a colour difference alone.
+        var iconFilled: String {
+            switch self {
+            case .ai:      return "sparkles"          // no filled variant; weight carries it
+            case .chat:    return "bubble.left.and.bubble.right.fill"
+            case .stories:     return "circle.circle.fill"
+            case .communities: return "person.3.fill"
+            case .map:         return "map.fill"
+            case .games:       return "gamecontroller.fill"
+            case .clips:       return "play.rectangle.fill"
+            }
+        }
+
         var label: String {
             switch self {
             case .ai:      return "AI"
             case .chat:    return "Chats"
-            case .stories: return "Stories"
-            case .map:     return "Map"
-            case .clips:   return "Clips"
+            case .stories:     return "Stories"
+            case .communities: return "Communities"
+            case .map:         return "Map"
+            case .games:       return "Games"
+            case .clips:       return "Clips"
             }
         }
     }
@@ -66,6 +105,16 @@ struct RootTabView: View {
                 case .stories: StoriesHomeView()
                 case .map:     MapTabView()
                 case .clips:   ClipsFeedView()
+                case .communities:
+                    ComingSoonView(
+                        icon: "person.3.fill",
+                        title: "Communities",
+                        blurb: "Group spaces for the people, teams and interests you care about — announcements, sub-groups and shared media in one place.")
+                case .games:
+                    ComingSoonView(
+                        icon: "gamecontroller.fill",
+                        title: "Games",
+                        blurb: "Quick games you can start straight from a chat and play with anyone in your conversations.")
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -100,85 +149,117 @@ struct RootTabView: View {
         .onAppear { _ = MapPresenceEngine.shared }
     }
 
+    /// The bar renders `Tab.allCases`, so ADDING A TAB IS ONE LINE — a new case in the enum
+    /// with its two symbols and a label, plus its screen in the switch above. Nothing here
+    /// needs touching.
+    ///
+    /// It is built to survive that growth. Labels hide automatically past `labelLimit` tabs,
+    /// because five is where a 10pt label stops fitting on a small phone (SE width ÷ 6 ≈ 54pt
+    /// of usable space per item) and truncated labels look far worse than none. Icons alone
+    /// with a selection underline stay legible to eight or so; beyond that this should become
+    /// a "More" overflow rather than growing thinner, and that is the point to revisit.
     private var tabBar: some View {
-        HStack(spacing: 0) {
-            tabItem(.ai)
-            tabItem(.chat)
-            tabItem(.stories)
-            tabItem(.map)
-            tabItem(.clips)
+        let tabs = Tab.allCases
+        return HStack(spacing: 0) {
+            ForEach(tabs, id: \.self) { t in
+                tabItem(t, showLabel: tabs.count <= Self.labelLimit)
+            }
         }
-        .padding(.horizontal, VoiidSpacing.md)
-        .padding(.top, VoiidSpacing.sm)
+        .padding(.horizontal, VoiidSpacing.sm)
+        .padding(.top, 9)
         .padding(.bottom, VoiidSpacing.xs)
-        .background(VoiidColor.background.opacity(0.98))
-        .overlay(VoiidColor.divider.opacity(0.5).frame(height: 1), alignment: .top)
+        // `.bar` material rather than a flat fill: content scrolling underneath blurs through
+        // it, which is what makes an iOS tab bar feel native instead of pasted on.
+        .background(.bar)
+        .overlay(VoiidColor.divider.opacity(0.6).frame(height: 0.5), alignment: .top)
     }
 
-    private func tabItem(_ t: Tab) -> some View {
+    /// Past this many tabs, labels are dropped and the bar goes icon-only.
+    private static let labelLimit = 5
+
+    private func tabItem(_ t: Tab, showLabel: Bool) -> some View {
         let active = tab == t
         return Button {
             Haptics.selection()
-            // elastic spring (low damping = bouncy)
-            withAnimation(.spring(response: 0.4, dampingFraction: 0.55)) { tab = t }
+            // Critically damped, not bouncy. The old spring (dampingFraction 0.55) overshot
+            // and wobbled on every tap, and a 1.12 icon scale-pop rode on top of it — motion
+            // that draws attention to the chrome instead of the content, and the single
+            // biggest reason the bar read as amateur. 0.9 settles without oscillating.
+            // Stretch while travelling, then release — the squash-and-stretch is applied to
+            // the indicator's scale, not to its damping, so it reads as elastic without
+            // oscillating to a stop.
+            guard tab != t else { return }
+            isSliding = true
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.9)) { tab = t }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) { isSliding = false }
         } label: {
-            VStack(spacing: 6) {
+            VStack(spacing: 5) {
                 ZStack {
-                    // Elastic pill indicator that slides + stretches between tabs
+                    // A slim underline, not a filled pill behind the glyph. The pill competed
+                    // with the icon it was meant to highlight; an underline states the
+                    // selection without obscuring anything, and it slides between tabs via the
+                    // same matchedGeometryEffect.
                     if active {
                         Capsule()
-                            .fill(VoiidColor.accent.opacity(0.55))
-                            .matchedGeometryEffect(id: "tabPill", in: indicator)
-                            .frame(width: 54, height: 40)
+                            .fill(VoiidColor.primary)
+                            .matchedGeometryEffect(id: "tabIndicator", in: indicator)
+                            // ELASTIC, kept from the original bar but tamed. The indicator
+                            // stretches along its travel axis while moving and settles back to
+                            // 1 — the squash-and-stretch that made the old pill feel alive,
+                            // without the wobble that came from under-damping it.
+                            .frame(width: 22, height: 3)
+                            .scaleEffect(x: isSliding ? 1.9 : 1, y: 1, anchor: .center)
+                            .animation(.spring(response: 0.3, dampingFraction: 0.75), value: isSliding)
+                            .offset(y: 17)
                     }
-                    iconGlyph(t, active: active)
-                        .frame(width: 24, height: 24)
-                        .foregroundColor(active ? VoiidColor.primary : VoiidColor.textSecondary)
-                        .scaleEffect(active ? 1.12 : 1)
+                    Image(systemName: active ? t.iconFilled : t.icon)
+                        // A fixed point size with a symbol weight, NOT a resizable image in a
+                        // frame: SF Symbols are optically sized, and stretching them to a box
+                        // is what made the old icons look inconsistently heavy next to
+                        // each other.
+                        .font(.system(size: 21, weight: active ? .semibold : .regular))
+                        .foregroundStyle(active ? VoiidColor.primary : VoiidColor.textSecondary)
                         // The Map badge sits at the icon's top-right, drawn whether or not the
                         // tab is active — visibility must be legible from every screen.
                         .overlay(alignment: .topTrailing) {
-                            if t == .map { mapVisibilityBadge.offset(x: 6, y: -4) }
+                            if t == .map { mapVisibilityBadge.offset(x: 7, y: -3) }
                             // Stories unread dot: any unexpired unviewed story exists (§8.1).
+                            // Spark, not the brand teal — an unread marker must not be the same
+                            // colour as the "this tab is selected" state.
                             if t == .stories && storyEngine.hasUnviewed {
                                 Circle().fill(VoiidColor.accent)
-                                    .frame(width: 9, height: 9)
+                                    .frame(width: 8, height: 8)
                                     .overlay(Circle().stroke(VoiidColor.background, lineWidth: 1.5))
-                                    .offset(x: 6, y: -4)
+                                    .offset(x: 7, y: -3)
                             }
                         }
                 }
-                .frame(height: 40)
-                Text(t.label)
-                    .font(VoiidFont.rounded(11, .medium))
-                    .foregroundColor(active ? VoiidColor.primary : VoiidColor.textSecondary)
+                .frame(height: 26)
+                if showLabel {
+                    Text(t.label)
+                        // The active label steps up in weight rather than only in colour, so
+                        // selection survives for a colour-blind user and in bright sunlight.
+                        .font(VoiidFont.rounded(10, active ? .semibold : .medium))
+                        .foregroundStyle(active ? VoiidColor.primary : VoiidColor.textSecondary)
+                        .lineLimit(1)
+                }
             }
             .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-
-    /// The Map tab uses an SF Symbol (no bundled `TabMap` PNG exists yet — a designed asset
-    /// can replace this without touching call sites). Every other tab uses its template PNG.
-    @ViewBuilder
-    private func iconGlyph(_ t: Tab, active: Bool) -> some View {
-        if t == .map {
-            Image(systemName: "map")
-                .resizable().scaledToFit()
-                .fontWeight(active ? .semibold : .regular)
-        } else {
-            Image(t.asset)
-                .renderingMode(.template)
-                .resizable().scaledToFit()
-        }
+        .accessibilityLabel(t.label)
+        .accessibilityAddTraits(active ? [.isButton, .isSelected] : .isButton)
     }
 
     /// Filled accent dot while visible; a hollow ghost glyph while ghosted (§8).
     @ViewBuilder
     private var mapVisibilityBadge: some View {
         if mapVisibility.isVisible {
+            // SPARK, not the brand teal. Teal is the "this tab is selected" colour, so a teal
+            // badge on the Map icon read as a second, contradictory selection state.
             Circle()
-                .fill(VoiidColor.primary)
+                .fill(VoiidColor.accent)
                 .frame(width: 9, height: 9)
                 .overlay(Circle().stroke(VoiidColor.background, lineWidth: 1.5))
         } else {

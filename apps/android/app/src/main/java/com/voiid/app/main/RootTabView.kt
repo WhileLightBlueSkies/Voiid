@@ -31,6 +31,23 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.ChatBubble
+import androidx.compose.material.icons.filled.Groups
+import androidx.compose.material.icons.filled.Map
+import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.SportsEsports
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.Circle
+import androidx.compose.material.icons.outlined.Groups
+import androidx.compose.material.icons.outlined.Map
+import androidx.compose.material.icons.outlined.PlayCircleOutline
+import androidx.compose.material.icons.outlined.SportsEsports
+import androidx.compose.material3.Icon
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
@@ -57,15 +74,34 @@ import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 
-private enum class Tab(val asset: Int, val label: String) {
-    AI(R.drawable.tab_ai, "AI"),
-    CHAT(R.drawable.tab_chats, "Chats"),
-    STORIES(R.drawable.tab_stories, "Stories"),   // right of Chats — chat-adjacent (replies land in chats)
-    // Order MUST match iOS RootTabView.swift (AI · Chats · Stories · Map · Clips) so the two apps
-    // feel like one product — Map sits between Stories and Clips, not tacked on after Clips.
-    MAP(R.drawable.tab_map, "Map"),   // Feature (B) — the Map (docs/LOCATION.md §7)
-    CLIPS(R.drawable.tab_clips, "Clips"),
+/**
+ * A bottom-nav destination.
+ *
+ * ADDING A TAB IS ONE LINE — a new entry here plus its screen in the `when` below. The bar
+ * renders `Tab.entries`, so nothing in the layout needs touching.
+ *
+ * Icons are Material vector icons, OUTLINED when inactive and FILLED when selected. They
+ * replaced bundled PNG drawables (tab_ai/chats/stories/map/clips), which is why the bar looked
+ * unfinished: the PNGs were drawn at different detail levels, did not share a stroke weight,
+ * and — being bitmaps — could not tint cleanly for dark mode. Order MUST match iOS
+ * RootTabView.swift so the two apps feel like one product.
+ */
+private enum class Tab(
+    val icon: ImageVector,
+    val iconFilled: ImageVector,
+    val label: String,
+) {
+    AI(Icons.Outlined.AutoAwesome, Icons.Filled.AutoAwesome, "AI"),
+    CHAT(Icons.Outlined.ChatBubbleOutline, Icons.Filled.ChatBubble, "Chats"),
+    STORIES(Icons.Outlined.Circle, Icons.Filled.Album, "Stories"),   // chat-adjacent: replies land in chats
+    COMMUNITIES(Icons.Outlined.Groups, Icons.Filled.Groups, "Communities"),
+    MAP(Icons.Outlined.Map, Icons.Filled.Map, "Map"),                // Feature (B) — docs/LOCATION.md §7
+    GAMES(Icons.Outlined.SportsEsports, Icons.Filled.SportsEsports, "Games"),
+    CLIPS(Icons.Outlined.PlayCircleOutline, Icons.Filled.PlayCircle, "Clips"),
 }
+
+/** Past this many tabs the bar drops labels and goes icon-only. Mirrors iOS `labelLimit`. */
+private const val TAB_LABEL_LIMIT = 5
 
 /**
  * Main app surface — the custom bottom nav (AI · Chats · Clips) plus the overlays that cover it
@@ -129,6 +165,16 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
         Column(Modifier.fillMaxSize().imePadding()) {
             Box(Modifier.fillMaxWidth().weight(1f)) {
                 when (tab) {
+                    Tab.COMMUNITIES -> ComingSoonView(
+                        icon = Icons.Outlined.Groups,
+                        title = "Communities",
+                        blurb = "Group spaces for the people, teams and interests you care about — announcements, sub-groups and shared media in one place.",
+                    )
+                    Tab.GAMES -> ComingSoonView(
+                        icon = Icons.Outlined.SportsEsports,
+                        title = "Games",
+                        blurb = "Quick games you can start straight from a chat and play with anyone in your conversations.",
+                    )
                     Tab.CHAT -> ChatsHomeView(chat, onOpenConversation = { openConversation = it }, onStartCall = startCall)
                     Tab.AI -> AIChatView(ai)
                     Tab.STORIES -> com.voiid.app.main.stories.StoriesHomeView(
@@ -242,42 +288,46 @@ private fun TabBar(
             .background(VoiidColor.background.copy(alpha = 0.98f))
             .navigationBarsPadding(),
     ) {
-        Box(Modifier.fillMaxWidth().height(1.dp).background(VoiidColor.divider.copy(alpha = 0.5f)))
+        Box(Modifier.fillMaxWidth().height(0.5.dp).background(VoiidColor.divider.copy(alpha = 0.6f)))
         BoxWithConstraints(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 8.dp, bottom = 4.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 8.dp).padding(top = 9.dp, bottom = 4.dp),
         ) {
-            // Divide by the ACTUAL tab count — the Row below lays tabs out with weight(1f), so a
-            // hardcoded /3 silently misaligns the sliding pill the moment a 4th tab (Map) exists.
+            // ELASTIC indicator, kept — but as an underline rather than a filled pill.
+            //
+            // The pill covered the glyph it was meant to highlight; an underline states the
+            // selection and leaves the icon alone. The stretch is preserved: the LEADING edge
+            // springs faster than the trailing one, so the bar elongates in the direction of
+            // travel and snaps back. Damping is raised from 0.55 to 0.82 — enough to keep the
+            // elasticity readable without the wobble that made it look amateur.
+            //
+            // Slot maths divides by the ACTUAL tab count, so adding a tab keeps it aligned
+            // with no edit here.
             val slot = maxWidth / Tab.entries.size
-            val pillW = 54.dp
-            val activeIndex = selected.ordinal
-            val leftTarget = slot * activeIndex + (slot - pillW) / 2
-            val rightTarget = leftTarget + pillW
+            val barW = 20.dp
+            val leftTarget = slot * selected.ordinal + (slot - barW) / 2
+            val rightTarget = leftTarget + barW
 
-            // Direction of travel (computed before SideEffect updates the previous index).
-            var prevIndex by remember { mutableStateOf(activeIndex) }
-            val movingRight = activeIndex >= prevIndex
-            SideEffect { prevIndex = activeIndex }
+            var prevIndex by remember { mutableStateOf(selected.ordinal) }
+            val movingRight = selected.ordinal >= prevIndex
+            SideEffect { prevIndex = selected.ordinal }
 
-            // Elastic pill: the LEADING edge springs faster than the trailing edge, so
-            // the pill STRETCHES in the direction of travel then snaps back — matching
-            // the iOS matchedGeometry capsule (RootTabView.swift).
-            val fast = spring<androidx.compose.ui.unit.Dp>(dampingRatio = 0.7f, stiffness = Spring.StiffnessMedium)
-            val slow = spring<androidx.compose.ui.unit.Dp>(dampingRatio = 0.7f, stiffness = Spring.StiffnessLow)
-            val leftX by animateDpAsState(leftTarget, if (movingRight) slow else fast, label = "tabPillLeft")
-            val rightX by animateDpAsState(rightTarget, if (movingRight) fast else slow, label = "tabPillRight")
+            val fast = spring<androidx.compose.ui.unit.Dp>(dampingRatio = 0.82f, stiffness = Spring.StiffnessMedium)
+            val slow = spring<androidx.compose.ui.unit.Dp>(dampingRatio = 0.82f, stiffness = Spring.StiffnessLow)
+            val leftX by animateDpAsState(leftTarget, if (movingRight) slow else fast, label = "tabIndicatorL")
+            val rightX by animateDpAsState(rightTarget, if (movingRight) fast else slow, label = "tabIndicatorR")
             Box(
                 Modifier
-                    .offset(x = leftX)
-                    .size(width = (rightX - leftX).coerceAtLeast(pillW), height = 40.dp)
+                    .offset(x = leftX, y = 26.dp)
+                    .size(width = (rightX - leftX).coerceAtLeast(barW), height = 3.dp)
                     .clip(RoundedCornerShape(999.dp))
-                    .background(VoiidColor.accent.copy(alpha = 0.55f)),
+                    .background(VoiidColor.primary),
             )
             Row(Modifier.fillMaxWidth()) {
                 Tab.entries.forEach { t ->
                     TabItem(
                         t,
                         active = selected == t,
+                        showLabel = Tab.entries.size <= TAB_LABEL_LIMIT,
                         // Reuse the generic tab dot: accent when you're visible on the Map, or when
                         // any unexpired unviewed story exists (one home, one unread truth — no rail).
                         showVisibleDot = (t == Tab.MAP && mapVisible) || (t == Tab.STORIES && storiesUnread),
@@ -295,12 +345,12 @@ private fun TabBar(
 private fun TabItem(
     t: Tab,
     active: Boolean,
+    showLabel: Boolean,
     showVisibleDot: Boolean,
     onLongPress: (() -> Unit)?,
     modifier: Modifier,
     onClick: () -> Unit,
 ) {
-    val iconScale by animateFloatAsState(if (active) 1.12f else 1f, spring(dampingRatio = 0.55f), label = "tabIcon")
     Column(
         modifier = modifier.combinedClickable(
             interactionSource = remember { MutableInteractionSource() },
@@ -310,32 +360,38 @@ private fun TabItem(
         ),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Box(Modifier.height(40.dp), contentAlignment = Alignment.Center) {
-            Image(
-                painter = painterResource(t.asset),
+        Box(Modifier.height(26.dp), contentAlignment = Alignment.Center) {
+            // Outline → filled on selection, so the state reads without depending on colour
+            // alone. No scale-pop: the old 1.12 spring made every tap wobble.
+            Icon(
+                imageVector = if (active) t.iconFilled else t.icon,
                 contentDescription = t.label,
-                modifier = Modifier.size(24.dp).scale(iconScale),
-                contentScale = ContentScale.Fit,
-                colorFilter = ColorFilter.tint(if (active) VoiidColor.primary else VoiidColor.textSecondary),
+                modifier = Modifier.size(23.dp),
+                tint = if (active) VoiidColor.primary else VoiidColor.textSecondary,
             )
-            // Persistent visibility indicator: a filled accent dot whenever you appear on the
-            // Map. Visible from every screen, so being visible is never something you forget.
+            // Persistent indicator: you are visible on the Map, or an unviewed story exists.
+            // SPARK, not the brand teal — teal is the "selected tab" colour, and using it here
+            // read as a second, contradictory selection state.
             if (showVisibleDot) {
                 Box(
                     Modifier
                         .align(Alignment.TopEnd)
-                        .offset(x = 4.dp, y = (-2).dp)
-                        .size(9.dp)
+                        .offset(x = 5.dp, y = (-2).dp)
+                        .size(8.dp)
                         .clip(androidx.compose.foundation.shape.CircleShape)
-                        .background(VoiidColor.primary),
+                        .background(VoiidColor.accent),
                 )
             }
         }
-        Spacer(Modifier.height(6.dp))
-        androidx.compose.material3.Text(
-            t.label,
-            style = VoiidFont.rounded(11, FontWeight.Medium),
-            color = if (active) VoiidColor.primary else VoiidColor.textSecondary,
-        )
+        if (showLabel) {
+            Spacer(Modifier.height(5.dp))
+            androidx.compose.material3.Text(
+                t.label,
+                // Weight steps up when active, so selection survives for a colour-blind user.
+                style = VoiidFont.rounded(10, if (active) FontWeight.SemiBold else FontWeight.Medium),
+                color = if (active) VoiidColor.primary else VoiidColor.textSecondary,
+                maxLines = 1,
+            )
+        }
     }
 }
