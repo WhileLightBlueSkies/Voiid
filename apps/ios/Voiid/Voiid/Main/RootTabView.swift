@@ -139,6 +139,13 @@ struct RootTabView: View {
             session.tabBarHeight = h
         }
         .ignoresSafeArea(.keyboard)
+        // Join tapped on a game-invite bubble, which lives in the Chats tab. Switch to Games
+        // so the board (owned by that tab's stack) can present; GamesHomeView handles the
+        // rest. Ordering is safe either way — the notification is re-broadcast to whoever is
+        // listening, and GamesHomeView is alive as soon as the tab renders.
+        .onReceive(NotificationCenter.default.publisher(for: .voiidOpenGameMatch)) { _ in
+            tab = .games
+        }
         // SELF-HEAL. `hideTabBar` is opt-out — every pushed screen sets it true and every root
         // tab is supposed to set it back — so one screen forgetting either half strands the
         // user with a missing bar, or leaks the bar into a chat. Switching tabs always lands

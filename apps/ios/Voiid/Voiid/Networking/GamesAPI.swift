@@ -32,6 +32,9 @@ struct GamesAPI {
     struct CreateBody: Encodable {
         let slug: String
         let opponent_ids: [String]
+        /// Per-game settings chosen at creation (hand cricket's over count). Stored on the
+        /// match row and validated by the engine — this client sends, it does not police.
+        let options: [String: Int]
     }
     struct CreateResponse: Decodable {
         let match_id: String
@@ -74,9 +77,14 @@ struct GamesAPI {
     /// carrying this id — this endpoint deliberately sends no notification of its own, so
     /// an invite produces exactly one alert, from the message path that already does wake
     /// and push correctly.
-    func create(slug: String, opponentIds: [String]) async throws -> String {
+    func create(
+        slug: String,
+        opponentIds: [String],
+        options: [String: Int] = [:]
+    ) async throws -> String {
         let res: CreateResponse = try await api.request(
-            "POST", "games/matches", body: CreateBody(slug: slug, opponent_ids: opponentIds))
+            "POST", "games/matches",
+            body: CreateBody(slug: slug, opponent_ids: opponentIds, options: options))
         return res.match_id
     }
 

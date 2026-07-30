@@ -122,8 +122,12 @@ struct RpsBotView: View {
     private func hand(_ throwIdx: Int?, mirrored: Bool) -> some View {
         let tilt: Double = revealing ? (shakeUp ? 18 : -18) : 0
         return ZStack {
+            // A lit panel rather than a flat card: the radial fall-off reads as a spotlit arena,
+            // which is what makes two emoji feel like a face-off instead of a list.
             RoundedRectangle(cornerRadius: VoiidRadius.lg)
-                .fill(VoiidColor.surfaceCard)
+                .fill(RadialGradient(
+                    colors: [VoiidColor.primary.opacity(0.20), VoiidColor.surfaceCard],
+                    center: .center, startRadius: 4, endRadius: 130))
                 .aspectRatio(1, contentMode: .fit)
             Text(RpsBot.emoji(revealing ? nil : throwIdx))
                 .font(.system(size: 56))
@@ -285,10 +289,12 @@ struct RpsBotView: View {
 
             let theirs = RpsBot.chooseThrow(history: history, skill: skill)
             botThrow = theirs
+            // Graded by outcome, so a win and a loss don't feel identical: a won round gets the
+            // rising thump, a lost one a blunt knock, a tie a light tick.
             switch RpsBot.compare(choice, theirs) {
-            case 1:  myWins += 1
-            case -1: botWins += 1
-            default: break
+            case 1:  myWins += 1; Haptics.boundary()
+            case -1: botWins += 1; Haptics.rigid()
+            default: Haptics.tap()
             }
             // Recorded AFTER resolving, so the model never sees the throw it is predicting.
             history.append(choice)

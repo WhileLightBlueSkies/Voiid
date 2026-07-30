@@ -126,9 +126,12 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
     // driven by nullable state exactly like the clip overlay above.
     var openStoryContext by remember { mutableStateOf<Int?>(null) }
     var showStoryComposer by remember { mutableStateOf(false) }
-    // The open game match id. Full-screen overlay sibling of the clip/story viewers — a
-    // board must cover the tab bar, or a mis-tap during a game switches tabs.
-    var openGameMatch by remember { mutableStateOf<String?>(null) }
+    // The open game match, as (matchId, slug). Full-screen overlay sibling of the clip/story
+    // viewers — a board must cover the tab bar, or a mis-tap during a game switches tabs.
+    //
+    // The SLUG is carried alongside the id because it chooses the renderer. Holding only the
+    // id is what made every online match draw a tic-tac-toe grid, RPS included.
+    var openGameMatch by remember { mutableStateOf<Pair<String, String>?>(null) }
     // The game whose setup sheet is open ("who are you playing?"). A catalog card is a
     // GAME; nothing exists yet until an opponent is chosen.
     var setupGame by remember { mutableStateOf<com.voiid.app.net.GamesService.CatalogGame?>(null) }
@@ -137,6 +140,12 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
     // invite message names the game ("Let's play Tic Tac Toe"), which needs the display name.
     var pendingGame by remember {
         mutableStateOf<com.voiid.app.net.GamesService.CatalogGame?>(null)
+    }
+    // An online cricket match waiting on its over count: (slug, display name, (convoId, peer)).
+    // Held because the length must be chosen BEFORE the match row exists — the server builds
+    // the innings from it.
+    var pendingCricket by remember {
+        mutableStateOf<Triple<String, String, Pair<String, String>>?>(null)
     }
     // The offline practice board: which game, at what difficulty. Needs no match id because
     // a bot game never touches the server.
@@ -185,9 +194,9 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
     // `game_state` frame populate it.
     val pendingGameMatch by com.voiid.app.net.DeepLinkRouter.pendingGameMatch.collectAsState()
     androidx.compose.runtime.LaunchedEffect(pendingGameMatch) {
-        val mid = pendingGameMatch ?: return@LaunchedEffect
-        com.voiid.app.net.GamesEngine.get(appContext).open(mid)
-        openGameMatch = mid
+        val tap = pendingGameMatch ?: return@LaunchedEffect
+        com.voiid.app.net.GamesEngine.get(appContext).open(tap.matchId)
+        openGameMatch = tap.matchId to tap.slug
         com.voiid.app.net.DeepLinkRouter.consumeGameMatch()
     }
 
@@ -287,15 +296,39 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                 onPick = { convo ->
                     pendingGame = null
                     val peer = convo.peerUserId ?: return@OpponentPickerSheet
-                    gamesScope.launch {
-                        // Creating the match SENDS THE INVITE into this conversation — the
-                        // board only opens once the opponent has actually been told.
-                        com.voiid.app.net.GamesEngine.get(appContext)
-                            .create(game.slug, peer, convo.id, game.name)
-                            ?.let { openGameMatch = it }
+                    // Hand cricket needs its match length before the row is minted (the
+                    // server builds the innings from it), so it takes one more step. Every
+                    // other game has nothing left to ask.
+                    if (game.slug == "cricket") {
+                        pendingCricket = Triple(game.slug, game.name, convo.id to peer)
+                    } else {
+                        gamesScope.launch {
+                            // Creating the match SENDS THE INVITE into this conversation — the
+                            // board only opens once the opponent has actually been told.
+                            com.voiid.app.net.GamesEngine.get(appContext)
+                                .create(game.slug, peer, convo.id, game.name)
+                                ?.let { openGameMatch = it to game.slug }
+                        }
                     }
                 },
                 onDismiss = { pendingGame = null },
+            )
+        }
+
+        // Match length for an online hand cricket game. Chosen by the CREATOR and then fixed
+        // for both players, because it is a property of the match, not of a player.
+        pendingCricket?.let { (slug, name, who) ->
+            val (convoId, peer) = who
+            com.voiid.app.main.games.OversSheet(
+                onPick = { overs ->
+                    pendingCricket = null
+                    gamesScope.launch {
+                        com.voiid.app.net.GamesEngine.get(appContext)
+                            .create(slug, peer, convoId, name, mapOf("overs" to overs))
+                            ?.let { openGameMatch = it to slug }
+                    }
+                },
+                onDismiss = { pendingCricket = null },
             )
         }
 
@@ -335,6 +368,8 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                 when (slug) {
                     "rps" -> com.voiid.app.main.games.RpsBotScreen(
                         level = level, skill = skill, onClose = { botGame = null })
+                    "cricket" -> com.voiid.app.main.games.CricketBotScreen(
+                        level = level, skill = skill, onClose = { botGame = null })
                     else -> com.voiid.app.main.games.TicTacToeBotScreen(
                         level = level, skill = skill, onClose = { botGame = null })
                 }
@@ -347,11 +382,22 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
             enter = slideInVertically { it } + fadeIn(),
             exit = slideOutVertically { it } + fadeOut(),
         ) {
-            openGameMatch?.let { matchId ->
-                com.voiid.app.main.games.TicTacToeScreen(
-                    matchId = matchId,
-                    onClose = { openGameMatch = null },
-                )
+            openGameMatch?.let { (matchId, slug) ->
+                // Renderer per game, keyed by the same slug the server's rules modules use.
+                when (slug) {
+                    "rps" -> com.voiid.app.main.games.RpsMatchScreen(
+                        matchId = matchId,
+                        onClose = { openGameMatch = null },
+                    )
+                    "cricket" -> com.voiid.app.main.games.CricketMatchScreen(
+                        matchId = matchId,
+                        onClose = { openGameMatch = null },
+                    )
+                    else -> com.voiid.app.main.games.TicTacToeScreen(
+                        matchId = matchId,
+                        onClose = { openGameMatch = null },
+                    )
+                }
             }
         }
 

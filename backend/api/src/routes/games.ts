@@ -57,11 +57,18 @@ router.post(
   requireAuth,
   asyncHandler(async (req, res) => {
     const userId = (req as any).user.user_id as string;
-    const { slug, opponent_ids } = req.body ?? {};
+    const { slug, opponent_ids, options } = req.body ?? {};
 
     if (typeof slug !== 'string' || !Array.isArray(opponent_ids)) {
       return res.status(400).json({ error: 'slug and opponent_ids required' });
     }
+    // Per-game settings chosen at creation (hand cricket's over count). Stored opaquely and
+    // validated by the ENGINE, not here: this router deliberately knows no game's rules, and
+    // a whitelist of every game's settings would be rules knowledge in a second place.
+    // A non-object is dropped rather than 400'd — it is optional, and an old client that
+    // omits it must keep working.
+    const matchOptions =
+      options !== null && typeof options === 'object' && !Array.isArray(options) ? options : {};
     const opponents = opponent_ids.filter(
       (id: unknown): id is string => typeof id === 'string' && UUID_RE.test(id) && id !== userId
     );
@@ -85,10 +92,10 @@ router.post(
     }
 
     const rows = await query<{ id: string }>(
-      `insert into game_matches (game_id, player_ids, created_by, status)
-       values ($1, $2::jsonb, $3, 'waiting')
+      `insert into game_matches (game_id, player_ids, created_by, status, options)
+       values ($1, $2::jsonb, $3, 'waiting', $4::jsonb)
        returning id`,
-      [game.id, JSON.stringify(players), userId]
+      [game.id, JSON.stringify(players), userId, JSON.stringify(matchOptions)]
     );
 
     res.status(201).json({ match_id: rows[0].id, players });

@@ -87,6 +87,33 @@ class VoiidHaptics(context: Context) {
 
     /** Success notification — completed actions. */
     fun success() = successPulse()
+
+    /**
+     * A rising thump for a big moment — a six clearing the rope, a match won.
+     *
+     * WHY NOT JUST [rigid]: a single click is over before the ball has left the screen, so the
+     * biggest event in the game would feel identical to pressing a button. This is a short
+     * crescendo (soft → hard) that lasts roughly as long as the strike animation, which is what
+     * makes it read as impact rather than acknowledgement.
+     *
+     * Falls back to a heavy click wherever waveforms or amplitude control are unavailable —
+     * better a plain thump than silence on the one event that most wants feedback.
+     */
+    fun boundary() {
+        val v = vibrator ?: return
+        if (!hasMotor) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val timings = longArrayOf(0, 26, 40, 70)
+            val amplitudes = intArrayOf(0, 150, 0, 255)
+            if (vibrator.hasAmplitudeControl()) {
+                v.vibrate(VibrationEffect.createWaveform(timings, amplitudes, -1))
+            } else {
+                v.vibrate(VibrationEffect.createWaveform(timings, -1))
+            }
+        } else {
+            @Suppress("DEPRECATION") v.vibrate(longArrayOf(0, 26, 40, 70), -1)
+        }
+    }
 }
 
 val LocalVoiidHaptics = compositionLocalOf<VoiidHaptics> {

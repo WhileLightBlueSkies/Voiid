@@ -81,6 +81,7 @@ fun RpsBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
 
     val context = androidx.compose.ui.platform.LocalContext.current
     val store = remember { BotScoreStore(context) }
+    val haptics = com.voiid.app.ui.components.LocalVoiidHaptics.current
     var recorded by remember { mutableStateOf(false) }
 
     val matchOver = myWins >= TARGET || botWins >= TARGET
@@ -93,9 +94,12 @@ fun RpsBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
         val mine = myThrow ?: return@LaunchedEffect
         val theirs = RpsBot.chooseThrow(history.toList(), skill)
         botThrow = theirs
+        // Graded by outcome, so a win and a loss don't feel identical: a won round gets the
+        // rising thump, a lost one a blunt knock, a tie a light tick.
         when (RpsBot.compare(mine, theirs)) {
-            1 -> myWins++
-            -1 -> botWins++
+            1 -> { myWins++; haptics.boundary() }
+            -1 -> { botWins++; haptics.rigid() }
+            else -> haptics.tap()
         }
         // Record AFTER resolving so the model never sees the throw it is predicting.
         history.add(mine)
@@ -306,7 +310,14 @@ private fun Hand(
         modifier
             .aspectRatio(1f)
             .clip(RoundedCornerShape(VoiidRadius.lg))
-            .background(VoiidColor.surfaceCard),
+            // A lit panel rather than a flat card: the radial fall-off reads as a spotlit
+            // arena, which is what makes two emoji feel like a face-off instead of a list.
+            .background(
+                androidx.compose.ui.graphics.Brush.radialGradient(
+                    0f to VoiidColor.primary.copy(alpha = 0.20f),
+                    1f to VoiidColor.surfaceCard,
+                )
+            ),
         contentAlignment = Alignment.Center,
     ) {
         Text(

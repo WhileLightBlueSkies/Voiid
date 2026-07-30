@@ -1169,6 +1169,17 @@ struct MessageBubble: View {
     }
 
     @ViewBuilder private var content: some View {
+        // A game invite is a TEXT message whose body carries a token (see GameInvite.swift).
+        // Intercepted before the kind switch so both sides render the Join card rather than a
+        // raw `voiid:game/...` line.
+        if let invite = GameInvite.parse(message.text) {
+            GameInviteBubble(message: message, invite: invite)
+        } else {
+            kindContent
+        }
+    }
+
+    @ViewBuilder private var kindContent: some View {
         switch message.kind {
         case .image:
             if let ref = message.mediaRef {
@@ -1195,6 +1206,55 @@ struct MessageBubble: View {
         default:
             styledText(message.text)
         }
+    }
+}
+
+// MARK: - Game invite bubble (tap to join)
+
+/// An invite to a match, in the transcript.
+///
+/// BOTH SIDES GET A BUTTON, and that is deliberate: the creator's board is already open, but
+/// they may have closed it, and "Open" on their own invite is the only way back into a match
+/// that hasn't finished. Labelling it per side keeps that honest without two code paths.
+///
+/// Tapping posts a notification rather than calling a closure: the board lives in the Games
+/// tab's own navigation stack, so every layer between this bubble and there (list, row,
+/// bubble) would otherwise grow a parameter it does nothing with. Same reasoning as the
+/// group-call and story deep links.
+private struct GameInviteBubble: View {
+    let message: VMessage
+    let invite: GameInvite.Parsed
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "gamecontroller")
+                    .font(.system(size: 11))
+                    .foregroundStyle(VoiidColor.primary)
+                Text("Game invite")
+                    .font(VoiidFont.rounded(11, .semibold))
+                    .foregroundStyle(VoiidColor.textSecondary)
+            }
+            // The human half of the token — never the marker line.
+            Text(GameInvite.preview(message.text))
+                .font(VoiidFont.rounded(15, .semibold))
+                .foregroundStyle(VoiidColor.textPrimary)
+
+            Button {
+                NotificationCenter.default.post(
+                    name: .voiidOpenGameMatch, object: nil,
+                    userInfo: ["match_id": invite.matchId, "slug": invite.slug])
+            } label: {
+                Text(message.isMine ? "Open board" : "Join game")
+                    .font(VoiidFont.rounded(14, .bold))
+                    .foregroundStyle(VoiidColor.textOnPrimary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(RoundedRectangle(cornerRadius: VoiidRadius.md)
+                        .fill(VoiidColor.primary))
+            }
+        }
+        .frame(width: 230)
     }
 }
 

@@ -70,9 +70,21 @@ class GamesService(private val api: ApiClient) {
      * this id — this endpoint sends no notification of its own, so one invite produces
      * exactly one alert, from the message path that already handles wake and push.
      */
-    suspend fun create(slug: String, opponentIds: List<String>): String {
+    suspend fun create(
+        slug: String,
+        opponentIds: List<String>,
+        /**
+         * Per-game settings chosen at creation (hand cricket's over count). Stored on the
+         * match row and validated by the ENGINE — this client sends, it does not police.
+         */
+        options: Map<String, Int> = emptyMap(),
+    ): String {
         val ids = opponentIds.joinToString(",") { "\"" + it + "\"" }
-        val body = api.request("POST", "games/matches", """{"slug":"$slug","opponent_ids":[$ids]}""")
+        val opts = options.entries.joinToString(",") { "\"${it.key}\":${it.value}" }
+        val body = api.request(
+            "POST", "games/matches",
+            """{"slug":"$slug","opponent_ids":[$ids],"options":{$opts}}""",
+        )
         return json.decodeFromString<CreateResponse>(body).match_id
     }
 

@@ -40,7 +40,11 @@ object DeepLinkRouter {
      * directly, and every layer in between (list, bubble row, bubble inner) would otherwise
      * grow a parameter it does nothing with. The same reasoning as the group-call link above.
      */
-    val pendingGameMatch = MutableStateFlow<String?>(null)
-    fun openGameMatch(matchId: String) { pendingGameMatch.value = matchId }
+    data class GameInviteTap(val matchId: String, val slug: String)
+    val pendingGameMatch = MutableStateFlow<GameInviteTap?>(null)
+    /** [slug] rides along because it selects the board renderer, not just the match. */
+    fun openGameMatch(matchId: String, slug: String) {
+        pendingGameMatch.value = GameInviteTap(matchId, slug)
+    }
     fun consumeGameMatch() { pendingGameMatch.value = null }
 }

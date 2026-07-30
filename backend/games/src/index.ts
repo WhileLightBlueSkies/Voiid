@@ -130,8 +130,13 @@ async function handleJoin(msg: Record<string, any>): Promise<void> {
     return;
   }
 
-  const rows = await query<{ slug: string; player_ids: string[]; status: string }>(
-    `select g.slug, m.player_ids, m.status
+  const rows = await query<{
+    slug: string;
+    player_ids: string[];
+    status: string;
+    options: Record<string, unknown> | null;
+  }>(
+    `select g.slug, m.player_ids, m.status, m.options
        from game_matches m join games g on g.id = m.game_id
       where m.id = $1`,
     [matchId]
@@ -143,7 +148,9 @@ async function handleJoin(msg: Record<string, any>): Promise<void> {
   if (!factory) return;
 
   const players = row.player_ids;
-  const engine = factory.create(players);
+  // Per-match settings (hand cricket's over count). Chosen at creation, so they must come
+  // from the row — the match is built lazily here, long after the creator's tap.
+  const engine = factory.create(players, row.options ?? {});
   const m: LiveMatch = {
     matchId,
     slug: row.slug,

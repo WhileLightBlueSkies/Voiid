@@ -59,6 +59,14 @@ export interface GameFactory {
   slug: string;
   /** Tick rate in Hz for continuous games; omit for turn-based. */
   tickHz?: number;
-  create(playerIds: string[]): GameEngine;
+  /**
+   * Build a fresh match.
+   *
+   * [options] is the match's `options` jsonb column — per-game settings chosen at creation,
+   * before any state exists (hand cricket's over count, for example). UNTRUSTED: it
+   * originates from the client that created the match, so an engine must validate and clamp
+   * whatever it reads, exactly as it validates input frames. Games with no settings ignore it.
+   */
+  create(playerIds: string[], options?: Record<string, unknown>): GameEngine;
   restore(state: GameStatePayload): GameEngine;
 }

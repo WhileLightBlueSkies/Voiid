@@ -16,7 +16,10 @@ import SwiftUI
 
 struct OpponentPickerSheet: View {
     let conversations: [VConversation]
-    let onPick: (String) -> Void
+    /// The CONVERSATION, not just the peer id: the invite is sent into this chat, so the
+    /// caller needs both halves. Handing back only a user id is what made the invite
+    /// unsendable — there was no thread to put it in.
+    let onPick: (VConversation) -> Void
 
     @Environment(\.dismiss) private var dismiss
 
@@ -40,7 +43,7 @@ struct OpponentPickerSheet: View {
                         LazyVStack(spacing: 0) {
                             ForEach(candidates, id: \.id) { convo in
                                 Button {
-                                    if let peer = convo.peerUserId { onPick(peer) }
+                                    onPick(convo)
                                     dismiss()
                                 } label: {
                                     HStack(spacing: VoiidSpacing.md) {

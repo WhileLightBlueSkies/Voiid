@@ -45,12 +45,90 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         val line: List<Int>?,
     )
 
+    /**
+     * Authoritative Rock Paper Scissors state (backend/games/src/engine/rps).
+     *
+     * NOTE WHAT IS ABSENT: the opponent's pending throw. While a round is open the server
+     * sends only [hasThrown] — booleans, never the choices — because RPS is simultaneous and
+     * leaking the first throw would let whoever moves second win every time. The view
+     * therefore CANNOT render the opponent's hand mid-round, by design: there is nothing to
+     * render. Resolved rounds arrive in [history], where both throws are safe to show.
+     */
+    data class RpsState(
+        /** Seat order. Index 0 and 1 map to the two entries in [wins] and [hasThrown]. */
+        val players: List<String>,
+        /** Rounds needed to take the match (server default 3). */
+        val target: Int,
+        /** Rounds won, by seat. */
+        val wins: List<Int>,
+        /** Whether each seat has thrown THIS round. Never what they threw. */
+        val hasThrown: List<Boolean>,
+        /** Resolved rounds, oldest first. Safe to show in full. */
+        val history: List<Round>,
+        val finished: Boolean,
+        val winnerUserId: String?,
+    ) {
+        /** One resolved round: both throws, and who took it. */
+        data class Round(
+            /** "rock" | "paper" | "scissors", by seat. */
+            val throws: List<String>,
+            /** Seat that won, or null for a tie. */
+            val winner: Int?,
+        )
+    }
+
+    /**
+     * Authoritative Hand Cricket state (docs/GAMES_HAND_CRICKET.md).
+     *
+     * Same anti-cheat shape as [RpsState]: [hasPicked] is booleans, never the picks. A pick is
+     * revealed only once the ball has resolved, in [history].
+     */
+    data class CricketState(
+        val players: List<String>,
+        val overs: Int,
+        val innings: Int,
+        /** Seat batting RIGHT NOW. Swaps between innings. */
+        val battingSeat: Int,
+        val scores: List<Int>,
+        val wickets: List<Int>,
+        val ballsBowled: Int,
+        /** `overs * 6`, sent by the server so the client needn't know the balls-per-over rule. */
+        val ballsTotal: Int,
+        val wicketsPerInnings: Int,
+        /** Runs the chasing side needs to WIN. Null during the first innings. */
+        val target: Int?,
+        val hasPicked: List<Boolean>,
+        val history: List<Ball>,
+        val finished: Boolean,
+        val winnerUserId: String?,
+    ) {
+        /** One resolved ball. Both picks are safe here — the ball is already scored. */
+        data class Ball(
+            val picks: List<Int>,
+            val battingSeat: Int,
+            val innings: Int,
+            val runs: Int,
+            val wicket: Boolean,
+        )
+    }
+
     private val appContext = context.applicationContext
     private val tokens = TokenStore.get(context)
     private val service = GamesService(ApiClient(tokens))
 
     private val _state = MutableStateFlow<TicTacToeState?>(null)
     val state: StateFlow<TicTacToeState?> = _state.asStateFlow()
+
+    /**
+     * RPS state, for the RPS renderer. A SEPARATE flow rather than a sealed `GameState`
+     * union: each screen renders exactly one game and would have to cast out of a union on
+     * every frame anyway, and a mistyped cast is a crash where an unused null flow is inert.
+     */
+    private val _rps = MutableStateFlow<RpsState?>(null)
+    val rps: StateFlow<RpsState?> = _rps.asStateFlow()
+
+    private val _cricket = MutableStateFlow<CricketState?>(null)
+    val cricket: StateFlow<CricketState?> = _cricket.asStateFlow()
 
     private val _joinError = MutableStateFlow<String?>(null)
     val joinError: StateFlow<String?> = _joinError.asStateFlow()
@@ -75,7 +153,76 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         if (matchId != this.matchId) return
         if (seq < lastSeq) return
         lastSeq = seq
-        _state.value = parse(payload)
+        // Dispatch on the game the SERVER named, not on anything the client remembered: the
+        // frame is the authority on what it contains.
+        when (game) {
+            "rps" -> _rps.value = parseRps(payload)
+            "cricket" -> _cricket.value = parseCricket(payload)
+            else -> _state.value = parse(payload)
+        }
+    }
+
+    private fun parseCricket(payload: JsonObject): CricketState? {
+        val players = payload["players"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull }
+            ?: return null
+        val history = payload["history"]?.jsonArray?.mapNotNull { entry ->
+            val obj = entry as? JsonObject ?: return@mapNotNull null
+            val picks = obj["picks"]?.jsonArray?.mapNotNull { it.jsonPrimitive.intOrNull }
+                ?: return@mapNotNull null
+            CricketState.Ball(
+                picks = picks,
+                battingSeat = obj["battingSeat"]?.jsonPrimitive?.intOrNull ?: 0,
+                innings = obj["innings"]?.jsonPrimitive?.intOrNull ?: 1,
+                runs = obj["runs"]?.jsonPrimitive?.intOrNull ?: 0,
+                wicket = obj["wicket"]?.jsonPrimitive?.booleanOrNull ?: false,
+            )
+        } ?: emptyList()
+        fun ints(key: String, fallback: List<Int>) =
+            payload[key]?.jsonArray?.map { it.jsonPrimitive.intOrNull ?: 0 } ?: fallback
+        return CricketState(
+            players = players,
+            overs = payload["overs"]?.jsonPrimitive?.intOrNull ?: 2,
+            innings = payload["innings"]?.jsonPrimitive?.intOrNull ?: 1,
+            battingSeat = payload["battingSeat"]?.jsonPrimitive?.intOrNull ?: 0,
+            scores = ints("scores", listOf(0, 0)),
+            wickets = ints("wickets", listOf(0, 0)),
+            ballsBowled = payload["ballsBowled"]?.jsonPrimitive?.intOrNull ?: 0,
+            ballsTotal = payload["ballsTotal"]?.jsonPrimitive?.intOrNull ?: 12,
+            wicketsPerInnings = payload["wicketsPerInnings"]?.jsonPrimitive?.intOrNull ?: 2,
+            target = payload["target"]?.jsonPrimitive?.intOrNull,
+            hasPicked = payload["hasPicked"]?.jsonArray?.map {
+                it.jsonPrimitive.booleanOrNull ?: false
+            } ?: listOf(false, false),
+            history = history,
+            finished = payload["finished"]?.jsonPrimitive?.booleanOrNull ?: false,
+            winnerUserId = payload["winnerUserId"]?.jsonPrimitive?.contentOrNull,
+        )
+    }
+
+    private fun parseRps(payload: JsonObject): RpsState? {
+        val players = payload["players"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull }
+            ?: return null
+        val history = payload["history"]?.jsonArray?.mapNotNull { entry ->
+            val obj = entry as? JsonObject ?: return@mapNotNull null
+            val throws = obj["throws"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull }
+                ?: return@mapNotNull null
+            RpsState.Round(
+                throws = throws,
+                winner = obj["winner"]?.jsonPrimitive?.intOrNull,
+            )
+        } ?: emptyList()
+        return RpsState(
+            players = players,
+            target = payload["target"]?.jsonPrimitive?.intOrNull ?: 3,
+            wins = payload["wins"]?.jsonArray?.map { it.jsonPrimitive.intOrNull ?: 0 }
+                ?: listOf(0, 0),
+            hasThrown = payload["hasThrown"]?.jsonArray?.map {
+                it.jsonPrimitive.booleanOrNull ?: false
+            } ?: listOf(false, false),
+            history = history,
+            finished = payload["finished"]?.jsonPrimitive?.booleanOrNull ?: false,
+            winnerUserId = payload["winnerUserId"]?.jsonPrimitive?.contentOrNull,
+        )
     }
 
     private fun parse(payload: JsonObject): TicTacToeState? {
@@ -99,6 +246,8 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
     suspend fun open(matchId: String) {
         this.matchId = matchId
         _state.value = null
+        _rps.value = null
+        _cricket.value = null
         _joinError.value = null
         lastSeq = -1
         runCatching { service.join(matchId) }
@@ -125,9 +274,11 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         opponentId: String,
         conversationId: String,
         gameName: String,
+        /** Per-game settings chosen before the match exists (hand cricket's over count). */
+        options: Map<String, Int> = emptyMap(),
     ): String? {
         return runCatching {
-            val id = service.create(slug, listOf(opponentId))
+            val id = service.create(slug, listOf(opponentId), options)
             ChatEngine.get(appContext)
                 .sendText(GameInvite.encode(slug, id, gameName), conversationId, opponentId)
             open(id)
@@ -149,9 +300,37 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         WebSocketClient.get(context).sendGameInput(id, """{"cell":$cell}""")
     }
 
+    /**
+     * Throw for this RPS round. [choice] is "rock" | "paper" | "scissors".
+     *
+     * Fire-and-forget like [play]: the round resolves when the SERVER says both throws are
+     * in. A second throw in the same round is rejected server-side (re-throwing would let a
+     * player change their mind after the opponent commits), so this doesn't police it either.
+     */
+    fun throwRps(context: Context, choice: String) {
+        val id = matchId ?: return
+        val s = _rps.value ?: return
+        if (s.finished) return
+        WebSocketClient.get(context).sendGameInput(id, """{"throw":"$choice"}""")
+    }
+
+    /**
+     * Pick a number (0–6) for this cricket ball. Same fire-and-forget contract as [play]: the
+     * ball resolves when the SERVER says both picks are in, and a second pick on the same ball
+     * is rejected server-side.
+     */
+    fun pickCricket(context: Context, pick: Int) {
+        val id = matchId ?: return
+        val s = _cricket.value ?: return
+        if (s.finished) return
+        WebSocketClient.get(context).sendGameInput(id, """{"pick":$pick}""")
+    }
+
     fun leave() {
         matchId = null
         _state.value = null
+        _rps.value = null
+        _cricket.value = null
         _joinError.value = null
         lastSeq = -1
     }

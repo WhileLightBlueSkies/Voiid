@@ -35,15 +35,31 @@ struct GamesHomeView: View {
     /// The game whose setup sheet is open. A card is a GAME; nothing exists until an
     /// opponent is chosen.
     @State private var setupGame: GamesAPI.CatalogGame?
-    /// The game awaiting a FRIEND — held between "play a friend" and picking who.
-    @State private var pendingSlug: PendingGame?
+    /// The game awaiting a FRIEND — held between "play a friend" and picking who. Carries the
+    /// whole catalog row: the invite message names the game ("Let's play Tic Tac Toe"), which
+    /// needs the display name, not just the slug.
+    @State private var pendingGame: GamesAPI.CatalogGame?
     /// The offline practice board: which game, at what difficulty.
     @State private var botGame: BotSession?
-    @State private var openMatchId: String?
+    /// The open online match, as id + slug. The SLUG chooses the renderer.
+    @State private var openMatch: OpenMatch?
     @State private var showLeaderboard = false
 
-    private struct PendingGame: Identifiable { let id: String }
-    private struct BotSession: Identifiable {
+    private struct OpenMatch: Identifiable, Hashable {
+        let id: String
+        let slug: String
+    }
+
+    /// An online cricket match waiting on its over count. Held because the length must be chosen
+    /// BEFORE the match row exists — the server builds the innings from it.
+    @State private var pendingCricket: PendingCricket?
+
+    private struct PendingCricket: Identifiable {
+        let id = UUID()
+        let game: GamesAPI.CatalogGame
+        let conversation: VConversation
+    }
+    private struct BotSession: Identifiable, Hashable {
         let id = UUID()
         let slug: String
         let level: BotDifficulty
@@ -101,18 +117,27 @@ struct GamesHomeView: View {
             .navigationDestination(isPresented: $showLeaderboard) {
                 LeaderboardView { showLeaderboard = false }
             }
-            .navigationDestination(item: $openMatchId) { id in
-                TicTacToeView(matchId: id) { openMatchId = nil }
-                    .environmentObject(session)
+            .navigationDestination(item: $openMatch) { m in
+                // Renderer per game, keyed by the same slug the server's rules modules use.
+                // Holding only a match id is what made every online match draw a
+                // tic-tac-toe grid, RPS included.
+                Group {
+                    switch m.slug {
+                    case "rps":     RpsMatchView(matchId: m.id) { openMatch = nil }
+                    case "cricket": CricketMatchView(matchId: m.id) { openMatch = nil }
+                    default:        TicTacToeView(matchId: m.id) { openMatch = nil }
+                    }
+                }
+                .environmentObject(session)
             }
             .navigationDestination(item: $botGame) { s in
                 // Which renderer runs is chosen by slug — the same key the server's rules
                 // modules use.
                 Group {
-                    if s.slug == "rps" {
-                        RpsBotView(level: s.level, skill: s.skill) { botGame = nil }
-                    } else {
-                        TicTacToeBotView(level: s.level, skill: s.skill) { botGame = nil }
+                    switch s.slug {
+                    case "rps":     RpsBotView(level: s.level, skill: s.skill) { botGame = nil }
+                    case "cricket": CricketBotView(level: s.level, skill: s.skill) { botGame = nil }
+                    default:        TicTacToeBotView(level: s.level, skill: s.skill) { botGame = nil }
                     }
                 }
                 .environmentObject(session)
@@ -120,26 +145,66 @@ struct GamesHomeView: View {
             .sheet(item: $setupGame) { game in
                 GameSetupSheet(
                     gameName: game.name,
-                    onPlayFriend: { pendingSlug = PendingGame(id: game.slug) },
+                    onPlayFriend: { pendingGame = game },
                     onPlayBot: { level, skill in
                         botGame = BotSession(slug: game.slug, level: level, skill: skill)
                     })
             }
-            .sheet(item: $pendingSlug) { pending in
-                OpponentPickerSheet(conversations: chat.directConversations) { peerUserId in
-                    Task { await startMatch(slug: pending.id, opponentId: peerUserId) }
+            .sheet(item: $pendingGame) { game in
+                OpponentPickerSheet(conversations: chat.directConversations) { convo in
+                    // Hand cricket needs its match length before the row is minted (the server
+                    // builds the innings from it), so it takes one more step. Every other game has
+                    // nothing left to ask.
+                    if game.slug == "cricket" {
+                        pendingCricket = PendingCricket(game: game, conversation: convo)
+                    } else {
+                        Task { await startMatch(game: game, conversation: convo) }
+                    }
+                }
+            }
+            // Match length for an online hand cricket game. Chosen by the CREATOR and then fixed
+            // for both players, because it is a property of the match, not of a player.
+            .sheet(item: $pendingCricket) { pending in
+                OversSheet { overs in
+                    pendingCricket = nil
+                    Task {
+                        await startMatch(
+                            game: pending.game,
+                            conversation: pending.conversation,
+                            options: ["overs": overs])
+                    }
                 }
             }
         }
         .task { await load() }
         // A ROOT tab, so it claims the bar exactly like ChatsHomeView does.
         .onAppear { session.hideTabBar = false }
+        // Join tapped on an invite bubble. Joining is authorized server-side (the caller must
+        // be in player_ids), so this only has to open the board — the opening `game_state`
+        // frame populates it.
+        .onReceive(NotificationCenter.default.publisher(for: .voiidOpenGameMatch)) { note in
+            guard let id = note.userInfo?["match_id"] as? String else { return }
+            let slug = (note.userInfo?["slug"] as? String) ?? "tictactoe"
+            openMatch = OpenMatch(id: id, slug: slug)
+        }
     }
 
-    /// Create the match, then open the board on the id the server minted.
-    private func startMatch(slug: String, opponentId: String) async {
-        if let id = await GamesEngine.shared.create(slug: slug, opponentId: opponentId) {
-            openMatchId = id
+    /// Create the match — which SENDS THE INVITE into this conversation — then open the board
+    /// on the id the server minted. The board only opens once the opponent has been told.
+    private func startMatch(
+        game: GamesAPI.CatalogGame,
+        conversation: VConversation,
+        options: [String: Int] = [:]
+    ) async {
+        guard let peer = conversation.peerUserId, !peer.isEmpty else { return }
+        if let id = await GamesEngine.shared.create(
+            slug: game.slug,
+            opponentId: peer,
+            conversationId: conversation.id,
+            gameName: game.name,
+            options: options
+        ) {
+            openMatch = OpenMatch(id: id, slug: game.slug)
         }
     }
 
@@ -164,37 +229,34 @@ private struct GameCard: View {
                     Rectangle().fill(VoiidColor.primary.opacity(0.10))
 
                     if let key = game.icon_key, UIImage(named: key) != nil {
+                        // The artwork IS the title: the shipped art carries the game's name
+                        // as a lettering treatment, so the card shows no text of its own. A
+                        // name label under it read the title twice, and the scrim that used
+                        // to sit here existed only to keep that label legible — both are
+                        // gone with it.
                         Image(key)
                             .resizable()
                             .scaledToFill()
-                        // Keeps the title legible over arbitrary artwork — without it a
-                        // light image and light text collide.
-                        LinearGradient(
-                            stops: [.init(color: .clear, location: 0.55),
-                                    .init(color: .black.opacity(0.45), location: 1)],
-                            startPoint: .top, endPoint: .bottom)
+                            .accessibilityLabel(game.name)
                     } else {
-                        // Art hasn't shipped yet — a tinted glyph, never an empty card.
-                        Image(systemName: game.slug == "rps" ? "hand.raised" : "number.square")
-                            .font(.system(size: 40, weight: .regular))
-                            .foregroundStyle(VoiidColor.primary)
+                        // Art hasn't shipped yet — a tinted glyph over its NAME, since
+                        // without artwork there is nothing else identifying the card.
+                        VStack(spacing: VoiidSpacing.sm) {
+                            Image(systemName: game.slug == "rps" ? "hand.raised" : "number.square")
+                                .font(.system(size: 40, weight: .regular))
+                                .foregroundStyle(VoiidColor.primary)
+                            Text(game.name)
+                                .font(VoiidFont.rounded(15, .semibold))
+                                .foregroundStyle(VoiidColor.textPrimary)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, VoiidSpacing.sm)
+                        }
                     }
                 }
                 // 4:3 — the aspect the shipped artwork is authored at.
                 .aspectRatio(4.0 / 3.0, contentMode: .fit)
                 .clipped()
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(game.name)
-                        .font(VoiidFont.rounded(15, .semibold))
-                        .foregroundStyle(VoiidColor.textPrimary)
-                        .lineLimit(2)
-                    Text("\(game.min_players)–\(game.max_players) players")
-                        .font(VoiidFont.rounded(12, .regular))
-                        .foregroundStyle(VoiidColor.textSecondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(VoiidSpacing.sm)
             }
             .background(RoundedRectangle(cornerRadius: VoiidRadius.lg).fill(VoiidColor.surfaceCard))
             .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg))

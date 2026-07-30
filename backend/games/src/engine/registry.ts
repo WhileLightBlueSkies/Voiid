@@ -4,8 +4,9 @@
 import type { GameFactory } from './GameEngine';
 import { tictactoe } from './tictactoe';
 import { rps } from './rps';
+import { cricket } from './cricket';
 
-const FACTORIES: GameFactory[] = [tictactoe, rps];
+const FACTORIES: GameFactory[] = [tictactoe, rps, cricket];
 
 const bySlug = new Map<string, GameFactory>(FACTORIES.map((f) => [f.slug, f]));
 

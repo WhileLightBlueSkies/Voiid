@@ -654,7 +654,7 @@ private fun GameInviteBubble(
                 .background(VoiidColor.primary)
                 .clickable {
                     haptics.tap()
-                    com.voiid.app.net.DeepLinkRouter.openGameMatch(invite.matchId)
+                    com.voiid.app.net.DeepLinkRouter.openGameMatch(invite.matchId, invite.slug)
                 },
             contentAlignment = Alignment.Center,
         ) {

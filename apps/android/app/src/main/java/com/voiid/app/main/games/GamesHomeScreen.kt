@@ -41,8 +41,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -202,48 +200,40 @@ private fun GameCard(game: GamesService.CatalogGame, onClick: () -> Unit) {
             contentAlignment = Alignment.Center,
         ) {
             if (artId != 0) {
+                // The artwork IS the title: the shipped art carries the game's name as a
+                // lettering treatment, so the card shows no text of its own. A name label
+                // under it read the title twice, and the scrim that used to sit here existed
+                // only to keep that label legible — both are gone with it.
                 Image(
                     painter = painterResource(artId),
-                    contentDescription = null,
+                    contentDescription = game.name,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),
                 )
-                // Keeps the title legible over arbitrary artwork — without it a light image
-                // and light text collide.
-                Box(
-                    Modifier
-                        .fillMaxSize()
-                        .background(
-                            Brush.verticalGradient(
-                                0.55f to Color.Transparent,
-                                1f to Color.Black.copy(alpha = 0.45f),
-                            )
-                        )
-                )
             } else {
-                // Art hasn't shipped for this game yet — a tinted glyph, never an empty card.
-                Icon(
-                    if (game.slug == "rps") Icons.Outlined.PanTool else Icons.Outlined.Grid3x3,
-                    contentDescription = null,
-                    tint = VoiidColor.primary,
-                    modifier = Modifier.size(44.dp),
-                )
+                // Art hasn't shipped for this game yet — a tinted glyph over its NAME, since
+                // without artwork there is nothing else identifying the card.
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(VoiidSpacing.sm),
+                ) {
+                    Icon(
+                        if (game.slug == "rps") Icons.Outlined.PanTool else Icons.Outlined.Grid3x3,
+                        contentDescription = null,
+                        tint = VoiidColor.primary,
+                        modifier = Modifier.size(44.dp),
+                    )
+                    Text(
+                        game.name,
+                        color = VoiidColor.textPrimary,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 2,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = VoiidSpacing.sm),
+                    )
+                }
             }
-        }
-
-        Column(Modifier.padding(VoiidSpacing.sm)) {
-            Text(
-                game.name,
-                color = VoiidColor.textPrimary,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 2,
-            )
-            Text(
-                "${game.min_players}–${game.max_players} players",
-                color = VoiidColor.textSecondary,
-                fontSize = 12.sp,
-            )
         }
     }
 }
