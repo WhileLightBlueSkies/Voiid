@@ -293,7 +293,25 @@ router.get(
     // One pass over the caller's finished matches. `opponent` is derived by expanding
     // player_ids and dropping the caller, so this works unchanged for >2-player games
     // later (each opponent gets a row).
-    const rows = await query(
+    //
+    // WRAPPED IN A TRY, and the catch LOGS. This query silently failed for its entire life — a
+    // uuid/text comparison error that surfaced to users as "Couldn't load the leaderboard" with
+    // nothing in any log to say why. A bad query here is a bug, not a user's problem, so it gets
+    // recorded server-side rather than swallowed into a generic 500.
+    let rows;
+    try {
+      rows = await runLeaderboard(userId, slug);
+    } catch (e) {
+      console.error('[games] leaderboard query failed:', (e as Error).message);
+      throw e;
+    }
+    res.json({ leaderboard: rows });
+  })
+);
+
+/** The leaderboard query itself, split out so the route above can log a failure with context. */
+async function runLeaderboard(userId: string, slug: string | null) {
+  return query(
       `with mine as (
          select m.id, m.winner_id, m.player_ids
            from game_matches m
@@ -324,10 +342,7 @@ router.get(
         group by p.opponent_id, u.full_name, u.username
         order by wins desc, played desc`,
       [JSON.stringify([userId]), slug, userId]
-    );
-
-    res.json({ leaderboard: rows });
-  })
-);
+  );
+}
 
 export default router;
