@@ -111,11 +111,7 @@ struct RootTabView: View {
                         icon: "person.3.fill",
                         title: "Communities",
                         blurb: "Group spaces for the people, teams and interests you care about — announcements, sub-groups and shared media in one place.")
-                case .games:
-                    ComingSoonView(
-                        icon: "gamecontroller.fill",
-                        title: "Games",
-                        blurb: "Quick games you can start straight from a chat and play with anyone in your conversations.")
+                case .games:   GamesHomeView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

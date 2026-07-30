@@ -31,4 +31,16 @@ object DeepLinkRouter {
         pendingGroupCall.value = GroupCallInvite(conversationId, video)
     }
     fun consumeGroupCall() { pendingGroupCall.value = null }
+
+    /**
+     * A game match the user tapped Join on, from an invite bubble in a chat.
+     *
+     * Routed here rather than through a callback threaded down to the bubble: the board is a
+     * full-screen sibling owned by the root composable, so the bubble has no way to open it
+     * directly, and every layer in between (list, bubble row, bubble inner) would otherwise
+     * grow a parameter it does nothing with. The same reasoning as the group-call link above.
+     */
+    val pendingGameMatch = MutableStateFlow<String?>(null)
+    fun openGameMatch(matchId: String) { pendingGameMatch.value = matchId }
+    fun consumeGameMatch() { pendingGameMatch.value = null }
 }

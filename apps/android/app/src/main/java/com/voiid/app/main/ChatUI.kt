@@ -54,6 +54,7 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.outlined.Circle
+import androidx.compose.material.icons.outlined.SportsEsports
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -332,6 +333,16 @@ private fun BubbleInner(message: VMessage, isGroup: Boolean, isLastMine: Boolean
         return
     }
 
+    // A game invite is a TEXT message whose body carries a token (see net/GameInvite.kt).
+    // Intercepted before the kind switch so both sides render the Join card rather than a
+    // raw `voiid:game/...` line.
+    val invite = remember(message.text) { com.voiid.app.net.GameInvite.parse(message.text) }
+    if (invite != null) {
+        GameInviteBubble(message, invite)
+        MetaRow(message, isLastMine, Modifier.padding(top = 2.dp))
+        return
+    }
+
     when (message.kind) {
         // Text: time + ticks flow INLINE at the end (bubble hugs content, WhatsApp-style) — iOS `textWithMeta`.
         MessageKind.TEXT -> Row(
@@ -590,6 +601,69 @@ fun PollBubble(poll: VPoll, onVote: (String) -> Unit) {
             }
         }
         Text("${poll.totalVotes} votes", style = VoiidFont.rounded(11), color = VoiidColor.textSecondary)
+    }
+}
+
+// MARK: - Game invite bubble (tap to join)
+
+/**
+ * An invite to a match, in the transcript.
+ *
+ * BOTH SIDES GET A BUTTON, and that is deliberate: the creator's board is already open, but
+ * they may have closed it, and "Open" on their own invite is the only way back into a match
+ * that hasn't finished. Labelling it differently per side ("Join" vs "Open") keeps that
+ * honest without needing two code paths.
+ *
+ * Tapping publishes to [com.voiid.app.net.DeepLinkRouter] rather than calling a callback —
+ * the board is a full-screen sibling of the whole tab tree, so the root composable owns it
+ * (see the router's comment).
+ */
+@Composable
+private fun GameInviteBubble(
+    message: VMessage,
+    invite: com.voiid.app.net.GameInvite.Parsed,
+) {
+    val haptics = LocalVoiidHaptics.current
+    val shape = RoundedCornerShape(12.dp)
+    Column(Modifier.width(230.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Icon(
+                Icons.Outlined.SportsEsports, null,
+                tint = VoiidColor.primary, modifier = Modifier.size(13.dp),
+            )
+            Text(
+                "Game invite",
+                style = VoiidFont.rounded(11, FontWeight.SemiBold),
+                color = VoiidColor.textSecondary,
+            )
+        }
+        // The human half of the token — never the marker line.
+        Text(
+            com.voiid.app.net.GameInvite.preview(message.text),
+            style = VoiidFont.rounded(15, FontWeight.SemiBold),
+            color = VoiidColor.textPrimary,
+        )
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(38.dp)
+                .clip(shape)
+                .background(VoiidColor.primary)
+                .clickable {
+                    haptics.tap()
+                    com.voiid.app.net.DeepLinkRouter.openGameMatch(invite.matchId)
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                if (message.isMine) "Open board" else "Join game",
+                style = VoiidFont.rounded(14, FontWeight.Bold),
+                color = VoiidColor.textOnPrimary,
+            )
+        }
     }
 }
 

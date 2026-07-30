@@ -30,11 +30,12 @@ git reset --hard "origin/$BRANCH"     # exact match to remote; no local drift
 echo "==> Installing workspace deps (npm ci)"
 npm ci
 
-echo "==> Building common-utils + api + websocket + workers"
+echo "==> Building common-utils + api + websocket + workers + games"
 npm run build -w @voiid/common-utils
 npm run build -w @voiid/api
 npm run build -w @voiid/websocket
 npm run build -w @voiid/workers
+npm run build -w @voiid/games
 
 echo "==> Applying DB migrations (idempotent; pending only)"
 node --env-file="$APP_DIR/.env" "$APP_DIR/infrastructure/deployment/migrate.mjs"
@@ -53,6 +54,15 @@ if pm2 describe voiid-workers >/dev/null 2>&1; then
   pm2 restart voiid-workers --update-env
 else
   pm2 start "npm run start -w @voiid/workers"   --name voiid-workers
+fi
+# voiid-games referees every move (docs/GAMES.md §2). Started separately for the same
+# reason as the workers above: a box that predates the service picks it up on the next
+# deploy without a manual pm2 start. Without it the catalog loads and matches can be
+# created, but no move ever resolves — nothing consumes channel:games:input.
+if pm2 describe voiid-games >/dev/null 2>&1; then
+  pm2 restart voiid-games --update-env
+else
+  pm2 start "npm run start -w @voiid/games"     --name voiid-games
 fi
 pm2 save
 

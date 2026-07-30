@@ -232,6 +232,19 @@ class WebSocketClient private constructor(context: Context) {
         send("""{"type":"loc_stop","share_id":${enc(shareId)},"recipient_ids":[$recips]}""", queueIfDown = false)
     }
 
+    /**
+     * Submit one game move (docs/GAMES.md §6). Unlike loc_update there is no recipient
+     * list: the relay hands this to backend/games, which knows the roster and answers the
+     * players itself.
+     *
+     * queueIfDown = true, deliberately unlike location: a stale position is worthless, but
+     * a move is the player's actual intent, and silently dropping it looks like the tap
+     * never registered. The server rejects it if the match has moved on.
+     */
+    fun sendGameInput(matchId: String, payloadJson: String) {
+        send("""{"type":"game_input","match_id":${enc(matchId)},"payload":$payloadJson}""", queueIfDown = true)
+    }
+
     /** Ask the message's sender to re-establish the E2E session (we couldn't decrypt). */
     fun sendSessionReset(conversationId: String, recipientIds: List<String>) {
         val recips = recipientIds.joinToString(",") { "\"" + it + "\"" }
@@ -363,6 +376,17 @@ class WebSocketClient private constructor(context: Context) {
             // A story was posted to us, viewed, or deleted. All three mean the same thing to
             // this client — re-sync the feed — so they share one seam, exactly as iOS routes
             // all three to `.voiidStorySignal`.
+            // Full authoritative state for one match. Routed to the GamesRelay seam so the
+            // open game screen consumes it and any other surface can too, exactly as
+            // loc_update routes through LocationRelay. Readable, not opaque — the server
+            // referees games (docs/GAMES.md §2).
+            "game_state" -> {
+                val mid = obj["match_id"]?.jsonPrimitive?.contentOrNull ?: return
+                val payload = obj["payload"] as? JsonObject ?: return
+                val game = obj["game"]?.jsonPrimitive?.contentOrNull ?: ""
+                val seq = obj["seq"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
+                GamesRelay.dispatchState(mid, game, seq, payload)
+            }
             "story", "story_receipt", "story_deleted" -> onStorySignal?.invoke()
             "session_reset" -> obj["conversation_id"]?.jsonPrimitive?.contentOrNull?.let { onSessionReset?.invoke(it) }
             "mls_event" -> onMlsEvent?.invoke(obj["conversation_id"]?.jsonPrimitive?.contentOrNull)

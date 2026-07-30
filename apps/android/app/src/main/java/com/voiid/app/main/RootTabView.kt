@@ -61,6 +61,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -125,6 +126,27 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
     // driven by nullable state exactly like the clip overlay above.
     var openStoryContext by remember { mutableStateOf<Int?>(null) }
     var showStoryComposer by remember { mutableStateOf(false) }
+    // The open game match id. Full-screen overlay sibling of the clip/story viewers — a
+    // board must cover the tab bar, or a mis-tap during a game switches tabs.
+    var openGameMatch by remember { mutableStateOf<String?>(null) }
+    // The game whose setup sheet is open ("who are you playing?"). A catalog card is a
+    // GAME; nothing exists yet until an opponent is chosen.
+    var setupGame by remember { mutableStateOf<com.voiid.app.net.GamesService.CatalogGame?>(null) }
+    // The game awaiting a FRIEND. A match row only exists once the opponent is picked, so
+    // this holds the gap between the two. The whole catalog row, not just the slug: the
+    // invite message names the game ("Let's play Tic Tac Toe"), which needs the display name.
+    var pendingGame by remember {
+        mutableStateOf<com.voiid.app.net.GamesService.CatalogGame?>(null)
+    }
+    // The offline practice board: which game, at what difficulty. Needs no match id because
+    // a bot game never touches the server.
+    var botGame by remember {
+        mutableStateOf<Triple<String, com.voiid.app.main.games.BotDifficulty, Float>?>(null)
+    }
+    var showLeaderboard by remember { mutableStateOf(false) }
+    // Creating a match is a suspend call made from a click, so it needs a scope.
+    val gamesScope = androidx.compose.runtime.rememberCoroutineScope()
+    val appContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
 
     // Feature (B) — the Map. Its store (allow-list, ghost state, subjects) is a ViewModel so
     // the Map surface can observe it the Compose way; the underlying engine is a singleton.
@@ -158,6 +180,17 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
         }
     }
 
+    // Join tapped on a game-invite bubble. Joining is authorized server-side (the caller
+    // must be in player_ids), so this only has to open the board and let the opening
+    // `game_state` frame populate it.
+    val pendingGameMatch by com.voiid.app.net.DeepLinkRouter.pendingGameMatch.collectAsState()
+    androidx.compose.runtime.LaunchedEffect(pendingGameMatch) {
+        val mid = pendingGameMatch ?: return@LaunchedEffect
+        com.voiid.app.net.GamesEngine.get(appContext).open(mid)
+        openGameMatch = mid
+        com.voiid.app.net.DeepLinkRouter.consumeGameMatch()
+    }
+
     // Notification deep-link: when MainActivity publishes a conversation id, switch to the
     // Chats tab and open that conversation (resolving/reloading it from the server if needed).
     val pendingConversationId by com.voiid.app.net.DeepLinkRouter.pendingConversationId.collectAsState()
@@ -178,10 +211,9 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                         title = "Communities",
                         blurb = "Group spaces for the people, teams and interests you care about — announcements, sub-groups and shared media in one place.",
                     )
-                    Tab.GAMES -> ComingSoonView(
-                        icon = Icons.Outlined.SportsEsports,
-                        title = "Games",
-                        blurb = "Quick games you can start straight from a chat and play with anyone in your conversations.",
+                    Tab.GAMES -> com.voiid.app.main.games.GamesHomeScreen(
+                        onPickGame = { setupGame = it },
+                        onLeaderboard = { showLeaderboard = true },
                     )
                     Tab.CHAT -> ChatsHomeView(chat, onOpenConversation = { openConversation = it }, onStartCall = startCall)
                     Tab.AI -> AIChatView(ai)
@@ -243,6 +275,82 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                     myUserId = clips.myUserId,
                     myName = clips.myName,
                     onClose = { openClip = null },
+                )
+            }
+        }
+
+        // Opponent picker. A catalog row picks a GAME; the match is created once an
+        // opponent is chosen, which is what turns a slug into the match id the board needs.
+        pendingGame?.let { game ->
+            com.voiid.app.main.games.OpponentPickerSheet(
+                conversations = chat.directConversations.toList(),
+                onPick = { convo ->
+                    pendingGame = null
+                    val peer = convo.peerUserId ?: return@OpponentPickerSheet
+                    gamesScope.launch {
+                        // Creating the match SENDS THE INVITE into this conversation — the
+                        // board only opens once the opponent has actually been told.
+                        com.voiid.app.net.GamesEngine.get(appContext)
+                            .create(game.slug, peer, convo.id, game.name)
+                            ?.let { openGameMatch = it }
+                    }
+                },
+                onDismiss = { pendingGame = null },
+            )
+        }
+
+        // Leaderboard — full-screen cover, same treatment as the boards.
+        AnimatedVisibility(
+            visible = showLeaderboard,
+            enter = slideInVertically { it } + fadeIn(),
+            exit = slideOutVertically { it } + fadeOut(),
+        ) {
+            com.voiid.app.main.games.LeaderboardScreen(onClose = { showLeaderboard = false })
+        }
+
+        // "Who are you playing?" — one entry point per game, opponent chosen second.
+        setupGame?.let { game ->
+            com.voiid.app.main.games.GameSetupSheet(
+                gameName = game.name,
+                onPlayFriend = {
+                    setupGame = null
+                    pendingGame = game
+                },
+                onPlayBot = { level, skill ->
+                    setupGame = null
+                    botGame = Triple(game.slug, level, skill)
+                },
+                onDismiss = { setupGame = null },
+            )
+        }
+
+        // Practice board — full-screen cover, same treatment as the online board. Which
+        // renderer runs is chosen by slug, the same key the server's rules modules use.
+        AnimatedVisibility(
+            visible = botGame != null,
+            enter = slideInVertically { it } + fadeIn(),
+            exit = slideOutVertically { it } + fadeOut(),
+        ) {
+            botGame?.let { (slug, level, skill) ->
+                when (slug) {
+                    "rps" -> com.voiid.app.main.games.RpsBotScreen(
+                        level = level, skill = skill, onClose = { botGame = null })
+                    else -> com.voiid.app.main.games.TicTacToeBotScreen(
+                        level = level, skill = skill, onClose = { botGame = null })
+                }
+            }
+        }
+
+        // Game board — full-screen cover (must sit over the tab bar), matching openClip.
+        AnimatedVisibility(
+            visible = openGameMatch != null,
+            enter = slideInVertically { it } + fadeIn(),
+            exit = slideOutVertically { it } + fadeOut(),
+        ) {
+            openGameMatch?.let { matchId ->
+                com.voiid.app.main.games.TicTacToeScreen(
+                    matchId = matchId,
+                    onClose = { openGameMatch = null },
                 )
             }
         }

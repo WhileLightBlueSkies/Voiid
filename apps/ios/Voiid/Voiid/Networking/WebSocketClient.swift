@@ -201,6 +201,22 @@ final class WebSocketClient {
         sendJSON(["type": "loc_stop", "share_id": shareId, "recipient_ids": recipientIds])
     }
 
+    /// Submit one game move (docs/GAMES.md §6).
+    ///
+    /// Unlike `loc_update` there are no `recipient_ids`: the relay forwards this to
+    /// backend/games, which knows the match roster and answers the players itself. The
+    /// payload is small, readable game state — games are the one surface where the server
+    /// is the referee and must read what it relays.
+    ///
+    /// `queueIfDown: true`, deliberately unlike location: a stale position is worthless,
+    /// but a move is the player's actual intent. Dropping it silently would look like the
+    /// tap never registered, so a move made in a reconnect window is delivered on
+    /// reattach. The server rejects it if the match has moved on.
+    func sendGameInput(matchId: String, payload: [String: Any]) {
+        sendJSON(["type": "game_input", "match_id": matchId, "payload": payload],
+                 queueIfDown: true)
+    }
+
     // MARK: - Internals
 
     private func receiveLoop() {
@@ -305,6 +321,19 @@ final class WebSocketClient {
                 onLocationStop?(sid, from)
                 NotificationCenter.default.post(name: .voiidLocationRelayStop, object: nil,
                     userInfo: ["share_id": sid, "from": from])
+            }
+        case "game_state":
+            // Full authoritative state for one match. NotificationCenter rather than a
+            // closure, mirroring the story/loc precedent: whichever game screen is open
+            // picks it up, and one that isn't open simply ignores it — no wiring at the
+            // WS setup site, and no closure to starve when several surfaces care.
+            if let mid = obj["match_id"] as? String,
+               let payload = obj["payload"] as? [String: Any] {
+                NotificationCenter.default.post(name: .voiidGameState, object: nil,
+                    userInfo: ["match_id": mid,
+                               "game": (obj["game"] as? String) ?? "",
+                               "seq": (obj["seq"] as? Int) ?? 0,
+                               "payload": payload])
             }
         case "story", "story_receipt", "story_deleted":
             // Routing signals only — a device's story ciphertext is NEVER on this channel

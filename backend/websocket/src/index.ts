@@ -79,6 +79,19 @@ const LOC_B64_RE = /^[A-Za-z0-9+/=_-]+$/;
 // single frame can ask this process to do.
 const LOC_MAX_RECIPIENTS = 512;
 
+// --- Games relay --------------------------------------------------------------------
+// Game input is FORWARDED, not fanned out: one publish to the games service, which owns
+// the rules and answers on the players' own channels. See the handler for why this
+// process stays ignorant of game rules.
+const GAMES_INPUT_CHANNEL = 'channel:games:input';
+// Turn-based games send a handful of moves a minute; the arcade games planned later tick
+// far faster, so this is set for the fastest credible client rather than for Tic Tac Toe,
+// and the games service applies its own per-game limit on top.
+const GAME_MAX_FRAMES_PER_WINDOW = Number(process.env.VOIID_GAME_WS_RATE) || 120;
+const GAME_RATE_WINDOW_MS = 60_000;
+// A move is tiny (a cell index, an angle/power pair). Generous, but bounded.
+const GAME_MAX_PAYLOAD_CHARS = 2048;
+
 /**
  * Deliver any buffered latest-fix frames to a user whose socket just attached.
  *
@@ -192,6 +205,11 @@ wss.on('connection', (ws, req) => {
   // with the connection — no cross-socket map to leak.
   const locRate = new Map<string, { count: number; windowStart: number }>();
 
+  // game_input rate state for THIS socket, keyed by match_id. Socket-local for the same
+  // reason as locRate — it dies with the connection, so there is no cross-socket map to
+  // leak or to clean up.
+  const gameRate = new Map<string, { count: number; windowStart: number }>();
+
   ws.on('message', (raw) => {
     // Realtime control frames: heartbeat (presence) and typing (Section 10 Redis keys).
     try {
@@ -302,6 +320,59 @@ wss.on('connection', (ws, req) => {
           }
         }
         if (msg.type === 'loc_stop') locRate.delete(msg.share_id);
+        return;
+      }
+
+      // --- Games input relay ------------------------------------------------------
+      // game_input: { type:'game_input', match_id, payload }
+      //
+      // WHY THIS FORWARDS INSTEAD OF ANSWERING: this process stays a dumb pipe. It does
+      // not know the rules of any game, does not hold match state, and has no database —
+      // the same constraints that make it forward location and SDP untouched. It hands
+      // the frame to backend/games on a single Redis channel and that service, which owns
+      // the rules, publishes the resulting `game_state` back to each player on their
+      // ordinary `channel:user:<id>`. So game state reaches clients through the exact
+      // path a chat message does, and needs no new client connection.
+      //
+      // SECURITY, SAME RULE AS EVERYWHERE ELSE HERE: `from_user_id` is stamped from THIS
+      // socket's JWT and any client-supplied value is discarded, so a player cannot
+      // submit a move as somebody else. Whether that user is actually in the match, and
+      // whether the move is legal, are decided by backend/games — which unlike this
+      // process has the state to answer both.
+      //
+      // NOT ENCRYPTED, DELIBERATELY: `payload` is readable game state, because the server
+      // is the referee and must read moves to validate them. That is a documented
+      // exception scoped to games (docs/GAMES.md §2) — it is NOT a precedent for the
+      // message path, whose payloads remain opaque to this relay.
+      if (msg.type === 'game_input' && typeof msg.match_id === 'string') {
+        // Bounded work per frame: a move is a few dozen bytes. The cap stops the games
+        // channel being repurposed as a bulk side-channel.
+        const encoded = JSON.stringify(msg.payload ?? {});
+        if (encoded.length > GAME_MAX_PAYLOAD_CHARS) return;
+
+        // Token bucket per match per socket — identical posture to loc_update above:
+        // silent drop, no error frame, because answering a flood with traffic is how one
+        // bad client becomes an amplifier.
+        const now = Date.now();
+        const bucket = gameRate.get(msg.match_id);
+        if (!bucket || now - bucket.windowStart >= GAME_RATE_WINDOW_MS) {
+          gameRate.set(msg.match_id, { count: 1, windowStart: now });
+        } else if (bucket.count >= GAME_MAX_FRAMES_PER_WINDOW) {
+          return;
+        } else {
+          bucket.count += 1;
+        }
+
+        // Rebuilt from a fixed field list — client extras are never forwarded.
+        pub.publish(
+          GAMES_INPUT_CHANNEL,
+          JSON.stringify({
+            type: 'game_input',
+            match_id: msg.match_id,
+            from_user_id: userId, // authoritative sender (never client-supplied)
+            payload: msg.payload ?? {},
+          })
+        );
         return;
       }
 

@@ -25,6 +25,7 @@ import reachabilityRoutes from './routes/reachability';
 import profileKeyRoutes from './routes/profileKeys';
 import gifRoutes from './routes/gifs';
 import clipsRoutes from './routes/clips';
+import gamesRoutes from './routes/games';
 import configRoutes from './routes/config';
 import { forceUpdateGate } from './version';
 
@@ -102,6 +103,12 @@ api.use('/profile-keys', rateLimit({ max: 120, windowSeconds: 60, bucket: 'profi
 // no fixed recipient set to encrypt to); see the header of routes/clips.ts and
 // 022_clips.sql. It does not touch the message/call/location/story paths.
 api.use('/clips', rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), clipsRoutes);
+// Games: match lifecycle only — the catalog, creating/joining a match, history. MOVES DO
+// NOT COME THROUGH HERE; they ride the WebSocket relay to backend/games, which referees
+// them (see the header of routes/games.ts for why the move path is deliberately absent).
+// Like clips, game state is a scoped exception to E2EE: the server must read moves to
+// validate them. The invite itself is still an ordinary encrypted message.
+api.use('/games', rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }), gamesRoutes);
 // GIF search: a thin proxy in front of Tenor so the API key never ships in the app and users'
 // searches don't go straight to Google with their IP. Returns URLs only — the CLIENT downloads
 // the chosen GIF, encrypts it, and sends it as ordinary E2EE media, so recipients never touch
