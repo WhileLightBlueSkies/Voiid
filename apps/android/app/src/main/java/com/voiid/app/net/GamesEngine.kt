@@ -279,8 +279,20 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
     ): String? {
         return runCatching {
             val id = service.create(slug, listOf(opponentId), options)
+            // Everything the poster bubble and the rich notification need travels INSIDE the
+            // encrypted body — which is what lets the recipient's banner name the game while the
+            // push that woke their device said only "New message".
+            val meta = GameInvite.Meta(
+                game = gameName,
+                from = myUserId?.let {
+                    com.voiid.app.store.UserDirectory.displayName(it, "")
+                }.orEmpty(),
+                overs = options["overs"] ?: 0,
+                format = if (slug == "rps") "first to 3" else "",
+                sentAt = System.currentTimeMillis(),
+            )
             ChatEngine.get(appContext)
-                .sendText(GameInvite.encode(slug, id, gameName), conversationId, opponentId)
+                .sendText(GameInvite.encode(slug, id, meta), conversationId, opponentId)
             open(id)
             id
         }.getOrElse {

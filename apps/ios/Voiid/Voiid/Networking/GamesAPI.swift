@@ -96,5 +96,38 @@ struct GamesAPI {
                               body: EmptyBody())
     }
 
+    /// An invite the caller has received but not joined. Drives the home-screen banners.
+    struct PendingInvite: Decodable, Identifiable {
+        let match_id: String
+        let slug: String
+        let name: String
+        var icon_key: String?
+        /// Lifted out of the options bag by the server; 0 when the game has no such setting.
+        var overs: Int = 0
+        var inviter_id: String?
+        var inviter_name: String?
+        var sent_at: Int64 = 0
+        var expires_at: Int64 = 0
+        /// Server's verdict on whether the window has passed — not the client's clock.
+        var missed: Bool = false
+
+        var id: String { match_id }
+    }
+
+    private struct InvitesResponse: Decodable { let invites: [PendingInvite] }
+
+    /// Invites waiting on the caller: live ones to accept, missed ones to acknowledge.
+    func invites() async throws -> [PendingInvite] {
+        let res: InvitesResponse = try await api.request("GET", "games/invites")
+        return res.invites
+    }
+
+    /// Decline an invite, or abandon a lobby nobody joined. Same call for both — they are the same
+    /// state change (a 'waiting' match that will never start).
+    @discardableResult
+    func decline(matchId: String) async throws -> JoinResponse {
+        try await api.request("POST", "games/matches/\(matchId)/decline", body: EmptyBody())
+    }
+
     private struct EmptyBody: Encodable {}
 }

@@ -1225,36 +1225,86 @@ private struct GameInviteBubble: View {
     let message: VMessage
     let invite: GameInvite.Parsed
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "gamecontroller")
-                    .font(.system(size: 11))
-                    .foregroundStyle(VoiidColor.primary)
-                Text("Game invite")
-                    .font(VoiidFont.rounded(11, .semibold))
-                    .foregroundStyle(VoiidColor.textSecondary)
-            }
-            // The human half of the token — never the marker line.
-            Text(GameInvite.preview(message.text))
-                .font(VoiidFont.rounded(15, .semibold))
-                .foregroundStyle(VoiidColor.textPrimary)
+    /// An expired invite is still a real message — it just can't be joined any more. Showing it as
+    /// live would send the tapper into a match the server has already abandoned.
+    private var expired: Bool { invite.meta?.isExpired == true }
 
-            Button {
-                NotificationCenter.default.post(
-                    name: .voiidOpenGameMatch, object: nil,
-                    userInfo: ["match_id": invite.matchId, "slug": invite.slug])
-            } label: {
-                Text(message.isMine ? "Open board" : "Join game")
-                    .font(VoiidFont.rounded(14, .bold))
-                    .foregroundStyle(VoiidColor.textOnPrimary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .background(RoundedRectangle(cornerRadius: VoiidRadius.md)
-                        .fill(VoiidColor.primary))
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Artwork by NAME, the same runtime lookup the catalog cards use — so a game whose art
+            // ships later needs no change here, and one without art degrades to a tinted glyph.
+            ZStack {
+                Rectangle().fill(VoiidColor.primary.opacity(0.10))
+                if UIImage(named: "game_\(invite.slug)") != nil {
+                    Image("game_\(invite.slug)")
+                        .resizable()
+                        .scaledToFill()
+                    LinearGradient(
+                        stops: [.init(color: .clear, location: 0.45),
+                                .init(color: .black.opacity(0.55), location: 1)],
+                        startPoint: .top, endPoint: .bottom)
+                } else {
+                    Image(systemName: "gamecontroller")
+                        .font(.system(size: 34))
+                        .foregroundStyle(VoiidColor.primary)
+                }
+                if expired {
+                    Color.black.opacity(0.45)
+                    Text("Expired")
+                        .font(VoiidFont.rounded(13, .bold))
+                        .foregroundStyle(.white)
+                }
             }
+            .aspectRatio(16.0 / 9.0, contentMode: .fit)
+            .clipped()
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("GAME INVITE")
+                    .font(VoiidFont.rounded(10, .bold))
+                    .foregroundStyle(VoiidColor.primary)
+                Text(invite.meta?.game.isEmpty == false
+                     ? invite.meta!.game
+                     : GameInvite.preview(message.text))
+                    .font(VoiidFont.rounded(16, .bold))
+                    .foregroundStyle(VoiidColor.textPrimary)
+                    .lineLimit(2)
+                // Settings the opponent is agreeing to — overs, format, difficulty. Assembled by
+                // GameInvite so both platforms describe an invite identically.
+                if let details = invite.meta?.detailLine(), !details.isEmpty {
+                    Text(details)
+                        .font(VoiidFont.rounded(12, .medium))
+                        .foregroundStyle(VoiidColor.textSecondary)
+                }
+                if let from = invite.meta?.from, !from.isEmpty, !message.isMine {
+                    Text("from \(from)")
+                        .font(VoiidFont.rounded(12, .regular))
+                        .foregroundStyle(VoiidColor.textSecondary)
+                }
+
+                Button {
+                    Haptics.tap()
+                    NotificationCenter.default.post(
+                        name: .voiidOpenGameMatch, object: nil,
+                        userInfo: ["match_id": invite.matchId, "slug": invite.slug])
+                } label: {
+                    Text(expired ? "Invite expired"
+                         : (message.isMine ? "Open lobby" : "Tap to play"))
+                        .font(VoiidFont.rounded(14, .bold))
+                        .foregroundStyle(expired ? VoiidColor.textSecondary
+                                                 : VoiidColor.textOnPrimary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(RoundedRectangle(cornerRadius: 10)
+                            .fill(expired ? VoiidColor.fieldFill : VoiidColor.primary))
+                }
+                .disabled(expired)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
         }
-        .frame(width: 230)
+        .frame(width: 248)
+        .background(VoiidColor.surfaceCard)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 }
 

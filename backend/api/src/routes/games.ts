@@ -143,6 +143,114 @@ router.post(
   })
 );
 
+/**
+ * GET /games/invites — matches the caller has been invited to but hasn't joined.
+ *
+ * Drives the banners on the games home screen. Two buckets, split by age rather than by a
+ * separate state column: an invite younger than INVITE_TTL_MS is LIVE, older is MISSED. Deriving
+ * it from `created_at` means no background job has to age rows out, and a client whose clock is
+ * off still gets the server's opinion.
+ *
+ * EXCLUDES matches the caller created. A creator sitting in the lobby is not "invited" — they
+ * already know, and showing them their own invite as an incoming banner would be nonsense.
+ *
+ * `status = 'waiting'` is the whole filter for "not joined": the games service flips a match to
+ * 'active' the moment anyone joins (markStarted), so a waiting row is by definition one nobody
+ * has entered.
+ */
+const INVITE_TTL_MS = 10 * 60 * 1000;
+
+router.get(
+  '/invites',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).user.user_id as string;
+    const rows = await query<{
+      id: string;
+      slug: string;
+      name: string;
+      icon_key: string | null;
+      options: Record<string, unknown> | null;
+      created_by: string;
+      created_at: Date;
+      inviter_name: string | null;
+      inviter_username: string | null;
+    }>(
+      `select m.id, g.slug, g.name, g.icon_key, m.options, m.created_by, m.created_at,
+              u.full_name as inviter_name, u.username as inviter_username
+         from game_matches m
+         join games g on g.id = m.game_id
+         left join users u on u.id = m.created_by
+        where m.status = 'waiting'
+          and m.created_by <> $1
+          and m.player_ids @> $2::jsonb
+        order by m.created_at desc
+        limit 20`,
+      [userId, JSON.stringify([userId])]
+    );
+
+    const now = Date.now();
+    const invites = rows.map((r) => {
+      const sentAt = new Date(r.created_at).getTime();
+      const age = now - sentAt;
+      // `overs` is lifted out of the options bag into a typed field: every client renders it on
+      // the banner, and making each one dig through an untyped map for the one setting they all
+      // care about is how three platforms end up parsing it three subtly different ways.
+      const overs = Number((r.options as { overs?: unknown } | null)?.overs);
+      return {
+        match_id: r.id,
+        slug: r.slug,
+        name: r.name,
+        icon_key: r.icon_key,
+        overs: Number.isFinite(overs) && overs > 0 ? overs : 0,
+        options: r.options ?? {},
+        inviter_id: r.created_by,
+        inviter_name: r.inviter_name ?? r.inviter_username ?? null,
+        sent_at: sentAt,
+        expires_at: sentAt + INVITE_TTL_MS,
+        missed: age > INVITE_TTL_MS,
+      };
+    });
+    res.json({ invites });
+  })
+);
+
+/**
+ * POST /games/matches/:id/decline — turn down an invite, or abandon a lobby nobody joined.
+ *
+ * One route for both because they are the same state change: a 'waiting' match that will never
+ * start. Marking it 'abandoned' rather than deleting keeps the row for history and, critically,
+ * keeps it out of the leaderboard — which counts only `status = 'finished'`.
+ */
+router.post(
+  '/matches/:id/decline',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const userId = (req as any).user.user_id as string;
+    const matchId = req.params.id;
+    if (!UUID_RE.test(matchId)) return res.status(400).json({ error: 'bad match id' });
+
+    const rows = await query<{ player_ids: string[]; status: string }>(
+      `select player_ids, status from game_matches where id = $1`,
+      [matchId]
+    );
+    const match = rows[0];
+    if (!match) return res.status(404).json({ error: 'no such match' });
+    if (!match.player_ids.includes(userId)) {
+      return res.status(403).json({ error: 'not a player in this match' });
+    }
+    // Only a match that never started can be declined. An in-progress game is left alone rather
+    // than 400'd, so a duplicate tap from a racing client is harmless.
+    if (match.status === 'waiting') {
+      await query(
+        `update game_matches set status = 'abandoned', ended_at = now() where id = $1`,
+        [matchId]
+      );
+    }
+    res.json({ ok: true });
+  })
+);
+
 /** GET /games/matches — the caller's recent matches, newest first. */
 router.get(
   '/matches',
@@ -204,10 +312,13 @@ router.get(
        select p.opponent_id,
               u.full_name,
               u.username,
-              count(*)::int                                              as played,
-              count(*) filter (where p.winner_id = $3::text)::int         as wins,
-              count(*) filter (where p.winner_id is null)::int            as draws,
-              count(*) filter (where p.winner_id = p.opponent_id)::int    as losses
+              count(*)::int                                                    as played,
+              -- winner_id is a UUID column; opponent_id came out of jsonb as TEXT. Postgres has
+              -- no uuid = text operator, so comparing them raw made this whole query error out
+              -- and the leaderboard could never load — every cast below is load-bearing.
+              count(*) filter (where p.winner_id = $3::uuid)::int              as wins,
+              count(*) filter (where p.winner_id is null)::int                 as draws,
+              count(*) filter (where p.winner_id = p.opponent_id::uuid)::int   as losses
          from pairs p
          left join users u on u.id = p.opponent_id::uuid
         group by p.opponent_id, u.full_name, u.username

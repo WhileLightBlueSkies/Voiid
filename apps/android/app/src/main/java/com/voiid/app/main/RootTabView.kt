@@ -141,6 +141,9 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
     var pendingGame by remember {
         mutableStateOf<com.voiid.app.net.GamesService.CatalogGame?>(null)
     }
+    // The lobby the CREATOR waits in after sending an invite, until the opponent joins or the
+    // invite expires. Holds what the lobby needs to describe itself without re-fetching.
+    var lobby by remember { mutableStateOf<com.voiid.app.main.games.LobbyArgs?>(null) }
     // An online cricket match waiting on its over count: (slug, display name, (convoId, peer)).
     // Held because the length must be chosen BEFORE the match row exists — the server builds
     // the innings from it.
@@ -223,6 +226,11 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                     Tab.GAMES -> com.voiid.app.main.games.GamesHomeScreen(
                         onPickGame = { setupGame = it },
                         onLeaderboard = { showLeaderboard = true },
+                        onAcceptInvite = { inv ->
+                            // Accepting from a banner is the same act as tapping the invite bubble
+                            // in chat, so it goes through the same seam.
+                            com.voiid.app.net.DeepLinkRouter.openGameMatch(inv.match_id, inv.slug)
+                        },
                     )
                     Tab.CHAT -> ChatsHomeView(chat, onOpenConversation = { openConversation = it }, onStartCall = startCall)
                     Tab.AI -> AIChatView(ai)
@@ -303,11 +311,21 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                         pendingCricket = Triple(game.slug, game.name, convo.id to peer)
                     } else {
                         gamesScope.launch {
-                            // Creating the match SENDS THE INVITE into this conversation — the
-                            // board only opens once the opponent has actually been told.
+                            // Creating the match SENDS THE INVITE into this conversation. The
+                            // creator then WAITS IN THE LOBBY — opening the board here is what made
+                            // it look like nothing happened: no opponent means no opening frame, so
+                            // the board sat on "Setting up…" forever.
                             com.voiid.app.net.GamesEngine.get(appContext)
                                 .create(game.slug, peer, convo.id, game.name)
-                                ?.let { openGameMatch = it to game.slug }
+                                ?.let {
+                                    lobby = com.voiid.app.main.games.LobbyArgs(
+                                        matchId = it,
+                                        slug = game.slug,
+                                        gameName = game.name,
+                                        opponentName = convo.title,
+                                        detailLine = if (game.slug == "rps") "first to 3" else "",
+                                    )
+                                }
                         }
                     }
                 },
@@ -325,7 +343,16 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                     gamesScope.launch {
                         com.voiid.app.net.GamesEngine.get(appContext)
                             .create(slug, peer, convoId, name, mapOf("overs" to overs))
-                            ?.let { openGameMatch = it to slug }
+                            ?.let {
+                                lobby = com.voiid.app.main.games.LobbyArgs(
+                                    matchId = it,
+                                    slug = slug,
+                                    gameName = name,
+                                    opponentName = chat.directConversations
+                                        .firstOrNull { c -> c.id == convoId }?.title ?: "them",
+                                    detailLine = "$overs ${if (overs == 1) "over" else "overs"}",
+                                )
+                            }
                     }
                 },
                 onDismiss = { pendingCricket = null },
@@ -373,6 +400,29 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                     else -> com.voiid.app.main.games.TicTacToeBotScreen(
                         level = level, skill = skill, onClose = { botGame = null })
                 }
+            }
+        }
+
+        // Lobby — full-screen cover. Sits between "invite sent" and the board: it hands off to the
+        // board the moment the opponent's join produces an opening frame.
+        AnimatedVisibility(
+            visible = lobby != null,
+            enter = slideInVertically { it } + fadeIn(),
+            exit = slideOutVertically { it } + fadeOut(),
+        ) {
+            lobby?.let { args ->
+                com.voiid.app.main.games.GameLobbyScreen(
+                    matchId = args.matchId,
+                    slug = args.slug,
+                    gameName = args.gameName,
+                    opponentName = args.opponentName,
+                    detailLine = args.detailLine,
+                    onStart = {
+                        openGameMatch = args.matchId to args.slug
+                        lobby = null
+                    },
+                    onClose = { lobby = null },
+                )
             }
         }
 

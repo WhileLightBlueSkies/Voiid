@@ -53,6 +53,8 @@ import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.outlined.Circle
 import androidx.compose.material.icons.outlined.SportsEsports
 import androidx.compose.material3.CircularProgressIndicator
@@ -624,45 +626,129 @@ private fun GameInviteBubble(
     invite: com.voiid.app.net.GameInvite.Parsed,
 ) {
     val haptics = LocalVoiidHaptics.current
-    val shape = RoundedCornerShape(12.dp)
-    Column(Modifier.width(230.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Icon(
-                Icons.Outlined.SportsEsports, null,
-                tint = VoiidColor.primary, modifier = Modifier.size(13.dp),
-            )
-            Text(
-                "Game invite",
-                style = VoiidFont.rounded(11, FontWeight.SemiBold),
-                color = VoiidColor.textSecondary,
-            )
-        }
-        // The human half of the token — never the marker line.
-        Text(
-            com.voiid.app.net.GameInvite.preview(message.text),
-            style = VoiidFont.rounded(15, FontWeight.SemiBold),
-            color = VoiidColor.textPrimary,
-        )
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val meta = invite.meta
+    // Artwork by NAME, the same runtime lookup the catalog cards use — so a game whose art ships
+    // later needs no change here, and one without art degrades to a tinted glyph.
+    val artId = remember(invite.slug) {
+        context.resources.getIdentifier("game_${invite.slug}", "drawable", context.packageName)
+    }
+    // An expired invite is still a real message — it just can't be joined any more. Showing it as
+    // live would send the tapper into a match the server has already abandoned.
+    val expired = meta?.isExpired == true
+
+    Column(
+        Modifier
+            .width(248.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(VoiidColor.surfaceCard),
+    ) {
         Box(
             Modifier
                 .fillMaxWidth()
-                .height(38.dp)
-                .clip(shape)
-                .background(VoiidColor.primary)
-                .clickable {
-                    haptics.tap()
-                    com.voiid.app.net.DeepLinkRouter.openGameMatch(invite.matchId, invite.slug)
-                },
+                .aspectRatio(16f / 9f)
+                .background(VoiidColor.primary.copy(alpha = 0.10f)),
             contentAlignment = Alignment.Center,
         ) {
-            Text(
-                if (message.isMine) "Open board" else "Join game",
-                style = VoiidFont.rounded(14, FontWeight.Bold),
-                color = VoiidColor.textOnPrimary,
+            if (artId != 0) {
+                // Fully qualified: this file imports `icons.filled.Image`, so a bare `Image` here
+                // resolves to the icon, not the composable.
+                androidx.compose.foundation.Image(
+                    painter = androidx.compose.ui.res.painterResource(artId),
+                    contentDescription = null,
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                Icon(
+                    Icons.Outlined.SportsEsports, null,
+                    tint = VoiidColor.primary, modifier = Modifier.size(34.dp),
+                )
+            }
+            // Keeps the label strip legible over arbitrary artwork.
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(
+                        androidx.compose.ui.graphics.Brush.verticalGradient(
+                            0.45f to androidx.compose.ui.graphics.Color.Transparent,
+                            1f to androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.55f),
+                        )
+                    )
             )
+            if (expired) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.45f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "Expired",
+                        style = VoiidFont.rounded(13, FontWeight.Bold),
+                        color = androidx.compose.ui.graphics.Color.White,
+                    )
+                }
+            }
+        }
+
+        Column(
+            Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(
+                "GAME INVITE",
+                style = VoiidFont.rounded(10, FontWeight.Bold),
+                color = VoiidColor.primary,
+            )
+            Text(
+                meta?.game?.takeIf { it.isNotBlank() }
+                    ?: com.voiid.app.net.GameInvite.preview(message.text),
+                style = VoiidFont.rounded(16, FontWeight.Bold),
+                color = VoiidColor.textPrimary,
+                maxLines = 2,
+            )
+            // Settings the opponent is agreeing to — overs, format, difficulty. Assembled by
+            // GameInvite so both platforms describe an invite identically.
+            meta?.detailLine()?.takeIf { it.isNotBlank() }?.let {
+                Text(
+                    it,
+                    style = VoiidFont.rounded(12, FontWeight.Medium),
+                    color = VoiidColor.textSecondary,
+                )
+            }
+            meta?.from?.takeIf { it.isNotBlank() && !message.isMine }?.let {
+                Text(
+                    "from $it",
+                    style = VoiidFont.rounded(12),
+                    color = VoiidColor.textSecondary,
+                )
+            }
+
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(38.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(
+                        if (expired) VoiidColor.fieldFill else VoiidColor.primary
+                    )
+                    .clickable(enabled = !expired) {
+                        haptics.tap()
+                        com.voiid.app.net.DeepLinkRouter.openGameMatch(invite.matchId, invite.slug)
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    when {
+                        expired -> "Invite expired"
+                        message.isMine -> "Open lobby"
+                        else -> "Tap to play"
+                    },
+                    style = VoiidFont.rounded(14, FontWeight.Bold),
+                    color = if (expired) VoiidColor.textSecondary else VoiidColor.textOnPrimary,
+                )
+            }
         }
     }
 }

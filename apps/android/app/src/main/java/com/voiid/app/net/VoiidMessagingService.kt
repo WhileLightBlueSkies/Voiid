@@ -214,9 +214,31 @@ class VoiidMessagingService : FirebaseMessagingService() {
             target == null -> null                       // fetched but nothing to show → generic
             target.media != null -> "📎 Media" // 📎 Media (no caption/plaintext detail)
             target.failed -> null                        // couldn't decrypt → generic fallback
-            else -> target.text.take(140)
+            else -> gameInviteBody(target.text) ?: target.text.take(140)
         }
         return Preview(title, body)
+    }
+
+    /**
+     * Notification body for a game invite, or null if this isn't one.
+     *
+     * THIS IS WHY THE PUSH IS WORTH DECRYPTING. The wake push that reached this device carried no
+     * content — the server never knew what it was for. We have just decrypted the envelope
+     * locally, so we can name the game and its settings here, and the only string Google's
+     * servers ever saw was "New message". Sending these details in the push payload instead would
+     * have been simpler and would have leaked who invited whom to what.
+     *
+     * Without this the banner would show the raw `voiid:game/...` marker lines, which is how the
+     * invite looked before: technically a notification, useless to a human.
+     */
+    private fun gameInviteBody(text: String): String? {
+        val invite = GameInvite.parse(text) ?: return null
+        val meta = invite.meta ?: return GameInvite.preview(text).take(140)
+        if (meta.isExpired) return "Game invite expired"
+        val details = meta.detailLine()
+        val game = meta.game.ifBlank { "a game" }
+        return if (details.isBlank()) "🎮 Invited you to $game"
+               else "🎮 Invited you to $game · $details"
     }
 }
 

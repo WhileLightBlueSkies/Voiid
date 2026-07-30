@@ -95,4 +95,38 @@ class GamesService(private val api: ApiClient) {
     suspend fun join(matchId: String) {
         api.request("POST", "games/matches/$matchId/join", "{}")
     }
+
+    /** An invite the caller has received but not joined. Drives the home-screen banners. */
+    @Serializable
+    data class PendingInvite(
+        val match_id: String,
+        val slug: String,
+        val name: String,
+        val icon_key: String? = null,
+        /** Lifted out of the options bag by the server; 0 when the game has no such setting. */
+        val overs: Int = 0,
+        val inviter_id: String? = null,
+        val inviter_name: String? = null,
+        val sent_at: Long = 0,
+        val expires_at: Long = 0,
+        /** Server's verdict on whether the window has passed — not the client's clock. */
+        val missed: Boolean = false,
+    )
+
+    @Serializable
+    private data class InvitesResponse(val invites: List<PendingInvite>)
+
+    /** Invites waiting on the caller: live ones to accept, missed ones to acknowledge. */
+    suspend fun invites(): List<PendingInvite> {
+        val body = api.request("GET", "games/invites")
+        return json.decodeFromString<InvitesResponse>(body).invites
+    }
+
+    /**
+     * Decline an invite, or abandon a lobby nobody joined. Same call for both — they are the
+     * same state change (a 'waiting' match that will never start).
+     */
+    suspend fun decline(matchId: String) {
+        api.request("POST", "games/matches/$matchId/decline", "{}")
+    }
 }

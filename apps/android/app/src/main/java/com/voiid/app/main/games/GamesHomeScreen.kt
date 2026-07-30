@@ -34,6 +34,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -77,6 +79,7 @@ import com.voiid.app.ui.theme.VoiidSpacing
 fun GamesHomeScreen(
     onPickGame: (GamesService.CatalogGame) -> Unit,
     onLeaderboard: () -> Unit,
+    onAcceptInvite: (GamesService.PendingInvite) -> Unit = {},
 ) {
     val context = LocalContext.current
     val service = remember { GamesService(ApiClient(TokenStore.get(context))) }
@@ -86,6 +89,15 @@ fun GamesHomeScreen(
     var loadFailed by remember { mutableStateOf(false) }
     var reloadToken by remember { mutableStateOf(0) }
 
+    // Incoming invites. Polled rather than pushed: an invite arrives as a chat message, and the
+    // games surface has no socket subscription of its own — a 20s poll while this tab is open is
+    // cheaper than inventing a second delivery path for a banner.
+    var invites by remember { mutableStateOf<List<GamesService.PendingInvite>>(emptyList()) }
+    // Match ids the user has already acknowledged this session. A MISSED invite is information you
+    // need once; without this, dismissing one would bring it straight back on the next poll.
+    val dismissed = remember { mutableStateListOf<String>() }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+
     LaunchedEffect(reloadToken) {
         loading = true
         loadFailed = false
@@ -93,6 +105,13 @@ fun GamesHomeScreen(
             .onSuccess { games = it }
             .onFailure { loadFailed = true }
         loading = false
+    }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            runCatching { service.invites() }.onSuccess { invites = it }
+            kotlinx.coroutines.delay(20_000)
+        }
     }
 
     Column(
@@ -124,6 +143,29 @@ fun GamesHomeScreen(
                     .clickable { onLeaderboard() }
                     .padding(VoiidSpacing.sm),
             )
+        }
+
+        // Invites sit ABOVE the catalog: an invitation is time-bound and someone is waiting on it,
+        // which makes it more urgent than browsing.
+        val visible = invites.filter { it.match_id !in dismissed }
+        if (visible.isNotEmpty()) {
+            Column(
+                Modifier.fillMaxWidth().padding(bottom = VoiidSpacing.sm),
+                verticalArrangement = Arrangement.spacedBy(VoiidSpacing.sm),
+            ) {
+                visible.forEach { invite ->
+                    InviteBanner(
+                        invite = invite,
+                        onAccept = { onAcceptInvite(invite) },
+                        onDismiss = {
+                            // Acknowledge locally at once so the banner goes immediately, then tell
+                            // the server. A failed decline is harmless — it expires anyway.
+                            dismissed.add(invite.match_id)
+                            scope.launch { runCatching { service.decline(invite.match_id) } }
+                        },
+                    )
+                }
+            }
         }
 
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {

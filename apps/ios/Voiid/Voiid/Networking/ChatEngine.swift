@@ -676,6 +676,12 @@ final class ChatEngine {
         let body: String
         if msg.media != nil {
             body = msg.text.isEmpty ? "📎 Media" : "📎 \(msg.text)"
+        } else if let invite = GameInvite.notificationBody(msg.text) {
+            // A game invite is a text message carrying markers (see GameInvite.swift). Without this
+            // the banner would show the raw `voiid:game/...` lines — technically a notification,
+            // useless to a human. We are already past the decrypt here, so naming the game costs
+            // nothing and Apple's servers still only ever saw "New message".
+            body = invite
         } else {
             body = msg.text.isEmpty ? "New message" : msg.text
         }

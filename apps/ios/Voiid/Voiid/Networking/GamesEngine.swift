@@ -267,8 +267,18 @@ final class GamesEngine: ObservableObject {
         do {
             let id = try await api.create(
                 slug: slug, opponentIds: [opponentId], options: options)
+            // Everything the poster bubble and the rich notification need travels INSIDE the
+            // encrypted body — which is what lets the recipient's banner name the game while the
+            // push that woke their device said only "New message".
+            let meta = GameInvite.Meta(
+                game: gameName,
+                from: TokenStore.shared.userId
+                    .map { UserDirectory.shared.displayName($0, fallback: "") } ?? "",
+                overs: options["overs"] ?? 0,
+                format: slug == "rps" ? "first to 3" : "",
+                sentAt: GameInvite.nowMs())
             _ = try await ChatEngine.shared.sendText(
-                GameInvite.encode(slug: slug, matchId: id, gameName: gameName),
+                GameInvite.encode(slug: slug, matchId: id, meta: meta),
                 conversationId: conversationId,
                 peerUserId: opponentId)
             await open(matchId: id)

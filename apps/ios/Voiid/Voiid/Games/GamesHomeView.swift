@@ -54,6 +54,18 @@ struct GamesHomeView: View {
     /// BEFORE the match row exists — the server builds the innings from it.
     @State private var pendingCricket: PendingCricket?
 
+    /// Incoming invites. Polled rather than pushed: an invite arrives as a chat message, and the
+    /// games surface has no socket subscription of its own — a 20s poll while this tab is open is
+    /// cheaper than inventing a second delivery path for a banner.
+    @State private var invites: [GamesAPI.PendingInvite] = []
+    /// Match ids already acknowledged this session. A MISSED invite is information you need once;
+    /// without this, dismissing one would bring it straight back on the next poll.
+    @State private var dismissed: Set<String> = []
+
+    /// The lobby the CREATOR waits in after sending an invite, until the opponent joins or the
+    /// invite expires.
+    @State private var lobby: LobbyArgs?
+
     private struct PendingCricket: Identifiable {
         let id = UUID()
         let game: GamesAPI.CatalogGame
@@ -88,6 +100,30 @@ struct GamesHomeView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ScrollView {
+                        // Invites sit ABOVE the catalog: an invitation is time-bound and someone is
+                        // waiting on it, which makes it more urgent than browsing.
+                        let visible = invites.filter { !dismissed.contains($0.match_id) }
+                        if !visible.isEmpty {
+                            VStack(spacing: VoiidSpacing.sm) {
+                                ForEach(visible) { inv in
+                                    InviteBanner(
+                                        invite: inv,
+                                        onAccept: {
+                                            openMatch = OpenMatch(id: inv.match_id, slug: inv.slug)
+                                        },
+                                        onDismiss: {
+                                            // Acknowledge locally at once so the banner goes
+                                            // immediately, then tell the server. A failed decline is
+                                            // harmless — it expires anyway.
+                                            dismissed.insert(inv.match_id)
+                                            Task { try? await api.decline(matchId: inv.match_id) }
+                                        })
+                                }
+                            }
+                            .padding(.horizontal, VoiidSpacing.md)
+                            .padding(.top, VoiidSpacing.sm)
+                        }
+
                         LazyVGrid(columns: columns, spacing: VoiidSpacing.sm) {
                             ForEach(games) { game in
                                 GameCard(game: game) { setupGame = game }
@@ -176,7 +212,23 @@ struct GamesHomeView: View {
                 }
             }
         }
+        .navigationDestination(item: $lobby) { args in
+            GameLobbyView(
+                args: args,
+                onStart: {
+                    openMatch = OpenMatch(id: args.id, slug: args.slug)
+                    lobby = nil
+                },
+                onClose: { lobby = nil })
+                .environmentObject(session)
+        }
         .task { await load() }
+        .task {
+            while !Task.isCancelled {
+                if let fresh = try? await api.invites() { invites = fresh }
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
+            }
+        }
         // A ROOT tab, so it claims the bar exactly like ChatsHomeView does.
         .onAppear { session.hideTabBar = false }
         // Join tapped on an invite bubble. Joining is authorized server-side (the caller must
@@ -204,7 +256,18 @@ struct GamesHomeView: View {
             gameName: game.name,
             options: options
         ) {
-            openMatch = OpenMatch(id: id, slug: game.slug)
+            // The creator WAITS IN THE LOBBY. Opening the board here is what made it look like
+            // nothing happened: no opponent means no opening frame, so the board sat on
+            // "Setting up…" forever.
+            let overs = options["overs"] ?? 0
+            lobby = LobbyArgs(
+                id: id,
+                slug: game.slug,
+                gameName: game.name,
+                opponentName: conversation.title,
+                detailLine: overs > 0
+                    ? "\(overs) \(overs == 1 ? "over" : "overs")"
+                    : (game.slug == "rps" ? "first to 3" : ""))
         }
     }
 
