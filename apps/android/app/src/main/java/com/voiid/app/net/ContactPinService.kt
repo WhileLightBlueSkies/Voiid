@@ -15,31 +15,54 @@ import kotlinx.serialization.Serializable
  * IT IS NOT A PASSWORD and must never gate account access. Knowing it does exactly one thing:
  * permits a request. Two independent gates, so a leaked PIN alone is not enough.
  *
- * The PIN is stored HASHED on the server and returned exactly ONCE, at rotation — there is no
- * endpoint that can read it back. Revealing it means rotating it, which is what makes a leaked
- * PIN recoverable at all.
+ * THE PIN IS VIEWABLE. It is stored encrypted at rest (migration 026) rather than hashed, so
+ * the owner can look it up whenever they need to share it. A PIN you cannot re-read is one you
+ * must write down, and forgetting it would force a rotation that locks out everyone already
+ * holding the old one.
+ *
+ * It is NOT end-to-end encrypted — the server holds the key. What that buys is that a stolen
+ * database dump alone yields ciphertext. Messages, calls and media are E2E and unaffected.
  */
 class ContactPinService(context: Context) {
     private val api = ApiClient(TokenStore.get(context))
 
-    /** Whether a PIN exists and when it was set. Never the PIN itself. */
+    /** The caller's own PIN. */
     @Serializable
-    data class PinState(val has_pin: Boolean = false, val set_at: String? = null)
+    data class PinState(
+        val has_pin: Boolean = false,
+        /**
+         * The digits, in the clear. Null with [has_pin] true means a PIN minted before
+         * migration 026, stored only as an unreversible hash — it still WORKS, it just can't
+         * be shown. Rotating replaces it with a viewable one.
+         */
+        val pin: String? = null,
+        val set_at: String? = null,
+    )
 
-    @Serializable private data class RotateResponse(val pin: String)
+    @Serializable
+    private data class RotateResponse(
+        val pin: String,
+        /** False when the server has no secretbox key, so this PIN won't be re-fetchable. */
+        val viewable: Boolean = true,
+    )
 
+    /**
+     * Fetch the current PIN. Owner-only server-side: the id comes from the auth token, so
+     * there is no parameter that could be pointed at someone else.
+     */
     suspend fun state(): PinState = api.requestAs("GET", "reachability/contact-pin")
 
     /**
-     * Mint a NEW PIN and return it. The plaintext exists outside the owner's head only in this
-     * return value — never persisted locally, never re-fetchable.
+     * Mint a NEW PIN, replacing any existing one.
      *
-     * Rotating invalidates the old PIN immediately for everyone who had it, and clears the
-     * server's failed-attempt ledger so a sender previously locked out by throttling gets a
-     * fresh start against the NEW secret.
+     * This is a REVOCATION, not a way to recover a forgotten PIN — [state] already returns the
+     * current one. It invalidates the old PIN immediately for everyone who had it, and clears
+     * the server's failed-attempt ledger so a sender previously locked out by throttling gets
+     * a fresh start against the NEW secret.
      */
-    suspend fun rotate(): String =
-        api.requestAs<RotateResponse>("POST", "reachability/contact-pin/rotate").pin
+    suspend fun rotate(): Pair<String, Boolean> =
+        api.requestAs<RotateResponse>("POST", "reachability/contact-pin/rotate")
+            .let { it.pin to it.viewable }
 
     // ---- Reaching someone by username ---------------------------------------------------
 

@@ -54,7 +54,6 @@ struct PrivacySettingsView: View {
     @ObservedObject private var storySettings = StorySettings.shared
     // Contact PIN — how someone who finds you by @username is allowed to message you.
     @State private var pinState: ContactPinService.PinState?
-    @State private var revealedPin: String?
     @State private var pinBusy = false
     @State private var pinError: String?
     @State private var confirmRotate = false
@@ -64,61 +63,27 @@ struct PrivacySettingsView: View {
 
             // MARK: Contact PIN (reachability by @username)
 
+            // ONE short footer, not three paragraphs. The old copy explained the storage
+            // model, the mutual-contact exception and the rotation semantics before the user
+            // had seen their own PIN — a wall of text where a number belongs. The card below
+            // shows the PIN; the sentence says what it's for; everything else moved to the
+            // moment it becomes relevant (the rotate confirmation).
             SettingsSection(
                 "Contact PIN",
-                footer: """
-                    People who find you by @username need this 6-digit PIN before they can                     send you anything — and you still choose whether to accept. Share it the                     way you'd share your number.
-
-                    Anyone saved in your contacts (who has also saved you) can message you                     without it.
-
-                    Voiid stores only a hash, so the PIN can't be shown again after this.                     Generating a new one immediately stops the old one working for everyone                     who had it.
-                    """
+                footer: "Share this with people who find you by @username. They'll need it to "
+                    + "message you — and you still choose whether to accept."
             ) {
-                if let pin = revealedPin {
-                    // The ONE moment the plaintext exists outside the owner's head. There is no
-                    // endpoint that can read it back, which is exactly what makes rotation a
-                    // real revocation rather than a suggestion.
-                    VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
-                        Text("Your new PIN")
-                            .font(.footnote)
-                            .foregroundStyle(VoiidColor.textSecondary)
-                        Text(pin.map(String.init).joined(separator: " "))
-                            .font(.system(size: 30, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(VoiidColor.primary)
-                            .textSelection(.enabled)
-                        Text("Write this down now — it can't be shown again.")
-                            .font(.footnote)
-                            .foregroundStyle(VoiidColor.warning)
-                    }
-                    .padding(.vertical, 4)
-                    Button("Done") { revealedPin = nil }
-                        .foregroundStyle(VoiidColor.primary)
-                } else {
-                    LabeledContent {
-                        Text(pinState?.has_pin == true ? "Set" : "Not set")
-                            .foregroundStyle(VoiidColor.textSecondary)
-                    } label: {
-                        Label("Contact PIN", systemImage: "number.circle")
-                            .foregroundStyle(VoiidColor.textPrimary)
-                    }
-                    Button {
+                ContactPinCard(
+                    pin: pinState?.pin,
+                    hasPin: pinState?.has_pin == true,
+                    busy: pinBusy,
+                    onRegenerate: {
                         Haptics.tap()
                         // Replacing an existing PIN locks out everyone holding the old one, so
                         // it is confirmed. Creating the first one cannot break anything.
                         if pinState?.has_pin == true { confirmRotate = true } else { rotatePin() }
-                    } label: {
-                        HStack {
-                            Label(pinState?.has_pin == true ? "Generate a new PIN" : "Create a PIN",
-                                  systemImage: "arrow.triangle.2.circlepath")
-                                .foregroundStyle(VoiidColor.primary)
-                            if pinBusy {
-                                Spacer()
-                                ProgressView()
-                            }
-                        }
                     }
-                    .disabled(pinBusy)
-                }
+                )
                 if let pinError {
                     Text(pinError)
                         .font(.footnote)
@@ -247,8 +212,8 @@ struct PrivacySettingsView: View {
         .background(VoiidColor.background.ignoresSafeArea())
         .navigationTitle("Privacy")
         .task {
-            // Only whether a PIN EXISTS — the hash is one-way, so the digits genuinely cannot
-            // be re-read. Revealing means rotating.
+            // Includes the PIN itself since migration 026 — owner-only, keyed on the auth
+            // token server-side.
             pinState = try? await ContactPinService.shared.state()
         }
         .confirmationDialog("Generate a new PIN?", isPresented: $confirmRotate,
@@ -256,6 +221,8 @@ struct PrivacySettingsView: View {
             Button("Generate", role: .destructive) { rotatePin() }
             Button("Cancel", role: .cancel) {}
         } message: {
+            // The rotation caveat lives HERE, at the moment it applies, rather than in a
+            // footer the user reads before they have any reason to care.
             Text("Anyone who has your current PIN will no longer be able to reach you with it.")
         }
     }
@@ -265,14 +232,134 @@ struct PrivacySettingsView: View {
         pinError = nil
         Task {
             do {
-                revealedPin = try await ContactPinService.shared.rotate()
+                _ = try await ContactPinService.shared.rotate()
+                // Re-read rather than trusting the rotate response: `state()` is the one
+                // place that knows whether the new PIN is actually viewable, so the card
+                // never claims a PIN is stored readably when the server couldn't do it.
                 pinState = try? await ContactPinService.shared.state()
+                Haptics.success()
             } catch {
                 // Say what failed. A silent no-op on a security control is worse than an error.
                 pinError = "Couldn't generate a PIN. Check your connection and try again."
             }
             pinBusy = false
         }
+    }
+}
+
+// MARK: - Contact PIN card
+
+/// The PIN, shown as a number rather than described in a paragraph.
+///
+/// Since migration 026 the PIN is stored encrypted rather than hashed, so it can be read
+/// back — which is what lets this be a display surface instead of a one-shot reveal. The
+/// digits are the largest thing on the screen because reading them aloud or copying them is
+/// the entire task; every other affordance is deliberately quieter.
+private struct ContactPinCard: View {
+    let pin: String?
+    let hasPin: Bool
+    let busy: Bool
+    let onRegenerate: () -> Void
+
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: VoiidSpacing.md) {
+            if let pin {
+                digits(pin)
+                actions(pin)
+            } else if hasPin {
+                // Set before 026, so it exists only as a hash and genuinely cannot be shown.
+                // Say that plainly instead of rendering an empty card that looks broken.
+                Text("Your PIN is set but can't be shown — it was created before PINs became "
+                     + "viewable. Generate a new one to see it here.")
+                    .font(.footnote)
+                    .foregroundStyle(VoiidColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                regenerateButton(title: "Generate a viewable PIN")
+            } else {
+                Text("You don't have a PIN yet, so nobody can reach you by @username.")
+                    .font(.footnote)
+                    .foregroundStyle(VoiidColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                regenerateButton(title: "Create a PIN")
+            }
+        }
+        .padding(.vertical, VoiidSpacing.sm)
+        .animation(.easeInOut(duration: 0.2), value: copied)
+    }
+
+    /// Grouped 3 + 3. Six undifferentiated digits are meaningfully harder to read aloud and
+    /// to check against what you just typed, which is most of what this card is for.
+    private func digits(_ pin: String) -> some View {
+        let mid = pin.index(pin.startIndex, offsetBy: min(3, pin.count))
+        return HStack(spacing: VoiidSpacing.sm) {
+            Text(String(pin[pin.startIndex..<mid]))
+            Text(String(pin[mid...]))
+        }
+        .font(.system(size: 34, weight: .semibold, design: .rounded))
+        .monospacedDigit()
+        .kerning(4)
+        .foregroundStyle(VoiidColor.textPrimary)
+        .textSelection(.enabled)
+        .frame(maxWidth: .infinity, alignment: .center)
+        .accessibilityElement()
+        // Read as separate digits, not as "four hundred eighteen thousand".
+        .accessibilityLabel("Your contact PIN is " + pin.map(String.init).joined(separator: " "))
+    }
+
+    private func actions(_ pin: String) -> some View {
+        HStack(spacing: 0) {
+            Button {
+                UIPasteboard.general.string = pin
+                Haptics.success()
+                copied = true
+                // Revert on its own. A permanently "Copied" button stops being a control.
+                Task {
+                    try? await Task.sleep(nanoseconds: 1_600_000_000)
+                    copied = false
+                }
+            } label: {
+                Label(copied ? "Copied" : "Copy",
+                      systemImage: copied ? "checkmark" : "doc.on.doc")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(copied ? VoiidColor.success : VoiidColor.primary)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.plain)
+
+            Divider().frame(height: 20)
+
+            Button(action: onRegenerate) {
+                // "New PIN", not "Regenerate": this REPLACES the PIN and cuts off everyone
+                // holding the old one, and the label should not sound like a refresh.
+                Label("New PIN", systemImage: "arrow.triangle.2.circlepath")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(busy ? VoiidColor.textSecondary : VoiidColor.primary)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.plain)
+            .disabled(busy)
+        }
+        .overlay(alignment: .trailing) {
+            if busy { ProgressView().controlSize(.small) }
+        }
+    }
+
+    private func regenerateButton(title: String) -> some View {
+        Button(action: onRegenerate) {
+            HStack {
+                Label(title, systemImage: "arrow.triangle.2.circlepath")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(busy ? VoiidColor.textSecondary : VoiidColor.primary)
+                if busy {
+                    Spacer()
+                    ProgressView().controlSize(.small)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(busy)
     }
 }
 

@@ -40,11 +40,12 @@ router.get('/:id', requireAuth, async (req, res) => {
     id: string; full_name: string | null; photo_url: string | null; bio: string | null;
     status_text: string | null; username: string | null; phone_number: string | null;
     photo_privacy: string; about_privacy: string;
-    contact_pin_hash: string | null; contact_pin_set_at: string | null;
+    contact_pin_hash: string | null; contact_pin_enc: string | null;
+    contact_pin_set_at: string | null;
     encrypted_photo_url: string | null; profile_key_version: number;
   }>(
     `select id, full_name, photo_url, bio, status_text, username, phone_number,
-            photo_privacy, about_privacy, contact_pin_hash, contact_pin_set_at,
+            photo_privacy, about_privacy, contact_pin_hash, contact_pin_enc, contact_pin_set_at,
             encrypted_photo_url, profile_key_version
        from users where id = $1 and deleted_at is null`,
     [targetId]
@@ -85,14 +86,16 @@ router.get('/:id', requireAuth, async (req, res) => {
       // (self), never to anyone else — it is how a user recovers their own real number on
       // a device that didn't capture it at OTP time. Others never receive it.
       phone_number: isOwner ? u.phone_number : undefined,
-      // Contact PIN state — OWNER ONLY, and never the PIN itself. The hash is one-way, so
-      // the digits genuinely cannot be re-read; revealing it means rotating it
-      // (POST /reachability/contact-pin/rotate), which is the point.
+      // Contact PIN state — OWNER ONLY, and only WHETHER one is set. The PIN itself has
+      // exactly one door, GET /reachability/contact-pin, so there is a single place to audit
+      // for this disclosure rather than two that can drift apart.
       //
       // Leaking `has_contact_pin` to a non-owner would be a small but real oracle: it tells
       // a stranger whether the account is reachable by handle at all. That answer belongs to
       // GET /reachability/by-username, which is the deliberate, rate-limited door for it.
-      has_contact_pin: isOwner ? !!u.contact_pin_hash : undefined,
+      // Either storage scheme counts: checking only the hash would report "no PIN" for
+      // every user who rotated after migration 026. See reachability.ts `hasPin`.
+      has_contact_pin: isOwner ? !!(u.contact_pin_hash || u.contact_pin_enc) : undefined,
       contact_pin_set_at: isOwner ? u.contact_pin_set_at : undefined,
     },
   });
