@@ -182,7 +182,11 @@ router.get(
          join games g on g.id = m.game_id
          left join users u on u.id = m.created_by
         where m.status = 'waiting'
-          and m.created_by <> $1
+          -- ::uuid, not a bare parameter. created_by is a uuid column and pg infers an untyped
+          -- parameter as text, and there is no uuid <> text operator — so this comparison made the
+          -- whole query fail and the endpoint 500 on every call, which is what left the invite
+          -- banners permanently empty. Same class of bug as the leaderboard's $3/$4 split.
+          and m.created_by <> $1::uuid
           and m.player_ids @> $2::jsonb
         order by m.created_at desc
         limit 20`,
