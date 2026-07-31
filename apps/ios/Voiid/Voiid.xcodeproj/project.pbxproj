@@ -95,7 +95,6 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
-				voiid.swift,
 			);
 			target = 0B832F1E2FE005110023F558 /* Voiid */;
 		};
