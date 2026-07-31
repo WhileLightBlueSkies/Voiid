@@ -24,9 +24,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.ui.draw.alpha
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -62,11 +64,13 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -106,6 +110,11 @@ fun ChatDetailView(
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val isGroup = conversation.type == ConversationType.GROUP
     var draft by remember { mutableStateOf("") }
+    // Recording state is hoisted HERE, not owned by the mic button: the RecordingBar is a
+    // sibling that replaces the composer row, so both need to read it.
+    var isRecording by remember { mutableStateOf(false) }
+    var recDragX by remember { mutableFloatStateOf(0f) }
+    var recSeconds by remember { mutableFloatStateOf(0f) }
     val messages = chat.messages(conversation.id)
     val typing = conversation.id in chat.typingConversations
     val listState = rememberLazyListState()
@@ -386,22 +395,52 @@ fun ChatDetailView(
                 // Input row
                 val hasText = draft.trim().isNotEmpty()
                 val pillShape = RoundedCornerShape(VoiidRadius.pill)
+
+                // RECORDING IS A MODAL STATE and takes the whole row. The bar cannot live
+                // inside the mic button — a 44dp capsule in a 32dp slot overflowed and fought
+                // the text field for space, which is what made the old one look broken.
+                //
+                // The mic itself stays MOUNTED in both branches (below), only hidden. Swapping
+                // it out mid-gesture destroys the composable that owns the pointer loop, which
+                // is exactly how the iOS version lost its drag callbacks.
+                if (isRecording) {
+                    Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                        RecordingBar(seconds = recSeconds, dragX = recDragX, onCancel = {})
+                    }
+                }
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        // Collapsed, not removed, while the bar has the row — see above.
+                        .then(if (isRecording) Modifier.height(0.dp) else Modifier)
+                        .alpha(if (isRecording) 0f else 1f)
+                        .padding(horizontal = 16.dp, vertical = if (isRecording) 0.dp else 8.dp)
                         .clip(pillShape)
-                        .background(VoiidColor.fieldFill)
-                        .border(1.dp, VoiidColor.fieldBorder, pillShape)
+                        .background(if (isRecording) androidx.compose.ui.graphics.Color.Transparent else VoiidColor.fieldFill)
+                        .border(
+                            1.dp,
+                            if (isRecording) androidx.compose.ui.graphics.Color.Transparent else VoiidColor.fieldBorder,
+                            pillShape,
+                        )
                         .padding(4.dp),
                     verticalAlignment = Alignment.Bottom,
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     Box {
-                        Icon(
-                            Icons.Default.Add, "Attach", tint = VoiidColor.textSecondary,
-                            modifier = Modifier.size(22.dp).clickable { showAttach = true },
-                        )
+                        // A 32dp tinted DISC, matching send and mic. These were bare 22dp
+                        // glyphs with no shape, so they sat visually unbalanced against the
+                        // filled send button and gave the thumb nothing to aim at.
+                        Box(
+                            Modifier.size(32.dp).clip(CircleShape)
+                                .background(VoiidColor.primary.copy(alpha = 0.12f))
+                                .clickable { haptics.tap(); showAttach = true },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.Default.Add, "Attach", tint = VoiidColor.primary,
+                                modifier = Modifier.size(17.dp),
+                            )
+                        }
                         DropdownMenu(expanded = showAttach, onDismissRequest = { showAttach = false }) {
                             DropdownMenuItem(
                                 text = { Text("Photo") },
@@ -428,10 +467,17 @@ fun ChatDetailView(
                     // GIF — a FIRST-CLASS button, not buried in the attach menu. It is the
                     // thing people reach for most, and a menu tap in front of it is friction
                     // for nothing.
-                    Icon(
-                        Icons.Outlined.Mood, "GIFs", tint = VoiidColor.textSecondary,
-                        modifier = Modifier.size(22.dp).clickable { haptics.tap(); showGifPicker = true },
-                    )
+                    Box(
+                        Modifier.size(32.dp).clip(CircleShape)
+                            .background(VoiidColor.primary.copy(alpha = 0.12f))
+                            .clickable { haptics.tap(); showGifPicker = true },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Outlined.Mood, "GIFs", tint = VoiidColor.primary,
+                            modifier = Modifier.size(17.dp),
+                        )
+                    }
                     Box(Modifier.weight(1f)) {
                         // A PLACEHOLDER: the field was empty with no prompt, so the composer
                         // read as a blank pill with no affordance.
@@ -447,11 +493,18 @@ fun ChatDetailView(
                             onValueChange = { draft = it },
                             textStyle = VoiidFont.rounded(16).merge(TextStyle(color = VoiidColor.textPrimary)),
                             cursorBrush = SolidColor(VoiidColor.primary),
-                            maxLines = 5,
+                            // maxLines alone TRUNCATED: past the fifth line the text simply
+                            // stopped being visible, so a long paragraph became unreviewable
+                            // before sending. The field now grows to a ceiling and SCROLLS
+                            // beyond it, which is what the cap was meant to do.
+                            maxLines = Int.MAX_VALUE,
                             // 32dp, not 46 — the pill's own padding carries the rest of the
                             // touch target, and 46 + outer padding was most of the wasted
-                            // vertical space.
-                            modifier = Modifier.fillMaxWidth().heightIn(min = 32.dp),
+                            // vertical space. 120dp caps growth at roughly six lines.
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 32.dp, max = 120.dp)
+                                .verticalScroll(rememberScrollState()),
                         )
                     }
                     if (hasText) {
@@ -471,10 +524,23 @@ fun ChatDetailView(
                                 tint = VoiidColor.textOnPrimary, modifier = Modifier.size(17.dp),
                             )
                         }
-                    } else {
-                        VoiceRecordButton { bytes, duration ->
-                            chat.sendMedia(bytes, "audio/m4a", caption = "Voice · ${duration.toInt()}s", conversationId = conversation.id)
-                        }
+                    }
+                    // ALWAYS COMPOSED, never swapped out — only sized to nothing when text is
+                    // present. An if/else here would tear down the button mid-gesture and take
+                    // its pointer loop with it, which is precisely how iOS lost slide-to-cancel.
+                    Box(
+                        Modifier
+                            .alpha(if (hasText) 0f else 1f)
+                            .width(if (hasText) 0.dp else 44.dp),
+                    ) {
+                        VoiceRecordButton(
+                            onSend = { bytes, duration ->
+                                chat.sendMedia(bytes, "audio/m4a", caption = "Voice · ${duration.toInt()}s", conversationId = conversation.id)
+                            },
+                            onRecordingChange = { isRecording = it },
+                            onDrag = { recDragX = it },
+                            onTick = { recSeconds = it },
+                        )
                     }
                 }
             }

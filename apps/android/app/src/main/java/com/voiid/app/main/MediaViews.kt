@@ -22,6 +22,19 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.Text
+import com.voiid.app.ui.theme.VoiidFont
+import com.voiid.app.ui.components.LocalVoiidHaptics
+import kotlinx.coroutines.delay
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -131,12 +144,32 @@ fun AsyncMediaImage(ref: ChatEngine.MediaRef) {
     }
 }
 
+/**
+ * A voice note as a SEEKABLE SCRUBBER, not a play button next to decorative bars.
+ *
+ * It was a plain play/pause icon plus 18 static bars at flat alpha — no progress, no time, and
+ * no way to skip back three seconds to catch a word you missed, which is the single most
+ * common thing anyone wants from a voice message.
+ *
+ * @param onOwnBubble the sent bubble is FILLED, so primary-on-primary is unreadable there and
+ *                    every colour has to invert. Passing this in is what keeps the same
+ *                    component usable on both sides.
+ */
 @Composable
-fun AsyncVoiceNote(ref: ChatEngine.MediaRef?, label: String) {
+fun AsyncVoiceNote(ref: ChatEngine.MediaRef?, label: String, onOwnBubble: Boolean = false) {
     val context = LocalContext.current
+    val haptics = LocalVoiidHaptics.current
     var bytes by remember(ref?.mediaUrl) { mutableStateOf(ref?.mediaUrl?.let { MediaCache.data(it) }) }
     var playing by remember { mutableStateOf(false) }
     var player by remember { mutableStateOf<MediaPlayer?>(null) }
+    var progress by remember { mutableFloatStateOf(0f) }
+    var durationMs by remember { mutableIntStateOf(0) }
+    var elapsedMs by remember { mutableIntStateOf(0) }
+
+    val tint = if (onOwnBubble) VoiidColor.textOnBubble else VoiidColor.primary
+    val trackTint = if (onOwnBubble) VoiidColor.textOnBubble.copy(alpha = 0.35f)
+                    else VoiidColor.textSecondary.copy(alpha = 0.4f)
+    val metaTint = if (onOwnBubble) VoiidColor.textOnBubble.copy(alpha = 0.7f) else VoiidColor.textSecondary
 
     LaunchedEffect(ref?.mediaUrl) {
         val r = ref ?: return@LaunchedEffect
@@ -145,35 +178,118 @@ fun AsyncVoiceNote(ref: ChatEngine.MediaRef?, label: String) {
         withContext(Dispatchers.IO) { MediaCache.data(context, r.mediaUrl) }?.let { bytes = it; return@LaunchedEffect }
         runCatching { val d = ChatEngine.get(context).fetchMedia(r); MediaCache.putData(context, r.mediaUrl, d); bytes = d }
     }
+
+    /** Build the player lazily, but eagerly enough to know the DURATION before first play —
+     *  a scrubber that reads 0:00 until you press play is a scrubber you cannot aim with. */
+    fun ensurePlayer(): MediaPlayer? {
+        val data = bytes ?: return null
+        player?.let { return it }
+        return runCatching {
+            val f = File.createTempFile("vn", ".m4a", context.cacheDir).apply { writeBytes(data) }
+            MediaPlayer().apply {
+                setDataSource(f.path); prepare()
+                setOnCompletionListener { playing = false; progress = 0f; elapsedMs = 0 }
+            }.also { player = it; durationMs = it.duration }
+        }.getOrNull()
+    }
+
+    LaunchedEffect(bytes) { if (bytes != null) ensurePlayer() }
     DisposableEffect(Unit) { onDispose { player?.release() } }
 
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        IconButton(
-            enabled = bytes != null,
-            onClick = {
-                val data = bytes ?: return@IconButton
-                if (playing) { player?.pause(); playing = false } else {
-                    if (player == null) {
-                        val f = File.createTempFile("vn", ".m4a", context.cacheDir).apply { writeBytes(data) }
-                        player = MediaPlayer().apply {
-                            setDataSource(f.path); prepare()
-                            setOnCompletionListener { playing = false }
-                        }
-                    }
-                    player?.start(); playing = true
-                }
-            },
-        ) {
-            Icon(
-                if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, null,
-                tint = VoiidColor.primary, modifier = Modifier.size(30.dp),
-            )
+    // Drive progress from the player itself rather than a wall-clock timer, so a seek or a
+    // pause can never desync the bar from the audio.
+    LaunchedEffect(playing) {
+        while (playing) {
+            player?.let { elapsedMs = it.currentPosition; if (it.duration > 0) progress = it.currentPosition / it.duration.toFloat() }
+            delay(50)
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            repeat(18) { i ->
-                Box(Modifier.width(2.5.dp).height((6 + (i * 7) % 18).dp).background(VoiidColor.primary.copy(alpha = 0.5f)))
+    }
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.width(210.dp),
+    ) {
+        Box(
+            Modifier
+                .size(34.dp)
+                .clip(CircleShape)
+                .background(if (onOwnBubble) VoiidColor.textOnBubble.copy(alpha = 0.18f) else VoiidColor.primary.copy(alpha = 0.12f))
+                .clickable(enabled = bytes != null) {
+                    haptics.tap()
+                    val p = ensurePlayer() ?: return@clickable
+                    if (playing) { p.pause(); playing = false } else { p.start(); playing = true }
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            if (bytes == null) {
+                CircularProgressIndicator(Modifier.size(16.dp), color = tint, strokeWidth = 2.dp)
+            } else {
+                Icon(
+                    if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, null,
+                    tint = tint, modifier = Modifier.size(17.dp),
+                )
             }
         }
-        if (bytes == null) CircularProgressIndicator(Modifier.size(16.dp), color = VoiidColor.primary, strokeWidth = 2.dp)
+
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            val barCount = 26
+            // Deterministic per-message pattern, seeded from the URL: bars that change on
+            // every recomposition read as noise, and two different notes that look identical
+            // read as a bug.
+            val seed = remember(ref?.mediaUrl) { (ref?.mediaUrl ?: label).hashCode() }
+            val heights = remember(seed) {
+                val rnd = java.util.Random(seed.toLong())
+                List(barCount) { 5 + rnd.nextInt(15) }
+            }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .height(22.dp)
+                    .pointerInput(bytes) {
+                        if (bytes == null) return@pointerInput
+                        // Tap AND drag both seek. Tap-to-jump is what people try first;
+                        // drag is what they use to hunt for a word.
+                        detectTapGestures { off ->
+                            val p = ensurePlayer() ?: return@detectTapGestures
+                            val f = (off.x / size.width).coerceIn(0f, 1f)
+                            p.seekTo((f * p.duration).toInt()); progress = f; elapsedMs = p.currentPosition
+                        }
+                    }
+                    .pointerInput(bytes) {
+                        if (bytes == null) return@pointerInput
+                        detectHorizontalDragGestures { change, _ ->
+                            val p = ensurePlayer() ?: return@detectHorizontalDragGestures
+                            val f = (change.position.x / size.width).coerceIn(0f, 1f)
+                            p.seekTo((f * p.duration).toInt()); progress = f; elapsedMs = p.currentPosition
+                        }
+                    },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                heights.forEachIndexed { i, h ->
+                    val played = i.toFloat() / barCount <= progress
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .height(h.dp)
+                            .clip(CircleShape)
+                            .background(if (played) tint else trackTint),
+                    )
+                }
+            }
+            Text(
+                // Elapsed once it has started, total before — the number is only useful if it
+                // answers "how much is left".
+                if (elapsedMs > 0) timeLabel(elapsedMs) else timeLabel(durationMs),
+                style = VoiidFont.rounded(10),
+                color = metaTint,
+            )
+        }
     }
+}
+
+private fun timeLabel(ms: Int): String {
+    val total = ms / 1000
+    return "%d:%02d".format(total / 60, total % 60)
 }
