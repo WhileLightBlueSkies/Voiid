@@ -37,6 +37,12 @@ class ContactPinService(context: Context) {
          */
         val pin: String? = null,
         val set_at: String? = null,
+        /**
+         * False when the SERVER has no secretbox key, so no PIN can be stored viewably.
+         * Distinguishes "your PIN predates the feature" (rotating fixes it) from "this
+         * deployment can't store PINs readably" (rotating cannot).
+         */
+        val storage_configured: Boolean = true,
     )
 
     @Serializable

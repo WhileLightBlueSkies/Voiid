@@ -138,6 +138,7 @@ fun PrivacySettingsScreen(onBack: () -> Unit) {
             ContactPinCard(
                 pin = pinState?.pin,
                 hasPin = pinState?.has_pin == true,
+                storageConfigured = pinState?.storage_configured != false,
                 busy = pinBusy,
                 onRegenerate = {
                     haptics.tap()
@@ -241,6 +242,8 @@ fun PrivacySettingsScreen(onBack: () -> Unit) {
 private fun ContactPinCard(
     pin: String?,
     hasPin: Boolean,
+    /** False when the SERVER cannot store a PIN readably (no secretbox key). */
+    storageConfigured: Boolean,
     busy: Boolean,
     onRegenerate: () -> Unit,
 ) {
@@ -294,6 +297,18 @@ private fun ContactPinCard(
                         onClick = onRegenerate,
                     )
                 }
+            }
+            hasPin && !storageConfigured -> {
+                // The SERVER cannot store PINs readably. Rotating would not help — it would
+                // mint another unviewable one — so this does not offer it as the fix, and
+                // names the missing setting so whoever runs the deployment can act.
+                Text(
+                    "Your PIN is set and works, but this server can't display it. " +
+                        "VOIID_SECRETBOX_KEY isn't configured.",
+                    style = VoiidFont.rounded(13), color = VoiidColor.warning,
+                )
+                Spacer(Modifier.height(12.dp))
+                PinAction("Generate a new PIN", VoiidColor.primary, !busy, onClick = onRegenerate)
             }
             hasPin -> {
                 // Set before 026, so it exists only as a hash and genuinely cannot be shown.

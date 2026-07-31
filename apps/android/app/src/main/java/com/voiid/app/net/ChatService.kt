@@ -5,6 +5,7 @@ import com.voiid.app.model.ConversationType
 import com.voiid.app.model.VConversation
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.Serializable
 
 /**
@@ -31,7 +32,9 @@ private data class ConversationsEnvelope(val conversations: List<ConvDTO>)
 @Serializable private data class ConvDetailEnvelope(val conversation: ConvDetailDTO, val members: List<MemberDTO>)
 // Backend returns a FLAT shape: direct → { conversation_id, existed }, group → { conversation_id }.
 @Serializable private data class CreateConvEnvelope(val conversation_id: String, val existed: Boolean = false)
-@Serializable private data class CreateGroupBody(val type: String = "group", val name: String, val member_ids: List<String>)
+// @EncodeDefault on `type`: kotlinx omits default-valued fields, and POST /conversations
+// needs the type to create a GROUP rather than falling back to a direct chat.
+@Serializable private data class CreateGroupBody(@EncodeDefault val type: String = "group", val name: String, val member_ids: List<String>)
 
 /** Resolved peer of a direct conversation. */
 data class PeerInfo(val peerUserId: String?, val title: String?, val photoURL: String?)

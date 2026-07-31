@@ -76,6 +76,7 @@ struct PrivacySettingsView: View {
                 ContactPinCard(
                     pin: pinState?.pin,
                     hasPin: pinState?.has_pin == true,
+                    storageConfigured: pinState?.storage_configured ?? true,
                     busy: pinBusy,
                     onRegenerate: {
                         Haptics.tap()
@@ -258,6 +259,8 @@ struct PrivacySettingsView: View {
 private struct ContactPinCard: View {
     let pin: String?
     let hasPin: Bool
+    /// False when the SERVER cannot store a PIN readably (no secretbox key).
+    let storageConfigured: Bool
     let busy: Bool
     let onRegenerate: () -> Void
 
@@ -268,6 +271,16 @@ private struct ContactPinCard: View {
             if let pin {
                 digits(pin)
                 actions(pin)
+            } else if hasPin && !storageConfigured {
+                // The SERVER cannot store PINs readably. Rotating would not help — it would
+                // mint another unviewable one — so this deliberately does not offer it as the
+                // fix, and names the missing setting so whoever runs the deployment can act.
+                Text("Your PIN is set and works, but this server can't display it. "
+                     + "VOIID_SECRETBOX_KEY isn't configured.")
+                    .font(.footnote)
+                    .foregroundStyle(VoiidColor.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+                regenerateButton(title: "Generate a new PIN")
             } else if hasPin {
                 // Set before 026, so it exists only as a hash and genuinely cannot be shown.
                 // Say that plainly instead of rendering an empty card that looks broken.

@@ -43,6 +43,10 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.CallMade
+import androidx.compose.material.icons.filled.CallReceived
+import androidx.compose.material.icons.filled.CallMissed
+import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
@@ -371,7 +375,7 @@ private fun BubbleInner(message: VMessage, isGroup: Boolean, isLastMine: Boolean
             MetaRow(message, isLastMine, Modifier.padding(top = 2.dp))
         }
         MessageKind.VOICE -> {
-            AsyncVoiceNote(message.mediaRef, message.text)
+            AsyncVoiceNote(message.mediaRef, message.text, onOwnBubble = message.isMine)
             MetaRow(message, isLastMine, Modifier.padding(top = 2.dp))
         }
         MessageKind.POLL -> {
@@ -408,13 +412,35 @@ private fun BubbleInner(message: VMessage, isGroup: Boolean, isLastMine: Boolean
 private fun CallLogBubble(log: VCallLog, onCallBack: () -> Unit) {
     val haptics = LocalVoiidHaptics.current
     val missed = log.incoming && !log.answered
-    val tint = if (missed) VoiidColor.error else VoiidColor.textSecondary
+    val onOwnBubble = !log.incoming
+
+    // DIRECTION, not medium. Every call drew the same phone glyph, so an incoming call was
+    // indistinguishable from an outgoing one — the single most useful fact about a call log
+    // was the one thing it did not show. Mirrors iOS `directionIcon`.
     val icon = when {
-        log.isVideo -> Icons.Default.Videocam
-        else -> Icons.Default.Call
+        log.outcome == "declined" -> Icons.Default.CallEnd
+        missed -> Icons.Default.CallMissed
+        log.incoming -> Icons.Default.CallReceived
+        else -> Icons.Default.CallMade
     }
+
+    // On a FILLED sent bubble the body text has to invert, or it is dark-on-dark. The missed
+    // red is kept in both cases: it is the one state worth shouting.
+    val bodyTint = when {
+        missed -> VoiidColor.error
+        onOwnBubble -> VoiidColor.textOnBubble
+        else -> VoiidColor.textPrimary
+    }
+    val subTint = if (onOwnBubble) VoiidColor.textOnBubble.copy(alpha = 0.7f) else VoiidColor.textSecondary
+    val tint = if (missed) VoiidColor.error else bodyTint
+
     val title = when {
-        log.answered -> if (log.isVideo) "Video call" else "Voice call"
+        // "Incoming"/"Outgoing" in words as well as in the arrow — the glyph carries it at a
+        // glance, the word removes any doubt, and it is what a screen reader announces.
+        log.answered -> {
+            val medium = if (log.isVideo) "video call" else "voice call"
+            if (log.incoming) "Incoming $medium" else "Outgoing $medium"
+        }
         log.outcome == "declined" -> if (log.incoming) "Declined call" else "Call declined"
         log.outcome == "failed" -> "Call failed"
         log.incoming -> if (log.isVideo) "Missed video call" else "Missed voice call"
@@ -438,21 +464,35 @@ private fun CallLogBubble(log: VCallLog, onCallBack: () -> Unit) {
                 .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(icon, null, tint = tint, modifier = Modifier.size(18.dp))
+            // A soft tinted disc, so the glyph reads as an icon rather than floating loose
+            // against the bubble fill.
+            Box(
+                Modifier.size(34.dp).clip(CircleShape).background(tint.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(icon, null, tint = tint, modifier = Modifier.size(17.dp))
+            }
             Spacer(Modifier.size(10.dp))
             Column {
-                Text(title, style = VoiidFont.rounded(14, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+                Text(title, style = VoiidFont.rounded(14, FontWeight.SemiBold), color = bodyTint)
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
                         VoiidDate.bubbleTime(log.startedAt),
                         style = VoiidFont.rounded(11),
-                        color = VoiidColor.textSecondary,
+                        color = subTint,
                     )
                     subtitle?.let {
-                        Text("· $it", style = VoiidFont.rounded(11), color = VoiidColor.textSecondary)
+                        Text("· $it", style = VoiidFont.rounded(11), color = subTint)
                     }
                 }
             }
+            // "Tap to call back" made visible. The whole row was already clickable, but a
+            // clickable thing that looks inert gets no taps.
+            Spacer(Modifier.size(10.dp))
+            Icon(
+                Icons.Default.CallMade, null,
+                tint = subTint, modifier = Modifier.size(13.dp),
+            )
         }
     }
 }

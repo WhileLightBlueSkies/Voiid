@@ -5,6 +5,7 @@ import android.util.Base64
 import com.voiid.app.model.MapConstants
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
@@ -728,9 +729,16 @@ class ChatEngine private constructor(context: Context) {
     // E2EE fan-out; the server sees only opaque ciphertext + a content_type hint. Receivers
     // apply them in [sync] by probing the plaintext "t" discriminator. Envelope JSON field
     // names MUST match iOS byte-for-byte.
-    @Serializable private data class ReactionWire(val t: String = "msg_reaction", val v: Int = 1, val target: String, val emoji: String? = null)
-    @Serializable private data class DeleteWire(val t: String = "msg_delete", val v: Int = 1, val target: String)
-    @Serializable private data class ReplyWire(val t: String = "msg_reply", val v: Int = 1, val text: String, val quotedId: String, val quotedPreview: String, val quotedSender: String)
+    //
+    // @EncodeDefault ON `t` AND `v`, mandatory. kotlinx omits default-valued fields (ApiClient's
+    // Json leaves `encodeDefaults` off), and `t` is the discriminator the receiver probes to
+    // decide what a plaintext IS — so without this a reaction serialises to `{"target":"…"}`
+    // and arrives indistinguishable from an ordinary message. Unlike the receipt bug there is
+    // no server-side default to mask it: the server only sees ciphertext. See
+    // ReceiptEncodingTest, and MapPresenceService, which already had to solve this.
+    @Serializable private data class ReactionWire(@EncodeDefault val t: String = "msg_reaction", @EncodeDefault val v: Int = 1, val target: String, val emoji: String? = null)
+    @Serializable private data class DeleteWire(@EncodeDefault val t: String = "msg_delete", @EncodeDefault val v: Int = 1, val target: String)
+    @Serializable private data class ReplyWire(@EncodeDefault val t: String = "msg_reply", @EncodeDefault val v: Int = 1, val text: String, val quotedId: String, val quotedPreview: String, val quotedSender: String)
     @Serializable private data class ActionProbe(val t: String? = null)
 
     /** Send (or clear, emoji=null) a reaction to [targetServerId]. No bubble. */
@@ -852,7 +860,7 @@ class ChatEngine private constructor(context: Context) {
     /** Wire shape of a story_reply envelope (kept local so `net` needn't depend on `model`). */
     @Serializable
     private data class StoryReplyWire(
-        val v: Int = 1, val t: String = "story_reply",
+        @EncodeDefault val v: Int = 1, @EncodeDefault val t: String = "story_reply",
         val storyId: String, val storyAuthorId: String, val storyCreatedAt: Long,
         val text: String, val reaction: String? = null,
     )
@@ -1201,7 +1209,17 @@ class ChatEngine private constructor(context: Context) {
 
     // MARK: - DTOs
 
-    @Serializable private data class MarkReadBody(val message_ids: List<String>, val status: String = "read")
+    /**
+     * NO DEFAULT ON `status`, deliberately.
+     *
+     * It used to be `= "read"`, and kotlinx omits any field equal to its default (ApiClient's
+     * Json does not set `encodeDefaults`). So marking a message READ sent `{"message_ids":[…]}`
+     * with no status — and routes/receipts.ts reads `status = 'delivered'` for a missing one.
+     * The POST returned 200, so Android looked healthy while iOS never showed "Seen".
+     *
+     * See ReceiptEncodingTest, which pins both the fix and the original failure.
+     */
+    @Serializable private data class MarkReadBody(val message_ids: List<String>, val status: String)
     /** One target device's ciphertext in a fan-out bundle. */
     @Serializable private data class DeviceCiphertext(val recipient_device_id: String, val ciphertext: String)
     /** Multi-device fan-out send: one ciphertext per TARGET device. */
