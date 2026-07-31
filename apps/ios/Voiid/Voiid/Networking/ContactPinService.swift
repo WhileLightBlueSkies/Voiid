@@ -13,9 +13,14 @@
 //  IT IS NOT A PASSWORD and must never gate account access. Knowing it does exactly one thing:
 //  permits a request. Two independent gates, so a leaked PIN alone is not enough.
 //
-//  The PIN is stored HASHED on the server and returned exactly ONCE, at rotation — there is no
-//  endpoint that can read it back. That is deliberate: revealing it means rotating it, which
-//  is what makes a leaked PIN recoverable at all.
+//  THE PIN IS VIEWABLE. It is stored encrypted at rest (migration 026) rather than hashed,
+//  so the owner can look it up whenever they need to share it. That is a deliberate trade:
+//  a PIN you cannot re-read is one you must write down, and forgetting it forces a rotation
+//  that locks out everyone already holding the old one.
+//
+//  It is NOT end-to-end encrypted — the server holds the key and can read it. What that
+//  buys is that a stolen database dump alone yields ciphertext. Messages, calls and media
+//  are E2E and unaffected.
 //
 
 import Foundation
@@ -29,28 +34,41 @@ final class ContactPinService {
 
     private let api = APIClient()
 
-    /// Whether a PIN exists and when it was set. Never the PIN itself.
+    /// The caller's own PIN.
     struct PinState: Decodable {
         let has_pin: Bool
+        /// The digits, in the clear. Nil with `has_pin` true means a PIN minted before
+        /// migration 026, stored only as an unreversible hash — it still WORKS, it just
+        /// can't be shown. Rotating replaces it with a viewable one.
+        let pin: String?
         let set_at: String?
     }
 
-    private struct RotateResponse: Decodable { let pin: String }
+    private struct RotateResponse: Decodable {
+        let pin: String
+        /// False when the server has no secretbox key, so this PIN won't be re-fetchable.
+        /// The UI must then say "write it down" rather than promising it stays available.
+        let viewable: Bool?
+    }
 
-    /// Current state, for the Settings row.
+    /// Fetch the current PIN. Owner-only server-side: the id comes from the auth token, so
+    /// there is no parameter that could be pointed at someone else.
     func state() async throws -> PinState {
         try await api.request("GET", "reachability/contact-pin")
     }
 
-    /// Mint a NEW PIN and return it. The plaintext exists outside your own head only in this
-    /// return value — it is never persisted locally and cannot be re-fetched.
+    /// Mint a NEW PIN, replacing any existing one.
     ///
-    /// Rotating invalidates the old PIN immediately for everyone who had it, and clears the
-    /// server's failed-attempt ledger so a sender previously locked out by throttling gets a
-    /// fresh start against the NEW secret.
-    func rotate() async throws -> String {
+    /// This is a REVOCATION, not a way to recover a forgotten PIN — `state()` already
+    /// returns the current one. It invalidates the old PIN immediately for everyone who had
+    /// it, and clears the server's failed-attempt ledger so a sender previously locked out
+    /// by throttling gets a fresh start against the NEW secret.
+    ///
+    /// Returns the PIN and whether it will be viewable afterwards.
+    @discardableResult
+    func rotate() async throws -> (pin: String, viewable: Bool) {
         let res: RotateResponse = try await api.request("POST", "reachability/contact-pin/rotate")
-        return res.pin
+        return (res.pin, res.viewable ?? true)
     }
 
     // MARK: - Reaching someone by username

@@ -12,12 +12,30 @@
 // ordinary ciphertext the server cannot read — it is simply not surfaced as a normal chat yet.
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
-import { randomInt } from 'crypto';
+import { randomInt, timingSafeEqual } from 'crypto';
 import { pool, query } from '../db';
 import { requireAuth } from '../auth';
 import { logSecurityEvent } from '../security';
+import { open, seal, secretboxAvailable } from '../secretbox';
 
 const router = Router();
+
+/**
+ * Constant-time string compare.
+ *
+ * `bcrypt.compare` was already constant-time; plain `===` is not, and swapping one for the
+ * other on a secret would quietly reintroduce a timing side channel. The rate limiter makes
+ * the channel hard to exploit here, but "hard to exploit" is not a reason to leave it.
+ *
+ * Length is compared first and separately — `timingSafeEqual` THROWS on unequal lengths
+ * rather than returning false, so it cannot be the only check. Leaking whether the guess had
+ * six digits is not a meaningful disclosure; the PIN's length is fixed and public.
+ */
+function timingSafeEqualStr(a: string, b: string): boolean {
+  const ba = Buffer.from(a, 'utf8');
+  const bb = Buffer.from(b, 'utf8');
+  return ba.length === bb.length && timingSafeEqual(ba, bb);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // Brute-force policy.
@@ -28,6 +46,17 @@ const router = Router();
 // ─────────────────────────────────────────────────────────────────────────────────
 const PIN_MAX_PER_HOUR = 5;
 const PIN_MAX_PER_DAY = 20;
+
+/**
+ * Whether this user has a PIN at all, under EITHER storage scheme.
+ *
+ * Checking only one column is the easy bug here: it would make everyone who set a PIN
+ * before 026 look unreachable by username, or everyone who set one after look the same,
+ * depending which column you picked.
+ */
+function hasPin(u: { contact_pin_hash: string | null; contact_pin_enc: string | null }): boolean {
+  return !!(u.contact_pin_hash || u.contact_pin_enc);
+}
 
 function clientIp(req: any): string | null {
   return (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim()
@@ -76,9 +105,10 @@ router.get('/by-username', requireAuth, async (req, res) => {
 
   const rows = await query<{
     id: string; full_name: string | null; photo_url: string | null;
-    username: string | null; bio: string | null; contact_pin_hash: string | null;
+    username: string | null; bio: string | null;
+    contact_pin_hash: string | null; contact_pin_enc: string | null;
   }>(
-    `select id, full_name, photo_url, username, bio, contact_pin_hash
+    `select id, full_name, photo_url, username, bio, contact_pin_hash, contact_pin_enc
        from users
       where lower(username) = $1 and deleted_at is null
       limit 1`,
@@ -99,10 +129,10 @@ router.get('/by-username', requireAuth, async (req, res) => {
     bio: target.bio,
     // The client uses these to decide which flow to run.
     is_mutual_contact: mutual,
-    requires_pin: !mutual && !!target.contact_pin_hash,
+    requires_pin: !mutual && hasPin(target),
     // A target who has never set a PIN cannot be reached by username at all — see the
     // request route. Told plainly so the UI can say so rather than failing at send time.
-    reachable_by_username: mutual || !!target.contact_pin_hash,
+    reachable_by_username: mutual || hasPin(target),
   });
 });
 
@@ -118,8 +148,8 @@ router.post('/request', requireAuth, async (req, res) => {
   const pin = req.body?.pin == null ? null : String(req.body.pin).trim();
   if (!username) return res.status(400).json({ error: 'username required' });
 
-  const rows = await query<{ id: string; contact_pin_hash: string | null }>(
-    `select id, contact_pin_hash from users
+  const rows = await query<{ id: string; contact_pin_hash: string | null; contact_pin_enc: string | null }>(
+    `select id, contact_pin_hash, contact_pin_enc from users
       where lower(username) = $1 and deleted_at is null limit 1`,
     [username]
   );
@@ -132,7 +162,7 @@ router.post('/request', requireAuth, async (req, res) => {
   // ── PIN gate. Skipped entirely for mutual contacts — they already proved acquaintance by
   //    both having saved each other, and demanding a PIN there would be pure friction.
   if (!mutual) {
-    if (!target.contact_pin_hash) {
+    if (!target.contact_pin_hash && !target.contact_pin_enc) {
       // No PIN set = not reachable by handle. Deliberately NOT an invitation to try again.
       return res.status(403).json({ error: 'This person can’t be reached by username.' });
     }
@@ -157,7 +187,15 @@ router.post('/request', requireAuth, async (req, res) => {
       return res.status(429).json({ error: 'Too many attempts. Try again later.' });
     }
 
-    const ok = await bcrypt.compare(pin, target.contact_pin_hash);
+    // Encrypted first, hash as the fallback. Both paths exist because 026 does not — and
+    // cannot — migrate old PINs: a bcrypt hash is one-way, so a user who set a PIN before
+    // that migration keeps verifying against the hash until they next rotate.
+    const stored = open(target.contact_pin_enc);
+    const ok = stored !== null
+      ? timingSafeEqualStr(pin, stored)
+      : target.contact_pin_hash
+        ? await bcrypt.compare(pin, target.contact_pin_hash)
+        : false;
     await query(
       `insert into contact_pin_attempts (target_user_id, sender_user_id, sender_ip, succeeded)
        values ($1, $2, $3, $4)`,
@@ -263,42 +301,71 @@ router.get('/pending', requireAuth, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────
-// GET /reachability/contact-pin — the caller's OWN pin state.
+// GET /reachability/contact-pin — the caller's OWN pin, in the clear.
 //
-// The hash is one-way, so the digits cannot be shown after the fact. The client is told only
-// whether one exists and when it was set; revealing it means rotating it.
+// Returning the plaintext here is the point of 026. The PIN is a token you hand out, not a
+// credential you prove knowledge of, so being unable to look it up made forgetting it cost a
+// rotation that locked out everyone already holding it.
+//
+// OWNER ONLY, and structurally so: `requireAuth` supplies the user id and the query is keyed
+// on it, so there is no parameter an attacker could vary to read someone else's. Nothing
+// anywhere else in the API returns this column.
+//
+// `pin` is null — with has_pin true — for a PIN minted before 026 and therefore stored only
+// as an unreversible hash. The client reads that combination as "set, but not viewable" and
+// offers a rotation to gain a readable one. Same shape when the server has no secretbox key.
 // ─────────────────────────────────────────────────────────────────────────────────
 router.get('/contact-pin', requireAuth, async (req, res) => {
   const { user_id } = (req as any).auth;
-  const rows = await query<{ contact_pin_hash: string | null; contact_pin_set_at: string | null }>(
-    `select contact_pin_hash, contact_pin_set_at from users where id = $1`,
+  const rows = await query<{
+    contact_pin_hash: string | null;
+    contact_pin_enc: string | null;
+    contact_pin_set_at: string | null;
+  }>(
+    `select contact_pin_hash, contact_pin_enc, contact_pin_set_at from users where id = $1`,
     [user_id]
   );
+  const row = rows[0];
   res.json({
-    has_pin: !!rows[0]?.contact_pin_hash,
-    set_at: rows[0]?.contact_pin_set_at ?? null,
+    has_pin: !!(row?.contact_pin_hash || row?.contact_pin_enc),
+    pin: open(row?.contact_pin_enc),
+    set_at: row?.contact_pin_set_at ?? null,
   });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────
-// POST /reachability/contact-pin/rotate — mint a new PIN and return it ONCE.
+// POST /reachability/contact-pin/rotate — mint a new PIN, replacing any existing one.
 //
-// This is the only moment the plaintext exists outside the owner's head, which is the point
-// of rotation: a PIN posted publicly is otherwise permanent, and rotating invalidates
-// everyone who held the old one immediately. The attempt ledger is cleared with it, so a
-// sender previously locked out by throttling gets a fresh start against the NEW secret.
+// Rotation exists for the case the PIN is no longer secret — posted publicly, or given to
+// someone who abused it. It invalidates everyone holding the old one immediately, and the
+// attempt ledger is cleared with it so a sender previously locked out by throttling gets a
+// fresh start against the NEW secret.
+//
+// Since 026 the new PIN is also readable afterwards via GET /contact-pin, so this is no
+// longer the user's only chance to see it. That makes rotation a genuine revocation tool
+// rather than the only way to recover a forgotten PIN.
 // ─────────────────────────────────────────────────────────────────────────────────
 router.post('/contact-pin/rotate', requireAuth, async (req, res) => {
   const { user_id } = (req as any).auth;
   const pin = generatePin();
+
+  // No key configured = no reversible storage. Fall back to hash-only rather than storing a
+  // PIN in the clear: a deployment that forgot the env var gets the OLD show-once behaviour,
+  // never a silent downgrade to plaintext in the database.
+  const enc = secretboxAvailable() ? seal(pin) : null;
+  // The hash is kept in step so a key that is later removed, rotated, or misconfigured
+  // degrades to "cannot be viewed" instead of "cannot be verified" — losing the key must
+  // never lock legitimate senders out of an existing PIN.
   const hash = await bcrypt.hash(pin, 10);
 
   const client = await pool.connect();
   try {
     await client.query('begin');
     await client.query(
-      `update users set contact_pin_hash = $2, contact_pin_set_at = now() where id = $1`,
-      [user_id, hash]
+      `update users
+          set contact_pin_hash = $2, contact_pin_enc = $3, contact_pin_set_at = now()
+        where id = $1`,
+      [user_id, hash, enc]
     );
     await client.query(`delete from contact_pin_attempts where target_user_id = $1`, [user_id]);
     await client.query('commit');
@@ -309,8 +376,9 @@ router.post('/contact-pin/rotate', requireAuth, async (req, res) => {
     client.release();
   }
 
-  // Returned exactly once. There is no endpoint that can read it back.
-  res.json({ pin });
+  // `viewable` tells the client whether GET /contact-pin will return this again, so the UI
+  // can stop promising a permanent PIN on a deployment that cannot actually store one.
+  res.json({ pin, viewable: enc !== null });
 });
 
 export default router;
