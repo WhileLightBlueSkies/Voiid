@@ -72,6 +72,14 @@ pm2 save
 # replaces every 5xx body with "internal error", and the box is not reachable by SSH from the
 # machine debugging it. The deploy pipeline IS reachable, so it is the only channel back. Remove
 # this block once that query is fixed.
+echo "==> API boot log (temporary diagnostic)"
+# The PIN storage line is printed once at listen() and pm2's restart output isn't captured by
+# this script, so read it back from the process log. This answers "is VOIID_SECRETBOX_KEY
+# loaded" without needing a settings screen or a logged-in client.
+pm2 logs voiid-api --lines 60 --nostream 2>/dev/null \
+  | grep -iE "contact PIN storage|listening on" | tail -4 || true
+echo
+
 echo "==> Games schema + query probe (temporary diagnostic)"
 # Runs the actually-failing statements against the real database FROM THE BOX and prints the
 # error. Indirect probing (log greps, response bodies) kept coming back empty or flattened by the
@@ -88,14 +96,14 @@ const { Client } = require("/opt/voiid/node_modules/pg");
     catch (e) { console.log(label, "FAILED", e.code, e.message); }
   };
   await show("[probe] game_matches cols:",
-    "select string_agg(column_name, ',') as cols from information_schema.columns where table_name = 'game_matches'");
+    "select string_agg(column_name, ',') as cols from information_schema.columns where table_name = $$game_matches$$");
   await show("[probe] games cols:",
-    "select string_agg(column_name, ',') as cols from information_schema.columns where table_name = 'games'");
+    "select string_agg(column_name, ',') as cols from information_schema.columns where table_name = $$games$$");
   await show("[probe] catalog:", "select slug from games where enabled = true limit 5");
   const u = (await c.query("select id from users limit 1")).rows[0]?.id;
   await show("[probe] insert match:",
     "insert into game_matches (game_id, player_ids, created_by, status, options) " +
-    "values ((select id from games limit 1), $1::jsonb, $2, 'waiting', $3::jsonb) returning id",
+    "values ((select id from games limit 1), $1::jsonb, $2, $$waiting$$, $3::jsonb) returning id",
     [JSON.stringify([u]), u, "{}"]);
   await c.end();
 })().catch((e) => { console.log("[probe] fatal", e.message); process.exit(0); });
