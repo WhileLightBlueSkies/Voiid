@@ -4,7 +4,10 @@ import android.content.Context
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
@@ -164,79 +167,79 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
     }
 
     private fun parseCricket(payload: JsonObject): CricketState? {
-        val players = payload["players"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull }
+        val players = payload.arr("players")?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
             ?: return null
-        val history = payload["history"]?.jsonArray?.mapNotNull { entry ->
+        val history = payload.arr("history")?.mapNotNull { entry ->
             val obj = entry as? JsonObject ?: return@mapNotNull null
-            val picks = obj["picks"]?.jsonArray?.mapNotNull { it.jsonPrimitive.intOrNull }
+            val picks = obj.arr("picks")?.mapNotNull { (it as? JsonPrimitive)?.intOrNull }
                 ?: return@mapNotNull null
             CricketState.Ball(
                 picks = picks,
-                battingSeat = obj["battingSeat"]?.jsonPrimitive?.intOrNull ?: 0,
-                innings = obj["innings"]?.jsonPrimitive?.intOrNull ?: 1,
-                runs = obj["runs"]?.jsonPrimitive?.intOrNull ?: 0,
-                wicket = obj["wicket"]?.jsonPrimitive?.booleanOrNull ?: false,
+                battingSeat = obj.int("battingSeat") ?: 0,
+                innings = obj.int("innings") ?: 1,
+                runs = obj.int("runs") ?: 0,
+                wicket = obj.bool("wicket") ?: false,
             )
         } ?: emptyList()
         fun ints(key: String, fallback: List<Int>) =
-            payload[key]?.jsonArray?.map { it.jsonPrimitive.intOrNull ?: 0 } ?: fallback
+            payload.arr(key)?.map { (it as? JsonPrimitive)?.intOrNull ?: 0 } ?: fallback
         return CricketState(
             players = players,
-            overs = payload["overs"]?.jsonPrimitive?.intOrNull ?: 2,
-            innings = payload["innings"]?.jsonPrimitive?.intOrNull ?: 1,
-            battingSeat = payload["battingSeat"]?.jsonPrimitive?.intOrNull ?: 0,
+            overs = payload.int("overs") ?: 2,
+            innings = payload.int("innings") ?: 1,
+            battingSeat = payload.int("battingSeat") ?: 0,
             scores = ints("scores", listOf(0, 0)),
             wickets = ints("wickets", listOf(0, 0)),
-            ballsBowled = payload["ballsBowled"]?.jsonPrimitive?.intOrNull ?: 0,
-            ballsTotal = payload["ballsTotal"]?.jsonPrimitive?.intOrNull ?: 12,
-            wicketsPerInnings = payload["wicketsPerInnings"]?.jsonPrimitive?.intOrNull ?: 2,
-            target = payload["target"]?.jsonPrimitive?.intOrNull,
-            hasPicked = payload["hasPicked"]?.jsonArray?.map {
-                it.jsonPrimitive.booleanOrNull ?: false
+            ballsBowled = payload.int("ballsBowled") ?: 0,
+            ballsTotal = payload.int("ballsTotal") ?: 12,
+            wicketsPerInnings = payload.int("wicketsPerInnings") ?: 2,
+            target = payload.int("target"),
+            hasPicked = payload.arr("hasPicked")?.map {
+                (it as? JsonPrimitive)?.booleanOrNull ?: false
             } ?: listOf(false, false),
             history = history,
-            finished = payload["finished"]?.jsonPrimitive?.booleanOrNull ?: false,
-            winnerUserId = payload["winnerUserId"]?.jsonPrimitive?.contentOrNull,
+            finished = payload.bool("finished") ?: false,
+            winnerUserId = payload.str("winnerUserId"),
         )
     }
 
     private fun parseRps(payload: JsonObject): RpsState? {
-        val players = payload["players"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull }
+        val players = payload.arr("players")?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
             ?: return null
-        val history = payload["history"]?.jsonArray?.mapNotNull { entry ->
+        val history = payload.arr("history")?.mapNotNull { entry ->
             val obj = entry as? JsonObject ?: return@mapNotNull null
-            val throws = obj["throws"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull }
+            val throws = obj.arr("throws")?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
                 ?: return@mapNotNull null
             RpsState.Round(
                 throws = throws,
-                winner = obj["winner"]?.jsonPrimitive?.intOrNull,
+                winner = obj.int("winner"),
             )
         } ?: emptyList()
         return RpsState(
             players = players,
-            target = payload["target"]?.jsonPrimitive?.intOrNull ?: 3,
-            wins = payload["wins"]?.jsonArray?.map { it.jsonPrimitive.intOrNull ?: 0 }
+            target = payload.int("target") ?: 3,
+            wins = payload.arr("wins")?.map { (it as? JsonPrimitive)?.intOrNull ?: 0 }
                 ?: listOf(0, 0),
-            hasThrown = payload["hasThrown"]?.jsonArray?.map {
-                it.jsonPrimitive.booleanOrNull ?: false
+            hasThrown = payload.arr("hasThrown")?.map {
+                (it as? JsonPrimitive)?.booleanOrNull ?: false
             } ?: listOf(false, false),
             history = history,
-            finished = payload["finished"]?.jsonPrimitive?.booleanOrNull ?: false,
-            winnerUserId = payload["winnerUserId"]?.jsonPrimitive?.contentOrNull,
+            finished = payload.bool("finished") ?: false,
+            winnerUserId = payload.str("winnerUserId"),
         )
     }
 
     private fun parse(payload: JsonObject): TicTacToeState? {
-        val players = payload["players"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull }
+        val players = payload.arr("players")?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
             ?: return null
-        val board = payload["board"]?.jsonArray?.map { it.jsonPrimitive.intOrNull } ?: return null
+        val board = payload.arr("board")?.map { (it as? JsonPrimitive)?.intOrNull } ?: return null
         return TicTacToeState(
             players = players,
             board = board,
-            turnUserId = payload["turnUserId"]?.jsonPrimitive?.contentOrNull,
-            finished = payload["finished"]?.jsonPrimitive?.booleanOrNull ?: false,
-            winnerUserId = payload["winnerUserId"]?.jsonPrimitive?.contentOrNull,
-            line = payload["line"]?.jsonArray?.mapNotNull { it.jsonPrimitive.intOrNull },
+            turnUserId = payload.str("turnUserId"),
+            finished = payload.bool("finished") ?: false,
+            winnerUserId = payload.str("winnerUserId"),
+            line = payload.arr("line")?.mapNotNull { (it as? JsonPrimitive)?.intOrNull },
         )
     }
 
@@ -356,3 +359,23 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         lastSeq = -1
     }
 }
+
+/**
+ * SAFE JSON ACCESSORS.
+ *
+ * `payload["line"]?.jsonArray` looks null-safe and is not: `?.` guards a MISSING key, but the
+ * server sends an explicit `null` for absent values (line, target, winnerUserId), and `.jsonArray`
+ * on a JsonNull THROWS. That crashed the app the instant the first frame of an unfinished game
+ * arrived — the lobby opened, the opening state landed, and the process died.
+ *
+ * These return null for both "missing" and "explicitly null", which is what every caller here
+ * actually wants.
+ */
+private fun JsonObject.arr(key: String): JsonArray? = (this[key] as? JsonArray)
+
+private fun JsonObject.prim(key: String): JsonPrimitive? =
+    (this[key] as? JsonPrimitive)?.takeIf { it !is JsonNull }
+
+private fun JsonObject.str(key: String): String? = prim(key)?.contentOrNull
+private fun JsonObject.int(key: String): Int? = prim(key)?.intOrNull
+private fun JsonObject.bool(key: String): Boolean? = prim(key)?.booleanOrNull

@@ -16,6 +16,15 @@ export interface LiveMatch {
   /** Monotonic per match, so a client can discard a state frame that arrives late. */
   seq: number;
   state: GameStatePayload;
+  /**
+   * User ids that have actually joined. A match is only PLAYABLE once every seat is filled.
+   *
+   * Needed because the creator joins the moment they create — so "a live record exists" is not the
+   * same as "both players are here". Without this the first join broadcast an opening board to the
+   * creator alone, their lobby saw a state frame and handed off to the board, and the game started
+   * before the opponent had accepted anything.
+   */
+  joined?: string[];
 }
 
 export async function loadMatch(matchId: string): Promise<LiveMatch | null> {

@@ -231,6 +231,17 @@ struct GamesHomeView: View {
         }
         // A ROOT tab, so it claims the bar exactly like ChatsHomeView does.
         .onAppear { session.hideTabBar = false }
+        // AND claims it again whenever a pushed screen pops back.
+        //
+        // `onAppear` does NOT re-fire when a NavigationStack pops to this view, and RootTabView's
+        // self-heal only runs on a TAB change — so coming out of a game back onto this same tab
+        // left the bar hidden with nothing to put it back. Watching the pushed-state bindings
+        // covers every exit path (back button, Exit, give up, lobby cancel) without each screen
+        // having to remember to restore it.
+        .onChange(of: openMatch == nil && botGame == nil && lobby == nil
+                  && !showLeaderboard) { _, atRoot in
+            if atRoot { session.hideTabBar = false }
+        }
         // Join tapped on an invite bubble. Joining is authorized server-side (the caller must
         // be in player_ids), so this only has to open the board — the opening `game_state`
         // frame populates it.

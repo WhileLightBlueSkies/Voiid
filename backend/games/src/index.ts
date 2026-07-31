@@ -123,10 +123,24 @@ async function handleJoin(msg: Record<string, any>): Promise<void> {
   const matchId = msg.match_id;
   if (typeof matchId !== 'string') return;
 
+  const joiner = typeof msg.from_user_id === 'string' ? msg.from_user_id : null;
+
   const existing = await loadMatch(matchId);
   if (existing) {
-    // Already live — re-send current state so a rejoining or reconnecting client syncs.
-    await broadcast(existing);
+    // Record this join, then decide whether the match is playable yet.
+    const joined = new Set(existing.joined ?? []);
+    if (joiner) joined.add(joiner);
+    existing.joined = [...joined];
+    await saveMatch(existing);
+
+    // A state frame means "the game is on". Sending one before every seat is filled is what made
+    // matches start early: the creator joins at creation, so a broadcast on their own join handed
+    // their lobby a board while the opponent had not accepted anything. Broadcast only once
+    // everyone is here — a rejoin after that is a genuine resync and still gets a frame.
+    if (existing.joined.length >= existing.players.length) {
+      await markStarted(matchId);
+      await broadcast(existing);
+    }
     return;
   }
 
@@ -157,10 +171,16 @@ async function handleJoin(msg: Record<string, any>): Promise<void> {
     players,
     seq: 0,
     state: engine.serialize(),
+    joined: joiner ? [joiner] : [],
   };
   await saveMatch(m);
-  await markStarted(matchId);
-  await broadcast(m);
+
+  // FIRST join only starts the match in a single-player game. For everyone else the board is built
+  // and held until the remaining seats join — see the resync branch above for why.
+  if (m.joined!.length >= players.length) {
+    await markStarted(matchId);
+    await broadcast(m);
+  }
 }
 
 sub.subscribe(GAMES_INPUT_CHANNEL, (err) => {

@@ -877,7 +877,14 @@ final class ChatStore: ObservableObject {
         }
     }
 
-    private func bumpPreview(_ convId: String, preview: String) {
+    private func bumpPreview(_ convId: String, preview rawPreview: String) {
+        // A game invite is a text message carrying `voiid:game/...` marker lines. Several callers
+        // pass the message body straight through, so without this the chat LIST showed the raw
+        // markers instead of a sentence — which is what "the invite message comes not properly"
+        // looked like. Normalised HERE rather than at each call site: one place, every path.
+        let preview = GameInvite.isInvite(rawPreview)
+            ? GameInvite.preview(rawPreview)
+            : rawPreview
         let now = Date()
         if let i = directConversations.firstIndex(where: { $0.id == convId }) {
             directConversations[i].lastMessagePreview = preview

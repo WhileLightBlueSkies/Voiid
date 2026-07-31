@@ -753,7 +753,16 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         arr[mi] = arr[mi].copy(poll = updated)
     }
 
-    private fun bumpPreview(convId: String, preview: String) {
+    private fun bumpPreview(convId: String, rawPreview: String) {
+        // A game invite is a text message carrying `voiid:game/...` marker lines. Callers pass the
+        // message body straight through, so without this the chat LIST shows the raw markers
+        // instead of a sentence. Normalised HERE rather than at each call site: one place, every
+        // path. Mirrors the same guard in iOS Stores.swift.
+        val preview = if (com.voiid.app.net.GameInvite.isInvite(rawPreview)) {
+            com.voiid.app.net.GameInvite.preview(rawPreview)
+        } else {
+            rawPreview
+        }
         val now = System.currentTimeMillis()
         val di = directConversations.indexOfFirst { it.id == convId }
         if (di >= 0) {
