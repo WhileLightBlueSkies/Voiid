@@ -154,6 +154,8 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
      */
     private val callLogsByConversation = mutableStateMapOf<String, List<VMessage>>()
     val typingConversations = mutableStateListOf<String>()
+    /** Pending auto-clears, one per conversation — see the onTyping handler. */
+    private val typingExpiry = mutableMapOf<String, kotlinx.coroutines.Job>()
     var loadError by mutableStateOf<String?>(null)
 
     private val chatService = com.voiid.app.net.ChatService(app)
@@ -581,8 +583,23 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         realtimeInstalled = true
         ws.onMessageRef = { cid -> viewModelScope.launch { handleIncoming(cid) } }
         ws.onTyping = { cid, _, isTyping ->
-            if (isTyping) { if (!typingConversations.contains(cid)) typingConversations.add(cid) }
-            else typingConversations.remove(cid)
+            if (isTyping) {
+                if (!typingConversations.contains(cid)) typingConversations.add(cid)
+                // EXPIRE IT. "stop" is not guaranteed to arrive — the sender can background
+                // the app, lose signal, or have the socket drop mid-word, and every one of
+                // those leaves a permanent "typing…" that only a restart clears. The peer
+                // re-sends "start" while still typing, so refreshing the deadline keeps a
+                // genuine indicator alive. Mirrors iOS `typingExpiry`.
+                typingExpiry.remove(cid)?.cancel()
+                typingExpiry[cid] = viewModelScope.launch {
+                    delay(8_000)
+                    typingConversations.remove(cid)
+                    typingExpiry.remove(cid)
+                }
+            } else {
+                typingExpiry.remove(cid)?.cancel()
+                typingConversations.remove(cid)
+            }
         }
         ws.onReceipt = { mid, status -> applyReceipt(mid, status) }
         // Peer asked us to re-establish — drop our sessions with that peer (all devices).
