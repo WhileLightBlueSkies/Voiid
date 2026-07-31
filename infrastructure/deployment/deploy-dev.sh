@@ -72,14 +72,34 @@ pm2 save
 # replaces every 5xx body with "internal error", and the box is not reachable by SSH from the
 # machine debugging it. The deploy pipeline IS reachable, so it is the only channel back. Remove
 # this block once that query is fixed.
-echo "==> Recent api errors (temporary diagnostic)"
-# Read the pm2 log FILES, not `pm2 logs`: the restart above resets the streamed buffer, so a
-# buffer read here is always empty. The files persist across restarts.
-for f in "$HOME"/.pm2/logs/voiid-api-error.log "$HOME"/.pm2/logs/voiid-api-out.log; do
-  [ -f "$f" ] || continue
-  echo "--- $f ---"
-  grep -iE "leaderboard|unhandled error|column|syntax|operator" "$f" 2>/dev/null | tail -20
-done
+echo "==> Games schema + query probe (temporary diagnostic)"
+# Runs the actually-failing statements against the real database FROM THE BOX and prints the
+# error. Indirect probing (log greps, response bodies) kept coming back empty or flattened by the
+# global error handler, so this executes the thing that fails and reports what Postgres says.
+node --env-file="$APP_DIR/.env" -e '
+const { Client } = require("/opt/voiid/node_modules/pg");
+(async () => {
+  const c = new Client({ connectionString: process.env.DATABASE_URL,
+                          ssl: { rejectUnauthorized: false } });
+  await c.connect();
+  const show = async (label, sql, params) => {
+    try { const r = await c.query(sql, params); console.log(label, "OK rows=" + r.rows.length,
+            JSON.stringify(r.rows[0] ?? null).slice(0, 200)); }
+    catch (e) { console.log(label, "FAILED", e.code, e.message); }
+  };
+  await show("[probe] game_matches cols:",
+    "select string_agg(column_name, ',') as cols from information_schema.columns where table_name = 'game_matches'");
+  await show("[probe] games cols:",
+    "select string_agg(column_name, ',') as cols from information_schema.columns where table_name = 'games'");
+  await show("[probe] catalog:", "select slug from games where enabled = true limit 5");
+  const u = (await c.query("select id from users limit 1")).rows[0]?.id;
+  await show("[probe] insert match:",
+    "insert into game_matches (game_id, player_ids, created_by, status, options) " +
+    "values ((select id from games limit 1), $1::jsonb, $2, 'waiting', $3::jsonb) returning id",
+    [JSON.stringify([u]), u, "{}"]);
+  await c.end();
+})().catch((e) => { console.log("[probe] fatal", e.message); process.exit(0); });
+' 2>&1 | head -20 || echo "[probe] node failed"
 echo "(end diagnostic)"
 echo
 

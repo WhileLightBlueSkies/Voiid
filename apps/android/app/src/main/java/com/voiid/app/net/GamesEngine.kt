@@ -24,6 +24,7 @@ import kotlinx.serialization.json.jsonPrimitive
 class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
 
     companion object {
+        private const val TAG = "GamesEngine"
         @Volatile private var instance: GamesEngine? = null
         fun get(context: Context): GamesEngine =
             instance ?: synchronized(this) {
@@ -278,7 +279,9 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         options: Map<String, Int> = emptyMap(),
     ): String? {
         return runCatching {
+            android.util.Log.i(TAG, "create: slug=$slug peer=$opponentId convo=$conversationId opts=$options")
             val id = service.create(slug, listOf(opponentId), options)
+            android.util.Log.i(TAG, "create: match minted id=$id — sending invite")
             // Everything the poster bubble and the rich notification need travels INSIDE the
             // encrypted body — which is what lets the recipient's banner name the game while the
             // push that woke their device said only "New message".
@@ -293,10 +296,16 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
             )
             ChatEngine.get(appContext)
                 .sendText(GameInvite.encode(slug, id, meta), conversationId, opponentId)
+            android.util.Log.i(TAG, "create: invite message sent for $id")
             open(id)
             id
         }.getOrElse {
-            _joinError.value = "Couldn't send the invite."
+            // LOG IT. A bare runCatching here meant any failure — a 500 from the match POST, a
+            // missing prekey on the peer, a decrypt error — produced no lobby, no invite and no
+            // banner, with nothing to say which. That silence is why this looked like "the invite
+            // feature doesn't work" rather than one nameable failure.
+            android.util.Log.e(TAG, "create FAILED: ${it::class.java.simpleName}: ${it.message}", it)
+            _joinError.value = "Couldn't send the invite: ${it.message}"
             null
         }
     }

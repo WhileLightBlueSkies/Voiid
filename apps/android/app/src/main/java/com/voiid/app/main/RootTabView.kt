@@ -303,7 +303,19 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                 conversations = chat.directConversations.toList(),
                 onPick = { convo ->
                     pendingGame = null
-                    val peer = convo.peerUserId ?: return@OpponentPickerSheet
+                    android.util.Log.i(
+                        "GamesInvite",
+                        "picked convo=${convo.id} title=${convo.title} peer=${convo.peerUserId}",
+                    )
+                    // NOTE the label: this returns from `onPick`, not from the composable. Written
+                    // as `return@OpponentPickerSheet` it returned from the wrong scope and silently
+                    // did nothing at all — no invite, no lobby, no error — which is exactly what
+                    // "the invite doesn't work" looked like from outside.
+                    val peer = convo.peerUserId
+                    if (peer.isNullOrBlank()) {
+                        android.util.Log.e("GamesInvite", "no peerUserId on ${convo.id}; cannot invite")
+                        return@OpponentPickerSheet
+                    }
                     // Hand cricket needs its match length before the row is minted (the
                     // server builds the innings from it), so it takes one more step. Every
                     // other game has nothing left to ask.

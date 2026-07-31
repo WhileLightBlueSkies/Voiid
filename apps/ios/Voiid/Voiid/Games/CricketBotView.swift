@@ -81,6 +81,10 @@ struct CricketBotView: View {
         }
         .navigationBarBackButtonHidden(true)
         .onAppear { session.hideTabBar = true }
+        // Restore the bar on the way OUT. Hiding without restoring left the app with no
+        // footer after quitting a game — the bar is opt-out, so every screen that hides
+        // it owns putting it back.
+        .onDisappear { session.hideTabBar = false }
     }
 
     // MARK: - Pieces
