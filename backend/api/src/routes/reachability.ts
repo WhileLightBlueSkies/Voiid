@@ -330,6 +330,14 @@ router.get('/contact-pin', requireAuth, async (req, res) => {
     has_pin: !!(row?.contact_pin_hash || row?.contact_pin_enc),
     pin: open(row?.contact_pin_enc),
     set_at: row?.contact_pin_set_at ?? null,
+    // WHY a pin is missing, so the client stops guessing. Without this the UI blamed the
+    // pre-026 migration for every null pin, including on a deployment whose real problem is
+    // an unset VOIID_SECRETBOX_KEY — sending the user to rotate, which cannot fix it and
+    // silently mints another unviewable PIN.
+    //
+    // Server capability only. It says nothing about this user and nothing secret: an
+    // operator reading their own logs already knows whether they configured the key.
+    storage_configured: secretboxAvailable(),
   });
 });
 

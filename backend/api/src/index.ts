@@ -1,4 +1,5 @@
 // VOIID API service (Phase 0/1). HTTPS-only in prod; JWT validation; rate limiting (Section 4.6/4.9).
+import { secretboxAvailable } from './secretbox';
 import express from 'express';
 import { pool } from './db';
 import { redis } from './redis';
@@ -136,4 +137,15 @@ process.on('unhandledRejection', (reason) => {
 });
 
 const port = Number(process.env.API_PORT) || 4000;
-app.listen(port, () => console.log(`[voiid:api] listening on :${port}`));
+app.listen(port, () => {
+  console.log(`[voiid:api] listening on :${port}`);
+  // Say this ONCE at boot rather than making an operator infer it from a settings screen.
+  // A missing key is silent by design (PIN storage falls back to hash-only, everything else
+  // works), and silent-by-design is exactly the thing that costs an afternoon to diagnose.
+  console.log(
+    secretboxAvailable()
+      ? '[voiid:api] contact PIN storage: encrypted at rest (VOIID_SECRETBOX_KEY loaded)'
+      : '[voiid:api] contact PIN storage: HASH-ONLY — VOIID_SECRETBOX_KEY is not set, so ' +
+        'PINs cannot be shown after generation. Generate one with: openssl rand -base64 32'
+  );
+});

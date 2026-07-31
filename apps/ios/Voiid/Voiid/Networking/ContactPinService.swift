@@ -42,6 +42,10 @@ final class ContactPinService {
         /// can't be shown. Rotating replaces it with a viewable one.
         let pin: String?
         let set_at: String?
+        /// False when the SERVER has no secretbox key, so no PIN can be stored viewably.
+        /// Distinguishes "your PIN predates the feature" (rotating fixes it) from "this
+        /// deployment can't store PINs readably" (rotating cannot).
+        let storage_configured: Bool?
     }
 
     private struct RotateResponse: Decodable {
