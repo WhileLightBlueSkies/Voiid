@@ -66,28 +66,6 @@ else
 fi
 pm2 save
 
-# TEMPORARY DIAGNOSTIC — dump recent api errors into the deploy log.
-#
-# The games leaderboard has been returning 500 with no way to see why: the global error handler
-# replaces every 5xx body with "internal error", and the box is not reachable by SSH from the
-# machine debugging it. The deploy pipeline IS reachable, so it is the only channel back. Remove
-# this block once that query is fixed.
-echo "==> API boot log (temporary diagnostic)"
-# The PIN storage line is printed once at listen() and pm2's restart output isn't captured by
-# this script, so read it back from the process log. This answers "is VOIID_SECRETBOX_KEY
-# loaded" without needing a settings screen or a logged-in client.
-pm2 logs voiid-api --lines 60 --nostream 2>/dev/null \
-  | grep -iE "contact PIN storage|listening on" | tail -4 || true
-echo
-
-echo "==> Games schema + query probe (temporary diagnostic)"
-# SQL lives in a FILE, not inline: an inline `node -e` had its quotes eaten by the shell and
-# produced fake Postgres errors that looked real. See games-probe.mjs.
-node --env-file="$APP_DIR/.env" "$APP_DIR/infrastructure/deployment/games-probe.mjs" 2>&1 \
-  | head -20 || echo "[probe] node failed"
-echo "(end diagnostic)"
-echo
-
 echo "==> Health check"
 sleep 3
 curl -fsS http://localhost:4000/health || {

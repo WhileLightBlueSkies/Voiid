@@ -303,19 +303,15 @@ router.get(
       rows = await runLeaderboard(userId, slug);
     } catch (e) {
       const err = e as Error & { code?: string; detail?: string; hint?: string; position?: string };
-      // Logged AND returned. Returning a database message to a client is normally wrong, but this
-      // endpoint has never once succeeded and the box's logs are not reachable from where it is
-      // being debugged — so the error has to travel to whoever can read it. Revert this to a bare
-      // 500 the moment the leaderboard is confirmed working.
-      console.error('[games] leaderboard query failed:', err.code, err.message, err.detail, err.hint, err.position);
-      return res.status(500).json({
-        error: 'leaderboard query failed',
-        pg_code: err.code ?? null,
-        pg_message: err.message ?? null,
-        pg_detail: err.detail ?? null,
-        pg_hint: err.hint ?? null,
-        pg_position: err.position ?? null,
-      });
+      // LOGGED, NOT RETURNED. A database message names columns and constraints, so it belongs in
+      // the server's log and never in a response — an earlier version returned it to debug this
+      // endpoint, which was expedient and is not shippable. The client gets a plain 500 from the
+      // global handler; the operator gets the code and position.
+      console.error(
+        '[games] leaderboard query failed:',
+        err.code, err.message, err.detail, err.hint, err.position,
+      );
+      throw e;
     }
     res.json({ leaderboard: rows });
   })
