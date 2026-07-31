@@ -331,17 +331,20 @@ async function runLeaderboard(userId: string, slug: string | null) {
               u.full_name,
               u.username,
               count(*)::int                                                    as played,
-              -- winner_id is a UUID column; opponent_id came out of jsonb as TEXT. Postgres has
-              -- no uuid = text operator, so comparing them raw made this whole query error out
-              -- and the leaderboard could never load — every cast below is load-bearing.
-              count(*) filter (where p.winner_id = $3::uuid)::int              as wins,
+              -- TWO PARAMETERS FOR ONE VALUE, deliberately. The caller's id is needed as TEXT
+              -- above (opponent_id comes out of jsonb as text) and as UUID here (winner_id is a
+              -- uuid column, and Postgres has no uuid = text operator). Reusing one parameter and
+              -- casting it both ways is what kept this query failing: Postgres infers ONE type
+              -- per parameter, so casting it to text in one place and uuid in another is a
+              -- contradiction, not a conversion. Hence $3 (text) and $4 (uuid), same value.
+              count(*) filter (where p.winner_id = $4::uuid)::int              as wins,
               count(*) filter (where p.winner_id is null)::int                 as draws,
               count(*) filter (where p.winner_id = p.opponent_id::uuid)::int   as losses
          from pairs p
          left join users u on u.id = p.opponent_id::uuid
         group by p.opponent_id, u.full_name, u.username
         order by wins desc, played desc`,
-      [JSON.stringify([userId]), slug, userId]
+      [JSON.stringify([userId]), slug, userId, userId]
   );
 }
 
