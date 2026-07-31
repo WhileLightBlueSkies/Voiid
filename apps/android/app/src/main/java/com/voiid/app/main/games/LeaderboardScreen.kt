@@ -75,7 +75,13 @@ fun LeaderboardScreen(onClose: () -> Unit) {
         failed = false
         runCatching { service.leaderboard() }
             .onSuccess { rows = it }
-            .onFailure { failed = true }
+            .onFailure {
+                failed = true
+                // LOG THE CAUSE. Discarding it is why a server-side SQL error looked
+                // indistinguishable from being offline for this screen's entire life — the UI said
+                // "couldn't load" and nothing, anywhere, said why.
+                android.util.Log.w("Leaderboard", "load failed: ${it.message}", it)
+            }
         loading = false
     }
 
