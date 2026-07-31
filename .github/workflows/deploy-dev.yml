@@ -33,6 +33,40 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "${{ secrets.VULTR_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
 
+      # Sync VOIID_SECRETBOX_KEY into the box's .env before the deploy restarts anything.
+      #
+      # WHY THIS IS IN CI AND NOT IN THE REPO: the key is a secret, so it cannot live in git —
+      # but /opt/voiid/.env is the only place the API reads it from, and that file is deliberately
+      # never committed. A GitHub secret piped over the existing deploy SSH is the one path that
+      # keeps the value out of the repository AND out of this workflow's logs.
+      #
+      # Idempotent, and UPDATES rather than appends: a re-run replaces the line instead of adding
+      # a second one (a duplicate would leave the effective value ambiguous). Skipped entirely if
+      # the secret isn't set, so a fork or a clone without it deploys exactly as before — the API
+      # falls back to hash-only PINs, which is a working state, not a broken one.
+      - name: Sync secretbox key to box .env
+        env:
+          KEY: ${{ secrets.VOIID_SECRETBOX_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "VOIID_SECRETBOX_KEY not set in repo secrets — skipping (PINs stay hash-only)."
+            exit 0
+          fi
+          # The key travels on stdin, never in argv: a command line is visible in `ps` to every
+          # user on the box for as long as it runs.
+          printf '%s' "$KEY" | ssh -i ~/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=yes \
+            "${{ secrets.VULTR_USER }}@${{ secrets.VULTR_HOST }}" \
+            'set -eu
+             key=$(cat)
+             f=/opt/voiid/.env
+             touch "$f"; chmod 600 "$f"
+             # Drop any existing line, then write the current value. sed -i on a 600 file keeps
+             # its mode, and grep -v into a temp would not.
+             sed -i "/^VOIID_SECRETBOX_KEY=/d" "$f"
+             printf "VOIID_SECRETBOX_KEY=%s\n" "$key" >> "$f"
+             echo "secretbox key written to $f ($(grep -c "^VOIID_SECRETBOX_KEY=" "$f") line)"'
+
       - name: Deploy over SSH
         run: |
           ssh -i ~/.ssh/id_ed25519 \
