@@ -50,6 +50,22 @@ export interface GameEngine {
   /** Current state as the clients should see it. */
   serialize(): GameStatePayload;
 
+  /**
+   * SERVER-ONLY state that must survive between inputs but must NEVER reach a client.
+   *
+   * Simultaneous-reveal games (RPS, hand cricket) hold each player's choice hidden until both
+   * have arrived. `serialize()` deliberately omits those choices — that omission IS the anti-cheat
+   * property. But the runtime round-trips serialize()/restore() on every single input, so a
+   * secret left out of serialize() was silently dropped a millisecond after being made: the ball
+   * could never resolve, and hand cricket looped between the two players forever.
+   *
+   * So secrets travel on their own channel. It is persisted to Redis alongside the public state
+   * and handed back to `restore`, and it is never included in a broadcast frame.
+   *
+   * Games with nothing to hide omit this entirely.
+   */
+  serializeSecret?(): GameStatePayload;
+
   /** True once the match is over; the runtime stops accepting input. */
   isFinished(): boolean;
 }
@@ -68,5 +84,10 @@ export interface GameFactory {
    * whatever it reads, exactly as it validates input frames. Games with no settings ignore it.
    */
   create(playerIds: string[], options?: Record<string, unknown>): GameEngine;
-  restore(state: GameStatePayload): GameEngine;
+  /**
+   * Rebuild from the public state plus, if the game has any, the server-only secret returned by
+   * [GameEngine.serializeSecret]. Passing the secret back is what lets a simultaneous game
+   * remember a pick across the serialize/restore cycle the runtime performs on every input.
+   */
+  restore(state: GameStatePayload, secret?: GameStatePayload): GameEngine;
 }

@@ -125,6 +125,15 @@ class RPSEngine implements GameEngine {
     };
   }
 
+  /**
+   * The throws, and ONLY the throws. Persisted server-side between inputs; never broadcast.
+   * Same reason as cricket: the runtime round-trips serialize/restore on every input, so a throw
+   * omitted from serialize() was lost immediately and the round could never resolve.
+   */
+  serializeSecret(): GameStatePayload {
+    return { pending: this.s.pending };
+  }
+
   isFinished(): boolean {
     return this.s.finished;
   }
@@ -144,7 +153,7 @@ export const rps: GameFactory = {
       winnerIdx: null,
     });
   },
-  restore(state: GameStatePayload): GameEngine {
+  restore(state: GameStatePayload, secret?: GameStatePayload): GameEngine {
     const players = state.players as string[];
     const history = (state.history as RoundLog[]) ?? [];
     return new RPSEngine({
@@ -155,7 +164,10 @@ export const rps: GameFactory = {
       // match restored mid-round therefore reopens that round, which costs one replayed
       // throw and never leaks a choice. Losing a round's throws is strictly better than
       // persisting them where the opponent's client could ever receive them.
-      pending: [null, null],
+      // Throws come back on the SECRET channel, never from `state` — they are persisted for the
+      // server's own use and never appear in a broadcast. A restore without a secret (Redis lost)
+      // reopens the round: one replayed throw, nothing leaked.
+      pending: (secret?.pending as [Throw | null, Throw | null]) ?? [null, null],
       history,
       finished: (state.finished as boolean) ?? false,
       winnerIdx:

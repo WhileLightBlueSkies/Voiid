@@ -201,6 +201,15 @@ class CricketEngine implements GameEngine {
     };
   }
 
+  /**
+   * The picks, and ONLY the picks. Persisted server-side between inputs; never broadcast.
+   * Without this the runtime's serialize/restore cycle dropped each pick the instant it was made
+   * and the ball never resolved (see GameEngine.serializeSecret).
+   */
+  serializeSecret(): GameStatePayload {
+    return { pending: this.s.pending };
+  }
+
   isFinished(): boolean {
     return this.s.finished;
   }
@@ -241,7 +250,7 @@ export const cricket: GameFactory = {
       winnerIdx: null,
     });
   },
-  restore(state: GameStatePayload): GameEngine {
+  restore(state: GameStatePayload, secret?: GameStatePayload): GameEngine {
     // Rebuilt FIELD BY FIELD, not by casting the payload: `serialize()` deliberately omits
     // `pending`, so a blanket cast produces an engine whose pending is undefined, and the
     // very next serialize() throws — taking the games service down with any match that
@@ -258,7 +267,10 @@ export const cricket: GameFactory = {
       // Picks are NEVER persisted (they are the one secret in the game), so a match restored
       // mid-ball reopens that ball. Costs one replayed pick and leaks nothing — the same
       // trade the RPS engine makes, for the same reason.
-      pending: [null, null],
+      // Picks come back on the SECRET channel, never from `state` — persisted for the server's
+      // own use and never broadcast. A restore without a secret reopens the ball: one replayed
+      // pick, nothing leaked.
+      pending: (secret?.pending as [number | null, number | null]) ?? [null, null],
       history: (state.history as BallLog[]) ?? [],
       finished: (state.finished as boolean) ?? false,
       // Recovered from the USER ID, because that is what serialize() emits — reading a

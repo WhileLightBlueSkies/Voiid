@@ -64,6 +64,7 @@ async function broadcast(m: LiveMatch): Promise<void> {
 async function endMatch(m: LiveMatch, engine: GameEngine, outcome: GameOutcome) {
   m.state = engine.serialize();
   m.seq += 1;
+  m.secret = engine.serializeSecret?.();
   // Broadcast the terminal state BEFORE clearing Redis: the players must see the winning
   // board, and finishMatch drops the key.
   await broadcast(m);
@@ -94,7 +95,7 @@ async function handleInput(msg: Record<string, any>): Promise<void> {
   const factory = factoryFor(m.slug);
   if (!factory) return;
 
-  const engine = factory.restore(m.state);
+  const engine = factory.restore(m.state, m.secret);
   const result = engine.applyInput(userId, msg.payload ?? {});
 
   // Rejected input produces NO broadcast. An illegal move costs the server one Redis read
@@ -107,6 +108,9 @@ async function handleInput(msg: Record<string, any>): Promise<void> {
   }
 
   m.state = engine.serialize();
+  // Keep the hidden picks alive across the next restore. Not part of `state`, so broadcast() can
+  // never leak them — which is the whole point of the separate channel.
+  m.secret = engine.serializeSecret?.();
   m.seq += 1;
   await saveMatch(m);
   await broadcast(m);
@@ -171,6 +175,7 @@ async function handleJoin(msg: Record<string, any>): Promise<void> {
     players,
     seq: 0,
     state: engine.serialize(),
+    secret: engine.serializeSecret?.(),
     joined: joiner ? [joiner] : [],
   };
   await saveMatch(m);

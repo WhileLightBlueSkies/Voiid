@@ -968,6 +968,14 @@ struct MessageBubble: View {
                         Text("This message was deleted").italic()
                     }
                     .font(VoiidFont.rounded(14, .regular)).foregroundColor(bubbleTextSecondary)
+                } else if GameInvite.isInvite(message.text) {
+                    // BEFORE the .text branch, deliberately. An invite IS a text message, so
+                    // `kind == .text` sent it to textWithMeta — which renders the raw body and
+                    // never consults GameInvite. The interception in `content` was therefore
+                    // unreachable for the only messages that needed it, which is why the invite
+                    // showed as `voiid:game/...` plus a wall of JSON.
+                    content
+                    metaRow.padding(.top, 2)
                 } else if message.kind == .text {
                     textWithMeta
                 } else {

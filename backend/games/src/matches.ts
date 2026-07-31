@@ -25,6 +25,14 @@ export interface LiveMatch {
    * before the opponent had accepted anything.
    */
   joined?: string[];
+  /**
+   * SERVER-ONLY state (see GameEngine.serializeSecret) — a simultaneous game's hidden picks.
+   *
+   * Stored in Redis with the public state because the runtime rebuilds the engine on every input,
+   * so anything not persisted here is forgotten between one pick and the next. NEVER included in a
+   * broadcast: `broadcast()` sends `state`, and this field is deliberately not part of it.
+   */
+  secret?: GameStatePayload;
 }
 
 export async function loadMatch(matchId: string): Promise<LiveMatch | null> {

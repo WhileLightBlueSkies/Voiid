@@ -39,8 +39,6 @@ struct TicTacToeView: View {
 
     var body: some View {
         VStack(spacing: VoiidSpacing.lg) {
-            header
-
             if let state = engine.state {
                 board(state)
                 status(state)
@@ -65,32 +63,24 @@ struct TicTacToeView: View {
         .padding(.horizontal, VoiidSpacing.lg)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(VoiidColor.background.ignoresSafeArea())
+        .navigationTitle("Tic Tac Toe")
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button { engine.leave(); onClose?() } label: {
+                    Image(systemName: "chevron.left").foregroundStyle(VoiidColor.textPrimary)
+                }
+                .accessibilityLabel("Back")
+            }
+        }
         .task { await engine.open(matchId: matchId) }
-        .onDisappear { engine.leave() }
+        .onAppear { session.hideTabBar = true }
+        .onDisappear { session.hideTabBar = false; engine.leave() }
     }
 
     // MARK: - Pieces
 
-    private var header: some View {
-        HStack {
-            Button {
-                engine.leave()
-                onClose?()
-            } label: {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(VoiidColor.textPrimary)
-            }
-            Spacer()
-            Text("Tic Tac Toe")
-                .font(VoiidFont.rounded(17, .semibold))
-                .foregroundStyle(VoiidColor.textPrimary)
-            Spacer()
-            // Balances the back chevron so the title stays optically centred.
-            Image(systemName: "chevron.left").opacity(0)
-        }
-        .padding(.top, VoiidSpacing.md)
-    }
 
     /// Shared with the bot game so the two modes cannot drift visually. Taps are disabled
     /// unless it is genuinely my turn — the server would reject them anyway, so this only

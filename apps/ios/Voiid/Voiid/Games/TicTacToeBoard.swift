@@ -49,7 +49,6 @@ struct TicTacToeBoard: View {
             ZStack {
                 RoundedRectangle(cornerRadius: VoiidRadius.lg)
                     .fill(isWinning ? VoiidColor.primary.opacity(0.20) : VoiidColor.surfaceCard)
-                    .aspectRatio(1, contentMode: .fit)
 
                 if let mark {
                     MarkShape(isCross: mark == 0)
@@ -62,6 +61,12 @@ struct TicTacToeBoard: View {
                         .transition(.scale(scale: 0.4).combined(with: .opacity))
                 }
             }
+            // SQUARE ON THE STACK, not on the background rectangle.
+            //
+            // With the ratio on the fill only, the rectangle was square but the ZStack was not —
+            // so MarkShape sized itself to the taller stack and drew an X and an O that spilled
+            // past the tile and looked stretched. Constraining the stack makes every child square.
+            .aspectRatio(1, contentMode: .fit)
             // The winning triple swells so the win reads instantly.
             .scaleEffect(isWinning ? 1.08 : 1)
             .animation(.spring(response: 0.45, dampingFraction: 0.5), value: isWinning)
