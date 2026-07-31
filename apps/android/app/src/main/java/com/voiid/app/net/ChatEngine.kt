@@ -3,6 +3,7 @@ package com.voiid.app.net
 import android.content.Context
 import android.util.Base64
 import com.voiid.app.model.MapConstants
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.EncodeDefault
@@ -428,17 +429,35 @@ class ChatEngine private constructor(context: Context) {
             MarkReadBody.serializer(), MarkReadBody(ids, status, e2e.deviceId),
         )
         android.util.Log.i("VOIIDReceipt", "POST receipts/mark status=$status n=${ids.size} device=${e2e.deviceId}")
-        runCatching { api.request("POST", "receipts/mark", jsonBody = body) }
-            .onSuccess { android.util.Log.i("VOIIDReceipt", "receipt $status OK for ${ids.size}") }
-            .onFailure {
-                // PUT THEM BACK. `markRead` records an id as reported BEFORE the POST, so a
-                // dropped request would otherwise strand it forever — the sender stuck on
-                // Delivered with nothing to retry it. Re-marking on the next sync is cheap;
-                // never re-marking is unrecoverable.
-                if (status == "read") readReported.removeAll(ids.toSet())
-                android.util.Log.w("VOIID", "receipt $status failed, will retry", it)
-            }
+        // NOT the caller's coroutine. The 4-second poll that calls markRead lives on the CHAT
+        // SCREEN's scope, so navigating away — or that loop being cancelled — killed the POST
+        // mid-flight. `runCatching` then caught the CancellationException, released the ids,
+        // and nothing retried them, because the thing that would have retried was the
+        // coroutine that just died. Opening a chat and backing out promptly meant the read
+        // receipt was never delivered at all.
+        //
+        // `receiptScope` outlives the screen, so a receipt that has STARTED will finish.
+        receiptScope.launch {
+            runCatching { api.request("POST", "receipts/mark", jsonBody = body) }
+                .onSuccess { android.util.Log.i("VOIIDReceipt", "receipt $status OK for ${ids.size}") }
+                .onFailure {
+                    // PUT THEM BACK. `markRead` records an id as reported BEFORE the POST, so
+                    // a dropped request would otherwise strand it forever — the sender stuck
+                    // on Delivered with nothing to retry it. Re-marking on the next sync is
+                    // cheap; never re-marking is unrecoverable.
+                    if (status == "read") readReported.removeAll(ids.toSet())
+                    android.util.Log.w("VOIIDReceipt", "receipt $status failed, will retry", it)
+                }
+        }
     }
+
+    /**
+     * Outlives any screen. Receipts are fire-and-forget by nature — no caller awaits the
+     * result — but they must not be CANCELLED by the caller going away.
+     */
+    private val receiptScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO,
+    )
 
     /**
      * Decode a decrypted plaintext into (displayText, media?), keyed off the server's
@@ -481,8 +500,30 @@ class ChatEngine private constructor(context: Context) {
         return env.reaction?.let { r -> if (env.text.isBlank()) r else "$r ${env.text}" } ?: env.text
     }
 
-    /** Server ids this device has already reported as READ. */
-    private val readReported = mutableSetOf<String>()
+    /**
+     * Server ids this device has already reported as READ.
+     *
+     * CONCURRENT-SAFE, and serialised by [readLock] below. `markRead` runs from at least two
+     * coroutines at once — `openConversation` launches one and the 4-second poll runs
+     * another — and a plain `mutableSetOf` is neither atomic nor safe under that.
+     */
+    private val readReported = java.util.Collections.newSetFromMap(
+        java.util.concurrent.ConcurrentHashMap<String, Boolean>(),
+    )
+
+    /**
+     * Serialises markRead.
+     *
+     * THE RACE THIS FIXES: `readReported.add()` claims an id BEFORE the POST is sent. Two
+     * concurrent markReads — the open and the poll, which is exactly what happens the moment
+     * a chat is opened — would have the first claim every id and the second find nothing to
+     * send. If the first one's POST then failed or was cancelled mid-flight (its coroutine
+     * belongs to the screen), the ids were released only after the second had already given
+     * up, so the read receipt was simply never sent and the sender sat on Delivered.
+     *
+     * `sync()` has its own per-conversation lock; markRead was outside it entirely.
+     */
+    private val readLock = Mutex()
 
     /**
      * Mark inbound messages in a conversation READ → the server fans out a `receipt` WS event
@@ -501,7 +542,7 @@ class ChatEngine private constructor(context: Context) {
      *                   messages POSTed 200 ids each time it was opened or polled, and the
      *                   server looped an UPDATE per id. Only newly-read ids go now.
      */
-    suspend fun markRead(conversationId: String) {
+    suspend fun markRead(conversationId: String) = readLock.withLock {
         ensureLoaded()
         val inbound = (store[conversationId] ?: emptyList())
             .filter { !it.isMine && !it.control && !it.failed }

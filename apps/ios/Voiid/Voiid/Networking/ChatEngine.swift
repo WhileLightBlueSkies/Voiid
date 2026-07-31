@@ -914,18 +914,27 @@ final class ChatEngine {
             let status: String
             let device_id: String?
         }
+        // DETACHED, not awaited on the caller's task. `markRead` is called from the chat
+        // screen's 4-second polling Task, which is cancelled the moment the user navigates
+        // away — that cancellation propagated into this request and killed it mid-flight.
+        // The catch then released the ids, but nothing retried them, because the thing that
+        // would have retried was the task that just died. Opening a chat and backing out
+        // promptly meant the read receipt was never delivered at all.
+        //
+        // A detached task outlives the screen, so a receipt that has STARTED will finish.
+        let body = Body(message_ids: ids, status: status, device_id: E2EManager.shared.deviceId)
+        let api = self.api
+        Task.detached {
         do {
-            _ = try await api.request(
-                "POST", "receipts/mark",
-                body: Body(message_ids: ids, status: status, device_id: E2EManager.shared.deviceId)
-            ) as EmptyResponse
+            _ = try await api.request("POST", "receipts/mark", body: body) as EmptyResponse
         } catch {
             // PUT THEM BACK. `markRead` records an id as reported BEFORE the POST, so a
             // dropped request would otherwise strand it forever — the sender stuck on
             // Delivered with nothing to retry it. Re-marking on the next sync is cheap;
             // never re-marking is unrecoverable.
-            if status == "read" { Self.readReported.subtract(ids) }
+            if status == "read" { await MainActor.run { Self.readReported.subtract(ids) } }
             NSLog("[VOIID] receipt \(status) failed, will retry: \(error.localizedDescription)")
+        }
         }
     }
 
