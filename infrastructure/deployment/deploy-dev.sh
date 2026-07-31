@@ -66,6 +66,10 @@ else
 fi
 pm2 save
 
+echo "==> invites probe (TEMPORARY)"
+node --env-file="$APP_DIR/.env" "$APP_DIR/infrastructure/deployment/games-probe.mjs" 2>&1 | head -12 || true
+echo
+
 echo "==> Health check"
 sleep 3
 curl -fsS http://localhost:4000/health || {
