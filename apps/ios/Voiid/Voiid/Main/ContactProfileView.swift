@@ -51,7 +51,10 @@ struct ContactProfileView: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: VoiidSpacing.lg) {
+            // 20pt between sections, not 24 — with titles now sitting outside the cards,
+            // each section already carries 8pt of its own leading space, so 24 opened gaps
+            // wide enough to read as unrelated screens stacked on top of each other.
+            VStack(spacing: 20) {
                 headerCard
                 aboutCard
                 sharedMediaCard
@@ -59,8 +62,10 @@ struct ContactProfileView: View {
                 settingsCard
                 dangerCard
             }
-            .padding(.horizontal, VoiidSpacing.lg)
-            .padding(.vertical, VoiidSpacing.lg)
+            // 20pt gutters: 24 left the cards floating in a wide margin on a 390pt phone.
+            .padding(.horizontal, 20)
+            .padding(.top, VoiidSpacing.sm)
+            .padding(.bottom, VoiidSpacing.xl)
         }
         .background(VoiidColor.background.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
@@ -97,42 +102,120 @@ struct ContactProfileView: View {
         }
     }
 
-    // Header: photo, name, phone, quick actions (message / call / video)
+    // Header: photo, name, identity, quick actions.
+    //
+    // THE PAGE HAS ONE SUBJECT and the header is it. Previously it was a 112pt avatar with
+    // 8pt gaps to a 24pt name — the same rhythm as every card below it, so the person the
+    // page is ABOUT carried no more weight than a "Mute notifications" toggle. It now gets
+    // deliberate air above and below, a larger name, and a hairline ring that separates the
+    // photo from the background without drawing a box around it.
     private var headerCard: some View {
-        VStack(spacing: VoiidSpacing.sm) {
+        VStack(spacing: 0) {
             Button { Haptics.tap(); viewPhoto = true } label: {
-                // The REAL photo. This used to be `VoiidAvatar(imageName:)` — a bundled-asset
-                // lookup left over from dummy data — so a real peer always fell through to the
-                // wordmark and no face ever appeared on their own profile.
-                ProfileAvatarButton(photoURL: photoRef, name: displayName, size: 112)
+                ProfileAvatarButton(photoURL: photoRef, name: displayName, size: 104)
+                    // A 1px ring at 8% — enough to define the edge against a light photo,
+                    // invisible against a dark one. A heavier border would read as a frame.
+                    .overlay(Circle().strokeBorder(VoiidColor.textPrimary.opacity(0.08), lineWidth: 1))
             }
             .buttonStyle(.plain)
+            .padding(.bottom, VoiidSpacing.md)
 
             Text(displayName)
-                .font(VoiidFont.rounded(24, .bold))
+                .font(VoiidFont.rounded(28, .bold))
+                // Optical tightening: at 28pt the default tracking looks loose. Apple's own
+                // large titles are negatively tracked for exactly this reason.
+                .kerning(-0.4)
                 .foregroundColor(VoiidColor.textPrimary)
                 .multilineTextAlignment(.center)
+                .lineLimit(2)
 
-            if let username = profile?.username, !username.isEmpty {
-                Text("@\(username)")
-                    .font(VoiidFont.rounded(15, .medium))
-                    .foregroundColor(VoiidColor.primary)
-            }
-            if let secondary = secondaryIdentity {
-                Text(secondary)
-                    .font(VoiidFont.rounded(15, .regular))
-                    .foregroundColor(VoiidColor.textSecondary)
+            // ONE line of secondary identity, not two stacked at equal weight. The handle and
+            // the number were competing — same size, same spacing — so neither read as the
+            // primary way to identify this person. The handle leads (it is what you share);
+            // the number follows it, quieter, separated by a dot.
+            if identityLine != nil {
+                identityRow
+                    .padding(.top, 5)
             }
 
-            HStack(spacing: VoiidSpacing.sm) {
-                quickAction("message.fill", "Message") { dismiss() }
-                quickAction("phone.fill", "Call") { requestCall(.voice) }
-                quickAction("video.fill", "Video") { requestCall(.video) }
-            }
-            .padding(.top, VoiidSpacing.md)
+            quickActions
+                .padding(.top, VoiidSpacing.lg)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, VoiidSpacing.md)
+        .padding(.top, VoiidSpacing.sm)
+        .padding(.bottom, VoiidSpacing.xs)
+    }
+
+    /// The handle, the number, or both — resolved once so the header does not branch inline.
+    private var identityLine: (handle: String?, secondary: String?)? {
+        let handle = profile?.username.flatMap { $0.isEmpty ? nil : "@\($0)" }
+        let secondary = secondaryIdentity
+        guard handle != nil || secondary != nil else { return nil }
+        return (handle, secondary)
+    }
+
+    @ViewBuilder
+    private var identityRow: some View {
+        if let line = identityLine {
+            HStack(spacing: 6) {
+                if let handle = line.handle {
+                    Text(handle)
+                        .font(VoiidFont.rounded(15, .medium))
+                        .foregroundColor(VoiidColor.primary)
+                }
+                if line.handle != nil && line.secondary != nil {
+                    Circle()
+                        .fill(VoiidColor.textSecondary.opacity(0.4))
+                        .frame(width: 3, height: 3)
+                }
+                if let secondary = line.secondary {
+                    Text(secondary)
+                        .font(VoiidFont.rounded(15, .regular))
+                        .foregroundColor(VoiidColor.textSecondary)
+                }
+            }
+        }
+    }
+
+    /// Message / Call / Video.
+    ///
+    /// ONE SEGMENTED CONTROL, not three floating tinted rectangles. Three separate 46pt
+    /// blocks with captions underneath read as three unrelated buttons that happen to sit in
+    /// a row; a single grouped surface with hairline separators reads as one control with
+    /// three choices — which is what it is. The label moves INSIDE the button, so the caption
+    /// row disappears and with it 20pt of vertical noise.
+    private var quickActions: some View {
+        HStack(spacing: 0) {
+            quickAction("message.fill", "Message") { dismiss() }
+            actionSeparator
+            quickAction("phone.fill", "Call") { requestCall(.voice) }
+            actionSeparator
+            quickAction("video.fill", "Video") { requestCall(.video) }
+        }
+        .frame(height: 58)
+        .background(VoiidColor.surfaceCard)
+        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
+    }
+
+    private var actionSeparator: some View {
+        Rectangle()
+            .fill(VoiidColor.divider.opacity(0.5))
+            .frame(width: 1, height: 26)
+    }
+
+    private func quickAction(_ icon: String, _ label: String, _ tap: @escaping () -> Void) -> some View {
+        Button(action: { Haptics.tap(); tap() }) {
+            VStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 17, weight: .medium))
+                Text(label)
+                    .font(VoiidFont.rounded(11, .medium))
+            }
+            .foregroundColor(VoiidColor.primary)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(SoftPressStyle())
     }
 
     /// The peer's photo reference, preferring the freshly-fetched profile and falling back to
@@ -141,24 +224,6 @@ struct ContactProfileView: View {
         if let u = profile?.photoURL, !u.isEmpty { return u }
         guard let peer = conversation.peerUserId else { return nil }
         return UserDirectory.shared.photoURL(peer)
-    }
-
-    private func quickAction(_ icon: String, _ label: String, _ tap: @escaping () -> Void) -> some View {
-        Button(action: { Haptics.tap(); tap() }) {
-            VStack(spacing: 6) {
-                Image(systemName: icon)
-                    .font(.system(size: 19, weight: .medium))
-                    .foregroundColor(VoiidColor.primary)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 46)
-                    .background(VoiidColor.primary.opacity(0.10))
-                    .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
-                Text(label)
-                    .font(VoiidFont.rounded(11, .medium))
-                    .foregroundColor(VoiidColor.textSecondary)
-            }
-        }
-        .buttonStyle(SoftPressStyle())
     }
 
     /// Call and Video used to be EMPTY closures — the buttons were decoration.
@@ -174,37 +239,36 @@ struct ContactProfileView: View {
     /// About AND status — two distinct fields the server has always returned separately
     /// (`bio` and `status_text`). They were being collapsed into one, so a user who set a
     /// status saw it labelled "About" and a user with both lost the status entirely.
+    @ViewBuilder
     private var aboutCard: some View {
-        card {
-            if let status = profile?.statusText, !status.isEmpty {
-                HStack(spacing: VoiidSpacing.sm) {
+        let status = profile?.statusText ?? ""
+        let about = profile?.about ?? ""
+        card("About") {
+            if !status.isEmpty {
+                HStack(alignment: .top, spacing: VoiidSpacing.sm) {
                     Image(systemName: "quote.opening")
-                        .font(.system(size: 13))
+                        .font(.system(size: 12))
                         .foregroundColor(VoiidColor.primary)
+                        .padding(.top, 3)
                     Text(status)
-                        .font(VoiidFont.rounded(15, .medium))
+                        .font(VoiidFont.rounded(16, .medium))
                         .foregroundColor(VoiidColor.textPrimary)
                     Spacer(minLength: 0)
                 }
-                if profile?.about?.isEmpty == false {
+                if !about.isEmpty {
                     Divider().background(VoiidColor.divider.opacity(0.4))
                 }
             }
-            if let about = profile?.about, !about.isEmpty {
-                Text("About")
-                    .font(VoiidFont.rounded(13, .medium))
-                    .foregroundColor(VoiidColor.textSecondary)
+            if !about.isEmpty {
                 Text(about)
                     .font(VoiidFont.rounded(16, .regular))
                     .foregroundColor(VoiidColor.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             // Only when BOTH are genuinely absent. Previously the default text was shown
             // whenever `about` was empty, which meant a peer with a real status still read
             // "Hey there! I am using Voiid." — a message they never wrote.
-            if (profile?.statusText ?? "").isEmpty && (profile?.about ?? "").isEmpty {
-                Text("About")
-                    .font(VoiidFont.rounded(13, .medium))
-                    .foregroundColor(VoiidColor.textSecondary)
+            if status.isEmpty && about.isEmpty {
                 Text("Hey there! I am using Voiid.")
                     .font(VoiidFont.rounded(16, .regular))
                     .foregroundColor(VoiidColor.textSecondary)
@@ -223,24 +287,14 @@ struct ContactProfileView: View {
     }
 
     private var sharedMediaCard: some View {
-        card {
-            HStack {
-                Text("Media")
-                    .font(VoiidFont.rounded(15, .semibold))
-                    .foregroundColor(VoiidColor.textPrimary)
-                if !sharedMedia.isEmpty {
-                    Text("\(sharedMedia.count)")
-                        .font(VoiidFont.rounded(12, .semibold))
-                        .foregroundColor(VoiidColor.textSecondary)
-                        .padding(.horizontal, 7).padding(.vertical, 2)
-                        .background(Capsule().fill(VoiidColor.fieldFill))
-                }
-                Spacer()
-                if !sharedMedia.isEmpty {
-                    Button("See all") { Haptics.tap(); showAllMedia = true }
-                        .font(VoiidFont.rounded(13, .medium)).foregroundColor(VoiidColor.primary)
-                }
-            }
+        card(
+            "Media",
+            accessory: sharedMedia.isEmpty ? nil : AnyView(
+                Button("See all") { Haptics.tap(); showAllMedia = true }
+                    .font(VoiidFont.rounded(13, .medium))
+                    .foregroundColor(VoiidColor.primary)
+            )
+        ) {
             if sharedMedia.isEmpty {
                 mediaEmptyState
             } else {
@@ -249,11 +303,15 @@ struct ContactProfileView: View {
                         ForEach(Array(sharedMedia.prefix(8)), id: \.mediaUrl) { ref in
                             SharedMediaThumb(ref: ref)
                                 .frame(width: 76, height: 76).clipped()
-                                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md))
+                                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
                         }
                     }
                     .padding(.vertical, 1)
                 }
+                // Bleed the strip to the card edge so thumbnails scroll OUT of frame rather
+                // than stopping short of it — the cut edge is what tells the eye it scrolls.
+                .padding(.horizontal, -VoiidSpacing.md)
+                .padding(.leading, VoiidSpacing.md)
             }
         }
     }
@@ -302,13 +360,7 @@ struct ContactProfileView: View {
         // Hidden entirely when there are none: an empty "Calls" card on a contact you have
         // only ever texted is an affordance to nothing.
         if !recentCalls.isEmpty {
-            card {
-                HStack {
-                    Text("Calls")
-                        .font(VoiidFont.rounded(15, .semibold))
-                        .foregroundStyle(VoiidColor.textPrimary)
-                    Spacer()
-                }
+            card("Calls") {
                 ForEach(Array(recentCalls.enumerated()), id: \.element.id) { index, entry in
                     if index > 0 {
                         Divider().background(VoiidColor.divider.opacity(0.4))
@@ -376,6 +428,10 @@ struct ContactProfileView: View {
     /// silent no-ops that look like they worked, they confirm and then say plainly that the
     /// feature is not live. A button that appears to succeed and does nothing is the worst of
     /// the three options for a safety feature.
+    ///
+    /// Destructive actions sit LAST and unlabelled — no "DANGER" header shouting at a screen
+    /// you opened to see someone's photo. The red carries it, and the confirmation catches
+    /// the mistake.
     private var dangerCard: some View {
         card {
             actionRow("hand.raised.fill", "Block \(displayName)") { showBlockConfirm = true }
@@ -400,22 +456,39 @@ struct ContactProfileView: View {
     }
 
     // MARK: helpers
-    private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: VoiidSpacing.md) { content() }
-            .padding(VoiidSpacing.md)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(VoiidColor.surfaceCard)
-            .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
-    }
-
-    private func row(_ icon: String, _ text: String, _ tap: @escaping () -> Void) -> some View {
-        Button(action: tap) {
-            HStack(spacing: VoiidSpacing.md) {
-                Image(systemName: icon).font(.system(size: 17)).foregroundColor(VoiidColor.textPrimary).frame(width: 24)
-                Text(text).font(VoiidFont.rounded(16, .regular)).foregroundColor(VoiidColor.textPrimary)
-                Spacer()
-            }.padding(.vertical, 4)
-        }.buttonStyle(.plain)
+    /// A grouped surface, optionally titled.
+    ///
+    /// The TITLE SITS OUTSIDE the card, in caps at 12pt — the iOS grouped-list idiom. It was
+    /// inside, at 15pt semibold, which made every card open with a line of text the same
+    /// weight as its content; six of those stacked gave the page no hierarchy at all. Outside
+    /// and quieter, the eye skips titles to find a section and reads content within it.
+    private func card<Content: View>(
+        _ title: String? = nil,
+        accessory: AnyView? = nil,
+        @ViewBuilder _ content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+            if title != nil || accessory != nil {
+                HStack(alignment: .firstTextBaseline, spacing: VoiidSpacing.sm) {
+                    if let title {
+                        Text(title.uppercased())
+                            .font(VoiidFont.rounded(12, .semibold))
+                            // Caps need positive tracking to stay legible; this is the same
+                            // treatment Apple uses on grouped section headers.
+                            .kerning(0.6)
+                            .foregroundColor(VoiidColor.textSecondary)
+                    }
+                    Spacer(minLength: 0)
+                    accessory
+                }
+                .padding(.horizontal, VoiidSpacing.xs)
+            }
+            VStack(alignment: .leading, spacing: VoiidSpacing.md) { content() }
+                .padding(VoiidSpacing.md)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(VoiidColor.surfaceCard)
+                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
+        }
     }
 
     private func actionRow(_ icon: String, _ text: String, _ tap: @escaping () -> Void) -> some View {

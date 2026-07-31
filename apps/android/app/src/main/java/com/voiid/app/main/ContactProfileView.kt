@@ -51,6 +51,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.border
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.ui.unit.dp
 import com.voiid.app.model.DummyData
 import com.voiid.app.model.VConversation
@@ -164,68 +168,108 @@ fun ContactProfileView(
         VoiidCircleBack(onBack = onBack)
 
         Column(
-            Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 24.dp, vertical = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(24.dp),
+            Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(top = 8.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
-            // Header
-            Column(Modifier.fillMaxWidth().padding(vertical = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                // The REAL photo. This was `VoiidAvatar` — the wordmark placeholder — so a
-                // contact's own profile never showed their face.
+            // Header.
+            //
+            // THE PAGE HAS ONE SUBJECT and the header is it. It was a 112dp avatar with 10dp
+            // gaps to a 24sp name — the same rhythm as every card below, so the person the
+            // page is ABOUT carried no more weight than a "Mute notifications" toggle.
+            // Mirrors the iOS header exactly.
+            Column(
+                Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 4.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
                 ProfileAvatar(
                     photoUrl = photoUrl ?: UserDirectory.photoUrl(conversation.peerUserId ?: ""),
                     name = conversation.title,
-                    size = 112.dp,
-                    modifier = Modifier.clip(CircleShape).clickable { haptics.tap(); viewPhoto = true },
+                    size = 104.dp,
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        // A 1px ring at 8% — defines the edge against a light photo, invisible
+                        // against a dark one. Heavier would read as a frame.
+                        .border(1.dp, VoiidColor.textPrimary.copy(alpha = 0.08f), CircleShape)
+                        .clickable { haptics.tap(); viewPhoto = true },
                 )
-                Spacer(Modifier.height(10.dp))
-                Text(conversation.title, style = VoiidFont.rounded(24, FontWeight.Bold), color = VoiidColor.textPrimary)
-                // Real name, @username and phone number — same secondary style, one per line.
-                // Each is shown only when known; the contact name above is the saved/display name.
-                fullName?.takeIf { it != conversation.title }?.let {
-                    Text(it, style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    conversation.title,
+                    style = VoiidFont.rounded(28, FontWeight.Bold)
+                        // Optical tightening: at 28sp default tracking looks loose.
+                        .copy(letterSpacing = (-0.4).sp),
+                    color = VoiidColor.textPrimary,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    maxLines = 2,
+                )
+
+                // ONE line of secondary identity, not three stacked at equal weight. The real
+                // name, handle and number were each on their own line in near-identical
+                // styles, so none of them read as the way to identify this person. The handle
+                // leads (it is what you share); the number follows, quieter, after a dot.
+                val secondary = savedNumber ?: fullName?.takeIf { it != conversation.title }
+                val handle = username?.let { "@$it" }
+                if (handle != null || secondary != null) {
+                    Spacer(Modifier.height(5.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        handle?.let {
+                            Text(it, style = VoiidFont.rounded(15, FontWeight.Medium), color = VoiidColor.primary)
+                        }
+                        if (handle != null && secondary != null) {
+                            Box(Modifier.size(3.dp).clip(CircleShape).background(VoiidColor.textSecondary.copy(alpha = 0.4f)))
+                        }
+                        secondary?.let {
+                            Text(it, style = VoiidFont.rounded(15), color = VoiidColor.textSecondary)
+                        }
+                    }
                 }
-                username?.let {
-                    Text("@$it", style = VoiidFont.rounded(15, FontWeight.Medium), color = VoiidColor.primary)
-                }
-                savedNumber?.let {
-                    Text(it, style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
-                }
-                Spacer(Modifier.height(8.dp))
-                Spacer(Modifier.height(8.dp))
+
+                Spacer(Modifier.height(24.dp))
+                // ONE SEGMENTED CONTROL, not three floating tinted rectangles with captions
+                // underneath — those read as three unrelated buttons that happen to sit in a
+                // row. A single surface with hairline separators reads as one control with
+                // three choices, and moving the label inside kills 20dp of vertical noise.
                 Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    Modifier
+                        .fillMaxWidth()
+                        .height(58.dp)
+                        .clip(RoundedCornerShape(VoiidRadius.lg))
+                        .background(VoiidColor.surfaceCard),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     QuickAction(Icons.AutoMirrored.Filled.Message, "Message", Modifier.weight(1f)) { haptics.tap(); onBack() }
+                    ActionSeparator()
                     QuickAction(Icons.Default.Call, "Call", Modifier.weight(1f)) { haptics.tap(); onStartCall(CallKind.VOICE); onBack() }
+                    ActionSeparator()
                     QuickAction(Icons.Default.Videocam, "Video", Modifier.weight(1f)) { haptics.tap(); onStartCall(CallKind.VIDEO); onBack() }
                 }
             }
 
-            // About
             // About AND status — two distinct fields. This screen only ever read `bio`, so a
             // contact who set a status showed nothing at all here.
-            ProfileCard {
+            ProfileCard("About") {
                 statusText?.let { st ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.FormatQuote, null, tint = VoiidColor.primary, modifier = Modifier.size(16.dp))
+                    Row(verticalAlignment = Alignment.Top) {
+                        Icon(
+                            Icons.Default.FormatQuote, null, tint = VoiidColor.primary,
+                            modifier = Modifier.size(15.dp).padding(top = 2.dp),
+                        )
                         Spacer(Modifier.width(8.dp))
-                        Text(st, style = VoiidFont.rounded(15, FontWeight.Medium), color = VoiidColor.textPrimary)
+                        Text(st, style = VoiidFont.rounded(16, FontWeight.Medium), color = VoiidColor.textPrimary)
                     }
                     if (!bio.isNullOrBlank()) {
-                        Spacer(Modifier.height(10.dp))
-                        Box(Modifier.fillMaxWidth().height(1.dp).background(VoiidColor.divider.copy(alpha = 0.4f)))
-                        Spacer(Modifier.height(10.dp))
+                        HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.4f))
                     }
                 }
                 bio?.takeIf { it.isNotBlank() }?.let {
-                    Text("About", style = VoiidFont.rounded(13, FontWeight.Medium), color = VoiidColor.textSecondary)
                     Text(it, style = VoiidFont.rounded(16), color = VoiidColor.textPrimary)
                 }
                 // Only when BOTH are absent — otherwise a peer with a real status was shown
                 // "Hey there! I am using Voiid.", a message they never wrote.
                 if (statusText.isNullOrBlank() && bio.isNullOrBlank()) {
-                    Text("About", style = VoiidFont.rounded(13, FontWeight.Medium), color = VoiidColor.textSecondary)
                     Text("Hey there! I am using Voiid.", style = VoiidFont.rounded(16), color = VoiidColor.textSecondary)
                 }
             }
@@ -240,62 +284,58 @@ fun ContactProfileView(
                     .reversed()
             }
             val recentPhotos = sharedMedia.take(8)
-            ProfileCard {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Media", style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.textPrimary)
-                    if (sharedMedia.isNotEmpty()) {
-                        Spacer(Modifier.width(8.dp))
-                        Box(
-                            Modifier.clip(RoundedCornerShape(999.dp)).background(VoiidColor.fieldFill)
-                                .padding(horizontal = 7.dp, vertical = 2.dp),
-                        ) {
-                            Text("${sharedMedia.size}", style = VoiidFont.rounded(12, FontWeight.SemiBold), color = VoiidColor.textSecondary)
-                        }
-                    }
-                    Spacer(Modifier.weight(1f))
-                    if (recentPhotos.isNotEmpty()) {
-                        Text("See all", style = VoiidFont.rounded(13, FontWeight.Medium), color = VoiidColor.primary, modifier = Modifier.clickable { haptics.tap(); showAllMedia = true })
-                    }
-                }
+            ProfileCard(
+                title = "Media",
+                accessory = if (recentPhotos.isEmpty()) null else ({
+                    Text(
+                        "See all", style = VoiidFont.rounded(13, FontWeight.Medium),
+                        color = VoiidColor.primary,
+                        modifier = Modifier.clickable { haptics.tap(); showAllMedia = true },
+                    )
+                }),
+            ) {
                 if (recentPhotos.isEmpty()) {
-                    // A DESIGNED empty state, not a bare grey sentence. This card is empty for
-                    // most contacts most of the time, so it is the state users actually see —
-                    // treating it as an afterthought made the whole screen look unfinished.
-                    Column(
-                        Modifier.fillMaxWidth().padding(vertical = 24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Box(
-                            Modifier.size(52.dp).clip(CircleShape).background(VoiidColor.primary.copy(alpha = 0.08f)),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(Icons.Default.PhotoLibrary, null, tint = VoiidColor.primary.copy(alpha = 0.65f), modifier = Modifier.size(21.dp))
-                        }
-                        Text("No media yet", style = VoiidFont.rounded(14, FontWeight.SemiBold), color = VoiidColor.textPrimary)
-                        Text(
-                            "Photos and videos you share with ${conversation.title} appear here.",
-                            style = VoiidFont.rounded(12),
-                            color = VoiidColor.textSecondary,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                        )
+                    // GHOST TILES, not a floating icon in a void. A centred disc and two lines
+                    // in an otherwise blank card reads as a HOLE in the layout; showing the
+                    // SHAPE the content will take makes the card look designed-but-empty and
+                    // says at a glance what would appear here. Matches iOS `mediaEmptyState`.
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(Icons.Default.Image, Icons.Default.Videocam, Icons.Default.PhotoLibrary)
+                            .forEach { ghost ->
+                                Box(
+                                    Modifier
+                                        .size(76.dp)
+                                        .dashedBorder(VoiidColor.divider, VoiidRadius.md),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Icon(
+                                        ghost, null,
+                                        tint = VoiidColor.placeholder.copy(alpha = 0.5f),
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
+                            }
                     }
+                    Text(
+                        "Photos, videos and files you share with ${conversation.title} appear here.",
+                        style = VoiidFont.rounded(12),
+                        color = VoiidColor.textSecondary,
+                    )
                 } else {
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         recentPhotos.forEach { ref ->
-                            Box(Modifier.size(72.dp).clip(RoundedCornerShape(VoiidRadius.md))) { SharedMediaThumb(ref) }
+                            Box(Modifier.size(76.dp).clip(RoundedCornerShape(VoiidRadius.md))) { SharedMediaThumb(ref) }
                         }
                     }
                 }
             }
 
             // Settings
+            // One toggle, no trailing dividers. Two HorizontalDividers were left behind when
+            // the rows between them (search-in-chat, wallpaper — both unimplemented) were
+            // removed, so the card drew separators separating nothing.
             ProfileCard {
                 ToggleRow(Icons.Default.NotificationsOff, "Mute notifications", muted) { muted = it; haptics.selection() }
-                HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.4f))
-
-                HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.4f))
-
             }
 
             // Danger
@@ -319,27 +359,79 @@ fun ContactProfileView(
 private fun QuickAction(icon: ImageVector, label: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-        modifier = modifier.softClickable(onClick = onClick),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = modifier.fillMaxHeight().softClickable(onClick = onClick),
     ) {
-        Box(
-            // Equal-width, brand-tinted — matches iOS `quickAction`. The old fixed 56dp on a
-            // pink accent wash left ragged gaps and used a colour that no longer exists.
-            Modifier.fillMaxWidth().height(46.dp).clip(RoundedCornerShape(VoiidRadius.md))
-                .background(VoiidColor.primary.copy(alpha = 0.10f)),
-            contentAlignment = Alignment.Center,
-        ) { Icon(icon, null, tint = VoiidColor.primary, modifier = Modifier.size(19.dp)) }
-        Text(label, style = VoiidFont.rounded(11, FontWeight.Medium), color = VoiidColor.textSecondary)
+        Spacer(Modifier.weight(1f))
+        Icon(icon, null, tint = VoiidColor.primary, modifier = Modifier.size(17.dp))
+        Text(label, style = VoiidFont.rounded(11, FontWeight.Medium), color = VoiidColor.primary)
+        Spacer(Modifier.weight(1f))
     }
 }
 
+/** The hairline between segments of the quick-action control. */
 @Composable
-fun ProfileCard(content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
-    Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(VoiidRadius.lg)).background(VoiidColor.surfaceCard).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-        content = content,
+private fun ActionSeparator() {
+    Box(Modifier.width(1.dp).height(26.dp).background(VoiidColor.divider.copy(alpha = 0.5f)))
+}
+
+/**
+ * A dashed placeholder outline, for empty-state ghost tiles.
+ *
+ * Compose has no dashed `border`, so this draws the stroke directly. Same 1.5dp / 5-4 dash as
+ * the iOS `strokeBorder(style:)` so the two empty states are visually identical.
+ */
+private fun Modifier.dashedBorder(color: Color, radius: androidx.compose.ui.unit.Dp) = drawBehind {
+    val stroke = androidx.compose.ui.graphics.drawscope.Stroke(
+        width = 1.5.dp.toPx(),
+        pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(
+            floatArrayOf(5.dp.toPx(), 4.dp.toPx()), 0f,
+        ),
     )
+    drawRoundRect(
+        color = color,
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(radius.toPx()),
+        style = stroke,
+    )
+}
+
+/**
+ * A grouped surface, optionally titled.
+ *
+ * The TITLE SITS OUTSIDE the card, in caps at 12sp — the platform grouped-list idiom on both
+ * OSes. It used to be inside at 15sp semibold, which made every card open with a line of text
+ * the same weight as its content; six of those stacked gave the page no hierarchy at all.
+ */
+@Composable
+fun ProfileCard(
+    title: String? = null,
+    accessory: (@Composable () -> Unit)? = null,
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (title != null || accessory != null) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                title?.let {
+                    Text(
+                        it.uppercase(),
+                        // Caps need positive tracking to stay legible.
+                        style = VoiidFont.rounded(12, FontWeight.SemiBold).copy(letterSpacing = 0.6.sp),
+                        color = VoiidColor.textSecondary,
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                accessory?.invoke()
+            }
+        }
+        Column(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(VoiidRadius.lg)).background(VoiidColor.surfaceCard).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            content = content,
+        )
+    }
 }
 
 @Composable
