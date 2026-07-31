@@ -336,8 +336,19 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
      * the arrival path must not rely on the next manual sync.
      */
     suspend fun markOpenConversationRead(conversationId: String) {
-        if (openConversationId != conversationId) return
-        if (!PrivacySettings.sendReadReceipts(appContext)) return
+        // Both guards are silent no-ops, and either one explains "read never happens" — so say
+        // which fired rather than leaving the caller to guess.
+        if (openConversationId != conversationId) {
+            android.util.Log.i(
+                "VOIIDReceipt",
+                "markOpen SKIPPED: open=$openConversationId asked=$conversationId",
+            )
+            return
+        }
+        if (!PrivacySettings.sendReadReceipts(appContext)) {
+            android.util.Log.i("VOIIDReceipt", "markOpen SKIPPED: read receipts disabled in settings")
+            return
+        }
         engine.markRead(conversationId)
     }
 

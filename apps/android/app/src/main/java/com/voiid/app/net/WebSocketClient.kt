@@ -345,7 +345,13 @@ class WebSocketClient private constructor(context: Context) {
         val t = (obj["type"] as? JsonPrimitive)?.contentOrNull
         android.util.Log.i("VOIID", "WS recv type=$t")
         when (t) {
-            "message" -> obj["conversation_id"]?.jsonPrimitive?.contentOrNull?.let { onMessageRef?.invoke(it) }
+            "message" -> obj["conversation_id"]?.jsonPrimitive?.contentOrNull?.let {
+                // Diagnostic: distinguishes "the live frame arrived" from "only FCM woke us".
+                // Read receipts for a message that lands while the chat is open depend on THIS
+                // firing; if it never does, the socket is down and the push is the only path.
+                android.util.Log.i("VOIIDWS", "inbound message frame conv=$it")
+                onMessageRef?.invoke(it)
+            }
             "typing" -> {
                 val cid = obj["conversation_id"]?.jsonPrimitive?.contentOrNull ?: return
                 val uid = obj["user_id"]?.jsonPrimitive?.contentOrNull ?: ""
@@ -355,6 +361,9 @@ class WebSocketClient private constructor(context: Context) {
             "receipt" -> {
                 val mid = obj["message_id"]?.jsonPrimitive?.contentOrNull ?: return
                 val status = obj["status"]?.jsonPrimitive?.contentOrNull ?: return
+                // Diagnostic: this is how the SENDER learns their message went Seen. If Android
+                // sends a read receipt but the peer never gets this frame, the tick is stuck.
+                android.util.Log.i("VOIIDWS", "receipt frame msg=$mid status=$status")
                 onReceipt?.invoke(mid, status)
             }
             // Location fixes / stops (docs/LOCATION.md P3). Routed to the shared LocationRelay

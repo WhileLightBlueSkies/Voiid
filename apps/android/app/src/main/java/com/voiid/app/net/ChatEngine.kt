@@ -427,7 +427,9 @@ class ChatEngine private constructor(context: Context) {
         val body = ApiClient.json.encodeToString(
             MarkReadBody.serializer(), MarkReadBody(ids, status, e2e.deviceId),
         )
+        android.util.Log.i("VOIIDReceipt", "POST receipts/mark status=$status n=${ids.size} device=${e2e.deviceId}")
         runCatching { api.request("POST", "receipts/mark", jsonBody = body) }
+            .onSuccess { android.util.Log.i("VOIIDReceipt", "receipt $status OK for ${ids.size}") }
             .onFailure {
                 // PUT THEM BACK. `markRead` records an id as reported BEFORE the POST, so a
                 // dropped request would otherwise strand it forever — the sender stuck on
@@ -501,10 +503,16 @@ class ChatEngine private constructor(context: Context) {
      */
     suspend fun markRead(conversationId: String) {
         ensureLoaded()
-        val ids = (store[conversationId] ?: emptyList())
+        val inbound = (store[conversationId] ?: emptyList())
             .filter { !it.isMine && !it.control && !it.failed }
-            .map { it.id }
-            .filter { readReported.add(it) }
+        val ids = inbound.map { it.id }.filter { readReported.add(it) }
+        // Diagnostic: distinguishes "nothing inbound to read" from "already reported this
+        // session" from "sent". Without it, a silent no-op here is indistinguishable from a
+        // failed POST, which is what made "read never happens" impossible to place.
+        android.util.Log.i(
+            "VOIIDReceipt",
+            "markRead conv=$conversationId inbound=${inbound.size} new=${ids.size}",
+        )
         if (ids.isEmpty()) return
         markReceipts(ids, "read")
     }
