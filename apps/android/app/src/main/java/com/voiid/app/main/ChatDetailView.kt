@@ -216,10 +216,14 @@ fun ChatDetailView(
     // While still typing, REFRESH it every 5s: the receiver expires a stale indicator after
     // 8s (a "stop" is not guaranteed to arrive), so without a heartbeat a slow typist's
     // indicator would vanish mid-sentence.
-    LaunchedEffect(draft.isNotEmpty()) {
-        val typing = draft.isNotEmpty()
-        chat.sendTyping(conversation.id, typing)
-        while (typing) {
+    val isTyping = draft.isNotEmpty()
+    LaunchedEffect(isTyping) {
+        chat.sendTyping(conversation.id, isTyping)
+        // Only the typing branch loops. LaunchedEffect cancels this coroutine the moment the
+        // key flips, so the loop exits by CANCELLATION rather than by its own condition —
+        // `isTyping` is captured and never changes inside the body.
+        if (!isTyping) return@LaunchedEffect
+        while (true) {
             kotlinx.coroutines.delay(5_000)
             chat.sendTyping(conversation.id, true)
         }

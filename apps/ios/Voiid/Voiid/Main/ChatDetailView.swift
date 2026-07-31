@@ -54,7 +54,7 @@ struct ChatDetailView: View {
     /// starting a call while a navigation transition is in flight drops the CallKit UI.
     /// Re-sends "typing start" every 5s so the peer's 8s expiry never cuts off a slow
     /// typist. Cancelled on stop and on disappear.
-    @State private var typingHeartbeat: Task<Void, Never>?
+    @State private var typingHeartbeat: Task<Void, Error>?
     @State private var pendingCall: CallKind?
     /// REAL group members (from the server), used for @mentions and group-call member tiles.
     /// Empty for 1:1 chats. Loaded on appear — never DummyData.
@@ -718,10 +718,12 @@ struct ChatDetailView: View {
                 typingHeartbeat?.cancel()
                 guard isTyping else { typingHeartbeat = nil; return }
                 typingHeartbeat = Task { @MainActor in
-                    while !Task.isCancelled {
-                        try? await Task.sleep(nanoseconds: 5_000_000_000)
-                        guard !Task.isCancelled, !draft.isEmpty,
-                              privacy.sendTypingIndicators else { return }
+                    // Exits by CANCELLATION — the next onChange (or onDisappear) cancels it.
+                    // `try await` rather than `try?`: a cancelled sleep must break the loop,
+                    // and swallowing that error would spin it at full speed instead.
+                    while true {
+                        try await Task.sleep(nanoseconds: 5_000_000_000)
+                        guard !draft.isEmpty, privacy.sendTypingIndicators else { return }
                         WebSocketClient.shared.sendTyping(conversationId: conversation.id,
                                                           recipientIds: [peer], isStart: true)
                     }
