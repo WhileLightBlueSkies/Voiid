@@ -66,6 +66,17 @@ else
 fi
 pm2 save
 
+# TEMPORARY DIAGNOSTIC — dump recent api errors into the deploy log.
+#
+# The games leaderboard has been returning 500 with no way to see why: the global error handler
+# replaces every 5xx body with "internal error", and the box is not reachable by SSH from the
+# machine debugging it. The deploy pipeline IS reachable, so it is the only channel back. Remove
+# this block once that query is fixed.
+echo "==> Recent api errors (temporary diagnostic)"
+pm2 logs voiid-api --lines 120 --nostream --raw 2>/dev/null \
+  | grep -iE "leaderboard|unhandled error|error:" | tail -25 || echo "(no matching lines)"
+echo
+
 echo "==> Health check"
 sleep 3
 curl -fsS http://localhost:4000/health || {

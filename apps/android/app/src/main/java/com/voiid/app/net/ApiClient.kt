@@ -105,6 +105,13 @@ class ApiClient(
             }
             if (!it.isSuccessful) {
                 if (it.code == 401) tokens.clear()
+                // Log the WHOLE body on a server error. Only the `error` field survives into the
+                // exception, so any diagnostic the server adds alongside it (a pg code, a hint)
+                // was being thrown away at exactly the moment it was needed. 5xx only: a 401 body
+                // is noise, and this must never log message content.
+                if (it.code >= 500) {
+                    android.util.Log.w("ApiClient", "HTTP ${it.code} on $path: ${text.take(600)}")
+                }
                 val msg = runCatching { json.decodeFromString<ErrorBody>(text).error }
                     .getOrNull() ?: "Request failed (${it.code})."
                 throw ApiError.Http(it.code, msg)
