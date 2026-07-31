@@ -34,6 +34,9 @@ const app = express();
 app.use(express.json({ limit: '5mb' }));
 
 // Health (Section 8 minimal ops). Reports DB + Redis reachability for Uptime Kuma / load balancer.
+// Process start time — with `build` above, distinguishes "restarted" from "redeployed".
+const STARTED_AT = new Date().toISOString();
+
 app.get('/health', async (_req, res) => {
   const out: Record<string, unknown> = { service: 'api', status: 'ok' };
   try { await pool.query('select 1'); out.db = 'up'; } catch { out.db = 'down'; out.status = 'degraded'; }
@@ -42,6 +45,16 @@ app.get('/health', async (_req, res) => {
   out.firebase = firebaseStatus();
   // R2 media storage configured? (no secrets) — confirms media uploads will work.
   out.media = { configured: r2Configured() };
+  // WHICH BUILD IS ACTUALLY SERVING. The deploy pipeline reports success against a host whose
+  // address is masked in the logs, and api-dev.voiid.app resolves to a DIFFERENT IP than the one
+  // in the local ssh config — so "the deploy went green" has not been the same claim as "the code
+  // I pushed is the code answering requests". This makes that verifiable from anywhere with curl,
+  // and it is the reason a games 500 could survive several apparently-successful deploys.
+  //
+  // Commit sha only: no secrets, and nothing an attacker gains from knowing the version they can
+  // already fingerprint from behaviour.
+  out.build = process.env.VOIID_BUILD_SHA ?? 'unknown';
+  out.started_at = STARTED_AT;
   res.status(out.status === 'ok' ? 200 : 503).json(out);
 });
 

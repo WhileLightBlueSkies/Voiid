@@ -40,6 +40,13 @@ npm run build -w @voiid/games
 echo "==> Applying DB migrations (idempotent; pending only)"
 node --env-file="$APP_DIR/.env" "$APP_DIR/infrastructure/deployment/migrate.mjs"
 
+# Stamp the commit being deployed so GET /health can report which build is serving. A green
+# deploy and a serving build have turned out to be different claims.
+export VOIID_BUILD_SHA="$(git rev-parse --short HEAD)"
+grep -q "^VOIID_BUILD_SHA=" "$APP_DIR/.env" && sed -i "/^VOIID_BUILD_SHA=/d" "$APP_DIR/.env"
+printf "VOIID_BUILD_SHA=%s\n" "$VOIID_BUILD_SHA" >> "$APP_DIR/.env"
+echo "==> Deploying build $VOIID_BUILD_SHA"
+
 echo "==> Restarting services under pm2 (start if not yet running)"
 # voiid-workers is the background job runner (story expiry: R2 objects + DB rows).
 # It is started separately from the api/ws pair so a box that predates it still picks

@@ -56,7 +56,7 @@ router.post(
   '/matches',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const userId = (req as any).user.user_id as string;
+    const { user_id: userId } = (req as any).auth as { user_id: string };
     const { slug, opponent_ids, options } = req.body ?? {};
 
     if (typeof slug !== 'string' || !Array.isArray(opponent_ids)) {
@@ -114,7 +114,7 @@ router.post(
   '/matches/:id/join',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const userId = (req as any).user.user_id as string;
+    const { user_id: userId } = (req as any).auth as { user_id: string };
     const matchId = req.params.id;
     if (!UUID_RE.test(matchId)) return res.status(400).json({ error: 'bad match id' });
 
@@ -164,7 +164,7 @@ router.get(
   '/invites',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const userId = (req as any).user.user_id as string;
+    const { user_id: userId } = (req as any).auth as { user_id: string };
     const rows = await query<{
       id: string;
       slug: string;
@@ -230,7 +230,7 @@ router.post(
   '/matches/:id/decline',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const userId = (req as any).user.user_id as string;
+    const { user_id: userId } = (req as any).auth as { user_id: string };
     const matchId = req.params.id;
     if (!UUID_RE.test(matchId)) return res.status(400).json({ error: 'bad match id' });
 
@@ -260,7 +260,7 @@ router.get(
   '/matches',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const userId = (req as any).user.user_id as string;
+    const { user_id: userId } = (req as any).auth as { user_id: string };
     const rows = await query(
       `select m.id, g.slug, g.name, m.status, m.player_ids, m.winner_id,
               m.created_at, m.started_at, m.ended_at
@@ -291,7 +291,7 @@ router.get(
   '/leaderboard',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const userId = (req as any).user.user_id as string;
+    const { user_id: userId } = (req as any).auth as { user_id: string };
     const slug = typeof req.query.game === 'string' ? req.query.game : null;
 
     // One pass over the caller's finished matches. `opponent` is derived by expanding
