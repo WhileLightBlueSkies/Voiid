@@ -210,8 +210,20 @@ fun ChatDetailView(
         }
     }
 
-    // Emit typing start/stop on the empty<->non-empty transition (debounced).
-    LaunchedEffect(draft.isNotEmpty()) { chat.sendTyping(conversation.id, draft.isNotEmpty()) }
+    // Emit typing on the empty<->non-empty transition ONLY — never per keystroke, which
+    // would push a redundant identical frame for every character typed.
+    //
+    // While still typing, REFRESH it every 5s: the receiver expires a stale indicator after
+    // 8s (a "stop" is not guaranteed to arrive), so without a heartbeat a slow typist's
+    // indicator would vanish mid-sentence.
+    LaunchedEffect(draft.isNotEmpty()) {
+        val typing = draft.isNotEmpty()
+        chat.sendTyping(conversation.id, typing)
+        while (typing) {
+            kotlinx.coroutines.delay(5_000)
+            chat.sendTyping(conversation.id, true)
+        }
+    }
 
     // @mention support (group only)
     val mentionQuery: String? = if (isGroup) {

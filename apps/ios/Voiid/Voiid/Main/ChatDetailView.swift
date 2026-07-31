@@ -52,6 +52,9 @@ struct ChatDetailView: View {
     @State private var activeCall: CallRequest?
     /// Set by ContactProfileView's Call / Video buttons. Placed once that screen has popped —
     /// starting a call while a navigation transition is in flight drops the CallKit UI.
+    /// Re-sends "typing start" every 5s so the peer's 8s expiry never cuts off a slow
+    /// typist. Cancelled on stop and on disappear.
+    @State private var typingHeartbeat: Task<Void, Never>?
     @State private var pendingCall: CallKind?
     /// REAL group members (from the server), used for @mentions and group-call member tiles.
     /// Empty for 1:1 chats. Loaded on appear — never DummyData.
@@ -114,6 +117,10 @@ struct ChatDetailView: View {
             // to Chats/Clips/etc. shows it and every detail screen keeps it hidden.
             // Settings → Privacy → "Send typing indicators". With it off we never sent a
             // start frame, so there is nothing to stop.
+            // Kill the heartbeat FIRST: a refresh firing after the stop would resurrect the
+            // indicator on the peer with no one left to clear it.
+            typingHeartbeat?.cancel()
+            typingHeartbeat = nil
             if privacy.sendTypingIndicators, let peer = livePeerUserId {
                 WebSocketClient.shared.sendTyping(conversationId: conversation.id, recipientIds: [peer], isStart: false)
             }
@@ -691,12 +698,34 @@ struct ChatDetailView: View {
                 RoundedRectangle(cornerRadius: 20, style: .continuous)
                     .stroke(VoiidColor.fieldBorder, lineWidth: 1)
             )
-            .onChange(of: draft) { _, newValue in
+            // KEYED ON THE BOOLEAN, not on `draft`.
+            //
+            // `onChange(of: draft)` fired on EVERY KEYSTROKE, and each one serialised a frame
+            // and wrote it to the socket. Typing a normal sentence pushed ~40 redundant
+            // "state":"start" frames — identical to the first — which is what made the field
+            // stutter under fast input. The peer only ever needed the transition.
+            //
+            // Android keys on `draft.isNotEmpty()` for this reason; this now matches.
+            .onChange(of: !draft.isEmpty) { _, isTyping in
                 // Settings → Privacy → "Send typing indicators".
                 guard privacy.sendTypingIndicators, let peer = livePeerUserId else { return }
                 WebSocketClient.shared.sendTyping(conversationId: conversation.id,
                                                   recipientIds: [peer],
-                                                  isStart: !newValue.isEmpty)
+                                                  isStart: isTyping)
+                // While still typing, REFRESH every 5s. The receiver expires a stale
+                // indicator after 8s (a "stop" is not guaranteed to arrive), so without a
+                // heartbeat a slow typist's indicator would vanish mid-sentence.
+                typingHeartbeat?.cancel()
+                guard isTyping else { typingHeartbeat = nil; return }
+                typingHeartbeat = Task { @MainActor in
+                    while !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: 5_000_000_000)
+                        guard !Task.isCancelled, !draft.isEmpty,
+                              privacy.sendTypingIndicators else { return }
+                        WebSocketClient.shared.sendTyping(conversationId: conversation.id,
+                                                          recipientIds: [peer], isStart: true)
+                    }
+                }
             }
     }
 

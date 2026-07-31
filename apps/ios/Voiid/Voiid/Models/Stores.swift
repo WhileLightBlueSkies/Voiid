@@ -206,6 +206,9 @@ final class ChatStore: ObservableObject {
     /// must not be persisted into the message store, previewed, or counted as unread.
     @Published var callLogsByConversation: [String: [VMessage]] = [:]
     @Published var typingConversations: Set<String> = []
+    /// Pending auto-clears, one per conversation. See the onTyping handler: a "stop" that
+    /// never arrives would otherwise strand the indicator forever.
+    private var typingExpiry: [String: DispatchWorkItem] = [:]
     @Published var loadError: String?
 
     init() {
@@ -226,6 +229,8 @@ final class ChatStore: ObservableObject {
         directConversations = []
         groupConversations = []
         messagesByConversation = [:]
+        typingExpiry.values.forEach { $0.cancel() }
+        typingExpiry = [:]
         typingConversations = []
         loadError = nil
     }
@@ -666,7 +671,25 @@ final class ChatStore: ObservableObject {
         }
         WebSocketClient.shared.onTyping = { [weak self] cid, _, isTyping in
             guard let self else { return }
-            if isTyping { self.typingConversations.insert(cid) } else { self.typingConversations.remove(cid) }
+            if isTyping {
+                self.typingConversations.insert(cid)
+                // EXPIRE IT. "stop" is not guaranteed to arrive — the sender can background
+                // the app, lose signal, or have the socket drop mid-word, and every one of
+                // those leaves a permanent "typing…" that only a restart clears. The peer
+                // re-sends "start" while they are still typing, so refreshing the deadline is
+                // enough to keep a genuinely-typing indicator alive.
+                self.typingExpiry[cid]?.cancel()
+                let work = DispatchWorkItem { [weak self] in
+                    self?.typingConversations.remove(cid)
+                    self?.typingExpiry[cid] = nil
+                }
+                self.typingExpiry[cid] = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: work)
+            } else {
+                self.typingExpiry[cid]?.cancel()
+                self.typingExpiry[cid] = nil
+                self.typingConversations.remove(cid)
+            }
         }
         WebSocketClient.shared.onReceipt = { [weak self] mid, status in
             self?.applyReceipt(messageId: mid, status: status)

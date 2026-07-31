@@ -20,11 +20,22 @@ router.post('/mark', requireAuth, async (req, res) => {
   }
 
   const tsCol = status === 'read' ? 'read_at' : 'delivered_at';
+
+  // TWO conflict targets, chosen by whether we have a device id.
+  //
+  // `on conflict (message_id, user_id, device_id)` CANNOT match when device_id is null:
+  // Postgres treats NULLs as distinct, so the row never collides and every mark inserted a
+  // duplicate instead of updating — silently bypassing the never-downgrade guard below and
+  // accumulating one row per call. 027 adds the matching partial indexes; this names them.
+  const conflictTarget = device_id
+    ? '(message_id, user_id, device_id) where device_id is not null'
+    : '(message_id, user_id) where device_id is null';
+
   for (const mid of message_ids) {
     await query(
       `insert into message_read_receipts (message_id, user_id, device_id, status, ${tsCol})
          values ($1, $2, $3, $4, now())
-         on conflict (message_id, user_id, device_id)
+         on conflict ${conflictTarget}
          do update set status = excluded.status, ${tsCol} = now()
          -- NEVER downgrade: once 'read', a later out-of-order 'delivered' must not
          -- revert it (status only ever advances delivered → read).
