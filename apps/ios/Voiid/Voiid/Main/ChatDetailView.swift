@@ -110,6 +110,9 @@ struct ChatDetailView: View {
             }
         }
         .onDisappear {
+            // CLOSE the conversation: this is what stops read receipts firing for a chat the
+            // user has navigated away from. Paired with `openConversation` in ChatStore.
+            chat.closeConversation(conversation.id)
             // NOTE: do NOT reset hideTabBar here. Pushing the contact/group profile fires
             // this onDisappear, and if it ran AFTER the profile's onAppear (which hides the
             // bar) the footer would flash back on over the profile. The bar is instead

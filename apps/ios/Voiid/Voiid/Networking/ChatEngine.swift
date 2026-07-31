@@ -906,15 +906,50 @@ final class ChatEngine {
     private func markReceipts(_ ids: [String], status: String) async {
         guard !ids.isEmpty else { return }
         NSLog("[VOIID] 📤 receipt \(status) x\(ids.count)")
-        struct Body: Encodable { let message_ids: [String]; let status: String }
-        _ = try? await api.request("POST", "receipts/mark", body: Body(message_ids: ids, status: status)) as EmptyResponse
+        // SEND THE DEVICE ID. The login token carries only user_id (POST /auth/firebase
+        // issues no device claim), so without this the server records every receipt against a
+        // NULL device — see the callerDeviceId note in routes/receipts.ts.
+        struct Body: Encodable {
+            let message_ids: [String]
+            let status: String
+            let device_id: String?
+        }
+        do {
+            _ = try await api.request(
+                "POST", "receipts/mark",
+                body: Body(message_ids: ids, status: status, device_id: E2EManager.shared.deviceId)
+            ) as EmptyResponse
+        } catch {
+            // PUT THEM BACK. `markRead` records an id as reported BEFORE the POST, so a
+            // dropped request would otherwise strand it forever — the sender stuck on
+            // Delivered with nothing to retry it. Re-marking on the next sync is cheap;
+            // never re-marking is unrecoverable.
+            if status == "read" { Self.readReported.subtract(ids) }
+            NSLog("[VOIID] receipt \(status) failed, will retry: \(error.localizedDescription)")
+        }
     }
 
     /// Mark all locally-stored inbound messages in a conversation as read. The
     /// server fans out a `receipt` WS event to the original senders (blue ticks).
+    /// Server ids this device has already reported as READ.
+    private static var readReported: Set<String> = []
+
+    /// Mark inbound messages READ. See the Android twin for the full rationale.
+    ///
+    /// ONLY EVER CALL THIS FOR A CHAT THE USER IS LOOKING AT — it used to run from every
+    /// `syncMessages`, including the one a background push fires, so a message was marked
+    /// read the instant it arrived in a chat the user had never opened.
+    ///
+    /// Control envelopes and undecryptable tombstones are excluded (neither was ever READ by
+    /// a human), and each id is reported ONCE rather than resending the whole conversation on
+    /// every sync.
     func markRead(conversationId: String) async {
         ensureLoaded()
-        let ids = (store[conversationId] ?? []).filter { !$0.isMine }.map { $0.id }
+        let ids = (store[conversationId] ?? [])
+            .filter { !$0.isMine && $0.control != true && !$0.failed }
+            .map { $0.id }
+            .filter { Self.readReported.insert($0).inserted }
+        guard !ids.isEmpty else { return }
         await markReceipts(ids, status: "read")
     }
 

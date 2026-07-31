@@ -9,8 +9,28 @@ const router = Router();
 
 // POST /receipts/mark — { message_ids:[...], status:'delivered'|'read' }
 // Records receipts for the caller and notifies senders over their Redis channel.
+/**
+ * The caller's device, from the token OR the request.
+ *
+ * IT IS ALMOST NEVER IN THE TOKEN. POST /auth/firebase issues `{ user_id }` with no device
+ * claim — only device LINKING (routes/linking.ts) includes one — so on every normally
+ * logged-in device `req.auth.device_id` is undefined. Reading it alone meant every receipt
+ * was written against a NULL device, which is the NULL-upsert path 027 had to repair.
+ *
+ * Same shape as `callerDeviceId` in messages.ts and stories.ts, which already solved this.
+ */
+function callerDeviceId(req: any): string | null {
+  const fromAuth = req.auth?.device_id;
+  if (typeof fromAuth === 'string' && fromAuth) return fromAuth;
+  const fromBody = req.body?.device_id;
+  if (typeof fromBody === 'string' && fromBody) return fromBody;
+  const fromQuery = req.query?.device_id;
+  return typeof fromQuery === 'string' && fromQuery ? fromQuery : null;
+}
+
 router.post('/mark', requireAuth, async (req, res) => {
-  const { user_id, device_id } = (req as any).auth;
+  const { user_id } = (req as any).auth;
+  const device_id = callerDeviceId(req);
   const { message_ids, status = 'delivered' } = req.body ?? {};
   if (!Array.isArray(message_ids) || !message_ids.length) {
     return res.status(400).json({ error: 'message_ids array required' });

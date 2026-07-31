@@ -402,10 +402,50 @@ final class ChatStore: ObservableObject {
         }
     }
 
+    /// The conversation currently ON SCREEN, or nil.
+    ///
+    /// Read receipts are gated on this. Without it `syncMessages` marked messages read from
+    /// EVERY sync — including the one a background push triggers — so a message was reported
+    /// "Seen" the moment it arrived in a chat the user had never opened. That is a privacy
+    /// failure as much as a correctness one: it tells the sender you read something you have
+    /// not looked at.
+    private(set) var openConversationId: String?
+
     /// Open a conversation: show cached messages, then sync (fetch + decrypt-new) from server.
     func openConversation(_ conv: VConversation) {
+        openConversationId = conv.id
+        // Clear the badge NOW rather than waiting for the next /conversations poll. The
+        // receipt round-trip takes a moment, and a chat you are staring at showing "3 unread"
+        // is the single most obvious way for the count to look broken.
+        clearUnreadLocally(conv.id)
         refresh(conv.id)
         Task { await syncMessages(conv) }
+    }
+
+    /// Zero the local unread badge. The server is the source of truth; this just stops the
+    /// UI lying during the round-trip.
+    private func clearUnreadLocally(_ conversationId: String) {
+        if let i = directConversations.firstIndex(where: { $0.id == conversationId }),
+           directConversations[i].unreadCount != 0 {
+            directConversations[i].unreadCount = 0
+        }
+        if let i = groupConversations.firstIndex(where: { $0.id == conversationId }),
+           groupConversations[i].unreadCount != 0 {
+            groupConversations[i].unreadCount = 0
+        }
+    }
+
+    /// The chat closed. Stops read receipts for it until it is opened again.
+    func closeConversation(_ conversationId: String) {
+        if openConversationId == conversationId { openConversationId = nil }
+    }
+
+    /// Mark the open chat read. Called on open, and whenever a message lands WHILE it is
+    /// open — the arrival path must not rely on the next manual sync.
+    func markOpenConversationRead(_ conversationId: String) async {
+        guard openConversationId == conversationId,
+              PrivacySettings.shared.sendReadReceipts else { return }
+        await ChatEngine.shared.markRead(conversationId: conversationId)
     }
 
     /// Pull from the server and decrypt any new messages, then refresh the UI.
@@ -415,11 +455,8 @@ final class ChatStore: ObservableObject {
             // this device's copy of the group's app messages into the shared store.
             await GroupEngine.shared.syncGroupEvents()
             await GroupEngine.shared.syncGroupMessages(conversationId: conv.id)
-            // Settings → Privacy → "Send read receipts". This is one of the only two
-            // places the app POSTs receipts/mark with status "read"; both are gated.
-            if PrivacySettings.shared.sendReadReceipts {
-                await ChatEngine.shared.markRead(conversationId: conv.id)
-            }
+            // Only for the chat ON SCREEN — see `openConversationId`.
+            await markOpenConversationRead(conv.id)
             refresh(conv.id)
             return
         }
@@ -435,10 +472,8 @@ final class ChatStore: ObservableObject {
                 ChatEngine.shared.resetSession(peer)
                 WebSocketClient.shared.sendSessionReset(conversationId: conv.id, recipientIds: [peer])
             }
-            // Settings → Privacy → "Send read receipts" (blue ticks for the sender).
-            if PrivacySettings.shared.sendReadReceipts {
-                await ChatEngine.shared.markRead(conversationId: conv.id)
-            }
+            // Only for the chat ON SCREEN — see `openConversationId`.
+            await markOpenConversationRead(conv.id)
             await fetchPresence(conv.id, peerUserId: peer)
         } catch {
             loadError = (error as? APIError)?.errorDescription ?? "Couldn’t load messages."

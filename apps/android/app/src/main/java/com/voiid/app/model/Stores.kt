@@ -294,10 +294,51 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         return (directConversations + groupConversations).firstOrNull { it.id == id }
     }
 
+    /**
+     * The conversation currently ON SCREEN, or null.
+     *
+     * Read receipts are gated on this. Without it [syncMessages] marked messages read from
+     * EVERY sync — including the one a background FCM push triggers — so a message was
+     * reported "Seen" the moment it arrived in a chat the user had never opened. That is a
+     * privacy failure as much as a correctness one: it tells the sender you read something
+     * you have not looked at.
+     */
+    var openConversationId: String? = null
+        private set
+
     /** Open a conversation: show cached, then sync (fetch + decrypt-new) from server. */
     fun openConversation(conv: VConversation) {
+        openConversationId = conv.id
+        // Clear the badge NOW rather than waiting for the next /conversations poll to report
+        // it. The receipt round-trip takes a moment, and a chat you are staring at showing
+        // "3 unread" is the single most obvious way for the count to look broken.
+        clearUnreadLocally(conv.id)
         refresh(conv.id)
         viewModelScope.launch { syncMessages(conv) }
+    }
+
+    /** Zero the local unread badge. The server is the source of truth; this just stops the
+     *  UI lying during the round-trip. */
+    private fun clearUnreadLocally(conversationId: String) {
+        listOf(directConversations, groupConversations).forEach { list ->
+            val i = list.indexOfFirst { it.id == conversationId }
+            if (i >= 0 && list[i].unreadCount != 0) list[i] = list[i].copy(unreadCount = 0)
+        }
+    }
+
+    /** The chat closed. Stops read receipts for it until it is opened again. */
+    fun closeConversation(conversationId: String) {
+        if (openConversationId == conversationId) openConversationId = null
+    }
+
+    /**
+     * Mark the open chat read. Called on open, and whenever a message lands WHILE it is open —
+     * the arrival path must not rely on the next manual sync.
+     */
+    suspend fun markOpenConversationRead(conversationId: String) {
+        if (openConversationId != conversationId) return
+        if (!PrivacySettings.sendReadReceipts(appContext)) return
+        engine.markRead(conversationId)
     }
 
     suspend fun syncMessages(conv: VConversation) {
@@ -308,10 +349,8 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                 groupEngine.syncGroupEvents()
                 groupEngine.receiveGroupMessages(conv.id)
                 refresh(conv.id)
-                // Settings -> Privacy -> "Send read receipts": when off, this device
-                // stops POSTing receipts/mark with status "read" (delivery receipts are
-                // a transport signal and unaffected — see PrivacySettings).
-                if (PrivacySettings.sendReadReceipts(appContext)) engine.markRead(conv.id)
+                // Only for the chat ON SCREEN — see `openConversationId`.
+                markOpenConversationRead(conv.id)
             } catch (e: Exception) {
                 loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t load messages."
             }
@@ -326,8 +365,8 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                 engine.resetSession(peer)
                 ws.sendSessionReset(conv.id, listOf(peer))
             }
-            // Settings -> Privacy -> "Send read receipts" (see PrivacySettings doc).
-            if (PrivacySettings.sendReadReceipts(appContext)) engine.markRead(conv.id)
+            // Only for the chat ON SCREEN — see `openConversationId`.
+            markOpenConversationRead(conv.id)
             fetchPresence(conv.id, peer)
         } catch (e: Exception) {
             loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t load messages."

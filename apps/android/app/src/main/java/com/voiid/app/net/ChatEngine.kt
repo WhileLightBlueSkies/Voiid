@@ -421,8 +421,21 @@ class ChatEngine private constructor(context: Context) {
     private suspend fun markReceipts(ids: List<String>, status: String) {
         if (ids.isEmpty()) return
         android.util.Log.i("VOIID", "📤 receipt $status x${ids.size}")
-        val body = ApiClient.json.encodeToString(MarkReadBody.serializer(), MarkReadBody(ids, status))
+        // SEND THE DEVICE ID. The login token carries only user_id (POST /auth/firebase
+        // issues no device claim), so without this the server records every receipt against a
+        // NULL device — see the callerDeviceId note in routes/receipts.ts.
+        val body = ApiClient.json.encodeToString(
+            MarkReadBody.serializer(), MarkReadBody(ids, status, e2e.deviceId),
+        )
         runCatching { api.request("POST", "receipts/mark", jsonBody = body) }
+            .onFailure {
+                // PUT THEM BACK. `markRead` records an id as reported BEFORE the POST, so a
+                // dropped request would otherwise strand it forever — the sender stuck on
+                // Delivered with nothing to retry it. Re-marking on the next sync is cheap;
+                // never re-marking is unrecoverable.
+                if (status == "read") readReported.removeAll(ids.toSet())
+                android.util.Log.w("VOIID", "receipt $status failed, will retry", it)
+            }
     }
 
     /**
@@ -466,11 +479,33 @@ class ChatEngine private constructor(context: Context) {
         return env.reaction?.let { r -> if (env.text.isBlank()) r else "$r ${env.text}" } ?: env.text
     }
 
-    /** Mark all stored inbound messages in a conversation read → server fans out a
-     *  `receipt` WS event to the senders (blue ticks). */
+    /** Server ids this device has already reported as READ. */
+    private val readReported = mutableSetOf<String>()
+
+    /**
+     * Mark inbound messages in a conversation READ → the server fans out a `receipt` WS event
+     * to the senders, and the message stops counting toward their unread badge.
+     *
+     * ONLY EVER CALL THIS FOR A CHAT THE USER IS LOOKING AT. It used to run from every
+     * `syncMessages`, including the one `handleIncoming` fires for a background push — so a
+     * message was marked read the instant it arrived in a chat the user had never opened.
+     *
+     * Three filters, each fixing a real defect:
+     *   - `!control`  — control envelopes (reactions, deletes, location keys) are not
+     *                   messages; marking them read is meaningless traffic.
+     *   - `!failed`   — a tombstone we could not decrypt has not been READ by anyone. Saying
+     *                   otherwise tells the sender it was seen when it never rendered.
+     *   - `readReported` — this resent EVERY inbound id on EVERY sync. A chat with 200
+     *                   messages POSTed 200 ids each time it was opened or polled, and the
+     *                   server looped an UPDATE per id. Only newly-read ids go now.
+     */
     suspend fun markRead(conversationId: String) {
         ensureLoaded()
-        val ids = (store[conversationId] ?: emptyList()).filter { !it.isMine }.map { it.id }
+        val ids = (store[conversationId] ?: emptyList())
+            .filter { !it.isMine && !it.control && !it.failed }
+            .map { it.id }
+            .filter { readReported.add(it) }
+        if (ids.isEmpty()) return
         markReceipts(ids, "read")
     }
 
@@ -1219,7 +1254,12 @@ class ChatEngine private constructor(context: Context) {
      *
      * See ReceiptEncodingTest, which pins both the fix and the original failure.
      */
-    @Serializable private data class MarkReadBody(val message_ids: List<String>, val status: String)
+    @Serializable private data class MarkReadBody(
+        val message_ids: List<String>,
+        val status: String,
+        /** This device, because the JWT does not carry it. Null only before E2E setup. */
+        val device_id: String? = null,
+    )
     /** One target device's ciphertext in a fan-out bundle. */
     @Serializable private data class DeviceCiphertext(val recipient_device_id: String, val ciphertext: String)
     /** Multi-device fan-out send: one ciphertext per TARGET device. */

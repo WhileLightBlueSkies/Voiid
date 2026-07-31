@@ -190,7 +190,12 @@ fun ChatDetailView(
     }
 
     // Load cached + sync (fetch + decrypt) the real E2EE messages on open.
-    LaunchedEffect(conversation.id) { chat.openConversation(conversation) }
+    // Open on entry, CLOSE on exit — the close is what stops read receipts firing for this
+    // chat once the user has navigated away.
+    androidx.compose.runtime.DisposableEffect(conversation.id) {
+        chat.openConversation(conversation)
+        onDispose { chat.closeConversation(conversation.id) }
+    }
     // Call bubbles come from the local call_history table, not the message store, so they are
     // loaded alongside the transcript rather than arriving through sync. Re-loaded whenever a
     // call finishes (state → null) so a call made from THIS chat leaves its bubble behind
