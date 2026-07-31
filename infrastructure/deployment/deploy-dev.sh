@@ -73,8 +73,14 @@ pm2 save
 # machine debugging it. The deploy pipeline IS reachable, so it is the only channel back. Remove
 # this block once that query is fixed.
 echo "==> Recent api errors (temporary diagnostic)"
-pm2 logs voiid-api --lines 120 --nostream --raw 2>/dev/null \
-  | grep -iE "leaderboard|unhandled error|error:" | tail -25 || echo "(no matching lines)"
+# Read the pm2 log FILES, not `pm2 logs`: the restart above resets the streamed buffer, so a
+# buffer read here is always empty. The files persist across restarts.
+for f in "$HOME"/.pm2/logs/voiid-api-error.log "$HOME"/.pm2/logs/voiid-api-out.log; do
+  [ -f "$f" ] || continue
+  echo "--- $f ---"
+  grep -iE "leaderboard|unhandled error|column|syntax|operator" "$f" 2>/dev/null | tail -20
+done
+echo "(end diagnostic)"
 echo
 
 echo "==> Health check"
