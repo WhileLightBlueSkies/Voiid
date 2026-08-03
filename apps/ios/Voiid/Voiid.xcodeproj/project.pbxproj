@@ -177,6 +177,7 @@
 				AA0000000000000000000016 /* MediaService.swift */,
 				AA00000000000000000000F1 /* GroupEngine.swift */,
 				AA00000000000000000000F3 /* MessageActionWire.swift */,
+				AA00000000000000000000F5 /* GameInvite.swift */,
 			);
 			name = "Recovered References";
 			sourceTree = "<group>";

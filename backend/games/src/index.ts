@@ -17,7 +17,7 @@ import { sub, pub, GAMES_INPUT_CHANNEL } from './redis';
 import { factoryFor } from './engine/registry';
 import { loadMatch, saveMatch, finishMatch, markStarted, type LiveMatch } from './matches';
 import { query } from './db';
-import type { GameEngine, GameOutcome } from './engine/GameEngine';
+import type { GameEngine, GameOutcome, GameStatePayload } from './engine/GameEngine';
 import http from 'http';
 
 // --- Per-match input rate limiting --------------------------------------------------
@@ -27,9 +27,26 @@ import http from 'http';
 // handful of moves a minute; 60 is generous headroom that still bounds the damage.
 const INPUT_MAX_PER_WINDOW = Number(process.env.VOIID_GAME_INPUT_RATE) || 60;
 const INPUT_WINDOW_MS = 60_000;
+
+/**
+ * Continuous games need a far higher ceiling, per game type (GAMES.md §115: "12-30/60s
+ * depending on game, configurable per game type").
+ *
+ * 60/minute is generous for chess and lethal for a joystick: a player steering a snake
+ * legitimately sends several frames a second, so the turn-based limit would silently freeze
+ * their controls a second into every match. The limit is therefore derived from the game's
+ * own tick rate — a client has no reason to send input faster than the server can act on it,
+ * with 2x headroom for jitter and burst.
+ */
+const CONTINUOUS_HEADROOM = 2;
 const inputRate = new Map<string, { count: number; windowStart: number }>();
 
-function rateLimited(matchId: string, userId: string): boolean {
+function limitFor(slug: string): number {
+  const hz = factoryFor(slug)?.tickHz;
+  return hz ? Math.ceil(hz * 60 * CONTINUOUS_HEADROOM) : INPUT_MAX_PER_WINDOW;
+}
+
+function rateLimited(matchId: string, userId: string, slug: string): boolean {
   const key = `${matchId}:${userId}`;
   const now = Date.now();
   const bucket = inputRate.get(key);
@@ -37,7 +54,7 @@ function rateLimited(matchId: string, userId: string): boolean {
     inputRate.set(key, { count: 1, windowStart: now });
     return false;
   }
-  if (bucket.count >= INPUT_MAX_PER_WINDOW) return true;
+  if (bucket.count >= limitFor(slug)) return true;
   bucket.count += 1;
   return false;
 }
@@ -48,13 +65,15 @@ function rateLimited(matchId: string, userId: string): boolean {
  * new connection, no new reconnect logic, and no second socket: a game frame arrives on
  * the pipe they already hold open for chat.
  */
-async function broadcast(m: LiveMatch): Promise<void> {
+async function broadcast(m: LiveMatch, wire?: GameStatePayload): Promise<void> {
   const frame = JSON.stringify({
     type: 'game_state',
     match_id: m.matchId,
     game: m.slug,
     seq: m.seq,
-    payload: m.state,
+    // `wire` is the engine's client-facing projection when it has one (continuous games send
+    // food as a delta). Falling back to m.state keeps every turn-based game unchanged.
+    payload: wire ?? m.state,
   });
   for (const uid of m.players) {
     await pub.publish(`channel:user:${uid}`, frame);
@@ -62,14 +81,104 @@ async function broadcast(m: LiveMatch): Promise<void> {
 }
 
 async function endMatch(m: LiveMatch, engine: GameEngine, outcome: GameOutcome) {
+  // Stop the clock before anything else. A tick firing between the terminal broadcast and
+  // finishMatch() would resurrect the Redis key that finishMatch is about to delete, leaving
+  // an orphaned match ticking forever with no players.
+  stopLoop(m.matchId);
   m.state = engine.serialize();
+  const wire = engine.serializeForWire?.();
   m.seq += 1;
   m.secret = engine.serializeSecret?.();
   // Broadcast the terminal state BEFORE clearing Redis: the players must see the winning
   // board, and finishMatch drops the key.
-  await broadcast(m);
+  await broadcast(m, wire);
   for (const uid of m.players) inputRate.delete(`${m.matchId}:${uid}`);
   await finishMatch(m.matchId, m.players, outcome);
+}
+
+// --- Tick loops for continuous games (docs/GAMES.md §105) ---------------------------
+//
+// Every game before Snake was turn-based, so this service had no clock at all: state changed
+// only in response to an input frame. Continuous games must move on their own, which means a
+// per-match interval that calls engine.tick() and broadcasts the result.
+//
+// THE LOOP IS KEYED ON tickHz BEING PRESENT, not on a list of slugs. A turn-based factory
+// omits tickHz and therefore never gets a loop — so CPU cost scales with live ARCADE
+// matches, not with matches in total, exactly as GameEngine.ts promises.
+//
+// The loop lives in this process's memory, not in Redis. That is a deliberate tradeoff: if
+// the service restarts, in-flight arcade matches stop ticking and expire via the state TTL.
+// GAMES.md §107 accepts exactly this ("if the games process restarts, in-progress arcade
+// matches are lost"), and the alternative — a durable scheduler — is a great deal of
+// machinery for a 3-minute match.
+const loops = new Map<string, NodeJS.Timeout>();
+
+function stopLoop(matchId: string): void {
+  const t = loops.get(matchId);
+  if (t) {
+    clearInterval(t);
+    loops.delete(matchId);
+  }
+}
+
+async function runTick(matchId: string): Promise<void> {
+  const m = await loadMatch(matchId);
+  if (!m) {
+    // Match expired or was finished by another path. Nothing left to drive.
+    stopLoop(matchId);
+    return;
+  }
+
+  const factory = factoryFor(m.slug);
+  if (!factory) {
+    stopLoop(matchId);
+    return;
+  }
+
+  const engine = factory.restore(m.state, m.secret);
+  if (!engine.tick) {
+    stopLoop(matchId);
+    return;
+  }
+
+  const result = engine.tick();
+
+  if (result.outcome) {
+    stopLoop(matchId);
+    await endMatch(m, engine, result.outcome);
+    return;
+  }
+
+  if (!result.changed) return;
+
+  // Order matters: serialize() captures the complete state for Redis, and
+  // serializeForWire() then consumes the per-frame deltas. Reversing these would persist
+  // already-drained delta buffers and the next frame would under-report its changes.
+  m.state = engine.serialize();
+  const wire = engine.serializeForWire?.();
+  m.secret = engine.serializeSecret?.();
+  m.seq += 1;
+  await saveMatch(m);
+  await broadcast(m, wire);
+}
+
+function startLoop(matchId: string, hz: number): void {
+  if (loops.has(matchId)) return;
+
+  // `running` guards against overlap: a tick that takes longer than the interval (a slow
+  // Redis round-trip) must not have the next one start on top of it, or the two would race
+  // on the same state and one's writes would be silently lost.
+  let running = false;
+  const timer = setInterval(() => {
+    if (running) return;
+    running = true;
+    runTick(matchId)
+      .catch((e) => console.error('[games] tick error', matchId, e))
+      .finally(() => { running = false; });
+  }, Math.round(1000 / hz));
+
+  loops.set(matchId, timer);
+  console.log(`[games] tick loop started for ${matchId} @ ${hz}Hz`);
 }
 
 /**
@@ -90,7 +199,7 @@ async function handleInput(msg: Record<string, any>): Promise<void> {
   // (no DB). This service holds the player list in the live record, so an outsider firing
   // inputs at someone else's match is rejected outright rather than merely being useless.
   if (!m.players.includes(userId)) return;
-  if (rateLimited(matchId, userId)) return;
+  if (rateLimited(matchId, userId, m.slug)) return;
 
   const factory = factoryFor(m.slug);
   if (!factory) return;
@@ -113,7 +222,10 @@ async function handleInput(msg: Record<string, any>): Promise<void> {
   m.secret = engine.serializeSecret?.();
   m.seq += 1;
   await saveMatch(m);
-  await broadcast(m);
+
+  // A continuous game's input only records intent; the next tick is what makes it visible.
+  // Broadcasting here as well would double the fan-out for a player holding a joystick.
+  if (!result.silent) await broadcast(m);
 }
 
 /**
@@ -144,6 +256,10 @@ async function handleJoin(msg: Record<string, any>): Promise<void> {
     if (existing.joined.length >= existing.players.length) {
       await markStarted(matchId);
       await broadcast(existing);
+      // Idempotent: a rejoin/resync after the match is already running must not start a
+      // second loop, which startLoop guards against.
+      const f = factoryFor(existing.slug);
+      if (f?.tickHz) startLoop(matchId, f.tickHz);
     }
     return;
   }
@@ -185,6 +301,7 @@ async function handleJoin(msg: Record<string, any>): Promise<void> {
   if (m.joined!.length >= players.length) {
     await markStarted(matchId);
     await broadcast(m);
+    if (factory.tickHz) startLoop(matchId, factory.tickHz);
   }
 }
 

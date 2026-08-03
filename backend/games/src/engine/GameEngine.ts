@@ -34,6 +34,16 @@ export interface ApplyResult {
   accepted: boolean;
   /** Set once the game has ended; the runtime persists it and stops the match. */
   outcome?: GameOutcome;
+  /**
+   * Accepted, but do NOT broadcast for this input alone.
+   *
+   * Turn-based games leave this unset: a move IS the state change, so it must go out
+   * immediately. Continuous games set it, because their input only records intent — a
+   * steering frame changes nothing a player can see until the next tick renders it. Without
+   * this, a player holding a joystick would trigger a full state fan-out on every input
+   * frame ON TOP OF the tick broadcast, multiplying bandwidth for no visible benefit.
+   */
+  silent?: boolean;
 }
 
 export interface GameEngine {
@@ -47,8 +57,28 @@ export interface GameEngine {
   /** Advance time. Continuous games only; absent on turn-based engines (see above). */
   tick?(): { changed: boolean; outcome?: GameOutcome };
 
-  /** Current state as the clients should see it. */
+  /**
+   * Complete state. This is the PERSISTENCE shape: the runtime writes it to Redis and hands
+   * it straight back to `restore`, so it must contain everything needed to rebuild the match
+   * exactly. Omitting a field here silently resets it on the next tick.
+   */
   serialize(): GameStatePayload;
+
+  /**
+   * What to actually send to clients, when that differs from the full state.
+   *
+   * Turn-based games omit this: their state is small and every field matters to the client,
+   * so the persistence shape and the wire shape are the same object.
+   *
+   * Continuous games need the split. Snake's food field is ~300 pellets that almost never
+   * change, and resending it 12x/sec made it 59% of the payload — but it cannot simply be
+   * dropped from `serialize`, because that is what rebuilds the match. So `serialize` stays
+   * complete for Redis, and this returns the same state with the unchanged bulk replaced by
+   * a delta.
+   *
+   * Called once per broadcast, AFTER serialize(), and may clear per-frame delta buffers.
+   */
+  serializeForWire?(): GameStatePayload;
 
   /**
    * SERVER-ONLY state that must survive between inputs but must NEVER reach a client.

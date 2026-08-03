@@ -161,6 +161,7 @@ struct GamesHomeView: View {
                     switch m.slug {
                     case "rps":     RpsMatchView(matchId: m.id) { openMatch = nil }
                     case "cricket": CricketMatchView(matchId: m.id) { openMatch = nil }
+                    case "snake":   SnakeArenaView(matchId: m.id) { openMatch = nil }
                     default:        TicTacToeView(matchId: m.id) { openMatch = nil }
                     }
                 }
@@ -183,7 +184,31 @@ struct GamesHomeView: View {
                     gameName: game.name,
                     onPlayFriend: { pendingGame = game },
                     onPlayBot: { level, skill in
-                        botGame = BotSession(slug: game.slug, level: level, skill: skill)
+                        // Snake's bots live on the SERVER, so "play a bot" mints a real
+                        // one-seat match rather than opening a local simulation. Every other
+                        // game here is turn-based and simulates its opponent on-device.
+                        if game.slug == "snake" {
+                            let slug = game.slug
+                            setupGame = nil
+                            Task {
+                                // Difficulty maps to how many bots share the arena. Bots all
+                                // use identical physics to the player — no speed or turning
+                                // advantage — so a busier arena IS the difficulty: less open
+                                // space, more bodies to cut across.
+                                let bots: Int
+                                switch level {
+                                case .easy:     bots = 3
+                                case .moderate: bots = 5
+                                case .hard:     bots = 8
+                                }
+                                if let id = await GamesEngine.shared.createSolo(
+                                    slug: slug, options: ["bots": bots]) {
+                                    openMatch = OpenMatch(id: id, slug: slug)
+                                }
+                            }
+                        } else {
+                            botGame = BotSession(slug: game.slug, level: level, skill: skill)
+                        }
                     })
             }
             .sheet(item: $pendingGame) { game in

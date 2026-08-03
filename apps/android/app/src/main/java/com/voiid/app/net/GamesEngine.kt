@@ -10,6 +10,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
@@ -28,6 +29,9 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
 
     companion object {
         private const val TAG = "GamesEngine"
+
+        /** Matches the server's snake tick rate — see [steer] for why input is capped to it. */
+        private const val STEER_INTERVAL_MS = 100L
         @Volatile private var instance: GamesEngine? = null
         fun get(context: Context): GamesEngine =
             instance ?: synchronized(this) {
@@ -116,6 +120,54 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         )
     }
 
+    /**
+     * Authoritative Snake state (backend/games/src/engine/snake).
+     *
+     * THE FIRST CONTINUOUS GAME, and the first that needs more from this layer than "parse
+     * and draw". The server ticks at 10 Hz, so a renderer drawing frames as they land would
+     * show 10 fps of visible stepping. The screen therefore keeps the PREVIOUS frame too and
+     * interpolates between the pair (see `SnakeArenaScreen.kt`).
+     *
+     * That is interpolation, not prediction — it draws only positions the server has already
+     * confirmed, slightly in the past. It cannot invent a position, so the
+     * "renderer, not referee" rule at the top of this file still holds exactly.
+     *
+     * Mirrors iOS `SnakeState`.
+     */
+    data class SnakeState(
+        val players: List<String>,
+        val snakes: List<Snake>,
+        val food: List<Food>,
+        val time: Double,
+        val arenaRadius: Double,
+        val duration: Double,
+        val finished: Boolean,
+        val winnerUserId: String?,
+    ) {
+        data class Snake(
+            val id: String,
+            val isBot: Boolean,
+            val x: Double,
+            val y: Double,
+            val heading: Double,
+            val mass: Double,
+            val alive: Boolean,
+            val boosting: Boolean,
+            /** Absolute body points, head first, already decoded from the wire's delta form. */
+            val path: List<Point>,
+            val kills: Int,
+            val deaths: Int,
+            val score: Int,
+            val invulnUntil: Double,
+            val colorIndex: Int,
+        )
+
+        data class Point(val x: Double, val y: Double)
+
+        /** [value]: 1 = standard, 2 = corpse, 0.5 = boost drop. */
+        data class Food(val id: Int, val x: Double, val y: Double, val value: Double)
+    }
+
     private val appContext = context.applicationContext
     private val tokens = TokenStore.get(context)
     private val service = GamesService(ApiClient(tokens))
@@ -133,6 +185,28 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
 
     private val _cricket = MutableStateFlow<CricketState?>(null)
     val cricket: StateFlow<CricketState?> = _cricket.asStateFlow()
+
+    /**
+     * Current snake frame and the one before it.
+     *
+     * The previous frame is kept because the renderer interpolates between the two: at a
+     * 10 Hz tick, drawing each frame on arrival would visibly step. It also supplies the
+     * baseline that food deltas are applied against.
+     */
+    private val _snake = MutableStateFlow<SnakeState?>(null)
+    val snake: StateFlow<SnakeState?> = _snake.asStateFlow()
+
+    private val _snakePrevious = MutableStateFlow<SnakeState?>(null)
+    val snakePrevious: StateFlow<SnakeState?> = _snakePrevious.asStateFlow()
+
+    /**
+     * Uptime millis at which the current snake frame landed, so the screen knows how far to
+     * interpolate. Deliberately elapsedRealtime rather than wall clock — the two differ by an
+     * unknown offset from the server and only the local one paces drawing, and a wall clock
+     * can jump mid-match.
+     */
+    @Volatile var snakeFrameAt: Long = 0L
+        private set
 
     private val _joinError = MutableStateFlow<String?>(null)
     val joinError: StateFlow<String?> = _joinError.asStateFlow()
@@ -162,8 +236,106 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         when (game) {
             "rps" -> _rps.value = parseRps(payload)
             "cricket" -> _cricket.value = parseCricket(payload)
+            "snake" -> {
+                // Parse against the CURRENT frame, because food deltas are relative to it,
+                // then shift it into `previous` for the renderer to interpolate from.
+                val next = parseSnake(payload, _snake.value) ?: return
+                _snakePrevious.value = _snake.value
+                _snake.value = next
+                snakeFrameAt = android.os.SystemClock.elapsedRealtime()
+            }
             else -> _state.value = parse(payload)
         }
+    }
+
+    /**
+     * Decode one snake's body.
+     *
+     * The wire form is `[headX, headY, dx, dy, ...]` in `pathStep` units — absolute
+     * coordinates only for the head, deltas after, because consecutive body points sit a few
+     * units apart and their deltas are far shorter to encode. Long snakes are also decimated
+     * past the head, which needs no handling here: a halved segment is simply a longer delta,
+     * and the curve through the points has the same shape.
+     */
+    private fun decodePath(raw: List<Double>, step: Double): List<SnakeState.Point> {
+        if (raw.size < 2) return emptyList()
+        val out = ArrayList<SnakeState.Point>(raw.size / 2)
+        var x = raw[0]
+        var y = raw[1]
+        out.add(SnakeState.Point(x, y))
+        var i = 2
+        while (i + 1 < raw.size) {
+            x += raw[i] * step
+            y += raw[i + 1] * step
+            out.add(SnakeState.Point(x, y))
+            i += 2
+        }
+        return out
+    }
+
+    /** `previous` supplies the food field when this frame carries only a delta. */
+    private fun parseSnake(payload: JsonObject, previous: SnakeState?): SnakeState? {
+        val players = payload.arr("players")?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+            ?: return null
+        val rawSnakes = payload.arr("snakes") ?: return null
+        val step = payload.dbl("pathStep") ?: 1.0
+
+        val snakes = rawSnakes.mapNotNull { entry ->
+            val o = entry as? JsonObject ?: return@mapNotNull null
+            val id = o.str("id") ?: return@mapNotNull null
+            SnakeState.Snake(
+                id = id,
+                isBot = o.bool("bot") ?: false,
+                x = o.dbl("x") ?: 0.0,
+                y = o.dbl("y") ?: 0.0,
+                heading = o.dbl("h") ?: 0.0,
+                mass = o.dbl("m") ?: 0.0,
+                alive = o.bool("a") ?: false,
+                boosting = o.bool("b") ?: false,
+                path = decodePath(
+                    o.arr("p")?.mapNotNull { (it as? JsonPrimitive)?.doubleOrNull } ?: emptyList(),
+                    step),
+                kills = o.int("k") ?: 0,
+                deaths = o.int("d") ?: 0,
+                score = o.int("s") ?: 0,
+                invulnUntil = o.dbl("iv") ?: 0.0,
+                colorIndex = o.int("c") ?: 0,
+            )
+        }
+
+        // Food arrives as a full snapshot or as add/remove deltas. Rebuilding from the
+        // previous frame is what keeps it off the wire ~90% of the time.
+        val food = LinkedHashMap<Int, SnakeState.Food>()
+        fun addEntries(arr: JsonArray?) {
+            arr?.forEach { entry ->
+                val nums = (entry as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.doubleOrNull }
+                if (nums != null && nums.size >= 4) {
+                    val id = nums[3].toInt()
+                    food[id] = SnakeState.Food(id, nums[0], nums[1], nums[2])
+                }
+            }
+        }
+
+        if (payload.bool("foodFull") != false) {
+            addEntries(payload.arr("food"))
+        } else {
+            previous?.food?.forEach { food[it.id] = it }
+            addEntries(payload.arr("foodAdd"))
+            payload.arr("foodDel")?.forEach { entry ->
+                (entry as? JsonPrimitive)?.intOrNull?.let { food.remove(it) }
+            }
+        }
+
+        return SnakeState(
+            players = players,
+            snakes = snakes,
+            food = food.values.toList(),
+            time = payload.dbl("t") ?: 0.0,
+            arenaRadius = payload.dbl("arenaRadius") ?: 1400.0,
+            duration = payload.dbl("duration") ?: 180.0,
+            finished = payload.bool("finished") ?: false,
+            winnerUserId = payload.str("winnerUserId"),
+        )
     }
 
     private fun parseCricket(payload: JsonObject): CricketState? {
@@ -252,6 +424,10 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         _state.value = null
         _rps.value = null
         _cricket.value = null
+        _snake.value = null
+        _snakePrevious.value = null
+        pendingHeading = null
+        lastSentBoost = false
         _joinError.value = null
         lastSeq = -1
         runCatching { service.join(matchId) }
@@ -350,8 +526,80 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         WebSocketClient.get(context).sendGameInput(id, """{"pick":$pick}""")
     }
 
+    /**
+     * Steer. [heading] is radians in world space; [boost] is whether the pedal is held.
+     *
+     * Rate-limited to the server's tick rate rather than sent on every touch callback. A drag
+     * fires far faster than 10 Hz and the extra frames cannot change anything — the server
+     * reads the latest heading once per tick and discards the rest — so sending them would
+     * burn uplink and radio for no visible effect, and would trip the per-match input limit.
+     *
+     * Unsent changes are not queued: the newest heading replaces the last, which is the right
+     * semantics for a continuous control. A stale heading has no value.
+     */
+    fun steer(context: Context, heading: Double, boost: Boolean) {
+        val id = matchId ?: return
+        val s = _snake.value ?: return
+        if (s.finished) return
+
+        val now = android.os.SystemClock.elapsedRealtime()
+        // Boost edges go immediately: a dropped press is a lost fight, and it is an edge
+        // rather than a continuous value.
+        val boostChanged = boost != lastSentBoost
+        if (!boostChanged && now - lastSteerSentAt < STEER_INTERVAL_MS) {
+            pendingHeading = heading
+            return
+        }
+
+        lastSteerSentAt = now
+        lastSentBoost = boost
+        pendingHeading = null
+        WebSocketClient.get(context).sendGameInput(id, """{"h":$heading,"boost":$boost}""")
+    }
+
+    /**
+     * Flush a heading that arrived between sends. Called by the renderer each frame, so a
+     * finger that stops moving still lands its final direction.
+     */
+    fun flushSteering(context: Context) {
+        val heading = pendingHeading ?: return
+        if (android.os.SystemClock.elapsedRealtime() - lastSteerSentAt < STEER_INTERVAL_MS) return
+        steer(context, heading, lastSentBoost)
+    }
+
+    private var lastSteerSentAt = 0L
+    private var lastSentBoost = false
+    private var pendingHeading: Double? = null
+
+    /**
+     * Create a SOLO match — one human against server-side bots — and enter it.
+     *
+     * No invite and no opponent, unlike [create]. Snake is the first game whose catalog row
+     * allows `min_players = 1`, which is what lets a match exist with a single seat.
+     *
+     * The bots run on the SERVER, so this stays a pure renderer: practice and multiplayer are
+     * the same code path on both sides, and a bug in one is a bug in both rather than two
+     * implementations drifting apart. That is the difference between this and the `*Bot.kt`
+     * screens, which simulate turn-based opponents locally because those games have no
+     * continuous state to keep in sync.
+     */
+    suspend fun createSolo(slug: String, options: Map<String, Int> = emptyMap()): String? {
+        return runCatching {
+            val id = service.create(slug, emptyList(), options)
+            open(id)
+            id
+        }.getOrElse {
+            _joinError.value = "Couldn't start the match."
+            null
+        }
+    }
+
     fun leave() {
         matchId = null
+        pendingHeading = null
+        lastSentBoost = false
+        _snake.value = null
+        _snakePrevious.value = null
         _state.value = null
         _rps.value = null
         _cricket.value = null
@@ -379,3 +627,4 @@ private fun JsonObject.prim(key: String): JsonPrimitive? =
 private fun JsonObject.str(key: String): String? = prim(key)?.contentOrNull
 private fun JsonObject.int(key: String): Int? = prim(key)?.intOrNull
 private fun JsonObject.bool(key: String): Boolean? = prim(key)?.booleanOrNull
+private fun JsonObject.dbl(key: String): Double? = prim(key)?.doubleOrNull

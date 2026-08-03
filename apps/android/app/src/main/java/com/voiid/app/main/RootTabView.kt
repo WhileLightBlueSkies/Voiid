@@ -394,7 +394,27 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                 },
                 onPlayBot = { level, skill ->
                     setupGame = null
-                    botGame = Triple(game.slug, level, skill)
+                    if (game.slug == "snake") {
+                        // Snake's bots live on the SERVER, so "play a bot" mints a real
+                        // one-seat match rather than opening a local simulation. Every other
+                        // game here is turn-based and simulates its opponent on-device.
+                        gamesScope.launch {
+                            // Difficulty maps to how many bots share the arena. Bots use
+                            // identical physics to the player — no speed or turning advantage
+                            // — so a busier arena IS the difficulty: less open space, more
+                            // bodies to cut across.
+                            val bots = when (level) {
+                                com.voiid.app.main.games.BotDifficulty.EASY -> 3
+                                com.voiid.app.main.games.BotDifficulty.MODERATE -> 5
+                                com.voiid.app.main.games.BotDifficulty.HARD -> 8
+                            }
+                            com.voiid.app.net.GamesEngine.get(context)
+                                .createSolo(game.slug, mapOf("bots" to bots))
+                                ?.let { openGameMatch = it to game.slug }
+                        }
+                    } else {
+                        botGame = Triple(game.slug, level, skill)
+                    }
                 },
                 onDismiss = { setupGame = null },
             )
@@ -456,6 +476,10 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                         onClose = { openGameMatch = null },
                     )
                     "cricket" -> com.voiid.app.main.games.CricketMatchScreen(
+                        matchId = matchId,
+                        onClose = { openGameMatch = null },
+                    )
+                    "snake" -> com.voiid.app.main.games.SnakeArenaScreen(
                         matchId = matchId,
                         onClose = { openGameMatch = null },
                     )
