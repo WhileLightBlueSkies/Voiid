@@ -36,6 +36,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.Headset
+import androidx.compose.material.icons.filled.PhoneInTalk
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
@@ -474,10 +481,16 @@ private fun CallControls(
             Ctrl(Icons.Default.Cameraswitch, false, isVideo, onFlip)
         }
         // Audio-output control on EVERY call, voice AND video — a video call needs to reach a
-        // Bluetooth headset just as much as a voice call. The route itself is chosen by the
-        // Telecom path (which already prefers Bluetooth > wired > speaker > earpiece when a
-        // device is connected); this button toggles the speaker within that.
-        Ctrl(Icons.AutoMirrored.Filled.VolumeUp, speaker, isVideo, onSpeaker)
+        // Bluetooth headset just as much as a voice call.
+        //
+        // A PICKER when there is something to pick, a toggle when there is not. The routing
+        // has always CHOSEN a device (Bluetooth > wired > speaker > earpiece), but it never
+        // told the user what was available — so connecting a headset silently moved the call
+        // and there was no way to pull it back to the phone, or to pick between two headsets.
+        // Above two routes this becomes a menu with the live one checked; with only
+        // earpiece + speaker it stays the plain speaker toggle it always was. Mirrors iOS
+        // `audioRouteControl`.
+        AudioRouteControl(speaker = speaker, isVideo = isVideo, onToggleSpeaker = onSpeaker)
         Box(
             Modifier.size(64.dp).clip(CircleShape).background(VoiidColor.error).softClickable(onClick = onEnd),
             contentAlignment = Alignment.Center,
@@ -501,4 +514,68 @@ private fun Ctrl(icon: ImageVector, active: Boolean, isVideo: Boolean, onClick: 
         Modifier.size(58.dp).clip(CircleShape).background(bg).softClickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) { Icon(icon, null, tint = fg, modifier = Modifier.size(22.dp)) }
+}
+
+/**
+ * Audio-output control: a route menu when more than earpiece + speaker exist, otherwise the
+ * plain speaker toggle. Port of iOS `CallScreen.audioRouteControl`.
+ */
+@Composable
+private fun AudioRouteControl(speaker: Boolean, isVideo: Boolean, onToggleSpeaker: () -> Unit) {
+    val haptics = LocalVoiidHaptics.current
+    var menuOpen by remember { mutableStateOf(false) }
+
+    // Re-read on every open rather than holding a snapshot: a headset connected mid-call must
+    // appear, and one that walked out of range must not linger in the list.
+    var routes by remember { mutableStateOf(CallManager.availableAudioRoutes()) }
+    val current = remember(menuOpen, speaker) { CallManager.currentAudioRoute() }
+
+    if (routes.size > 2) {
+        Box {
+            Ctrl(routeIcon(current), current !is com.voiid.app.net.CallManager.AudioRoute.Earpiece, isVideo) {
+                routes = CallManager.availableAudioRoutes()
+                haptics.tap()
+                menuOpen = true
+            }
+            DropdownMenu(
+                expanded = menuOpen,
+                onDismissRequest = { menuOpen = false },
+                containerColor = VoiidColor.surfaceCard,
+            ) {
+                routes.forEach { route ->
+                    val selected = route.id == current.id
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                route.label,
+                                style = VoiidFont.rounded(15, if (selected) FontWeight.SemiBold else FontWeight.Normal),
+                                color = VoiidColor.textPrimary,
+                            )
+                        },
+                        onClick = {
+                            menuOpen = false
+                            haptics.tap()
+                            CallManager.selectAudioRoute(route)
+                        },
+                        leadingIcon = {
+                            Icon(
+                                if (selected) Icons.Default.Check else routeIcon(route),
+                                null,
+                                tint = if (selected) VoiidColor.primary else VoiidColor.textSecondary,
+                            )
+                        },
+                    )
+                }
+            }
+        }
+    } else {
+        Ctrl(Icons.AutoMirrored.Filled.VolumeUp, speaker, isVideo, onToggleSpeaker)
+    }
+}
+
+private fun routeIcon(route: com.voiid.app.net.CallManager.AudioRoute): ImageVector = when (route) {
+    is com.voiid.app.net.CallManager.AudioRoute.Bluetooth -> Icons.Default.Bluetooth
+    is com.voiid.app.net.CallManager.AudioRoute.Wired -> Icons.Default.Headset
+    com.voiid.app.net.CallManager.AudioRoute.Speaker -> Icons.AutoMirrored.Filled.VolumeUp
+    com.voiid.app.net.CallManager.AudioRoute.Earpiece -> Icons.Default.PhoneInTalk
 }

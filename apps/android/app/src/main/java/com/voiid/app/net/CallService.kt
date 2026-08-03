@@ -826,6 +826,135 @@ object CallManager {
         update { it.copy(speaker = on) }
     }
 
+    // MARK: - Audio route picker
+    //
+    // The routing below (applyAudioRoute) has always PICKED a device — Bluetooth first, then
+    // wired, then earpiece/speaker — but it never told the UI what was available, so the user
+    // got a binary speaker toggle and no way to move the call to (or off) their headset.
+    // iOS has had a route menu for a while; this is the missing half on Android.
+
+    /** One selectable audio output. Mirrors iOS `CallAudioRoute`. */
+    sealed class AudioRoute(val id: String, val label: String) {
+        object Earpiece : AudioRoute("earpiece", "iPhone")
+        object Speaker : AudioRoute("speaker", "Speaker")
+        class Bluetooth(val deviceId: Int, name: String) : AudioRoute("bt:$deviceId", name)
+        class Wired(val deviceId: Int, name: String) : AudioRoute("wired:$deviceId", name)
+    }
+
+    /**
+     * Every output the call can be sent to, right now.
+     *
+     * Earpiece and speaker are ALWAYS offered even when the query returns nothing — every
+     * phone has both, and an empty picker would be worse than a wrong one. Bluetooth and
+     * wired are appended only when actually connected, which is what makes the UI able to
+     * collapse to a plain speaker toggle when there is nothing to choose between.
+     */
+    fun availableAudioRoutes(): List<AudioRoute> {
+        val am = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            ?: return listOf(AudioRoute.Earpiece, AudioRoute.Speaker)
+        val out = mutableListOf<AudioRoute>(AudioRoute.Earpiece, AudioRoute.Speaker)
+        runCatching {
+            val devices = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                am.availableCommunicationDevices
+            } else {
+                @Suppress("DEPRECATION")
+                am.getDevices(AudioManager.GET_DEVICES_OUTPUTS).toList()
+            }
+            for (d in devices) {
+                when (d.type) {
+                    AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+                    AudioDeviceInfo.TYPE_BLE_HEADSET,
+                    AudioDeviceInfo.TYPE_HEARING_AID ->
+                        out += AudioRoute.Bluetooth(d.id, d.productName?.toString()?.ifBlank { null } ?: "Bluetooth")
+                    AudioDeviceInfo.TYPE_WIRED_HEADSET,
+                    AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+                    AudioDeviceInfo.TYPE_USB_HEADSET ->
+                        out += AudioRoute.Wired(d.id, d.productName?.toString()?.ifBlank { null } ?: "Headphones")
+                }
+            }
+        }
+        // Distinct by id: the same headset can appear under two types (SCO and BLE) on some
+        // devices, which would list it twice.
+        return out.distinctBy { it.id }
+    }
+
+    /** The route currently carrying the call, for the picker's checkmark. */
+    fun currentAudioRoute(): AudioRoute {
+        val am = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && am != null) {
+            am.communicationDevice?.let { d ->
+                when (d.type) {
+                    AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+                    AudioDeviceInfo.TYPE_BLE_HEADSET,
+                    AudioDeviceInfo.TYPE_HEARING_AID ->
+                        return AudioRoute.Bluetooth(d.id, d.productName?.toString()?.ifBlank { null } ?: "Bluetooth")
+                    AudioDeviceInfo.TYPE_WIRED_HEADSET,
+                    AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+                    AudioDeviceInfo.TYPE_USB_HEADSET ->
+                        return AudioRoute.Wired(d.id, d.productName?.toString()?.ifBlank { null } ?: "Headphones")
+                    AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> return AudioRoute.Speaker
+                    AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> return AudioRoute.Earpiece
+                }
+            }
+        }
+        // Pre-S, or nothing reported: fall back to our own speaker flag, which is the only
+        // thing we know for certain.
+        return if (_state.value?.speaker == true) AudioRoute.Speaker else AudioRoute.Earpiece
+    }
+
+    /**
+     * Send the call to a specific output.
+     *
+     * Goes through Telecom first when Telecom owns the call — the same rule applyAudioRoute
+     * follows, and for the same reason: two owners fighting over the route produces
+     * device-specific bugs that never reproduce on a dev machine.
+     */
+    fun selectAudioRoute(route: AudioRoute) {
+        val speaker = route is AudioRoute.Speaker
+        val callId = _state.value?.callId
+        // `&&` binds tighter than `||`, so the obvious spelling of this condition —
+        // `callId != null && a || b` — is `(callId != null && a) || b`, which lets a null
+        // callId through on the earpiece branch. Parenthesised, and the inner null check
+        // kept, so neither reading can bite.
+        val isBuiltIn = route is AudioRoute.Speaker || route is AudioRoute.Earpiece
+        if (callId != null && isBuiltIn) {
+            // Speaker/earpiece is exactly the toggle Telecom already models.
+            if (TelecomBridge.setAudioRoute(callId, speaker)) {
+                ensureCommunicationMode()
+                update { it.copy(speaker = speaker) }
+                return
+            }
+        }
+
+        val am = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        runCatching { am.mode = AudioManager.MODE_IN_COMMUNICATION }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching {
+                val target = when (route) {
+                    is AudioRoute.Bluetooth ->
+                        am.availableCommunicationDevices.firstOrNull { it.id == route.deviceId }
+                    is AudioRoute.Wired ->
+                        am.availableCommunicationDevices.firstOrNull { it.id == route.deviceId }
+                    AudioRoute.Speaker ->
+                        am.availableCommunicationDevices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                    AudioRoute.Earpiece ->
+                        am.availableCommunicationDevices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE }
+                }
+                target?.let { am.setCommunicationDevice(it) }
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            runCatching {
+                when (route) {
+                    is AudioRoute.Bluetooth -> { am.startBluetoothSco(); am.isBluetoothScoOn = true }
+                    else -> { am.stopBluetoothSco(); am.isBluetoothScoOn = false; am.isSpeakerphoneOn = speaker }
+                }
+            }
+        }
+        update { it.copy(speaker = speaker) }
+    }
+
     /**
      * The SYSTEM moved the audio route — the user tapped speaker in the Telecom UI, pressed a
      * button on a Bluetooth headset, or Android Auto took over.
