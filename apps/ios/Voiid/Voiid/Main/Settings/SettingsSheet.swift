@@ -320,12 +320,10 @@ struct SettingsSheet: View {
                 }
 
                 Spacer(minLength: 0)
-
-                // The chevron IS the affordance. "View and edit profile" underneath it said
-                // the same thing twice and cost a line of the card's height.
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(VoiidColor.placeholder)
+                // NO chevron drawn here. NavigationLink already renders one inside a
+                // SettingsSection row, so adding a second put TWO arrows side by side.
+                // The system's is the one to keep — it stays aligned with every other row
+                // on the screen and follows the platform's own metrics.
             }
             .padding(VoiidSpacing.md)
             .frame(maxWidth: .infinity, alignment: .leading)
