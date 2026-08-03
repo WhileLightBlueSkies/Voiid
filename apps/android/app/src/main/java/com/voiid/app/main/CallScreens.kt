@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -46,6 +47,15 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.ui.graphics.graphicsLayer
 import com.voiid.app.store.UserDirectory
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
@@ -154,11 +164,83 @@ private fun CallTypeCard(label: String, icon: ImageVector, modifier: Modifier, o
  */
 @Composable
 fun CallOverlay(state: CallManager.CallState) {
-    if (state.incoming && state.phase == CallManager.Phase.RINGING_IN) {
-        IncomingCallUi(state)
-    } else {
-        InCallUi(state)
+    val minimized by CallManager.minimized.collectAsState()
+    when {
+        state.incoming && state.phase == CallManager.Phase.RINGING_IN -> IncomingCallUi(state)
+        // MINIMIZED: a compact pill instead of the full screen, so the rest of the app is
+        // usable during a call. Never for a RINGING call — a call you have not answered must
+        // not be dismissable into a pill.
+        minimized -> MinimizedCallPill(state)
+        else -> InCallUi(state)
     }
+}
+
+/**
+ * The minimized call: a tappable pill pinned under the status bar.
+ *
+ * WHY THIS EXISTS. Android had no way to leave a call screen without ENDING the call, so
+ * answering meant losing access to the whole app until it was over — you could not check the
+ * address someone was reading to you, or the message you were calling about. iOS has had this
+ * via CallFloatingWindowManager.
+ *
+ * Deliberately a pill, not a floating video window: it carries who and how long, it is one
+ * tap back to the call, and it never covers content the way a draggable video tile does.
+ */
+@Composable
+private fun MinimizedCallPill(state: CallManager.CallState) {
+    val haptics = LocalVoiidHaptics.current
+    Box(Modifier.fillMaxSize().statusBarsPadding(), contentAlignment = Alignment.TopCenter) {
+        Row(
+            Modifier
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .clip(RoundedCornerShape(999.dp))
+                .background(VoiidColor.success)
+                .softClickable { haptics.tap(); CallManager.expand() }
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Icon(
+                if (state.kind == CallKind.VIDEO) Icons.Default.Videocam else Icons.Default.Call,
+                null, tint = Color.White, modifier = Modifier.size(16.dp),
+            )
+            Text(
+                state.peerName,
+                style = VoiidFont.rounded(14, FontWeight.SemiBold),
+                color = Color.White,
+                maxLines = 1,
+            )
+            Text(
+                callTimer(state),
+                style = VoiidFont.rounded(13),
+                color = Color.White.copy(alpha = 0.85f),
+            )
+            // End, right on the pill: the most likely reason to look at it is to hang up, and
+            // requiring a trip back to the full screen for that would be busywork.
+            Box(
+                Modifier.size(26.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.22f))
+                    .softClickable { haptics.rigid(); CallManager.hangup() },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Default.CallEnd, "End call", tint = Color.White, modifier = Modifier.size(14.dp))
+            }
+        }
+    }
+}
+
+/** mm:ss since connect, or the phase while it is not yet up. */
+@Composable
+private fun callTimer(state: CallManager.CallState): String {
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(state.connectedAtMs) {
+        while (state.connectedAtMs != null) {
+            now = System.currentTimeMillis()
+            kotlinx.coroutines.delay(1000)
+        }
+    }
+    val started = state.connectedAtMs ?: return "Connecting…"
+    val s = ((now - started) / 1000).coerceAtLeast(0)
+    return "%d:%02d".format(s / 60, s % 60)
 }
 
 @Composable
@@ -298,6 +380,34 @@ private fun InCallUi(state: CallManager.CallState) {
 
         if (inPip) return@Box
 
+        // MINIMIZE — voice AND video. The call keeps running; only the full screen goes away.
+        //
+        // Android had no way off a call screen except ending the call, so answering meant
+        // losing the whole app until it was over. Offered once the call is real (not while
+        // ringing — a call you have not answered must not be dismissable) and never in PiP,
+        // which is already a minimized state.
+        if (state.phase == CallManager.Phase.CONNECTED || state.phase == CallManager.Phase.CONNECTING) {
+            Box(
+                Modifier
+                    .align(Alignment.TopStart)
+                    .statusBarsPadding()
+                    .padding(12.dp)
+                    .size(38.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (isVideo) Color.White.copy(alpha = 0.20f) else VoiidColor.surfaceCard,
+                    )
+                    .softClickable { haptics.tap(); CallManager.minimize() },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Default.KeyboardArrowDown, "Minimize call",
+                    tint = if (isVideo) Color.White else VoiidColor.textPrimary,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+        }
+
         Column(Modifier.fillMaxSize().statusBarsPadding(), horizontalAlignment = Alignment.CenterHorizontally) {
             Spacer(Modifier.height(48.dp))
             Text(state.peerName, style = VoiidFont.rounded(24, FontWeight.Bold), color = titleColor)
@@ -383,33 +493,19 @@ private fun VoiceCenter() {
 @Composable
 private fun VideoCenter(state: CallManager.CallState) {
     Box(Modifier.fillMaxSize()) {
-        // Local self-preview, TOP-right.
+        // A DRAGGABLE self-preview that snaps to whichever corner you release it near, with
+        // the camera flip on the tile itself. Mirrors iOS `SelfPreview`.
         //
-        // THE OVERLAP. This container fills the space between the header and the controls,
-        // and the preview was pinned to its BOTTOM edge — which is exactly where
-        // mute/speaker/end sit. On a shorter phone it covered them outright.
+        // WHY IT DRAGS. A fixed corner always covers something eventually — the other
+        // person's face drifts, or a caption sits under it. Snapping to corners rather than
+        // free-floating keeps the layout predictable: it cannot be left half off-screen or
+        // dead-centre over the remote video.
         //
-        // Top-right is also where every other video app puts self-view, for the same reason:
-        // the bottom of a call screen belongs to the controls. Mirrors iOS.
-        Box(
-            Modifier
-                .align(Alignment.TopEnd)
-                .padding(horizontal = 16.dp, vertical = 8.dp)
-                .size(width = 104.dp, height = 140.dp)
-                .clip(RoundedCornerShape(18.dp))
-                .background(VoiidColor.primary.copy(alpha = 0.5f))
-                // A hairline so the preview reads as a separate surface rather than a hole
-                // punched in the remote video — a dark self-view against a dark remote frame
-                // otherwise has no edge at all.
-                .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(18.dp)),
-            contentAlignment = Alignment.Center,
-        ) {
-            if (state.videoEnabled) {
-                LocalVideoSurface(Modifier.fillMaxSize().clip(RoundedCornerShape(18.dp)))
-            } else {
-                Icon(Icons.Default.VideocamOff, null, tint = Color.White.copy(alpha = 0.8f), modifier = Modifier.size(26.dp))
-            }
-        }
+        // WHY THE FLIP IS HERE. It acts on the self-view, which was at the opposite end of
+        // the display from the button that controlled it — and it was a sixth control in a
+        // row that already overflowed. On the tile, the control and its result are the same
+        // object.
+        SelfPreview(state = state)
     }
 }
 
@@ -511,14 +607,26 @@ private fun CallControls(
     onToggleHold: () -> Unit,
     onEnd: () -> Unit,
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+    // EVENLY DISTRIBUTED, not fixed-spacing.
+    //
+    // THE OVERFLOW. A video call showed mic, hold, camera, flip, route and end — six 64dp
+    // controls with 24dp gaps, needing ~500dp of width that a normal phone does not have, so
+    // the end button ran off the right edge. `weight(1f)` lets them share whatever width
+    // exists, at any control count, on any device.
+    //
+    // The camera FLIP is gone from this row: it now lives ON the self-preview, where the
+    // thing it affects is the thing you are looking at. Mirrors iOS.
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceEvenly,
+    ) {
         Ctrl(if (muted) Icons.Default.MicOff else Icons.Default.Mic, muted, isVideo, onMute)
         if (canHold) {
             Ctrl(if (onHold) Icons.Default.PlayArrow else Icons.Default.Pause, onHold, isVideo, onToggleHold)
         }
         if (isVideo) {
             Ctrl(if (videoOn) Icons.Default.Videocam else Icons.Default.VideocamOff, !videoOn, isVideo, onVideo)
-            Ctrl(Icons.Default.Cameraswitch, false, isVideo, onFlip)
         }
         // Audio-output control on EVERY call, voice AND video — a video call needs to reach a
         // Bluetooth headset just as much as a voice call.
@@ -640,4 +748,118 @@ private fun routeIcon(route: com.voiid.app.net.CallManager.AudioRoute): ImageVec
     is com.voiid.app.net.CallManager.AudioRoute.Wired -> Icons.Default.Headset
     com.voiid.app.net.CallManager.AudioRoute.Speaker -> Icons.AutoMirrored.Filled.VolumeUp
     com.voiid.app.net.CallManager.AudioRoute.Earpiece -> Icons.Default.PhoneInTalk
+}
+
+/** Which corner the self-view is parked in. */
+private enum class PreviewCorner { TOP_START, TOP_END, BOTTOM_START, BOTTOM_END }
+
+@Composable
+private fun BoxScope.SelfPreview(state: CallManager.CallState) {
+    val haptics = LocalVoiidHaptics.current
+    val density = LocalDensity.current
+    var corner by remember { mutableStateOf(PreviewCorner.TOP_END) }
+    var drag by remember { mutableStateOf(Offset.Zero) }
+    var dragging by remember { mutableStateOf(false) }
+    var container by remember { mutableStateOf(IntSize.Zero) }
+
+    val tileW = 104.dp
+    val tileH = 140.dp
+    val margin = 12.dp
+
+    val alignment = when (corner) {
+        PreviewCorner.TOP_START -> Alignment.TopStart
+        PreviewCorner.TOP_END -> Alignment.TopEnd
+        PreviewCorner.BOTTOM_START -> Alignment.BottomStart
+        PreviewCorner.BOTTOM_END -> Alignment.BottomEnd
+    }
+    // Animated so a corner change glides rather than teleports.
+    val dx by animateFloatAsState(drag.x, spring(dampingRatio = 0.8f), label = "selfX")
+    val dy by animateFloatAsState(drag.y, spring(dampingRatio = 0.8f), label = "selfY")
+    val scale by animateFloatAsState(if (dragging) 1.04f else 1f, spring(), label = "selfScale")
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .onSizeChanged { container = it },
+    ) {
+        Box(
+            Modifier
+                .align(alignment)
+                .padding(margin)
+                .graphicsLayer {
+                    translationX = dx
+                    translationY = dy
+                    scaleX = scale
+                    scaleY = scale
+                }
+                .size(width = tileW, height = tileH)
+                .clip(RoundedCornerShape(18.dp))
+                .background(VoiidColor.primary.copy(alpha = 0.5f))
+                // A hairline so a dark preview against a dark remote frame still has an edge.
+                .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(18.dp))
+                .pointerInput(container) {
+                    detectDragGestures(
+                        onDragStart = { dragging = true; haptics.tap() },
+                        onDragEnd = {
+                            // Snap from where the tile ACTUALLY is — its corner plus the
+                            // drag — not from the finger, so a small nudge does not fling it
+                            // across the screen.
+                            val halfW = with(density) { (tileW / 2 + margin).toPx() }
+                            val halfH = with(density) { (tileH / 2 + margin).toPx() }
+                            val originX = if (corner == PreviewCorner.TOP_START || corner == PreviewCorner.BOTTOM_START) {
+                                halfW
+                            } else {
+                                container.width - halfW
+                            }
+                            val originY = if (corner == PreviewCorner.TOP_START || corner == PreviewCorner.TOP_END) {
+                                halfH
+                            } else {
+                                container.height - halfH
+                            }
+                            val landedX = originX + drag.x
+                            val landedY = originY + drag.y
+                            val left = landedX < container.width / 2f
+                            val top = landedY < container.height / 2f
+                            val target = when {
+                                top && left -> PreviewCorner.TOP_START
+                                top -> PreviewCorner.TOP_END
+                                left -> PreviewCorner.BOTTOM_START
+                                else -> PreviewCorner.BOTTOM_END
+                            }
+                            if (target != corner) haptics.selection()
+                            corner = target
+                            drag = Offset.Zero
+                            dragging = false
+                        },
+                    ) { change, amount ->
+                        change.consume()
+                        drag += amount
+                    }
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            if (state.videoEnabled) {
+                LocalVideoSurface(Modifier.fillMaxSize().clip(RoundedCornerShape(18.dp)))
+            } else {
+                Icon(Icons.Default.VideocamOff, null, tint = Color.White.copy(alpha = 0.8f), modifier = Modifier.size(26.dp))
+            }
+
+            // Camera flip, ON the preview.
+            Box(
+                Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(6.dp)
+                    .size(28.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.45f))
+                    .softClickable { haptics.tap(); CallManager.switchCamera() },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Default.Cameraswitch, "Flip camera",
+                    tint = Color.White, modifier = Modifier.size(15.dp),
+                )
+            }
+        }
+    }
 }

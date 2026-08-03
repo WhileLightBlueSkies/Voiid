@@ -65,6 +65,10 @@ struct LeaderboardView: View {
         .padding(.horizontal, VoiidSpacing.md)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(VoiidColor.background.ignoresSafeArea())
+        // The header below draws its own back chevron; without this the pushed
+        // navigation bar would stack a second one right above it.
+        .navigationBarBackButtonHidden(true)
+        .toolbar(.hidden, for: .navigationBar)
         .task { await load() }
     }
 

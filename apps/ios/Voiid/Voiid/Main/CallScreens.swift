@@ -129,6 +129,9 @@ struct CallScreen: View {
     /// animation needs a value that CHANGES to start, and `true` on appear is the cheapest
     /// one that cannot get out of sync with anything else.
     @State private var ringPulse = false
+    /// Which corner the self-preview is parked in. Persisted for the life of the call only —
+    /// a corner choice is about THIS call's framing, not a lasting preference.
+    @State private var previewCorner: PreviewCorner = .topTrailing
     @State private var videoOn = true
     @State private var timer: Timer?
 
@@ -367,10 +370,13 @@ struct CallScreen: View {
         if request.isGroup {
             participantGrid(video: true)
         } else {
-            ZStack(alignment: .topTrailing) {
-                Color.clear
-                // Self preview: real local camera for a live 1:1 call, else placeholder.
-                Group {
+            GeometryReader { geo in
+                SelfPreview(
+                    corner: $previewCorner,
+                    isMirrored: true,
+                    canFlip: isRealOneToOne,
+                    onFlip: { call.switchCamera() }
+                ) {
                     if isRealOneToOne, call.videoEnabled, let localTrack = call.localVideoTrack {
                         RTCVideoView(track: localTrack, mirror: true)
                     } else {
@@ -380,27 +386,7 @@ struct CallScreen: View {
                                 .font(.system(size: 26)).foregroundColor(.white.opacity(0.8)))
                     }
                 }
-                // TOP-trailing, not bottom.
-                //
-                // THE OVERLAP. This container is `maxHeight: .infinity` inside the call's
-                // VStack, so it expands until it meets the controls — and the self-preview
-                // was pinned to its BOTTOM edge, which is exactly where mute/speaker/end sit.
-                // On a shorter phone the preview covered them outright.
-                //
-                // Top-right is also where every other video app puts self-view, for the same
-                // reason: the bottom of a call screen belongs to the controls.
-                .frame(width: 104, height: 140)
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                // A hairline so the preview reads as a separate surface rather than a hole
-                // punched in the remote video — without it a dark self-view against a dark
-                // remote frame has no edge at all.
-                .overlay(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .strokeBorder(.white.opacity(0.18), lineWidth: 1)
-                )
-                .shadow(color: .black.opacity(0.35), radius: 12, y: 4)
-                .padding(.horizontal, VoiidSpacing.md)
-                .padding(.top, VoiidSpacing.sm)
+                .frame(width: geo.size.width, height: geo.size.height)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -454,34 +440,52 @@ struct CallScreen: View {
             // Hold is only offered on a real, connected 1:1 call — there is
             // nothing to hold before that, and the group path doesn't support it.
             let showHold = isRealOneToOne && liveState == .connected
-            HStack(spacing: showHold ? VoiidSpacing.md : VoiidSpacing.xl) {
+            // EVENLY DISTRIBUTED, not fixed-spacing.
+            //
+            // THE OVERFLOW. A video call shows mic, camera, flip, route, hold and end — six
+            // 64pt controls with 16–32pt gaps, which needs 460–540pt of width. A 390pt phone
+            // does not have it, so the end button ran off the right edge and the row was
+            // clipped (visible in the screenshot: the red button is half off-screen).
+            //
+            // `maxWidth: .infinity` on each control lets them share whatever width exists,
+            // so the row fits at any control count and on any device. The camera FLIP is
+            // gone from here entirely — it now lives on the self-preview, where what it
+            // affects is what you are looking at.
+            HStack(spacing: 0) {
                 let isMuted = isRealOneToOne ? call.muted : muted
                 ctrl(isMuted ? "mic.slash.fill" : "mic.fill", isMuted) {
                     if isRealOneToOne { call.toggleMute() } else { muted.toggle() }
                 }
+                .frame(maxWidth: .infinity)
+
                 if request.kind == .video {
                     let vOn = isRealOneToOne ? call.videoEnabled : videoOn
                     ctrl(vOn ? "video.fill" : "video.slash.fill", !vOn) {
                         if isRealOneToOne { call.toggleVideo() } else { videoOn.toggle() }
                     }
-                    ctrl("arrow.triangle.2.circlepath.camera.fill", false) {
-                        if isRealOneToOne { call.switchCamera() }
-                    }
+                    .frame(maxWidth: .infinity)
                 }
+
                 // Audio-route control on EVERY call, voice and video alike — a video call
                 // needs to reach AirPods just as much as a voice call does.
                 audioRouteControl(isRealOneToOne: isRealOneToOne)
+                    .frame(maxWidth: .infinity)
+
                 if showHold {
                     ctrl(call.isOnHold ? "play.fill" : "pause.fill", call.isOnHold) {
                         call.toggleHold()
                     }
+                    .frame(maxWidth: .infinity)
                 }
+
                 // End
                 Button { Haptics.rigid(); endTapped() } label: {
-                    Image(systemName: "phone.down.fill").font(.system(size: 26)).foregroundColor(.white)
-                        .frame(width: 64, height: 64).background(VoiidColor.error).clipShape(Circle())
+                    Image(systemName: "phone.down.fill").font(.system(size: 24)).foregroundColor(.white)
+                        .frame(width: 60, height: 60).background(VoiidColor.error).clipShape(Circle())
                 }
+                .frame(maxWidth: .infinity)
             }
+            .padding(.horizontal, VoiidSpacing.sm)
         }
     }
 
@@ -550,5 +554,126 @@ struct CallScreen: View {
             withAnimation { connected = true }
             timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in seconds += 1 }
         }
+    }
+}
+
+// MARK: - Self preview
+
+/// Which corner the self-view sits in.
+enum PreviewCorner: CaseIterable {
+    case topLeading, topTrailing, bottomLeading, bottomTrailing
+
+    var alignment: Alignment {
+        switch self {
+        case .topLeading:     return .topLeading
+        case .topTrailing:    return .topTrailing
+        case .bottomLeading:  return .bottomLeading
+        case .bottomTrailing: return .bottomTrailing
+        }
+    }
+
+    /// The corner nearest a point in a container of `size` — used to snap after a drag.
+    static func nearest(to point: CGPoint, in size: CGSize) -> PreviewCorner {
+        let left = point.x < size.width / 2
+        let top = point.y < size.height / 2
+        switch (top, left) {
+        case (true, true):   return .topLeading
+        case (true, false):  return .topTrailing
+        case (false, true):  return .bottomLeading
+        case (false, false): return .bottomTrailing
+        }
+    }
+}
+
+/// A draggable self-view that snaps to whichever corner you release it near, with the camera
+/// flip on the preview itself.
+///
+/// WHY THE FLIP MOVED HERE. It was a sixth button in the bottom control row — a row that
+/// already overflowed a 390pt screen — and it acts on the self-view, which is at the OTHER
+/// end of the display. Putting it on the thing it affects means the control and its result
+/// are the same object, and the bottom row loses a button it did not have room for.
+///
+/// WHY IT DRAGS. A fixed corner always covers something eventually: the other person's face
+/// drifts, or a caption sits underneath it. Every video app solves this the same way, and
+/// snapping to corners rather than free-floating keeps the layout predictable — you cannot
+/// leave it half off-screen or dead-centre over the remote video.
+struct SelfPreview<Content: View>: View {
+    @Binding var corner: PreviewCorner
+    var isMirrored: Bool
+    var canFlip: Bool
+    var onFlip: () -> Void
+    @ViewBuilder var content: () -> Content
+
+    @State private var drag: CGSize = .zero
+    @State private var dragging = false
+
+    private let size = CGSize(width: 104, height: 140)
+    private let margin: CGFloat = 12
+
+    var body: some View {
+        GeometryReader { geo in
+            content()
+                .frame(width: size.width, height: size.height)
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay(alignment: .bottomTrailing) {
+                    if canFlip {
+                        Button {
+                            Haptics.tap(); onFlip()
+                        } label: {
+                            Image(systemName: "arrow.triangle.2.circlepath.camera.fill")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .frame(width: 28, height: 28)
+                                .background(.black.opacity(0.45), in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(6)
+                    }
+                }
+                // A hairline so a dark preview against a dark remote frame still has an edge.
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(.white.opacity(0.18), lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.35), radius: dragging ? 18 : 12, y: 4)
+                // Lifts while held, so the drag reads as picking the tile up.
+                .scaleEffect(dragging ? 1.04 : 1)
+                .offset(drag)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: corner.alignment)
+                .padding(margin)
+                .gesture(
+                    DragGesture()
+                        .onChanged { v in
+                            if !dragging { dragging = true; Haptics.tap() }
+                            drag = v.translation
+                        }
+                        .onEnded { v in
+                            // Snap to the nearest corner from where the tile ACTUALLY is —
+                            // its current corner plus the drag — rather than from the finger,
+                            // so a small nudge does not fling it across the screen.
+                            let origin = anchorPoint(for: corner, in: geo.size)
+                            let landed = CGPoint(x: origin.x + v.translation.width,
+                                                 y: origin.y + v.translation.height)
+                            let target = PreviewCorner.nearest(to: landed, in: geo.size)
+                            if target != corner { Haptics.selection() }
+                            withAnimation(.spring(response: 0.32, dampingFraction: 0.8)) {
+                                corner = target
+                                drag = .zero
+                                dragging = false
+                            }
+                        }
+                )
+        }
+    }
+
+    /// The tile's centre when parked in `corner`.
+    private func anchorPoint(for corner: PreviewCorner, in container: CGSize) -> CGPoint {
+        let x = corner == .topLeading || corner == .bottomLeading
+            ? margin + size.width / 2
+            : container.width - margin - size.width / 2
+        let y = corner == .topLeading || corner == .topTrailing
+            ? margin + size.height / 2
+            : container.height - margin - size.height / 2
+        return CGPoint(x: x, y: y)
     }
 }

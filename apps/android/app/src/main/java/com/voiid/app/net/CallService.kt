@@ -112,6 +112,21 @@ object CallManager {
 
     private val json = Json { ignoreUnknownKeys = true }
 
+    /**
+     * The call is MINIMIZED — running, but the full screen is dismissed so the user can use
+     * the rest of the app. iOS has had this via CallFloatingWindowManager; Android had no way
+     * to leave a call screen without ending the call, so answering a call meant losing access
+     * to the app until it was over.
+     *
+     * Lives on the manager, not on a screen: it has to survive the overlay being torn down,
+     * which is the entire point.
+     */
+    private val _minimized = MutableStateFlow(false)
+    val minimized: StateFlow<Boolean> = _minimized.asStateFlow()
+
+    fun minimize() { _minimized.value = true }
+    fun expand() { _minimized.value = false }
+
     private val _state = MutableStateFlow<CallState?>(null)
     val state: StateFlow<CallState?> = _state.asStateFlow()
 
@@ -1279,6 +1294,9 @@ object CallManager {
         scope.launch {
             kotlinx.coroutines.delay(600)
             if (_state.value?.phase == Phase.ENDED) _state.value = null
+            // Reset the minimize flag with the call. Leaving it true would start the NEXT
+            // call minimized — the user would answer and land on a pill with no call screen.
+            _minimized.value = false
         }
     }
 
