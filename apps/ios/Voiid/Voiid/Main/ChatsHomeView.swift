@@ -135,7 +135,24 @@ struct ChatsHomeView: View {
             // chrome while the VStack still respects the top safe area, so the header starts
             // BELOW the clock where it belongs.
             .toolbar(.hidden, for: .navigationBar)
-            .onAppear { session.hideTabBar = false }   // root screen always shows the bar
+            // ROOT SCREEN SHOWS THE BAR — but only when it is genuinely on top.
+            //
+            // THE CANCELLED-SWIPE BUG. `onAppear` fires while a back-swipe REVEALS this view
+            // underneath the chat, before the gesture has been committed. Release the drag
+            // short of the threshold and navigation snaps back to the chat — but this
+            // `onAppear` has already run and set the bar visible, and the chat's own
+            // `onAppear` does NOT re-fire (it was never removed). Result: the tab bar sitting
+            // over an open chat until the next push or tab switch.
+            //
+            // `openConversation == nil` is the unambiguous test: during a cancelled swipe the
+            // binding is still set, because the pop never completed. A real pop clears it,
+            // and `onChange` below catches that case.
+            .onAppear { if openConversation == nil { session.hideTabBar = false } }
+            // The pop actually completed — now the bar belongs on screen. This fires on a
+            // finished swipe as well as a Back tap, which `onAppear` alone would miss.
+            .onChange(of: openConversation) { _, conv in
+                if conv == nil { session.hideTabBar = false }
+            }
             .task { await refreshRequestCount() }
             .task {
                 // INSTANT FIRST: render the cached (local) chat list before ANY network or
