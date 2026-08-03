@@ -26,6 +26,8 @@ import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.FormatQuote
 import androidx.compose.material.icons.filled.PhotoLibrary
@@ -57,6 +59,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.ui.unit.dp
 import com.voiid.app.model.DummyData
+import com.voiid.app.model.ConversationType
 import com.voiid.app.model.VConversation
 import com.voiid.app.net.ContactDirectory
 import com.voiid.app.net.ProfileService
@@ -70,6 +73,7 @@ import com.voiid.app.ui.components.softClickable
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
+import com.voiid.app.ui.theme.VoiidSpacing
 
 /** 1:1 contact profile (WhatsApp-style) — port of iOS `ContactProfileView.swift`. */
 @Composable
@@ -87,6 +91,8 @@ fun ContactProfileView(
     val context = LocalContext.current
     val haptics = LocalVoiidHaptics.current
     var muted by remember { mutableStateOf(false) }
+    // The safety-number screen (anti-MITM verification), reachable from the Encryption card below.
+    var showSafetyNumber by remember { mutableStateOf(false) }
     var showAllMedia by remember { mutableStateOf(false) }
     var viewPhoto by remember { mutableStateOf(false) }
     /** "block" | "report" | null — Block and Report have no backend yet (no route, no table),
@@ -330,6 +336,51 @@ fun ContactProfileView(
                 }
             }
 
+            // Encryption
+            //
+            // A claim of end-to-end encryption the user cannot verify is a claim they have to take
+            // on faith. This row turns it into something checkable — and it sits ABOVE mute and
+            // block because it is the more consequential fact about the conversation.
+            //
+            // 1:1 only: a safety number compares two identity keys, and a group has no single pair.
+            if (conversation.type != ConversationType.GROUP) {
+                ProfileCard(title = "Encryption") {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { haptics.tap(); showSafetyNumber = true }
+                            .padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.md),
+                    ) {
+                        Icon(
+                            Icons.Default.Lock,
+                            contentDescription = null,
+                            tint = VoiidColor.success,
+                            modifier = Modifier.size(24.dp),
+                        )
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "End-to-end encrypted",
+                                color = VoiidColor.textPrimary,
+                                fontSize = 16.sp,
+                            )
+                            Text(
+                                "Tap to verify with a safety number",
+                                color = VoiidColor.textSecondary,
+                                fontSize = 12.sp,
+                            )
+                        }
+                        Icon(
+                            Icons.Default.ChevronRight,
+                            contentDescription = null,
+                            tint = VoiidColor.placeholder,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                }
+            }
+
             // Settings
             // One toggle, no trailing dividers. Two HorizontalDividers were left behind when
             // the rows between them (search-in-chat, wallpaper — both unimplemented) were
@@ -352,6 +403,15 @@ fun ContactProfileView(
     }
     if (viewPhoto) {
         ProfilePhotoViewer(title = conversation.title, onClose = { viewPhoto = false })
+    }
+    // Safety number, opened from the Encryption card. Full-screen: the digits are read aloud in
+    // 5-groups and need the whole width.
+    if (showSafetyNumber) {
+        SafetyNumberScreen(
+            peerUserId = conversation.peerUserId.orEmpty(),
+            peerName = fullName ?: conversation.title,
+            onClose = { showSafetyNumber = false },
+        )
     }
 }
 
