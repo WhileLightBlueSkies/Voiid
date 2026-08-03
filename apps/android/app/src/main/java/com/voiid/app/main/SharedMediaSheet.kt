@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
@@ -198,11 +199,27 @@ fun SharedMediaThumb(ref: ChatEngine.MediaRef) {
         }
     }
     val b = bitmap
+    // fillMaxSize, NOT fillMaxWidth().aspectRatio(1f).
+    //
+    // The profile strip puts this inside a fixed `Box(Modifier.size(76.dp))`, and asking for
+    // an aspect ratio inside an already-square parent fights that constraint — portrait
+    // photos came out stretched and the row rendered ragged. The CALLER owns the shape (a
+    // square tile here, a grid cell in the sheet); this just fills whatever it is given and
+    // crops to it.
     if (b != null) {
-        Image(b, null, modifier = Modifier.fillMaxWidth().aspectRatio(1f), contentScale = ContentScale.Crop)
+        Image(b, null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
     } else {
-        Box(Modifier.fillMaxWidth().aspectRatio(1f).background(VoiidColor.accent.copy(alpha = 0.25f)), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator(color = VoiidColor.primary, modifier = Modifier.size(20.dp))
+        // A neutral placeholder, not accent-tinted. A strip of orange squares while photos
+        // load reads as an error state; a quiet fill reads as "loading".
+        Box(
+            Modifier.fillMaxSize().background(VoiidColor.fieldFill),
+            contentAlignment = Alignment.Center,
+        ) {
+            CircularProgressIndicator(
+                color = VoiidColor.primary,
+                strokeWidth = 2.dp,
+                modifier = Modifier.size(18.dp),
+            )
         }
     }
 }

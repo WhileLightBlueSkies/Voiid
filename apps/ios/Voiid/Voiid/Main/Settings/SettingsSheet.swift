@@ -189,6 +189,7 @@ struct SettingsSheet: View {
                 identity
                 accountAndSecurity
                 appBehaviour
+                display
                 about
                 signOut
             }
@@ -288,34 +289,43 @@ struct SettingsSheet: View {
 
                     // Handle and number on ONE line, separated by a dot — the same pattern as
                     // the contact profile, rather than two stacked lines at equal weight.
+                    // TWO LINES, not one.
+                    //
+                    // The dot-separated row was wrong for real data: "@nehalshenoy ·
+                    // +918904915476" is ~28 characters, which does not fit beside a 72pt
+                    // avatar on a 390pt phone. BOTH halves wrapped mid-word — "@nehalshe /
+                    // noy" — which is worse than the stacked layout it replaced. The same
+                    // row still works on the CONTACT profile, where the header is full-width
+                    // with no avatar beside it.
+                    //
+                    // The handle leads because it is the identifier you share; the number is
+                    // quieter beneath. Both truncate rather than wrap.
                     let handle = (session.profile.username ?? "").isEmpty
                         ? nil : session.profile.username
-                    HStack(spacing: 6) {
-                        if let handle {
-                            Text("@\(handle)")
-                                .font(VoiidFont.rounded(14, .medium))
-                                .foregroundStyle(VoiidColor.primary)
-                        }
-                        if handle != nil && !session.profile.phoneNumber.isEmpty {
-                            Circle()
-                                .fill(VoiidColor.textSecondary.opacity(0.4))
-                                .frame(width: 3, height: 3)
-                        }
-                        // Never render an empty line where a phone number would go.
-                        if !session.profile.phoneNumber.isEmpty {
-                            Text(session.profile.phoneNumber)
-                                .font(VoiidFont.rounded(14, .regular))
-                                .foregroundStyle(VoiidColor.textSecondary)
-                        }
+                    if let handle {
+                        Text("@\(handle)")
+                            .font(VoiidFont.rounded(14, .medium))
+                            .foregroundStyle(VoiidColor.primary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    // Never render an empty line where a phone number would go.
+                    if !session.profile.phoneNumber.isEmpty {
+                        Text(session.profile.phoneNumber)
+                            .font(VoiidFont.rounded(13, .regular))
+                            .foregroundStyle(VoiidColor.textSecondary)
+                            .lineLimit(1)
                     }
 
-                    Text("View and edit profile")
-                        .font(VoiidFont.rounded(12, .medium))
-                        .foregroundStyle(VoiidColor.primary)
-                        .padding(.top, 1)
                 }
 
                 Spacer(minLength: 0)
+
+                // The chevron IS the affordance. "View and edit profile" underneath it said
+                // the same thing twice and cost a line of the card's height.
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(VoiidColor.placeholder)
             }
             .padding(VoiidSpacing.md)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -400,29 +410,39 @@ struct SettingsSheet: View {
                 rowLabel("Storage", systemImage: "internaldrive")
             }
 
-            // Chat list layout — same reasoning as Appearance below: two options, and the
-            // result is on the screen you just came from, so a pushed screen would mean
-            // choosing blind and navigating back to check.
-            VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
-                rowLabel("Chat list", systemImage: "rectangle.grid.2x2")
+        }
+    }
+
+
+    // MARK: G3.5 — display
+
+    /// DISPLAY — the two controls that change how the app LOOKS.
+    ///
+    /// They used to sit inside the same card as Notifications, Privacy and Storage, wedged
+    /// between navigation rows. That card is a LIST: every row is a tappable line with a
+    /// chevron or an external-link glyph, and dropping two segmented controls into it breaks
+    /// that rhythm twice — the eye stops reading rows and has to re-parse what kind of thing
+    /// it is looking at.
+    ///
+    /// Navigation and inline choice are different interactions and belong in different
+    /// groups. Apple's own Settings does exactly this: Display & Brightness is its own
+    /// section, not a picker buried among links.
+    private var display: some View {
+        SettingsSection("Display") {
+            settingsPicker("Chat list", icon: "rectangle.grid.2x2") {
                 Picker("Chat list", selection: Binding(
                     get: { chatLayout.layout },
                     set: { Haptics.selection(); chatLayout.layout = $0 }
                 )) {
                     ForEach(ChatLayoutPreference.Layout.allCases) { l in
-                        Label(l.label, systemImage: l.icon).tag(l)
+                        Text(l.label).tag(l)
                     }
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
             }
-            .padding(.vertical, 2)
 
-            // Appearance is INLINE, not a pushed screen: there are exactly three options and
-            // the result is visible the instant you tap, so navigating away to choose and
-            // then back to see the effect would be worse.
-            VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
-                rowLabel("Appearance", systemImage: "circle.lefthalf.filled")
+            // INLINE, not a pushed screen: the result is visible the instant you tap, so
+            // navigating away to choose and back to see the effect would be worse.
+            settingsPicker("Appearance", icon: "circle.lefthalf.filled") {
                 Picker("Appearance", selection: Binding(
                     get: { theme.mode },
                     set: { Haptics.selection(); theme.mode = $0 }
@@ -431,11 +451,21 @@ struct SettingsSheet: View {
                         Text(m.label).tag(m)
                     }
                 }
+            }
+        }
+    }
+
+    /// A labelled inline picker: label above, control beneath, so the icon column still
+    /// reads as a column instead of the control colliding with it.
+    private func settingsPicker<P: View>(_ title: String, icon: String,
+                                         @ViewBuilder _ picker: () -> P) -> some View {
+        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+            rowLabel(title, systemImage: icon)
+            picker()
                 .pickerStyle(.segmented)
                 .labelsHidden()
-            }
-            .padding(.vertical, 2)
         }
+        .padding(.vertical, 4)
     }
 
     // MARK: G4 — about

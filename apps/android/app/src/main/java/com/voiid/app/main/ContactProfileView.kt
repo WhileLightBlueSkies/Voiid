@@ -197,8 +197,13 @@ fun ContactProfileView(
                 .fillMaxWidth()
                 .height(520.dp)
                 .background(
+                    // 0.08, not 0.16. That value was tuned for iOS, where a real backdrop
+                    // BLUR softens the tint before it reaches the eye. Android has no blur
+                    // here, so the same alpha rendered as a flat purple wash behind the
+                    // cards. Halved, it does what it is for — giving the translucent edges
+                    // something to pick up — without colouring the page.
                     Brush.verticalGradient(
-                        listOf(VoiidColor.primary.copy(alpha = 0.16f), Color.Transparent),
+                        listOf(VoiidColor.primary.copy(alpha = 0.08f), Color.Transparent),
                     ),
                 ),
         )
@@ -328,7 +333,13 @@ fun ContactProfileView(
             // About AND status — two distinct fields. This screen only ever read `bio`, so a
             // contact who set a status showed nothing at all here.
             ProfileCard("About") {
-                statusText?.let { st ->
+                // DE-DUPLICATE. `status_text` and `bio` are separate server fields, but the
+                // profile editor writes the same string to both — so a user who set "Testing
+                // 2" saw it rendered TWICE with a divider between, which is what the stray
+                // bar under the text was. Identical values collapse to one line.
+                val statusShown = statusText?.takeIf { it.isNotBlank() }
+                val bioShown = bio?.takeIf { it.isNotBlank() && it != statusShown }
+                statusShown?.let { st ->
                     Row(verticalAlignment = Alignment.Top) {
                         Icon(
                             Icons.Default.FormatQuote, null, tint = VoiidColor.primary,
@@ -337,16 +348,16 @@ fun ContactProfileView(
                         Spacer(Modifier.width(8.dp))
                         Text(st, style = VoiidFont.rounded(16, FontWeight.Medium), color = VoiidColor.textPrimary)
                     }
-                    if (!bio.isNullOrBlank()) {
+                    if (bioShown != null) {
                         HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.4f))
                     }
                 }
-                bio?.takeIf { it.isNotBlank() }?.let {
+                bioShown?.let {
                     Text(it, style = VoiidFont.rounded(16), color = VoiidColor.textPrimary)
                 }
                 // Only when BOTH are absent — otherwise a peer with a real status was shown
                 // "Hey there! I am using Voiid.", a message they never wrote.
-                if (statusText.isNullOrBlank() && bio.isNullOrBlank()) {
+                if (statusShown == null && bioShown == null) {
                     Text("Hey there! I am using Voiid.", style = VoiidFont.rounded(16), color = VoiidColor.textSecondary)
                 }
             }
@@ -747,13 +758,32 @@ private fun callTitleFor(entry: com.voiid.app.store.CallHistoryRow): String {
 private fun Modifier.glassCard(cornerRadius: androidx.compose.ui.unit.Dp = 20.dp): Modifier {
     val shape = RoundedCornerShape(cornerRadius)
     return this
-        .shadow(10.dp, shape, ambientColor = Color.Black.copy(alpha = 0.10f))
+        // 4dp, not 10. Android's elevation shadow is far heavier than the iOS equivalent at
+        // the same nominal value — 10dp drew a dark halo around every card and made the page
+        // read as a stack of floating boxes rather than one surface.
+        .shadow(
+            elevation = 4.dp,
+            shape = shape,
+            ambientColor = Color.Black.copy(alpha = 0.06f),
+            spotColor = Color.Black.copy(alpha = 0.10f),
+        )
         .clip(shape)
-        .background(VoiidColor.surfaceCard.copy(alpha = 0.82f))
+        // 0.94, not 0.82. At 0.82 the brand-tinted ground bled through hard enough to tint
+        // the card body itself, so text sat on a faintly purple slab and the card looked
+        // dirty rather than translucent. Glass should be felt at the EDGES, not read as a
+        // colour cast across the content.
+        .background(VoiidColor.surfaceCard.copy(alpha = 0.94f))
+        // The hairline is what says "this has a surface" — but it must be a LIGHT-ON-EDGE
+        // highlight, not a white outline. White at 0.28 on a near-white card in light mode is
+        // a hard visible line; keyed off the divider token it reads as a lit edge in both
+        // themes and disappears where it should.
         .border(
             1.dp,
             Brush.verticalGradient(
-                listOf(Color.White.copy(alpha = 0.28f), Color.White.copy(alpha = 0.04f)),
+                listOf(
+                    VoiidColor.divider.copy(alpha = 0.55f),
+                    VoiidColor.divider.copy(alpha = 0.12f),
+                ),
             ),
             shape,
         )
