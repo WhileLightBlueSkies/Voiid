@@ -1144,8 +1144,32 @@ object CallManager {
         }
     }
 
-    private fun startCapture() {
-        runCatching { videoCapturer?.startCapture(1280, 720, 30) }
+    /**
+     * Start (or restart) camera capture.
+     *
+     * IDEMPOTENT, and LOUD ON FAILURE.
+     *
+     * "My video does not appear until I toggle the camera off and on" is this method failing
+     * silently the first time. `startCapture` throws if the camera is still held by whatever
+     * used it last — a just-ended call, the system camera, another app releasing on a
+     * different thread — and `runCatching` swallowed that without a trace, so the local track
+     * existed, the renderer was attached, and no frames ever arrived. Toggling worked because
+     * stopCapture-then-startCapture releases and re-acquires by then.
+     *
+     * One retry after a short delay covers the release race, which is the common cause. The
+     * log line means a remaining failure is diagnosable instead of invisible.
+     */
+    private fun startCapture(attempt: Int = 0) {
+        val result = runCatching { videoCapturer?.startCapture(1280, 720, 30) }
+        if (result.isSuccess) return
+
+        val e = result.exceptionOrNull()
+        if (attempt == 0) {
+            android.util.Log.w("VOIID", "camera: startCapture failed, retrying in 300ms", e)
+            mainHandler.postDelayed({ exec.execute { startCapture(attempt = 1) } }, 300)
+        } else {
+            android.util.Log.e("VOIID", "camera: startCapture failed after retry — local video will be black", e)
+        }
     }
 
     private fun createCameraCapturer(): VideoCapturer? {

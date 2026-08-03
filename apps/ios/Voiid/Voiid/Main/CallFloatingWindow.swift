@@ -71,13 +71,22 @@ private final class FloatingCallPill: UIView {
         self.isVideo = isVideo
         super.init(frame: CGRect(origin: .zero,
                                  size: isVideo ? Self.videoSize : Self.voiceSize))
-        backgroundColor = .black
+        // GREEN for voice, black for video.
+        //
+        // Black was right when this was a video-first window — it is the letterbox behind a
+        // remote frame. On a voice bubble it reads as an empty hole, and it did not match
+        // Android's green. Green is the universal "call in progress" colour, and it is what
+        // makes the bubble legible as a live call rather than a floating dot.
+        backgroundColor = isVideo ? .black : UIColor(VoiidColor.success)
         // Fully round for voice (a circle), softly rounded for video (which has a frame to
         // show and would crop badly in a circle).
         layer.cornerRadius = isVideo ? 14 : Self.voiceSize.width / 2
         layer.cornerCurve = .continuous
         clipsToBounds = true
-        layer.borderWidth = 1
+        // The hairline exists to give a BLACK video window an edge against dark content. On
+        // the green bubble the fill already provides that, and a white ring on green reads as
+        // an unintended outline.
+        layer.borderWidth = isVideo ? 1 : 0
         layer.borderColor = UIColor.white.withAlphaComponent(0.18).cgColor
         // A shadow needs to escape the clipped corners, so it lives on the
         // container's layer via a shadow path on this view's own layer instead.
@@ -109,7 +118,10 @@ private final class FloatingCallPill: UIView {
         stack.spacing = 2
         stack.alignment = .center
         stack.isUserInteractionEnabled = false
-        stack.frame = bounds
+        // INSET, not the full bounds. A circle's usable area is its inscribed square — laying
+        // content out to the full 64pt bounds put the icon and timer hard against the curve,
+        // which is why the contents looked wrong rather than centred.
+        stack.frame = bounds.insetBy(dx: 10, dy: 10)
         stack.autoresizingMask = [.flexibleWidth, .flexibleHeight]
 
         let icon = UIImageView(image: UIImage(systemName: "phone.fill"))

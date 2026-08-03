@@ -250,19 +250,42 @@ private fun MinimizedCallPill(state: CallManager.CallState) {
                 .softClickable { haptics.tap(); CallManager.expand() },
             contentAlignment = Alignment.Center,
         ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(
-                    if (state.kind == CallKind.VIDEO) Icons.Default.Videocam else Icons.Default.Call,
-                    "Return to call", tint = Color.White, modifier = Modifier.size(20.dp),
-                )
-                // The timer, not the name: at 64dp a name truncates to nothing useful, and
-                // "how long have I been on this call" is the fact worth surfacing.
-                Text(
-                    callTimer(state),
-                    style = VoiidFont.rounded(11, FontWeight.SemiBold),
-                    color = Color.White,
-                    maxLines = 1,
-                )
+            // A VIDEO call keeps its video IN the bubble. Minimizing a video call to an icon
+            // throws away the thing you minimized it to keep watching — and since system PiP
+            // is not an option here (it leaves the app entirely), the bubble has to carry it.
+            if (state.kind == CallKind.VIDEO && state.hasRemoteVideo) {
+                RemoteVideoSurface(Modifier.fillMaxSize().clip(CircleShape))
+                // The timer sits ON the video, on a scrim, so it stays legible over any frame.
+                Box(
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .background(Color.Black.copy(alpha = 0.45f))
+                        .padding(vertical = 2.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        callTimer(state),
+                        style = VoiidFont.rounded(10, FontWeight.SemiBold),
+                        color = Color.White,
+                        maxLines = 1,
+                    )
+                }
+            } else {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        if (state.kind == CallKind.VIDEO) Icons.Default.Videocam else Icons.Default.Call,
+                        "Return to call", tint = Color.White, modifier = Modifier.size(20.dp),
+                    )
+                    // The timer, not the name: at 64dp a name truncates to nothing useful,
+                    // and "how long have I been on this call" is the fact worth surfacing.
+                    Text(
+                        callTimer(state),
+                        style = VoiidFont.rounded(11, FontWeight.SemiBold),
+                        color = Color.White,
+                        maxLines = 1,
+                    )
+                }
             }
         }
     }
@@ -437,20 +460,18 @@ private fun InCallUi(state: CallManager.CallState) {
                     .background(
                         if (isVideo) Color.White.copy(alpha = 0.20f) else VoiidColor.surfaceCard,
                     )
-                    .softClickable {
-                        haptics.tap()
-                        // VIDEO GOES TO SYSTEM PiP, voice to the in-app bubble.
-                        //
-                        // A video call minimized to a pill loses the video — which is the
-                        // entire reason to keep a video call visible while doing something
-                        // else. PiP keeps the remote frame on screen, and it is what iOS
-                        // does. Voice has nothing to render, so a bubble is right there.
-                        //
-                        // Falls back to the bubble when PiP is refused: OEMs disable it, users
-                        // revoke it, and devices lie about supporting it. A dead minimize
-                        // button would be worse than a pill.
-                        if (!isVideo || !CallPipState.enterPip()) CallManager.minimize()
-                    },
+                    // ALWAYS the in-app bubble, never system PiP.
+                    //
+                    // I routed video minimize to PiP last commit and that was wrong: Android
+                    // PiP shrinks the WHOLE ACTIVITY into a corner and shows the launcher
+                    // behind it. So "minimize" left the app entirely — the exact opposite of
+                    // what the button is for, which is to keep using Voiid during a call.
+                    //
+                    // PiP still exists and is still correct for its own case: pressing
+                    // Home/Recents during a video call (onUserLeaveHint), where the user has
+                    // genuinely chosen to leave. The video bubble below keeps the remote
+                    // frame visible WITHIN the app.
+                    .softClickable { haptics.tap(); CallManager.minimize() },
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
