@@ -865,14 +865,11 @@ private fun GridCard(conv: VConversation, modifier: Modifier) {
 
     Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
         Box(Modifier.fillMaxWidth().aspectRatio(1f)) {
-            // SQUARE tiles — this grid is the app's signature and the shape stays.
-            //
-            // What DID change is the fallback: every chat without a photo used to render the
-            // `fieldFill` plate with a faint wordmark on it, so the grid read as a set of
-            // empty grey boxes. Initials on a brand tint are a person-shaped placeholder
-            // instead. Mirrors iOS.
             Box(
-                Modifier.fillMaxSize().clip(RoundedCornerShape(VoiidRadius.lg)),
+                Modifier
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(VoiidRadius.lg))
+                    .background(VoiidColor.fieldFill),
                 contentAlignment = Alignment.Center,
             ) {
                 val bmp = avatar
@@ -899,21 +896,8 @@ private fun GridCard(conv: VConversation, modifier: Modifier) {
                         contentScale = ContentScale.Crop,
                     )
                 } else {
-                    // Initials on a brand tint — the same fallback the shared ProfileAvatar
-                    // uses everywhere else, so a face-less chat looks like a person rather
-                    // than an empty box.
-                    Box(
-                        Modifier.fillMaxSize().background(VoiidColor.primary.copy(alpha = 0.14f)),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            conv.title.trim().split(" ").filter { it.isNotBlank() }
-                                .take(2).mapNotNull { it.firstOrNull() }.joinToString("").uppercase()
-                                .ifEmpty { "?" },
-                            style = VoiidFont.rounded(28, FontWeight.SemiBold),
-                            color = VoiidColor.primary,
-                        )
-                    }
+                    // iOS renders the wordmark image at width 56pt (~52% of card), very faint.
+                    VoiidWordmark(fontSize = 23, alpha = 0.15f)
                 }
             }
             // Badges sit INSIDE the tile. They used to be pushed OUT past its edge (offset
