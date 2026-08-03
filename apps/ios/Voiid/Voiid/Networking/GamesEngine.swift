@@ -25,6 +25,10 @@
 
 import Foundation
 import Combine
+// CGPoint for decoded body points, and CACurrentMediaTime for the interpolation clock —
+// monotonic, unlike Date(), so it cannot jump when the system clock is adjusted mid-match.
+import CoreGraphics
+import QuartzCore
 
 extension Notification.Name {
     static let voiidGameState = Notification.Name("voiidGameState")
@@ -169,6 +173,130 @@ struct CricketState {
     }
 }
 
+/// Authoritative Snake state (backend/games/src/engine/snake).
+///
+/// THE FIRST CONTINUOUS GAME, and the first that needs more from this layer than "parse and
+/// draw". The server ticks at 10 Hz, so a renderer that drew frames as they landed would show
+/// 10 fps of visible stepping. `SnakeSnapshot` therefore keeps the PREVIOUS frame alongside
+/// the current one, and the view interpolates between them (see `SnakeArenaView`).
+///
+/// That is interpolation, not prediction — it draws only positions the server has already
+/// confirmed, just slightly in the past. It cannot invent a position the server never sent,
+/// so the no-optimistic-updates rule at the top of this file still holds.
+struct SnakeState {
+    struct Snake: Identifiable {
+        let id: String
+        let isBot: Bool
+        let x: Double
+        let y: Double
+        let heading: Double
+        let mass: Double
+        let alive: Bool
+        let boosting: Bool
+        /// Absolute body points, head first, already decoded from the wire's delta form.
+        let path: [CGPoint]
+        let kills: Int
+        let deaths: Int
+        let score: Int
+        let invulnUntil: Double
+        let colorIndex: Int
+    }
+
+    struct Food {
+        let id: Int
+        let position: CGPoint
+        /// 1 = standard, 2 = corpse, 0.5 = boost drop.
+        let value: Double
+    }
+
+    let players: [String]
+    let snakes: [Snake]
+    let food: [Food]
+    let time: Double
+    let arenaRadius: Double
+    let duration: Double
+    let finished: Bool
+    let winnerUserId: String?
+    /// Deaths/kills/eats this frame, for one-shot effects.
+    let events: [[String: Any]]
+
+    /// Decode one snake's body.
+    ///
+    /// The wire form is `[headX, headY, dx, dy, dx, dy, ...]` in `pathStep` units — absolute
+    /// coordinates only for the head, deltas thereafter, because consecutive body points are
+    /// a few units apart and their deltas are far shorter to encode. Long snakes are also
+    /// decimated past the head, which needs no handling here: a halved segment is simply a
+    /// longer delta, and the curve through the points is the same shape.
+    private static func decodePath(_ raw: [Double], step: Double) -> [CGPoint] {
+        guard raw.count >= 2 else { return [] }
+        var points: [CGPoint] = [CGPoint(x: raw[0], y: raw[1])]
+        var x = raw[0], y = raw[1]
+        var i = 2
+        while i + 1 < raw.count {
+            x += raw[i] * step
+            y += raw[i + 1] * step
+            points.append(CGPoint(x: x, y: y))
+            i += 2
+        }
+        return points
+    }
+
+    /// Parse a frame. `previous` supplies the food field when this frame carries only a delta.
+    static func parse(_ payload: [String: Any], previous: SnakeState?) -> SnakeState? {
+        guard let players = payload["players"] as? [String],
+              let rawSnakes = payload["snakes"] as? [[String: Any]] else { return nil }
+
+        let step = (payload["pathStep"] as? Double) ?? 1
+
+        let snakes: [Snake] = rawSnakes.compactMap { s in
+            guard let id = s["id"] as? String else { return nil }
+            return Snake(
+                id: id,
+                isBot: (s["bot"] as? Bool) ?? false,
+                x: (s["x"] as? Double) ?? 0,
+                y: (s["y"] as? Double) ?? 0,
+                heading: (s["h"] as? Double) ?? 0,
+                mass: (s["m"] as? Double) ?? 0,
+                alive: (s["a"] as? Bool) ?? false,
+                boosting: (s["b"] as? Bool) ?? false,
+                path: decodePath((s["p"] as? [Double]) ?? [], step: step),
+                kills: (s["k"] as? Int) ?? 0,
+                deaths: (s["d"] as? Int) ?? 0,
+                score: (s["s"] as? Int) ?? 0,
+                invulnUntil: (s["iv"] as? Double) ?? 0,
+                colorIndex: (s["c"] as? Int) ?? 0)
+        }
+
+        // Food arrives as a full snapshot or as add/remove deltas. Rebuilding from the
+        // previous frame is what keeps this off the wire 90% of the time.
+        var food: [Int: Food] = [:]
+        if (payload["foodFull"] as? Bool) ?? true {
+            for entry in (payload["food"] as? [[Double]] ?? []) where entry.count >= 4 {
+                let id = Int(entry[3])
+                food[id] = Food(id: id, position: CGPoint(x: entry[0], y: entry[1]), value: entry[2])
+            }
+        } else {
+            for f in previous?.food ?? [] { food[f.id] = f }
+            for entry in (payload["foodAdd"] as? [[Double]] ?? []) where entry.count >= 4 {
+                let id = Int(entry[3])
+                food[id] = Food(id: id, position: CGPoint(x: entry[0], y: entry[1]), value: entry[2])
+            }
+            for id in (payload["foodDel"] as? [Int] ?? []) { food.removeValue(forKey: id) }
+        }
+
+        return SnakeState(
+            players: players,
+            snakes: snakes,
+            food: Array(food.values),
+            time: (payload["t"] as? Double) ?? 0,
+            arenaRadius: (payload["arenaRadius"] as? Double) ?? 1400,
+            duration: (payload["duration"] as? Double) ?? 180,
+            finished: (payload["finished"] as? Bool) ?? false,
+            winnerUserId: payload["winnerUserId"] as? String,
+            events: (payload["events"] as? [[String: Any]]) ?? [])
+    }
+}
+
 @MainActor
 final class GamesEngine: ObservableObject {
     static let shared = GamesEngine()
@@ -183,6 +311,17 @@ final class GamesEngine: ObservableObject {
     /// a crash where an unused nil is inert.
     @Published private(set) var rps: RpsState?
     @Published private(set) var cricket: CricketState?
+    /// Current snake frame, and the one before it.
+    ///
+    /// The previous frame is kept because the renderer interpolates between the two: at a
+    /// 10 Hz tick, drawing each frame on arrival would visibly step. It also supplies the
+    /// baseline that food deltas are applied against.
+    @Published private(set) var snake: SnakeState?
+    @Published private(set) var snakePrevious: SnakeState?
+    /// Host-clock time the current snake frame landed, so the view knows how far to
+    /// interpolate. Monotonic, and deliberately not the server's `t` — the two clocks differ
+    /// by an unknown offset and only the local one paces drawing.
+    @Published private(set) var snakeFrameAt: TimeInterval = 0
     /// Set when the join REST call fails, so the screen can show something truthful
     /// instead of an empty board that will never update.
     @Published private(set) var joinError: String?
@@ -220,6 +359,13 @@ final class GamesEngine: ObservableObject {
         switch info["game"] as? String {
         case "rps":     rps = RpsState.parse(payload)
         case "cricket": cricket = CricketState.parse(payload)
+        case "snake":
+            // Parse against the CURRENT frame, because food deltas are relative to it, then
+            // shift it into `previous` for the renderer to interpolate from.
+            guard let next = SnakeState.parse(payload, previous: snake) else { return }
+            snakePrevious = snake
+            snake = next
+            snakeFrameAt = CACurrentMediaTime()
         default:        state = TicTacToeState.parse(payload)
         }
     }
@@ -232,8 +378,12 @@ final class GamesEngine: ObservableObject {
         self.state = nil
         self.rps = nil
         self.cricket = nil
+        self.snake = nil
+        self.snakePrevious = nil
         self.joinError = nil
         self.lastSeq = -1
+        self.pendingHeading = nil
+        self.lastSentBoost = false
         do {
             try await api.join(matchId: matchId)
         } catch {
@@ -311,12 +461,79 @@ final class GamesEngine: ObservableObject {
         WebSocketClient.shared.sendGameInput(matchId: matchId, payload: ["pick": pick])
     }
 
+    /// Create a SOLO match — one human against server-side bots — and enter it.
+    ///
+    /// No invite and no opponent, unlike `create`. Snake is the first game whose catalog row
+    /// allows `min_players = 1`, which is what lets a match exist with a single seat.
+    ///
+    /// The bots run on the SERVER, not here, so this stays a pure renderer: practice and
+    /// multiplayer are the same code path on both sides, and a bug in one is a bug in both
+    /// rather than two implementations drifting apart. That is the difference between this
+    /// and the `*Bot.swift` views, which simulate turn-based opponents locally because those
+    /// games have no continuous state to keep in sync.
+    func createSolo(slug: String, options: [String: Int] = [:]) async -> String? {
+        do {
+            let id = try await api.create(slug: slug, opponentIds: [], options: options)
+            await open(matchId: id)
+            return id
+        } catch {
+            joinError = "Couldn't start the match."
+            return nil
+        }
+    }
+
+    /// Steer. `heading` is radians in world space; `boost` is whether the pedal is held.
+    ///
+    /// Rate-limited to the server's tick rate rather than sent on every touch callback. A
+    /// drag gesture fires far faster than 10 Hz, and the extra frames cannot change anything:
+    /// the server reads the latest heading once per tick and discards the rest. Sending them
+    /// anyway would burn uplink and radio on a phone for no visible effect, and would trip
+    /// the per-match input limit.
+    ///
+    /// Unsent changes are not queued — the newest heading simply replaces the last, which is
+    /// the correct semantics for a continuous control. A stale heading has no value.
+    func steer(heading: Double, boost: Bool) {
+        guard let matchId, let snake, !snake.finished else { return }
+
+        let now = CACurrentMediaTime()
+        // Boost changes go immediately: a dropped press is a lost fight, and it is an edge,
+        // not a continuous value.
+        let boostChanged = boost != lastSentBoost
+        guard boostChanged || now - lastSteerSentAt >= Self.steerInterval else {
+            pendingHeading = heading
+            return
+        }
+
+        lastSteerSentAt = now
+        lastSentBoost = boost
+        pendingHeading = nil
+        WebSocketClient.shared.sendGameInput(
+            matchId: matchId, payload: ["h": heading, "boost": boost])
+    }
+
+    /// Flush a heading that arrived between sends. Called by the renderer each frame, so a
+    /// finger that stops moving still lands its final direction.
+    func flushSteering() {
+        guard let heading = pendingHeading else { return }
+        guard CACurrentMediaTime() - lastSteerSentAt >= Self.steerInterval else { return }
+        steer(heading: heading, boost: lastSentBoost)
+    }
+
+    private static let steerInterval: TimeInterval = 1.0 / 10.0
+    private var lastSteerSentAt: TimeInterval = 0
+    private var lastSentBoost = false
+    private var pendingHeading: Double?
+
     func leave() {
         matchId = nil
         state = nil
         rps = nil
         cricket = nil
+        snake = nil
+        snakePrevious = nil
         joinError = nil
         lastSeq = -1
+        pendingHeading = nil
+        lastSentBoost = false
     }
 }
