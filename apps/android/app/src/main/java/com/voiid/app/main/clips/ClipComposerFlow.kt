@@ -220,23 +220,20 @@ fun ClipComposerFlow(
                     edit = edit,
                     onPost = { caption ->
                         haptics.success()
-                        // Dismiss immediately — the export + upload run in the background
-                        // and surface on the grid tile. Blocking the UI on a 100 MB PUT is
-                        // what the story composer explicitly avoids, and a clip is larger.
+                        // Hand the work to the STORE first, then dismiss. The store owns it on
+                        // viewModelScope, which outlives this composable — the previous version
+                        // launched the export on this composable's own scope and then called
+                        // onClose(), cancelling the export a frame later, so nothing ever
+                        // uploaded. Never start work on a composable scope that has to survive
+                        // that composable's dismissal.
+                        clips.post(
+                            sourceFile = file,
+                            edit = edit,
+                            caption = caption.trim().ifEmpty { null },
+                            authorId = myUserId,
+                            authorName = myName,
+                        )
                         onClose()
-                        scope.launch {
-                            // Produces the full 480p/720p/1080p ladder in one pass
-                            // (skipping rungs above the source resolution) plus the cover.
-                            val ladder = withContext(Dispatchers.IO) {
-                                ClipExporter.exportLadder(context, file, edit)
-                            } ?: return@launch
-                            clips.post(
-                                ladder = ladder,
-                                caption = caption.trim().ifEmpty { null },
-                                authorId = myUserId,
-                                authorName = myName,
-                            )
-                        }
                     },
                 )
             }

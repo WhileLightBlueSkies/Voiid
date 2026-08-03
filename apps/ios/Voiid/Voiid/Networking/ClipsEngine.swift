@@ -400,9 +400,90 @@ final class ClipsEngine: ObservableObject {
 
     func deleteClip(_ clipId: String) async {
         let snapshot = clips
+        let mineSnapshot = myClips
         clips.removeAll { $0.id == clipId }
+        myClips.removeAll { $0.id == clipId }
         do { try await svc.deleteClip(clipId: clipId) }
-        catch { clips = snapshot }   // put it back rather than lie about the delete
+        catch {
+            // Put it back rather than lie about the delete.
+            clips = snapshot
+            myClips = mineSnapshot
+        }
+    }
+
+    // MARK: - My Clips
+
+    @Published private(set) var myClips: [Clip] = []
+    @Published private(set) var myLoading = false
+    @Published private(set) var myLoadError: String?
+    @Published private(set) var myHasLoadedOnce = false
+    private var myNextCursor: String?
+    private var myReachedEnd = false
+
+    func refreshMine() async {
+        myLoading = true
+        myLoadError = nil
+        do {
+            let resp = try await svc.mine()
+            myClips = resp.clips.map(Clip.init(row:))
+            myNextCursor = resp.next_cursor
+            myReachedEnd = resp.next_cursor == nil
+        } catch {
+            myLoadError = Self.message(error)
+        }
+        myHasLoadedOnce = true
+        myLoading = false
+    }
+
+    func loadMoreMineIfNeeded(currentItem: Clip) async {
+        guard !myReachedEnd, !myLoading, let cursor = myNextCursor else { return }
+        guard let idx = myClips.firstIndex(where: { $0.id == currentItem.id }),
+              idx >= myClips.count - 6 else { return }
+        do {
+            let resp = try await svc.mine(cursor: cursor)
+            let existing = Set(myClips.map(\.id))
+            myClips.append(contentsOf: resp.clips.map(Clip.init(row:)).filter { !existing.contains($0.id) })
+            myNextCursor = resp.next_cursor
+            myReachedEnd = resp.next_cursor == nil
+        } catch {
+            myReachedEnd = true
+        }
+    }
+
+    /// Edit the caption and/or cover of an existing clip. The VIDEO is never replaced —
+    /// people have already watched and engaged with those bytes, so swapping them under a
+    /// stable id would turn existing likes into an endorsement of something nobody saw.
+    ///
+    /// Returns nil on success, or a message to show.
+    func updateClip(
+        _ clipId: String,
+        caption: String?,
+        clearCaption: Bool,
+        newCoverJPEG: Data? = nil
+    ) async -> String? {
+        do {
+            var thumbKey: String?
+            if let newCoverJPEG {
+                let presign = try await svc.presignThumb(clipId: clipId)
+                try await Self.putToR2(presign.thumb_upload_url, body: newCoverJPEG,
+                                       contentType: "image/jpeg")
+                thumbKey = presign.thumb_key
+            }
+            let row = try await svc.updateClip(
+                clipId: clipId,
+                caption: clearCaption ? .some(nil) : caption.map { .some($0) },
+                thumbKey: thumbKey,
+                coverSource: thumbKey != nil ? "upload" : nil
+            )
+            // Replace in BOTH lists — the same clip is on the explore grid too, and
+            // leaving a stale caption there reads as "the edit didn't save".
+            let updated = Clip(row: row)
+            if let i = myClips.firstIndex(where: { $0.id == clipId }) { myClips[i] = updated }
+            if let i = clips.firstIndex(where: { $0.id == clipId }) { clips[i] = updated }
+            return nil
+        } catch {
+            return Self.message(error)
+        }
     }
 
     // MARK: - Helpers

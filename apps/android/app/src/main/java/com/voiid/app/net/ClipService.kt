@@ -3,6 +3,7 @@ package com.voiid.app.net
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonPrimitive
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -272,6 +273,52 @@ class ClipService(private val tokens: TokenStore) {
 
     suspend fun deleteComment(clipId: String, commentId: String) {
         api.request("DELETE", "clips/$clipId/comments/$commentId")
+    }
+
+    // ── Editing (caption + cover only; the video itself is immutable) ──────────────
+
+    @Serializable data class PresignThumbResp(
+        val thumb_key: String,
+        val thumb_upload_url: String,
+    )
+
+    /**
+     * A fresh cover key for an existing clip. The server mints a NEW uuid rather than
+     * reusing the old one, so caches still holding the previous cover are invalidated.
+     */
+    suspend fun presignThumb(clipId: String): PresignThumbResp =
+        api.requestAs("POST", "clips/$clipId/presign-thumb", jsonBody = "{}")
+
+    @Serializable private data class UpdateClipResp(val clip: ClipRow)
+
+    /**
+     * Caption and/or cover, independently applied.
+     *
+     * The body is built by hand rather than through a @Serializable class because
+     * ApiClient's Json sets `explicitNulls = false`, which DROPS a null field instead of
+     * emitting `null` — so a serialized "clear the caption" would arrive as "change
+     * nothing" and the clear would silently never happen.
+     */
+    suspend fun updateClip(
+        clipId: String,
+        caption: String? = null,
+        clearCaption: Boolean = false,
+        thumbKey: String? = null,
+        coverSource: String? = null,
+    ): ClipRow {
+        val fields = buildList {
+            when {
+                clearCaption -> add("\"caption\":null")
+                caption != null -> add("\"caption\":${JsonPrimitive(caption)}")
+            }
+            if (thumbKey != null) add("\"thumb_r2_key\":${JsonPrimitive(thumbKey)}")
+            if (coverSource != null) add("\"cover_source\":${JsonPrimitive(coverSource)}")
+        }
+        val resp: UpdateClipResp = api.requestAs(
+            "PATCH", "clips/$clipId",
+            jsonBody = fields.joinToString(",", prefix = "{", postfix = "}"),
+        )
+        return resp.clip
     }
 
     suspend fun deleteClip(clipId: String) {

@@ -167,6 +167,16 @@ struct ClipsFeedView: View {
                 .font(VoiidFont.display)
                 .foregroundColor(VoiidColor.textPrimary)
             Spacer()
+            NavigationLink {
+                MyClipsView().environmentObject(engine)
+            } label: {
+                Image(systemName: "person.crop.square.filled.and.at.rectangle")
+                    .font(.system(size: 22))
+                    .foregroundColor(VoiidColor.textPrimary)
+            }
+            .accessibilityLabel("My clips")
+            .padding(.trailing, VoiidSpacing.sm)
+
             Button {
                 Haptics.tap()
                 showComposer = true

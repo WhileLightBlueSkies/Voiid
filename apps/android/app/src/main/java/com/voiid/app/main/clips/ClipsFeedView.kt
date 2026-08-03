@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddCircle
 import androidx.compose.material.icons.filled.RemoveRedEye
+import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -59,6 +60,7 @@ fun ClipsFeedView(
     clips: ClipsStore,
     onOpenClip: (Int) -> Unit,
     onNewClip: () -> Unit,
+    onMyClips: () -> Unit,
 ) {
     val haptics = LocalVoiidHaptics.current
     val gridState = rememberLazyGridState()
@@ -81,6 +83,13 @@ fun ClipsFeedView(
         ) {
             Text("Clips", style = VoiidFont.display, color = VoiidColor.textPrimary)
             Spacer(Modifier.weight(1f))
+            Icon(
+                Icons.Default.VideoLibrary, "My clips", tint = VoiidColor.textPrimary,
+                modifier = Modifier.size(24.dp).softClickable(scale = 0.9f) {
+                    haptics.tap(); onMyClips()
+                },
+            )
+            Spacer(Modifier.width(16.dp))
             Icon(
                 Icons.Default.AddCircle, "New clip", tint = VoiidColor.primary,
                 modifier = Modifier.size(28.dp).softClickable(scale = 0.9f) {

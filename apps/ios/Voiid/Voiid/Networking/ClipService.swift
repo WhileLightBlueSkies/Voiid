@@ -207,6 +207,54 @@ final class ClipService {
         _ = try await api.request("DELETE", "clips/\(clipId)", as: EmptyResponse.self)
     }
 
+    // MARK: - Editing (caption + cover only; the video itself is immutable)
+
+    struct PresignThumbResp: Decodable {
+        let thumb_key: String
+        let thumb_upload_url: String
+    }
+
+    /// A fresh cover key for an existing clip. The server mints a NEW uuid rather than
+    /// reusing the old one so caches holding the previous cover are actually invalidated.
+    func presignThumb(clipId: String) async throws -> PresignThumbResp {
+        try await api.request("POST", "clips/\(clipId)/presign-thumb", body: EmptyBody())
+    }
+
+    /// Caption and/or cover. Both optional and independently applied, so changing the
+    /// caption never re-sends a cover the user did not touch.
+    ///
+    /// `caption` is doubly optional on purpose: `.some(nil)` clears it, `nil` leaves it
+    /// alone. Collapsing those would make "clear my caption" impossible to express.
+    func updateClip(
+        clipId: String,
+        caption: String?? = nil,
+        thumbKey: String? = nil,
+        coverSource: String? = nil
+    ) async throws -> ClipRow {
+        struct Body: Encodable {
+            var caption: String??
+            var thumb_r2_key: String?
+            var cover_source: String?
+
+            // Swift's synthesized encoder omits a `.some(nil)` double optional entirely,
+            // which would silently drop exactly the "clear the caption" case. Encode it
+            // explicitly as JSON null.
+            func encode(to encoder: Encoder) throws {
+                var c = encoder.container(keyedBy: CodingKeys.self)
+                if let caption { try c.encode(caption, forKey: .caption) }
+                try c.encodeIfPresent(thumb_r2_key, forKey: .thumb_r2_key)
+                try c.encodeIfPresent(cover_source, forKey: .cover_source)
+            }
+            enum CodingKeys: String, CodingKey { case caption, thumb_r2_key, cover_source }
+        }
+        struct Resp: Decodable { let clip: ClipRow }
+        let resp: Resp = try await api.request(
+            "PATCH", "clips/\(clipId)",
+            body: Body(caption: caption, thumb_r2_key: thumbKey, cover_source: coverSource)
+        )
+        return resp.clip
+    }
+
     /// Bodyless POST/DELETE still needs a JSON body for the shared client.
     private struct EmptyBody: Encodable {}
 }

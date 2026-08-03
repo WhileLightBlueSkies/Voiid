@@ -8,6 +8,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.voiid.app.main.clips.ClipEdit
 import com.voiid.app.main.clips.ClipExporter
 import com.voiid.app.net.ApiError
 import com.voiid.app.net.ClipQuality
@@ -313,22 +314,29 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
     // ── Posting ───────────────────────────────────────────────────────────────────
 
     /**
-     * Optimistic post: the tile appears in the grid immediately and the upload runs in the
-     * background, so Post never blocks on a 100 MB PUT. Mirrors the story composer's
+     * Optimistic post: the tile appears in the grid immediately and the export + upload run
+     * in the background, so Post never blocks on a 100 MB PUT. Mirrors the story composer's
      * reasoning for the same decision.
+     *
+     * THE EXPORT RUNS HERE, on viewModelScope, and that placement is the whole point. It
+     * used to run in the composer's rememberCoroutineScope, which the composer's own
+     * onClose() tears down — so closing the composer (the very next thing the user does)
+     * cancelled the export before it produced a single frame and the upload silently never
+     * happened. viewModelScope outlives the composer; a composable's scope cannot be used
+     * for work that is supposed to continue after it leaves the screen.
      */
     fun post(
-        ladder: ClipExporter.LadderOutput,
+        sourceFile: File,
+        edit: ClipEdit,
         caption: String?,
         authorId: String,
         authorName: String,
     ) {
         val clipId = UUID.randomUUID().toString()
 
-        // Persist the cover so the optimistic tile has something to draw.
-        val thumbFile = File(getApplication<Application>().cacheDir, "clip_thumb_$clipId.jpg")
-        runCatching { thumbFile.writeBytes(ladder.thumbnailJpeg) }
-
+        // The tile appears NOW, before the export, showing indeterminate progress. Waiting
+        // for the export to finish would leave the grid looking like the post was dropped
+        // for however many seconds a 90s transcode takes.
         clips.add(
             0,
             VClip(
@@ -336,15 +344,34 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
                 authorId = authorId,
                 authorName = authorName,
                 caption = caption,
-                durationMs = ladder.durationMs.toInt(),
-                width = ladder.width,
-                height = ladder.height,
                 uploadState = ClipUploadState.Uploading(0f),
-                localThumbPath = thumbFile.absolutePath,
             )
         )
 
         viewModelScope.launch {
+            val ladder = withContext(Dispatchers.IO) {
+                runCatching { ClipExporter.exportLadder(getApplication(), sourceFile, edit) }
+                    .getOrNull()
+            }
+            if (ladder == null) {
+                val i = clips.indexOfFirst { it.id == clipId }
+                if (i >= 0) clips[i] = clips[i].copy(
+                    uploadState = ClipUploadState.Failed("Couldn't process that video."),
+                )
+                return@launch
+            }
+
+            // Persist the cover so the tile has something real to draw from here on.
+            val thumbFile = File(getApplication<Application>().cacheDir, "clip_thumb_$clipId.jpg")
+            runCatching { thumbFile.writeBytes(ladder.thumbnailJpeg) }
+            val ti = clips.indexOfFirst { it.id == clipId }
+            if (ti >= 0) clips[ti] = clips[ti].copy(
+                durationMs = ladder.durationMs.toInt(),
+                width = ladder.width,
+                height = ladder.height,
+                localThumbPath = thumbFile.absolutePath,
+            )
+
             runCatching {
                 val presign = svc.presignUpload()
 
@@ -410,6 +437,8 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
                 val i = clips.indexOfFirst { it.id == clipId }
                 if (i >= 0) clips[i] = clips[i].copy(uploadState = ClipUploadState.None)
                 cleanUp(ladder)
+                // The copy made by copyAndProbe is ours to reap; the export is done with it.
+                runCatching { sourceFile.delete() }
                 refresh()
             }.onFailure { e ->
                 val i = clips.indexOfFirst { it.id == clipId }
@@ -430,13 +459,105 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
 
     fun deleteClip(clipId: String) {
         val snapshot = clips.toList()
+        val mineSnapshot = myClips.toList()
         clips.removeAll { it.id == clipId }
+        myClips.removeAll { it.id == clipId }
         viewModelScope.launch {
             runCatching { svc.deleteClip(clipId) }.onFailure {
                 // Put it back rather than lie about the delete.
                 clips.clear()
                 clips.addAll(snapshot)
+                myClips.clear()
+                myClips.addAll(mineSnapshot)
             }
+        }
+    }
+
+    // ── My Clips ──────────────────────────────────────────────────────────────────
+
+    val myClips = mutableStateListOf<VClip>()
+    var myLoading by mutableStateOf(false)
+        private set
+    var myLoadError by mutableStateOf<String?>(null)
+        private set
+    var myHasLoadedOnce by mutableStateOf(false)
+        private set
+    private var myNextCursor: String? = null
+    private var myReachedEnd = false
+
+    fun refreshMine() {
+        viewModelScope.launch {
+            myLoading = true
+            myLoadError = null
+            runCatching { svc.mine() }
+                .onSuccess { resp ->
+                    myClips.clear()
+                    myClips.addAll(resp.clips.map(VClip::from))
+                    myNextCursor = resp.next_cursor
+                    myReachedEnd = resp.next_cursor == null
+                }
+                .onFailure { myLoadError = message(it) }
+            myHasLoadedOnce = true
+            myLoading = false
+        }
+    }
+
+    fun loadMoreMineIfNeeded(index: Int) {
+        if (myReachedEnd || myLoading) return
+        val cursor = myNextCursor ?: return
+        if (index < myClips.size - 6) return
+        viewModelScope.launch {
+            runCatching { svc.mine(cursor = cursor) }
+                .onSuccess { resp ->
+                    val existing = myClips.map { it.id }.toSet()
+                    myClips.addAll(resp.clips.map(VClip::from).filter { it.id !in existing })
+                    myNextCursor = resp.next_cursor
+                    myReachedEnd = resp.next_cursor == null
+                }
+                .onFailure { myReachedEnd = true }
+        }
+    }
+
+    /**
+     * Edit the caption and/or cover of an existing clip. The VIDEO is never replaced —
+     * people have already watched and engaged with those bytes, so swapping them under a
+     * stable id would turn existing likes into an endorsement of something nobody saw.
+     *
+     * [onResult] receives null on success, or a message to show.
+     */
+    fun updateClip(
+        clipId: String,
+        caption: String?,
+        clearCaption: Boolean,
+        newCoverJpeg: ByteArray? = null,
+        onResult: (String?) -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            runCatching {
+                var thumbKey: String? = null
+                if (newCoverJpeg != null) {
+                    val presign = svc.presignThumb(clipId)
+                    svc.uploadBlob(presign.thumb_upload_url, newCoverJpeg, "image/jpeg")
+                    thumbKey = presign.thumb_key
+                }
+                svc.updateClip(
+                    clipId = clipId,
+                    caption = caption,
+                    clearCaption = clearCaption,
+                    thumbKey = thumbKey,
+                    coverSource = if (thumbKey != null) "upload" else null,
+                )
+            }.onSuccess { row ->
+                // Replace in BOTH lists — the same clip is on the explore grid too, and
+                // leaving a stale caption there is exactly the kind of thing that reads
+                // as "the edit didn't save".
+                val updated = VClip.from(row)
+                listOf(myClips, clips).forEach { list ->
+                    val i = list.indexOfFirst { it.id == clipId }
+                    if (i >= 0) list[i] = updated
+                }
+                onResult(null)
+            }.onFailure { onResult(message(it)) }
         }
     }
 

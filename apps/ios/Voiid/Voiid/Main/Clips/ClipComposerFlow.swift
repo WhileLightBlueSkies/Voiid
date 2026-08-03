@@ -52,7 +52,9 @@ struct ClipComposerFlow: View {
         .fullScreenCover(isPresented: $showCamera) {
             // The stories camera already implements press-and-hold record, flip and a
             // duration ring — reused rather than forked.
-            StoryCameraView { _, videoURL in
+            // .clip: 90s cap and video-only. With the story defaults a tap produced a photo
+            // this composer could only drop on the floor, and anything past 30s was truncated.
+            StoryCameraView(mode: .clip) { _, videoURL in
                 showCamera = false
                 guard let videoURL else { return }
                 Task { await accept(url: videoURL) }

@@ -122,6 +122,7 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
     // over the whole page, so it has to know where to start.
     var openClip by remember { mutableStateOf<Int?>(null) }
     var showNewClip by remember { mutableStateOf(false) }
+    var showMyClips by remember { mutableStateOf(false) }
     // Stories viewer + composer are full-screen overlay siblings (they must cover the tab bar),
     // driven by nullable state exactly like the clip overlay above.
     var openStoryContext by remember { mutableStateOf<Int?>(null) }
@@ -243,6 +244,7 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                         clips,
                         onOpenClip = { openClip = it },
                         onNewClip = { showNewClip = true },
+                        onMyClips = { showMyClips = true },
                     )
                     // "Open chat" on a map contact card jumps straight into that conversation,
                     // the same push the chat list performs.
@@ -505,6 +507,12 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
             myUserId = clips.myUserId,
             myName = clips.myName,
             onClose = { showNewClip = false },
+        )
+    }
+    if (showMyClips) {
+        com.voiid.app.main.clips.MyClipsView(
+            clips = clips,
+            onBack = { showMyClips = false },
         )
     }
     if (showStoryComposer) {

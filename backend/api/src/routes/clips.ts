@@ -631,6 +631,129 @@ router.delete('/:id/comments/:commentId', requireAuth, asyncHandler(async (req, 
 }));
 
 // ─────────────────────────────────────────────────────────────────────────────────
+// POST /clips/:id/presign-thumb -> { thumb_key, thumb_upload_url }
+//
+// A replacement cover for an EXISTING clip. Mints a fresh uuid stem rather than
+// reusing the clip's original thumb key: overwriting the old object in place would
+// be invisible to every CDN and client cache still holding the previous cover, so
+// the edit would appear to do nothing for exactly the people who already saw it.
+// The old object is deleted by PATCH once the new key is committed.
+// ─────────────────────────────────────────────────────────────────────────────────
+router.post('/:id/presign-thumb', requireAuth, asyncHandler(async (req, res) => {
+  if (!r2Configured()) return res.status(503).json({ error: 'media storage not configured' });
+  const { user_id } = (req as any).auth;
+  const clipId = req.params.id;
+  if (!UUID_RE.test(clipId)) return res.status(400).json({ error: 'invalid clip id' });
+
+  // Prove ownership BEFORE minting a writable URL — otherwise any authenticated
+  // caller could obtain a PUT url scoped to their own namespace and then attempt to
+  // attach it to somebody else's clip.
+  const rows = await query<{ author_id: string }>(
+    `select author_id from clips where id = $1 and deleted_at is null`,
+    [clipId]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'clip not found' });
+  if (rows[0].author_id !== user_id) {
+    return res.status(403).json({ error: 'not the author of this clip' });
+  }
+
+  const thumb_key = `media/clips/${user_id}/${randomUUID()}.jpg`;
+  const thumb_upload_url = await presignPut(thumb_key, 'image/jpeg');
+  return res.json({ thumb_key, thumb_upload_url });
+}));
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// PATCH /clips/:id  { caption?, thumb_r2_key?, cover_source? } -> { clip }
+//
+// Edits the CAPTION and COVER only. The video itself is immutable by design: people
+// have already watched, liked and commented on these bytes, and swapping them under
+// a stable id turns every existing engagement into an endorsement of something the
+// audience never saw. Re-uploading is a new clip.
+//
+// Both fields are optional and independently applied, so the client can change just
+// the caption without re-sending a cover it did not touch.
+// ─────────────────────────────────────────────────────────────────────────────────
+router.patch('/:id', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id } = (req as any).auth;
+  const clipId = req.params.id;
+  if (!UUID_RE.test(clipId)) return res.status(400).json({ error: 'invalid clip id' });
+
+  const { caption, thumb_r2_key, cover_source } = req.body ?? {};
+
+  const hasCaption = caption !== undefined;
+  const hasThumb = thumb_r2_key !== undefined;
+  if (!hasCaption && !hasThumb) {
+    return res.status(400).json({ error: 'nothing to update' });
+  }
+
+  // `null` is a meaningful caption value (clear it); a non-string is not.
+  if (hasCaption && caption !== null &&
+      (typeof caption !== 'string' || caption.length > MAX_CAPTION_LEN)) {
+    return res.status(400).json({ error: `caption must be a string under ${MAX_CAPTION_LEN} chars` });
+  }
+  if (cover_source != null && cover_source !== 'frame' && cover_source !== 'upload') {
+    return res.status(400).json({ error: "cover_source must be 'frame' or 'upload'" });
+  }
+
+  // Same namespace+uuid-tail proof as POST /clips. A thumb key from presign-thumb has
+  // a bare uuid stem, so no rendition suffix is permitted here.
+  if (hasThumb) {
+    const prefix = `media/clips/${user_id}/`;
+    const ok = typeof thumb_r2_key === 'string' &&
+      thumb_r2_key.startsWith(prefix) &&
+      thumb_r2_key.endsWith('.jpg') &&
+      UUID_RE.test(thumb_r2_key.slice(prefix.length, thumb_r2_key.length - '.jpg'.length));
+    if (!ok) return res.status(400).json({ error: 'thumb_r2_key does not belong to this user' });
+  }
+
+  const existing = await query<{ author_id: string; thumb_r2_key: string }>(
+    `select author_id, thumb_r2_key from clips where id = $1 and deleted_at is null`,
+    [clipId]
+  );
+  if (!existing[0]) return res.status(404).json({ error: 'clip not found' });
+  if (existing[0].author_id !== user_id) {
+    return res.status(403).json({ error: 'not the author of this clip' });
+  }
+  const oldThumbKey = existing[0].thumb_r2_key;
+
+  // Build the SET list from only the fields actually supplied. coalesce() would be
+  // wrong for caption: it cannot distinguish "clear this" from "leave it alone".
+  const sets: string[] = [];
+  const params: unknown[] = [clipId];
+  if (hasCaption) {
+    params.push(caption === null ? null : (caption as string));
+    sets.push(`caption = $${params.length}`);
+  }
+  if (hasThumb) {
+    params.push(thumb_r2_key);
+    sets.push(`thumb_r2_key = $${params.length}`);
+    params.push(cover_source ?? 'upload');
+    sets.push(`cover_source = $${params.length}`);
+  }
+
+  await query(`update clips set ${sets.join(', ')} where id = $1`, params);
+
+  // Drop the superseded cover only after the row commits — deleting first would leave
+  // a clip pointing at a missing object if the update then failed.
+  if (hasThumb && oldThumbKey && oldThumbKey !== thumb_r2_key && r2Configured()) {
+    try {
+      await deleteObject(oldThumbKey);
+    } catch (e) {
+      console.warn('[clips] old thumb delete failed (lifecycle rule will reap):', (e as Error).message);
+    }
+  }
+
+  // Return the full updated row in the same shape as every other endpoint, so the
+  // client can replace its local model wholesale instead of patching fields by hand.
+  const updated = await query<any>(
+    `select ${CLIP_COLUMNS} from clips c join users u on u.id = c.author_id where c.id = $2`,
+    [user_id, clipId]
+  );
+  await attachThumbUrls(updated);
+  return res.json({ clip: withNumericByteSize(updated)[0] });
+}));
+
+// ─────────────────────────────────────────────────────────────────────────────────
 // DELETE /clips/:id -> 204
 //
 // Soft delete (the row survives so counters and open comment lists do not
