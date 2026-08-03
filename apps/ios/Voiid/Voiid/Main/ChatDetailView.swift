@@ -947,8 +947,13 @@ struct CallLogBubble: View {
     }
 
     var body: some View {
-        HStack {
-            if !log.incoming { Spacer(minLength: 56) }
+        HStack(spacing: 0) {
+            // minLength 0, not 56. The old value FORCED a 56pt gutter on the opposite side,
+            // so a short call log was pushed to at least (width - 56) — combined with the
+            // Spacer that used to sit inside the bubble, that is why these rendered wider
+            // than the messages around them. Zero lets the bubble be exactly as wide as its
+            // content and sit flush against its own edge, which is what Android does.
+            if !log.incoming { Spacer(minLength: 0) }
             Button {
                 Haptics.tap()
                 onCallBack()
@@ -981,7 +986,12 @@ struct CallLogBubble: View {
                         .font(VoiidFont.rounded(11, .regular))
                         .foregroundColor(subTint)
                     }
-                    Spacer(minLength: 8)
+                    // NO Spacer HERE. A `Spacer` inside the bubble expands to every point the
+                    // parent offers, so the bubble stretched to the full width of the
+                    // transcript no matter how short "Missed · 0:12" is — a call log ended up
+                    // wider than the messages around it, which is backwards. Fixed 10pt
+                    // instead, so the row WRAPS its content like Android's does.
+                    Spacer().frame(width: 10)
                     // Tapping calls back, so say so — a bare row gives no hint it is tappable.
                     Image(systemName: "arrow.up.right")
                         .font(.system(size: 11, weight: .semibold))
@@ -1001,7 +1011,9 @@ struct CallLogBubble: View {
                 )
             }
             .buttonStyle(.plain)
-            if log.incoming { Spacer(minLength: 56) }
+            // A flexible Spacer on the trailing side so the bubble sits against its own edge
+            // — this one is OUTSIDE the bubble, so it pushes rather than stretches.
+            if log.incoming { Spacer(minLength: 0) }
         }
         .padding(.vertical, 2)
     }
