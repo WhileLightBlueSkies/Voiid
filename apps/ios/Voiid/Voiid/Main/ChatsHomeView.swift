@@ -38,7 +38,7 @@ struct ChatsHomeView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                searchBar
+                compactHeader
                 tabs
                 // "You are sharing your location" — pinned below the tabs, visible from the
                 // home screen, one-tap Stop (docs/LOCATION.md §8). Renders nothing when idle.
@@ -122,82 +122,11 @@ struct ChatsHomeView: View {
                 }
             }
             .background(VoiidColor.background.ignoresSafeArea())
-            // Native large title + toolbar (replaces the hand-drawn header): the system draws
-            // the "Chats" title and the bar; we only supply the leading profile avatar (→
-            // Settings) and the trailing compose action.
-            .navigationTitle("Chats")
-            .navigationBarTitleDisplayMode(.large)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button { Haptics.tap(); showSettings = true } label: {
-                        ProfileAvatarButton(photoURL: session.profile.photoURL,
-                                            name: session.profile.fullName, size: 32)
-                    }
-                    // Show the avatar BARE — no iOS 26 glass ring / button chrome around it.
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Profile and settings")
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    if tab == .groups {
-                        Button {
-                            Haptics.tap(); showNewGroup = true
-                        } label: { Image(systemName: "person.3.fill") }
-                        .accessibilityLabel("New group")
-                    } else {
-                        // A MENU, not a single action: there are now two distinct ways to start
-                        // a chat — browse people you already have, or reach a stranger by the
-                        // handle they gave you. Those are different enough that folding the
-                        // second into the contact list would put strangers among your contacts.
-                        Menu {
-                            Button {
-                                Haptics.tap(); showNewChat = true
-                            } label: { Label("From contacts", systemImage: "person.crop.circle") }
-                            Button {
-                                Haptics.tap(); showFindByUsername = true
-                            } label: { Label("Find by username", systemImage: "at") }
-                        } label: {
-                            Image(systemName: "square.and.pencil")
-                        }
-                        .accessibilityLabel("New chat")
-                    }
-                }
-            }
-            .onAppear { session.hideTabBar = false }   // root screen always shows the bar
-            .task { await refreshRequestCount() }
-            .task {
-                // INSTANT FIRST: render the cached (local) chat list before ANY network or
-                // address-book work. loadConversations() reads local storage synchronously up
-                // front, so the list appears immediately; the network sync inside it continues
-                // after. Nothing slow may run before this — that was the 8–15s "not instant" bug
-                // (contact discovery + profile fetch were awaited ahead of the render).
-                await chat.loadConversations()
-
-                // Everything below is background/best-effort and must NEVER block the list.
-                WebSocketClient.shared.reconnect()         // fresh socket (avoid a stale/dead one missing pushes)
-                LocationShareEngine.shared.configure()     // route inbound live fixes + start the expiry ticker
-                MapPresenceEngine.shared.configureControlSender()   // hand map_key/map_off to the audience over the ratchet
-                Task { try? await E2EManager.shared.bootstrap() }   // publish identity/prekeys (idempotent)
-                Task { await session.refreshServerProfile() }       // REAL name/photo/bio/username
-                // Contact discovery (rebuilds saved-name map after a restore) — SLOW (address
-                // book + hashing + network), so strictly background; when it finishes it
-                // refreshes names in place via UserDirectory.
-                Task { _ = try? await ContactsService.shared.discover() }
-            }
-            .navigationDestination(item: $openConversation) { ChatDetailView(conversation: $0) }
-            .onReceive(NotificationCenter.default.publisher(for: .voiidOpenConversation)) { note in
-                // Deep-link from a tapped message notification: open its conversation,
-                // loading the list first if it isn't in memory yet.
-                guard let convId = note.object as? String else { return }
-                Task { @MainActor in
-                    let present = chat.directConversations.contains { $0.id == convId }
-                        || chat.groupConversations.contains { $0.id == convId }
-                    if !present { await chat.loadConversations() }
-                    if let conv = chat.directConversations.first(where: { $0.id == convId })
-                        ?? chat.groupConversations.first(where: { $0.id == convId }) {
-                        openConversation = conv
-                    }
-                }
-            }
+            // NO NAVIGATION TITLE, NO TOOLBAR. Both are now the single `compactHeader` row
+            // above: the avatar and compose button moved into it, and the "Chats" large
+            // title is gone entirely — it named the tab already selected in the bar at the
+            // bottom, in the app whose icon you just tapped.
+            .navigationBarHidden(true)
             .sheet(isPresented: $showSettings) {
                 SettingsSheet()
             }
@@ -320,20 +249,97 @@ struct ChatsHomeView: View {
         }
     }
 
-    private var searchBar: some View {
+    /// Avatar · search · compose, on ONE row.
+    ///
+    /// The screen used to spend four stacked bands before the first chat: a toolbar with the
+    /// avatar and compose button, a 40pt "Chats" large title, a 52pt search field, then the
+    /// tabs. Roughly a third of the display was chrome telling you that you were in the app
+    /// you had just opened.
+    ///
+    /// The title goes first. It named the tab that is already selected in the bar at the
+    /// bottom of the screen, in the app whose icon you just tapped — it was the least
+    /// informative pixel on the page.
+    ///
+    /// Then the search field slots BETWEEN the two controls that were already on that row.
+    /// Search is the most-used control on a chat list and it now sits at thumb height rather
+    /// than under a title, and the row that held two small buttons and a lot of empty space
+    /// earns its height.
+    private var compactHeader: some View {
         HStack(spacing: VoiidSpacing.sm) {
-            Image(systemName: "magnifyingglass").foregroundColor(VoiidColor.placeholder)
-            TextField("", text: $search,
-                      prompt: Text("Search").foregroundColor(VoiidColor.placeholder))
-                .font(VoiidFont.body).foregroundColor(VoiidColor.textPrimary)
+            Button { Haptics.tap(); showSettings = true } label: {
+                ProfileAvatarButton(photoURL: session.profile.photoURL,
+                                    name: session.profile.fullName, size: 38)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Profile and settings")
+
+            HStack(spacing: VoiidSpacing.sm) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundColor(VoiidColor.placeholder)
+                TextField("", text: $search,
+                          prompt: Text("Search").foregroundColor(VoiidColor.placeholder))
+                    .font(VoiidFont.rounded(15, .regular))
+                    .foregroundColor(VoiidColor.textPrimary)
+                if !search.isEmpty {
+                    Button {
+                        Haptics.tap(); search = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 15))
+                            .foregroundColor(VoiidColor.placeholder)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, VoiidSpacing.md)
+            // 40pt, down from 52 — it no longer has a whole band to itself, so it can match
+            // the height of the controls beside it instead of towering over them.
+            .frame(height: 40)
+            .background(VoiidColor.fieldFill)
+            .clipShape(Capsule())
+
+            composeButton
         }
         .padding(.horizontal, VoiidSpacing.md)
-        .frame(height: 52)
-        .background(VoiidColor.fieldFill)
-        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.pill, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: VoiidRadius.pill).stroke(VoiidColor.fieldBorder, lineWidth: 1))
-        .padding(.horizontal, VoiidSpacing.lg)
-        .padding(.top, VoiidSpacing.md)
+        .padding(.top, VoiidSpacing.sm)
+        .padding(.bottom, VoiidSpacing.xs)
+    }
+
+    /// The trailing action. Extracted so the header row and nothing else owns it.
+    @ViewBuilder
+    private var composeButton: some View {
+        if tab == .groups {
+            Button { Haptics.tap(); showNewGroup = true } label: {
+                headerGlyph("person.3.fill")
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("New group")
+        } else {
+            // A MENU, not a single action: there are two distinct ways to start a chat —
+            // browse people you already have, or reach a stranger by the handle they gave
+            // you. Folding the second into the contact list would put strangers among your
+            // contacts.
+            Menu {
+                Button { Haptics.tap(); showNewChat = true } label: {
+                    Label("From contacts", systemImage: "person.crop.circle")
+                }
+                Button { Haptics.tap(); showFindByUsername = true } label: {
+                    Label("Find by username", systemImage: "at")
+                }
+            } label: {
+                headerGlyph("square.and.pencil")
+            }
+            .accessibilityLabel("New chat")
+        }
+    }
+
+    private func headerGlyph(_ name: String) -> some View {
+        Image(systemName: name)
+            .font(.system(size: 16, weight: .medium))
+            .foregroundColor(VoiidColor.primary)
+            .frame(width: 38, height: 38)
+            .background(Circle().fill(VoiidColor.primary.opacity(0.10)))
     }
 
     private var tabs: some View {

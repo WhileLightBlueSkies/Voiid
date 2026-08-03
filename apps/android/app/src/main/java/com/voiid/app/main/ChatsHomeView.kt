@@ -51,6 +51,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.AlternateEmail
 import androidx.compose.material.icons.filled.ChevronRight
@@ -187,11 +188,12 @@ fun ChatsHomeView(
             haptics,
             photoUrl = session.profile.photoURL,
             myName = session.profile.fullName,
+            search = search,
+            onSearchChange = { search = it },
             onNewChat = { showNewChat = true },
             onFindByUsername = { showFindByUsername = true },
             onOpenSettings = { showSettings = true },
         )
-        SearchBar(search) { search = it }
         Tabs(tab) { haptics.selection(); tab = it }
         // "N message requests" — the ONLY surface for them. GET /conversations filters pending
         // ones out, so without this a stranger's held-back message would be invisible until
@@ -713,70 +715,95 @@ private fun Header(
     haptics: com.voiid.app.ui.components.VoiidHaptics,
     photoUrl: String?,
     myName: String?,
+    search: String,
+    onSearchChange: (String) -> Unit,
     onNewChat: () -> Unit,
     onFindByUsername: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(top = 8.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            ProfileAvatar(
-                photoUrl = photoUrl,
-                name = myName,
-                size = 38.dp,
-                modifier = Modifier.softClickable(scale = 0.92f) { haptics.tap(); onOpenSettings() },
-            )
-            Spacer(Modifier.weight(1f))
-            // Two distinct ways to start a chat: browse people you already have, or reach a
-            // stranger by the handle they gave you. Separate affordances, because folding the
-            // second into the contact list would put strangers among your contacts.
-            Icon(
-                Icons.Default.AlternateEmail, "Find by username", tint = VoiidColor.textPrimary,
-                modifier = Modifier.size(22.dp).clip(CircleShape)
-                    .clickable { haptics.tap(); onFindByUsername() },
-            )
-            Spacer(Modifier.width(18.dp))
-            Icon(
-                Icons.Default.Create, "New chat", tint = VoiidColor.textPrimary,
-                modifier = Modifier.size(24.dp).clip(CircleShape)
-                    .clickable { haptics.tap(); onNewChat() },
-            )
-        }
-        Spacer(Modifier.height(12.dp))
-        Text("Chats", style = VoiidFont.rounded(28, FontWeight.Bold), color = VoiidColor.textPrimary)
-    }
-}
-
-@Composable
-private fun SearchBar(search: String, onChange: (String) -> Unit) {
+    // Avatar - search - actions, on ONE row.
+    //
+    // The screen used to spend three stacked bands before the first chat: an avatar row, a
+    // 28sp "Chats" title, then a 52dp search field. Roughly a third of the display was chrome
+    // telling you that you were in the app you had just opened.
+    //
+    // The title goes first — it named the tab already selected in the bar at the bottom of
+    // the screen, in the app whose icon you just tapped. Then the search field slots between
+    // the controls that were already on that row, putting the most-used control on a chat
+    // list at thumb height rather than under a title. Mirrors iOS `compactHeader`.
     val shape = RoundedCornerShape(VoiidRadius.pill)
     Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 24.dp)
-            .padding(top = 16.dp)
-            .height(52.dp)
-            .clip(shape)
-            .background(VoiidColor.fieldFill)
-            .border(1.dp, VoiidColor.fieldBorder, shape)
-            .padding(horizontal = 16.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 8.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Icon(Icons.Default.Search, null, tint = VoiidColor.placeholder, modifier = Modifier.size(20.dp))
-        BasicTextField(
-            value = search,
-            onValueChange = onChange,
-            singleLine = true,
-            textStyle = VoiidFont.body.merge(TextStyle(color = VoiidColor.textPrimary)),
-            cursorBrush = SolidColor(VoiidColor.primary),
-            modifier = Modifier.weight(1f),
-            decorationBox = { inner ->
-                Box(contentAlignment = Alignment.CenterStart) {
-                    if (search.isEmpty()) Text("Search", style = VoiidFont.body, color = VoiidColor.placeholder)
-                    inner()
-                }
-            },
+        ProfileAvatar(
+            photoUrl = photoUrl,
+            name = myName,
+            size = 38.dp,
+            modifier = Modifier.softClickable(scale = 0.92f) { haptics.tap(); onOpenSettings() },
         )
+
+        Row(
+            Modifier
+                .weight(1f)
+                // 40dp, down from 52 — it no longer has a whole band to itself, so it can
+                // match the height of the controls beside it instead of towering over them.
+                .height(40.dp)
+                .clip(shape)
+                .background(VoiidColor.fieldFill)
+                .padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(Icons.Default.Search, null, tint = VoiidColor.placeholder, modifier = Modifier.size(18.dp))
+            BasicTextField(
+                value = search,
+                onValueChange = onSearchChange,
+                singleLine = true,
+                textStyle = VoiidFont.rounded(15).merge(TextStyle(color = VoiidColor.textPrimary)),
+                cursorBrush = SolidColor(VoiidColor.primary),
+                modifier = Modifier.weight(1f),
+                decorationBox = { inner ->
+                    Box(contentAlignment = Alignment.CenterStart) {
+                        if (search.isEmpty()) {
+                            Text("Search", style = VoiidFont.rounded(15), color = VoiidColor.placeholder)
+                        }
+                        inner()
+                    }
+                },
+            )
+            if (search.isNotEmpty()) {
+                Icon(
+                    Icons.Default.Close, "Clear search", tint = VoiidColor.placeholder,
+                    modifier = Modifier.size(16.dp).clip(CircleShape)
+                        .clickable { haptics.tap(); onSearchChange("") },
+                )
+            }
+        }
+
+        // Two distinct ways to start a chat: browse people you already have, or reach a
+        // stranger by the handle they gave you. Separate affordances, because folding the
+        // second into the contact list would put strangers among your contacts.
+        HeaderGlyph(Icons.Default.AlternateEmail, "Find by username") { haptics.tap(); onFindByUsername() }
+        HeaderGlyph(Icons.Default.Create, "New chat") { haptics.tap(); onNewChat() }
+    }
+}
+
+/** A 38dp tinted disc, matching the avatar's size so the row reads as one set of controls. */
+@Composable
+private fun HeaderGlyph(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    description: String,
+    onClick: () -> Unit,
+) {
+    Box(
+        Modifier.size(38.dp).clip(CircleShape)
+            .background(VoiidColor.primary.copy(alpha = 0.10f))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, description, tint = VoiidColor.primary, modifier = Modifier.size(18.dp))
     }
 }
 
@@ -838,11 +865,16 @@ private fun GridCard(conv: VConversation, modifier: Modifier) {
 
     Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
         Box(Modifier.fillMaxWidth().aspectRatio(1f)) {
+            // ROUND, and NO PLATE BEHIND IT.
+            //
+            // The tile was a rounded SQUARE on a `fieldFill` plate. Two problems: a face
+            // cropped to a square reads as a thumbnail rather than a person, and every chat
+            // without a photo showed that plate as a visible grey box with a faint wordmark
+            // in it — a grid of empty boxes. The plate is gone; no photo now falls back to
+            // the person's initials on a brand tint, which is a person-shaped placeholder
+            // rather than an empty container. Mirrors iOS.
             Box(
-                Modifier
-                    .fillMaxSize()
-                    .clip(RoundedCornerShape(VoiidRadius.lg))
-                    .background(VoiidColor.fieldFill),
+                Modifier.fillMaxSize().clip(CircleShape),
                 contentAlignment = Alignment.Center,
             ) {
                 val bmp = avatar
@@ -869,8 +901,21 @@ private fun GridCard(conv: VConversation, modifier: Modifier) {
                         contentScale = ContentScale.Crop,
                     )
                 } else {
-                    // iOS renders the wordmark image at width 56pt (~52% of card), very faint.
-                    VoiidWordmark(fontSize = 23, alpha = 0.15f)
+                    // Initials on a brand tint — the same fallback the shared ProfileAvatar
+                    // uses everywhere else, so a face-less chat looks like a person rather
+                    // than an empty box.
+                    Box(
+                        Modifier.fillMaxSize().background(VoiidColor.primary.copy(alpha = 0.14f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            conv.title.trim().split(" ").filter { it.isNotBlank() }
+                                .take(2).mapNotNull { it.firstOrNull() }.joinToString("").uppercase()
+                                .ifEmpty { "?" },
+                            style = VoiidFont.rounded(28, FontWeight.SemiBold),
+                            color = VoiidColor.primary,
+                        )
+                    }
                 }
             }
             // Badges sit INSIDE the tile. They used to be pushed OUT past its edge (offset
@@ -879,9 +924,12 @@ private fun GridCard(conv: VConversation, modifier: Modifier) {
             if (conv.isOnline) {
                 Box(
                     Modifier
+                        // BADGES MOVE IN FOR A CIRCLE. Inset from the corners of a SQUARE they
+                        // now float in the empty space outside the rim; ~8dp brings them back
+                        // onto the edge where they read as attached.
                         .align(Alignment.BottomStart)
-                        .padding(6.dp)
-                        .size(12.dp)
+                        .padding(start = 8.dp, bottom = 8.dp)
+                        .size(13.dp)
                         .clip(CircleShape)
                         .background(VoiidColor.background)
                         .padding(2.dp)
@@ -893,7 +941,7 @@ private fun GridCard(conv: VConversation, modifier: Modifier) {
                 Box(
                     Modifier
                         .align(Alignment.TopEnd)
-                        .padding(5.dp)
+                        .padding(end = 2.dp)
                         .size(20.dp)
                         .clip(CircleShape)
                         .background(VoiidColor.accent),
