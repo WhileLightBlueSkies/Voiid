@@ -57,6 +57,18 @@ struct ProfileAvatarButton: View {
     var name: String?
     var size: CGFloat = 38
 
+    /// FILL A RECTANGULAR FRAME instead of clipping to a circle.
+    ///
+    /// The avatar is a circle almost everywhere — chat rows, toolbars, the settings header —
+    /// so that stays the default and all 18 existing call sites are untouched. The contact
+    /// profile's full-bleed portrait is the exception: it needs the photo to fill a 360pt
+    /// banner, and the hard-coded `.frame(width:height:)` + `.clipShape(Circle())` was
+    /// squeezing it into a circle in the top-left of that space.
+    ///
+    /// When true the view takes the frame its PARENT gives it and crops the image to fill,
+    /// which is what a banner needs.
+    var fillsFrame: Bool = false
+
     private var initials: String {
         let parts = (name ?? "").split(separator: " ").prefix(2)
         let letters = parts.compactMap { $0.first }.map(String.init).joined()
@@ -91,9 +103,24 @@ struct ProfileAvatarButton: View {
                     .foregroundColor(VoiidColor.textSecondary)
             }
         }
-        .frame(width: size, height: size)
-        .clipShape(Circle())
+        .modifier(AvatarShape(size: size, fillsFrame: fillsFrame))
         .task(id: photoURL) { await resolveIfNeeded() }
+    }
+
+    /// Square-and-circular by default; frame-filling when the caller asks for it.
+    private struct AvatarShape: ViewModifier {
+        let size: CGFloat
+        let fillsFrame: Bool
+
+        func body(content: Content) -> some View {
+            if fillsFrame {
+                // No fixed frame: the parent decides. `.clipped()` crops the overflow that
+                // scaledToFill produces, so the photo fills the banner without letterboxing.
+                content.frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
+            } else {
+                content.frame(width: size, height: size).clipShape(Circle())
+            }
+        }
     }
 
     /// Resolve through the SHARED cache so a face fetched once shows instantly everywhere
@@ -236,37 +263,69 @@ struct SettingsSheet: View {
     ///
     /// The avatar here is NOT a PhotosPicker: two competing tap targets in one row is a
     /// mis-tap generator. Photo editing lives on the Edit Profile screen this row opens.
+    /// YOU, at the top of your own settings.
+    ///
+    /// It was a 60pt avatar in an ordinary row — the same weight as "Storage" or
+    /// "Appearance" — so the one thing on this screen that is ABOUT you carried no more
+    /// presence than a preference toggle. It now gets a card of its own: a larger avatar, the
+    /// name at title size, and the handle and number on one line beneath, which is the same
+    /// identity treatment the contact profile uses. The two screens finally rhyme.
     private var identity: some View {
-        SettingsSection {
-            NavigationLink(value: SettingsRoute.editProfile) {
-                HStack(spacing: VoiidSpacing.md) {
-                    ProfileAvatarButton(photoURL: session.profile.photoURL,
-                                        name: session.profile.fullName,
-                                        size: 60)
-                    VStack(alignment: .leading, spacing: 2) {
-                        if session.profile.fullName.isEmpty {
-                            Text("Add your name")
-                                .font(.title3.weight(.semibold))
-                                .foregroundStyle(VoiidColor.placeholder)
-                        } else {
-                            Text(session.profile.fullName)
-                                .font(.title3.weight(.semibold))
-                                .foregroundStyle(VoiidColor.textPrimary)
+        NavigationLink(value: SettingsRoute.editProfile) {
+            HStack(spacing: VoiidSpacing.md) {
+                ProfileAvatarButton(photoURL: session.profile.photoURL,
+                                    name: session.profile.fullName,
+                                    size: 72)
+                    .overlay(Circle().strokeBorder(VoiidColor.textPrimary.opacity(0.08), lineWidth: 1))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(session.profile.fullName.isEmpty ? "Add your name" : session.profile.fullName)
+                        .font(VoiidFont.rounded(22, .bold))
+                        .kerning(-0.3)
+                        .foregroundStyle(session.profile.fullName.isEmpty
+                                         ? VoiidColor.placeholder : VoiidColor.textPrimary)
+                        .lineLimit(1)
+
+                    // Handle and number on ONE line, separated by a dot — the same pattern as
+                    // the contact profile, rather than two stacked lines at equal weight.
+                    let handle = (session.profile.username ?? "").isEmpty
+                        ? nil : session.profile.username
+                    HStack(spacing: 6) {
+                        if let handle {
+                            Text("@\(handle)")
+                                .font(VoiidFont.rounded(14, .medium))
+                                .foregroundStyle(VoiidColor.primary)
+                        }
+                        if handle != nil && !session.profile.phoneNumber.isEmpty {
+                            Circle()
+                                .fill(VoiidColor.textSecondary.opacity(0.4))
+                                .frame(width: 3, height: 3)
                         }
                         // Never render an empty line where a phone number would go.
                         if !session.profile.phoneNumber.isEmpty {
                             Text(session.profile.phoneNumber)
-                                .font(.subheadline)
+                                .font(VoiidFont.rounded(14, .regular))
                                 .foregroundStyle(VoiidColor.textSecondary)
                         }
                     }
+
+                    Text("View and edit profile")
+                        .font(VoiidFont.rounded(12, .medium))
+                        .foregroundStyle(VoiidColor.primary)
+                        .padding(.top, 1)
                 }
-                .padding(.vertical, VoiidSpacing.sm)
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel(profileAccessibilityLabel)
-                .accessibilityHint("Opens your profile")
+
+                Spacer(minLength: 0)
             }
+            .padding(VoiidSpacing.md)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(VoiidColor.surfaceCard)
+            .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(profileAccessibilityLabel)
+            .accessibilityHint("Opens your profile")
         }
+        .buttonStyle(.plain)
     }
 
     private var profileAccessibilityLabel: String {

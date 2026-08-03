@@ -113,6 +113,7 @@ struct ContactProfileView: View {
         // a ROOT tab page appears (each sets hideTabBar = false).
         .onAppear { session.hideTabBar = true }
         .task { await loadProfile() }
+        .task { await loadLocalContent() }
         .fullScreenCover(isPresented: $viewPhoto) {
             ProfilePhotoViewer(title: displayName, imageName: conversation.photoName) { viewPhoto = false }
         }
@@ -196,11 +197,10 @@ struct ContactProfileView: View {
     @ViewBuilder
     private var portrait: some View {
         if let ref = photoRef, !ref.isEmpty {
-            ProfileAvatarButton(photoURL: ref, name: displayName, size: 360)
-                .frame(maxWidth: .infinity)
-                // Fill, not fit: a portrait cropped to the frame beats one letterboxed
-                // against grey bars.
-                .scaledToFill()
+            // fillsFrame: the banner is a RECTANGLE. Without it the shared avatar view
+            // clipped the photo to a circle in the corner of the 360pt frame — which is
+            // exactly the "profile is showing rounded" problem.
+            ProfileAvatarButton(photoURL: ref, name: displayName, size: 360, fillsFrame: true)
         } else {
             // NO PHOTO IS A COMMON CASE, not an edge case, so it gets a real design rather
             // than a grey box: the brand gradient with the person's initial. It reads as
@@ -396,11 +396,30 @@ struct ContactProfileView: View {
     /// All shared visual media in this 1:1, newest first — real, from the message store.
     /// Videos count too: the strip previously filtered to `image/` only, so a chat full of
     /// videos reported "no media shared yet".
-    private var sharedMedia: [MediaRef] {
-        ChatEngine.shared.messages(conversationId: conversation.id)
-            .compactMap { $0.media }
-            .filter { $0.mime.hasPrefix("image/") || $0.mime.hasPrefix("video/") }
-            .reversed()
+    /// Computed ONCE, in `.task`, not on every render.
+    ///
+    /// THIS IS WHY THE PROFILE FELT SLOW. It was a computed property that decoded the whole
+    /// message store for this conversation, filtered it and reversed it — and SwiftUI
+    /// evaluated it SIX times per render pass (`isEmpty` in the accessory, `isEmpty` again in
+    /// the body, `count`, `prefix(8)`, and so on). On a chat with real history that is six
+    /// full decodes for one frame, on the main actor, every time anything on the screen
+    /// changed. Same for `recentCalls`, which hit SQLite three times per render.
+    @State private var sharedMedia: [MediaRef] = []
+    @State private var recentCalls: [LocalStore.CallHistoryEntry] = []
+
+    /// Load both off the render path. Cheap enough to redo on appear (so a photo sent while
+    /// the profile was open shows up), expensive enough that it must never sit in `body`.
+    private func loadLocalContent() async {
+        let convId = conversation.id
+        let media: [MediaRef] = await Task.detached(priority: .userInitiated) {
+            await ChatEngine.shared.messages(conversationId: convId)
+                .compactMap { $0.media }
+                .filter { $0.mime.hasPrefix("image/") || $0.mime.hasPrefix("video/") }
+                .reversed()
+        }.value
+        let calls = Array(LocalStore.callsForConversation(convId).reversed().prefix(4))
+        sharedMedia = media
+        recentCalls = calls
     }
 
     private var sharedMediaCard: some View {
@@ -476,9 +495,7 @@ struct ContactProfileView: View {
     /// The transcript already shows call bubbles, but a profile is where you go to answer
     /// "how often do we actually talk?" — and scrolling a whole chat to reconstruct that is
     /// not an answer. Same data, different question.
-    private var recentCalls: [LocalStore.CallHistoryEntry] {
-        Array(LocalStore.callsForConversation(conversation.id).reversed().prefix(4))
-    }
+
 
     @ViewBuilder
     private var callHistoryCard: some View {
