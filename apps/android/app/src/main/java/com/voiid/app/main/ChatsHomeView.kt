@@ -49,6 +49,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.AlternateEmail
@@ -62,6 +63,17 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.material.icons.filled.Groups
+import androidx.compose.material.icons.filled.ChatBubble
+import androidx.compose.ui.text.style.TextAlign
+import com.voiid.app.ui.theme.ChatLayoutPreference
+import com.voiid.app.ui.theme.ChatLayout
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -209,13 +221,49 @@ fun ChatsHomeView(
         // Persistent "sharing live location" banner across all chats (docs/LOCATION.md §8.A).
         LocationBanner()
         if (search.isBlank()) {
-            DraggableChatGrid(
-                items = list,
-                onOpen = { haptics.tap(); onOpenConversation(it) },
-                onCall = { callTarget = it },
-                onDelete = { deleteTarget = it },
-                modifier = Modifier.fillMaxWidth().weight(1f),
-            )
+            // THREE STATES, not one. The grid used to render for all of them, so a fresh
+            // install and a still-loading list both showed the same blank screen — the first
+            // thing a new user ever sees, indistinguishable from the app being broken.
+            //
+            // "Empty" means no REAL conversations: Note to Self always exists, so a plain
+            // isEmpty check would never fire and a brand-new user would see one lonely tile
+            // with no explanation of what to do next. Mirrors iOS.
+            val realItems = list.filter { it.type != ConversationType.SELF }
+            if (!chat.didLoadConversations && realItems.isEmpty()) {
+                ChatsLoadingState(Modifier.fillMaxWidth().weight(1f))
+            } else if (realItems.isEmpty()) {
+                ChatsEmptyState(
+                    isGroups = tab == ChatTab.GROUPS,
+                    onNewChat = { haptics.tap(); showNewChat = true },
+                    onFindByUsername = { haptics.tap(); showFindByUsername = true },
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                )
+            } else if (ChatLayoutPreference.layout == ChatLayout.GRID) {
+                DraggableChatGrid(
+                    items = list,
+                    onOpen = { haptics.tap(); onOpenConversation(it) },
+                    onCall = { callTarget = it },
+                    onDelete = { deleteTarget = it },
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                )
+            } else {
+                // The classic list. See ChatLayoutPreference for why this exists alongside
+                // the grid, and ChatListRows for the per-row design decisions.
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 8.dp),
+                ) {
+                    items(list, key = { "l_" + it.id }) { conv ->
+                        ChatListRow(conv) { haptics.tap(); onOpenConversation(conv) }
+                        // Inset to start at the TEXT, not the screen edge — the avatar column
+                        // reads as a gutter and a full-width rule cuts through it.
+                        HorizontalDivider(
+                            color = VoiidColor.divider.copy(alpha = 0.5f),
+                            modifier = Modifier.padding(start = 86.dp),
+                        )
+                    }
+                }
+            }
         } else {
             // Search results — existing chats + contacts you can start a new chat with.
             LazyColumn(
@@ -798,7 +846,22 @@ private fun GridCard(conv: VConversation, modifier: Modifier) {
                 contentAlignment = Alignment.Center,
             ) {
                 val bmp = avatar
-                if (bmp != null) {
+                if (conv.type == ConversationType.SELF) {
+                    // NOTE TO SELF gets its own mark, not a profile photo. It is the one chat
+                    // with no other person in it, and rendering your own face there reads as
+                    // a conversation with someone else. A bookmark on brand tint says "saved"
+                    // at a glance. Mirrors iOS.
+                    Box(
+                        Modifier.fillMaxSize().background(VoiidColor.primary.copy(alpha = 0.12f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Default.Bookmark, null,
+                            tint = VoiidColor.primary,
+                            modifier = Modifier.size(28.dp),
+                        )
+                    }
+                } else if (bmp != null) {
                     Image(
                         bitmap = bmp,
                         contentDescription = null,
@@ -846,5 +909,111 @@ private fun GridCard(conv: VConversation, modifier: Modifier) {
         }
         Spacer(Modifier.height(8.dp))
         Text(conv.title, style = VoiidFont.rounded(13), color = VoiidColor.textPrimary, maxLines = 1)
+    }
+}
+
+// MARK: - Empty / loading states
+
+/**
+ * Shown while the FIRST load is still in flight and nothing is cached.
+ *
+ * Deliberately not a bare spinner in a void: six dimmed tiles in the same grid shape the real
+ * chats will occupy, so the layout does not jump when content lands and the screen reads as
+ * "filling in" rather than "empty". The pulse is what separates LOADING from BROKEN — a
+ * static grey grid reads as content that failed to render. Mirrors iOS `chatsLoadingState`.
+ */
+@Composable
+private fun ChatsLoadingState(modifier: Modifier = Modifier) {
+    val pulse = rememberInfiniteTransition(label = "skeleton")
+    val alpha by pulse.animateFloat(
+        0.45f, 0.85f,
+        infiniteRepeatable(tween(1100), RepeatMode.Reverse),
+        label = "skeletonAlpha",
+    )
+    Column(
+        modifier.padding(horizontal = 24.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        repeat(3) {
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.fillMaxWidth()) {
+                repeat(2) {
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .height(104.dp)
+                            .clip(RoundedCornerShape(VoiidRadius.lg))
+                            .alpha(alpha)
+                            .background(VoiidColor.surfaceCard),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * A genuinely empty list — a fresh account, or one that has never started a chat.
+ *
+ * AN EMPTY STATE MUST OFFER THE WAY OUT. Saying "no chats yet" and stopping leaves the user
+ * to hunt for the button; both routes into a first conversation are right here.
+ */
+@Composable
+private fun ChatsEmptyState(
+    isGroups: Boolean,
+    onNewChat: () -> Unit,
+    onFindByUsername: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier.padding(horizontal = 32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Box(
+            Modifier.size(88.dp).clip(CircleShape).background(VoiidColor.primary.copy(alpha = 0.10f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                if (isGroups) Icons.Default.Groups else Icons.Default.ChatBubble,
+                null, tint = VoiidColor.primary, modifier = Modifier.size(32.dp),
+            )
+        }
+        Spacer(Modifier.height(16.dp))
+        Text(
+            if (isGroups) "No groups yet" else "No chats yet",
+            style = VoiidFont.rounded(20, FontWeight.SemiBold),
+            color = VoiidColor.textPrimary,
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            if (isGroups) "Groups you create or get added to will appear here."
+            else "Start a conversation with someone in your contacts, or find them by @username.",
+            style = VoiidFont.rounded(14),
+            color = VoiidColor.textSecondary,
+            textAlign = TextAlign.Center,
+        )
+        if (!isGroups) {
+            Spacer(Modifier.height(20.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(VoiidColor.primary)
+                        .clickable(onClick = onNewChat)
+                        .padding(horizontal = 18.dp, vertical = 12.dp),
+                ) {
+                    Text("New chat", style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.textOnPrimary)
+                }
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(VoiidColor.primary.copy(alpha = 0.10f))
+                        .clickable(onClick = onFindByUsername)
+                        .padding(horizontal = 18.dp, vertical = 12.dp),
+                ) {
+                    Text("Find by @username", style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.primary)
+                }
+            }
+        }
     }
 }

@@ -144,6 +144,17 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
 
     // REAL backend data — starts empty, loaded via loadConversations(). A new
     // account shows an empty list, confirming we read the live server (not mock).
+    /**
+     * False until the first server load finishes.
+     *
+     * WITHOUT THIS "still loading" and "you have no chats" render identically — a blank
+     * screen. On a fresh install that blank is the first thing a new user ever sees, and it
+     * is indistinguishable from the app being broken. Cached chats paint instantly from Room,
+     * so this only ever gates the genuinely-empty case. Mirrors iOS.
+     */
+    var didLoadConversations by mutableStateOf(false)
+        private set
+
     val directConversations = mutableStateListOf<VConversation>()
     val groupConversations = mutableStateListOf<VConversation>()
     private val messagesByConversation = mutableStateMapOf<String, androidx.compose.runtime.snapshots.SnapshotStateList<VMessage>>()
@@ -186,6 +197,10 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         val cached = runCatching { LocalStore.conversations(appContext) }.getOrDefault(emptyList())
         if (cached.isEmpty()) return
         directConversations.clear(); groupConversations.clear()
+        // Note to Self lives in CHATS, pinned to the top — you reach for it by muscle
+        // memory, not by recency, so its position should never move. Filtering to DIRECT
+        // alone would drop it from BOTH lists. Mirrors iOS `applyLocalConversations`.
+        directConversations.addAll(cached.filter { it.type == ConversationType.SELF })
         directConversations.addAll(cached.filter { it.type == ConversationType.DIRECT })
         groupConversations.addAll(cached.filter { it.type == ConversationType.GROUP })
         // Previews come from Room (denormalized), so we touch NO message store here — the list
@@ -220,6 +235,11 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
     /** Suspend reload (so callers like handleIncoming can await it, then sync). */
     private suspend fun reload() {
         try {
+            // Ensure Note to Self exists before the list is fetched, so it appears on first
+            // launch rather than only after a second one. Idempotent server-side; a failure
+            // is not worth surfacing — the list still loads and the next launch retries.
+            runCatching { chatService.createSelfChat() }
+
             // Titles come from the directory, not the server: if you saved this person as
             // "Mum" in your address book, every screen says "Mum" whatever they signed up as.
             val convs = chatService.fetchConversations().map { c ->
@@ -233,12 +253,18 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
             val prevMap = (directConversations + groupConversations).associate { it.id to it.lastMessagePreview }
             val withPreview = convs.map { it.copy(lastMessagePreview = it.lastMessagePreview ?: prevMap[it.id]) }
             directConversations.clear(); groupConversations.clear()
+            directConversations.addAll(withPreview.filter { it.type == ConversationType.SELF })
             directConversations.addAll(withPreview.filter { it.type == ConversationType.DIRECT })
             groupConversations.addAll(withPreview.filter { it.type == ConversationType.GROUP })
             LocalStore.saveConversations(appContext, convs)   // so the next cold launch renders instantly (preview col preserved by the upsert)
             loadError = null
         } catch (e: Exception) {
             loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t load chats."
+        } finally {
+            // Set on BOTH paths — success and failure. A load that failed is still a load
+            // that finished; leaving this false would strand the user on a skeleton forever
+            // with the error hidden behind it.
+            didLoadConversations = true
         }
     }
 

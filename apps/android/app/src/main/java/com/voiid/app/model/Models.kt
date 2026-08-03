@@ -78,7 +78,12 @@ data class VMessage(
     val call: VCallLog? = null,
 )
 
-enum class ConversationType { DIRECT, GROUP }
+/**
+ * SELF is Note to Self — your own private scratchpad. One member (you), and its OWN type so
+ * it can never satisfy the "exactly two members" lookup that identifies a real 1:1.
+ * Mirrors iOS `ConversationType`.
+ */
+enum class ConversationType { DIRECT, GROUP, SELF }
 
 data class VConversation(
     val id: String,

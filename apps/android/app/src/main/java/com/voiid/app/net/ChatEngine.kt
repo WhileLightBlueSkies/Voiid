@@ -204,6 +204,17 @@ class ChatEngine private constructor(context: Context) {
                 // Fan-out: encrypt ONCE PER TARGET DEVICE (peer's devices + our own other
                 // devices), build the per-device bundle, and POST it in one send.
                 val messages = encryptFanout(p.text.encodeToByteArray(), peerUserId)
+
+                // A single-device NOTE TO SELF has no target devices (see encryptFanout).
+                // There is nothing to upload — the note already lives in the local store,
+                // which is the only place it was ever going to be read from. Mark it sent so
+                // it does not sit under a spinner forever awaiting a delivery with no
+                // recipient.
+                if (messages.isEmpty()) {
+                    markSent(p.id, conversationId, p.id)
+                    continue
+                }
+
                 val body = ApiClient.json.encodeToString(
                     SendBundleBody.serializer(),
                     SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "text"))
@@ -618,6 +629,18 @@ class ChatEngine private constructor(context: Context) {
      */
     private suspend fun encryptFanout(plaintext: ByteArray, peerUserId: String): List<DeviceCiphertext> {
         val targets = resolveTargets(peerUserId)
+
+        // NOTE TO SELF on a single device: `peerUserId` is our own id, so resolveTargets
+        // correctly returns our other devices MINUS this one — an empty list when there is
+        // only one. That is not a failure and must not be retried forever: there is genuinely
+        // nowhere to send, because the only reader already holds the plaintext.
+        //
+        // The moment a second device is linked it starts receiving new notes like any other
+        // message. Notes written before that stay on the device that wrote them — there is no
+        // ciphertext on the server to backfill from, which is the honest consequence of
+        // end-to-end encryption rather than a gap to paper over. Mirrors iOS.
+        if (targets.isEmpty() && peerUserId == tokens.userId) return emptyList()
+
         if (targets.isEmpty()) throw ApiError.Http(409, "no target devices for peer")
         val out = mutableListOf<DeviceCiphertext>()
         // Group by owning user so we fetch each user's prekey bundles at most once per

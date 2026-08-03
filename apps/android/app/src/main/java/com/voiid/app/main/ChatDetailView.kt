@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.ui.draw.alpha
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
@@ -110,6 +111,8 @@ fun ChatDetailView(
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val isGroup = conversation.type == ConversationType.GROUP
+    /** Note to Self has no second party — no profile to open, no presence, no verification. */
+    val isSelfChat = conversation.type == ConversationType.SELF
     var draft by remember { mutableStateOf("") }
     // Recording state is hoisted HERE, not owned by the mic button: the RecordingBar is a
     // sibling that replaces the composer row, so both need to read it.
@@ -289,7 +292,7 @@ fun ChatDetailView(
                     Row(
                         modifier = Modifier.weight(1f).clickable(
                             interactionSource = remember { MutableInteractionSource() }, indication = null,
-                        ) { haptics.tap(); showDetails = true },
+                        ) { if (!isSelfChat) { haptics.tap(); showDetails = true } },
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
@@ -349,6 +352,22 @@ fun ChatDetailView(
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                // Shown ONCE, at the very top of the transcript — the same place and moment
+                // WhatsApp puts it. It scrolls away with the history rather than pinning,
+                // because it is a fact about the conversation, not a status bar.
+                //
+                // ONLY ON A NEW CHAT: past ~6 messages it is a line of text pushed a thousand
+                // messages up where nobody will scroll. Note to Self is excluded — a note you
+                // wrote yourself has no second party for the guarantee to be ABOUT.
+                if (!isSelfChat && messages.size < 6) {
+                    item(key = "e2ee-notice") {
+                        EncryptionNotice(
+                            canVerify = conversation.peerUserId != null,
+                            onVerify = { haptics.tap(); showSafetyNumber = true },
+                        )
+                    }
+                }
+
                 sortedDays.forEach { day ->
                     item(key = "sep-$day") { DateSeparator(VoiidDate.separator(day)) }
                     items(grouped[day].orEmpty(), key = { it.id }) { msg ->
@@ -589,6 +608,10 @@ fun ChatDetailView(
         ) {
             if (isGroup) {
                 GroupInfoView(conversation = conversation, chat = chat, onBack = { showDetails = false })
+            } else if (isSelfChat) {
+                // ContactProfileView would open, find peerUserId == null, and render a
+                // profile of nobody. There is no second person to show.
+                Unit
             } else {
                 ContactProfileView(
                     conversation = conversation,
@@ -707,4 +730,63 @@ private fun presenceText(context: android.content.Context, conversation: VConver
     conversation.isOnline -> "Online"
     conversation.lastSeenAt != null -> "last seen ${VoiidDate.relative(conversation.lastSeenAt!!)}"
     else -> "last seen recently"
+}
+
+/**
+ * The end-to-end encryption notice at the top of a new chat. Mirrors iOS
+ * `ChatDetailView.encryptionNotice` — same copy, same placement, same behaviour.
+ *
+ * SAYS WHAT IS ACTUALLY TRUE, and says it specifically. "Your messages are encrypted" is
+ * vague enough to be worthless — the question people actually have is whether the PHOTOS and
+ * VOICE NOTES are covered too, because that is the part every other app is evasive about.
+ * Naming them is the point.
+ *
+ * Verified before it was written: 1:1 messages use the Double Ratchet, groups use MLS, calls
+ * are E2E on both paths (DTLS-SRTP for 1:1; on-device keys for group, where the SFU forwards
+ * frames it cannot decrypt), and media is encrypted per-attachment.
+ *
+ * @param canVerify false for a group, which has no single peer to compare a safety number
+ *                  against — it gets the statement without the affordance rather than a tap
+ *                  that leads nowhere.
+ */
+@Composable
+private fun EncryptionNotice(canVerify: Boolean, onVerify: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(bottom = 8.dp),
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        Row(
+            Modifier
+                .widthIn(max = 320.dp)
+                .clip(RoundedCornerShape(VoiidRadius.md))
+                .background(VoiidColor.warning.copy(alpha = 0.10f))
+                .then(if (canVerify) Modifier.clickable(onClick = onVerify) else Modifier)
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(
+                Icons.Default.Lock, null,
+                tint = VoiidColor.textSecondary,
+                modifier = Modifier.size(13.dp).padding(top = 2.dp),
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(
+                    "Messages, photos, videos, voice notes and calls in this chat are " +
+                        "end-to-end encrypted. Not even Voiid can read or listen to them.",
+                    style = VoiidFont.rounded(12),
+                    color = VoiidColor.textSecondary,
+                )
+                if (canVerify) {
+                    // The affordance has to be visible or the tap is a secret.
+                    Text(
+                        "Tap to verify",
+                        style = VoiidFont.rounded(12, FontWeight.SemiBold),
+                        color = VoiidColor.primary,
+                    )
+                }
+            }
+        }
+    }
 }

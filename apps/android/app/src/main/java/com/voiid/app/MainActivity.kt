@@ -68,6 +68,9 @@ class MainActivity : ComponentActivity() {
         // Load the Light/Dark/System choice BEFORE the first composition, or the app paints
         // one light frame and then snaps to dark.
         com.voiid.app.ui.theme.VoiidThemeStore.load(this)
+        // Restore the saved chat-list layout before the first frame, so a user who chose
+        // List does not see one frame of Grid on every launch.
+        com.voiid.app.ui.theme.ChatLayoutPreference.load(this)
         com.voiid.app.ui.theme.VoiidThemeStore.applyToSystem(this)
         setContent {
             VoiidTheme {

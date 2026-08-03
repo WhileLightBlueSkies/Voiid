@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.RemoveRedEye
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -293,14 +294,41 @@ fun SettingsScreen(
                     }
                 }
 
-                if (session.profile.phoneNumber.isNotBlank()) {
+                // HANDLE AND NUMBER ON ONE LINE, dot-separated — the same identity treatment
+                // the contact profile and iOS settings use, rather than two stacked lines at
+                // equal weight where neither reads as the way to identify you. Only when the
+                // handle is not being edited; editing needs the full row to itself.
+                if (!editingUsername && !session.profile.username.isNullOrBlank()
+                    && session.profile.phoneNumber.isNotBlank()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            "@${session.profile.username}",
+                            style = VoiidFont.rounded(14, FontWeight.Medium),
+                            color = VoiidColor.primary,
+                            modifier = Modifier.softClickable {
+                                haptics.tap()
+                                draftUsername = session.profile.username ?: ""
+                                editingUsername = true
+                            },
+                        )
+                        Box(Modifier.size(3.dp).clip(CircleShape).background(VoiidColor.textSecondary.copy(alpha = 0.4f)))
+                        Text(
+                            session.profile.phoneNumber,
+                            style = VoiidFont.rounded(14), color = VoiidColor.textSecondary,
+                        )
+                    }
+                } else if (session.profile.phoneNumber.isNotBlank()) {
                     Text(
                         session.profile.phoneNumber,
                         style = VoiidFont.rounded(14), color = VoiidColor.textSecondary,
                     )
                 }
 
-                // Username (@handle) — tap to edit, with live availability.
+                // Username (@handle) — tap to edit, with live availability. Shown on its own
+                // line only when it is NOT already on the combined identity row above.
                 if (editingUsername) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text("@", style = VoiidFont.rounded(15), color = VoiidColor.textSecondary)
@@ -320,7 +348,7 @@ fun SettingsScreen(
                             color = VoiidColor.primary,
                             modifier = Modifier.softClickable { haptics.tap(); saveUsername() })
                     }
-                } else {
+                } else if (session.profile.username.isNullOrBlank() || session.profile.phoneNumber.isBlank()) {
                     Text(
                         if (session.profile.username.isNullOrBlank()) "Add a username" else "@${session.profile.username}",
                         style = VoiidFont.rounded(14),
@@ -390,6 +418,10 @@ fun SettingsScreen(
                 // Appearance is INLINE, not a pushed screen: there are three options and the
                 // result is visible the instant you tap, so navigating away to choose and back
                 // to see the effect would be strictly worse.
+                // Chat list layout — same reasoning as Appearance: two options, and the
+                // result is on the screen you just came from, so a pushed screen would mean
+                // choosing blind and navigating back to check.
+                ChatLayoutRow()
                 AppearanceRow()
                 SettingsDivider()
                 // Stories: view-receipts opt-in (default OFF). Sending one tells the SERVER you
@@ -438,6 +470,51 @@ private fun SettingsRow(icon: ImageVector, title: String, tint: Color = VoiidCol
  * "Moment view receipts" — an inline toggle row (the app has no settings sub-navigation). Copy is
  * verbatim from the spec so nobody softens the reciprocity.
  */
+@Composable
+private fun ChatLayoutRow() {
+    val context = LocalContext.current
+    val current = com.voiid.app.ui.theme.ChatLayoutPreference.layout
+    val haptics = LocalVoiidHaptics.current
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.GridView, null, tint = VoiidColor.textPrimary, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.size(14.dp))
+            Text("Chat list", style = VoiidFont.rounded(16), color = VoiidColor.textPrimary)
+        }
+        Spacer(Modifier.size(10.dp))
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(VoiidRadius.md))
+                .background(VoiidColor.fieldFill)
+                .padding(3.dp),
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            com.voiid.app.ui.theme.ChatLayout.entries.forEach { l ->
+                val selected = l == current
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(VoiidRadius.sm))
+                        .background(if (selected) VoiidColor.primary else Color.Transparent)
+                        .clickable {
+                            haptics.selection()
+                            com.voiid.app.ui.theme.ChatLayoutPreference.set(context, l)
+                        }
+                        .padding(vertical = 9.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        l.label,
+                        style = VoiidFont.rounded(13, if (selected) FontWeight.SemiBold else FontWeight.Medium),
+                        color = if (selected) VoiidColor.textOnPrimary else VoiidColor.textSecondary,
+                    )
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun AppearanceRow() {
     val context = LocalContext.current
@@ -530,6 +607,16 @@ fun ProfileAvatar(
     name: String?,
     size: Dp,
     modifier: Modifier = Modifier,
+    /**
+     * FILL A RECTANGULAR FRAME instead of clipping to a circle.
+     *
+     * The avatar is a circle almost everywhere, so that stays the default and every existing
+     * call site is untouched. The contact profile's full-bleed portrait is the exception: it
+     * needs the photo to fill a 360dp banner, and the hard-coded `.size(size)` +
+     * `.clip(CircleShape)` squeezed it into a circle in the corner of that space. Mirrors iOS
+     * `ProfileAvatarButton.fillsFrame`.
+     */
+    fillsFrame: Boolean = false,
 ) {
     val context = LocalContext.current
     var bitmap by remember(photoUrl) { mutableStateOf(photoUrl?.let { MediaCache.image(it) }) }
@@ -554,11 +641,17 @@ fun ProfileAvatar(
         .take(2).mapNotNull { it.firstOrNull() }.joinToString("").uppercase()
 
     Box(
-        modifier
-            .size(size)
-            .clip(CircleShape)
-            .background(VoiidColor.fieldFill)
-            .border(1.dp, VoiidColor.divider.copy(alpha = 0.4f), CircleShape),
+        // When filling, the PARENT decides the frame and there is no circular clip or ring —
+        // a hairline border around a full-bleed banner would read as a box drawn on the page.
+        if (fillsFrame) {
+            modifier.fillMaxSize().background(VoiidColor.fieldFill)
+        } else {
+            modifier
+                .size(size)
+                .clip(CircleShape)
+                .background(VoiidColor.fieldFill)
+                .border(1.dp, VoiidColor.divider.copy(alpha = 0.4f), CircleShape)
+        },
         contentAlignment = Alignment.Center,
     ) {
         val b = bitmap

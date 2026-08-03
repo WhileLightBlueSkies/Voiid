@@ -49,14 +49,36 @@ class ChatService(context: Context) {
 
     init { com.voiid.app.store.UserDirectory.init(appContext) }
 
+    /**
+     * Create (or fetch) the caller's Note to Self. Idempotent server-side — there is exactly
+     * one per user, ever — so this is safe to call on every launch. Mirrors iOS
+     * `ChatService.createSelfChat`.
+     */
+    suspend fun createSelfChat(): String {
+        @kotlinx.serialization.Serializable data class Body(val type: String = "self")
+        @kotlinx.serialization.Serializable data class Res(val conversation_id: String)
+        // encodeDefaults: `type` equals its default, and kotlinx omits default-valued fields
+        // — the server would see no type and fall back to creating a DIRECT chat.
+        val json = kotlinx.serialization.json.Json { encodeDefaults = true }
+        val body = json.encodeToString(Body.serializer(), Body())
+        return api.requestAs<Res>("POST", "conversations/create", jsonBody = body).conversation_id
+    }
+
     /** Fetch the user's real conversations, then enrich direct chats (peer) concurrently. */
     suspend fun fetchConversations(): List<VConversation> = coroutineScope {
         val env: ConversationsEnvelope = api.requestAs("GET", "conversations")
         val convs = env.conversations.map { c ->
             VConversation(
                 id = c.id,
-                type = if (c.type == "group") ConversationType.GROUP else ConversationType.DIRECT,
-                title = c.name ?: "Direct chat",
+                // Explicit mapping. A bare `else -> DIRECT` would silently turn a self-chat
+                // into a direct one, and the peer-resolution pass below would then hunt for
+                // a second member that does not exist.
+                type = when (c.type) {
+                    "group" -> ConversationType.GROUP
+                    "self" -> ConversationType.SELF
+                    else -> ConversationType.DIRECT
+                },
+                title = if (c.type == "self") "Note to Self" else (c.name ?: "Direct chat"),
                 lastMessagePreview = if (c.last_ciphertext == null) null else "Encrypted message",
                 lastMessageAt = null,
                 unreadCount = c.unread_count,
