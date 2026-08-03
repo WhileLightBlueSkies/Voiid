@@ -54,6 +54,8 @@ import androidx.compose.material.icons.outlined.PlayCircleOutline
 import androidx.compose.material.icons.outlined.SportsEsports
 import androidx.compose.material3.Icon
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
@@ -631,11 +633,36 @@ private fun TabItem(
     modifier: Modifier,
     onClick: () -> Unit,
 ) {
+    // PRESS RESPONSE, on touch-down. `indication = null` gave no feedback at all until the
+    // finger lifted, so on a slow tap the bar did nothing — the acknowledgement has to arrive
+    // WITH the press, which is most of what "feels interactive" means. Deliberately subtle: a
+    // tab bar is pressed constantly, and a large or slow press animation stops reading as
+    // responsiveness and starts reading as lag.
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val pressScale by animateFloatAsState(
+        targetValue = if (pressed) 0.92f else 1f,
+        animationSpec = spring(dampingRatio = 0.7f, stiffness = Spring.StiffnessMediumLow),
+        label = "tabPress",
+    )
+
+    // A SMALL overshoot when a tab BECOMES active — 1.10, critically damped.
+    //
+    // An earlier version had a 1.12 pop that was removed for wobbling on every tap (the note
+    // below is still right). This stays under it: damped at 0.85 so it settles rather than
+    // oscillates, and driven off `active` so it fires on selection, not on every recomposition.
+    val activeScale by animateFloatAsState(
+        targetValue = if (active) 1f else 0.94f,
+        animationSpec = spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMedium),
+        label = "tabActive",
+    )
+
     Column(
         modifier = modifier
             .height(64.dp)   // 48dp min touch target + label + the indicator's 3dp track
+            .graphicsLayer { scaleX = pressScale; scaleY = pressScale }
             .combinedClickable(
-            interactionSource = remember { MutableInteractionSource() },
+            interactionSource = interaction,
             indication = null,
             onClick = onClick,
             onLongClick = onLongPress,
@@ -645,11 +672,13 @@ private fun TabItem(
     ) {
         Box(Modifier.height(28.dp), contentAlignment = Alignment.Center) {
             // Outline → filled on selection, so the state reads without depending on colour
-            // alone. No scale-pop: the old 1.12 spring made every tap wobble.
+            // alone. The scale is the tamed version described above, not the old 1.12 wobble.
             Icon(
                 imageVector = if (active) t.iconFilled else t.icon,
                 contentDescription = t.label,
-                modifier = Modifier.size(24.dp),
+                modifier = Modifier
+                    .size(24.dp)
+                    .graphicsLayer { scaleX = activeScale; scaleY = activeScale },
                 tint = if (active) VoiidColor.primary else VoiidColor.textSecondary,
             )
             // Persistent indicator: you are visible on the Map, or an unviewed story exists.

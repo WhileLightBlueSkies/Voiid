@@ -245,6 +245,26 @@ struct RootTabView: View {
                         // each other.
                         .font(.system(size: 22, weight: active ? .semibold : .regular))
                         .foregroundStyle(active ? VoiidColor.primary : VoiidColor.textSecondary)
+                        // THE ICON ITSELF NOW MOVES. The indicator slid and the glyph hard-cut
+                        // from outline to filled — so the one thing the thumb was aimed at was
+                        // the only thing that did not respond, and the bar felt inert even
+                        // though something on it was animating.
+                        //
+                        // A SMALL overshoot: 1.10, settling to 1.0, critically damped.
+                        //
+                        // An earlier version of this bar had a 1.12 pop on a 0.55-damped
+                        // spring and it was removed for wobbling on every tap — motion that
+                        // draws attention to the chrome instead of the content. That note is
+                        // still in the comment above and it is right, so this stays under it:
+                        // slightly smaller, and damped at 0.85 so it settles rather than
+                        // oscillates. The reaction is felt, not watched.
+                        .scaleEffect(active && isSliding ? 1.10 : 1)
+                        .animation(.spring(response: 0.28, dampingFraction: 0.85), value: isSliding)
+                        // The outline→filled swap is a DIFFERENT view, so SwiftUI cross-fades
+                        // it rather than morphing. `.contentTransition` makes SF Symbols
+                        // interpolate between the two variants instead — the fill grows out of
+                        // the outline, which is what Apple's own tab bars do.
+                        .contentTransition(.symbolEffect(.replace))
                         // The Map badge sits at the icon's top-right, drawn whether or not the
                         // tab is active — visibility must be legible from every screen.
                         .overlay(alignment: .topTrailing) {
@@ -274,7 +294,11 @@ struct RootTabView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        // PRESS RESPONSE, not just a post-hoc animation. `.plain` gives no feedback at all
+        // on touch-down, so on a slow tap the bar did nothing until the finger lifted. This
+        // dips the whole item the instant it is touched — the acknowledgement arrives with
+        // the press rather than after it, which is most of what "feels interactive" means.
+        .buttonStyle(TabPressStyle())
         .accessibilityLabel(t.label)
         .accessibilityAddTraits(active ? [.isButton, .isSelected] : .isButton)
     }
@@ -296,5 +320,17 @@ struct RootTabView: View {
                 .padding(1.5)
                 .background(Circle().fill(VoiidColor.background))
         }
+    }
+}
+
+/// Touch-down feedback for a tab item.
+///
+/// Deliberately subtle: 0.92 and a fast spring. A tab bar is pressed constantly, so a large
+/// or slow press animation stops reading as responsiveness and starts reading as lag.
+private struct TabPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.92 : 1)
+            .animation(.spring(response: 0.22, dampingFraction: 0.7), value: configuration.isPressed)
     }
 }
