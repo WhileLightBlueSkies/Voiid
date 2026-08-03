@@ -49,6 +49,19 @@ object CallPipState {
     internal fun setInPip(value: Boolean) { _inPip.value = value }
 
     /**
+     * Set by [CallPipController] so a composable can request PiP without holding an Activity.
+     *
+     * The controller is activity-scoped and the call UI is not; passing an Activity down
+     * through the composition to reach it would be worse than one nullable hook that the
+     * controller owns the lifetime of.
+     */
+    @Volatile
+    internal var requestPip: (() -> Boolean)? = null
+
+    /** Ask for PiP. False when it is unavailable, so the caller can fall back. */
+    fun enterPip(): Boolean = requestPip?.invoke() ?: false
+
+    /**
      * Remote video frame size, as reported by the renderer's `onFrameResolutionChanged`.
      * PiP params track this so the window matches the real video aspect instead of a
      * hardcoded guess, and update live if the sender rotates or renegotiates resolution.
@@ -160,6 +173,18 @@ class CallPipController(private val activity: ComponentActivity) {
     /** Set once we enter PiP for a call, so we know a PiP window must be torn down on end. */
     private var enteredPipForCall = false
 
+    init {
+        // Publish the hook so the call UI can request PiP without an Activity reference, and
+        // CLEAR it when this activity dies. A stale lambda would hold a destroyed Activity
+        // and call enterPictureInPictureMode on it — a leak that also throws.
+        CallPipState.requestPip = { enterPipForMinimize() }
+        activity.lifecycle.addObserver(object : androidx.lifecycle.DefaultLifecycleObserver {
+            override fun onDestroy(owner: androidx.lifecycle.LifecycleOwner) {
+                CallPipState.requestPip = null
+            }
+        })
+    }
+
     /** Attach lifecycle-scoped observers. Call once from `onCreate`. */
     fun attach(owner: LifecycleOwner) {
         activity.addOnPictureInPictureModeChangedListener { info ->
@@ -253,6 +278,30 @@ class CallPipController(private val activity: ComponentActivity) {
             activity.enterPictureInPictureMode(buildParams(state!!))
         }.getOrDefault(false)
         if (entered) enteredPipForCall = true
+    }
+
+    /**
+     * The user tapped MINIMIZE on a video call.
+     *
+     * Same path as [onUserLeaveHint] — the system PiP window, not an in-app overlay. A video
+     * call minimized to a pill loses the video, which is the entire reason to keep a video
+     * call visible while doing something else. Voice calls have nothing to render, so those
+     * take the in-app pill instead (see MinimizedCallPill).
+     *
+     * Returns false when PiP is unavailable — the OEM disabled it, the user revoked the
+     * permission, or the device lied about supporting it — so the caller can fall back to the
+     * pill rather than leaving the user stuck on a call screen with a dead button.
+     */
+    fun enterPipForMinimize(): Boolean {
+        val state = CallManager.state.value
+        if (!isPipEligible(state)) return false
+        if (isInPipNow()) return true
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
+        val entered = runCatching {
+            activity.enterPictureInPictureMode(buildParams(state!!))
+        }.getOrDefault(false)
+        if (entered) enteredPipForCall = true
+        return entered
     }
 
     /** Mirror the system's PiP mode into [CallPipState] so Compose can hide/restore chrome. */

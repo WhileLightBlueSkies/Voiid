@@ -176,53 +176,93 @@ fun CallOverlay(state: CallManager.CallState) {
 }
 
 /**
- * The minimized call: a tappable pill pinned under the status bar.
+ * The minimized call: a circular, draggable bubble.
  *
- * WHY THIS EXISTS. Android had no way to leave a call screen without ENDING the call, so
- * answering meant losing access to the whole app until it was over — you could not check the
- * address someone was reading to you, or the message you were calling about. iOS has had this
- * via CallFloatingWindowManager.
+ * WHY A CIRCLE, NOT A PILL. The pill was a full-width bar under the status bar — it covered
+ * whatever the app was showing there, and its shape said "banner", which is the language of
+ * something you dismiss rather than something you tap to return to. A round bubble reads as a
+ * live object, takes a fraction of the space, and is the shape every messenger uses for
+ * exactly this state.
  *
- * Deliberately a pill, not a floating video window: it carries who and how long, it is one
- * tap back to the call, and it never covers content the way a draggable video tile does.
+ * WHY IT DRAGS. A fixed position always ends up over the one control you need. It snaps to
+ * the nearest side after a drag so it can never be left half off-screen, and stays vertically
+ * where you put it.
+ *
+ * WHY THIS EXISTS AT ALL. Android had no way to leave a call screen without ENDING the call,
+ * so answering meant losing the whole app until it was over — you could not check the address
+ * someone was reading to you. Video calls go to system PiP instead (see the minimize button);
+ * this is the voice-call path, and the fallback when PiP is unavailable.
  */
 @Composable
 private fun MinimizedCallPill(state: CallManager.CallState) {
     val haptics = LocalVoiidHaptics.current
-    Box(Modifier.fillMaxSize().statusBarsPadding(), contentAlignment = Alignment.TopCenter) {
-        Row(
+    val density = LocalDensity.current
+    var offset by remember { mutableStateOf(Offset.Zero) }
+    var container by remember { mutableStateOf(IntSize.Zero) }
+    var onRight by remember { mutableStateOf(true) }
+    var dragging by remember { mutableStateOf(false) }
+
+    val bubble = 64.dp
+    val margin = 12.dp
+    val dx by animateFloatAsState(offset.x, spring(dampingRatio = 0.8f), label = "bubbleX")
+    val dy by animateFloatAsState(offset.y, spring(dampingRatio = 0.8f), label = "bubbleY")
+    val scale by animateFloatAsState(if (dragging) 1.06f else 1f, spring(), label = "bubbleScale")
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .onSizeChanged { container = it },
+    ) {
+        Box(
             Modifier
-                .padding(horizontal = 16.dp, vertical = 8.dp)
-                .clip(RoundedCornerShape(999.dp))
+                .align(if (onRight) Alignment.TopEnd else Alignment.TopStart)
+                .padding(margin)
+                .graphicsLayer {
+                    translationX = dx
+                    translationY = dy
+                    scaleX = scale
+                    scaleY = scale
+                }
+                .size(bubble)
+                .clip(CircleShape)
                 .background(VoiidColor.success)
-                .softClickable { haptics.tap(); CallManager.expand() }
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                .pointerInput(container) {
+                    detectDragGestures(
+                        onDragStart = { dragging = true; haptics.tap() },
+                        onDragEnd = {
+                            // Snap to the nearer SIDE, keeping the vertical position — the
+                            // user chose that height, and resetting it would undo the drag
+                            // they just made.
+                            val half = with(density) { (bubble / 2 + margin).toPx() }
+                            val originX = if (onRight) container.width - half else half
+                            val landedRight = (originX + offset.x) > container.width / 2f
+                            if (landedRight != onRight) haptics.selection()
+                            onRight = landedRight
+                            offset = Offset(0f, offset.y)
+                            dragging = false
+                        },
+                    ) { change, amount ->
+                        change.consume()
+                        offset += amount
+                    }
+                }
+                .softClickable { haptics.tap(); CallManager.expand() },
+            contentAlignment = Alignment.Center,
         ) {
-            Icon(
-                if (state.kind == CallKind.VIDEO) Icons.Default.Videocam else Icons.Default.Call,
-                null, tint = Color.White, modifier = Modifier.size(16.dp),
-            )
-            Text(
-                state.peerName,
-                style = VoiidFont.rounded(14, FontWeight.SemiBold),
-                color = Color.White,
-                maxLines = 1,
-            )
-            Text(
-                callTimer(state),
-                style = VoiidFont.rounded(13),
-                color = Color.White.copy(alpha = 0.85f),
-            )
-            // End, right on the pill: the most likely reason to look at it is to hang up, and
-            // requiring a trip back to the full screen for that would be busywork.
-            Box(
-                Modifier.size(26.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.22f))
-                    .softClickable { haptics.rigid(); CallManager.hangup() },
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(Icons.Default.CallEnd, "End call", tint = Color.White, modifier = Modifier.size(14.dp))
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(
+                    if (state.kind == CallKind.VIDEO) Icons.Default.Videocam else Icons.Default.Call,
+                    "Return to call", tint = Color.White, modifier = Modifier.size(20.dp),
+                )
+                // The timer, not the name: at 64dp a name truncates to nothing useful, and
+                // "how long have I been on this call" is the fact worth surfacing.
+                Text(
+                    callTimer(state),
+                    style = VoiidFont.rounded(11, FontWeight.SemiBold),
+                    color = Color.White,
+                    maxLines = 1,
+                )
             }
         }
     }
@@ -397,7 +437,20 @@ private fun InCallUi(state: CallManager.CallState) {
                     .background(
                         if (isVideo) Color.White.copy(alpha = 0.20f) else VoiidColor.surfaceCard,
                     )
-                    .softClickable { haptics.tap(); CallManager.minimize() },
+                    .softClickable {
+                        haptics.tap()
+                        // VIDEO GOES TO SYSTEM PiP, voice to the in-app bubble.
+                        //
+                        // A video call minimized to a pill loses the video — which is the
+                        // entire reason to keep a video call visible while doing something
+                        // else. PiP keeps the remote frame on screen, and it is what iOS
+                        // does. Voice has nothing to render, so a bubble is right there.
+                        //
+                        // Falls back to the bubble when PiP is refused: OEMs disable it, users
+                        // revoke it, and devices lie about supporting it. A dead minimize
+                        // button would be worse than a pill.
+                        if (!isVideo || !CallPipState.enterPip()) CallManager.minimize()
+                    },
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(

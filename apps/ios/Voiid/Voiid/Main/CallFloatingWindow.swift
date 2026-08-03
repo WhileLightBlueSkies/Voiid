@@ -47,17 +47,34 @@ private final class FloatingCallPill: UIView {
     var onTap: (() -> Void)?
 
     private static let videoSize = CGSize(width: 90, height: 160)
-    private static let voiceSize = CGSize(width: 148, height: 56)
+    /// A CIRCLE, not a 148×56 bar.
+    ///
+    /// The bar read as a BANNER — the shape of something you dismiss, not something you tap
+    /// to go back — and it covered a strip of whatever was underneath. A round bubble reads
+    /// as a live object, takes a fraction of the space, and is the shape every messenger uses
+    /// for this state. Matches Android's minimized bubble.
+    private static let voiceSize = CGSize(width: 64, height: 64)
     private static let margin: CGFloat = 12
 
     private let isVideo: Bool
+
+    /// Lets the manager find the timer label without holding a reference to it.
+    static let timerLabelTag = 9_101
+
+    /// Update the bubble's elapsed-time label.
+    func setElapsed(_ seconds: Int) {
+        guard let label = viewWithTag(Self.timerLabelTag) as? UILabel else { return }
+        label.text = String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
 
     init(isVideo: Bool, title: String) {
         self.isVideo = isVideo
         super.init(frame: CGRect(origin: .zero,
                                  size: isVideo ? Self.videoSize : Self.voiceSize))
         backgroundColor = .black
-        layer.cornerRadius = 14
+        // Fully round for voice (a circle), softly rounded for video (which has a frame to
+        // show and would crop badly in a circle).
+        layer.cornerRadius = isVideo ? 14 : Self.voiceSize.width / 2
         layer.cornerCurve = .continuous
         clipsToBounds = true
         layer.borderWidth = 1
@@ -85,24 +102,29 @@ private final class FloatingCallPill: UIView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     private func makeVoiceContent(title: String) -> UIView {
+        // VERTICAL, for a circle. The old horizontal icon+name stack was built for a 148pt
+        // bar; in a 64pt circle a name truncates to two characters and says nothing.
         let stack = UIStackView()
-        stack.axis = .horizontal
-        stack.spacing = 8
+        stack.axis = .vertical
+        stack.spacing = 2
         stack.alignment = .center
         stack.isUserInteractionEnabled = false
-        stack.frame = bounds.insetBy(dx: 12, dy: 8)
+        stack.frame = bounds
         stack.autoresizingMask = [.flexibleWidth, .flexibleHeight]
 
         let icon = UIImageView(image: UIImage(systemName: "phone.fill"))
         icon.tintColor = .white
         icon.contentMode = .scaleAspectFit
-        icon.widthAnchor.constraint(equalToConstant: 18).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 18).isActive = true
 
+        // The TIMER, not the name — "how long have I been on this call" is the fact worth
+        // surfacing in the space a circle actually has. Updated by the manager.
         let label = UILabel()
-        label.text = title.isEmpty ? "Return to call" : title
+        label.tag = Self.timerLabelTag
+        label.text = "0:00"
         label.textColor = .white
-        label.font = .systemFont(ofSize: 13, weight: .semibold)
-        label.lineBreakMode = .byTruncatingTail
+        label.font = .systemFont(ofSize: 11, weight: .semibold)
+        label.textAlignment = .center
 
         stack.addArrangedSubview(icon)
         stack.addArrangedSubview(label)
@@ -196,6 +218,18 @@ final class CallFloatingWindowManager {
             self?.update(active: active, callUIVisible: callUIVisible, pipActive: pipActive)
         }
         .store(in: &cancellables)
+
+        // Drive the bubble's timer off the SAME counter the call screen uses, rather than a
+        // second clock. Two independent timers drift, and a bubble showing 2:04 while the
+        // call screen behind it says 2:07 is the kind of detail that reads as broken.
+        service.$connectedSeconds
+            .receive(on: RunLoop.main)
+            .sink { [weak self] seconds in
+                // The pill lives on the window's root VC, not on the manager.
+                let root = self?.window?.rootViewController as? FloatingCallRootViewController
+                root?.pill?.setElapsed(seconds)
+            }
+            .store(in: &cancellables)
     }
 
     private func update(active: ActiveCall?, callUIVisible: Bool, pipActive: Bool) {
