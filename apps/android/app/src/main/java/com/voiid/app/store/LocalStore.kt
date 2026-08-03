@@ -139,6 +139,12 @@ object LocalStore {
         }
 
     /** Calls belonging to ONE conversation, oldest first — merged into that chat's transcript. */
+    /** Remove every call row. Device-local — the peer's log is untouched. */
+    suspend fun clearCallHistory(context: Context) = withContext(Dispatchers.IO) {
+        runCatching { db(context).calls().clearAll() }
+        Unit
+    }
+
     suspend fun callsForConversation(context: Context, conversationId: String): List<CallHistoryRow> =
         withContext(Dispatchers.IO) {
             runCatching { db(context).calls().forConversation(conversationId) }.getOrDefault(emptyList())

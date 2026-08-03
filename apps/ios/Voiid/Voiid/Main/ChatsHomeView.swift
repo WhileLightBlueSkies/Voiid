@@ -18,6 +18,7 @@ struct ChatsHomeView: View {
     @State private var callTarget: VConversation?
     @State private var activeCall: CallRequest?
     @ObservedObject private var layoutPref = ChatLayoutPreference.shared
+    @State private var showCallLog = false
     @State private var showNewChat = false
     @State private var showFindByUsername = false
     @State private var showRequests = false
@@ -190,6 +191,9 @@ struct ChatsHomeView: View {
                         openConversation = conv
                     }
                 }
+            }
+            .sheet(isPresented: $showCallLog) {
+                CallLogView()
             }
             .sheet(isPresented: $showSettings) {
                 SettingsSheet()
@@ -395,6 +399,9 @@ struct ChatsHomeView: View {
             // is the discoverable path, and the avatar stays as the shortcut for anyone
             // who already knows it.
             Divider()
+            Button { Haptics.tap(); showCallLog = true } label: {
+                Label("Calls", systemImage: "phone")
+            }
             Button { Haptics.tap(); showSettings = true } label: {
                 Label("Settings", systemImage: "gearshape")
             }

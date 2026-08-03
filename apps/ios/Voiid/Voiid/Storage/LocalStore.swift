@@ -242,6 +242,72 @@ enum LocalStore {
         }) ?? []
     }
 
+    /// EVERY call, newest first — the Recents screen.
+    ///
+    /// A separate query from `callsForConversation` rather than a filter over it: that one is
+    /// keyed on a conversation and ordered ASC for the transcript, and this needs neither.
+    /// It also carries `conversationId` and `peerUserId`, which the per-chat query drops
+    /// because the caller already knows them — here they are what lets a row open a chat or
+    /// place a call back.
+    ///
+    /// Capped at 500. A call log is read from the top; nobody scrolls to their thousandth
+    /// call, and an unbounded query on a chatty account would decode the lot to draw a screen
+    /// of twenty rows.
+    static func allCalls(limit: Int = 500) -> [CallLogEntry] {
+        (try? db.read { database in
+            try Row.fetchAll(database, sql: """
+                SELECT id, conversation_id, peer_user_id, kind, direction, outcome,
+                       started_at, ended_at
+                  FROM call_history
+                 ORDER BY started_at DESC
+                 LIMIT ?
+                """, arguments: [limit]).map { row in
+                CallLogEntry(
+                    id: row["id"],
+                    conversationId: row["conversation_id"],
+                    peerUserId: row["peer_user_id"],
+                    kind: row["kind"],
+                    direction: row["direction"],
+                    outcome: row["outcome"],
+                    startedAt: Date(timeIntervalSince1970: TimeInterval(row["started_at"] as Int64)),
+                    endedAt: (row["ended_at"] as Int64?).map { Date(timeIntervalSince1970: TimeInterval($0)) }
+                )
+            }
+        }) ?? []
+    }
+
+    /// Delete every call row. Backs "Clear call history".
+    static func clearCallHistory() {
+        db.write { database in
+            try database.execute(sql: "DELETE FROM call_history")
+        }
+    }
+
+    /// A row of the global call log. Distinct from [CallHistoryEntry] because it carries the
+    /// conversation and peer the transcript version does not need.
+    struct CallLogEntry: Identifiable {
+        let id: String
+        let conversationId: String?
+        let peerUserId: String?
+        let kind: String        // voice | video
+        let direction: String   // incoming | outgoing
+        let outcome: String     // answered | missed | declined | failed
+        let startedAt: Date
+        let endedAt: Date?
+
+        var isVideo: Bool { kind == "video" }
+        var incoming: Bool { direction == "incoming" }
+        /// Missed means it RANG and was never answered. A call the user declined was
+        /// answered-by-a-human-decision and must not sit in the missed filter.
+        var missed: Bool { incoming && outcome != "answered" && outcome != "declined" }
+
+        /// Seconds, or nil when the call never connected.
+        var duration: TimeInterval? {
+            guard outcome == "answered", let endedAt else { return nil }
+            return max(0, endedAt.timeIntervalSince(startedAt))
+        }
+    }
+
     /// A row of `call_history`, as read back for the transcript.
     struct CallHistoryEntry: Identifiable {
         let id: String

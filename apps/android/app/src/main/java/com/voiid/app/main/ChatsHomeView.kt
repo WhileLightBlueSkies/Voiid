@@ -150,6 +150,7 @@ fun ChatsHomeView(
     var tab by remember { mutableStateOf(ChatTab.CHATS) }
     var deleteTarget by remember { mutableStateOf<VConversation?>(null) }
     var callTarget by remember { mutableStateOf<VConversation?>(null) }
+    var showCallLog by remember { mutableStateOf(false) }
     var showNewChat by remember { mutableStateOf(false) }
     /** Set by the menu so the sheet knows whether to build a GROUP, independent of the tab. */
     var forceGroup by remember { mutableStateOf(false) }
@@ -203,6 +204,7 @@ fun ChatsHomeView(
             // missed — a stale `true` would then turn the next "New chat" into a group.
             onNewGroup = { forceGroup = true; showNewChat = true },
             onFindByUsername = { showFindByUsername = true },
+            onOpenCallLog = { showCallLog = true },
             onOpenSettings = { showSettings = true },
         )
         Tabs(tab) { haptics.selection(); tab = it }
@@ -311,6 +313,22 @@ fun ChatsHomeView(
                     }
                 }
             }
+        }
+    }
+
+    // Calls — fullscreen dialog, same pattern as Settings below.
+    if (showCallLog) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showCallLog = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            CallLogScreen(
+                chat = chat,
+                onBack = { showCallLog = false },
+                // Close FIRST, then open the chat — leaving the dialog up would push the
+                // conversation behind it.
+                onOpenConversation = { conv -> showCallLog = false; onOpenConversation(conv) },
+            )
         }
     }
 
@@ -734,6 +752,7 @@ private fun Header(
     onNewChat: () -> Unit,
     onNewGroup: () -> Unit,
     onFindByUsername: () -> Unit,
+    onOpenCallLog: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     // Avatar - search - actions, on ONE row.
@@ -824,6 +843,11 @@ private fun Header(
                     leadingIcon = { Icon(Icons.Default.Groups, null, tint = VoiidColor.textPrimary) },
                 )
                 HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.4f))
+                DropdownMenuItem(
+                    text = { Text("Calls", style = VoiidFont.rounded(15), color = VoiidColor.textPrimary) },
+                    onClick = { menuOpen = false; haptics.tap(); onOpenCallLog() },
+                    leadingIcon = { Icon(Icons.Default.Call, null, tint = VoiidColor.textPrimary) },
+                )
                 // SETTINGS IS HERE TOO, not only behind the avatar. Tapping your own face to
                 // reach app settings is a convention people learn, not one they guess — this
                 // is the discoverable path, and the avatar stays as the shortcut.

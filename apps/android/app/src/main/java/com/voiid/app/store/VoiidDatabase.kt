@@ -411,6 +411,10 @@ abstract class CallHistoryDao {
     @Query("SELECT COUNT(*) FROM call_history")
     abstract fun count(): Int
 
+    /** Backs "Clear call history" on the Calls screen. Device-local, like the table itself. */
+    @Query("DELETE FROM call_history")
+    abstract fun clearAll()
+
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     abstract fun insertIgnore(row: CallHistoryRow)
 
