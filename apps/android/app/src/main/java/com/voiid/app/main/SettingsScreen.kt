@@ -109,15 +109,15 @@ fun SettingsScreen(
     var uploading by remember { mutableStateOf(false) }
     var errorText by remember { mutableStateOf<String?>(null) }
 
-    // Photos picker (system UI — no READ_MEDIA_IMAGES permission needed).
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
+    /** Camera or gallery — asked before either opens, so the user picks the SOURCE rather
+     *  than being dropped into whichever one we guessed. Mirrors iOS. */
+    var showPhotoSource by remember { mutableStateOf(false) }
+
+    /** The ONE upload path, shared by camera and gallery. */
+    fun uploadPhotoBytes(bytes: ByteArray?) {
         scope.launch {
             uploading = true
             errorText = try {
-                val bytes = withContext(Dispatchers.IO) {
-                    context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                }
                 if (bytes == null) "Couldn't read that photo." else {
                     val key = MediaService(TokenStore.get(context)).uploadProfilePhoto(bytes)
                     // Local-first: cache the bytes we just uploaded under the key so the avatar
@@ -132,6 +132,78 @@ fun SettingsScreen(
             }
             uploading = false
         }
+    }
+
+    // Photos picker (system UI — no READ_MEDIA_IMAGES permission needed).
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val bytes = withContext(Dispatchers.IO) {
+                context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            }
+            uploadPhotoBytes(bytes)
+        }
+    }
+
+    // Camera. TakePicturePreview returns a downscaled thumbnail Bitmap rather than a
+    // full-resolution file — which is exactly right here: this is displayed at 104dp, and
+    // the full-file variant would need a FileProvider, a temp file and a cleanup path for
+    // detail no screen in the app can show.
+    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
+        if (bitmap == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val bytes = withContext(Dispatchers.IO) {
+                java.io.ByteArrayOutputStream().use { out ->
+                    bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+                    out.toByteArray()
+                }
+            }
+            uploadPhotoBytes(bytes)
+        }
+    }
+
+    // CAMERA permission is declared in the manifest, so it must be REQUESTED at runtime on
+    // API 23+. Launching the camera without it fails silently, which would look like a dead
+    // button.
+    val cameraPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) camera.launch(null)
+        else errorText = "Camera permission is needed to take a photo."
+    }
+
+    if (showPhotoSource) {
+        // TWO SOURCES, asked explicitly. Tapping the avatar opened the gallery directly, so
+        // taking a NEW photo meant leaving the app, using the camera, coming back and
+        // picking it — for what is overwhelmingly a selfie.
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showPhotoSource = false },
+            containerColor = VoiidColor.surfaceCard,
+            title = {
+                Text("Profile photo", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+            },
+            text = {
+                Text(
+                    "Take a new photo, or choose one you already have.",
+                    style = VoiidFont.rounded(14), color = VoiidColor.textSecondary,
+                )
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    showPhotoSource = false
+                    haptics.tap()
+                    // Ask for permission first — launching without it fails silently.
+                    cameraPermission.launch(android.Manifest.permission.CAMERA)
+                }) { Text("Take Photo", color = VoiidColor.primary) }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    showPhotoSource = false
+                    haptics.tap()
+                    picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                }) { Text("Choose from Gallery", color = VoiidColor.primary) }
+            },
+        )
     }
 
     fun saveName() {
@@ -213,12 +285,7 @@ fun SettingsScreen(
                         name = session.profile.fullName,
                         size = 96.dp,
                         modifier = Modifier.softClickable(scale = 0.95f) {
-                            if (!uploading) {
-                                haptics.tap()
-                                picker.launch(
-                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
-                                )
-                            }
+                            if (!uploading) { haptics.tap(); showPhotoSource = true }
                         },
                     )
                     // Affordance: without this it isn't obvious the avatar is tappable.

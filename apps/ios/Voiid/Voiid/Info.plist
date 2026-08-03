@@ -9,6 +9,10 @@
 	     Apple rejects vague strings, so these are specific about WHAT is collected, WHEN, and
 	     that it is end-to-end encrypted. Both strings must be present before Always can ever
 	     be requested (iOS 11+). -->
+	<!-- Taking a profile photo. Without this key iOS TERMINATES the app the instant the
+	     camera is presented — not a permission denial, a crash. -->
+	<key>NSCameraUsageDescription</key>
+	<string>Take a photo for your Voiid profile.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Voiid uses your location only when you choose to share it in a chat or on the Map. Your location is end-to-end encrypted — Voiid's servers never see it.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>

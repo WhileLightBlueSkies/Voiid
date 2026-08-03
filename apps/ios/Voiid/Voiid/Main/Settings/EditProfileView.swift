@@ -44,6 +44,11 @@ struct EditProfileView: View {
     @State private var loaded = false
 
     @State private var photoItem: PhotosPickerItem?
+    /// Camera or library — asked before either is presented, so the user picks the SOURCE
+    /// rather than being dropped into whichever one we guessed.
+    @State private var showPhotoSource = false
+    @State private var showCamera = false
+    @State private var showLibrary = false
     @State private var uploading = false
 
     @State private var saving = false
@@ -70,6 +75,12 @@ struct EditProfileView: View {
     }
 
     /// Block save when the chosen username is known-taken.
+    /// Everything that must hold for Save to do anything, in ONE place — the button's look
+    /// and its enabled state read the same value, so they cannot drift apart.
+    private var canSave: Bool {
+        isDirty && !saving && !trimmedName.isEmpty && !usernameBlocksSave && !checkingUsername
+    }
+
     private var usernameBlocksSave: Bool {
         trimmedUsername != (session.profile.username ?? "") && usernameAvailable == false
     }
@@ -155,10 +166,27 @@ struct EditProfileView: View {
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
-                Button("Save") { Task { await save() } }
-                    .fontWeight(.semibold)
-                    .foregroundStyle(VoiidColor.primary)
-                    .disabled(!isDirty || saving || trimmedName.isEmpty || usernameBlocksSave || checkingUsername)
+                // SAVE HAS TO LOOK DISABLED WHEN IT IS.
+                //
+                // It was always `VoiidColor.primary`, so a Save that could not run looked
+                // exactly like one that could — you tapped it, nothing happened, and the
+                // screen appeared broken. It is disabled far more often than not: the photo
+                // uploads the instant you pick it (nothing to save), and Save is also
+                // blocked while a username check is in flight or has come back taken.
+                //
+                // Dimming it says "not yet" before the tap instead of after it, and the
+                // spinner distinguishes "in flight" from "inert".
+                Button {
+                    Task { await save() }
+                } label: {
+                    if saving {
+                        ProgressView().tint(VoiidColor.primary)
+                    } else {
+                        Text("Save").fontWeight(.semibold)
+                    }
+                }
+                .foregroundStyle(canSave ? VoiidColor.primary : VoiidColor.placeholder)
+                .disabled(!canSave)
             }
         }
         .confirmationDialog("Discard changes?",
@@ -216,36 +244,84 @@ struct EditProfileView: View {
             // One unambiguous control beats a picture that might be a button.
             HStack {
                 Spacer()
-                ProfileAvatarButton(photoURL: session.profile.photoURL,
-                                    name: session.profile.fullName,
-                                    size: 96)
+                // THE AVATAR IS THE BUTTON, with a camera badge on it.
+                //
+                // The old layout put a 96pt avatar alone in one card with nothing else in
+                // it — a band of empty white — and "Change Photo" in a SECOND card below,
+                // which is what made the top of this screen read as blank. They are one
+                // thing and now sit in one card, and the badge means the photo itself looks
+                // tappable instead of relying on a separate row to say so.
+                Button {
+                    Haptics.tap()
+                    showPhotoSource = true
+                } label: {
+                    ZStack(alignment: .bottomTrailing) {
+                        ProfileAvatarButton(photoURL: session.profile.photoURL,
+                                            name: session.profile.fullName,
+                                            size: 104)
+                            .overlay(Circle().strokeBorder(VoiidColor.textPrimary.opacity(0.08), lineWidth: 1))
+                            .opacity(uploading ? 0.5 : 1)
+
+                        if uploading {
+                            ProgressView().tint(VoiidColor.primary)
+                        } else {
+                            Image(systemName: "camera.fill")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(VoiidColor.textOnPrimary)
+                                .frame(width: 32, height: 32)
+                                .background(Circle().fill(VoiidColor.primary))
+                                // Ringed in the card's own fill so the badge reads as ON the
+                                // avatar rather than floating beside it.
+                                .overlay(Circle().strokeBorder(VoiidColor.surfaceCard, lineWidth: 3))
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(uploading)
+                .accessibilityLabel("Change profile photo")
                 Spacer()
             }
-            .padding(.vertical, VoiidSpacing.sm)
+            .padding(.vertical, VoiidSpacing.md)
             .listRowBackground(Color.clear)
-            .accessibilityHidden(true)
 
-            // No "Remove Photo": clearing photo_url server-side is unverified, and a
-            // button that might not do what it says has no place here.
-            PhotosPicker(selection: $photoItem, matching: .images) {
-                HStack {
-                    Spacer()
-                    if uploading {
-                        ProgressView().tint(VoiidColor.primary)
-                    } else {
-                        Text("Change Photo")
-                            .font(.body)
-                            .foregroundStyle(VoiidColor.primary)
-                    }
-                    Spacer()
-                }
+            // SAY THAT THE PHOTO IS ALREADY SAVED. It uploads the instant you pick it —
+            // Save covers only the text fields — so without this line a user changes their
+            // photo, sees Save still greyed out, and reasonably concludes nothing happened.
+            HStack {
+                Spacer()
+                Text("Your photo saves as soon as you choose it.")
+                    .font(.footnote)
+                    .foregroundStyle(VoiidColor.textSecondary)
+                    .multilineTextAlignment(.center)
+                Spacer()
             }
-            .disabled(uploading)
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: VoiidSpacing.sm, trailing: 0))
+
             .onChange(of: photoItem) { _, item in
                 guard let item else { return }
                 Task { await uploadPhoto(item) }
             }
         }
+        // TWO SOURCES, asked explicitly. Tapping the avatar used to open the library
+        // directly, so taking a NEW photo meant leaving the app, using the camera, coming
+        // back and picking it — for what is overwhelmingly a selfie.
+        .confirmationDialog("Profile photo", isPresented: $showPhotoSource, titleVisibility: .hidden) {
+            // Only offered when there IS a camera. On a device without one this button
+            // would open a black screen with no way out.
+            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                Button("Take Photo") { showCamera = true }
+            }
+            Button("Choose from Library") { showLibrary = true }
+            Button("Cancel", role: .cancel) {}
+        }
+        .fullScreenCover(isPresented: $showCamera) {
+            CameraPicker { image in
+                Task { await uploadCaptured(image) }
+            }
+            .ignoresSafeArea()
+        }
+        .photosPicker(isPresented: $showLibrary, selection: $photoItem, matching: .images)
     }
 
     // MARK: - Actions
@@ -290,11 +366,27 @@ struct EditProfileView: View {
         }
     }
 
+    /// A camera capture. Shares the upload path with the library picker rather than
+    /// duplicating it — the only difference is where the bytes came from.
+    ///
+    /// JPEG at 0.85: a full-resolution capture from a modern iPhone is several megabytes,
+    /// and this is displayed at 104pt. Uploading the original would cost the user's data
+    /// for detail no screen in the app can show.
+    private func uploadCaptured(_ image: UIImage) async {
+        guard let data = image.jpegData(compressionQuality: 0.85) else { return }
+        await uploadImageData(data)
+    }
+
     private func uploadPhoto(_ item: PhotosPickerItem) async {
+        guard let data = try? await item.loadTransferable(type: Data.self) else { return }
+        await uploadImageData(data)
+    }
+
+    /// The one upload path, shared by camera and library.
+    private func uploadImageData(_ data: Data) async {
         uploading = true
         defer { uploading = false }
         do {
-            guard let data = try await item.loadTransferable(type: Data.self) else { return }
             let url = try await MediaService.shared.uploadProfilePhoto(data)
             // Local-first: cache the bytes we just uploaded under the returned key so the
             // avatar shows INSTANTLY everywhere — no presigned re-download (the 15–20s wait).
