@@ -126,7 +126,54 @@ struct ChatsHomeView: View {
             // above: the avatar and compose button moved into it, and the "Chats" large
             // title is gone entirely — it named the tab already selected in the bar at the
             // bottom, in the app whose icon you just tapped.
-            .navigationBarHidden(true)
+            // `.toolbar(.hidden)` rather than `.navigationBarHidden(true)`.
+            //
+            // THIS IS WHY THE LAYOUT COLLAPSED. Hiding the bar removes its HEIGHT but not the
+            // safe area it used to occupy — with `.background(...ignoresSafeArea())` already
+            // pushing content upward, the header ended up under the status bar and everything
+            // below it shifted up with it. `.toolbar(.hidden, for: .navigationBar)` hides the
+            // chrome while the VStack still respects the top safe area, so the header starts
+            // BELOW the clock where it belongs.
+            .toolbar(.hidden, for: .navigationBar)
+            .onAppear { session.hideTabBar = false }   // root screen always shows the bar
+            .task { await refreshRequestCount() }
+            .task {
+                // INSTANT FIRST: render the cached (local) chat list before ANY network or
+                // address-book work. loadConversations() reads local storage synchronously up
+                // front, so the list appears immediately; the network sync inside it continues
+                // after. Nothing slow may run before this — that was the 8–15s "not instant" bug
+                // (contact discovery + profile fetch were awaited ahead of the render).
+                await chat.loadConversations()
+
+                // Everything below is background/best-effort and must NEVER block the list.
+                WebSocketClient.shared.reconnect()         // fresh socket (avoid a stale/dead one missing pushes)
+                LocationShareEngine.shared.configure()     // route inbound live fixes + start the expiry ticker
+                MapPresenceEngine.shared.configureControlSender()   // hand map_key/map_off to the audience over the ratchet
+                Task { try? await E2EManager.shared.bootstrap() }   // publish identity/prekeys (idempotent)
+                Task { await session.refreshServerProfile() }       // REAL name/photo/bio/username
+                // Contact discovery (rebuilds saved-name map after a restore) — SLOW (address
+                // book + hashing + network), so strictly background; when it finishes it
+                // refreshes names in place via UserDirectory.
+                Task { _ = try? await ContactsService.shared.discover() }
+            }
+            // OPENING A CHAT LIVES HERE. Removing the old toolbar block took this line and
+            // the deep-link handler below with it, so every tap set `openConversation` and
+            // nothing consumed it — the tile highlighted and the chat never appeared.
+            .navigationDestination(item: $openConversation) { ChatDetailView(conversation: $0) }
+            .onReceive(NotificationCenter.default.publisher(for: .voiidOpenConversation)) { note in
+                // Deep-link from a tapped message notification: open its conversation,
+                // loading the list first if it isn't in memory yet.
+                guard let convId = note.object as? String else { return }
+                Task { @MainActor in
+                    let present = chat.directConversations.contains { $0.id == convId }
+                        || chat.groupConversations.contains { $0.id == convId }
+                    if !present { await chat.loadConversations() }
+                    if let conv = chat.directConversations.first(where: { $0.id == convId })
+                        ?? chat.groupConversations.first(where: { $0.id == convId }) {
+                        openConversation = conv
+                    }
+                }
+            }
             .sheet(isPresented: $showSettings) {
                 SettingsSheet()
             }

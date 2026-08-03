@@ -865,16 +865,14 @@ private fun GridCard(conv: VConversation, modifier: Modifier) {
 
     Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
         Box(Modifier.fillMaxWidth().aspectRatio(1f)) {
-            // ROUND, and NO PLATE BEHIND IT.
+            // SQUARE tiles — this grid is the app's signature and the shape stays.
             //
-            // The tile was a rounded SQUARE on a `fieldFill` plate. Two problems: a face
-            // cropped to a square reads as a thumbnail rather than a person, and every chat
-            // without a photo showed that plate as a visible grey box with a faint wordmark
-            // in it — a grid of empty boxes. The plate is gone; no photo now falls back to
-            // the person's initials on a brand tint, which is a person-shaped placeholder
-            // rather than an empty container. Mirrors iOS.
+            // What DID change is the fallback: every chat without a photo used to render the
+            // `fieldFill` plate with a faint wordmark on it, so the grid read as a set of
+            // empty grey boxes. Initials on a brand tint are a person-shaped placeholder
+            // instead. Mirrors iOS.
             Box(
-                Modifier.fillMaxSize().clip(CircleShape),
+                Modifier.fillMaxSize().clip(RoundedCornerShape(VoiidRadius.lg)),
                 contentAlignment = Alignment.Center,
             ) {
                 val bmp = avatar
@@ -924,12 +922,9 @@ private fun GridCard(conv: VConversation, modifier: Modifier) {
             if (conv.isOnline) {
                 Box(
                     Modifier
-                        // BADGES MOVE IN FOR A CIRCLE. Inset from the corners of a SQUARE they
-                        // now float in the empty space outside the rim; ~8dp brings them back
-                        // onto the edge where they read as attached.
                         .align(Alignment.BottomStart)
-                        .padding(start = 8.dp, bottom = 8.dp)
-                        .size(13.dp)
+                        .padding(6.dp)
+                        .size(12.dp)
                         .clip(CircleShape)
                         .background(VoiidColor.background)
                         .padding(2.dp)
@@ -941,7 +936,7 @@ private fun GridCard(conv: VConversation, modifier: Modifier) {
                 Box(
                     Modifier
                         .align(Alignment.TopEnd)
-                        .padding(end = 2.dp)
+                        .padding(5.dp)
                         .size(20.dp)
                         .clip(CircleShape)
                         .background(VoiidColor.accent),

@@ -155,22 +155,20 @@ struct DraggableChatGrid: View {
     private func cardView(_ conv: VConversation) -> some View {
         VStack(spacing: VoiidSpacing.sm) {
             ZStack(alignment: .topTrailing) {
-                // ROUND, and NO PLATE BEHIND IT.
+                // SQUARE tiles — this grid is the app's signature and the shape stays.
                 //
-                // The tile was a rounded SQUARE on a `fieldFill` plate. Two problems: a face
-                // cropped to a square reads as a thumbnail rather than a person, and every
-                // chat without a photo showed that plate as a visible grey box with a faint
-                // wordmark in it — a grid of empty boxes, which is exactly what the screen
-                // looked like. The plate is gone; a circle with no photo now falls back to
-                // the initials on a brand tint, which is a person-shaped placeholder rather
-                // than an empty container.
+                // What DID change is the fallback: every chat without a photo used to render
+                // the `fieldFill` plate with a faint wordmark on it, so the grid read as a
+                // set of empty grey boxes. Initials on a brand tint are a person-shaped
+                // placeholder instead, and a chat WITH a photo fills the tile as before.
                 ZStack {
                     if conv.type == .self {
                         // NOTE TO SELF gets its own mark, not a profile photo. It is the one
                         // chat with no other person in it, and rendering your own face there
                         // reads as a conversation with someone else. A bookmark on brand tint
                         // says "saved" at a glance and is findable without reading the label.
-                        Circle().fill(VoiidColor.primary.opacity(0.12))
+                        RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
+                            .fill(VoiidColor.primary.opacity(0.12))
                         Image(systemName: "bookmark.fill")
                             .font(.system(size: 28, weight: .medium))
                             .foregroundStyle(VoiidColor.primary)
@@ -185,22 +183,18 @@ struct DraggableChatGrid: View {
                     }
                 }
                 .aspectRatio(1, contentMode: .fit)
-                .clipShape(Circle())
+                .clipped()
+                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
 
                 // Badges sit INSIDE the tile. They were pushed OUT past its edge
                 // (offset x: 6, y: -6), which broke the grid's alignment and let a badge
                 // overlap the tile beside it. Online goes bottom-leading so the two can
                 // never collide.
-                // BADGES MOVE IN FOR A CIRCLE. They were inset 5–6pt from the corners of a
-                // SQUARE tile; against a circle those corners are empty space, so a badge
-                // placed there floats off the edge with a visible gap. ~10% of the tile
-                // brings them back onto the rim where they read as attached.
                 if conv.isOnline {
                     Circle().fill(VoiidColor.success)
-                        .frame(width: 13, height: 13)
+                        .frame(width: 12, height: 12)
                         .overlay(Circle().stroke(VoiidColor.background, lineWidth: 2))
-                        .padding(.leading, 8)
-                        .padding(.bottom, 8)
+                        .padding(6)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
                 }
                 if conv.unreadCount > 0 {
@@ -211,8 +205,8 @@ struct DraggableChatGrid: View {
                         .frame(minWidth: 20, minHeight: 20)
                         .background(VoiidColor.accent)
                         .clipShape(Circle())
-                        .overlay(Circle().stroke(VoiidColor.background, lineWidth: 2))
-                        .padding(.trailing, 2)
+                        .overlay(Circle().stroke(VoiidColor.background, lineWidth: 1.5))
+                        .padding(5)
                 }
             }
             Text(conv.title).font(VoiidFont.rounded(13, .regular)).foregroundColor(VoiidColor.textPrimary).lineLimit(1)
