@@ -53,6 +53,7 @@ import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Photo
 import androidx.compose.material.icons.filled.Videocam
@@ -133,6 +134,9 @@ fun ChatDetailView(
 
     // overflow / attach menus
     var showOverflow by remember { mutableStateOf(false) }
+    // The safety-number screen (anti-MITM verification). A full-screen overlay like the profile,
+    // not a bottom sheet: the number is read aloud digit by digit, so it needs the whole width.
+    var showSafetyNumber by remember { mutableStateOf(false) }
     var showAttach by remember { mutableStateOf(false) }
 
     // sheets / dialogs
@@ -314,6 +318,16 @@ fun ChatDetailView(
                                     onClick = { showOverflow = false; selectionMode = true },
                                     leadingIcon = { Icon(Icons.Default.CheckCircle, null) },
                                 )
+                                // 1:1 only. A safety number is a comparison between two identity
+                                // keys; a group has no single pair to compare, and offering it
+                                // there would imply a guarantee the screen cannot make.
+                                if (!isGroup) {
+                                    DropdownMenuItem(
+                                        text = { Text("Verify encryption") },
+                                        onClick = { showOverflow = false; showSafetyNumber = true },
+                                        leadingIcon = { Icon(Icons.Default.Lock, null) },
+                                    )
+                                }
                                 DropdownMenuItem(
                                     text = { Text("Clear chat", color = VoiidColor.error) },
                                     onClick = { showOverflow = false; showClearChat = true },
@@ -584,6 +598,19 @@ fun ChatDetailView(
                     onStartCall = { kind -> showDetails = false; startCall(kind) },
                 )
             }
+        }
+
+        // Safety number (verify encryption) — mirrors iOS `SafetyNumberView`.
+        AnimatedVisibility(
+            visible = showSafetyNumber,
+            enter = slideInHorizontally { it } + fadeIn(),
+            exit = slideOutHorizontally { it } + fadeOut(),
+        ) {
+            SafetyNumberScreen(
+                peerUserId = conversation.peerUserId.orEmpty(),
+                peerName = conversation.title,
+                onClose = { showSafetyNumber = false },
+            )
         }
     }
 

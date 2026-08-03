@@ -968,6 +968,24 @@ class ChatEngine private constructor(context: Context) {
 
     // MARK: - Peer key resolution
 
+    /** One of the peer's devices, for safety-number comparison. */
+    data class PeerIdentity(val id: String, val identityKey: String)
+
+    /**
+     * EVERY device the peer has published a key for, for the safety-number screen.
+     *
+     * ALL of them, not just the first: a safety number is per DEVICE PAIR, because each device
+     * has its own identity key. A contact with a phone and a tablet has two numbers and both must
+     * match — collapsing them into one would show "verified" while an unverified second device
+     * sat silently on the account, which is precisely the thing this feature exists to catch.
+     *
+     * Mirrors iOS `ChatEngine.peerIdentities`.
+     */
+    suspend fun peerIdentities(userId: String): List<PeerIdentity> {
+        val res: DevicesResponse = api.requestAs("GET", "devices/$userId")
+        return res.devices.map { PeerIdentity(it.id, it.identity_public_key) }
+    }
+
     /** Peer's identity key + device id, resolving the SPECIFIC device that sent the
      *  message (a multi-device sender may use a non-first device); falls back to first. */
     private suspend fun peerIdentity(userId: String, deviceId: String?): Pair<String, String> {
