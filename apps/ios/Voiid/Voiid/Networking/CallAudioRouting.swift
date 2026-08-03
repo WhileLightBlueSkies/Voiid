@@ -74,6 +74,21 @@ extension CallService {
 
     /// Recompute the available routes and the live one from the current AVAudioSession, and
     /// publish them. Call after any route change and when a call becomes active.
+    /// True when a headset — Bluetooth, wired or USB — is connected right now.
+    ///
+    /// Used to decide whether the video-call speaker default should apply. It reads
+    /// `availableInputs` rather than the live output, because it is asked at connect time
+    /// when the route may not have settled yet.
+    var hasExternalAudioDevice: Bool {
+        let session = AVAudioSession.sharedInstance()
+        return (session.availableInputs ?? []).contains { input in
+            switch input.portType {
+            case .bluetoothHFP, .carAudio, .headsetMic, .usbAudio: return true
+            default: return false
+            }
+        }
+    }
+
     func refreshAudioRoutes() {
         let session = AVAudioSession.sharedInstance()
 

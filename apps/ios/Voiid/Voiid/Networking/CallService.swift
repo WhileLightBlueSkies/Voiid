@@ -1686,9 +1686,15 @@ final class CallService: NSObject, ObservableObject {
         everConnected = true
         if let pc { stats.start(pc: pc) }
         CallManager.shared.reportOutgoingConnected(uuid: call.uuid)
-        // A video call held at arm's length belongs on the speaker, not the
-        // earpiece. Only forced once, on connect — the user can still toggle.
-        if call.isVideo, !speakerOn {
+        // A video call held at arm's length belongs on the speaker, not the earpiece —
+        // UNLESS a headset is connected, in which case it belongs there.
+        //
+        // This used to force the speaker unconditionally, so answering a video call with
+        // AirPods in yanked the audio out of them and onto the phone. The user plugged in or
+        // paired a device precisely so the call would go there; overriding that is the one
+        // thing the default must not do. Only forced once, on connect — the user can still
+        // toggle either way afterwards.
+        if call.isVideo, !speakerOn, !hasExternalAudioDevice {
             speakerOn = true
             applyOutputOverride(speaker: true)
         }

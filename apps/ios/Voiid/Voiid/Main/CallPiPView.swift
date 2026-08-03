@@ -17,7 +17,7 @@ import UIKit
 /// of a 1:1 video call — it is what makes Picture-in-Picture possible.
 struct CallRemoteVideoView: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
-        let container = UIView()
+        let container = HostContainer()
         container.backgroundColor = .black
         container.clipsToBounds = true
         CallRemoteVideoView.reparentHostView(into: container)
@@ -30,6 +30,31 @@ struct CallRemoteVideoView: UIViewRepresentable {
         let host = CallPiPController.shared.hostView
         if host.superview !== uiView {
             CallRemoteVideoView.reparentHostView(into: uiView)
+        }
+    }
+
+    /// RE-CLAIM ON EVERY LAYOUT PASS, not only when SwiftUI decides to update.
+    ///
+    /// THE BLACK SCREEN AFTER RESTORING A MINIMIZED VIDEO CALL. There is ONE shared host view
+    /// and it lives wherever it was last parented. Minimizing hands it to the floating
+    /// window; dismissing that window calls `removeFromSuperview()`, so the host is left
+    /// ORPHANED — attached to the renderer and the track, but in no view hierarchy.
+    ///
+    /// Returning to the call screen does not necessarily rebuild it: if SwiftUI reuses the
+    /// existing representable, `makeUIView` never runs again, and `updateUIView` only runs
+    /// when SwiftUI thinks something changed. Nothing did — the state that matters changed
+    /// in UIKit, invisibly to SwiftUI — so nobody re-parented the host and the user got a
+    /// black rectangle where the remote video should be.
+    ///
+    /// `layoutSubviews` fires when the view is laid out, which restoring always does. Cheap:
+    /// the guard makes it a no-op in the normal case.
+    final class HostContainer: UIView {
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            let host = CallPiPController.shared.hostView
+            if host.superview !== self {
+                CallRemoteVideoView.reparentHostView(into: self)
+            }
         }
     }
 
