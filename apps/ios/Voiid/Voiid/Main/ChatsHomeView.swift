@@ -314,8 +314,10 @@ struct ChatsHomeView: View {
     private var compactHeader: some View {
         HStack(spacing: VoiidSpacing.sm) {
             Button { Haptics.tap(); showSettings = true } label: {
+                // 40, matching the glass buttons opposite it — a 38pt avatar beside 40pt
+                // controls reads as a misalignment rather than a smaller element.
                 ProfileAvatarButton(photoURL: session.profile.photoURL,
-                                    name: session.profile.fullName, size: 38)
+                                    name: session.profile.fullName, size: 40)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Profile and settings")
@@ -381,12 +383,39 @@ struct ChatsHomeView: View {
         }
     }
 
+    /// A circular header button in the system's glass material.
+    ///
+    /// GLASS ON iOS 26, MATERIAL BELOW. `.glassEffect` is iOS 26-only and this project
+    /// targets iOS 18, so it is availability-gated rather than adopted outright — on 26 the
+    /// button gets Apple's real Liquid Glass (it refracts and specular-highlights against
+    /// whatever scrolls beneath it), and on 18 it falls back to `.ultraThinMaterial`, which
+    /// is the same visual language the platform used before Liquid Glass existed. Neither
+    /// path is a flat tint, so the control reads as a system button on both.
+    ///
+    /// OPTICAL CENTERING, not geometric. `square.and.pencil` carries its pencil up and to
+    /// the right, so its ink sits high-right of the glyph's bounding box — centering the BOX
+    /// leaves the mark visibly off-centre in the circle. A per-symbol nudge fixes what the
+    /// layout engine cannot see, which is the difference between "centered" and "looks
+    /// centered".
     private func headerGlyph(_ name: String) -> some View {
         Image(systemName: name)
-            .font(.system(size: 16, weight: .medium))
+            .font(.system(size: 17, weight: .medium))
             .foregroundColor(VoiidColor.primary)
-            .frame(width: 38, height: 38)
-            .background(Circle().fill(VoiidColor.primary.opacity(0.10)))
+            .offset(opticalOffset(name))
+            .frame(width: 40, height: 40)
+            .modifier(GlassCircle())
+    }
+
+    /// Per-symbol optical correction. Values are small and deliberate: enough to look
+    /// centered, never enough to look shifted.
+    private func opticalOffset(_ name: String) -> CGSize {
+        switch name {
+        // The pencil's tip extends up-right past the square, pulling the visual mass with it.
+        case "square.and.pencil": return CGSize(width: -0.5, height: 0.5)
+        // The @ sign's descender-less bowl sits fractionally high in its box.
+        case "at":               return CGSize(width: 0, height: 0.5)
+        default:                 return .zero
+        }
     }
 
     private var tabs: some View {
@@ -749,5 +778,25 @@ struct PulsePlaceholder: ViewModifier {
             .opacity(on ? 0.85 : 0.45)
             .animation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: on)
             .onAppear { on = true }
+    }
+}
+
+/// A circular glass background, gated to the OS that supports it.
+///
+/// Kept as a modifier rather than inlined so the availability check exists ONCE. Repeating
+/// `if #available` at each call site is how one branch quietly drifts from the other.
+private struct GlassCircle: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.glassEffect(.regular.interactive(), in: Circle())
+        } else {
+            content
+                .background(.ultraThinMaterial, in: Circle())
+                // The hairline is what reads as a SURFACE. Without it a blurred disc on a
+                // dark ground is just a lighter patch.
+                .overlay(
+                    Circle().strokeBorder(VoiidColor.textPrimary.opacity(0.10), lineWidth: 1)
+                )
+        }
     }
 }

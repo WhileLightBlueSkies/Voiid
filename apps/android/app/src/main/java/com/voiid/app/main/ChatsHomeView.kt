@@ -740,7 +740,8 @@ private fun Header(
         ProfileAvatar(
             photoUrl = photoUrl,
             name = myName,
-            size = 38.dp,
+            // 40, matching the glyph buttons opposite it.
+            size = 40.dp,
             modifier = Modifier.softClickable(scale = 0.92f) { haptics.tap(); onOpenSettings() },
         )
 
@@ -797,9 +798,20 @@ private fun HeaderGlyph(
     description: String,
     onClick: () -> Unit,
 ) {
+    // 40dp, matching the avatar beside it — mismatched sizes on one row read as a
+    // misalignment rather than as a smaller element.
+    //
+    // NO GLASS EQUIVALENT ON ANDROID. iOS gets `.glassEffect` on 26 and `.ultraThinMaterial`
+    // below it; Compose has neither, and a backdrop blur here would need a RenderEffect pass
+    // that costs more than it is worth on mid-tier hardware for a 40dp button. A tinted disc
+    // with the same lit hairline is the honest equivalent — it reads as a raised control
+    // without pretending to a material the platform cannot draw.
     Box(
-        Modifier.size(38.dp).clip(CircleShape)
+        Modifier
+            .size(40.dp)
+            .clip(CircleShape)
             .background(VoiidColor.primary.copy(alpha = 0.10f))
+            .border(1.dp, VoiidColor.textPrimary.copy(alpha = 0.08f), CircleShape)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
