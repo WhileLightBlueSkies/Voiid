@@ -24,6 +24,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Message
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.CallMade
+import androidx.compose.material.icons.filled.CallReceived
+import androidx.compose.material.icons.filled.PhoneMissed
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Lock
@@ -101,6 +104,17 @@ fun ContactProfileView(
     var confirm by remember { mutableStateOf<String?>(null) }
     var notImplemented by remember { mutableStateOf<String?>(null) }
     var photoUrl by remember { mutableStateOf<String?>(null) }
+    // The four most recent calls with this contact, newest first — same source the transcript's
+    // call bubbles use, asked a different question. Four because the card is a summary, not a log.
+    var recentCalls by remember {
+        mutableStateOf<List<com.voiid.app.store.CallHistoryRow>>(emptyList())
+    }
+    LaunchedEffect(conversation.id) {
+        recentCalls = com.voiid.app.store.LocalStore
+            .callsForConversation(context, conversation.id)
+            .sortedByDescending { it.startedAt }
+            .take(4)
+    }
 
     // Real profile: full name + @username from the backend; the phone number from
     // the on-device contact match (the API never returns a phone — privacy).
@@ -336,6 +350,25 @@ fun ContactProfileView(
                 }
             }
 
+            // Calls
+            //
+            // The transcript already shows call bubbles, but a profile is where you go to answer
+            // "how often do we actually talk?" — and scrolling a whole chat to reconstruct that is
+            // not an answer. Same data, different question.
+            //
+            // HIDDEN ENTIRELY when there are none: an empty "Calls" card on a contact you have only
+            // ever texted is an affordance to nothing. Mirrors iOS `callHistoryCard`.
+            if (recentCalls.isNotEmpty()) {
+                ProfileCard(title = "Calls") {
+                    recentCalls.forEachIndexed { index, entry ->
+                        if (index > 0) {
+                            HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.4f))
+                        }
+                        CallHistoryRowView(entry)
+                    }
+                }
+            }
+
             // Encryption
             //
             // A claim of end-to-end encryption the user cannot verify is a claim they have to take
@@ -512,5 +545,83 @@ fun ToggleRow(icon: ImageVector, text: String, checked: Boolean, onChange: (Bool
         Icon(icon, null, tint = VoiidColor.textPrimary, modifier = Modifier.size(22.dp))
         Text(text, style = VoiidFont.rounded(16), color = VoiidColor.textPrimary, modifier = Modifier.weight(1f))
         VoiidToggle(checked = checked, onCheckedChange = onChange)
+    }
+}
+
+/**
+ * One call in the profile's Calls card.
+ *
+ * SAME ARROW LANGUAGE as the transcript's call bubble, so the two surfaces teach one vocabulary
+ * rather than each inventing its own: down-left for incoming, up-right for outgoing, and a distinct
+ * missed-call glyph in the error colour when an incoming call went unanswered.
+ *
+ * Mirrors iOS `callRow` / `callTitle`.
+ */
+@Composable
+private fun CallHistoryRowView(entry: com.voiid.app.store.CallHistoryRow) {
+    val incoming = entry.direction == "incoming"
+    val missed = incoming && entry.outcome != "answered"
+
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.md),
+    ) {
+        Icon(
+            when {
+                missed -> Icons.Default.PhoneMissed
+                incoming -> Icons.Default.CallReceived
+                else -> Icons.Default.CallMade
+            },
+            contentDescription = null,
+            tint = if (missed) VoiidColor.error else VoiidColor.textSecondary,
+            modifier = Modifier.size(20.dp),
+        )
+        Column(Modifier.weight(1f)) {
+            Text(
+                callTitleFor(entry),
+                style = VoiidFont.rounded(15),
+                color = if (missed) VoiidColor.error else VoiidColor.textPrimary,
+            )
+            Text(
+                // call_history stores SECONDS; the formatter wants millis.
+                android.text.format.DateFormat.format("d MMM yyyy", entry.startedAt * 1000L).toString(),
+                style = VoiidFont.rounded(11),
+                color = VoiidColor.textSecondary,
+            )
+        }
+        Icon(
+            if (entry.kind == "video") Icons.Default.Videocam else Icons.Default.Call,
+            contentDescription = null,
+            tint = VoiidColor.placeholder,
+            modifier = Modifier.size(14.dp),
+        )
+    }
+}
+
+/**
+ * "Incoming · 2:14" / "Missed" / "Call declined".
+ *
+ * The DURATION is what makes an answered call informative — "Incoming" alone says nothing about
+ * whether you spoke for ten seconds or an hour. Hours are only shown when there are hours, so the
+ * common case stays short.
+ */
+private fun callTitleFor(entry: com.voiid.app.store.CallHistoryRow): String {
+    val incoming = entry.direction == "incoming"
+    return when (entry.outcome) {
+        "answered" -> {
+            val ended = entry.endedAt ?: return if (incoming) "Incoming" else "Outgoing"
+            val secs = (ended - entry.startedAt).coerceAtLeast(0)
+            val mins = secs / 60
+            val duration = if (mins >= 60) {
+                String.format("%d:%02d:%02d", mins / 60, mins % 60, secs % 60)
+            } else {
+                String.format("%d:%02d", mins, secs % 60)
+            }
+            (if (incoming) "Incoming · " else "Outgoing · ") + duration
+        }
+        "declined" -> if (incoming) "Declined" else "Call declined"
+        "failed" -> "Call failed"
+        else -> if (incoming) "Missed" else "No answer"
     }
 }
