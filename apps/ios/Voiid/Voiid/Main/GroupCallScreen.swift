@@ -156,26 +156,38 @@ struct GroupCallScreen: View {
         }
     }
 
+    /// The grid FILLS the space it is given, rather than scrolling a fixed-aspect list.
+    ///
+    /// THE OLD LAYOUT COULD NOT FIT. Each tile had a hard `aspectRatio` inside a ScrollView,
+    /// so the grid's height was whatever the tiles summed to — never the height available.
+    /// With three people that left a band of dead space under the tiles; with six it
+    /// overflowed into a scroll, so half the call was off-screen and you had to drag to see
+    /// who was talking. A call grid should never scroll: everyone on the call is the content.
+    ///
+    /// Now the tile size is DERIVED from the container. Rows are computed from the column
+    /// count, and each tile takes an equal share of the height minus the gaps — so any
+    /// participant count fills the frame exactly, and nobody is below the fold.
     private var grid: some View {
-        let cols = Array(repeating: GridItem(.flexible(), spacing: 8), count: columnCount)
-        return ScrollView {
-            LazyVGrid(columns: cols, spacing: 8) {
+        GeometryReader { geo in
+            let count = max(call.participants.count, 1)
+            let cols = columnCount
+            let rows = Int(ceil(Double(count) / Double(cols)))
+            let spacing: CGFloat = 8
+            let tileW = (geo.size.width - CGFloat(cols - 1) * spacing) / CGFloat(cols)
+            let tileH = (geo.size.height - CGFloat(rows - 1) * spacing) / CGFloat(rows)
+
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.fixed(tileW), spacing: spacing), count: cols),
+                spacing: spacing
+            ) {
                 ForEach(call.participants) { p in
                     GroupCallTile(participant: p, isVideoCall: isVideo)
-                        .aspectRatio(tileAspect, contentMode: .fit)
+                        .frame(width: tileW, height: tileH)
                 }
             }
-            .padding(.horizontal, VoiidSpacing.lg)
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .center)
         }
-    }
-
-    private var tileAspect: CGFloat {
-        switch call.participants.count {
-        case 1:    return 0.75
-        case 2:    return 1.4    // wide, two stacked fill the screen
-        case 3, 4: return 0.85
-        default:   return 0.8
-        }
+        .padding(.horizontal, VoiidSpacing.md)
     }
 
     // MARK: - Controls
@@ -193,10 +205,16 @@ struct GroupCallScreen: View {
                 ctrl("arrow.triangle.2.circlepath.camera.fill", false) {
                     call.switchCamera()
                 }
-            } else {
-                ctrl(call.speakerOn ? "speaker.wave.2.fill" : "speaker.fill", call.speakerOn) {
-                    call.toggleSpeaker()
-                }
+            }
+
+            // SPEAKER ON EVERY GROUP CALL, voice AND video.
+            //
+            // It was voice-only, so a group VIDEO call had no audio control at all — you
+            // could not move it to the earpiece, and on a phone that had just been on speaker
+            // there was no way back. A video call needs to reach a headset exactly as much as
+            // a voice call does; this was simply missing.
+            ctrl(call.speakerOn ? "speaker.wave.2.fill" : "speaker.fill", call.speakerOn) {
+                call.toggleSpeaker()
             }
 
             Button {

@@ -20,6 +20,8 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeDown
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.Lock
@@ -146,9 +148,11 @@ fun GroupCallOverlay(state: GroupCallManager.GroupCallState) {
                 isVideo = isVideo,
                 muted = state.muted,
                 videoOn = state.videoEnabled,
+                speakerOn = state.speakerOn,
                 onMute = { haptics.tap(); GroupCallManager.toggleMute() },
                 onVideo = { haptics.tap(); GroupCallManager.toggleVideo() },
                 onFlip = { haptics.tap(); GroupCallManager.switchCamera() },
+                onSpeaker = { haptics.tap(); GroupCallManager.toggleSpeaker() },
                 onLeave = { haptics.rigid(); GroupCallManager.leave() },
             )
             Spacer(Modifier.height(40.dp))
@@ -219,14 +223,30 @@ private fun ParticipantGrid(participants: List<GroupCallManager.Participant>) {
             }
         }
 
-        else -> LazyVerticalGrid(
-            columns = GridCells.Fixed(if (n > 9) 3 else 2),
-            modifier = Modifier.fillMaxSize(),
-            horizontalArrangement = Arrangement.spacedBy(TILE_GAP),
-            verticalArrangement = Arrangement.spacedBy(TILE_GAP),
-        ) {
-            items(participants, key = { it.identity }) { p ->
-                ParticipantTile(p, Modifier.fillMaxWidth().aspectRatio(0.85f))
+        // 5+ : the same weighted rows as above, NOT a scrolling grid.
+        //
+        // A CALL GRID SHOULD NEVER SCROLL. The LazyVerticalGrid gave every tile a fixed
+        // 0.85 aspect, so past four people the grid was taller than the screen and half the
+        // call sat below the fold — you had to drag to see who was talking, on the one screen
+        // where everyone present IS the content. Weighted rows shrink the tiles instead, so
+        // any participant count fills the frame exactly. Mirrors the iOS fix.
+        else -> {
+            val cols = if (n > 9) 3 else 2
+            Column(
+                Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(TILE_GAP),
+            ) {
+                participants.chunked(cols).forEach { rowItems ->
+                    Row(
+                        Modifier.fillMaxWidth().weight(1f),
+                        horizontalArrangement = Arrangement.spacedBy(TILE_GAP),
+                    ) {
+                        rowItems.forEach { p -> ParticipantTile(p, Modifier.weight(1f).fillMaxSize()) }
+                        // Pad a short final row so its tiles keep the same width as the rows
+                        // above rather than stretching to fill.
+                        repeat(cols - rowItems.size) { Spacer(Modifier.weight(1f)) }
+                    }
+                }
             }
         }
     }
@@ -328,15 +348,25 @@ private fun GroupCallControls(
     isVideo: Boolean,
     muted: Boolean,
     videoOn: Boolean,
+    speakerOn: Boolean,
     onMute: () -> Unit,
     onVideo: () -> Unit,
     onFlip: () -> Unit,
+    onSpeaker: () -> Unit,
     onLeave: () -> Unit,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(24.dp)) {
         GroupCtrl(if (muted) Icons.Default.MicOff else Icons.Default.Mic, muted, onMute)
         GroupCtrl(if (videoOn) Icons.Default.Videocam else Icons.Default.VideocamOff, !videoOn, onVideo)
         if (isVideo) GroupCtrl(Icons.Default.Cameraswitch, false, onFlip)
+        // SPEAKER ON EVERY GROUP CALL, voice AND video. Group calls had no audio control at
+        // all: a conference that started on the earpiece could not be moved to the speaker,
+        // and a video call had no way back off it. Mirrors iOS.
+        GroupCtrl(
+            if (speakerOn) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeDown,
+            speakerOn,
+            onSpeaker,
+        )
         Box(
             Modifier.size(64.dp).clip(CircleShape).background(VoiidColor.error).softClickable(onClick = onLeave),
             contentAlignment = Alignment.Center,

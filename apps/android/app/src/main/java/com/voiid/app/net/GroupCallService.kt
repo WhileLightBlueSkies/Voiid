@@ -1,6 +1,9 @@
 package com.voiid.app.net
 
 import android.content.Context
+import android.media.AudioManager
+import android.media.AudioDeviceInfo
+import android.os.Build
 import android.util.Log
 import com.voiid.app.main.CallKind
 import io.livekit.android.LiveKit
@@ -77,6 +80,9 @@ object GroupCallManager {
         val phase: Phase,
         val participants: List<Participant> = emptyList(),
         val muted: Boolean = false,
+        /** Speaker vs earpiece. Group calls default to SPEAKER — a conference held to the
+         *  ear is not how anyone uses one, and a video call has the phone on a table. */
+        val speakerOn: Boolean = true,
         val videoEnabled: Boolean = false,
         val connectedAtMs: Long? = null,
         /** Non-null when the call could not start/continue — shown to the user, then dismissed. */
@@ -230,6 +236,13 @@ object GroupCallManager {
                 .onFailure { Log.e("VOIID", "group call: camera publish failed", it) }
         }
 
+        // ASSERT THE ROUTE ON JOIN. The state defaults to speakerOn = true, but a default is
+        // only a claim until something applies it — without this the call would report
+        // "speaker" while the audio came out of the earpiece, and the first tap of the new
+        // button would appear to do nothing (it would toggle to `false`, which is where the
+        // hardware already was).
+        applySpeaker(_state.value?.speakerOn ?: true)
+
         _state.value = _state.value?.copy(
             phase = Phase.CONNECTED,
             connectedAtMs = System.currentTimeMillis(),
@@ -375,6 +388,47 @@ object GroupCallManager {
             runCatching { r.localParticipant.setMicrophoneEnabled(!target) }
                 .onFailure { Log.e("VOIID", "group call: toggle mute failed", it) }
             publishSnapshot()
+        }
+    }
+
+    /**
+     * Speaker on/off for a group call.
+     *
+     * GROUP CALLS HAD NO AUDIO CONTROL AT ALL — neither voice nor video. A conference that
+     * started on the earpiece could not be moved to the speaker, and a video call had no way
+     * back off it. LiveKit owns the media, but the ROUTE is still AudioManager's, so this is
+     * the same call the 1:1 path makes.
+     */
+    fun toggleSpeaker() {
+        val on = !(_state.value?.speakerOn ?: true)
+        applySpeaker(on)
+        _state.value = _state.value?.copy(speakerOn = on)
+    }
+
+    /** Assert the route. Called on join too, so the default actually takes effect. */
+    private fun applySpeaker(on: Boolean) {
+        val ctx = appContext ?: return
+        val am = ctx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        runCatching {
+            am.mode = AudioManager.MODE_IN_COMMUNICATION
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val devices = am.availableCommunicationDevices
+                // A connected headset WINS over the speaker flag — the user plugged it in for
+                // a reason, and forcing the speaker over it would be the wrong default.
+                val preferred = devices.firstOrNull {
+                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                        it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                        it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                        it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES
+                } ?: devices.firstOrNull {
+                    it.type == if (on) AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                               else AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+                }
+                preferred?.let { am.setCommunicationDevice(it) }
+            } else {
+                @Suppress("DEPRECATION")
+                am.isSpeakerphoneOn = on
+            }
         }
     }
 
