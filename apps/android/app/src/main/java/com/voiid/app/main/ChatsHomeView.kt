@@ -75,6 +75,11 @@ import androidx.compose.ui.text.style.TextAlign
 import com.voiid.app.ui.theme.ChatLayoutPreference
 import com.voiid.app.ui.theme.ChatLayout
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PersonAdd
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -146,6 +151,8 @@ fun ChatsHomeView(
     var deleteTarget by remember { mutableStateOf<VConversation?>(null) }
     var callTarget by remember { mutableStateOf<VConversation?>(null) }
     var showNewChat by remember { mutableStateOf(false) }
+    /** Set by the menu so the sheet knows whether to build a GROUP, independent of the tab. */
+    var forceGroup by remember { mutableStateOf(false) }
     var showFindByUsername by remember { mutableStateOf(false) }
     var showRequests by remember { mutableStateOf(false) }
     /** Inbound requests waiting to be accepted. Zero hides the banner entirely rather than
@@ -190,7 +197,11 @@ fun ChatsHomeView(
             myName = session.profile.fullName,
             search = search,
             onSearchChange = { search = it },
-            onNewChat = { showNewChat = true },
+            onNewChat = { forceGroup = false; showNewChat = true },
+            // Set on OPEN, both ways. Resetting on close would mean covering four separate
+            // dismiss paths (dismiss, two onClose, two onOpen) and one of them will always be
+            // missed — a stale `true` would then turn the next "New chat" into a group.
+            onNewGroup = { forceGroup = true; showNewChat = true },
             onFindByUsername = { showFindByUsername = true },
             onOpenSettings = { showSettings = true },
         )
@@ -418,8 +429,11 @@ fun ChatsHomeView(
             onDismissRequest = { showNewChat = false },
             properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
         ) {
-            // On the GROUPS tab the "+" builds a real E2EE (MLS) group; on CHATS it starts a 1:1.
-            if (tab == ChatTab.GROUPS) {
+            // WHICH sheet is now explicit, not inferred from the tab. The old rule — "+ means
+            // group on the Groups tab, 1:1 on Chats" — made one control mean two things
+            // depending on a selection two rows away. The menu names both, so `forceGroup`
+            // carries the choice and the tab is only the fallback for any older entry point.
+            if (forceGroup || tab == ChatTab.GROUPS) {
                 NewGroupScreen(
                     chat = chat,
                     onClose = { showNewChat = false },
@@ -718,6 +732,7 @@ private fun Header(
     search: String,
     onSearchChange: (String) -> Unit,
     onNewChat: () -> Unit,
+    onNewGroup: () -> Unit,
     onFindByUsername: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
@@ -783,11 +798,42 @@ private fun Header(
             }
         }
 
-        // Two distinct ways to start a chat: browse people you already have, or reach a
-        // stranger by the handle they gave you. Separate affordances, because folding the
-        // second into the contact list would put strangers among your contacts.
-        HeaderGlyph(Icons.Default.AlternateEmail, "Find by username") { haptics.tap(); onFindByUsername() }
-        HeaderGlyph(Icons.Default.Create, "New chat") { haptics.tap(); onNewChat() }
+        // ONE menu, not two glyphs. Every way to start a conversation lives in one list, and
+        // an ellipsis promises exactly what it delivers: more options. Mirrors iOS.
+        Box {
+            var menuOpen by remember { mutableStateOf(false) }
+            HeaderGlyph(Icons.Default.MoreVert, "More") { haptics.tap(); menuOpen = true }
+            DropdownMenu(
+                expanded = menuOpen,
+                onDismissRequest = { menuOpen = false },
+                containerColor = VoiidColor.surfaceCard,
+            ) {
+                DropdownMenuItem(
+                    text = { Text("New chat", style = VoiidFont.rounded(15), color = VoiidColor.textPrimary) },
+                    onClick = { menuOpen = false; haptics.tap(); onNewChat() },
+                    leadingIcon = { Icon(Icons.Default.PersonAdd, null, tint = VoiidColor.textPrimary) },
+                )
+                DropdownMenuItem(
+                    text = { Text("Find by username", style = VoiidFont.rounded(15), color = VoiidColor.textPrimary) },
+                    onClick = { menuOpen = false; haptics.tap(); onFindByUsername() },
+                    leadingIcon = { Icon(Icons.Default.AlternateEmail, null, tint = VoiidColor.textPrimary) },
+                )
+                DropdownMenuItem(
+                    text = { Text("New group", style = VoiidFont.rounded(15), color = VoiidColor.textPrimary) },
+                    onClick = { menuOpen = false; haptics.tap(); onNewGroup() },
+                    leadingIcon = { Icon(Icons.Default.Groups, null, tint = VoiidColor.textPrimary) },
+                )
+                HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.4f))
+                // SETTINGS IS HERE TOO, not only behind the avatar. Tapping your own face to
+                // reach app settings is a convention people learn, not one they guess — this
+                // is the discoverable path, and the avatar stays as the shortcut.
+                DropdownMenuItem(
+                    text = { Text("Settings", style = VoiidFont.rounded(15), color = VoiidColor.textPrimary) },
+                    onClick = { menuOpen = false; haptics.tap(); onOpenSettings() },
+                    leadingIcon = { Icon(Icons.Default.Settings, null, tint = VoiidColor.textPrimary) },
+                )
+            }
+        }
     }
 }
 

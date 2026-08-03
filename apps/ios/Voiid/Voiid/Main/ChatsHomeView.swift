@@ -372,32 +372,36 @@ struct ChatsHomeView: View {
         .padding(.bottom, VoiidSpacing.xs)
     }
 
-    /// The trailing action. Extracted so the header row and nothing else owns it.
-    @ViewBuilder
+    /// ONE menu, not a button whose meaning changes with the tab.
+    ///
+    /// It used to be a compose glyph on Chats and a people glyph on Groups, each doing a
+    /// different thing — so the control under your thumb meant something different depending
+    /// on a tab selection two rows up. Now every way to start a conversation lives in one
+    /// list, and the glyph is a plain ellipsis, which promises exactly what it delivers:
+    /// more options.
     private var composeButton: some View {
-        if tab == .groups {
+        Menu {
+            Button { Haptics.tap(); showNewChat = true } label: {
+                Label("New chat", systemImage: "person.crop.circle")
+            }
+            Button { Haptics.tap(); showFindByUsername = true } label: {
+                Label("Find by username", systemImage: "at")
+            }
             Button { Haptics.tap(); showNewGroup = true } label: {
-                headerGlyph("person.3.fill")
+                Label("New group", systemImage: "person.3")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("New group")
-        } else {
-            // A MENU, not a single action: there are two distinct ways to start a chat —
-            // browse people you already have, or reach a stranger by the handle they gave
-            // you. Folding the second into the contact list would put strangers among your
-            // contacts.
-            Menu {
-                Button { Haptics.tap(); showNewChat = true } label: {
-                    Label("From contacts", systemImage: "person.crop.circle")
-                }
-                Button { Haptics.tap(); showFindByUsername = true } label: {
-                    Label("Find by username", systemImage: "at")
-                }
-            } label: {
-                headerGlyph("square.and.pencil")
+            // SETTINGS IS HERE TOO, not only behind the avatar. Tapping your own face to
+            // reach app settings is a convention people learn, not one they guess — this
+            // is the discoverable path, and the avatar stays as the shortcut for anyone
+            // who already knows it.
+            Divider()
+            Button { Haptics.tap(); showSettings = true } label: {
+                Label("Settings", systemImage: "gearshape")
             }
-            .accessibilityLabel("New chat")
+        } label: {
+            headerGlyph("ellipsis")
         }
+        .accessibilityLabel("More")
     }
 
     /// A circular header button in the system's glass material.
