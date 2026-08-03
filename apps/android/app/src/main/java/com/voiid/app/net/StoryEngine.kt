@@ -42,6 +42,35 @@ class StoryEngine private constructor(context: Context) {
     private val e2e = E2EManager.get(appContext)
     private val chat = ChatEngine.get(appContext)
     private val service = StoryService(tokens)
+    private val prefs = appContext.getSharedPreferences("voiid_story_engine", Context.MODE_PRIVATE)
+
+    /**
+     * Story ids whose key ciphertext could NOT be decrypted. An Olm message is decrypt-once: a
+     * `type=1` envelope encrypted against a session we no longer hold can never be recovered, no
+     * matter how many times we re-fetch it. Recovery comes from the author RE-POSTING, never from
+     * retrying a dead id.
+     *
+     * This mirrors the tombstone discipline `ChatEngine.sync` applies to 1:1 messages (see its
+     * `controlSeenIds` union and the "no matching session cascade" comment). Stories had no such
+     * guard, so every `includeDelivered` pass re-fetched the same dead envelope and re-failed it
+     * — and because that pass only runs while the received-feed is empty, ONE undecryptable story
+     * pinned the feed in permanent recovery mode, re-failing on every refresh forever.
+     */
+    /**
+     * Deliberately NEVER cleared. It is tempting to reset this after a fix that widens what we
+     * can accept, so previously-rejected stories get another chance — but that is actively
+     * harmful: an Olm ciphertext is DECRYPT-ONCE. A story that decrypted and was then rejected
+     * downstream has already consumed its one-time key, so re-fetching it decrypts to nothing
+     * and the retry merely burns session state (the "no matching session cascade" ChatEngine.sync
+     * warns about). Recovery for those stories comes from the author RE-POSTING, never from
+     * retrying a dead id.
+     */
+    private fun deadStoryIds(): Set<String> =
+        prefs.getStringSet("undecryptable", emptySet()) ?: emptySet()
+    private fun markStoryDead(storyId: String) {
+        val cur = HashSet(deadStoryIds()); cur.add(storyId)
+        prefs.edit().putStringSet("undecryptable", cur).apply()
+    }
 
     /** One decrypted, validated story returned from a feed sync (already persisted locally). */
     data class SyncResult(val newStories: List<Story>)
@@ -124,11 +153,23 @@ class StoryEngine private constructor(context: Context) {
         UserDirectory.ready(appContext)
         val live = runCatching { StoryLocalStore.liveStories(appContext) }.getOrDefault(emptyList())
         val existing = live.map { it.id }.toHashSet()
-        // Rows that came from the SERVER. A failed post leaves an optimistic "pending-<uuid>"
-        // row behind (StoriesStore.post) which lives for 24h — and because it made the local
-        // feed look non-empty, it silently disabled the include_delivered recovery below for a
-        // whole day. One failed post must not cost you every recoverable story.
-        val serverBacked = live.count { !it.id.startsWith("pending-") }
+        // Rows that came from the SERVER **and from someone else**. A failed post leaves an
+        // optimistic "pending-<uuid>" row behind (StoriesStore.post) which lives for 24h — and
+        // because it made the local feed look non-empty, it silently disabled the
+        // include_delivered recovery below for a whole day. One failed post must not cost you
+        // every recoverable story.
+        //
+        // `isMine` is excluded for the same reason iOS excludes it (StoryEngine.swift): YOUR OWN
+        // posted story also makes the feed non-empty, so the moment you posted anything the
+        // recovery pass turned off and a peer's story that was already marked delivered — the
+        // common case on Android, where the pre-fix async-directory bug dropped them — became
+        // permanently unrecoverable. That is the "Android can't see anyone else's moment" bug:
+        // the keys were delivered once, dropped, and never re-fetched. Recovery must key off
+        // stories RECEIVED FROM OTHERS only.
+        val serverBacked = live.count { !it.id.startsWith("pending-") && !it.isMine }
+        // Envelopes already proven undecryptable. Unioned into the dedup set below so a dead id
+        // is never re-fetched and re-failed, and so it cannot hold the feed in recovery mode.
+        val dead = deadStoryIds()
         // RECOVERY: if we hold no live stories at all, re-fetch with include_delivered so a
         // device whose keys were already marked delivered — a lost local DB, OR a story dropped
         // by the pre-fix async-directory bug — still gets its live feed back. The normal
@@ -150,10 +191,24 @@ class StoryEngine private constructor(context: Context) {
         val reachable = reachableAuthors()
         val fresh = mutableListOf<Story>()
         for (row in rows) {
-            if (existing.contains(row.story_id)) continue    // decrypt-once dedup
+            // decrypt-once dedup: already stored, OR already proven undecryptable.
+            if (existing.contains(row.story_id) || dead.contains(row.story_id)) continue
             val plain = chat.decryptBroadcast(row.ciphertext, row.author_id, row.author_device_id)
+            // Tombstone on the DECRYPT ATTEMPT, whichever way it went — not just on failure.
+            //
+            // An Olm ciphertext is decrypt-once: a successful decrypt consumes the one-time key
+            // and advances the ratchet, so the SAME row can never be opened again. If we only
+            // tombstoned failures, a story that decrypted fine but was rejected by validate()
+            // below stayed un-tombstoned and got re-fetched on the next pass — where it now
+            // failed to decrypt, because we ourselves had already consumed it. That turns one
+            // recoverable validation bug into a permanent decrypt failure and burns session
+            // state on every retry.
+            //
+            // Marking here makes the rule exact: we attempt each envelope at most once, and
+            // recovery is always the author re-posting.
+            markStoryDead(row.story_id)
             if (plain == null) {
-                android.util.Log.w("VOIID", "⚠️ story key undecryptable id=${row.story_id}")
+                android.util.Log.w("VOIID", "⚠️ story key undecryptable id=${row.story_id} — tombstoned, will not retry")
                 continue
             }
             // Logged, not silent: a wire-shape mismatch here (the iOS→Android direction of the
@@ -186,7 +241,10 @@ class StoryEngine private constructor(context: Context) {
         val peers = convs.asSequence()
             .filter { it.type == com.voiid.app.model.ConversationType.DIRECT }
             .mapNotNull { it.peerUserId }
-        return (peers + UserDirectory.knownUserIds()).filter { it.isNotEmpty() }.toSet()
+        // Lowercased so the membership probe in validate() is case-insensitive: ids reaching us
+        // from an iOS sender are uppercase, while these local ones are not.
+        return (peers + UserDirectory.knownUserIds())
+            .filter { it.isNotEmpty() }.map { it.lowercase() }.toSet()
     }
 
     /**
@@ -196,11 +254,24 @@ class StoryEngine private constructor(context: Context) {
     private fun validate(env: StoryEnvelope, row: StoryService.FeedStory, myId: String?, reachable: Set<String>): Story? {
         // Each drop is LOGGED. A silent `return null` here made "the story never arrived"
         // indistinguishable from "it was rejected by rule 1/2/3", with nothing in logcat.
-        if (env.story_id != row.story_id) {                                 // 1. id must bind
+        // UUIDs are compared CASE-INSENSITIVELY. A UUID's canonical form is case-insensitive by
+        // spec (RFC 4122 §3), and the two sides of this comparison come from different places
+        // with different conventions: iOS mints ids with `UUID().uuidString`, which is
+        // UPPERCASE, and that exact string is what rides inside the sealed envelope — while the
+        // feed row comes back from a Postgres `uuid` column, which normalises to LOWERCASE on
+        // storage. The server's own validation uses a /i regex, so it happily accepts either.
+        //
+        // Comparing literally therefore dropped EVERY story posted from iOS as a forgery:
+        //   envelope 0E6B1DEC-…  vs  row 0e6b1dec-…
+        // Same id, different case. That is the "Android can't see iOS moments" bug. The check
+        // still binds the envelope to the row — it just no longer treats letter case as a
+        // mismatch. (Android is unaffected in the other direction: java.util.UUID renders
+        // lowercase, which is why iOS→Android failed while Android→iOS did not.)
+        if (!env.story_id.equals(row.story_id, ignoreCase = true)) {        // 1. id must bind
             android.util.Log.w("VOIID", "🚫 story DROPPED id=${row.story_id}: envelope story_id mismatch (${env.story_id})")
             return null
         }
-        if (env.author_id != row.author_id) {                               // 2. no reattribution
+        if (!env.author_id.equals(row.author_id, ignoreCase = true)) {      // 2. no reattribution
             android.util.Log.w("VOIID", "🚫 story DROPPED id=${row.story_id}: author mismatch (${env.author_id} vs ${row.author_id})")
             return null
         }
@@ -216,7 +287,11 @@ class StoryEngine private constructor(context: Context) {
         // 5. author must be a known contact (in the local directory) and not ourselves-as-stranger.
         //    Our OWN stories are always allowed; a story from someone we have never seen is dropped
         //    silently so strangers can't push media into the feed.
-        val isMine = env.author_id == myId
+        // Case-insensitive for the same reason as the id checks above: an iOS-minted author id
+        // arrives uppercase inside the envelope while everything local (our own token, the
+        // directory, the conversation peers) is lowercase. Comparing literally would make our
+        // OWN story from a linked iPhone look like a stranger's.
+        val isMine = env.author_id.equals(myId, ignoreCase = true)
         // Author must be someone we actually know. Note: we only reach here AFTER successfully
         // decrypting the broadcast key (decryptBroadcast != null), which itself REQUIRES an
         // established E2E session with the author — a stranger can't forge that. So the
@@ -232,7 +307,10 @@ class StoryEngine private constructor(context: Context) {
         // a fresh install or right after sign-in — and the feed is deliver-once, so discarding
         // here loses a real contact's moment permanently. That was the iOS→Android
         // "moments never arrive" bug. An empty set means "we don't know yet", not "stranger".
-        if (!isMine && reachable.isNotEmpty() && env.author_id !in reachable) {
+        // `reachable` is normalised to lowercase by reachableAuthors(), so the probe must be too
+        // — otherwise an uppercase iOS author id misses the set and the story is dropped as a
+        // stranger's even though that person is a contact.
+        if (!isMine && reachable.isNotEmpty() && env.author_id.lowercase() !in reachable) {
             android.util.Log.w("VOIID", "🚫 story DROPPED id=${env.story_id}: author=${env.author_id} is neither a contact nor someone you have a chat with")
             return null
         }
@@ -240,7 +318,11 @@ class StoryEngine private constructor(context: Context) {
             android.util.Log.i("VOIID", "story ACCEPTED id=${env.story_id} with a cold reachability cache — directory not yet synced")
         }
         return Story(
-            id = env.story_id, authorId = env.author_id, isMine = isMine,
+            // Store the SERVER's rendering of both ids, not the envelope's. The server value is
+            // the canonical (lowercase) one that every other local table, the dedup set and the
+            // delete/receipt endpoints key on — persisting iOS's uppercase here would split the
+            // same story across two spellings.
+            id = row.story_id, authorId = row.author_id, isMine = isMine,
             createdAt = createdAt, expiresAt = expiresAt, media = env.media,
             // Coalesce the now-nullable wire fields to the envelope's declared defaults: an
             // absent or explicitly-null caption is a normal empty value, not a dropped story.
@@ -317,11 +399,32 @@ class StoryEngine private constructor(context: Context) {
         if (!receiptsEnabled) return emptySet()   // discarded on decrypt: we don't even store them
         val changed = HashSet<String>()
         for (row in rows) {
-            val plain = chat.decryptStoryReceipt(row.ciphertext) ?: continue
+            // The server does NOT name the viewer (story_receipts has no viewer_user_id column),
+            // so we hand the decryptor the audience we saved at post time — those are the only
+            // people who could have produced this receipt, and it needs them to rehydrate the
+            // right sessions from disk. Unlike iOS we do NOT skip on an empty audience: a story
+            // posted before saveAudience existed (or from a linked device) still has receipts
+            // worth attributing, and the decryptor falls back to scanning cached sessions.
+            val audience = runCatching { StoryLocalStore.audience(appContext, row.story_id) }
+                .getOrDefault(emptyList())
+            val plain = chat.decryptStoryReceipt(row.ciphertext, audience)
+            if (plain == null) {
+                android.util.Log.w("VOIID", "⚠️ view receipt undecryptable story=${row.story_id} (audience=${audience.size})")
+                continue
+            }
             val receipt = runCatching { ApiClient.json.decodeFromString(StoryViewReceipt.serializer(), plain) }.getOrNull()
                 ?: continue
+            // Bind the receipt to the row the server routed it under, exactly as iOS does —
+            // otherwise a peer could record a view against a story that isn't the one they saw.
+            if (receipt.story_id != row.story_id) {
+                android.util.Log.w("VOIID", "🚫 view receipt DROPPED: story_id mismatch (${receipt.story_id} vs ${row.story_id})")
+                continue
+            }
             StoryLocalStore.recordView(appContext, receipt.story_id, receipt.viewer_id, receipt.viewed_at)
             changed.add(receipt.story_id)
+        }
+        if (rows.isNotEmpty()) {
+            android.util.Log.i("VOIID", "story receipts: ${rows.size} row(s), ${changed.size} view(s) recorded")
         }
         return changed
     }
@@ -329,14 +432,34 @@ class StoryEngine private constructor(context: Context) {
     // MARK: - Delete / sweep
 
     /** Delete a story we authored: R2 object + rows server-side, then local. NOT a security
-     *  operation — anyone who already downloaded keeps the media. */
+     *  operation — anyone who already downloaded keeps the media.
+     *
+     *  Throws if the SERVER delete failed. It used to be swallowed by a bare `runCatching`, which
+     *  made an offline delete look successful while the story stayed live for every recipient —
+     *  and, because the row was only gone locally, the include_delivered recovery pass pulled it
+     *  straight back. A 404 is treated as success: the row is already gone, which is the outcome
+     *  we wanted. */
     suspend fun deleteStory(storyId: String) {
-        runCatching { service.deleteStory(storyId) }
+        try {
+            service.deleteStory(storyId)
+        } catch (e: ApiError.Http) {
+            if (e.status != 404) throw e
+        }
         StoryLocalStore.deleteStory(appContext, storyId)
     }
 
     /** Foreground sweep of expired local rows + their cached plaintext files. */
-    suspend fun sweep() { StoryLocalStore.sweepExpired(appContext) }
+    suspend fun sweep() {
+        StoryLocalStore.sweepExpired(appContext)
+        // Bound the tombstone set. Stories live 24h, so an id the server has long since reaped
+        // can never come back and no longer needs suppressing — without this the set would grow
+        // without limit for the life of the install. The cap is generous (far more than a day's
+        // worth of undecryptable envelopes) and only trims when clearly exceeded.
+        val dead = deadStoryIds()
+        if (dead.size > 500) {
+            prefs.edit().putStringSet("undecryptable", dead.toList().takeLast(250).toSet()).apply()
+        }
+    }
 
     // MARK: - helpers
 

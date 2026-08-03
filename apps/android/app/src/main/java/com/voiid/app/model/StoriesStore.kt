@@ -105,7 +105,16 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
                 .onFailure { loadError = "Couldn't refresh moments." }
             loadLocal()
             runCatching { deliveredCounts.putAll(engine.mineCounts()) }
+            // Push the newly-attributed views into the map the viewers sheet actually renders
+            // from. fetchReceipts persisted them and returned the affected story ids, but
+            // nothing re-read `viewersByStory` — so a sheet that was already open (or one
+            // opened before this refresh landed) kept showing "No views yet" even though the
+            // receipts were sitting in the local store. loadViewers() is the only writer.
             runCatching { engine.fetchReceipts(receiptsEnabled) }
+                .getOrDefault(emptySet())
+                .forEach { storyId ->
+                    viewersByStory[storyId] = StoryLocalStore.viewers(appContext, storyId)
+                }
         }
     }
 
@@ -256,9 +265,15 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
 
     // MARK: - Delete
 
+    /** Delete one of OUR stories. The engine now throws when the SERVER delete fails, so the
+     *  local row is kept and the user is told — silently dropping it locally would leave the
+     *  moment visible to everyone else while looking deleted here. */
     fun delete(storyId: String, onDone: () -> Unit = {}) {
         viewModelScope.launch {
-            engine.deleteStory(storyId)
+            val ok = runCatching { engine.deleteStory(storyId) }
+                .onFailure { android.util.Log.w("VOIID", "story delete failed id=$storyId", it) }
+                .isSuccess
+            if (!ok) loadError = "Couldn't delete that moment."
             loadLocal()
             onDone()
         }

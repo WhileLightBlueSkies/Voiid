@@ -776,8 +776,27 @@ class ChatEngine private constructor(context: Context) {
      */
     suspend fun decryptBroadcast(ciphertextB64: String, senderUserId: String, senderDeviceId: String?): String? =
         syncLock(senderUserId).withLock {
-            val wire = decodeWire(ciphertextB64) ?: return@withLock null
-            runCatching { decryptInbound(wire, senderUserId, senderDeviceId) }.getOrNull()
+            val wire = decodeWire(ciphertextB64)
+            if (wire == null) {
+                // Distinct from a crypto failure: the base64/JSON wrapper itself was malformed,
+                // which points at the SENDER's encoding rather than at our session state.
+                android.util.Log.w("VOIID", "story key: wire decode failed from=$senderUserId device=$senderDeviceId")
+                return@withLock null
+            }
+            // The exception was swallowed by a bare getOrNull(), leaving "⚠️ story key
+            // undecryptable" as the only trace — which cannot distinguish "no session with that
+            // device" from "session exists but the ratchet rejected it". Both are real causes
+            // with completely different fixes, so log the reason and the session count.
+            runCatching { decryptInbound(wire, senderUserId, senderDeviceId) }
+                .onFailure { e ->
+                    val known = senderDeviceId?.let { candidateSessions(senderUserId, it).size } ?: -1
+                    android.util.Log.w(
+                        "VOIID",
+                        "story key decrypt FAILED from=$senderUserId device=$senderDeviceId " +
+                            "type=${wire.msgType} sessions=$known: ${e.message}",
+                    )
+                }
+                .getOrNull()
         }
 
     /**
@@ -789,12 +808,30 @@ class ChatEngine private constructor(context: Context) {
      * is dropped — acceptable because receipts are opt-in and best-effort, and the session the
      * author minted while fanning the story out is already in memory for exactly these viewers.
      */
-    fun decryptStoryReceipt(ciphertextB64: String): String? {
+    fun decryptStoryReceipt(ciphertextB64: String, audienceUserIds: List<String> = emptyList()): String? {
         val wire = decodeWire(ciphertextB64) ?: return null
+        // Load the audience's sessions from DISK before scanning. `sessions` is a LAZY cache
+        // populated only by candidateSessions() — so on a cold start (the usual case when you
+        // open Moments to check your views) it is EMPTY, every receipt failed to decrypt, and
+        // the viewer list was permanently blank. Receipts are deliver-once, so each miss was
+        // unrecoverable. iOS passes the audience for exactly this reason; Android scanned only
+        // whatever happened to be in memory. Restoring by device is what makes the sessions the
+        // author minted while fanning the story out available to match against.
+        for (uid in audienceUserIds) {
+            val devices = runCatching { deviceIdsWithSessions(uid) }.getOrDefault(emptyList())
+            for (deviceId in devices) candidateSessions(uid, deviceId)
+        }
         for (list in sessions.values) for (s in list) {
             runCatching { s.decrypt(wire) }.getOrNull()?.let { return it.decodeToString() }
         }
         return null
+    }
+
+    /** Every device id we hold a PERSISTED session for with [userId], read straight from prefs.
+     *  Lets the receipt path rehydrate sessions it has never touched this process. */
+    private fun deviceIdsWithSessions(userId: String): List<String> {
+        val prefix = "sess::$userId::"
+        return prefs.all.keys.filter { it.startsWith(prefix) }.map { it.removePrefix(prefix) }
     }
 
     /**
