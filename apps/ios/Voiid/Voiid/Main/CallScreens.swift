@@ -114,6 +114,21 @@ struct CallScreen: View {
     @State private var seconds = 0
     @State private var muted = false
     @State private var speaker = false
+    /// The peer's real photo, resolved from the directory. `request.photoName` is a bundled
+    /// asset name from the dummy era and cannot name a real person's avatar.
+    private var peerPhotoURL: String? {
+        request.peerUserId.flatMap { UserDirectory.shared.photoURL($0) }
+    }
+
+    /// True once the call is actually up — the pulse is for RINGING, not for a live call.
+    private var isConnected: Bool {
+        call.active?.state == .connected
+    }
+
+    /// Drives the ringing pulse. A plain Bool toggled once in `onAppear` — a repeating
+    /// animation needs a value that CHANGES to start, and `true` on appear is the cheapest
+    /// one that cannot get out of sync with anything else.
+    @State private var ringPulse = false
     @State private var videoOn = true
     @State private var timer: Timer?
 
@@ -322,8 +337,28 @@ struct CallScreen: View {
         if request.isGroup {
             participantGrid(video: false)
         } else {
-            VoiidAvatar(size: 160, imageName: request.photoName).clipShape(Circle())
-                .overlay(Circle().stroke(VoiidColor.accent, lineWidth: 3))
+            // THE PEER'S REAL FACE, not the wordmark. `VoiidAvatar(imageName:)` is a
+            // BUNDLED-ASSET lookup left over from dummy data, so the one screen where knowing
+            // who you are talking to matters most showed a logo for every real contact.
+            // `ProfileAvatarButton` resolves the photo through the shared cache and falls
+            // back to their initials, which is at least a person.
+            ZStack {
+                // A slow pulse behind the avatar while the call is not yet connected. A
+                // ringing call is a live event and a completely static screen reads as a
+                // screenshot — but this is on screen while the phone is buzzing, so it is
+                // deliberately gentle rather than attention-seeking.
+                if !isConnected {
+                    Circle()
+                        .fill(.white.opacity(0.10))
+                        .frame(width: 190, height: 190)
+                        .scaleEffect(ringPulse ? 1.06 : 0.94)
+                        .animation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true),
+                                   value: ringPulse)
+                }
+                ProfileAvatarButton(photoURL: peerPhotoURL, name: request.title, size: 160)
+                    .overlay(Circle().stroke(VoiidColor.accent, lineWidth: 3))
+            }
+            .onAppear { ringPulse = true }
         }
     }
 
@@ -332,22 +367,40 @@ struct CallScreen: View {
         if request.isGroup {
             participantGrid(video: true)
         } else {
-            ZStack(alignment: .bottomTrailing) {
+            ZStack(alignment: .topTrailing) {
                 Color.clear
                 // Self preview: real local camera for a live 1:1 call, else placeholder.
                 Group {
                     if isRealOneToOne, call.videoEnabled, let localTrack = call.localVideoTrack {
                         RTCVideoView(track: localTrack, mirror: true)
                     } else {
-                        RoundedRectangle(cornerRadius: VoiidRadius.lg)
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
                             .fill(VoiidColor.primary.opacity(0.5))
                             .overlay(Image(systemName: "video.slash.fill")
-                                .font(.system(size: 30)).foregroundColor(.white.opacity(0.8)))
+                                .font(.system(size: 26)).foregroundColor(.white.opacity(0.8)))
                     }
                 }
-                .frame(width: 110, height: 150)
-                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg))
-                .padding(VoiidSpacing.lg)
+                // TOP-trailing, not bottom.
+                //
+                // THE OVERLAP. This container is `maxHeight: .infinity` inside the call's
+                // VStack, so it expands until it meets the controls — and the self-preview
+                // was pinned to its BOTTOM edge, which is exactly where mute/speaker/end sit.
+                // On a shorter phone the preview covered them outright.
+                //
+                // Top-right is also where every other video app puts self-view, for the same
+                // reason: the bottom of a call screen belongs to the controls.
+                .frame(width: 104, height: 140)
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                // A hairline so the preview reads as a separate surface rather than a hole
+                // punched in the remote video — without it a dark self-view against a dark
+                // remote frame has no edge at all.
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(.white.opacity(0.18), lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.35), radius: 12, y: 4)
+                .padding(.horizontal, VoiidSpacing.md)
+                .padding(.top, VoiidSpacing.sm)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }

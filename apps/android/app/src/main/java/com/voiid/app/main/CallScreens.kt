@@ -43,6 +43,9 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.ui.graphics.graphicsLayer
+import com.voiid.app.store.UserDirectory
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
@@ -173,11 +176,37 @@ private fun IncomingCallUi(state: CallManager.CallState) {
                 style = VoiidFont.rounded(15), color = Color.White.copy(alpha = 0.85f),
             )
             Spacer(Modifier.height(24.dp))
-            Box(
-                Modifier.size(140.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.15f))
-                    .border(3.dp, Color.White.copy(alpha = 0.6f), CircleShape),
-                contentAlignment = Alignment.Center,
-            ) { VoiidAvatar(size = 140.dp, modifier = Modifier.clip(CircleShape)) }
+            // THE CALLER'S REAL FACE, not the wordmark. `VoiidAvatar` is the bundled
+            // placeholder — so the one screen where knowing WHO is calling matters most
+            // showed a logo. `ProfileAvatar` resolves the peer's photo through the shared
+            // cache and falls back to their initials, which is at least a person.
+            //
+            // A slow pulse on the ring: a ringing call is a live event, and a completely
+            // static screen reads as a screenshot. Deliberately gentle — this is on screen
+            // while a phone is buzzing, and anything faster competes for attention.
+            val ringPulse = rememberInfiniteTransition(label = "ring")
+            val ringScale by ringPulse.animateFloat(
+                1f, 1.06f,
+                infiniteRepeatable(tween(1200, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+                label = "ringScale",
+            )
+            Box(contentAlignment = Alignment.Center) {
+                Box(
+                    Modifier
+                        .size(160.dp)
+                        .graphicsLayer { scaleX = ringScale; scaleY = ringScale }
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.10f)),
+                )
+                ProfileAvatar(
+                    photoUrl = UserDirectory.photoUrl(state.peerUserId),
+                    name = state.peerName,
+                    size = 140.dp,
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .border(3.dp, Color.White.copy(alpha = 0.6f), CircleShape),
+                )
+            }
             Spacer(Modifier.height(20.dp))
             Text(state.peerName, style = VoiidFont.rounded(26, FontWeight.Bold), color = Color.White)
 
@@ -354,20 +383,31 @@ private fun VoiceCenter() {
 @Composable
 private fun VideoCenter(state: CallManager.CallState) {
     Box(Modifier.fillMaxSize()) {
-        // Local self-preview (bottom-right).
+        // Local self-preview, TOP-right.
+        //
+        // THE OVERLAP. This container fills the space between the header and the controls,
+        // and the preview was pinned to its BOTTOM edge — which is exactly where
+        // mute/speaker/end sit. On a shorter phone it covered them outright.
+        //
+        // Top-right is also where every other video app puts self-view, for the same reason:
+        // the bottom of a call screen belongs to the controls. Mirrors iOS.
         Box(
             Modifier
-                .align(Alignment.BottomEnd)
-                .padding(24.dp)
-                .size(width = 110.dp, height = 150.dp)
-                .clip(RoundedCornerShape(VoiidRadius.lg))
-                .background(VoiidColor.primary.copy(alpha = 0.5f)),
+                .align(Alignment.TopEnd)
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .size(width = 104.dp, height = 140.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(VoiidColor.primary.copy(alpha = 0.5f))
+                // A hairline so the preview reads as a separate surface rather than a hole
+                // punched in the remote video — a dark self-view against a dark remote frame
+                // otherwise has no edge at all.
+                .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(18.dp)),
             contentAlignment = Alignment.Center,
         ) {
             if (state.videoEnabled) {
-                LocalVideoSurface(Modifier.fillMaxSize().clip(RoundedCornerShape(VoiidRadius.lg)))
+                LocalVideoSurface(Modifier.fillMaxSize().clip(RoundedCornerShape(18.dp)))
             } else {
-                Icon(Icons.Default.VideocamOff, null, tint = Color.White.copy(alpha = 0.8f), modifier = Modifier.size(30.dp))
+                Icon(Icons.Default.VideocamOff, null, tint = Color.White.copy(alpha = 0.8f), modifier = Modifier.size(26.dp))
             }
         }
     }
@@ -525,15 +565,37 @@ private fun AudioRouteControl(speaker: Boolean, isVideo: Boolean, onToggleSpeake
     val haptics = LocalVoiidHaptics.current
     var menuOpen by remember { mutableStateOf(false) }
 
-    // Re-read on every open rather than holding a snapshot: a headset connected mid-call must
-    // appear, and one that walked out of range must not linger in the list.
+    // POLLED, not read once at composition.
+    //
+    // THIS IS WHY THE PICKER NEVER APPEARED. `remember { availableAudioRoutes() }` evaluates
+    // exactly once — when the call screen first composes. At that moment the audio session is
+    // often not yet in MODE_IN_COMMUNICATION, so `availableCommunicationDevices` returns only
+    // the built-ins, the list has 2 entries, and the control collapses to a plain speaker
+    // toggle for the whole call. Connecting a headset afterwards changed nothing, because
+    // nothing re-read.
+    //
+    // A 2-second poll is the honest fix here: AudioManager has no Compose-friendly device
+    // callback, `registerAudioDeviceCallback` needs a Handler and its own lifecycle, and a
+    // headset appearing 2s late is imperceptible next to one that never appears at all.
     var routes by remember { mutableStateOf(CallManager.availableAudioRoutes()) }
-    val current = remember(menuOpen, speaker) { CallManager.currentAudioRoute() }
+    var current by remember { mutableStateOf(CallManager.currentAudioRoute()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            routes = CallManager.availableAudioRoutes()
+            current = CallManager.currentAudioRoute()
+            kotlinx.coroutines.delay(2_000)
+        }
+    }
+    // Also re-read the moment the speaker flag changes, so the checkmark moves with the tap
+    // rather than up to 2s later.
+    LaunchedEffect(speaker) { current = CallManager.currentAudioRoute() }
 
     if (routes.size > 2) {
         Box {
             Ctrl(routeIcon(current), current !is com.voiid.app.net.CallManager.AudioRoute.Earpiece, isVideo) {
+                // Refresh on open too — the poll may be up to 2s stale.
                 routes = CallManager.availableAudioRoutes()
+                current = CallManager.currentAudioRoute()
                 haptics.tap()
                 menuOpen = true
             }

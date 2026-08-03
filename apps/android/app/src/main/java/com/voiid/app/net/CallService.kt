@@ -854,11 +854,20 @@ object CallManager {
             ?: return listOf(AudioRoute.Earpiece, AudioRoute.Speaker)
         val out = mutableListOf<AudioRoute>(AudioRoute.Earpiece, AudioRoute.Speaker)
         runCatching {
-            val devices = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                am.availableCommunicationDevices
-            } else {
+            // UNION of both queries, not one or the other.
+            //
+            // `availableCommunicationDevices` (API 31+) is the correct list to SELECT from,
+            // but it returns only built-ins until the audio session is actually in
+            // MODE_IN_COMMUNICATION — which on an incoming call is not yet true when the UI
+            // first asks. `getDevices(GET_DEVICES_OUTPUTS)` always reports what is physically
+            // connected. Querying both means a headset shows up in the picker immediately and
+            // is still selectable through the modern path once the mode is set.
+            val devices = buildList {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    addAll(am.availableCommunicationDevices)
+                }
                 @Suppress("DEPRECATION")
-                am.getDevices(AudioManager.GET_DEVICES_OUTPUTS).toList()
+                addAll(am.getDevices(AudioManager.GET_DEVICES_OUTPUTS))
             }
             for (d in devices) {
                 when (d.type) {
@@ -931,15 +940,30 @@ object CallManager {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             runCatching {
+                // The mode must be set BEFORE this list is meaningful — see the union in
+                // availableAudioRoutes. Without it `availableCommunicationDevices` can be
+                // built-ins only, and selecting a headset silently does nothing.
+                ensureCommunicationMode()
+                val avail = am.availableCommunicationDevices
                 val target = when (route) {
-                    is AudioRoute.Bluetooth ->
-                        am.availableCommunicationDevices.firstOrNull { it.id == route.deviceId }
-                    is AudioRoute.Wired ->
-                        am.availableCommunicationDevices.firstOrNull { it.id == route.deviceId }
+                    // Match by id first; fall back to TYPE, because a device enumerated by
+                    // the legacy query can carry an id the communication list does not use.
+                    is AudioRoute.Bluetooth -> avail.firstOrNull { it.id == route.deviceId }
+                        ?: avail.firstOrNull {
+                            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                                it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                                it.type == AudioDeviceInfo.TYPE_HEARING_AID
+                        }
+                    is AudioRoute.Wired -> avail.firstOrNull { it.id == route.deviceId }
+                        ?: avail.firstOrNull {
+                            it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                                it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                                it.type == AudioDeviceInfo.TYPE_USB_HEADSET
+                        }
                     AudioRoute.Speaker ->
-                        am.availableCommunicationDevices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                        avail.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
                     AudioRoute.Earpiece ->
-                        am.availableCommunicationDevices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE }
+                        avail.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE }
                 }
                 target?.let { am.setCommunicationDevice(it) }
             }
