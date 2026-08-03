@@ -1064,13 +1064,42 @@ object CallManager {
         }
     }
 
+    /**
+     * Attach the self-view renderer.
+     *
+     * THE RACE THIS FIXES. Sink attachment happened in exactly two places, each of which only
+     * works if the OTHER thing already exists: `addLocalMedia` does
+     * `localRenderer?.let { addSink }` when the track is created, and this does
+     * `localVideoTrack?.addSink` when the renderer arrives. On the CALLEE they arrive in the
+     * wrong order — the track is built inside `doAnswer()` before the call screen has
+     * composed, so `localRenderer` is null there; and this runs on a different thread via
+     * `exec`, so it could still observe a null track.
+     *
+     * When both miss, the track is live and rendering nowhere: black self-view until the user
+     * toggles the camera, which recreates the plumbing. That is exactly the reported bug, and
+     * it reproduces on the ANSWERING side specifically — which is why the earlier
+     * startCapture fix (an outgoing-side race) did not touch it.
+     *
+     * `attachLocalSink()` is the single idempotent place both paths now call.
+     */
     fun setLocalRenderer(r: SurfaceViewRenderer?) {
         val old = localRenderer
         localRenderer = r
         exec.execute {
             if (old != null && old !== r) runCatching { localVideoTrack?.removeSink(old) }
-            if (r != null) runCatching { localVideoTrack?.addSink(r) }
+            attachLocalSink()
         }
+    }
+
+    /**
+     * Bind the local track to the local renderer, if both exist. Safe to call repeatedly —
+     * `addSink` on an already-attached sink is a no-op in libwebrtc, and the guard means a
+     * missing half is simply a no-op rather than an error.
+     */
+    private fun attachLocalSink() {
+        val track = localVideoTrack ?: return
+        val renderer = localRenderer ?: return
+        runCatching { track.addSink(renderer) }
     }
 
     fun setRemoteRenderer(r: SurfaceViewRenderer?) {
@@ -1078,8 +1107,15 @@ object CallManager {
         remoteRenderer = r
         exec.execute {
             if (old != null && old !== r) runCatching { remoteVideoTrack?.removeSink(old) }
-            if (r != null) runCatching { remoteVideoTrack?.addSink(r) }
+            attachRemoteSink()
         }
+    }
+
+    /** Bind the remote track to the remote renderer, if both exist. See [attachLocalSink]. */
+    private fun attachRemoteSink() {
+        val track = remoteVideoTrack ?: return
+        val renderer = remoteRenderer ?: return
+        runCatching { track.addSink(renderer) }
     }
 
     /**
@@ -1138,7 +1174,8 @@ object CallManager {
             surfaceHelper = helper
             videoSource = vSource
             localVideoTrack = vTrack
-            localRenderer?.let { vTrack.addSink(it) }
+            // Same idempotent path as setLocalRenderer — see the race note there.
+            attachLocalSink()
             p.addTrack(vTrack, listOf(STREAM_ID))
             startCapture()
         }
@@ -1231,7 +1268,10 @@ object CallManager {
             val track = transceiver.receiver?.track() ?: return
             if (track is VideoTrack) {
                 remoteVideoTrack = track
-                exec.execute { remoteRenderer?.let { track.addSink(it) } }
+                // Idempotent, both-directions attach — same race as the local track: the
+                // renderer and the track arrive in either order depending on which side
+                // answered, and each site alone only works if the other already exists.
+                exec.execute { attachRemoteSink() }
                 update { it.copy(hasRemoteVideo = true) }
             }
         }
@@ -1240,7 +1280,10 @@ object CallManager {
             val track = receiver.track()
             if (track is VideoTrack) {
                 remoteVideoTrack = track
-                exec.execute { remoteRenderer?.let { track.addSink(it) } }
+                // Idempotent, both-directions attach — same race as the local track: the
+                // renderer and the track arrive in either order depending on which side
+                // answered, and each site alone only works if the other already exists.
+                exec.execute { attachRemoteSink() }
                 update { it.copy(hasRemoteVideo = true) }
             }
         }

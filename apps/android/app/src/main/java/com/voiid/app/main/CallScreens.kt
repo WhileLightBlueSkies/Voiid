@@ -532,6 +532,15 @@ private fun RemoteVideoSurface(modifier: Modifier) {
             CallManager.detachRenderer(renderer, remote = true)
         }
     }
+
+    // Re-assert when the remote track actually arrives. `hasRemoteVideo` flips at exactly
+    // that moment, and the renderer usually registered BEFORE it — so without this the
+    // attach ran against a null track and the frame never appeared. Same race as the local
+    // surface; addSink on an attached sink is a no-op.
+    val remoteState by CallManager.state.collectAsState()
+    LaunchedEffect(remoteState?.hasRemoteVideo, remoteState?.phase) {
+        CallManager.setRemoteRenderer(renderer)
+    }
     AndroidView(
         factory = { renderer },
         modifier = modifier.onGloballyPositioned { coords ->
@@ -588,10 +597,26 @@ private fun VideoCenter(state: CallManager.CallState) {
 private fun LocalVideoSurface(modifier: Modifier) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val renderer = remember { makeRenderer(context, mirror = true) }
+    val state by CallManager.state.collectAsState()
+
     DisposableEffect(renderer) {
         CallManager.setLocalRenderer(renderer)
         onDispose { CallManager.detachRenderer(renderer, remote = false) }
     }
+
+    // RE-ASSERT WHEN THE CALL PHASE CHANGES.
+    //
+    // The local track is created inside doAnswer() on the ANSWERING side — after this
+    // composable has already registered its renderer, so the attach in setLocalRenderer saw
+    // no track and did nothing. CallService now attaches idempotently from both sides, and
+    // this covers the remaining window: keying on `phase` re-runs the attach the moment the
+    // call moves to CONNECTING/CONNECTED, which is exactly when the track appears.
+    //
+    // Cheap: addSink on an already-attached sink is a no-op.
+    LaunchedEffect(state?.phase, state?.videoEnabled) {
+        CallManager.setLocalRenderer(renderer)
+    }
+
     AndroidView(factory = { renderer }, modifier = modifier)
 }
 
