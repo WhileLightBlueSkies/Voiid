@@ -157,10 +157,22 @@ struct DraggableChatGrid: View {
             ZStack(alignment: .topTrailing) {
                 ZStack {
                     RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous).fill(VoiidColor.fieldFill)
-                    // Show the peer's REAL profile photo (conv.photoURL is an R2 key or URL),
-                    // resolved through the shared cache — falling back to a bundled asset, then
-                    // the wordmark. Previously the grid only ever showed bundled/dummy assets.
-                    GridPeerImage(photoURL: conv.photoURL, photoName: conv.photoName)
+                    if conv.type == .self {
+                        // NOTE TO SELF gets its own mark, not a profile photo. It is the one
+                        // chat with no other person in it, and rendering your own face there
+                        // reads as a conversation with someone else. A bookmark on brand tint
+                        // says "saved" at a glance and is findable without reading the label.
+                        RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
+                            .fill(VoiidColor.primary.opacity(0.12))
+                        Image(systemName: "bookmark.fill")
+                            .font(.system(size: 28, weight: .medium))
+                            .foregroundStyle(VoiidColor.primary)
+                    } else {
+                        // Show the peer's REAL profile photo (conv.photoURL is an R2 key or URL),
+                        // resolved through the shared cache — falling back to a bundled asset, then
+                        // the wordmark. Previously the grid only ever showed bundled/dummy assets.
+                        GridPeerImage(photoURL: conv.photoURL, photoName: conv.photoName)
+                    }
                 }
                 .aspectRatio(1, contentMode: .fit)
                 .clipped()

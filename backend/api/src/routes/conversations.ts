@@ -13,8 +13,56 @@ router.post('/create', requireAuth, async (req, res) => {
   const { user_id } = (req as any).auth;
   const { type = 'direct', member_id, name, photo_url, member_ids } = req.body ?? {};
 
+  // ── Note to Self ─────────────────────────────────────────────────────────────────
+  //
+  // A private scratchpad: your own chat, with exactly one member — you. Used for notes,
+  // links, and forwarding things to yourself, the way every major messenger now offers.
+  //
+  // Its own TYPE, not a 'direct' with a duplicate member row. The direct path identifies a
+  // 1:1 by "exactly two active members", and a self-chat with two rows of the same user id
+  // would satisfy that query and start colliding with real conversations. One member, one
+  // type, no ambiguity.
+  //
+  // STILL E2E. Nothing here weakens that: notes are encrypted on-device to the author's
+  // OTHER devices, exactly like any message, and the server stores ciphertext it cannot
+  // read. With a single device there are no targets, which the client handles — see the
+  // note-to-self path in ChatEngine.
+  if (type === 'self') {
+    // Idempotent. There is exactly one of these per user, ever.
+    const existing = await query<{ id: string }>(
+      `select c.id from conversations c
+         join conversation_members m on m.conversation_id = c.id and m.user_id = $1 and m.left_at is null
+        where c.type = 'self'
+        limit 1`,
+      [user_id]
+    );
+    if (existing[0]) return res.json({ conversation_id: existing[0].id, existed: true });
+
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      const conv = (await client.query(
+        `insert into conversations (type, created_by) values ('self', $1) returning id`,
+        [user_id]
+      )).rows[0];
+      await client.query(
+        `insert into conversation_members (conversation_id, user_id) values ($1,$2)`,
+        [conv.id, user_id]
+      );
+      await client.query('commit');
+      return res.json({ conversation_id: conv.id, existed: false });
+    } catch (e) {
+      await client.query('rollback');
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
+
   if (type === 'direct') {
     if (!member_id) return res.status(400).json({ error: 'member_id required for direct' });
+    // Self-chats have their own type above — this stays blocked so a 'direct' can never be
+    // created with a duplicate member and start matching the two-member lookup.
     if (member_id === user_id) return res.status(400).json({ error: 'cannot create direct conversation with self' });
 
     // Idempotent: reuse an existing 1:1 between exactly these two users.

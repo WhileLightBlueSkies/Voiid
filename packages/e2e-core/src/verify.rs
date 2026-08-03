@@ -111,3 +111,79 @@ fn group_digits(digits: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ALICE: &[u8] = b"alice-user-id";
+    const BOB: &[u8] = b"bob-user-id";
+    // Realistic shape: base64 of 32 bytes, as an Ed25519 fingerprint arrives from the FFI.
+    const KEY_A: &str = "TWFyeSBoYWQgYSBsaXR0bGUgbGFtYiwgaXRzIGZsZQ==";
+    const KEY_B: &str = "ZWNlIHdhcyB3aGl0ZSBhcyBzbm93LCBhbmQgZXZlcnk=";
+
+    /// THE PROPERTY THE WHOLE FEATURE RESTS ON.
+    ///
+    /// Two people compare numbers on two phones. Each computes with THEMSELVES as "ours" and
+    /// the other as "theirs" — opposite argument order. If the function is not symmetric the
+    /// numbers differ, every honest pair sees a mismatch, and the screen tells them they are
+    /// under attack when they are not. A verification tool that cries wolf is worse than none.
+    #[test]
+    fn both_sides_compute_the_same_number() {
+        let from_alice = safety_number(ALICE, KEY_A, BOB, KEY_B);
+        let from_bob = safety_number(BOB, KEY_B, ALICE, KEY_A);
+        assert_eq!(from_alice, from_bob);
+    }
+
+    /// A DIFFERENT KEY MUST PRODUCE A DIFFERENT NUMBER — this is the detection itself.
+    /// If a machine-in-the-middle substituted its own key and the number stayed the same,
+    /// the screen would confirm an attack in progress.
+    #[test]
+    fn a_substituted_key_changes_the_number() {
+        let honest = safety_number(ALICE, KEY_A, BOB, KEY_B);
+        let attacker = safety_number(ALICE, KEY_A, BOB, "YXR0YWNrZXIga2V5IHN1YnN0aXR1dGVkIGhlcmU=");
+        assert_ne!(honest, attacker);
+    }
+
+    /// The identifier is bound in too, so the same key under a different user id is a
+    /// different number. Without this, an attacker who replayed a legitimate key against
+    /// another account would inherit its verified status.
+    #[test]
+    fn the_identifier_is_bound_into_the_number() {
+        let a = safety_number(ALICE, KEY_A, BOB, KEY_B);
+        let b = safety_number(ALICE, KEY_A, b"mallory-user-id", KEY_B);
+        assert_ne!(a, b);
+    }
+
+    /// Stable across calls. It is read aloud and re-checked later; a number that drifted
+    /// between openings would make every re-verification fail.
+    #[test]
+    fn the_number_is_deterministic() {
+        assert_eq!(
+            safety_number(ALICE, KEY_A, BOB, KEY_B),
+            safety_number(ALICE, KEY_A, BOB, KEY_B)
+        );
+    }
+
+    /// 60 digits in 12 groups of 5 — the format the UI renders and two people read to each
+    /// other. Groups are what let them stay in sync while reading.
+    #[test]
+    fn the_number_is_sixty_digits_in_groups_of_five() {
+        let n = safety_number(ALICE, KEY_A, BOB, KEY_B);
+        let groups: Vec<&str> = n.split(' ').collect();
+        assert_eq!(groups.len(), 12, "expected 12 groups, got {n}");
+        for g in &groups {
+            assert_eq!(g.len(), 5, "group {g} is not 5 digits");
+            assert!(g.chars().all(|c| c.is_ascii_digit()), "non-digit in {g}");
+        }
+    }
+
+    /// A fingerprint that is not valid base64 must still yield a usable number rather than
+    /// panicking — verify.rs falls back to hashing the raw bytes. Crashing on a malformed
+    /// key would let a hostile server take the app down by sending garbage.
+    #[test]
+    fn a_malformed_fingerprint_does_not_panic() {
+        let n = safety_number(ALICE, KEY_A, BOB, "!!! not base64 !!!");
+        assert_eq!(n.split(' ').count(), 12);
+    }
+}

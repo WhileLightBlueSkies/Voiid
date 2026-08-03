@@ -35,6 +35,10 @@ struct ContentView: View {
         // (Peacock), so this follows the user's Light / Dark / System choice. `.system`
         // yields nil, which SwiftUI reads as "inherit from the OS".
         .preferredColorScheme(theme.mode.colorScheme)
+        // Push the SAVED preference into the UIKit window on launch. Without this the very
+        // first frame resolves VoiidColor tokens against the OS style, so a user who chose
+        // Dark on a Light phone would see one light frame before it corrected itself.
+        .onAppear { theme.applyToWindows() }
         // Global incoming-call surface: an inbound 1:1 call (offer received over the
         // socket) presents the call screen over whatever is on screen.
         .fullScreenCover(isPresented: incomingCallPresented) {

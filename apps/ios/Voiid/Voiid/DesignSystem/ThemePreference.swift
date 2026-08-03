@@ -15,6 +15,7 @@
 
 import SwiftUI
 import Combine   // @Published / ObservableObject conformance
+import UIKit    // overrideUserInterfaceStyle — see applyToWindows()
 
 @MainActor
 final class ThemePreference: ObservableObject {
@@ -54,11 +55,47 @@ final class ThemePreference: ObservableObject {
     private static let key = "voiid.theme.mode"
 
     @Published var mode: Mode {
-        didSet { UserDefaults.standard.set(mode.rawValue, forKey: Self.key) }
+        didSet {
+            UserDefaults.standard.set(mode.rawValue, forKey: Self.key)
+            applyToWindows()
+        }
     }
 
     private init() {
         let raw = UserDefaults.standard.string(forKey: Self.key) ?? Mode.system.rawValue
         mode = Mode(rawValue: raw) ?? .system
+    }
+
+    /// Push the choice into the UIKit window.
+    ///
+    /// THIS IS WHY SWITCHING THEME DID NOT RECOLOUR THE CURRENT SCREEN.
+    ///
+    /// `.preferredColorScheme` changes SwiftUI's environment, and a view reading
+    /// `@Environment(\.colorScheme)` updates immediately. But every VoiidColor token is a
+    /// `UIColor { trait in ... }` closure, and those resolve against the UIKIT trait
+    /// collection — which still followed the OS. So picking Dark while the phone was in
+    /// Light left the whole palette resolving light: backgrounds, cards, bubbles, all of it.
+    /// The screens that DID appear to change were the ones using `@Environment(\.colorScheme)`
+    /// directly (the map), which is why it looked like some pages updated and others did not.
+    ///
+    /// Setting `overrideUserInterfaceStyle` on the window makes UIKit agree with SwiftUI, so
+    /// both resolution paths land on the same answer and the change is live and total.
+    func applyToWindows() {
+        let style: UIUserInterfaceStyle = {
+            switch mode {
+            case .system: return .unspecified
+            case .light:  return .light
+            case .dark:   return .dark
+            }
+        }()
+        for scene in UIApplication.shared.connectedScenes {
+            guard let ws = scene as? UIWindowScene else { continue }
+            for window in ws.windows {
+                // Animated so the swap reads as a deliberate transition rather than a flash.
+                UIView.transition(with: window, duration: 0.25, options: .transitionCrossDissolve) {
+                    window.overrideUserInterfaceStyle = style
+                }
+            }
+        }
     }
 }

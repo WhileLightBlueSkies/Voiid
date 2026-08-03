@@ -26,6 +26,12 @@ struct ContactProfileView: View {
     @State private var viewPhoto = false
     @State private var showAllMedia = false
     @State private var profile: UserProfile?
+
+    /// Explicit states, because "profile == nil" meant BOTH "still loading" and "failed" —
+    /// and the screen drew the same empty page for each.
+    private enum LoadState { case loading, loaded, failed }
+    @State private var loadState: LoadState = .loading
+    @State private var showSafetyNumber = false
     @State private var showBlockConfirm = false
     @State private var showReportConfirm = false
     @State private var notImplemented: String?
@@ -51,26 +57,56 @@ struct ContactProfileView: View {
 
     var body: some View {
         ScrollView {
-            // 20pt between sections, not 24 — with titles now sitting outside the cards,
-            // each section already carries 8pt of its own leading space, so 24 opened gaps
-            // wide enough to read as unrelated screens stacked on top of each other.
-            VStack(spacing: 20) {
+            VStack(spacing: 0) {
+                // Full-bleed: no horizontal padding, and it runs UNDER the status bar. A
+                // photo inset from the edges reads as a picture ON a page; one that touches
+                // all three edges reads as the page itself, which is the point.
                 headerCard
-                aboutCard
-                sharedMediaCard
-                callHistoryCard
-                settingsCard
-                dangerCard
+
+                // 20pt between sections, not 24 — with titles sitting outside the cards,
+                // each section already carries 8pt of its own leading space, and 24 opened
+                // gaps wide enough to read as unrelated screens stacked together.
+                VStack(spacing: 20) {
+                    quickActions
+                    aboutCard
+                    sharedMediaCard
+                    callHistoryCard
+                    encryptionCard
+                    settingsCard
+                    dangerCard
+                }
+                // 20pt gutters: 24 left the cards floating in a wide margin on a 390pt phone.
+                .padding(.horizontal, 20)
+                .padding(.top, 20)
+                .padding(.bottom, VoiidSpacing.xl)
             }
-            // 20pt gutters: 24 left the cards floating in a wide margin on a 390pt phone.
-            .padding(.horizontal, 20)
-            .padding(.top, VoiidSpacing.sm)
-            .padding(.bottom, VoiidSpacing.xl)
         }
-        .background(VoiidColor.background.ignoresSafeArea())
+        // The photo extends past the top safe area; everything else respects it.
+        .ignoresSafeArea(edges: .top)
+        // A TINTED GROUND, not flat. Glass blurs whatever is behind it — over a single flat
+        // colour there is nothing to sample, so the cards render as grey slabs and the
+        // material is wasted. A soft wash of the brand colour under the top of the scroll
+        // gives them something to pick up, so the cards read as translucent rather than
+        // merely dim.
+        .background {
+            ZStack(alignment: .top) {
+                VoiidColor.background
+                LinearGradient(
+                    colors: [VoiidColor.primary.opacity(0.16), .clear],
+                    startPoint: .top, endPoint: .bottom
+                )
+                .frame(height: 520)
+            }
+            .ignoresSafeArea()
+        }
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
-        .tint(VoiidColor.primary)
+        // WHITE back chevron, not the brand tint. The bar now floats over the portrait's
+        // scrim, and deep aubergine on a dark photo is very nearly invisible — the one
+        // control that must always be findable would have been the hardest thing to see.
+        // Forcing the dark colour scheme on the bar makes the system draw its chrome light.
+        .toolbarColorScheme(.dark, for: .navigationBar)
+        .tint(.white)
         // Hide the bottom bar on this detail screen. We do NOT reset on disappear: when you
         // pop back to the CHAT (also a detail screen) its onAppear does not re-fire, so a
         // reset here would wrongly show the bar over the chat. The bar is restored only when
@@ -79,6 +115,9 @@ struct ContactProfileView: View {
         .task { await loadProfile() }
         .fullScreenCover(isPresented: $viewPhoto) {
             ProfilePhotoViewer(title: displayName, imageName: conversation.photoName) { viewPhoto = false }
+        }
+        .sheet(isPresented: $showSafetyNumber) {
+            SafetyNumberView(peerUserId: conversation.peerUserId ?? "", peerName: displayName)
         }
         .sheet(isPresented: $showAllMedia) { SharedMediaSheet(title: conversation.title, conversationId: conversation.id) }
         .confirmationDialog("Block \(displayName)?", isPresented: $showBlockConfirm, titleVisibility: .visible) {
@@ -102,48 +141,85 @@ struct ContactProfileView: View {
         }
     }
 
-    // Header: photo, name, identity, quick actions.
+    // Header: a full-bleed portrait with the identity laid over it.
     //
-    // THE PAGE HAS ONE SUBJECT and the header is it. Previously it was a 112pt avatar with
-    // 8pt gaps to a 24pt name — the same rhythm as every card below it, so the person the
-    // page is ABOUT carried no more weight than a "Mute notifications" toggle. It now gets
-    // deliberate air above and below, a larger name, and a hairline ring that separates the
-    // photo from the background without drawing a box around it.
+    // WHY NOT A CENTERED AVATAR ON A CARD. That layout — round photo, name under it,
+    // buttons under that, all centered on a plain ground — is the 2016 iOS profile, and it
+    // wastes the one asset the screen actually has: the person's photo, shown at 104pt in a
+    // circle while two thirds of the width sits empty. Apple stopped building profiles that
+    // way years ago; Contacts, Photos and Music all now anchor identity to a large image and
+    // let content scroll beneath it.
+    //
+    // So the photo goes edge-to-edge at the top, the name sits ON it in white, and the
+    // scrim underneath guarantees the text is legible over ANY photo — a dark portrait, a
+    // blown-out selfie, or no photo at all. Nothing is centered for its own sake.
     private var headerCard: some View {
-        VStack(spacing: 0) {
-            Button { Haptics.tap(); viewPhoto = true } label: {
-                ProfileAvatarButton(photoURL: photoRef, name: displayName, size: 104)
-                    // A 1px ring at 8% — enough to define the edge against a light photo,
-                    // invisible against a dark one. A heavier border would read as a frame.
-                    .overlay(Circle().strokeBorder(VoiidColor.textPrimary.opacity(0.08), lineWidth: 1))
-            }
-            .buttonStyle(.plain)
-            .padding(.bottom, VoiidSpacing.md)
+        ZStack(alignment: .bottomLeading) {
+            portrait
 
-            Text(displayName)
-                .font(VoiidFont.rounded(28, .bold))
-                // Optical tightening: at 28pt the default tracking looks loose. Apple's own
-                // large titles are negatively tracked for exactly this reason.
-                .kerning(-0.4)
-                .foregroundColor(VoiidColor.textPrimary)
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
+            // A bottom-anchored gradient, not a flat overlay. Flat dimming greys out the
+            // whole photo to protect two lines of text; a gradient leaves the face untouched
+            // and only darkens where the words actually are.
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.15), .black.opacity(0.72)],
+                startPoint: .center, endPoint: .bottom
+            )
 
-            // ONE line of secondary identity, not two stacked at equal weight. The handle and
-            // the number were competing — same size, same spacing — so neither read as the
-            // primary way to identify this person. The handle leads (it is what you share);
-            // the number follows it, quieter, separated by a dot.
-            if identityLine != nil {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(displayName)
+                    .font(VoiidFont.rounded(32, .bold))
+                    // Optical tightening — Apple negatively tracks large titles for the same
+                    // reason: default spacing reads loose above ~28pt.
+                    .kerning(-0.6)
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.75)
+
                 identityRow
-                    .padding(.top, 5)
             }
-
-            quickActions
-                .padding(.top, VoiidSpacing.lg)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 18)
+            // Fixed white on the scrim, NOT a theme token: this text sits on a photo, so it
+            // must not follow the light/dark ground it is no longer standing on.
+            .shadow(color: .black.opacity(0.35), radius: 8, y: 1)
         }
+        .frame(height: 360)
         .frame(maxWidth: .infinity)
-        .padding(.top, VoiidSpacing.sm)
-        .padding(.bottom, VoiidSpacing.xs)
+        .clipped()
+        .contentShape(Rectangle())
+        .onTapGesture { Haptics.tap(); viewPhoto = true }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(displayName). Tap to view photo.")
+    }
+
+    /// The photo itself, or a generated placeholder when there is none.
+    @ViewBuilder
+    private var portrait: some View {
+        if let ref = photoRef, !ref.isEmpty {
+            ProfileAvatarButton(photoURL: ref, name: displayName, size: 360)
+                .frame(maxWidth: .infinity)
+                // Fill, not fit: a portrait cropped to the frame beats one letterboxed
+                // against grey bars.
+                .scaledToFill()
+        } else {
+            // NO PHOTO IS A COMMON CASE, not an edge case, so it gets a real design rather
+            // than a grey box: the brand gradient with the person's initial. It reads as
+            // deliberate, and it keeps the same 360pt shape so the layout never jumps when
+            // a photo finally loads.
+            LinearGradient(
+                colors: [VoiidColor.primary.opacity(0.85), VoiidColor.primary.opacity(0.45)],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+            .overlay {
+                Text(initial)
+                    .font(VoiidFont.rounded(96, .semibold))
+                    .foregroundStyle(.white.opacity(0.9))
+            }
+        }
+    }
+
+    private var initial: String {
+        String(displayName.trimmingCharacters(in: .whitespaces).first.map(String.init) ?? "?").uppercased()
     }
 
     /// The handle, the number, or both — resolved once so the header does not branch inline.
@@ -160,70 +236,82 @@ struct ContactProfileView: View {
             HStack(spacing: 6) {
                 if let handle = line.handle {
                     Text(handle)
-                        .font(VoiidFont.rounded(15, .medium))
-                        .foregroundColor(VoiidColor.primary)
+                        .font(VoiidFont.rounded(15, .semibold))
+                        .foregroundStyle(.white)
                 }
                 if line.handle != nil && line.secondary != nil {
                     Circle()
-                        .fill(VoiidColor.textSecondary.opacity(0.4))
+                        .fill(.white.opacity(0.55))
                         .frame(width: 3, height: 3)
                 }
                 if let secondary = line.secondary {
                     Text(secondary)
                         .font(VoiidFont.rounded(15, .regular))
-                        .foregroundColor(VoiidColor.textSecondary)
+                        // 0.85 rather than a grey: on a photo, a desaturated white reads as
+                        // "quieter", where grey reads as "disabled".
+                        .foregroundStyle(.white.opacity(0.85))
                 }
             }
         }
     }
 
-    /// Message / Call / Video.
+    /// Message / Call / Video, as three equal capsules.
     ///
-    /// ONE SEGMENTED CONTROL, not three floating tinted rectangles. Three separate 46pt
-    /// blocks with captions underneath read as three unrelated buttons that happen to sit in
-    /// a row; a single grouped surface with hairline separators reads as one control with
-    /// three choices — which is what it is. The label moves INSIDE the button, so the caption
-    /// row disappears and with it 20pt of vertical noise.
+    /// They used to be one segmented block with hairline dividers — which reads as a PICKER,
+    /// a control where you choose a mode, not three separate things you can do. These are
+    /// three distinct actions, so they get three distinct buttons with real spacing between
+    /// them. Message leads on brand fill because it is what this screen is overwhelmingly
+    /// opened to do; call and video are secondary and tinted.
     private var quickActions: some View {
-        HStack(spacing: 0) {
-            quickAction("message.fill", "Message") { dismiss() }
-            actionSeparator
-            quickAction("phone.fill", "Call") { requestCall(.voice) }
-            actionSeparator
-            quickAction("video.fill", "Video") { requestCall(.video) }
+        HStack(spacing: VoiidSpacing.sm) {
+            actionButton("message.fill", "Message", filled: true) { dismiss() }
+            actionButton("phone.fill", "Call", filled: false) { requestCall(.voice) }
+            actionButton("video.fill", "Video", filled: false) { requestCall(.video) }
         }
-        .frame(height: 58)
-        .background(VoiidColor.surfaceCard)
-        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
     }
 
-    private var actionSeparator: some View {
-        Rectangle()
-            .fill(VoiidColor.divider.opacity(0.5))
-            .frame(width: 1, height: 26)
-    }
-
-    private func quickAction(_ icon: String, _ label: String, _ tap: @escaping () -> Void) -> some View {
+    private func actionButton(_ icon: String, _ label: String,
+                              filled: Bool, _ tap: @escaping () -> Void) -> some View {
         Button(action: { Haptics.tap(); tap() }) {
-            VStack(spacing: 4) {
+            VStack(spacing: 5) {
                 Image(systemName: icon)
-                    .font(.system(size: 17, weight: .medium))
+                    .font(.system(size: 17, weight: .semibold))
                 Text(label)
-                    .font(VoiidFont.rounded(11, .medium))
+                    .font(VoiidFont.rounded(12, .medium))
             }
-            .foregroundColor(VoiidColor.primary)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .contentShape(Rectangle())
+            .foregroundStyle(filled ? VoiidColor.textOnPrimary : VoiidColor.primary)
+            .frame(maxWidth: .infinity)
+            .frame(height: 62)
+            .background {
+                // The PRIMARY action stays solid — glass on the one button you are most
+                // likely to press would make it recede exactly where it should lead. The
+                // secondary two are glass, so the group reads as one family with a clear
+                // first among them.
+                if filled {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(VoiidColor.primary)
+                        .shadow(color: VoiidColor.primary.opacity(0.28), radius: 12, y: 5)
+                }
+            }
+            .glassIfNeeded(!filled, cornerRadius: 18)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         }
         .buttonStyle(SoftPressStyle())
+        .accessibilityLabel(label)
     }
 
     /// The peer's photo reference, preferring the freshly-fetched profile and falling back to
     /// whatever the directory already cached — so a face shows on the first frame offline.
     private var photoRef: String? {
+        // Freshest first, then two caches. The CONVERSATION's photo is the third fallback and
+        // it matters: it is already on screen in the chat header the user just tapped, so
+        // omitting it meant the profile could open with a blank portrait for a face the app
+        // was displaying a moment earlier.
         if let u = profile?.photoURL, !u.isEmpty { return u }
-        guard let peer = conversation.peerUserId else { return nil }
-        return UserDirectory.shared.photoURL(peer)
+        if let peer = conversation.peerUserId,
+           let cached = UserDirectory.shared.photoURL(peer), !cached.isEmpty { return cached }
+        if let convPhoto = conversation.photoURL, !convPhoto.isEmpty { return convPhoto }
+        return nil
     }
 
     /// Call and Video used to be EMPTY closures — the buttons were decoration.
@@ -244,7 +332,36 @@ struct ContactProfileView: View {
         let status = profile?.statusText ?? ""
         let about = profile?.about ?? ""
         card("About") {
-            if !status.isEmpty {
+            if loadState == .loading {
+                // A SKELETON, not a spinner. The card already occupies this space, so a
+                // centred spinner would make the layout jump when text replaces it; two
+                // dimmed bars the height of the real lines keep the geometry identical.
+                VStack(alignment: .leading, spacing: 8) {
+                    Capsule().fill(VoiidColor.textPrimary.opacity(0.08)).frame(height: 14)
+                    Capsule().fill(VoiidColor.textPrimary.opacity(0.08))
+                        .frame(width: 180, height: 14)
+                }
+                .modifier(PulsePlaceholder())
+            } else if loadState == .failed && status.isEmpty && about.isEmpty {
+                // FAILED IS NOT EMPTY. Showing "Hey there! I am using Voiid." here would put
+                // words in this person's mouth that they never wrote, purely because our
+                // request failed — so the failure says so, and offers the retry.
+                HStack(spacing: VoiidSpacing.sm) {
+                    Image(systemName: "wifi.exclamationmark")
+                        .font(.system(size: 14))
+                        .foregroundStyle(VoiidColor.textSecondary)
+                    Text("Couldn't load profile")
+                        .font(VoiidFont.rounded(15, .regular))
+                        .foregroundStyle(VoiidColor.textSecondary)
+                    Spacer(minLength: 0)
+                    Button("Retry") {
+                        Haptics.tap()
+                        Task { await loadProfile() }
+                    }
+                    .font(VoiidFont.rounded(14, .semibold))
+                    .foregroundStyle(VoiidColor.primary)
+                }
+            } else if !status.isEmpty {
                 HStack(alignment: .top, spacing: VoiidSpacing.sm) {
                     Image(systemName: "quote.opening")
                         .font(.system(size: 12))
@@ -328,9 +445,17 @@ struct ContactProfileView: View {
             HStack(spacing: VoiidSpacing.sm) {
                 ForEach(0..<3, id: \.self) { i in
                     RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
-                        .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
-                        .foregroundStyle(VoiidColor.divider)
+                        // A faint FILL under the dashes. On the old opaque card an outline
+                        // alone was enough; on glass a bare dashed rectangle has nothing to
+                        // sit on and reads as scratches across the blur. The fill gives each
+                        // ghost tile a body, so it reads as an empty slot.
+                        .fill(VoiidColor.textPrimary.opacity(0.04))
                         .frame(width: 76, height: 76)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
+                                .strokeBorder(VoiidColor.divider,
+                                              style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+                        )
                         .overlay {
                             Image(systemName: i == 0 ? "photo" : (i == 1 ? "video" : "doc"))
                                 .font(.system(size: 18))
@@ -415,6 +540,40 @@ struct ContactProfileView: View {
         }
     }
 
+    /// Encryption, and the way to check it.
+    ///
+    /// A claim of end-to-end encryption that the user cannot verify is a claim they have to
+    /// take on faith. This row is what turns it into something checkable — and it sits above
+    /// mute and block because it is the more consequential fact about the conversation.
+    private var encryptionCard: some View {
+        card("Encryption") {
+            Button {
+                Haptics.tap(); showSafetyNumber = true
+            } label: {
+                HStack(spacing: VoiidSpacing.md) {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 15))
+                        .foregroundStyle(VoiidColor.success)
+                        .frame(width: 24)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("End-to-end encrypted")
+                            .font(VoiidFont.rounded(16, .regular))
+                            .foregroundStyle(VoiidColor.textPrimary)
+                        Text("Tap to verify with a safety number")
+                            .font(VoiidFont.rounded(12, .regular))
+                            .foregroundStyle(VoiidColor.textSecondary)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(VoiidColor.placeholder)
+                }
+                .padding(.vertical, 2)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
     private var settingsCard: some View {
         card {
             Toggle(isOn: $muted) {
@@ -444,14 +603,35 @@ struct ContactProfileView: View {
 
     /// Load the peer's public profile (name, about, username, photo). Phone is not
     /// fetched — the backend doesn't expose it on the profile endpoint (privacy).
+    /// Load the peer's public profile.
+    ///
+    /// THE OLD VERSION FAILED SILENTLY, THREE WAYS. `guard let peerId ... else { return }`
+    /// returned with no state change; `try?` swallowed every network and decode error; and
+    /// `profile` starting nil is indistinguishable from a load that never finished. All
+    /// three produced the same thing on screen: a profile with nothing on it, no spinner, no
+    /// message, and no way to retry. Each is now a distinct, visible state.
     private func loadProfile() async {
-        guard let peerId = conversation.peerUserId else { return }
-        profile = try? await ChatService.shared.userProfile(userId: peerId)
-        // Cache what the server told us, so the next visit (and every call from this
-        // person) can name them with no network at all.
-        if let p = profile {
+        guard let peerId = conversation.peerUserId else {
+            // No peer id at all — the conversation row never resolved one. Real, and not the
+            // user's fault, so it says so rather than rendering a blank page forever.
+            loadState = .failed
+            return
+        }
+
+        loadState = .loading
+        do {
+            let p = try await ChatService.shared.userProfile(userId: peerId)
+            profile = p
+            loadState = .loaded
+            // Cache what the server told us, so the next visit (and every call from this
+            // person) can name them with no network at all.
             UserDirectory.shared.upsertFromServer(userId: peerId, fullName: p.name,
                                                   username: p.username, photoURL: p.photoURL)
+        } catch {
+            // A cached name/photo is still worth showing — the header renders from the
+            // directory, so a failed fetch degrades to "less detail" rather than "nothing".
+            loadState = .failed
+            NSLog("[VOIID] profile load failed for \(peerId): \(error.localizedDescription)")
         }
     }
 
@@ -486,8 +666,7 @@ struct ContactProfileView: View {
             VStack(alignment: .leading, spacing: VoiidSpacing.md) { content() }
                 .padding(VoiidSpacing.md)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(VoiidColor.surfaceCard)
-                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
+                .glassCard()
         }
     }
 
@@ -499,5 +678,49 @@ struct ContactProfileView: View {
                 Spacer()
             }.padding(.vertical, 4)
         }.buttonStyle(.plain)
+    }
+}
+
+// MARK: - Glass card
+
+extension View {
+    /// A translucent card in the system material.
+    ///
+    /// `.regularMaterial`, NOT a flat `surfaceCard` fill. Material samples and blurs what is
+    /// behind it, so the cards pick up the portrait's colour as you scroll them over it —
+    /// the page reads as one continuous surface instead of opaque tiles sliding across a
+    /// photo. It is also the language the rest of the OS speaks in 2026, and the app already
+    /// uses it on the map and AI chrome.
+    ///
+    /// NOT `.glassEffect`: that is iOS 26-only and this project targets iOS 18, so it would
+    /// have to be availability-gated and would leave older devices with a flat fallback that
+    /// looks nothing like the design. Material gets the same result everywhere.
+    ///
+    /// THE HAIRLINE IS WHAT MAKES IT READ AS GLASS. Without a lit top edge a blurred
+    /// rectangle just looks like a washed-out fill; the 1px white-to-transparent stroke is
+    /// the specular highlight that says "this has a surface". The shadow is deliberately
+    /// soft and low-opacity — enough to lift the card off the ground, not enough to look
+    /// like a dropped box.
+    /// Apply [glassCard] only when `condition` holds, so a caller can switch between a solid
+    /// and a glass treatment without duplicating the whole view.
+    @ViewBuilder
+    func glassIfNeeded(_ condition: Bool, cornerRadius: CGFloat = 20) -> some View {
+        if condition { glassCard(cornerRadius: cornerRadius) } else { self }
+    }
+
+    func glassCard(cornerRadius: CGFloat = 20) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        return self
+            .background(.regularMaterial, in: shape)
+            .overlay(
+                shape.strokeBorder(
+                    LinearGradient(
+                        colors: [.white.opacity(0.28), .white.opacity(0.04)],
+                        startPoint: .top, endPoint: .bottom
+                    ),
+                    lineWidth: 1
+                )
+            )
+            .shadow(color: .black.opacity(0.10), radius: 14, y: 6)
     }
 }

@@ -17,6 +17,7 @@ struct ChatsHomeView: View {
     @State private var deleteTarget: VConversation?
     @State private var callTarget: VConversation?
     @State private var activeCall: CallRequest?
+    @ObservedObject private var layoutPref = ChatLayoutPreference.shared
     @State private var showNewChat = false
     @State private var showFindByUsername = false
     @State private var showRequests = false
@@ -62,13 +63,29 @@ struct ChatsHomeView: View {
                     .padding(.bottom, VoiidSpacing.sm)
                 }
                 if search.isEmpty {
-                    // Home-screen-style draggable grid (reorder + drag to Call/Delete zones)
-                    DraggableChatGrid(
-                        items: tab == .chats ? $chat.directConversations : $chat.groupConversations,
-                        onOpen: { openConversation = $0 },
-                        onCall: { callTarget = $0 },
-                        onDelete: { deleteTarget = $0 }
-                    )
+                    // THREE STATES, not one. The grid used to render for all of them, so a
+                    // fresh install and a still-loading list both showed the same blank
+                    // screen — the first thing a new user ever sees, indistinguishable from
+                    // the app being broken.
+                    // "Empty" means no REAL conversations. Note to Self always exists, so a
+                    // plain isEmpty check would never fire on the Chats tab and a brand-new
+                    // user would see one lonely tile with no explanation of what to do next.
+                    let realItems = items.filter { $0.type != .self }
+                    if !chat.didLoadConversations && realItems.isEmpty {
+                        chatsLoadingState
+                    } else if realItems.isEmpty {
+                        chatsEmptyState
+                    } else if layoutPref.layout == .grid {
+                        // Home-screen-style draggable grid (reorder + drag to Call/Delete zones)
+                        DraggableChatGrid(
+                            items: tab == .chats ? $chat.directConversations : $chat.groupConversations,
+                            onOpen: { openConversation = $0 },
+                            onCall: { callTarget = $0 },
+                            onDelete: { deleteTarget = $0 }
+                        )
+                    } else {
+                        chatListLayout(items)
+                    }
                 } else {
                     // Search results — existing chats grid + contacts you can start a chat with.
                     ScrollView {
@@ -422,6 +439,137 @@ struct ChatsHomeView: View {
         }
     }
 
+    /// The classic list layout. See ChatLayoutPreference for why this exists alongside the
+    /// grid, and ChatListRows for the per-row design decisions.
+    private func chatListLayout(_ items: [VConversation]) -> some View {
+        List {
+            ForEach(items) { conv in
+                ChatListRow(
+                    conversation: conv,
+                    onTap: { openConversation = conv },
+                    onCall: { callTarget = conv },
+                    onDelete: { deleteTarget = conv }
+                )
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(VoiidColor.background)
+                .listRowSeparatorTint(VoiidColor.divider.opacity(0.5))
+                // Inset the separator to start at the TEXT, not the screen edge — the
+                // avatar column reads as a gutter, and a full-width rule cuts through it.
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 54 + VoiidSpacing.md * 2 }
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(VoiidColor.background)
+    }
+
+    // MARK: - Empty / loading states
+
+    /// Shown while the FIRST server load is still in flight and we have nothing cached.
+    ///
+    /// Deliberately not a bare spinner in the middle of a void: three dimmed placeholder
+    /// tiles in the same grid shape the real chats will occupy, so the layout does not jump
+    /// when content lands and the screen reads as "filling in" rather than "empty".
+    private var chatsLoadingState: some View {
+        VStack(spacing: VoiidSpacing.lg) {
+            LazyVGrid(columns: columns, spacing: VoiidSpacing.lg) {
+                ForEach(0..<6, id: \.self) { _ in
+                    RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
+                        .fill(VoiidColor.surfaceCard)
+                        .frame(height: 104)
+                        .opacity(0.55)
+                }
+            }
+            .padding(.horizontal, VoiidSpacing.lg)
+            Spacer(minLength: 0)
+        }
+        .padding(.top, VoiidSpacing.md)
+        // The shimmer is what separates "loading" from "broken" — a static grey grid reads
+        // as content that failed to render.
+        .modifier(PulsePlaceholder())
+        .accessibilityLabel("Loading chats")
+    }
+
+    /// A genuinely empty list — a fresh account, or one that has never started a chat.
+    ///
+    /// AN EMPTY STATE MUST OFFER THE WAY OUT. Saying "no chats yet" and stopping leaves the
+    /// user to hunt for the button; both routes into a first conversation are right here.
+    private var chatsEmptyState: some View {
+        VStack(spacing: VoiidSpacing.md) {
+            Spacer(minLength: VoiidSpacing.xl)
+
+            ZStack {
+                Circle()
+                    .fill(VoiidColor.primary.opacity(0.10))
+                    .frame(width: 88, height: 88)
+                Image(systemName: tab == .chats ? "bubble.left.and.bubble.right.fill" : "person.3.fill")
+                    .font(.system(size: 32, weight: .medium))
+                    .foregroundStyle(VoiidColor.primary)
+            }
+
+            Text(tab == .chats ? "No chats yet" : "No groups yet")
+                .font(VoiidFont.rounded(20, .semibold))
+                .foregroundStyle(VoiidColor.textPrimary)
+
+            Text(tab == .chats
+                 ? "Start a conversation with someone in your contacts, or find them by @username."
+                 : "Groups you create or get added to will appear here.")
+                .font(VoiidFont.rounded(14, .regular))
+                .foregroundStyle(VoiidColor.textSecondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, VoiidSpacing.xl)
+
+            if tab == .chats {
+                HStack(spacing: VoiidSpacing.sm) {
+                    Button {
+                        Haptics.tap(); showNewChat = true
+                    } label: {
+                        Label("New chat", systemImage: "square.and.pencil")
+                            .font(VoiidFont.rounded(15, .semibold))
+                            .foregroundStyle(VoiidColor.textOnPrimary)
+                            .padding(.horizontal, VoiidSpacing.md)
+                            .frame(height: 44)
+                            .background(VoiidColor.primary)
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(SoftPressStyle())
+
+                    Button {
+                        Haptics.tap(); showFindByUsername = true
+                    } label: {
+                        Label("Find by @username", systemImage: "at")
+                            .font(VoiidFont.rounded(15, .semibold))
+                            .foregroundStyle(VoiidColor.primary)
+                            .padding(.horizontal, VoiidSpacing.md)
+                            .frame(height: 44)
+                            .background(VoiidColor.primary.opacity(0.10))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(SoftPressStyle())
+                }
+                .padding(.top, VoiidSpacing.sm)
+            }
+
+            // Note to Self is a real, usable chat even with zero contacts — offer it here
+            // rather than hiding the one thing a brand-new user CAN do immediately.
+            if tab == .chats, let note = chat.directConversations.first(where: { $0.type == .self }) {
+                Button {
+                    Haptics.tap(); openConversation = note
+                } label: {
+                    Label("Open Note to Self", systemImage: "bookmark.fill")
+                        .font(VoiidFont.rounded(14, .medium))
+                        .foregroundStyle(VoiidColor.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .padding(.top, VoiidSpacing.xs)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
     private func gridCard(_ conv: VConversation) -> some View {
         VStack(spacing: VoiidSpacing.sm) {
             ZStack(alignment: .topTrailing) {
@@ -531,5 +679,22 @@ private struct GridCardAvatar: View {
             if image == nil { image = AvatarCache.cached(ref) }
             if image == nil, let ref { image = await AvatarCache.resolve(ref) }
         }
+    }
+}
+
+/// A slow opacity pulse for skeleton placeholders.
+///
+/// The point is to distinguish LOADING from BROKEN. A static grey grid reads as content that
+/// failed to render; the same grid breathing reads as content on its way. Deliberately gentle
+/// (0.45→0.85 over 1.1s) — a fast or high-contrast pulse draws the eye to the placeholder
+/// instead of to the content replacing it.
+struct PulsePlaceholder: ViewModifier {
+    @State private var on = false
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(on ? 0.85 : 0.45)
+            .animation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: on)
+            .onAppear { on = true }
     }
 }

@@ -76,8 +76,11 @@ final class ChatService {
         var convs = env.conversations.map { c in
             VConversation(
                 id: c.id,
-                type: c.type == "group" ? .group : .direct,
-                title: c.name ?? "Direct chat",
+                // Explicit mapping. `?? .direct` would silently turn a self-chat into a
+                // direct one, and the peer-resolution pass below would then hunt for a
+                // second member that does not exist.
+                type: ConversationType(rawValue: c.type) ?? .direct,
+                title: c.type == "self" ? "Note to Self" : (c.name ?? "Direct chat"),
                 photoName: nil,
                 lastMessagePreview: c.last_ciphertext == nil ? nil : "Encrypted message",
                 lastMessageAt: c.last_message_at.flatMap { iso.date(from: $0) },
@@ -119,6 +122,14 @@ final class ChatService {
     func createDirect(memberId: String) async throws -> String {
         struct Body: Encodable { let type = "direct"; let member_id: String }
         let env: CreateConvEnvelope = try await api.request("POST", "conversations/create", body: Body(member_id: memberId))
+        return env.conversation_id
+    }
+
+    /// Create (or fetch) the caller's Note to Self. Idempotent server-side — there is
+    /// exactly one per user, ever — so this is safe to call on every launch.
+    func createSelfChat() async throws -> String {
+        struct Body: Encodable { let type = "self" }
+        let env: CreateConvEnvelope = try await api.request("POST", "conversations/create", body: Body())
         return env.conversation_id
     }
 

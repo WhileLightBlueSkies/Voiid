@@ -105,6 +105,17 @@ enum VoiidColor {
     // red AND carries its icon and label.
 
     static let success = dyn(0x1F7A52, 0x63C78D)
+
+    /// Online-presence green, used where the word "Online" is TEXT rather than a fill.
+    ///
+    /// Darker than [success] in the light theme on purpose. `success` is 4.61:1 on the light
+    /// ground — a pass, but only just, and the place this is read is the chat toolbar, which
+    /// is translucent Liquid Glass: the real backdrop is whatever bubble or photo is
+    /// scrolling underneath, not the ground colour the ratio was measured against. 6.58:1
+    /// keeps it legible against a white bubble (7.55:1) as well as the ground.
+    ///
+    /// Dark mode keeps [success] unchanged — it is already 9.38:1 there.
+    static let onlineText = dyn(0x17603F, 0x63C78D)
     static let error   = dyn(0xC0392F, 0xEF7A6B)
     static let warning = dyn(0xB07818, 0xE0A83C)
     static let info    = dyn(0x2A5B8F, 0x7FB0E0)

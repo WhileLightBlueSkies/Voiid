@@ -199,6 +199,13 @@ final class ChatStore: ObservableObject {
     // account shows an empty list, which confirms we're reading the live server
     // (not mock). Message content is still E2EE/not-yet-decrypted (placeholder).
     @Published var directConversations: [VConversation] = []
+    /// False until the first server load finishes.
+    ///
+    /// WITHOUT THIS "still loading" and "you have no chats" render identically — a blank
+    /// screen. On a fresh install that blank is the first thing a new user ever sees, and it
+    /// is indistinguishable from the app being broken. Local chats paint instantly from
+    /// SQLite, so this only ever gates the genuinely-empty case.
+    @Published var didLoadConversations = false
     @Published var groupConversations: [VConversation] = []
     @Published var messagesByConversation: [String: [VMessage]] = [:]
     /// Finished calls per conversation, as transcript bubbles. Kept SEPARATE from the message
@@ -251,6 +258,11 @@ final class ChatStore: ObservableObject {
         // Render from disk before touching the network.
         applyLocalConversations()
 
+        // Ensure Note to Self exists before the list is fetched, so it appears on first
+        // launch rather than only after a second one. Idempotent server-side; a failure here
+        // is not worth surfacing — the list still loads, and the next launch retries.
+        _ = try? await ChatService.shared.createSelfChat()
+
         do {
             let convs = try await ChatService.shared.fetchConversations()
             LocalStore.saveConversations(convs)
@@ -275,6 +287,10 @@ final class ChatStore: ObservableObject {
                 loadError = nil
             }
         }
+        // Set on BOTH paths — success and failure. A load that failed is still a load that
+        // finished; leaving this false would strand the user on a spinner forever with the
+        // error banner hidden behind it.
+        didLoadConversations = true
     }
 
     /// Publish whatever the local database currently holds.
@@ -292,7 +308,11 @@ final class ChatStore: ObservableObject {
         // (WhatsApp-style). Previews stay fresh via bumpPreview at message-write time.
         let convs = LocalStore.conversations()
         guard !convs.isEmpty else { return }
-        directConversations = convs.filter { $0.type == .direct }
+        // Note to Self lives in CHATS, pinned to the top — it is the one conversation whose
+        // position should never move, because you reach for it by muscle memory rather than
+        // by recency. Filtering to `.direct` alone would have dropped it from both lists.
+        let selfChats = convs.filter { $0.type == .self }
+        directConversations = selfChats + convs.filter { $0.type == .direct }
         groupConversations = convs.filter { $0.type == .group }
         backfillPreviewsIfNeeded()
     }

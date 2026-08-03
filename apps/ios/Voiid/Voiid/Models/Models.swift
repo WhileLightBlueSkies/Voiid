@@ -90,7 +90,9 @@ struct VMessage: Identifiable, Hashable {
     }
 }
 
-enum ConversationType: String { case direct, group }
+/// `self` is Note to Self — your own private scratchpad. One member (you), its own type so
+/// it can never satisfy the "exactly two members" lookup that identifies a real 1:1.
+enum ConversationType: String { case direct, group, `self` }
 
 struct VConversation: Identifiable, Hashable {
     let id: String

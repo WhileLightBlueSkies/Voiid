@@ -317,6 +317,17 @@ final class ChatEngine {
                 // Fan-out: encrypt ONCE PER TARGET DEVICE (peer's devices + our own other
                 // devices), build the per-device bundle, and POST it in one send.
                 let messages = try await encryptFanout(Data(p.text.utf8), peerUserId: peerUserId)
+
+                // A single-device NOTE TO SELF has no target devices (see encryptFanout).
+                // There is nothing to upload — the note already lives in the local store,
+                // which is the only place it was ever going to be read from. Mark it sent so
+                // it does not sit under a spinner forever waiting for a delivery that has no
+                // recipient.
+                if messages.isEmpty {
+                    markSent(localId: p.id, conversationId: conversationId, serverId: p.id)
+                    continue
+                }
+
                 let res: SendResponse = try await api.request(
                     "POST", "messages/send",
                     body: SendBundleBody(conversation_id: conversationId,
@@ -1025,6 +1036,21 @@ final class ChatEngine {
     /// so the message stays pending and re-sends once prekeys appear.
     private func encryptFanout(_ plaintext: Data, peerUserId: String) async throws -> [DeviceCiphertext] {
         let targets = try await resolveTargets(peerUserId)
+
+        // NOTE TO SELF on a single device: `peerUserId` is our own id, so `resolveTargets`
+        // correctly returns our other devices MINUS this one — which on one device is an
+        // empty list. That is not a failure and must not be retried forever: there is
+        // genuinely nowhere to send, because the only reader is already holding the
+        // plaintext. The note is stored locally and marked sent.
+        //
+        // The moment a second device is linked it starts receiving new notes like any other
+        // message. Notes written before that point stay on the device that wrote them —
+        // there is no ciphertext on the server to backfill from, which is the honest
+        // consequence of end-to-end encryption rather than a gap to paper over.
+        if targets.isEmpty, peerUserId == TokenStore.shared.userId {
+            return []
+        }
+
         if targets.isEmpty { throw APIError.http(status: 409, message: "no target devices for peer") }
         let out = try await fanOut(plaintext, targets: targets)
         // Nothing deliverable (e.g. peer hasn't published prekeys yet) — retryable, like the
@@ -1121,6 +1147,22 @@ final class ChatEngine {
     // MARK: - Peer key resolution
 
     private struct DeviceDTO: Decodable { let id: String; let identity_public_key: String }
+
+    /// A peer device's identity key, for SAFETY-NUMBER display.
+    ///
+    /// Reads GET /devices/:user_id, NOT the prekey bundle. `GET /prekeys/:user_id` consumes a
+    /// one-time key per device on every call — using it to draw a verification screen would
+    /// burn the peer's prekey supply every time someone opened the sheet, and a device that
+    /// runs out cannot receive a first message from anyone.
+    struct PeerIdentity: Identifiable {
+        let id: String            // device id
+        let identityKey: String   // base64 Ed25519
+    }
+
+    func peerIdentities(userId: String) async throws -> [PeerIdentity] {
+        let res: DevicesResponse = try await api.request("GET", "devices/\(userId)")
+        return res.devices.map { PeerIdentity(id: $0.id, identityKey: $0.identity_public_key) }
+    }
     private struct DevicesResponse: Decodable { let devices: [DeviceDTO] }
     private struct BundleDTO: Decodable {
         let device_id: String?

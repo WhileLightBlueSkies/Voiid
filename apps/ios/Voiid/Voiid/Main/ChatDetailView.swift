@@ -29,6 +29,7 @@ struct ChatDetailView: View {
     @State private var photoItem: PhotosPickerItem?
     @State private var fullscreenImage: UIImage?
     @State private var showInfo = false       // group info / contact profile
+    @State private var showSafetyNumber = false
     @State private var showAttach = false     // attach menu (photo / poll)
     @State private var showPollCompose = false
     @State private var showLocationCompose = false   // location share compose sheet
@@ -137,11 +138,21 @@ struct ChatDetailView: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { startCall(kind) }
         }
         .navigationDestination(isPresented: $showInfo) {
-            if conversation.type == .group {
+            switch conversation.type {
+            case .group:
                 GroupInfoView(conversation: conversation)
-            } else {
+            case .self:
+                // Note to Self has no peer, so ContactProfileView would open, find
+                // `peerUserId == nil`, and render a profile of nobody. There is no second
+                // person to show — the header is not a link.
+                EmptyView()
+            case .direct:
                 ContactProfileView(conversation: conversation, pendingCall: $pendingCall)
             }
+        }
+        .sheet(isPresented: $showSafetyNumber) {
+            SafetyNumberView(peerUserId: conversation.peerUserId ?? "",
+                             peerName: conversation.title)
         }
         .sheet(isPresented: $showGifPicker) {
             GifPickerSheet { data in
@@ -313,7 +324,9 @@ struct ChatDetailView: View {
     @ToolbarContentBuilder
     private var chatToolbar: some ToolbarContent {
         ToolbarItem(placement: .principal) {
-            Button { Haptics.tap(); showInfo = true } label: {
+            // Note to Self has nothing behind the header — see navigationDestination. A
+            // button that opens an empty screen is worse than a label that does nothing.
+            Button { guard conversation.type != .self else { return }; Haptics.tap(); showInfo = true } label: {
                 HStack(spacing: VoiidSpacing.sm) {
                     ProfileAvatarButton(photoURL: conversation.photoURL,
                                         name: conversation.title, size: 34)
@@ -323,10 +336,37 @@ struct ChatDetailView: View {
                             .foregroundColor(VoiidColor.textPrimary)
                             .lineLimit(1)
                         if let presenceText {
-                            Text(presenceText)
-                                .font(VoiidFont.rounded(11, .regular))
-                                .foregroundColor(chat.typingConversations.contains(conversation.id) ? VoiidColor.primary : VoiidColor.textSecondary)
-                                .lineLimit(1)
+                            // 12pt MEDIUM, not 11pt regular.
+                            //
+                            // The colour already passed WCAG on paper — textSecondary is
+                            // 6.06:1 on the light ground and 7.57:1 on the dark one. That
+                            // measurement is misleading here: this line sits in a Liquid
+                            // Glass toolbar, so the real backdrop is not the ground colour
+                            // at all, it is whatever chat content happens to be scrolling
+                            // underneath, blurred. Against a photo or a filled bubble the
+                            // effective contrast is far lower than the number suggests.
+                            //
+                            // Weight is what survives that. A thin 11pt glyph has almost no
+                            // ink to carry against a busy translucent backdrop; the same
+                            // text one step heavier and one point larger stays legible
+                            // without shouting, and "Online" reads as status rather than as
+                            // a caption someone forgot to style.
+                            //
+                            // ONLINE ALSO GETS A DOT. Presence is the one fact here worth
+                            // spotting without reading, and a green dot is how every
+                            // messenger signals it — colour alone would fail for the ~1 in
+                            // 12 men with a colour-vision deficiency, so the word stays too.
+                            HStack(spacing: 4) {
+                                if isPeerOnline {
+                                    Circle()
+                                        .fill(VoiidColor.success)
+                                        .frame(width: 6, height: 6)
+                                }
+                                Text(presenceText)
+                                    .font(VoiidFont.rounded(12, .medium))
+                                    .foregroundColor(presenceTint)
+                                    .lineLimit(1)
+                            }
                         }
                     }
                 }
@@ -394,6 +434,23 @@ struct ChatDetailView: View {
         chat.directConversations.first(where: { $0.id == conversation.id })?.peerUserId ?? conversation.peerUserId
     }
 
+    /// True only for a 1:1 peer who is actually online — drives the status dot. Groups show
+    /// a member count, which is not presence, so they never get one.
+    private var isPeerOnline: Bool {
+        guard conversation.type == .direct, privacy.showOnlineStatus,
+              !chat.typingConversations.contains(conversation.id) else { return false }
+        return chat.directConversations.first(where: { $0.id == conversation.id })?.isOnline == true
+    }
+
+    /// Typing and Online are STATES worth noticing; "last seen" and a member count are
+    /// reference facts. Tinting the first two and leaving the rest secondary is what makes
+    /// the line scannable instead of uniformly grey.
+    private var presenceTint: Color {
+        if chat.typingConversations.contains(conversation.id) { return VoiidColor.primary }
+        if isPeerOnline { return VoiidColor.onlineText }
+        return VoiidColor.textSecondary
+    }
+
     /// `nil` when there is no line to draw, so the caller omits the `Text` entirely
     /// rather than laying out an empty one.
     private var presenceText: String? {
@@ -415,6 +472,12 @@ struct ChatDetailView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: VoiidSpacing.sm) {
+                    // Shown ONCE, at the very top of the transcript — the same place and the
+                    // same moment WhatsApp puts it. It scrolls away with the history rather
+                    // than pinning, because it is a fact about the conversation, not a
+                    // persistent status bar.
+                    if showsEncryptionNotice { encryptionNotice }
+
                     ForEach(groupedByDay, id: \.0) { day, msgs in
                         DateSeparator(text: day)
                         ForEach(msgs) { msg in
@@ -442,6 +505,78 @@ struct ChatDetailView: View {
             }
             .onAppear { proxy.scrollTo(lastID, anchor: .bottom) }
         }
+    }
+
+    /// Whether to draw the end-to-end encryption notice.
+    ///
+    /// ONLY ON A NEW CHAT. Once there is real history the notice is just a line of text
+    /// pushed a thousand messages up where nobody will ever scroll — the moment it is worth
+    /// reading is the moment you open a conversation for the first time. Six messages is the
+    /// cutoff: enough that a couple of exchanged greetings still show it, few enough that an
+    /// established chat does not.
+    ///
+    /// Note to Self is excluded: a note you wrote to yourself has no second party for the
+    /// guarantee to be ABOUT, and claiming one there is noise.
+    private var showsEncryptionNotice: Bool {
+        conversation.type != .self && chat.messages(for: conversation.id).count < 6
+    }
+
+    /// The E2EE notice.
+    ///
+    /// SAYS WHAT IS ACTUALLY TRUE, and says it specifically. "Your messages are encrypted"
+    /// is vague enough to be worthless — the question people actually have is whether the
+    /// PHOTOS and VOICE NOTES are covered too, because that is the part every other app is
+    /// evasive about. Naming them is the point.
+    ///
+    /// TAPPABLE, now that there is somewhere honest to go: it opens the safety number, the
+    /// same way WhatsApp's notice opens key verification. A claim the user cannot check is a
+    /// claim they have to take on faith, and the tap is what makes it checkable.
+    private var encryptionNotice: some View {
+        Button {
+            guard conversation.peerUserId != nil else { return }
+            Haptics.tap()
+            showSafetyNumber = true
+        } label: {
+            encryptionNoticeLabel
+        }
+        .buttonStyle(.plain)
+        .disabled(conversation.peerUserId == nil)
+    }
+
+    private var encryptionNoticeLabel: some View {
+        HStack(alignment: .top, spacing: VoiidSpacing.sm) {
+            Image(systemName: "lock.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(VoiidColor.textSecondary)
+                .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Messages, photos, videos, voice notes and calls in this chat are "
+                     + "**end-to-end encrypted**. Not even Voiid can read or listen to them.")
+                    .font(VoiidFont.rounded(12, .regular))
+                    .foregroundStyle(VoiidColor.textSecondary)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if conversation.peerUserId != nil {
+                    // The affordance has to be visible or the tap is a secret. Groups have no
+                    // single peer to compare against, so they get the statement without it.
+                    Text("Tap to verify")
+                        .font(VoiidFont.rounded(12, .semibold))
+                        .foregroundStyle(VoiidColor.primary)
+                }
+            }
+        }
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.vertical, 10)
+        .frame(maxWidth: 320)
+        // A soft tinted plate rather than a card: it must read as a system aside, not as a
+        // message someone sent. Centring it reinforces that — every real bubble is sided.
+        .background(VoiidColor.warning.opacity(0.10))
+        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+        .frame(maxWidth: .infinity)
+        .padding(.bottom, VoiidSpacing.sm)
+        .accessibilityElement(children: .combine)
     }
 
     // Extracted per-message row (keeps messageList small enough for the type-checker).

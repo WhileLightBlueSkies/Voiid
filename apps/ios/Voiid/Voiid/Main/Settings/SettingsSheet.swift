@@ -140,6 +140,7 @@ struct SettingsSheet: View {
     @EnvironmentObject var session: AppSession
     /// Light / Dark / System, applied app-wide at ContentView.
     @ObservedObject private var theme = ThemePreference.shared
+    @ObservedObject private var chatLayout = ChatLayoutPreference.shared
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
 
@@ -339,6 +340,24 @@ struct SettingsSheet: View {
             NavigationLink(value: SettingsRoute.storage) {
                 rowLabel("Storage", systemImage: "internaldrive")
             }
+
+            // Chat list layout — same reasoning as Appearance below: two options, and the
+            // result is on the screen you just came from, so a pushed screen would mean
+            // choosing blind and navigating back to check.
+            VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+                rowLabel("Chat list", systemImage: "rectangle.grid.2x2")
+                Picker("Chat list", selection: Binding(
+                    get: { chatLayout.layout },
+                    set: { Haptics.selection(); chatLayout.layout = $0 }
+                )) {
+                    ForEach(ChatLayoutPreference.Layout.allCases) { l in
+                        Label(l.label, systemImage: l.icon).tag(l)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+            .padding(.vertical, 2)
 
             // Appearance is INLINE, not a pushed screen: there are exactly three options and
             // the result is visible the instant you tap, so navigating away to choose and
