@@ -12,8 +12,15 @@
 // So it is DRY RUN BY DEFAULT. It prints exactly what it would remove and exits. Deleting
 // only happens when you pass --confirm, which is deliberately awkward to type by accident.
 //
-//   node scripts/wipe-clips.mjs              # counts only, deletes nothing
-//   node scripts/wipe-clips.mjs --confirm    # actually deletes
+//   node scripts/wipe-clips.mjs                             # counts only, deletes nothing
+//   node scripts/wipe-clips.mjs --confirm                   # deletes clips + media
+//   node scripts/wipe-clips.mjs --confirm --reset-profiles  # ALSO wipes creator identity
+//
+// --reset-profiles additionally clears creator_profiles, creator_follows and
+// creator_handle_history. Without it, a wipe leaves every user still holding their old
+// handle — so the "create a profile before you post" gate never fires for them, and the
+// first-post flow cannot actually be tested on a supposedly fresh database. WITH it, every
+// handle returns to the pool and every user goes through the picker again.
 //
 // ORDER MATTERS. R2 objects go FIRST, rows second. The keys only exist in the rows, so
 // deleting rows first would orphan every video in the bucket with no way left to find it —
@@ -28,6 +35,11 @@ import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CONFIRM = process.argv.includes('--confirm');
+// SEPARATE FLAG, deliberately. Wiping clips is about content; wiping creator profiles
+// destroys IDENTITY — handles, follower graphs, avatars. Someone clearing out test videos
+// almost never means "and release every @handle on the platform", so it must be asked for
+// explicitly rather than riding along with --confirm.
+const RESET_PROFILES = process.argv.includes('--reset-profiles');
 
 // ---- config -----------------------------------------------------------------
 
@@ -41,7 +53,19 @@ function env(name, required = true) {
   return v;
 }
 
-const pool = new pg.Pool({ connectionString: env('DATABASE_URL') });
+// TLS settings copied from src/db.ts so this script reaches the SAME database the API
+// does. Managed Postgres (Supabase, RDS) terminates TLS with a chain Node does not trust
+// out of the box; local development has no TLS at all.
+// `?sslmode=require` in the URL takes precedence over the `ssl` option below and makes
+// node-postgres verify the chain, which managed Postgres fails. Strip it so the explicit
+// setting wins — the connection is still TLS, just without chain verification, exactly as
+// the API does it.
+const dbUrl = env('DATABASE_URL').replace(/[?&]sslmode=[a-z-]+/i, '');
+const isLocalDb = /@(localhost|127\.0\.0\.1)/.test(dbUrl);
+const pool = new pg.Pool({
+  connectionString: dbUrl,
+  ssl: isLocalDb ? undefined : { rejectUnauthorized: false },
+});
 
 // Matches src/r2.ts exactly — R2_ENDPOINT is the full URL, not an account id. Building the
 // URL here from a different variable would mean this script works against a different
@@ -64,12 +88,19 @@ const { rows } = await pool.query(`
    order by created_at
 `);
 
+// creator_profiles may not exist on a database that has not run 029 yet — to_regclass
+// returns null instead of throwing, so this script still works mid-migration.
+const hasProfiles = (await pool.query(
+  `select to_regclass('public.creator_profiles') is not null as ok`)).rows[0].ok;
+
 const counts = await pool.query(`
   select
     (select count(*) from clips)          ::int as clips,
     (select count(*) from clip_likes)     ::int as likes,
     (select count(*) from clip_views)     ::int as views,
-    (select count(*) from clip_comments)  ::int as comments
+    (select count(*) from clip_comments)  ::int as comments,
+    ${hasProfiles ? "(select count(*) from creator_profiles)::int" : '0'} as profiles,
+    ${hasProfiles ? "(select count(*) from creator_follows)::int" : '0'}  as follows
 `);
 const c = counts.rows[0];
 
@@ -89,6 +120,8 @@ console.log(`  authors      ${authors.size}`);
 console.log(`  likes        ${c.likes}`);
 console.log(`  views        ${c.views}`);
 console.log(`  comments     ${c.comments}`);
+console.log(`  profiles     ${c.profiles}${RESET_PROFILES ? '' : '   (kept — pass --reset-profiles)'}`);
+console.log(`  follows      ${c.follows}${RESET_PROFILES ? '' : '   (kept — pass --reset-profiles)'}`);
 console.log(`  R2 objects   ${keys.length}`);
 console.log(`  video bytes  ${(bytes / 1e6).toFixed(1)} MB`);
 console.log('');
@@ -126,8 +159,17 @@ try {
   await client.query('delete from clip_views');
   await client.query('delete from clip_likes');
   await client.query('delete from clips');
+  if (RESET_PROFILES) {
+    // Order matters: follows reference profiles' users, and handle history references the
+    // user too. Deleting profiles first would work by cascade, but doing it explicitly keeps
+    // the intent readable and does not depend on a foreign key someone may later alter.
+    await client.query('delete from creator_follows');
+    await client.query('delete from creator_handle_history');
+    await client.query('delete from creator_profiles');
+  }
   await client.query('commit');
   console.log(`  DB: all clip rows deleted`);
+  if (RESET_PROFILES) console.log('  DB: creator profiles, follows and handle history reset');
 } catch (e) {
   await client.query('rollback');
   console.error('  DB delete FAILED, rolled back:', e.message);

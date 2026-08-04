@@ -229,10 +229,22 @@ struct CreatorProfileView: View {
         } else {
             LazyVGrid(columns: columns, spacing: 2) {
                 ForEach(rows) { clip in
+                    // THE ASPECT RATIO BELONGS ON THE CELL, NOT THE IMAGE.
+                    //
+                    // This grid overlapped its own rows. `ClipThumbnail` uses scaledToFill,
+                    // which reports an UNBOUNDED ideal height — putting .aspectRatio on the
+                    // image only clips the picture, it never tells the cell how tall to be.
+                    // The other grids get away with it because they sit directly inside a
+                    // ScrollView, which hands its children a definite width to resolve
+                    // against; this one is nested in a VStack beside the profile header,
+                    // where nothing constrains the cell and every row bleeds into the next.
+                    //
+                    // Constraining the ZStack fixes it at the source: the cell is a 9:16 box,
+                    // the image fills and clips inside it, and the layout is identical to the
+                    // other grids by construction rather than by luck.
                     ZStack(alignment: .bottomLeading) {
                         ClipThumbnail(url: clip.thumb_url)
-                            .aspectRatio(9.0 / 16.0, contentMode: .fill)
-                            .clipped()
+                            .scaledToFill()
 
                         LinearGradient(colors: [.clear, .black.opacity(0.55)],
                                        startPoint: .center, endPoint: .bottom)
@@ -246,6 +258,9 @@ struct CreatorProfileView: View {
                         .shadow(radius: 2)
                         .padding(6)
                     }
+                    .frame(maxWidth: .infinity)
+                    .aspectRatio(9.0 / 16.0, contentMode: .fit)
+                    .clipped()
                     .contentShape(Rectangle())
                     .task {
                         await creators.loadMoreClipsIfNeeded(handle: handle, currentItem: clip)

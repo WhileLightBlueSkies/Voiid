@@ -192,10 +192,13 @@ struct ClipsFeedView: View {
     }
 
     private func followingTile(_ clip: CreatorService.CreatorClipRow) -> some View {
+        // Aspect ratio on the CELL, not the image — see the note in CreatorProfileView.
+        // scaledToFill reports an unbounded ideal height, so a tile that constrains only the
+        // image depends on its container handing down a definite size. That holds here today
+        // and does not in a VStack, which is exactly how the profile grid came to overlap.
         ZStack(alignment: .bottomLeading) {
             ClipThumbnail(url: clip.thumb_url)
-                .aspectRatio(9.0 / 16.0, contentMode: .fill)
-                .clipped()
+                .scaledToFill()
             LinearGradient(colors: [.clear, .black.opacity(0.6)],
                            startPoint: .center, endPoint: .bottom)
             VStack(alignment: .leading, spacing: 1) {
@@ -214,6 +217,9 @@ struct ClipsFeedView: View {
             .shadow(radius: 2)
             .padding(6)
         }
+        .frame(maxWidth: .infinity)
+        .aspectRatio(9.0 / 16.0, contentMode: .fit)
+        .clipped()
         .contentShape(Rectangle())
     }
 
