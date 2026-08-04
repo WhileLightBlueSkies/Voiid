@@ -39,8 +39,14 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         /** ~3 degrees. Below this the thumb is jittering, not turning. */
         private const val HEADING_EPSILON = 0.05
 
-        /** How many server frames the jitter buffer holds. */
-        private const val SNAKE_BUFFER = 4
+        /**
+         * How many server frames the jitter buffer holds.
+         *
+         * Must comfortably exceed INTERP_DELAY expressed in ticks, or the renderer runs off
+         * the end of the buffer and stalls — 8 frames is 800 ms of history against a 250 ms
+         * render delay, so even a badly late frame still has something to interpolate toward.
+         */
+        private const val SNAKE_BUFFER = 8
         @Volatile private var instance: GamesEngine? = null
         fun get(context: Context): GamesEngine =
             instance ?: synchronized(this) {
@@ -175,6 +181,8 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
             val deaths: Int,
             val score: Int,
             val invulnUntil: Double,
+            /** Dead AND past the respawn delay: the client may offer its Respawn button. */
+            val canRespawn: Boolean,
             val colorIndex: Int,
         )
 
@@ -318,6 +326,7 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
                 deaths = o.int("d") ?: 0,
                 score = o.int("s") ?: 0,
                 invulnUntil = o.dbl("iv") ?: 0.0,
+                canRespawn = o.bool("cr") ?: false,
                 colorIndex = o.int("c") ?: 0,
             )
         }
@@ -609,6 +618,12 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
      */
     fun releaseSteering() {
         desiredHeading = null
+    }
+
+    /** Ask the server to put a dead snake back in. Ignored until the delay has elapsed. */
+    fun requestRespawn(context: Context) {
+        val id = matchId ?: return
+        WebSocketClient.get(context).sendGameInput(id, """{"respawn":true}""")
     }
 
     private var lastSteerSentAt = 0L

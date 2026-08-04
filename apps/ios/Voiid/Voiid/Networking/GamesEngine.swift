@@ -204,6 +204,8 @@ struct SnakeState {
         let deaths: Int
         let score: Int
         let invulnUntil: Double
+        /// Dead AND past the respawn delay: the client may offer its Respawn button.
+        let canRespawn: Bool
         let colorIndex: Int
     }
 
@@ -285,6 +287,7 @@ struct SnakeState {
                 deaths: (s["d"] as? Int) ?? 0,
                 score: (s["s"] as? Int) ?? 0,
                 invulnUntil: (s["iv"] as? Double) ?? 0,
+                canRespawn: (s["cr"] as? Bool) ?? false,
                 colorIndex: (s["c"] as? Int) ?? 0)
         }
 
@@ -361,7 +364,7 @@ final class GamesEngine: ObservableObject {
     /// an array of structs, so the read is safe and cheap.
     nonisolated(unsafe) private(set) var snakeFramesSnapshot: [SnakeFrame] = []
 
-    private static let SNAKE_BUFFER = 4
+    private static let SNAKE_BUFFER = 8
     /// Set when the join REST call fails, so the screen can show something truthful
     /// instead of an empty board that will never update.
     @Published private(set) var joinError: String?
@@ -574,6 +577,12 @@ final class GamesEngine: ObservableObject {
     /// The finger left the stick. Stop resending; the snake keeps its heading.
     func releaseSteering() {
         desiredHeading = nil
+    }
+
+    /// Ask the server to put a dead snake back in. Ignored until the delay has elapsed.
+    func requestRespawn() {
+        guard let matchId else { return }
+        WebSocketClient.shared.sendGameInput(matchId: matchId, payload: ["respawn": true])
     }
 
     private static let steerInterval: TimeInterval = 0.06

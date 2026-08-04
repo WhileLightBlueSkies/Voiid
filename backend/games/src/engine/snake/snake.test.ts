@@ -174,9 +174,22 @@ console.log('\nSnake engine\n');
     if (!(state.snakes as any[])[0].a) break;
   }
 
-  // Then wait out the respawn delay without steering.
+  // Wait out the delay, then ASK to respawn. Humans are no longer put back automatically —
+  // being teleported into play unprompted meant a player never saw that they had died.
   for (let i = 0; i < Math.ceil(TUNING.RESPAWN_DELAY * TUNING.TICK_HZ) + 4; i++) {
     const e = snake.restore(state);
+    e.tick!();
+    state = e.serialize();
+  }
+
+  check('a dead human stays dead until it asks',
+    (state.snakes as any[])[0].a === false);
+  check('the client is told it may respawn',
+    (state.snakes as any[])[0].cr === true);
+
+  {
+    const e = snake.restore(state);
+    e.applyInput('u1', { respawn: true });
     e.tick!();
     state = e.serialize();
   }
