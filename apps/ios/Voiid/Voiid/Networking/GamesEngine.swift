@@ -547,10 +547,19 @@ final class GamesEngine: ObservableObject {
         // fraction of a degree even when held still, and without this floor every one of
         // those micro-movements consumed a send slot — so a REAL turn arriving moments later
         // had to wait out the interval behind noise.
-        var delta = heading - lastSentHeading
+        // Compared against the heading the SERVER last reported, not the last one sent.
+        //
+        // Against lastSentHeading this broke completely after a respawn: the server resets a
+        // respawned snake's heading, but the client still remembered what it sent before
+        // dying — so a thumb held in roughly the same place produced a sub-epsilon delta and
+        // every frame was suppressed as a no-op while the snake actually pointed elsewhere.
+        // Steering looked dead for the whole life, and only a big deliberate swing revived it.
+        let serverHeading = snake.snakes.first { $0.id == TokenStore.shared.userId }?.heading
+        let reference = serverHeading ?? lastSentHeading
+        var delta = heading - reference
         while delta > .pi { delta -= 2 * .pi }
         while delta < -.pi { delta += 2 * .pi }
-        let moved = abs(delta) >= Self.headingEpsilon
+        let moved = !reference.isFinite || abs(delta) >= Self.headingEpsilon
 
         guard boostChanged || (moved && now - lastSteerSentAt >= Self.steerInterval) else {
             if moved { pendingHeading = heading }
