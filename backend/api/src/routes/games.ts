@@ -72,10 +72,14 @@ router.post(
     const opponents = opponent_ids.filter(
       (id: unknown): id is string => typeof id === 'string' && UUID_RE.test(id) && id !== userId
     );
-    if (opponents.length === 0) {
-      return res.status(400).json({ error: 'at least one opponent required' });
-    }
 
+    // NO blanket "at least one opponent" check here.
+    //
+    // That guard was correct while every game was strictly 1:1, but it rejected a solo match
+    // BEFORE the min_players check below could allow one — so Snake's practice mode (one
+    // human, server-side bots) 400'd on every attempt even though its catalog row sets
+    // min_players = 1. The catalog is the authority on how many seats a game needs; encoding
+    // that a second time here just meant two sources of truth disagreeing.
     const games = await query<{ id: string; min_players: number; max_players: number }>(
       `select id, min_players, max_players from games where slug = $1 and enabled = true`,
       [slug]
