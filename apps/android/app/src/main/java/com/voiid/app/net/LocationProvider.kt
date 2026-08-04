@@ -54,9 +54,18 @@ class LocationProvider(context: Context) {
 
     /** One best-effort current fix (for the static pin). Never throws to the caller. */
     @SuppressLint("MissingPermission")
+    /**
+     * One fix, for a pin or for centring the picker.
+     *
+     * HIGH_ACCURACY, not BALANCED. Balanced returns a cell/wifi estimate — roughly 100 m, and
+     * often a CACHED one — which for a pin the user is placing deliberately meant a marker
+     * dropped a street or more from where they were standing. That is the "location is not
+     * accurate" report. `getCurrentLocation` (unlike `getLastLocation`) actively computes a
+     * fresh fix rather than handing back whatever is in the cache.
+     */
     fun currentFix(onResult: (Location?) -> Unit) {
         runCatching {
-            client.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, null)
+            client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
                 .addOnSuccessListener { onResult(it) }
                 .addOnFailureListener { onResult(null) }
         }.onFailure { onResult(null) }

@@ -71,10 +71,12 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         // Requires the `location` UIBackgroundMode (declared in Info.plist) or this traps.
         // Safe to set with WhenInUse; real background delivery needs Always.
         manager.allowsBackgroundLocationUpdates = true
+        isLiveStreaming = true
         manager.startUpdatingLocation()
     }
 
     func stopUpdating() {
+        isLiveStreaming = false
         manager.stopUpdatingLocation()
         // Drop background privileges the moment we stop, so nothing lingers.
         manager.allowsBackgroundLocationUpdates = false
@@ -86,8 +88,13 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
     /// failure so the caller can surface "couldn't get your location" rather than hang.
     func requestOneShot(timeout seconds: TimeInterval = 10, _ completion: @escaping (CLLocation?) -> Void) {
         oneShot = completion
+        bestOneShot = nil
         manager.desiredAccuracy = kCLLocationAccuracyBest
-        manager.requestLocation()
+        // startUpdatingLocation, NOT requestLocation: `requestLocation` delivers ONE result
+        // and stops, so a cached tower estimate arriving first ends the attempt with no
+        // chance of a better fix. A short stream lets accuracy converge, and fireOneShot
+        // stops it the moment a good fix lands or the timeout expires.
+        manager.startUpdatingLocation()
         oneShotTimeout?.cancel()
         oneShotTimeout = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
@@ -96,17 +103,63 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         }
     }
 
+    /// The most accurate fix seen during the current one-shot window, so a timeout can still
+    /// return the best available rather than nothing.
+    private var bestOneShot: CLLocation?
+
+    /// True while a LIVE SHARE owns the stream.
+    ///
+    /// A one-shot now uses startUpdatingLocation to let accuracy converge, so it must not
+    /// call stopUpdatingLocation if a live share is relying on that same stream — sending a
+    /// pin mid-share would otherwise silently kill the share's updates.
+    private var isLiveStreaming = false
+
     private func fireOneShot(_ location: CLLocation?) {
         oneShotTimeout?.cancel(); oneShotTimeout = nil
+        // Stop the convergence stream. Leaving it running would hold the GPS open for a pin
+        // that has already been sent.
+        if !isLiveStreaming { manager.stopUpdatingLocation() }
         let cb = oneShot; oneShot = nil
-        cb?(location)
+        // Fall back to the best candidate seen, not nil: a 90 m pin beats "couldn't get your
+        // location" when the user is indoors and GPS never sharpens.
+        let result = location ?? bestOneShot
+        bestOneShot = nil
+        cb?(result)
     }
 
     // MARK: - CLLocationManagerDelegate
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let loc = locations.last else { return }
-        if oneShot != nil { fireOneShot(loc) } else { onFix?(loc) }
+
+        if oneShot != nil {
+            // DO NOT ACCEPT THE FIRST FIX BLINDLY.
+            //
+            // `requestLocation()` delivers whatever CoreLocation already has, which on a cold
+            // start is routinely a CACHED CELL-TOWER estimate — hundreds of metres out, and
+            // sometimes minutes old. Taking it meant a pin dropped a suburb away from where
+            // the user was standing, which is the "location is not accurate" report.
+            //
+            // Hold out for a fix that is both RECENT and reasonably precise. `bestOneShot`
+            // keeps the best candidate so far, so if the timeout fires we still send
+            // something rather than failing outright.
+            let age = -loc.timestamp.timeIntervalSinceNow
+            let accuracy = loc.horizontalAccuracy
+
+            if accuracy > 0, age < 15 {
+                if bestOneShot == nil || accuracy < (bestOneShot?.horizontalAccuracy ?? .greatestFiniteMagnitude) {
+                    bestOneShot = loc
+                }
+                // 65 m is the threshold for "this is a real GNSS fix, not a tower estimate".
+                // Waiting for better than that indoors would usually mean waiting for the
+                // timeout, and a 60 m pin is still the right building.
+                if accuracy <= 65 { fireOneShot(loc); return }
+            }
+            // Not good enough yet — keep the request alive and let the timeout decide.
+            return
+        }
+
+        onFix?(loc)
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {

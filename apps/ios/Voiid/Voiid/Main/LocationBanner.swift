@@ -38,8 +38,9 @@ struct LocationBanner: View {
         HStack(spacing: VoiidSpacing.sm) {
             pulse
             VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(VoiidFont.rounded(13, .semibold)).foregroundColor(VoiidColor.primary)
-                Text(subtitle).font(VoiidFont.rounded(11, .regular)).foregroundColor(VoiidColor.textSecondary)
+                Text(title).font(VoiidFont.rounded(13, .semibold)).foregroundColor(VoiidColor.textOnPrimary)
+                Text(subtitle).font(VoiidFont.rounded(11, .regular))
+                    .foregroundColor(VoiidColor.textOnPrimary.opacity(0.8))
             }
             Spacer()
             Button {
@@ -54,7 +55,17 @@ struct LocationBanner: View {
             .buttonStyle(.plain)
         }
         .padding(.horizontal, VoiidSpacing.md).padding(.vertical, VoiidSpacing.sm)
-        .background(VoiidColor.accent.opacity(0.5))
+        // PURPLE, not gold — matching Android, which already had this right.
+        //
+        // The banner was `accent` at 50 %, a washed-out gold that read as a WARNING rather
+        // than as an active feature, and it clashed with the brand everywhere else on screen.
+        // Accent is Voiid's attention colour (unread counts, the live dot); using it as a
+        // full-width background made a normal state look like a problem.
+        //
+        // Solid primary also fixes a contrast bug: the title was `primary` ON the gold, which
+        // is dark-on-mid and hard to read. On a solid primary fill the text is textOnPrimary,
+        // which is what that token exists for.
+        .background(VoiidColor.primary)
         .overlay(VoiidColor.fieldBorder.frame(height: 1), alignment: .bottom)
         .confirmationDialog("Stop all live shares?", isPresented: $confirmStopAll, titleVisibility: .visible) {
             Button("Stop all", role: .destructive) { Task { await engine.stopAll() } }
@@ -76,6 +87,10 @@ struct LocationBanner: View {
     private func stop(_ id: String) { Task { await engine.stopLiveShare(id) } }
 
     private var pulse: some View {
-        Circle().fill(VoiidColor.success).frame(width: 9, height: 9)
+        // ACCENT, matching Android. Gold is Voiid's attention colour and it belongs HERE — a
+        // small live dot — rather than as the banner's whole background. On the purple fill
+        // it is the one thing that draws the eye, which is exactly what a "this is running
+        // right now" indicator should do.
+        Circle().fill(VoiidColor.accent).frame(width: 9, height: 9)
     }
 }

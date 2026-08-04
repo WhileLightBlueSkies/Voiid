@@ -550,6 +550,19 @@ object MapPresenceEngine {
     }
 
     private fun onStop(stopShareId: String, fromUserId: String) {
+        // ONLY ACT ON A STOP FOR A SHARE *THIS* ENGINE IS TRACKING.
+        //
+        // THE BUG: the Map and the chat live-share engine both consume the same
+        // LocationRelay stop stream, so ending a conversation live-share reached here too —
+        // and `eraseSubject` removed the sender from the Map entirely. Stopping a chat share
+        // with someone made them vanish from Friends Map, a different feature they had not
+        // turned off. Mirrors the iOS fix.
+        //
+        // `inbound` holds only MAP shares (they are the ones that arrived with a map_key), so
+        // its membership IS the test: an unknown id belongs to the chat feature, or to a share
+        // we already forgot. Neither is a reason to erase the person.
+        if (!inbound.containsKey(stopShareId)) return
+
         inbound.remove(stopShareId)
         subjectSeq.remove(stopShareId)
         eraseSubject(fromUserId)

@@ -509,6 +509,23 @@ final class MapPresenceEngine: ObservableObject {
     }
 
     private func receiveStop(shareId: String, fromUserId: String) {
+        // ONLY ACT ON A STOP FOR *THIS* SENDER'S MAP SHARE.
+        //
+        // THE BUG: the Map and the chat live-share engine both hang off the SAME
+        // `ws.onLocationStop`, so ending a conversation live-share fired this too — and this
+        // erased the sender from the Map entirely. Stopping a chat share with someone made
+        // them vanish from Friends Map, which is a different feature they had not turned off.
+        //
+        // The test is the same one `receiveFix` uses: a Map share from this sender exists only
+        // if they have handed us a `map_key`. A conversation share carries no map_key, so its
+        // stop is correctly ignored here — the chat engine handles that one.
+        guard MapKeyStore.inboundKey(forSender: fromUserId) != nil else { return }
+
+        // Confirm the id belongs to the MAP share we are tracking for them, not some other
+        // share that happens to be from the same person. A stale id means a share we already
+        // forgot, which is also not a reason to erase them.
+        if let known = MapPresenceStore.presence(for: fromUserId)?.shareId, known != shareId { return }
+
         // An explicit stop ERASES the cached position (the load-bearing distinction from an
         // age-out, which keeps it) and rotates the sender out of our view.
         MapKeyStore.clearInboundKey(forSender: fromUserId)
