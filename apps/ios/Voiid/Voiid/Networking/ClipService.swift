@@ -86,6 +86,10 @@ final class ClipService {
         /// request, not a guarantee (a 480p source has no 1080p rendition).
         var quality: String?
         var byte_size: Int?
+        /// Seconds this presigned URL stays valid. OPTIONAL because Swift's Codable throws
+        /// `keyNotFound` on an absent key rather than applying a default — a non-optional
+        /// here would hard-fail playback against any server older than this field.
+        var expires_in: Int?
     }
     struct ViewResp: Decodable { let view_count: Int }
     struct LikeResp: Decodable { let liked: Bool; let like_count: Int }

@@ -16,7 +16,7 @@ import { randomUUID } from 'crypto';
 import { query } from '../db';
 import { requireAuth } from '../auth';
 import { asyncHandler } from '../util';
-import { presignPut, presignGet, deleteObject, r2Configured } from '../r2';
+import { presignPut, presignGet, deleteObject, r2Configured, GET_URL_TTL_SECONDS } from '../r2';
 
 const router = Router();
 
@@ -431,6 +431,12 @@ router.get('/:id/playback', requireAuth, asyncHandler(async (req, res) => {
   const playback_url = await presignGet(key);
   return res.json({
     playback_url,
+    // How long this URL stays valid. The pager caches playback URLs and preloads a window
+    // around the current page; without an expiry it would either re-mint on every swipe (a
+    // network round-trip on the critical path of a gesture — the single largest source of
+    // scroll stutter) or serve a dead URL after an hour. The client subtracts its own safety
+    // margin from this rather than assuming a hardcoded TTL that can drift from the server.
+    expires_in: GET_URL_TTL_SECONDS,
     quality: served,
     byte_size: size != null ? Number(size) : null,
   });

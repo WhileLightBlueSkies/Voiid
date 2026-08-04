@@ -195,10 +195,70 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
      * serve a DIFFERENT rung than requested (a 480p source has no 1080p rendition), so
      * it reports back what it actually served.
      */
-    suspend fun playbackUrl(clipId: String): String? = runCatching {
+    /** A minted playback URL plus the moment it stops being usable. */
+    private data class CachedPlayback(
+        val url: String,
+        val quality: ClipQuality,
+        val expiresAtMs: Long,
+    )
+
+    /**
+     * PLAYBACK URL CACHE — the single largest scroll-stutter fix in this screen.
+     *
+     * Every page change used to mint a fresh presigned URL, which is a network round-trip
+     * sitting directly on the critical path of a swipe. Swiping back to a clip seen two
+     * seconds ago re-fetched it, and on a slow connection ExoPlayer could not even begin
+     * buffering until that round-trip returned — exactly the "laggy" feel.
+     *
+     * Presigned URLs are valid for an hour, so they are cacheable by construction; the only
+     * requirement is never to serve one past its expiry.
+     */
+    private val playbackCache = mutableMapOf<String, CachedPlayback>()
+
+    /**
+     * Safety margin subtracted from the server's TTL. A URL that passes the freshness check
+     * must stay valid long enough to finish playing the clip it was minted for — clips cap
+     * at 90s, so five minutes covers a paused-and-resumed watch with room to spare.
+     */
+    private val PLAYBACK_URL_SAFETY_MARGIN_MS = 300_000L
+
+    /**
+     * Fallback TTL for a server that does not send `expires_in`. Deliberately far shorter
+     * than the real hour: guessing high risks handing ExoPlayer a dead URL, while the cost
+     * of guessing low is one extra round-trip.
+     */
+    private val PLAYBACK_URL_FALLBACK_TTL_S = 600L
+
+    suspend fun playbackUrl(clipId: String): String? {
         val quality = ClipQuality.preferred(getApplication())
-        svc.playback(clipId, quality).playback_url
-    }.getOrNull()
+        val now = System.currentTimeMillis()
+
+        // Reusable only if still valid AND minted for the quality we now want — the network
+        // may have moved from wifi to cellular, and replaying a stale 1080p URL on a metered
+        // connection is worse than re-minting.
+        playbackCache[clipId]?.let { hit ->
+            if (hit.quality == quality && hit.expiresAtMs > now) return hit.url
+        }
+
+        return runCatching {
+            val resp = svc.playback(clipId, quality)
+            val ttlMs = (resp.expires_in ?: PLAYBACK_URL_FALLBACK_TTL_S) * 1000
+            playbackCache[clipId] = CachedPlayback(
+                url = resp.playback_url,
+                quality = quality,
+                // coerceAtLeast so a pathologically short server TTL still caches briefly
+                // rather than storing an already-expired entry that re-fetches every swipe.
+                expiresAtMs = now + (ttlMs - PLAYBACK_URL_SAFETY_MARGIN_MS).coerceAtLeast(60_000),
+            )
+            resp.playback_url
+        }.getOrNull()
+    }
+
+    /** Drops entries that can no longer be used, so the map does not grow all session. */
+    fun prunePlaybackCache() {
+        val now = System.currentTimeMillis()
+        playbackCache.entries.removeAll { it.value.expiresAtMs <= now }
+    }
 
     // ── Interactions ──────────────────────────────────────────────────────────────
 

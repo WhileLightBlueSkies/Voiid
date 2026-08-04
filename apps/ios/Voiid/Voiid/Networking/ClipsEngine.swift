@@ -195,13 +195,67 @@ final class ClipsEngine: ObservableObject {
     /// Resolve a playback URL at the quality this connection warrants. The server may
     /// serve a DIFFERENT rung than requested (a 480p source has no 1080p rendition), so
     /// it reports back what it actually served.
+    /// A minted playback URL plus the moment it stops being usable.
+    private struct CachedPlayback {
+        let url: URL
+        let quality: ClipQuality
+        let expiresAt: Date
+    }
+
+    /// PLAYBACK URL CACHE — the single largest scroll-stutter fix in this screen.
+    ///
+    /// Every page change used to mint a fresh presigned URL, which is a network round-trip
+    /// sitting directly on the critical path of a swipe gesture. Swiping back to a clip you
+    /// saw two seconds ago re-fetched it. On a slow connection the player could not even
+    /// begin buffering until that round-trip returned, which is exactly the "laggy" feel.
+    ///
+    /// Presigned URLs are valid for an hour, so they are cacheable by construction; the only
+    /// requirement is not to serve one past its expiry.
+    private var playbackCache: [String: CachedPlayback] = [:]
+
+    /// Safety margin subtracted from the server's TTL. A URL that passes the check must stay
+    /// valid long enough to finish playing the clip it was minted for — clips cap at 90s, so
+    /// five minutes covers a paused-and-resumed watch with room to spare.
+    private static let playbackURLSafetyMargin: TimeInterval = 300
+
+    /// Fallback TTL for a server that does not send `expires_in`. Deliberately far shorter
+    /// than the real hour: guessing high risks handing the player a dead URL, and the cost of
+    /// guessing low is one extra round-trip.
+    private static let playbackURLFallbackTTL: TimeInterval = 600
+
     func playbackURL(for clipId: String) async throws -> URL {
         let quality = ClipNetworkMonitor.shared.preferredQuality
+
+        // A cached URL is only reusable if it is still valid AND was minted for the quality
+        // we now want — the network may have moved from wifi to cellular since, and serving
+        // a stale 1080p URL on a metered connection is worse than re-minting.
+        if let hit = playbackCache[clipId],
+           hit.quality == quality,
+           hit.expiresAt > Date() {
+            return hit.url
+        }
+
         let resp = try await svc.playback(clipId: clipId, quality: quality)
         guard let url = URL(string: resp.playback_url) else {
             throw APIError.http(status: 0, message: "Bad playback URL")
         }
+
+        let ttl = resp.expires_in.map(TimeInterval.init) ?? Self.playbackURLFallbackTTL
+        playbackCache[clipId] = CachedPlayback(
+            url: url,
+            quality: quality,
+            // max(60,…) so a pathologically short server TTL still caches briefly rather
+            // than producing an already-expired entry that re-fetches on every single swipe.
+            expiresAt: Date().addingTimeInterval(max(60, ttl - Self.playbackURLSafetyMargin))
+        )
         return url
+    }
+
+    /// Drops cache entries that can no longer be used. Called when the feed reloads; without
+    /// it the dictionary grows for the lifetime of the session.
+    func prunePlaybackCache() {
+        let now = Date()
+        playbackCache = playbackCache.filter { $0.value.expiresAt > now }
     }
 
     // MARK: - Interactions

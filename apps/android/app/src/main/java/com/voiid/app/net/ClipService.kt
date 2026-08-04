@@ -108,6 +108,14 @@ class ClipService(private val tokens: TokenStore) {
          */
         val quality: String? = null,
         val byte_size: Long? = null,
+        /**
+         * Seconds this presigned URL stays valid, so the pager can cache it instead of
+         * minting a fresh one on every swipe. Nullable with a default because this is a
+         * DECODE of a server response — an older server simply omits it. (The
+         * `encodeDefaults = false` hazard that has bitten this codebase repeatedly applies
+         * to request bodies we SEND, not to responses we receive.)
+         */
+        val expires_in: Long? = null,
     )
     @Serializable private data class ViewResp(val view_count: Int)
     @Serializable data class LikeResp(val liked: Boolean, val like_count: Int)

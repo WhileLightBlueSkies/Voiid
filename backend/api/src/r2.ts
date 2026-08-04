@@ -42,6 +42,8 @@ function s3(): S3Client {
 
 const PUT_TTL = 300; // 5 min — enough to upload, short enough to limit replay
 const GET_TTL = 3600; // 1 hour — download window for a fetched message
+/** Exported so clients can cache a presigned URL and know when it stops being valid. */
+export const GET_URL_TTL_SECONDS = GET_TTL;
 
 /** Presigned PUT URL the client uses to upload encrypted bytes to `key`. */
 export function presignPut(key: string, contentType = 'application/octet-stream'): Promise<string> {

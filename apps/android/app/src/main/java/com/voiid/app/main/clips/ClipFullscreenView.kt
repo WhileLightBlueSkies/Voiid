@@ -70,6 +70,7 @@ import com.voiid.app.ui.components.softClickable
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 /**
@@ -102,24 +103,45 @@ fun ClipFullscreenView(
 
     val currentClip = clips.clips.getOrNull(pagerState.currentPage)
 
-    // Page lifecycle: retain a ±1 window, prepare it, play the current one.
+    // Page lifecycle: retain an asymmetric window, warm the current page first, then the
+    // neighbours in parallel.
     LaunchedEffect(pagerState) {
-        snapshotFlow { pagerState.currentPage }.collect { page ->
-            val window = listOf(page - 1, page, page + 1)
-                .filter { it in clips.clips.indices }
-                .map { clips.clips[it].id }
-            pool.retainOnly(window)
-            window.forEach { id ->
-                pool.prepare(id, muted) { clips.playbackUrl(id) }
-            }
-            val clip = clips.clips.getOrNull(page) ?: return@collect
-            pool.play(clip.id)
+        snapshotFlow { pagerState.currentPage }
+            // collectLatest, NOT collect. The old version ran `delay(2000)` for the view
+            // count inside the collector, which BLOCKS the next page emission — a fast
+            // scroller's swipes queued up behind a two-second sleep, and each page's prepare
+            // ran two seconds late. collectLatest cancels the previous page's work the moment
+            // a new page arrives, which is exactly the desired semantics.
+            .collectLatest { page ->
+                // ASYMMETRIC: two forward, one back. Scrolling in a reels feed is
+                // overwhelmingly downward, so the next-next clip is likelier to be needed
+                // than the previous — but going back must not be a cold start either.
+                val window = listOf(page - 1, page, page + 1, page + 2)
+                    .filter { it in clips.clips.indices }
+                    .map { clips.clips[it].id }
+                pool.retainOnly(window)
 
-            // A view counts after a >=2s watch, not on appearance — counting scroll-past
-            // impressions inflates the number the entire grid is built around.
-            delay(2000)
-            if (pagerState.currentPage == page) clips.markViewed(clip.id)
-        }
+                val clip = clips.clips.getOrNull(page) ?: return@collectLatest
+
+                // THE CURRENT PAGE FIRST AND ALONE — it is the only one on screen, so it must
+                // not queue behind a neighbour's round-trip.
+                pool.prepare(clip.id, muted) { clips.playbackUrl(clip.id) }
+                pool.play(clip.id)
+
+                // Neighbours in PARALLEL. Previously this was a serial forEach, so preparing
+                // page n+1 waited on page n-1's network round-trip — the clip about to appear
+                // was last in line behind one already scrolled past.
+                window.filter { it != clip.id }.forEach { id ->
+                    launch { pool.prepare(id, muted) { clips.playbackUrl(id) } }
+                }
+
+                // A view counts after a >=2s watch, not on appearance — counting scroll-past
+                // impressions inflates the number the entire grid is built around. Under
+                // collectLatest this whole block is cancelled when the page changes, so the
+                // page check is now belt-and-braces rather than the primary guard.
+                delay(2000)
+                if (pagerState.currentPage == page) clips.markViewed(clip.id)
+            }
     }
 
     LaunchedEffect(muted) { pool.setMuted(muted) }

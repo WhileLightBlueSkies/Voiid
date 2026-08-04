@@ -116,16 +116,35 @@ struct ClipFullscreenView: View {
     private func onPageChanged() async {
         guard let clip = currentClip else { return }
 
-        // Preload a ±1 window and release everything outside it.
-        let window = [index - 1, index, index + 1]
+        // ASYMMETRIC WINDOW: two pages forward, one back. Scrolling is overwhelmingly
+        // downward in a reels feed, so the next-next clip is far likelier to be needed than
+        // the previous one — but going back must not be a cold start either.
+        let window = [index - 1, index, index + 1, index + 2]
             .filter { engine.clips.indices.contains($0) }
             .map { engine.clips[$0].id }
         players.retainOnly(window)
 
-        for id in window {
-            await players.prepare(id: id) { try await engine.playbackURL(for: id) }
-        }
+        // THE CURRENT PAGE FIRST, AND ALONE. It is the only one the user is looking at, so
+        // it must not queue behind a neighbour's network round-trip.
+        await players.prepare(id: clip.id) { try await engine.playbackURL(for: clip.id) }
         players.play(clip.id)
+
+        // Neighbours PARALLEL and detached. Previously this was a serial `for … await`, so
+        // preparing page n+1 waited on page n-1's round-trip to finish — meaning the clip
+        // about to come on screen was last in line behind one already scrolled past. It is
+        // also detached from this task because `.task(id: index)` cancels on every page
+        // change: a fast scroller would otherwise kill each preload before it landed and
+        // arrive at a page with nothing warmed.
+        let neighbours = window.filter { $0 != clip.id }
+        Task.detached(priority: .utility) { [players, engine] in
+            await withTaskGroup(of: Void.self) { group in
+                for id in neighbours {
+                    group.addTask {
+                        await players.prepare(id: id) { try await engine.playbackURL(for: id) }
+                    }
+                }
+            }
+        }
 
         // A view counts after a >=2s watch, not on appearance — counting scroll-past
         // impressions inflates the number the entire grid is built around.
