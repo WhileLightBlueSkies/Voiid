@@ -163,7 +163,7 @@ final class GroupCallService: NSObject, ObservableObject {
             auth = try await api.request("POST", "calls/group/token",
                                          body: TokenBody(conversation_id: conversationId),
                                          as: TokenResponse.self)
-        } catch let APIError.http(status, _) where status == 503 {
+        } catch let APIError.http(status, _, _) where status == 503 {
             // LIVEKIT_* unset on this deployment — not an error the user caused.
             groupCallingUnavailable = true
             state = .failed("Group calling isn't available on this server.")

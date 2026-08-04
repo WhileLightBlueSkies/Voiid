@@ -26,18 +26,28 @@ enum APIConfig {
 extension Notification.Name { static let voiidUpdateRequired = Notification.Name("voiidUpdateRequired") }
 
 enum APIError: Error, LocalizedError {
-    case http(status: Int, message: String)
+    /// `code` is the backend's stable machine-readable discriminator (e.g. "profile_required"),
+    /// carried alongside the human `message`. Matching on a bare status is not enough: 428 is a
+    /// generic "precondition required" that any future endpoint may reuse, so a client keying
+    /// off the status alone would fire the handle picker for an unrelated precondition.
+    case http(status: Int, message: String, code: String? = nil)
     case transport(Error)
     case decoding(Error)
     case notAuthenticated
 
     var errorDescription: String? {
         switch self {
-        case .http(_, let m): return m
+        case .http(_, let m, _): return m
         case .transport(let e): return e.localizedDescription
         case .decoding: return "Unexpected server response."
         case .notAuthenticated: return "Please sign in again."
         }
+    }
+
+    /// The backend error code, when the server sent one.
+    var serverCode: String? {
+        if case .http(_, _, let code) = self { return code }
+        return nil
     }
 }
 
@@ -104,10 +114,10 @@ struct APIClient {
             throw APIError.http(status: 426, message: "Update required")
         }
         guard (200..<300).contains(status) else {
-            let message = (try? JSONDecoder().decode(ErrorBody.self, from: data))?.error
-                ?? "Request failed (\(status))."
+            let parsed = try? JSONDecoder().decode(ErrorBody.self, from: data)
+            let message = parsed?.error ?? "Request failed (\(status))."
             if status == 401 { tokenStore.clear() }
-            throw APIError.http(status: status, message: message)
+            throw APIError.http(status: status, message: message, code: parsed?.code)
         }
 
         if Response.self == EmptyResponse.self { return EmptyResponse() as! Response }
@@ -115,7 +125,8 @@ struct APIClient {
         catch { throw APIError.decoding(error) }
     }
 
-    private struct ErrorBody: Decodable { let error: String }
+    /// `code` is optional — most endpoints send only `error`.
+    private struct ErrorBody: Decodable { let error: String; var code: String? }
     private struct UpdateBody: Decodable { let update_url: String? }
 }
 

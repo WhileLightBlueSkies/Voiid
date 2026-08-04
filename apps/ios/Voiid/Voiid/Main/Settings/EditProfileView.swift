@@ -351,7 +351,7 @@ struct EditProfileView: View {
             syncWarning = nil
             Haptics.success()
             dismiss()
-        } catch let APIError.http(status, _) where status == 409 {
+        } catch let APIError.http(status, _, _) where status == 409 {
             // The username was taken between the check and the save.
             usernameAvailable = false
             syncWarning = "That username was just taken. Pick another."

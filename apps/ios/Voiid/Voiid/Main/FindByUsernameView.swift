@@ -185,7 +185,7 @@ struct FindByUsernameView: View {
                     pin: p.requires_pin ? pin : nil)
                 dismiss()
                 onOpen(result.conversationId, result.pending)
-            } catch let APIError.http(status, message) {
+            } catch let APIError.http(status, message, _) {
                 // 403 is a wrong PIN, 429 is the throttle. Both are things the user can act
                 // on, so they are surfaced verbatim rather than flattened into "try again".
                 error = status == 403 ? "That PIN isn’t correct."

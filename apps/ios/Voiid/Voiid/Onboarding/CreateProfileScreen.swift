@@ -69,7 +69,7 @@ struct CreateProfileScreen: View {
                 )
                 session.profile.bio = about
                 Haptics.success(); onFinish()
-            } catch let APIError.http(status, _) where status == 409 {
+            } catch let APIError.http(status, _, _) where status == 409 {
                 uStatus = .taken("Just taken — pick another")
                 errorText = "That username was just taken."
                 Haptics.error()

@@ -35,7 +35,13 @@ object UpdateGate {
 }
 
 sealed class ApiError(message: String) : Exception(message) {
-    class Http(val status: Int, message: String) : ApiError(message)
+    /**
+     * [code] is the backend's stable machine-readable discriminator (e.g. "profile_required"),
+     * carried alongside the human message. Matching on a bare status is not enough: 428 is a
+     * generic "precondition required" that any future endpoint may reuse, so a client keying
+     * off the status alone would fire the handle picker for an unrelated precondition.
+     */
+    class Http(val status: Int, message: String, val code: String? = null) : ApiError(message)
     class Transport(cause: Throwable) : ApiError(cause.message ?: "Network error")
     object NotAuthenticated : ApiError("Please sign in again.")
 }
@@ -112,9 +118,9 @@ class ApiClient(
                 if (it.code >= 500) {
                     android.util.Log.w("ApiClient", "HTTP ${it.code} on $path: ${text.take(600)}")
                 }
-                val msg = runCatching { json.decodeFromString<ErrorBody>(text).error }
-                    .getOrNull() ?: "Request failed (${it.code})."
-                throw ApiError.Http(it.code, msg)
+                val parsed = runCatching { json.decodeFromString<ErrorBody>(text) }.getOrNull()
+                val msg = parsed?.error ?: "Request failed (${it.code})."
+                throw ApiError.Http(it.code, msg, parsed?.code)
             }
             text
         }
@@ -176,8 +182,9 @@ data class RawResponse(val code: Int, val retryAfter: String?, val body: ByteArr
     val retryAfterSeconds: Long? get() = retryAfter?.trim()?.toLongOrNull()
 }
 
+/** `code` is optional — most endpoints send only `error`. */
 @kotlinx.serialization.Serializable
-private data class ErrorBody(val error: String = "error")
+private data class ErrorBody(val error: String = "error", val code: String? = null)
 
 @kotlinx.serialization.Serializable
 data class UpdateBody(val update_url: String? = null)

@@ -344,7 +344,7 @@ final class ChatEngine {
                 // for unexpected errors.
                 let retryable: Bool
                 switch error {
-                case APIError.http(let status, _): retryable = (status == 409 || status == 404)
+                case APIError.http(let status, _, _): retryable = (status == 409 || status == 404)
                 case APIError.transport: retryable = true
                 default: retryable = false
                 }

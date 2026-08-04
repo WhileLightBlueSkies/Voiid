@@ -14,9 +14,11 @@ import SwiftUI
 struct ClipsFeedView: View {
     @EnvironmentObject var session: AppSession
     @StateObject private var engine = ClipsEngine.shared
+    @StateObject private var creators = CreatorEngine()
 
     @State private var openIndex: Int?
     @State private var showComposer = false
+    @State private var showHandleSheet = false
 
     /// 3 columns, 2pt gutters, edge-to-edge — the reference layout. Uniform 9:16 tiles;
     /// a staggered grid is deliberately avoided (it needs per-tile aspect data before
@@ -33,13 +35,58 @@ struct ClipsFeedView: View {
             .onAppear {
                 session.hideTabBar = false
                 if !engine.hasLoadedOnce { Task { await engine.refresh() } }
+                // Warm the gate so tapping compose opens the composer directly instead of
+                // pausing on a spinner at the moment the user is trying to create.
+                Task { await creators.ensureMeLoaded() }
             }
             .fullScreenCover(item: $openIndex.asIdentifiable()) { boxed in
                 ClipFullscreenView(startIndex: boxed.value)
                     .environmentObject(engine)
             }
             .fullScreenCover(isPresented: $showComposer) {
-                ClipComposerFlow().environmentObject(engine)
+                ClipComposerFlow()
+                    .environmentObject(engine)
+                    .environmentObject(creators)
+            }
+            .sheet(isPresented: $showHandleSheet) {
+                CreatorHandleSheet { _ in
+                    // Whatever raised the gate can now proceed: either finish an upload
+                    // parked at the commit step, or open the composer that was blocked.
+                    Task {
+                        if engine.hasPendingCommits { await engine.retryPendingCommits() }
+                        else { showComposer = true }
+                    }
+                }
+                .environmentObject(creators)
+            }
+            // The engine raises this when a commit came back `profile_required` — the
+            // backstop for an upload that started before the profile went away.
+            .onChange(of: engine.needsCreatorProfile) { _, needs in
+                if needs { showHandleSheet = true; engine.needsCreatorProfile = false }
+            }
+        }
+    }
+
+    // MARK: - The gate
+
+    /// Opens the composer, or the handle picker first if this account has no creator
+    /// profile yet.
+    ///
+    /// Checked HERE rather than at the end of the upload on purpose. `POST /clips` answers
+    /// 428 only after the video is already in R2 — the composer exports a 480/720/1080
+    /// ladder and PUTs every rung before the row is committed — so gating on the response
+    /// would mean asking for a handle after a 100 MB upload the user could still lose.
+    /// Asking first costs one cached GET. The 428 path remains as a backstop for the race.
+    private func startCompose() {
+        Task {
+            let profile = await creators.ensureMeLoaded()
+            if profile == nil && creators.hasLoadedMe {
+                showHandleSheet = true
+            } else {
+                // A failed lookup falls through to the composer rather than blocking: the
+                // server still enforces the gate, and refusing to open on a network blip
+                // would be a worse failure than the rare parked upload.
+                showComposer = true
             }
         }
     }
@@ -60,7 +107,7 @@ struct ClipsFeedView: View {
                 .disabled(true)
         } else if engine.clips.isEmpty && engine.hasLoadedOnce {
             ScrollView {
-                ClipsEmptyState(kind: .noClips) { Haptics.tap(); showComposer = true }
+                ClipsEmptyState(kind: .noClips) { Haptics.tap(); startCompose() }
             }
             .refreshable { await engine.refresh() }
         } else {
@@ -179,7 +226,7 @@ struct ClipsFeedView: View {
 
             Button {
                 Haptics.tap()
-                showComposer = true
+                startCompose()
             } label: {
                 Image(systemName: "plus.circle.fill")
                     .font(.system(size: 28))

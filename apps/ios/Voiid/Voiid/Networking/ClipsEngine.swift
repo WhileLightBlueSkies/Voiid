@@ -145,7 +145,41 @@ final class ClipsEngine: ObservableObject {
     /// saves a pointless round-trip per rewatch.
     private var viewedThisSession: Set<String> = []
 
+    /// Set when a commit was rejected with `profile_required`. The Clips screen observes it
+    /// to raise the handle picker, so an upload parked at the last step is recoverable
+    /// rather than silently stuck behind a generic "failed" tile.
+    @Published var needsCreatorProfile = false
+
+    /// Uploads whose bytes reached R2 but whose row was never created, keyed by clip id.
+    /// Holding the closure means the retry re-sends only the row — the presigned keys and
+    /// measured sizes it closes over are still valid, so nothing is uploaded twice.
+    private var pendingCommits: [String: () async throws -> Void] = [:]
+
+    var hasPendingCommits: Bool { !pendingCommits.isEmpty }
+
     private init() {}
+
+    /// Finish every upload parked on the profile gate. Called once a creator profile
+    /// exists; safe to call when there is nothing pending.
+    func retryPendingCommits() async {
+        let pending = pendingCommits
+        pendingCommits.removeAll()
+        for (clipId, commit) in pending {
+            do {
+                try await commit()
+                if let i = clips.firstIndex(where: { $0.id == clipId }) {
+                    clips[i].uploadState = .none
+                }
+            } catch {
+                if let i = clips.firstIndex(where: { $0.id == clipId }) {
+                    clips[i].uploadState = .failed(Self.message(error))
+                }
+                // Keep it parked so a later attempt can still finish it.
+                pendingCommits[clipId] = commit
+            }
+        }
+        if !pending.isEmpty { await refresh() }
+    }
 
     // MARK: - Feed paging
 
@@ -417,14 +451,37 @@ final class ClipsEngine: ObservableObject {
                 }
 
                 self.setUploadProgress(clipId, 0.95)
-                _ = try await svc.postClip(clipId: clipId, r2Key: presign.key,
-                                           thumbKey: presign.thumb_key, caption: caption,
-                                           durationMs: ladder.durationMs,
-                                           width: ladder.width, height: ladder.height,
-                                           byteSize: baselineSize,
-                                           renditionKeys: uploadedKeys,
-                                           renditionSizes: uploadedSizes,
-                                           coverSource: ladder.coverSource.rawValue)
+                // Committing the row is retried on `profile_required` ALONE. The bytes are
+                // already in R2 by this point, so re-running `post` would re-upload the whole
+                // ladder; and the gate is normally satisfied before the composer even opens,
+                // so reaching here means the profile vanished mid-flight (deleted on another
+                // device, or a first post racing the check). Only the commit is repeated.
+                let commit = { [weak self] in
+                    guard let self else { return }
+                    _ = try await self.svc.postClip(
+                        clipId: clipId, r2Key: presign.key,
+                        thumbKey: presign.thumb_key, caption: caption,
+                        durationMs: ladder.durationMs,
+                        width: ladder.width, height: ladder.height,
+                        byteSize: baselineSize,
+                        renditionKeys: uploadedKeys,
+                        renditionSizes: uploadedSizes,
+                        coverSource: ladder.coverSource.rawValue)
+                }
+                do {
+                    try await commit()
+                } catch let e as APIError where e.serverCode == "profile_required" {
+                    // Park the upload rather than fail it: the video is safely in R2, and
+                    // discarding it because the user has no handle yet would throw away work
+                    // they can still complete. The feed surfaces the prompt; `retryCommit`
+                    // finishes the job once a profile exists.
+                    if let i = self.clips.firstIndex(where: { $0.id == clipId }) {
+                        self.clips[i].uploadState = .failed("Choose a handle to finish posting.")
+                    }
+                    self.pendingCommits[clipId] = commit
+                    self.needsCreatorProfile = true
+                    return
+                }
 
                 // Swap the optimistic tile for the real row.
                 if let i = self.clips.firstIndex(where: { $0.id == clipId }) {
@@ -450,6 +507,9 @@ final class ClipsEngine: ObservableObject {
     /// Drop a failed optimistic tile (the user tapped dismiss on the retry affordance).
     func discardFailedUpload(_ clipId: String) {
         clips.removeAll { $0.id == clipId && $0.uploadState != .none }
+        // Drop any parked commit too, or a tile the user dismissed would quietly reappear
+        // the next time the gate is satisfied.
+        pendingCommits.removeValue(forKey: clipId)
     }
 
     func deleteClip(_ clipId: String) async {
@@ -584,7 +644,7 @@ final class ClipsEngine: ObservableObject {
     }
 
     private static func message(_ error: Error) -> String {
-        if let api = error as? APIError, case .http(_, let m) = api { return m }
+        if let api = error as? APIError, case .http(_, let m, _) = api { return m }
         return "Something went wrong. Try again."
     }
 }

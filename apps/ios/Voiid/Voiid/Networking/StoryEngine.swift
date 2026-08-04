@@ -324,7 +324,7 @@ final class StoryEngine: ObservableObject {
             // R2 404 (object gone) is distinct from a decrypt failure only in the message;
             // both leave the viewer with a clear terminal state, never a blank frame.
             let gone: Bool
-            if case APIError.http(let s, _) = error, s == 404 { gone = true } else { gone = false }
+            if case APIError.http(let s, _, _) = error, s == 404 { gone = true } else { gone = false }
             StoryStore.setDownload(story.id, state: gone ? .gone : .failed)
             reloadFromStore()
             NSLog("[VOIID] story download failed \(story.id): \(error)")

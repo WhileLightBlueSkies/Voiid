@@ -44,7 +44,7 @@ final class BackupService {
     /// Fetch backup metadata, or nil when there is no backup yet (404).
     func fetchBackupMeta() async throws -> BackupMeta? {
         do { return try await api.request("GET", "backup") as BackupMeta }
-        catch APIError.http(let status, _) where status == 404 { return nil }
+        catch APIError.http(let status, _, _) where status == 404 { return nil }
     }
 
     /// Raw octet-stream upload of the sealed blob. Mirrors MediaService: manual
