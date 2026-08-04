@@ -30,8 +30,17 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
     companion object {
         private const val TAG = "GamesEngine"
 
-        /** Matches the server's snake tick rate — see [steer] for why input is capped to it. */
-        private const val STEER_INTERVAL_MS = 100L
+        // 60 ms, not the tick period. The server's per-match input limit for a continuous
+        // game is tickHz x 120/min (20/s at 10 Hz), so ~16.7/s sits safely under it — and the
+        // extra granularity means a direction change waits at most 60 ms to leave the device
+        // instead of 100, a visible slice of total input latency.
+        private const val STEER_INTERVAL_MS = 60L
+
+        /** ~3 degrees. Below this the thumb is jittering, not turning. */
+        private const val HEADING_EPSILON = 0.05
+
+        /** How many server frames the jitter buffer holds. */
+        private const val SNAKE_BUFFER = 4
         @Volatile private var instance: GamesEngine? = null
         fun get(context: Context): GamesEngine =
             instance ?: synchronized(this) {
@@ -125,8 +134,8 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
      *
      * THE FIRST CONTINUOUS GAME, and the first that needs more from this layer than "parse
      * and draw". The server ticks at 10 Hz, so a renderer drawing frames as they land would
-     * show 10 fps of visible stepping. The screen therefore keeps the PREVIOUS frame too and
-     * interpolates between the pair (see `SnakeArenaScreen.kt`).
+     * show 10 fps of visible stepping. Frames are therefore buffered (see [snakeFrames]) and
+     * the screen interpolates across them on the server's own clock (see `SnakeArenaScreen.kt`).
      *
      * That is interpolation, not prediction — it draws only positions the server has already
      * confirmed, slightly in the past. It cannot invent a position, so the
@@ -186,27 +195,25 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
     private val _cricket = MutableStateFlow<CricketState?>(null)
     val cricket: StateFlow<CricketState?> = _cricket.asStateFlow()
 
+    /** One received snake frame plus when it landed, on the monotonic uptime clock. */
+    data class SnakeFrame(val state: SnakeState, val arrivedAtMs: Long)
+
     /**
-     * Current snake frame and the one before it.
+     * The last few snake frames, oldest first — a jitter buffer, not just a pair.
      *
-     * The previous frame is kept because the renderer interpolates between the two: at a
-     * 10 Hz tick, drawing each frame on arrival would visibly step. It also supplies the
-     * baseline that food deltas are applied against.
+     * Interpolating between exactly two frames timed by ARRIVAL was the stutter: WS frames do
+     * not land evenly, so the renderer held at a late frame and then jumped when the next one
+     * arrived. With a small buffer keyed on the SERVER's `t`, the renderer picks a render time
+     * slightly in the past and interpolates between whichever pair brackets it — arrival
+     * jitter is absorbed instead of displayed.
+     *
+     * Arrival uses elapsedRealtime rather than wall clock: a wall clock can jump mid-match.
      */
-    private val _snake = MutableStateFlow<SnakeState?>(null)
-    val snake: StateFlow<SnakeState?> = _snake.asStateFlow()
+    private val _snakeFrames = MutableStateFlow<List<SnakeFrame>>(emptyList())
+    val snakeFrames: StateFlow<List<SnakeFrame>> = _snakeFrames.asStateFlow()
 
-    private val _snakePrevious = MutableStateFlow<SnakeState?>(null)
-    val snakePrevious: StateFlow<SnakeState?> = _snakePrevious.asStateFlow()
-
-    /**
-     * Uptime millis at which the current snake frame landed, so the screen knows how far to
-     * interpolate. Deliberately elapsedRealtime rather than wall clock — the two differ by an
-     * unknown offset from the server and only the local one paces drawing, and a wall clock
-     * can jump mid-match.
-     */
-    @Volatile var snakeFrameAt: Long = 0L
-        private set
+    /** Latest snake state, for HUD/overlay code with no need to interpolate. */
+    val snake: SnakeState? get() = _snakeFrames.value.lastOrNull()?.state
 
     private val _joinError = MutableStateFlow<String?>(null)
     val joinError: StateFlow<String?> = _joinError.asStateFlow()
@@ -237,12 +244,11 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
             "rps" -> _rps.value = parseRps(payload)
             "cricket" -> _cricket.value = parseCricket(payload)
             "snake" -> {
-                // Parse against the CURRENT frame, because food deltas are relative to it,
-                // then shift it into `previous` for the renderer to interpolate from.
-                val next = parseSnake(payload, _snake.value) ?: return
-                _snakePrevious.value = _snake.value
-                _snake.value = next
-                snakeFrameAt = android.os.SystemClock.elapsedRealtime()
+                // Parse against the NEWEST frame, because food deltas are relative to it,
+                // then append to the jitter buffer the renderer interpolates across.
+                val next = parseSnake(payload, snake) ?: return
+                val frame = SnakeFrame(next, android.os.SystemClock.elapsedRealtime())
+                _snakeFrames.value = (_snakeFrames.value + frame).takeLast(SNAKE_BUFFER)
             }
             else -> _state.value = parse(payload)
         }
@@ -424,10 +430,10 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         _state.value = null
         _rps.value = null
         _cricket.value = null
-        _snake.value = null
-        _snakePrevious.value = null
+        _snakeFrames.value = emptyList()
         pendingHeading = null
         lastSentBoost = false
+        lastSentHeading = Double.NaN
         _joinError.value = null
         lastSeq = -1
         runCatching { service.join(matchId) }
@@ -539,20 +545,31 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
      */
     fun steer(context: Context, heading: Double, boost: Boolean) {
         val id = matchId ?: return
-        val s = _snake.value ?: return
+        val s = snake ?: return
         if (s.finished) return
 
         val now = android.os.SystemClock.elapsedRealtime()
         // Boost edges go immediately: a dropped press is a lost fight, and it is an edge
         // rather than a continuous value.
         val boostChanged = boost != lastSentBoost
-        if (!boostChanged && now - lastSteerSentAt < STEER_INTERVAL_MS) {
-            pendingHeading = heading
+
+        // A heading that has barely moved is not worth a frame. The thumb jitters by a
+        // fraction of a degree even when held still, and without this floor every one of
+        // those micro-movements consumed a send slot — so a REAL turn arriving moments later
+        // had to wait out the interval behind noise.
+        var delta = heading - lastSentHeading
+        while (delta > Math.PI) delta -= 2 * Math.PI
+        while (delta < -Math.PI) delta += 2 * Math.PI
+        val moved = lastSentHeading.isNaN() || kotlin.math.abs(delta) >= HEADING_EPSILON
+
+        if (!boostChanged && !(moved && now - lastSteerSentAt >= STEER_INTERVAL_MS)) {
+            if (moved) pendingHeading = heading
             return
         }
 
         lastSteerSentAt = now
         lastSentBoost = boost
+        lastSentHeading = heading
         pendingHeading = null
         WebSocketClient.get(context).sendGameInput(id, """{"h":$heading,"boost":$boost}""")
     }
@@ -569,6 +586,7 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
 
     private var lastSteerSentAt = 0L
     private var lastSentBoost = false
+    private var lastSentHeading = Double.NaN
     private var pendingHeading: Double? = null
 
     /**
@@ -598,8 +616,8 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         matchId = null
         pendingHeading = null
         lastSentBoost = false
-        _snake.value = null
-        _snakePrevious.value = null
+        lastSentHeading = Double.NaN
+        _snakeFrames.value = emptyList()
         _state.value = null
         _rps.value = null
         _cricket.value = null

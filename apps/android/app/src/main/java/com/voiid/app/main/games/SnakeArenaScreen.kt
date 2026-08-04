@@ -1,5 +1,9 @@
 package com.voiid.app.main.games
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.VectorConverter
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -20,28 +24,34 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.voiid.app.net.GamesEngine
 import com.voiid.app.store.UserDirectory
+import kotlinx.coroutines.launch
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.log10
 import kotlin.math.min
 import kotlin.math.sin
@@ -52,12 +62,29 @@ import kotlin.math.sin
  * WHY THIS ONE IS DIFFERENT FROM EVERY OTHER GAME SCREEN HERE. Tic Tac Toe, RPS and cricket
  * recompose when a frame lands and are done: their state changes a few times a minute.
  * Snake's server ticks 10 times a second, so drawing frames on arrival would show visible
- * 10 fps stepping. This screen therefore runs its own 60 fps clock (`withFrameNanos`) and
- * INTERPOLATES between the last two server frames.
+ * 10 fps stepping. This screen runs its own 60 fps clock (`withFrameNanos`) and reconstructs
+ * the motion between server frames.
  *
- * That is interpolation, not prediction. It only ever draws positions the server has already
- * confirmed, rendered ~100 ms in the past. It cannot invent a position, so the
- * "renderer, not referee" rule in GamesEngine.kt still holds exactly.
+ * THREE THINGS MAKE IT SMOOTH, and the first version shipped without any of them:
+ *
+ *  1. A JITTER BUFFER, not a frame pair. Interpolating between "current" and "previous" timed
+ *     by ARRIVAL renders network jitter directly: frames do not land evenly, so the snake held
+ *     and then jumped. The engine now buffers the last few frames stamped with the SERVER's
+ *     own clock, and this screen renders ~150 ms in the past between whichever pair brackets
+ *     that instant.
+ *
+ *  2. CLIENT-BUILT TRAILS. The body is NOT drawn by interpolating server path points. The
+ *     server prepends a head point each tick and decimates long tails, so index i is a
+ *     DIFFERENT piece of snake between frames — interpolating them made the whole body crawl
+ *     and twitch. Each snake now keeps a local trail fed by the smoothly interpolated head.
+ *
+ *  3. A REAL JOYSTICK. Steering toward the finger's offset from screen centre gave no fixed
+ *     reference and read as "the snake doesn't go where my hand goes". It also ran TWO
+ *     competing pointerInput blocks over the same touches, which is why input sometimes did
+ *     nothing at all.
+ *
+ * All interpolation and input, never prediction: no position is drawn that the server did not
+ * send, so "renderer, not referee" still holds exactly.
  *
  * Mirrors iOS `SnakeArenaView.swift`.
  */
@@ -65,21 +92,22 @@ import kotlin.math.sin
 fun SnakeArenaScreen(matchId: String, onClose: () -> Unit) {
     val context = LocalContext.current
     val engine = remember { GamesEngine.get(context) }
+    val density = LocalDensity.current
 
-    val state by engine.snake.collectAsState()
-    val previous by engine.snakePrevious.collectAsState()
+    val frames by engine.snakeFrames.collectAsState()
 
     var boosting by remember { mutableStateOf(false) }
     var lastHeading by remember { mutableDoubleStateOf(0.0) }
-    /** Ticks every display frame purely to drive redraws off the server's frame clock. */
+    /** Live joystick vector, normalized to the ring radius; (0,0) at rest. */
+    var stick by remember { mutableStateOf(Offset.Zero) }
+    /** Ticks every display frame purely to drive redraws. */
     var frameClock by remember { mutableDoubleStateOf(0.0) }
+    val trails = remember { TrailStore() }
 
     val me = engine.myUserId
 
     LaunchedEffect(matchId) { engine.open(matchId) }
 
-    // 60 fps redraw loop. Reading `frameClock` inside Canvas is what subscribes the draw to
-    // it, so every frame produces a new interpolated position.
     LaunchedEffect(Unit) {
         while (true) {
             withFrameNanos { frameClock = it / 1_000_000_000.0 }
@@ -90,51 +118,35 @@ fun SnakeArenaScreen(matchId: String, onClose: () -> Unit) {
     Box(
         Modifier
             .fillMaxSize()
-            .background(Color.Black)
-            .pointerInput(Unit) {
-                detectDragGestures(
-                    onDrag = { change, _ ->
-                        val dx = change.position.x - size.width / 2f
-                        val dy = change.position.y - size.height / 2f
-                        if (dx * dx + dy * dy > 64f) {
-                            val heading = atan2(dy.toDouble(), dx.toDouble())
-                            lastHeading = heading
-                            engine.steer(context, heading, boosting)
-                        }
-                    },
-                    // Releasing does NOT stop the snake — it keeps its heading, which is the
-                    // genre's expectation.
-                    onDragEnd = {},
-                )
-            }
-            .pointerInput(Unit) {
-                detectTapGestures(onPress = { offset ->
-                    val dx = offset.x - size.width / 2f
-                    val dy = offset.y - size.height / 2f
-                    if (dx * dx + dy * dy > 64f) {
-                        val heading = atan2(dy.toDouble(), dx.toDouble())
-                        lastHeading = heading
-                        engine.steer(context, heading, boosting)
-                    }
-                })
-            }
+            .background(Color.Black),
     ) {
         Canvas(Modifier.fillMaxSize()) {
             // Touch the clock so this redraws every display frame.
             @Suppress("UNUSED_EXPRESSION") frameClock
-            val current = state ?: return@Canvas
-            drawArena(current, previous, me, engine.snakeFrameAt)
+            drawArena(frames, me, trails, stick)
         }
 
         Overlay(
-            state = state,
+            state = frames.lastOrNull()?.state,
             me = me,
             boosting = boosting,
+            radiusPx = with(density) { JOY_RADIUS_DP.dp.toPx() },
             onClose = onClose,
+            onStick = { v ->
+                stick = v
+                // Deadzone: below this the thumb is resting, not steering, and atan2 on a
+                // near-zero vector is meaningless noise.
+                if (hypot(v.x, v.y) >= 0.15f) {
+                    val heading = atan2(v.y.toDouble(), v.x.toDouble())
+                    lastHeading = heading
+                    engine.steer(context, heading, boosting)
+                }
+            },
             onBoostChange = { held ->
                 boosting = held
                 engine.steer(context, lastHeading, held)
-            })
+            },
+        )
     }
 }
 
@@ -151,37 +163,98 @@ private val PALETTE = listOf(
 private fun paletteColor(index: Int): Color =
     PALETTE[((index % PALETTE.size) + PALETTE.size) % PALETTE.size]
 
-/** Server tick period. Interpolation spans exactly one of these. */
-private const val TICK_MS = 100.0
+/**
+ * How far behind the newest frame to render, in seconds.
+ *
+ * Slightly more than one 10 Hz tick, so there is virtually always a NEWER frame to interpolate
+ * towards. Less and the buffer runs dry constantly — the stutter this removes; much more and
+ * the controls start to feel remote.
+ */
+private const val INTERP_DELAY = 0.15
+
+private const val JOY_RADIUS_DP = 60f
+private const val JOY_KNOB_DP = 26f
+
+/** The pair of frames bracketing the render instant, plus the blend between them. */
+private class Sample(
+    val from: GamesEngine.SnakeState,
+    val to: GamesEngine.SnakeState,
+    val t: Double,
+)
+
+/**
+ * Pick the two frames to draw between.
+ *
+ * The render clock derives from the SERVER's `t`, offset by how long the newest frame has been
+ * sitting here, so arrival jitter moves the offset rather than the snake. When the buffer runs
+ * dry the newest frame is HELD, never extrapolated — extrapolation looks smoother right up
+ * until the real frame lands elsewhere and everything snaps, which reads far worse.
+ */
+private fun pickSample(frames: List<GamesEngine.SnakeFrame>): Sample? {
+    val newest = frames.lastOrNull() ?: return null
+    if (frames.size < 2) return Sample(newest.state, newest.state, 1.0)
+
+    val elapsed = (android.os.SystemClock.elapsedRealtime() - newest.arrivedAtMs) / 1000.0
+    val renderT = newest.state.time + elapsed - INTERP_DELAY
+
+    for (i in frames.size - 2 downTo 0) {
+        val a = frames[i].state
+        val b = frames[i + 1].state
+        if (renderT >= a.time) {
+            val span = b.time - a.time
+            val t = if (span > 1e-6) ((renderT - a.time) / span).coerceIn(0.0, 1.0) else 1.0
+            return Sample(a, b, t)
+        }
+    }
+    // renderT predates everything buffered (a long stall): show the oldest pair's start
+    // rather than jumping to the newest.
+    return Sample(frames[0].state, frames[1].state, 0.0)
+}
+
+private fun lerp(a: Double, b: Double, t: Double) = a + (b - a) * t
+
+/** Short-arc angular interpolation, so crossing the -pi/pi wrap does not spin the long way. */
+private fun lerpAngle(a: Double, b: Double, t: Double): Double {
+    var delta = b - a
+    while (delta > Math.PI) delta -= 2 * Math.PI
+    while (delta < -Math.PI) delta += 2 * Math.PI
+    return a + delta * t
+}
 
 private fun DrawScope.drawArena(
-    state: GamesEngine.SnakeState,
-    previous: GamesEngine.SnakeState?,
+    frames: List<GamesEngine.SnakeFrame>,
     me: String?,
-    frameAt: Long,
+    trails: TrailStore,
+    stick: Offset,
 ) {
-    // Interpolation factor, clamped to 1: if a frame is late the snake HOLDS at the last
-    // known position rather than extrapolating past it. Extrapolating looks smoother right up
-    // until the real frame arrives somewhere else and the snake snaps, which reads as a much
-    // worse glitch than a brief pause.
-    val elapsed = (android.os.SystemClock.elapsedRealtime() - frameAt).toDouble()
-    val t = (elapsed / TICK_MS).coerceIn(0.0, 1.0)
+    val s = pickSample(frames) ?: return
+    val state = s.to
 
-    val mine = state.snakes.firstOrNull { it.id == me }
-    val prevMine = previous?.snakes?.firstOrNull { it.id == me }
+    // Interpolated head positions and headings for every snake this frame.
+    val heads = HashMap<String, Offset>(state.snakes.size)
+    val headings = HashMap<String, Double>(state.snakes.size)
+    state.snakes.forEach { sn ->
+        val prev = s.from.snakes.firstOrNull { it.id == sn.id }
+        heads[sn.id] = Offset(
+            lerp(prev?.x ?: sn.x, sn.x, s.t).toFloat(),
+            lerp(prev?.y ?: sn.y, sn.y, s.t).toFloat(),
+        )
+        headings[sn.id] = lerpAngle(prev?.heading ?: sn.heading, sn.heading, s.t)
+    }
 
-    val focusX = lerp(prevMine?.x, mine?.x ?: 0.0, t)
-    val focusY = lerp(prevMine?.y, mine?.y ?: 0.0, t)
+    trails.update(state, heads)
 
-    // Zoom so a growing snake stays framed, easing out so growth is not nauseating.
-    val mass = mine?.mass ?: 10.0
+    val focus = heads[me] ?: Offset.Zero
+    val mass = state.snakes.firstOrNull { it.id == me }?.mass ?: 10.0
+
+    // Zoom out as the snake grows so it stays framed, easing off so growth is not nauseating.
     val zoom = 1.0 / (1.0 + log10(1 + mass / 30) * 0.42)
     val scale = (min(size.width, size.height) / 900f) * zoom.toFloat()
 
     withTransform({
         translate(size.width / 2f, size.height / 2f)
         scale(scale, scale, pivot = Offset.Zero)
-        translate(-focusX.toFloat(), -focusY.toFloat())
+        translate(-focus.x, -focus.y)
     }) {
         drawBoundary(state.arenaRadius.toFloat())
         drawFood(state)
@@ -189,25 +262,22 @@ private fun DrawScope.drawArena(
         // Others first, the local player last, so your own body is never buried under
         // someone else's in a scrum.
         state.snakes.filter { it.alive && it.id != me }.forEach {
-            drawSnake(it, previous, t, false, state.time)
+            drawSnake(it, trails, heads[it.id] ?: Offset.Zero,
+                headings[it.id] ?: 0.0, false, state.time, stick)
         }
-        mine?.takeIf { it.alive }?.let { drawSnake(it, previous, t, true, state.time) }
+        state.snakes.firstOrNull { it.id == me && it.alive }?.let {
+            drawSnake(it, trails, heads[it.id] ?: Offset.Zero,
+                headings[it.id] ?: 0.0, true, state.time, stick)
+        }
     }
 }
 
-private fun lerp(from: Double?, to: Double, t: Double): Double =
-    if (from == null) to else from + (to - from) * t
-
 private fun DrawScope.drawBoundary(radius: Float) {
-    val topLeft = Offset(-radius, -radius)
-    val diameter = Size(radius * 2, radius * 2)
-
-    // Interior wash, so "inside" reads as a place rather than as empty black.
     drawCircle(Color(0xFF120E28), radius = radius, center = Offset.Zero)
 
-    // The boundary is drawn EXACTLY at the lethal line, not inside or outside it. A wall
-    // whose visible edge disagrees with the killing surface makes every border death feel
-    // unfair, and players cannot learn a boundary they cannot see precisely.
+    // Drawn EXACTLY at the lethal line, not inside or outside it. A wall whose visible edge
+    // disagrees with the killing surface makes every border death feel unfair, and players
+    // cannot learn a boundary they cannot see precisely.
     drawCircle(
         Color(0xFF5AD8FF).copy(alpha = 0.16f), radius = radius - 20f,
         center = Offset.Zero, style = Stroke(width = 40f))
@@ -215,6 +285,7 @@ private fun DrawScope.drawBoundary(radius: Float) {
 }
 
 private fun DrawScope.drawFood(state: GamesEngine.SnakeState) {
+    // Food never moves, so it is drawn from the newest frame with no interpolation.
     state.food.forEach { item ->
         val r = if (item.value >= 2) 7f else if (item.value < 1) 4.5f else 5.5f
         val color = if (item.value >= 2) Color(0xFFFFB873) else Color(0xFFFFEE9E)
@@ -226,37 +297,30 @@ private fun DrawScope.drawFood(state: GamesEngine.SnakeState) {
 
 private fun DrawScope.drawSnake(
     snake: GamesEngine.SnakeState.Snake,
-    previous: GamesEngine.SnakeState?,
-    t: Double,
+    trails: TrailStore,
+    head: Offset,
+    heading: Double,
     isMe: Boolean,
     time: Double,
+    stick: Offset,
 ) {
-    if (snake.path.size < 2) return
+    val points = trails.points(snake.id)
+    if (points.size < 2) return
 
-    val prev = previous?.snakes?.firstOrNull { it.id == snake.id }
     val color = paletteColor(snake.colorIndex)
 
-    // Body width grows sub-linearly with mass: linear growth would have a long snake filling
-    // the screen, and length is meant to dominate by covering space, not by being fat.
+    // Sub-linear thickness: linear growth would have a long snake filling the screen, and
+    // length is meant to dominate by covering space, not by being fat.
     val width = (20.0 * (1 + log10(1 + snake.mass / 25) * 0.55)).toFloat()
-
-    // Interpolate point-by-point against the previous frame, matched by index — correct here
-    // because a path only grows or shifts by one point per tick, so index i is very nearly
-    // the same piece of snake between frames.
-    val points = snake.path.mapIndexed { i, p ->
-        val pp = prev?.path?.getOrNull(i)
-        Offset(lerp(pp?.x, p.x, t).toFloat(), lerp(pp?.y, p.y, t).toFloat())
-    }
 
     val path = Path().apply {
         moveTo(points[0].x, points[0].y)
-        // Quadratic smoothing through midpoints: the server sends a decimated polyline, and
-        // drawing it as straight segments would show every corner.
+        // Quadratic smoothing through midpoints: the trail is a polyline of per-frame samples,
+        // and drawing it as straight segments would show every corner.
         for (i in 1 until points.size - 1) {
-            val mid = Offset(
-                (points[i].x + points[i + 1].x) / 2f,
-                (points[i].y + points[i + 1].y) / 2f)
-            quadraticBezierTo(points[i].x, points[i].y, mid.x, mid.y)
+            val mx = (points[i].x + points[i + 1].x) / 2f
+            val my = (points[i].y + points[i + 1].y) / 2f
+            quadraticBezierTo(points[i].x, points[i].y, mx, my)
         }
         lineTo(points.last().x, points.last().y)
     }
@@ -266,61 +330,158 @@ private fun DrawScope.drawSnake(
     val alpha = if (time < snake.invulnUntil) 0.55f else 1f
 
     drawPath(path, color.copy(alpha = 0.22f * alpha),
-        style = Stroke(width = width * 2.1f, cap = androidx.compose.ui.graphics.StrokeCap.Round,
-            join = androidx.compose.ui.graphics.StrokeJoin.Round))
+        style = Stroke(width = width * 2.1f, cap = StrokeCap.Round, join = StrokeJoin.Round))
     drawPath(path, color.copy(alpha = alpha),
-        style = Stroke(width = width, cap = androidx.compose.ui.graphics.StrokeCap.Round,
-            join = androidx.compose.ui.graphics.StrokeJoin.Round))
+        style = Stroke(width = width, cap = StrokeCap.Round, join = StrokeJoin.Round))
 
     if (isMe) {
-        // The local player's snake carries a rim no one else has. In a crowded arena hue
-        // alone is not enough to find yourself quickly.
+        // A rim no one else has. In a crowded arena hue alone is not enough to find yourself.
         drawPath(path, Color.White.copy(alpha = 0.85f * alpha),
-            style = Stroke(width = 2.5f, cap = androidx.compose.ui.graphics.StrokeCap.Round,
-                join = androidx.compose.ui.graphics.StrokeJoin.Round))
+            style = Stroke(width = 2.5f, cap = StrokeCap.Round, join = StrokeJoin.Round))
     }
     if (snake.boosting) {
         drawPath(path, Color.White.copy(alpha = 0.35f),
-            style = Stroke(width = width * 0.45f,
-                cap = androidx.compose.ui.graphics.StrokeCap.Round,
-                join = androidx.compose.ui.graphics.StrokeJoin.Round))
+            style = Stroke(width = width * 0.45f, cap = StrokeCap.Round, join = StrokeJoin.Round))
     }
 
-    drawHead(points[0], snake, prev, t, width, color, alpha)
+    drawHead(head, heading, width, color, alpha, isMe, stick)
 }
 
 private fun DrawScope.drawHead(
     head: Offset,
-    snake: GamesEngine.SnakeState.Snake,
-    prev: GamesEngine.SnakeState.Snake?,
-    t: Double,
+    heading: Double,
     width: Float,
     color: Color,
     alpha: Float,
+    isMe: Boolean,
+    stick: Offset,
 ) {
     val r = width * 0.62f
     drawCircle(color.copy(alpha = 0.28f * alpha), radius = r * 2.4f, center = head)
     drawCircle(color.copy(alpha = alpha), radius = r, center = head)
 
-    // Angles interpolate on the SHORT arc, so a snake crossing the -pi/pi wrap does not spin
-    // its eyes the long way round.
-    var heading = snake.heading
-    if (prev != null) {
-        var delta = snake.heading - prev.heading
-        while (delta > Math.PI) delta -= 2 * Math.PI
-        while (delta < -Math.PI) delta += 2 * Math.PI
-        heading = prev.heading + delta * t
-    }
+    // The local player's eyes follow the JOYSTICK rather than the confirmed heading, so aim
+    // responds on the same frame the thumb moves. Purely cosmetic — the body and every
+    // collision still come from the server — but it is most of what makes the control feel
+    // connected across a 10 Hz link.
+    val look = if (isMe && stick != Offset.Zero) {
+        atan2(stick.y.toDouble(), stick.x.toDouble())
+    } else heading
 
     val eyeR = r * 0.3f
     for (side in listOf(-1.0, 1.0)) {
-        val ex = head.x + (cos(heading) * r * 0.35 - sin(heading) * side * r * 0.42).toFloat()
-        val ey = head.y + (sin(heading) * r * 0.35 + cos(heading) * side * r * 0.42).toFloat()
+        val ex = head.x + (cos(look) * r * 0.35 - sin(look) * side * r * 0.42).toFloat()
+        val ey = head.y + (sin(look) * r * 0.35 + cos(look) * side * r * 0.42).toFloat()
         drawCircle(Color.White.copy(alpha = alpha), radius = eyeR, center = Offset(ex, ey))
         val pr = eyeR * 0.52f
-        val px = ex + (cos(heading) * eyeR * 0.4).toFloat()
-        val py = ey + (sin(heading) * eyeR * 0.4).toFloat()
+        val px = ex + (cos(look) * eyeR * 0.4).toFloat()
+        val py = ey + (sin(look) * eyeR * 0.4).toFloat()
         drawCircle(Color.Black.copy(alpha = alpha), radius = pr, center = Offset(px, py))
+    }
+}
+
+/**
+ * Per-snake body polylines, rebuilt on the client from interpolated head motion.
+ *
+ * WHY NOT JUST DRAW THE SERVER'S PATH: the server prepends a head point every tick and
+ * decimates the tail of long snakes, so the same array index is a different piece of snake
+ * from one frame to the next. Interpolating those against each other made the whole body crawl
+ * and twitch — the single worst part of how the first version looked.
+ *
+ * A trail is appended at RENDER rate from the smoothly interpolated head, so the body is built
+ * out of 60 fps of motion. The server's path only seeds a new snake, re-seeds after a respawn,
+ * and re-syncs if the two drift apart.
+ */
+private class TrailStore {
+    private val trails = HashMap<String, MutableList<Offset>>()
+    private val wasAlive = HashMap<String, Boolean>()
+
+    fun points(id: String): List<Offset> = trails[id] ?: emptyList()
+
+    fun update(state: GamesEngine.SnakeState, heads: Map<String, Offset>) {
+        val seen = HashSet<String>(state.snakes.size)
+
+        state.snakes.forEach { sn ->
+            seen.add(sn.id)
+            val respawned = sn.alive && wasAlive[sn.id] != true
+            wasAlive[sn.id] = sn.alive
+
+            if (!sn.alive) { trails.remove(sn.id); return@forEach }
+            val head = heads[sn.id] ?: return@forEach
+
+            var trail = trails[sn.id]
+
+            // Seed from the server path on first sight or after a respawn — a trail has to
+            // start as a whole body, not grow from a dot over the first second.
+            if (trail == null || trail.isEmpty() || respawned) {
+                trails[sn.id] = seedFrom(sn, head)
+                return@forEach
+            }
+
+            // Re-sync if the local trail has drifted from where the server says the head is.
+            // Happens after a stall or a big correction; without it a wrong trail persists for
+            // the rest of the match.
+            val first = trail.first()
+            if (hypot(head.x - first.x, head.y - first.y) > RESYNC_DISTANCE) {
+                trails[sn.id] = seedFrom(sn, head)
+                return@forEach
+            }
+
+            if (hypot(head.x - first.x, head.y - first.y) >= MIN_STEP) {
+                trail.add(0, head)
+            } else {
+                // Keep the drawn head exactly on the interpolated position even when it has
+                // not moved far enough to earn its own point.
+                trail[0] = head
+            }
+
+            trim(trail, sn.mass * SEGMENT_SPACING)
+        }
+
+        trails.keys.retainAll(seen)
+        wasAlive.keys.retainAll(seen)
+    }
+
+    private fun seedFrom(
+        sn: GamesEngine.SnakeState.Snake,
+        head: Offset,
+    ): MutableList<Offset> =
+        if (sn.path.isEmpty()) mutableListOf(head)
+        else sn.path.mapTo(ArrayList(sn.path.size)) { Offset(it.x.toFloat(), it.y.toFloat()) }
+
+    /**
+     * Trim to an exact arc length, cutting THROUGH the final segment.
+     *
+     * Same maths as the server's `trimPath`. Dropping whole segments instead makes the tail
+     * quantise: it holds still while the head travels a segment's worth, then jumps back by a
+     * whole segment — a visible twitch on every snake, every frame.
+     */
+    private fun trim(points: MutableList<Offset>, maxLength: Double) {
+        if (points.size < 2 || maxLength <= 0) return
+
+        var total = 0.0
+        for (i in 0 until points.size - 1) {
+            val seg = hypot(points[i + 1].x - points[i].x, points[i + 1].y - points[i].y).toDouble()
+            if (total + seg >= maxLength) {
+                val t = if (seg > 1e-9) ((maxLength - total) / seg).toFloat() else 0f
+                points[i + 1] = Offset(
+                    points[i].x + (points[i + 1].x - points[i].x) * t,
+                    points[i].y + (points[i + 1].y - points[i].y) * t,
+                )
+                while (points.size > i + 2) points.removeAt(points.size - 1)
+                return
+            }
+            total += seg
+        }
+    }
+
+    private companion object {
+        /** Matches the server's SEGMENT_SPACING. Body length in world units is mass x this. */
+        const val SEGMENT_SPACING = 14.0
+        /** Minimum head movement before a new point is recorded, to bound polyline length. */
+        const val MIN_STEP = 1.5f
+        /** Head-vs-trail divergence beyond which the local trail is wrong and gets re-seeded. */
+        const val RESYNC_DISTANCE = 60f
     }
 }
 
@@ -329,7 +490,9 @@ private fun Overlay(
     state: GamesEngine.SnakeState?,
     me: String?,
     boosting: Boolean,
+    radiusPx: Float,
     onClose: () -> Unit,
+    onStick: (Offset) -> Unit,
     onBoostChange: (Boolean) -> Unit,
 ) {
     Box(Modifier.fillMaxSize().padding(14.dp)) {
@@ -385,12 +548,20 @@ private fun Overlay(
             }
         }
 
+        VirtualJoystick(
+            radiusPx = radiusPx,
+            onVector = onStick,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = 12.dp, bottom = 20.dp),
+        )
+
         // Press-and-hold, not a toggle: boost is a held commitment, and a toggle costs a tap
         // to release at exactly the moment a player is busy steering.
         Box(
             Modifier
                 .align(Alignment.BottomEnd)
-                .padding(10.dp)
+                .padding(end = 12.dp, bottom = 20.dp)
                 .size(78.dp)
                 .background(
                     Color.White.copy(alpha = if (boosting) 0.30f else 0.12f), CircleShape)
@@ -408,4 +579,86 @@ private fun Overlay(
                 fontSize = 10.sp, fontWeight = FontWeight.Black)
         }
     }
+}
+
+/**
+ * A fixed-ring virtual joystick.
+ *
+ * The knob follows the finger, clamped inside the ring: past the edge it pins to the rim in
+ * that direction rather than escaping. Release springs it back to centre. Output is a
+ * normalized vector in [-1, 1] per axis, relative to the ring radius.
+ *
+ * FIXED RATHER THAN FLOATING, deliberately: a fixed ring gives the thumb a constant physical
+ * reference it can find without looking, which is exactly what was missing when steering was
+ * "toward my finger relative to screen centre".
+ *
+ * ONE pointerInput, deliberately: the previous screen ran detectDragGestures AND
+ * detectTapGestures over the same area, and they competed for the same touches — which is why
+ * steering sometimes did nothing at all.
+ */
+@Composable
+private fun VirtualJoystick(
+    radiusPx: Float,
+    onVector: (Offset) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val scope = rememberCoroutineScope()
+    val knob = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
+
+    Box(
+        modifier
+            // A hit area larger than the ring: a thumb reaching for a joystick lands near it
+            // as often as on it, and demanding a precise hit is what makes an on-screen stick
+            // feel unresponsive.
+            .size((JOY_RADIUS_DP * 2.8f).dp)
+            .pointerInput(radiusPx) {
+                detectDragGestures(
+                    onDragStart = { offset ->
+                        scope.launch { knob.snapTo(clampToRing(offset, size.width, radiusPx)) }
+                        onVector(knob.value / radiusPx)
+                    },
+                    onDrag = { change, _ ->
+                        val v = clampToRing(change.position, size.width, radiusPx)
+                        scope.launch { knob.snapTo(v) }
+                        onVector(v / radiusPx)
+                    },
+                    onDragEnd = {
+                        // Springs home like a rubber band. No steer is sent on release: the
+                        // snake keeps its heading, matching the server model and the genre.
+                        scope.launch {
+                            knob.animateTo(
+                                Offset.Zero,
+                                spring(dampingRatio = 0.55f, stiffness = Spring.StiffnessMedium))
+                        }
+                        onVector(Offset.Zero)
+                    },
+                    onDragCancel = {
+                        scope.launch { knob.animateTo(Offset.Zero, spring(dampingRatio = 0.55f)) }
+                        onVector(Offset.Zero)
+                    },
+                )
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val centre = Offset(size.width / 2f, size.height / 2f)
+            drawCircle(Color.White.copy(alpha = 0.10f), radius = radiusPx, center = centre)
+            drawCircle(Color.White.copy(alpha = 0.22f), radius = radiusPx,
+                center = centre, style = Stroke(width = 4f))
+            drawCircle(Color.White.copy(alpha = 0.85f),
+                radius = with(this) { JOY_KNOB_DP.dp.toPx() },
+                center = centre + knob.value)
+        }
+    }
+}
+
+/** Clamp a touch to the ring: normalize and scale by R once the finger passes the rim. */
+private fun clampToRing(position: Offset, boxSize: Int, radiusPx: Float): Offset {
+    val centre = boxSize / 2f
+    val dx = position.x - centre
+    val dy = position.y - centre
+    val dist = hypot(dx, dy)
+    return if (dist > radiusPx && dist > 0f) {
+        Offset(dx / dist * radiusPx, dy / dist * radiusPx)
+    } else Offset(dx, dy)
 }

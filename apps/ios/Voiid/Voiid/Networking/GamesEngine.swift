@@ -311,17 +311,28 @@ final class GamesEngine: ObservableObject {
     /// a crash where an unused nil is inert.
     @Published private(set) var rps: RpsState?
     @Published private(set) var cricket: CricketState?
-    /// Current snake frame, and the one before it.
+    /// One received snake frame plus when it landed, on the monotonic host clock.
+    struct SnakeFrame {
+        let state: SnakeState
+        let arrivedAt: TimeInterval
+    }
+
+    /// The last few snake frames, oldest first — a jitter buffer, not just a pair.
     ///
-    /// The previous frame is kept because the renderer interpolates between the two: at a
-    /// 10 Hz tick, drawing each frame on arrival would visibly step. It also supplies the
-    /// baseline that food deltas are applied against.
-    @Published private(set) var snake: SnakeState?
-    @Published private(set) var snakePrevious: SnakeState?
-    /// Host-clock time the current snake frame landed, so the view knows how far to
-    /// interpolate. Monotonic, and deliberately not the server's `t` — the two clocks differ
-    /// by an unknown offset and only the local one paces drawing.
-    @Published private(set) var snakeFrameAt: TimeInterval = 0
+    /// Interpolating between exactly two frames timed by ARRIVAL was the stutter: WS frames
+    /// do not land evenly, so the renderer held at a late frame and then jumped when the next
+    /// one arrived. With a small buffer keyed on the SERVER's `t`, the renderer picks a
+    /// render time slightly in the past and interpolates between whichever pair brackets it —
+    /// arrival jitter is absorbed instead of displayed.
+    ///
+    /// Arrival times use the monotonic clock, deliberately not the server's `t` alone — the
+    /// two clocks differ by an unknown offset, and only the local one paces drawing.
+    @Published private(set) var snakeFrames: [SnakeFrame] = []
+
+    /// Latest snake state, for HUD/overlay code that has no need to interpolate.
+    var snake: SnakeState? { snakeFrames.last?.state }
+
+    private static let SNAKE_BUFFER = 4
     /// Set when the join REST call fails, so the screen can show something truthful
     /// instead of an empty board that will never update.
     @Published private(set) var joinError: String?
@@ -360,12 +371,13 @@ final class GamesEngine: ObservableObject {
         case "rps":     rps = RpsState.parse(payload)
         case "cricket": cricket = CricketState.parse(payload)
         case "snake":
-            // Parse against the CURRENT frame, because food deltas are relative to it, then
-            // shift it into `previous` for the renderer to interpolate from.
+            // Parse against the NEWEST frame, because food deltas are relative to it, then
+            // append to the jitter buffer the renderer interpolates across.
             guard let next = SnakeState.parse(payload, previous: snake) else { return }
-            snakePrevious = snake
-            snake = next
-            snakeFrameAt = CACurrentMediaTime()
+            snakeFrames.append(SnakeFrame(state: next, arrivedAt: CACurrentMediaTime()))
+            if snakeFrames.count > Self.SNAKE_BUFFER {
+                snakeFrames.removeFirst(snakeFrames.count - Self.SNAKE_BUFFER)
+            }
         default:        state = TicTacToeState.parse(payload)
         }
     }
@@ -378,12 +390,12 @@ final class GamesEngine: ObservableObject {
         self.state = nil
         self.rps = nil
         self.cricket = nil
-        self.snake = nil
-        self.snakePrevious = nil
+        self.snakeFrames = []
         self.joinError = nil
         self.lastSeq = -1
         self.pendingHeading = nil
         self.lastSentBoost = false
+        self.lastSentHeading = .infinity
         do {
             try await api.join(matchId: matchId)
         } catch {
@@ -499,13 +511,24 @@ final class GamesEngine: ObservableObject {
         // Boost changes go immediately: a dropped press is a lost fight, and it is an edge,
         // not a continuous value.
         let boostChanged = boost != lastSentBoost
-        guard boostChanged || now - lastSteerSentAt >= Self.steerInterval else {
-            pendingHeading = heading
+
+        // A heading that has barely moved is not worth a frame. The thumb jitters by a
+        // fraction of a degree even when held still, and without this floor every one of
+        // those micro-movements consumed a send slot — so a REAL turn arriving moments later
+        // had to wait out the interval behind noise.
+        var delta = heading - lastSentHeading
+        while delta > .pi { delta -= 2 * .pi }
+        while delta < -.pi { delta += 2 * .pi }
+        let moved = abs(delta) >= Self.headingEpsilon
+
+        guard boostChanged || (moved && now - lastSteerSentAt >= Self.steerInterval) else {
+            if moved { pendingHeading = heading }
             return
         }
 
         lastSteerSentAt = now
         lastSentBoost = boost
+        lastSentHeading = heading
         pendingHeading = nil
         WebSocketClient.shared.sendGameInput(
             matchId: matchId, payload: ["h": heading, "boost": boost])
@@ -519,9 +542,16 @@ final class GamesEngine: ObservableObject {
         steer(heading: heading, boost: lastSentBoost)
     }
 
-    private static let steerInterval: TimeInterval = 1.0 / 10.0
+    // 60 ms, not the tick period. The server's per-match input limit for a continuous game
+    // is tickHz x 120/min (20/s at 10 Hz), so ~16.7/s sits safely under it — and the extra
+    // granularity means a direction change waits at most 60 ms to leave the device instead
+    // of 100, which is a visible slice of the total input latency.
+    private static let steerInterval: TimeInterval = 0.06
+    /// ~3°. Below this the thumb is jittering, not turning.
+    private static let headingEpsilon: Double = 0.05
     private var lastSteerSentAt: TimeInterval = 0
     private var lastSentBoost = false
+    private var lastSentHeading: Double = .infinity
     private var pendingHeading: Double?
 
     func leave() {
@@ -529,11 +559,11 @@ final class GamesEngine: ObservableObject {
         state = nil
         rps = nil
         cricket = nil
-        snake = nil
-        snakePrevious = nil
+        snakeFrames = []
         joinError = nil
         lastSeq = -1
         pendingHeading = nil
         lastSentBoost = false
+        lastSentHeading = .infinity
     }
 }
