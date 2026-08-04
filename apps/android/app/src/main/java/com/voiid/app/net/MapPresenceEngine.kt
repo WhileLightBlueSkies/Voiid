@@ -332,7 +332,43 @@ object MapPresenceEngine {
         if (_visibility.value == MapVisibility.VISIBLE) {
             provider?.start { lat, lon, acc -> emitFix(lat, lon, acc) }
             provider?.requestSingle { lat, lon, acc -> emitFix(lat, lon, acc) }
+            // ALSO register the PendingIntent stream, which survives the app being killed.
+            // The in-process callback above is the responsive one while Voiid is alive; this
+            // is what stops the pin freezing the moment Android reclaims the process. Both
+            // are cheap and idempotent, and goGhost()/killSwitch() tear down both via
+            // provider.stop().
+            provider?.startBackground()
         }
+    }
+
+    /**
+     * A background fix arrived, possibly with the app process starting COLD to receive it.
+     *
+     * THE KILL PROBLEM. `requestLocationUpdates(request, callback, looper)` binds delivery to
+     * an in-process object, so Android killing the app — which it does aggressively when
+     * backgrounded, and immediately on a swipe from Recents — took the Map's location stream
+     * with it. The pin then froze wherever the user last had Voiid open, telling their
+     * contacts they were somewhere they had left. Delivery is now a PendingIntent broadcast
+     * (see MapLocationReceiver), which the OS holds and which restarts the process.
+     *
+     * Everything this needs — visibility, share id, share key, audience — is in
+     * SharedPreferences, so `init` rebuilds it from disk. That also means GHOST MODE SURVIVES
+     * A KILL: if the user ghosted, `restore()` reads VISIBLE = false and `emitFix` refuses,
+     * even though the OS still had a live registration when the process died.
+     *
+     * The socket may not be connected on a cold start. That is fine and deliberate: a missed
+     * ambient fix is a pin a few minutes stale, and forcing a connect on every background
+     * wake would cost far more than it is worth for a 500 m-accurate position.
+     */
+    fun handleBackgroundFix(context: Context, lat: Double, lon: Double, acc: Double?) {
+        init(context)
+        if (_visibility.value != MapVisibility.VISIBLE) {
+            // Registration outlived the user's decision — cancel it now that we are alive to
+            // do so, rather than waking again for a position we will refuse to send.
+            provider?.stopBackground()
+            return
+        }
+        emitFix(lat, lon, acc)
     }
 
     private fun emitFix(lat: Double, lon: Double, acc: Double?) {

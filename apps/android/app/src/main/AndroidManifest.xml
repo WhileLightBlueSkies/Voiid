@@ -154,6 +154,17 @@
             android:exported="false"
             android:foregroundServiceType="location" />
 
+        <!-- Map presence fixes, delivered by PendingIntent so they SURVIVE PROCESS DEATH.
+             An in-process LocationCallback dies with the app; this does not, and the OS will
+             start Voiid cold to deliver a fix (see MapLocationReceiver).
+
+             NOT exported: only Play Services can fire it, because only it holds the
+             PendingIntent we created. An exported receiver here would let any installed app
+             broadcast a fake position into the Map. -->
+        <receiver
+            android:name=".net.MapLocationReceiver"
+            android:exported="false" />
+
         <!-- Stop-sharing action from the ongoing location notification. -->
         <receiver
             android:name=".net.LocationActionReceiver"

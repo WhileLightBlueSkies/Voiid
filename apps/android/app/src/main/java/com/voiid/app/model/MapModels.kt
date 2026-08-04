@@ -95,6 +95,16 @@ data class MapSubject(
 object MapConstants {
     // Presence cadence (§5): coarse, foreground-only. Balanced power, ~5 min / 250 m.
     const val PRESENCE_INTERVAL_MS = 300_000L
+
+    /**
+     * Background presence cadence: 15 minutes, vs 5 in the foreground.
+     *
+     * A background fix WAKES THE PROCESS — the OS may start Voiid cold just to deliver it —
+     * which costs far more than an in-process callback. Presence is an ambient standing
+     * state measured in hundreds of metres; 15 minutes keeps a pin honest without paying to
+     * wake three times as often for a position that has barely moved.
+     */
+    const val PRESENCE_BACKGROUND_INTERVAL_MS = 900_000L
     const val PRESENCE_MIN_DISTANCE_M = 250f
     const val PRESENCE_CADENCE_SECONDS = 300
 

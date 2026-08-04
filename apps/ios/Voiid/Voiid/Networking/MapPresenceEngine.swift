@@ -83,6 +83,21 @@ final class MapPresenceEngine: ObservableObject {
         MapPresenceStore.pruneAged()
         reloadFromStore()
 
+        // RESUME THE STREAM ON COLD LAUNCH if the user is still visible.
+        //
+        // Significant-change delivery RELAUNCHES a terminated app — that is the whole reason
+        // it survives being killed — but the relaunch is silent and headless: no UI runs, so
+        // nothing that lives in a view's `onAppear` executes. Without this the app woke up,
+        // did nothing, and went back to sleep, leaving the user's pin frozen wherever they
+        // last had Voiid open. That is worse than showing nothing, because it tells their
+        // contacts they are somewhere they left an hour ago.
+        //
+        // Visibility is read from the store, so a kill cannot silently turn sharing back on
+        // for someone who ghosted — and `start()` is a no-op when not authorized.
+        if visibility.isVisible {
+            provider.start()
+        }
+
         NotificationCenter.default.addObserver(forName: .voiidDidSignOut, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.handleSignOut() }
         }

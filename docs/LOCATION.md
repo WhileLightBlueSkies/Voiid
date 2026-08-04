@@ -272,9 +272,18 @@ Self-hosted / offline vector tiles are out of scope for v1 (§10).
 |---|---|---|---|---|
 | **Static pin** | one fix, 10 s timeout | best available | no | negligible |
 | **(A) Live share** | 10–15 s, 25 m distance filter | ~10 m | **yes** | ~4–8 %/h |
-| **(B) Map presence** | significant-change / 5 min, 250 m filter | ~100–500 m | **no** | <1 %/h |
+| **(B) Map presence** | significant-change / 5 min fg, 15 min bg, 250 m filter | ~100–500 m | **yes, coarse** | <1 %/h |
 
-**The Map is coarse, last-known, and foreground-driven. A continuously-broadcasting map is not shipped.**
+**The Map is coarse and last-known. A continuously-broadcasting map is not shipped.**
+
+UPDATED: the Map now keeps delivering while backgrounded or killed, because the previous
+foreground-only design had a failure worse than showing nothing — the pin FROZE wherever the
+user last had Voiid open, telling their contacts they were somewhere they had left. It is
+still the cheap ambient stream (significant-change on iOS, a 15-minute PendingIntent request
+on Android), NOT the continuous mode; the <1 %/h figure and the 250 m filter are unchanged.
+Ghost Mode and the kill switch tear down background delivery along with everything else, and
+both platforms re-read visibility from disk on a cold wake so a kill cannot resurrect a
+share the user ended.
 It is the single largest battery and safety difference between (A) and (B), and it is deliberate: (A) is
 a short, explicit, timer-bounded act; (B) is an ambient standing state, and an ambient state must be cheap
 and imprecise.
@@ -640,9 +649,12 @@ keeps the backend surface at zero new message routes.
    ghosted. Visible from every screen in the app.
 2. A **persistent pill** at the top of the Map: *"Visible to 4 people"* on accent, tappable → the audience
    list. When ghosted: *"Ghost Mode — hidden from everyone"* on grey.
-3. iOS: the Map never runs in background, so **no** blue system pill is expected during Map-only use — if
+3. iOS: the Map uses significant-change in the background, which does NOT show the blue pill
+   (that is for `startUpdatingLocation`). A pill during Map-only use still means something is wrong — if
    one appears, that is a bug.
-4. Android: **no** FGS and **no** ongoing notification for the Map, because nothing runs in background —
+4. Android: still **no** FGS and **no** ongoing notification for the Map. Background fixes arrive by
+   PendingIntent broadcast, which needs neither — a permanent notification for an ambient state would be
+   wrong. An FGS appearing for Map-only use still means something is misrouted —
    there is nothing to disclose while the app is closed. That is the honest version of the indicator.
 5. A **weekly local reminder** if you have been continuously visible for 7 days: *"You've been visible on
    the Map to 4 people all week. Review?"* Purely local; the server is not involved.

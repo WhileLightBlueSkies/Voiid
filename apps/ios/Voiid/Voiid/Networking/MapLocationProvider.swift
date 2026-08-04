@@ -55,6 +55,19 @@ final class MapLocationProvider: NSObject, ObservableObject, CLLocationManagerDe
 
     // MARK: - Authorization
 
+    /// Ask for ALWAYS, so presence survives backgrounding.
+    ///
+    /// iOS only grants Always as an UPGRADE from WhenInUse — asking cold shows nothing, or
+    /// shows a prompt the user has no context for. So this is called after WhenInUse is
+    /// already granted, and only when the user has chosen to be visible on the Map.
+    ///
+    /// Nothing breaks if it is refused: significant-change delivery simply stops while
+    /// backgrounded and resumes on foreground, which is exactly the old behaviour.
+    func requestAlwaysIfNeeded() {
+        guard authorization == .authorizedWhenInUse else { return }
+        manager.requestAlwaysAuthorization()
+    }
+
     /// In-context, at the moment the user chooses to be visible — never at onboarding. The
     /// Map only ever needs When-In-Use.
     func requestWhenInUse() {
@@ -75,8 +88,33 @@ final class MapLocationProvider: NSObject, ObservableObject, CLLocationManagerDe
     func start() {
         guard !running, isAuthorized else { return }
         running = true
+
+        // BACKGROUND DELIVERY for the significant-change stream.
+        //
+        // Without this the Map went stale the moment the app was backgrounded — your pin
+        // froze wherever you last had Voiid open, which is worse than showing nothing: it
+        // tells your contacts you are somewhere you left an hour ago.
+        //
+        // This stays CHEAP. It is still significant-change (~500 m / ~5 min), which rides
+        // the cell/wifi radio the OS already runs for its own purposes — not
+        // `startUpdatingLocation`, which is the 4–8 %/h mode reserved for a timer-bounded
+        // live share. The Map's contract (coarse, ambient, <1 %/h) is unchanged; only its
+        // ability to keep delivering while closed is new.
+        //
+        // Requires the `location` UIBackgroundMode, which Info.plist declares — this TRAPS
+        // without it. Real background delivery additionally needs Always; with WhenInUse the
+        // stream simply pauses when backgrounded, which is the previous behaviour.
+        manager.allowsBackgroundLocationUpdates = true
+        // Never auto-pause: the OS pausing an ambient presence stream would strand the pin
+        // silently, and significant-change is too cheap for the pause to buy anything.
+        manager.pausesLocationUpdatesAutomatically = false
+
         manager.startMonitoringSignificantLocationChanges()
         manager.requestLocation()
+
+        // Ask to upgrade once the coarse stream is live, so the prompt arrives with the
+        // feature it is for rather than at some unrelated moment.
+        requestAlwaysIfNeeded()
     }
 
     /// One immediate coarse fix — used on foreground to refresh presence without waiting for
@@ -90,6 +128,10 @@ final class MapLocationProvider: NSObject, ObservableObject, CLLocationManagerDe
         guard running else { return }
         running = false
         manager.stopMonitoringSignificantLocationChanges()
+        // Drop background privileges the instant we stop. Ghost Mode and the kill switch
+        // both route here, and a lingering background grant after the user said "stop" would
+        // be the exact failure this feature must never have.
+        manager.allowsBackgroundLocationUpdates = false
     }
 
     // MARK: - CLLocationManagerDelegate

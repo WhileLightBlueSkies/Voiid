@@ -37,6 +37,17 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         // Alert pushes are best-effort and get dropped for killed/backgrounded apps,
         // which loses calls; a VoIP push wakes us and we ring CallKit immediately.
         VoIPPushManager.shared.start()
+
+        // A LOCATION LAUNCH IS HEADLESS. When significant-change relaunches a terminated app
+        // there is no window and no view, so nothing in `onAppear` runs — the engine has to
+        // be constructed HERE or the wake does nothing and the user's pin stays frozen.
+        //
+        // `launchOptions[.location]` tells us this specific launch was caused by a location
+        // event, but the engine is touched unconditionally: it is also correct on a normal
+        // launch (it prunes the stale trail and resumes the stream if the user is visible),
+        // and gating it would mean two paths that can drift.
+        _ = MapPresenceEngine.shared
+
         return true
     }
 

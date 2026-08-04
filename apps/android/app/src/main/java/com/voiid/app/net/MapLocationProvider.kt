@@ -2,6 +2,8 @@ package com.voiid.app.net
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.Intent
+import android.app.PendingIntent
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Looper
@@ -75,6 +77,60 @@ class MapLocationProvider(context: Context) {
     fun stop() {
         callback?.let { client.removeLocationUpdates(it) }
         callback = null
+        stopBackground()
+    }
+
+    // MARK: - Background delivery
+    //
+    // The in-process callback above dies with the app. This is the same request delivered to
+    // a BroadcastReceiver via PendingIntent, which the OS holds — it will start the process
+    // cold to deliver a fix. See MapLocationReceiver for why this rather than a foreground
+    // service.
+
+    private fun fixPendingIntent(): PendingIntent {
+        val intent = Intent(appContext, MapLocationReceiver::class.java)
+            .setAction(MapLocationReceiver.ACTION_FIX)
+        // FLAG_MUTABLE is REQUIRED: Play Services writes the LocationResult into this intent
+        // before delivering it, and an immutable one silently never fires. UPDATE_CURRENT so
+        // re-registering replaces rather than stacking duplicate deliveries.
+        return PendingIntent.getBroadcast(
+            appContext,
+            REQUEST_CODE,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
+        )
+    }
+
+    /**
+     * Keep delivering coarse fixes while the app is backgrounded or dead.
+     *
+     * Deliberately SLOWER than the foreground stream: background presence does not need the
+     * foreground cadence, and a background wake is far more expensive than an in-process
+     * callback. This is the Map's ambient contract — coarse, cheap, and imprecise.
+     */
+    @SuppressLint("MissingPermission") // guarded by hasPermission()
+    fun startBackground(): Boolean {
+        if (!hasPermission()) return false
+        val request = LocationRequest.Builder(
+            Priority.PRIORITY_BALANCED_POWER_ACCURACY,
+            MapConstants.PRESENCE_BACKGROUND_INTERVAL_MS,
+        )
+            .setMinUpdateDistanceMeters(MapConstants.PRESENCE_MIN_DISTANCE_M)
+            .setWaitForAccurateLocation(false)
+            .build()
+        return runCatching {
+            client.requestLocationUpdates(request, fixPendingIntent())
+            true
+        }.getOrDefault(false)
+    }
+
+    /** Cancel background delivery. Ghost Mode and the kill switch both route here. */
+    fun stopBackground() {
+        runCatching { client.removeLocationUpdates(fixPendingIntent()) }
+    }
+
+    private companion object {
+        const val REQUEST_CODE = 4_201
     }
 
     /** One-shot best-effort fix used on foreground so the map is fresh immediately. */

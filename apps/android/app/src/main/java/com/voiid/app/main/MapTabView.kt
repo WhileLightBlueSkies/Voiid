@@ -1,6 +1,7 @@
 package com.voiid.app.main
 
 import android.Manifest
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -158,15 +159,35 @@ fun MapTabView(map: MapStore, chat: ChatStore, onOpenChatWithUser: ((String) -> 
         pickedSuggestion = null
     }
 
-    // FINE/COARSE foreground grant, requested IN CONTEXT at opt-in — never at onboarding, and
-    // never bundled with ACCESS_BACKGROUND_LOCATION (the Map runs foreground-only, so it does
-    // not need background at all).
+    // Background grant, asked SECOND and separately.
+    //
+    // From Android 11 ACCESS_BACKGROUND_LOCATION cannot be requested in the same dialog as
+    // the foreground one — bundling them makes the system silently drop the background half.
+    // So this fires only after foreground is granted, which is also the honest order: the
+    // user has already said yes to the feature before being asked to extend it.
+    //
+    // Refusal is NOT fatal. Presence simply stops updating while the app is killed and
+    // resumes when it next runs, which is the behaviour before background delivery existed.
+    val bgPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { /* granted or not, the Map works either way */ }
+
+    // FINE/COARSE foreground grant, requested IN CONTEXT at opt-in — never at onboarding.
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { grants ->
         val granted = grants.values.any { it }
         // This path is always "I want to pick who sees me" — force the chooser.
-        if (granted) { audienceMode = MapAudienceMode.CHOOSE; showAudience = true }
+        if (granted) {
+            audienceMode = MapAudienceMode.CHOOSE; showAudience = true
+            // Ask to extend to background so the pin does not freeze when Android reclaims
+            // the process. API 29+ only; below that the foreground grant already covers it.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                !com.voiid.app.net.LocationPermissions.hasBackground(context)
+            ) {
+                bgPermLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+            }
+        }
     }
     val requestThenPick: () -> Unit = {
         permLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
