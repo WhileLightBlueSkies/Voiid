@@ -108,7 +108,7 @@ Plaintext of one fix (≈100–160 bytes):
 
 `_vloc` is the envelope discriminator (see §4). `n` is a monotonic sequence so an out-of-order relay
 frame is dropped rather than rendered as a jump backwards. `alt`/`hdg`/`spd` are reserved and not drawn
-in v1. Coordinates are rounded to **5 decimals (~1.1 m)** for live shares and **3 decimals (~110 m)**
+in v1. Coordinates are rounded to **5 decimals (~1.1 m)** for live shares and **4 decimals (~11 m)**
 for Map presence — rounding at the source, before encryption.
 
 WS frame in:
@@ -272,7 +272,7 @@ Self-hosted / offline vector tiles are out of scope for v1 (§10).
 |---|---|---|---|---|
 | **Static pin** | one fix, 10 s timeout | best available | no | negligible |
 | **(A) Live share** | 10–15 s, 25 m distance filter | ~10 m | **yes** | ~4–8 %/h |
-| **(B) Map presence** | significant-change / 5 min fg, 15 min bg, 250 m filter | ~100–500 m | **yes, coarse** | <1 %/h |
+| **(B) Map presence** | significant-change / 5 min fg, 15 min bg, 100 m filter | ~10–100 m | **yes, coarse** | <1 %/h |
 
 **The Map is coarse and last-known. A continuously-broadcasting map is not shipped.**
 
@@ -280,7 +280,13 @@ UPDATED: the Map now keeps delivering while backgrounded or killed, because the 
 foreground-only design had a failure worse than showing nothing — the pin FROZE wherever the
 user last had Voiid open, telling their contacts they were somewhere they had left. It is
 still the cheap ambient stream (significant-change on iOS, a 15-minute PendingIntent request
-on Android), NOT the continuous mode; the <1 %/h figure and the 250 m filter are unchanged.
+on Android), NOT the continuous mode, and the <1 %/h figure is unchanged.
+
+Accuracy was ALSO tightened in the same pass: the distance filter went 250 m → 100 m and the
+coordinate rounding 3 decimals (~110 m) → 4 (~11 m). At 250 m you could cross a campus without
+the pin moving, and a ~110 m grid put two people standing together a block apart — more
+imprecision than the privacy model asks for, since the real defence is the coarse cadence, the
+audience gate and the encryption rather than blurring the coordinate past usefulness.
 Ghost Mode and the kill switch tear down background delivery along with everything else, and
 both platforms re-read visibility from disk on a cold wake so a kill cannot resurrect a
 share the user ended.

@@ -74,10 +74,27 @@ class MapLocationProvider(context: Context) {
         }.getOrDefault(false)
     }
 
+    /**
+     * Stop EVERYTHING — foreground callback and background registration.
+     *
+     * This is the Ghost Mode / kill-switch path: going dark must leave nothing running, and
+     * an OS-held PendingIntent that outlives the user's decision is exactly the failure this
+     * feature cannot have.
+     */
     fun stop() {
+        stopForeground()
+        stopBackground()
+    }
+
+    /**
+     * Stop only the in-process callback, leaving background delivery registered.
+     *
+     * Used when the app is merely BACKGROUNDED. The callback cannot survive that anyway, and
+     * cancelling the PendingIntent here would undo the whole point of having one.
+     */
+    fun stopForeground() {
         callback?.let { client.removeLocationUpdates(it) }
         callback = null
-        stopBackground()
     }
 
     // MARK: - Background delivery

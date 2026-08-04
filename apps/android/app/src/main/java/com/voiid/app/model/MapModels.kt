@@ -105,7 +105,18 @@ object MapConstants {
      * wake three times as often for a position that has barely moved.
      */
     const val PRESENCE_BACKGROUND_INTERVAL_MS = 900_000L
-    const val PRESENCE_MIN_DISTANCE_M = 250f
+    /**
+     * 100 m, down from 250.
+     *
+     * The filter is what makes a pin feel WRONG rather than merely coarse: at 250 m you could
+     * walk to the next street, or across a campus, and your pin would not move at all —
+     * indistinguishable from being stale. 100 m still rejects the GPS jitter this exists to
+     * suppress (a stationary phone wanders 10–30 m) while tracking a real walk.
+     *
+     * Cost is bounded: a fix that passes the filter is a WebSocket frame, not a wake, and the
+     * cadence still gates how often one can arrive at all.
+     */
+    const val PRESENCE_MIN_DISTANCE_M = 100f
     const val PRESENCE_CADENCE_SECONDS = 300
 
     // §8 subject-state thresholds, all derived from the fix age (works with zero network).
@@ -126,6 +137,17 @@ object MapConstants {
      */
     const val DEFAULT_KEY_TTL_MS = MAP_MAX_DURATION_SECONDS * 1000L
 
-    // Map presence coordinates are rounded to 3 decimals (~110 m) BEFORE encryption (§4).
-    const val PRESENCE_COORD_DECIMALS = 3
+    /**
+     * 4 decimals (~11 m), up from 3 (~110 m). Still rounded BEFORE encryption (§4).
+     *
+     * 3 decimals quantised every position onto a ~110 m grid, so two people standing together
+     * could show a block apart, and moving within a building never moved the pin. That is
+     * more imprecision than the privacy model asks for: the DEFENCE here is the coarse
+     * cadence, the audience gate and the encryption — not blurring the coordinate past
+     * usefulness.
+     *
+     * 11 m is well inside what a phone can actually resolve, so this rounds away noise rather
+     * than signal, and the pin lands on the right side of the street.
+     */
+    const val PRESENCE_COORD_DECIMALS = 4
 }

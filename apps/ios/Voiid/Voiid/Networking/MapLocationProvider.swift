@@ -46,10 +46,16 @@ final class MapLocationProvider: NSObject, ObservableObject, CLLocationManagerDe
     private override init() {
         super.init()
         manager.delegate = self
-        // Map presence targets ~100–500 m. Never ask for best accuracy — that is the whole
-        // point of the coarse mode. 250 m distance filter matches §5's Map profile.
+        // Map presence targets ~100 m. Never ask for BEST accuracy — that is the whole point
+        // of the coarse mode and the difference between <1 %/h and 4–8 %/h.
+        //
+        // The distance filter is 100 m, down from 250. At 250 you could walk to the next
+        // street, or across a campus, and the pin would not move at all — indistinguishable
+        // from being stale. 100 still rejects the jitter this exists to suppress (a
+        // stationary phone wanders 10–30 m) while tracking a real walk. Matches Android's
+        // PRESENCE_MIN_DISTANCE_M.
         manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
-        manager.distanceFilter = 250
+        manager.distanceFilter = 100
         authorization = manager.authorizationStatus
     }
 

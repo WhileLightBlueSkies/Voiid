@@ -215,5 +215,13 @@ enum LocationRounding {
         return (value * f).rounded() / f
     }
     static let liveDecimals = 5
-    static let mapDecimals = 3
+    /// 4 decimals (~11 m), up from 3 (~110 m).
+    ///
+    /// 3 decimals quantised every position onto a ~110 m grid, so two people standing
+    /// together could show a block apart and moving within a building never moved the pin.
+    /// That is more imprecision than the privacy model asks for: the defence here is the
+    /// coarse cadence, the audience gate and the encryption — not blurring the coordinate
+    /// past usefulness. 11 m rounds away noise rather than signal. Matches Android's
+    /// PRESENCE_COORD_DECIMALS.
+    static let mapDecimals = 4
 }

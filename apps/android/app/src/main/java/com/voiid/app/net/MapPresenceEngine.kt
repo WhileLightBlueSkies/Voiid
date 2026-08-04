@@ -140,6 +140,25 @@ object MapPresenceEngine {
             ws = WebSocketClient.get(app)
             restore()
             subscribe()
+
+            // RESUME THE STREAM ON COLD START.
+            //
+            // `restore()` rebuilds the STATE — visibility, share id, share key, audience —
+            // but nothing was starting the location provider again, so after a kill the app
+            // came back believing it was visible while emitting nothing. The user had to
+            // remove and re-add their audience to get it going, which is exactly the reported
+            // flow.
+            //
+            // Guarded on the share being real AND unexpired: a restored VISIBLE with a lapsed
+            // server row would emit against a share the backend has already dropped, and the
+            // fixes would go nowhere. onForeground() re-opens that case properly.
+            if (_visibility.value == MapVisibility.VISIBLE &&
+                shareId != null && shareKey != null && expiresAt > now()
+            ) {
+                provider?.start { lat, lon, acc -> emitFix(lat, lon, acc) }
+                provider?.startBackground()
+                provider?.requestSingle { lat, lon, acc -> emitFix(lat, lon, acc) }
+            }
         }
     }
 
@@ -293,9 +312,16 @@ object MapPresenceEngine {
     }
 
     fun onBackground() {
-        // The Map never runs in background — stop emitting the instant we leave (§5). Live
-        // conversation shares (Feature A, an FGS) are unaffected; this is Map presence only.
-        provider?.stop()
+        // Stop the FOREGROUND stream only — the background PendingIntent registration stays.
+        //
+        // This used to call `provider.stop()`, which now also cancels background delivery, so
+        // it tore down the whole thing the instant the app was backgrounded and undid the
+        // point of having it. `stopForeground()` drops the in-process callback (which cannot
+        // survive anyway) and leaves the OS-held registration alone.
+        //
+        // Ghost Mode and the kill switch still call the full `stop()` — going dark must cancel
+        // BOTH, and that distinction is the whole reason these are now separate methods.
+        provider?.stopForeground()
     }
 
     // ---- outbound: open share + emit ----------------------------------------------------
