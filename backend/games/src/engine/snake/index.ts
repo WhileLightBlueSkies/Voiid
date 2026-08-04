@@ -243,6 +243,17 @@ class SnakeEngine implements GameEngine {
     const snake = this.s.snakes.find((sn) => sn.id === playerId);
     if (!snake) return { accepted: false };
 
+    // "Put me back in." Only honoured once the respawn delay has elapsed, so the button
+    // cannot be used to skip the penalty for dying.
+    if (input.respawn === true) {
+      if (!this.canRespawn(snake)) return { accepted: false };
+      this.spawnSnake(snake);
+      this.s.events.push({ k: 'spawn', x: snake.x, y: snake.y, id: snake.id });
+      // NOT silent: this one changes the world immediately, so the player should see it
+      // without waiting for the next tick.
+      return { accepted: true };
+    }
+
     const h = input.h;
     if (typeof h === 'number' && Number.isFinite(h)) {
       snake.th = h;
@@ -497,12 +508,29 @@ class SnakeEngine implements GameEngine {
     }
   }
 
+  /**
+   * Put snakes back in the arena.
+   *
+   * BOTS respawn on a timer. HUMANS DO NOT — a human is respawned only when their client
+   * asks (`{ respawn: true }`), because auto-respawning meant a player never got to see that
+   * they had died: the death panel appeared and vanished inside the 2.5 s delay, and being
+   * teleported back into play unprompted reads as "the match restarted by itself".
+   *
+   * `respawnAt` still gates the request, so a dead player cannot re-enter instantly and
+   * dodge the consequence of dying.
+   */
   private respawnDue(): void {
     for (const sn of this.s.snakes) {
       if (sn.alive || this.s.t < sn.respawnAt) continue;
+      if (!sn.bot) continue;
       this.spawnSnake(sn);
       this.s.events.push({ k: 'spawn', x: sn.x, y: sn.y, id: sn.id });
     }
+  }
+
+  /** True when this snake is dead and past its respawn delay, i.e. may re-enter on request. */
+  private canRespawn(sn: SnakeState): boolean {
+    return !sn.alive && this.s.t >= sn.respawnAt;
   }
 
   /** Place a snake at a point far from other heads, at starting mass. No catch-up bonus. */
@@ -673,6 +701,9 @@ class SnakeEngine implements GameEngine {
         // Deadlines are compared against `t`, so they carry full precision for the same
         // reason `t` does — a rounded deadline drifts against an unrounded clock.
         ra: sn.respawnAt,
+        // Whether this snake may respawn right now, so the client can enable its button
+        // without having to reason about the server's clock.
+        cr: !sn.alive && this.s.t >= sn.respawnAt,
         iv: sn.invulnUntil,
         c: sn.color,
       })),

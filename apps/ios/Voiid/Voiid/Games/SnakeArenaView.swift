@@ -62,7 +62,8 @@ struct SnakeArenaView: View {
                 if state.finished {
                     gameOverPanel(mass: mine.map { Int($0.mass) })
                 } else if let mine, !mine.alive {
-                    respawnPanel(mass: Int(mine.mass), deaths: mine.deaths)
+                    deathPanel(mass: Int(mine.mass), deaths: mine.deaths,
+                               canRespawn: mine.canRespawn)
                 }
             }
         }
@@ -86,39 +87,57 @@ struct SnakeArenaView: View {
         }
     }
 
-    /// Shown while dead and waiting to respawn. Deliberately NOT blocking — the server puts
-    /// you back in within a couple of seconds, so a modal would be worse than a notice that
-    /// dissolves on its own. Quit is offered because it is the one thing a dead player might
-    /// actually want.
-    private func respawnPanel(mass: Int, deaths: Int) -> some View {
-        VStack(spacing: 4) {
-            Text("You died")
-                .font(.system(size: 22, weight: .heavy))
-            Text("Respawning...")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.white.opacity(0.6))
-            Text("Length \(mass)  -  Deaths \(deaths)")
-                .font(.system(size: 12))
-                .foregroundStyle(.white.opacity(0.45))
+    /// Shown when the player is dead.
+    ///
+    /// BLOCKING, and the player stays dead until they choose. The server used to auto-respawn
+    /// humans after 2.5 s, which meant this panel appeared and vanished before it could be
+    /// read, and being teleported back into play unprompted felt like the match had restarted
+    /// itself. Bots still respawn on a timer; a human decides.
+    private func deathPanel(mass: Int, deaths: Int, canRespawn: Bool) -> some View {
+        ZStack {
+            Color.black.opacity(0.8).ignoresSafeArea()
 
-            Button {
-                session.hideTabBar = false
-                onClose()
-            } label: {
-                Text("Quit")
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.85))
-                    .padding(.horizontal, 22)
-                    .padding(.vertical, 10)
-                    .background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+            VStack(spacing: 0) {
+                Text("You died")
+                    .font(.system(size: 30, weight: .black))
+                Text("Length \(mass)  -  Deaths \(deaths)")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.6))
+                    .padding(.top, 6)
+
+                Button {
+                    engine.requestRespawn()
+                } label: {
+                    Text(canRespawn ? "Respawn" : "Respawning...")
+                        .font(.system(size: 15, weight: .black))
+                        .foregroundStyle(canRespawn
+                            ? Color(red: 0.03, green: 0.02, blue: 0.06)
+                            : .white.opacity(0.5))
+                        .padding(.horizontal, 42)
+                        .padding(.vertical, 14)
+                        .background(canRespawn
+                            ? Color(red: 0.13, green: 0.88, blue: 0.94)
+                            : Color.white.opacity(0.15),
+                            in: RoundedRectangle(cornerRadius: 14))
+                }
+                .disabled(!canRespawn)
+                .padding(.top, 26)
+
+                Button {
+                    session.hideTabBar = false
+                    onClose()
+                } label: {
+                    Text("Quit")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .padding(.horizontal, 50)
+                        .padding(.vertical, 13)
+                        .background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
+                }
+                .padding(.top, 12)
             }
-            .padding(.top, 10)
+            .foregroundStyle(.white)
         }
-        .foregroundStyle(.white)
-        .padding(.horizontal, 26)
-        .padding(.vertical, 20)
-        .background(Color(red: 0.08, green: 0.07, blue: 0.12).opacity(0.92),
-                    in: RoundedRectangle(cornerRadius: 18))
     }
 
     /// The match itself is over. This one blocks — there is nothing left to play.

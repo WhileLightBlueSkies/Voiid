@@ -193,42 +193,75 @@ fun SnakeArenaScreen(
                 onQuit = onClose,
             )
         } else if (mine != null && !mine.alive) {
-            RespawnPanel(mass = mine.mass.toInt(), deaths = mine.deaths, onQuit = onClose)
+            DeathPanel(
+                mass = mine.mass.toInt(),
+                deaths = mine.deaths,
+                canRespawn = mine.canRespawn,
+                onRespawn = { engine.requestRespawn(context) },
+                onQuit = onClose,
+            )
         }
     }
 }
 
 /**
- * Shown while the player is dead and waiting to respawn.
+ * Shown when the player is dead.
  *
- * Deliberately NOT blocking: the server puts you back in after a couple of seconds, so a
- * modal with a button would be a worse experience than a notice that dissolves on its own.
- * Quit is offered because the one thing a dead player might genuinely want is out.
+ * BLOCKING, and the player stays dead until they choose. The server used to auto-respawn
+ * humans after 2.5 s, which meant this panel appeared and vanished before it could be read
+ * and being teleported back into play unprompted felt like the match had restarted itself.
+ * Bots still respawn on a timer; a human decides.
  */
 @Composable
-private fun BoxScope.RespawnPanel(mass: Int, deaths: Int, onQuit: () -> Unit) {
+private fun BoxScope.DeathPanel(
+    mass: Int,
+    deaths: Int,
+    canRespawn: Boolean,
+    onRespawn: () -> Unit,
+    onQuit: () -> Unit,
+) {
     Box(
         Modifier
-            .align(Alignment.Center)
-            .background(Color(0xE614121F), RoundedCornerShape(18.dp))
-            .padding(horizontal = 26.dp, vertical = 20.dp),
+            .fillMaxSize()
+            .background(Color(0xCC07060F))
+            // Swallow taps so the arena underneath cannot be steered while this is up.
+            .pointerInput(Unit) { detectTapGestures { } },
+        contentAlignment = Alignment.Center,
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("You died", color = Color.White, fontSize = 22.sp,
-                fontWeight = FontWeight.ExtraBold)
-            Text("Respawning…", color = Color.White.copy(alpha = 0.6f),
-                fontSize = 13.sp, fontWeight = FontWeight.Medium)
+            Text("You died", color = Color.White, fontSize = 30.sp,
+                fontWeight = FontWeight.Black)
             Text("Length $mass  ·  Deaths $deaths",
-                color = Color.White.copy(alpha = 0.45f), fontSize = 12.sp)
+                color = Color.White.copy(alpha = 0.6f), fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.padding(top = 6.dp))
+
             Box(
                 Modifier
-                    .padding(top = 14.dp)
-                    .background(Color.White.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
-                    .pointerInput(Unit) { detectTapGestures { onQuit() } }
-                    .padding(horizontal = 22.dp, vertical = 10.dp),
+                    .padding(top = 26.dp)
+                    .background(
+                        if (canRespawn) Color(0xFF22E0F0) else Color.White.copy(alpha = 0.15f),
+                        RoundedCornerShape(14.dp))
+                    .pointerInput(canRespawn) {
+                        detectTapGestures { if (canRespawn) onRespawn() }
+                    }
+                    .padding(horizontal = 42.dp, vertical = 14.dp),
             ) {
-                Text("Quit", color = Color.White.copy(alpha = 0.85f),
-                    fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    if (canRespawn) "Respawn" else "Respawning…",
+                    color = if (canRespawn) Color(0xFF07060F) else Color.White.copy(alpha = 0.5f),
+                    fontSize = 15.sp, fontWeight = FontWeight.Black)
+            }
+
+            Box(
+                Modifier
+                    .padding(top = 12.dp)
+                    .background(Color.White.copy(alpha = 0.12f), RoundedCornerShape(14.dp))
+                    .pointerInput(Unit) { detectTapGestures { onQuit() } }
+                    .padding(horizontal = 50.dp, vertical = 13.dp),
+            ) {
+                Text("Quit", color = Color.White.copy(alpha = 0.9f),
+                    fontSize = 15.sp, fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -313,11 +346,15 @@ private fun labelFor(snake: GamesEngine.SnakeState.Snake, me: String?): String =
 /**
  * How far behind the newest frame to render, in seconds.
  *
- * Slightly more than one 10 Hz tick, so there is virtually always a NEWER frame to interpolate
- * towards. Less and the buffer runs dry constantly — the stutter this removes; much more and
- * the controls start to feel remote.
+ * TWO AND A HALF ticks, not one and a half.
+ *
+ * At 1.5 ticks the buffer ran dry on any frame that arrived even slightly late — and on a
+ * mobile network that is most of them — so the render clock repeatedly caught up with the
+ * newest frame, held, and jumped. That hold-jump cycle IS the jitter. Buying an extra tick of
+ * delay costs 100 ms of visual lag and removes the stall almost entirely, which is a trade
+ * strongly worth making for a game steered by a stick rather than aimed.
  */
-private const val INTERP_DELAY = 0.15
+private const val INTERP_DELAY = 0.25
 
 private const val JOY_RADIUS_DP = 60f
 private const val JOY_KNOB_DP = 26f
@@ -861,25 +898,29 @@ private fun VirtualJoystick(
             .pointerInput(Unit) {
                 awaitEachGesture {
                     // requireUnconsumed = false so this still wins the touch even if an
-                    // ancestor looked at it first. awaitEachGesture handles the outer loop
-                    // and, critically, cleans up correctly if the composable goes away
-                    // mid-gesture — which a hand-rolled while(true) does not.
+                    // ancestor looked at it first.
                     val down = awaitFirstDown(requireUnconsumed = false)
                     val r = size.width / 2f / 1.4f
                     held = true
                     knob = clampToRing(down.position, size.width, r)
                     onVector(knob / r)
-                    down.consume()
 
-                    // Track until the finger lifts. Reading the event stream directly means
-                    // the knob moves on the very first move event, with no touch slop.
+                    // NOTHING IS CONSUMED HERE, and that is deliberate.
+                    //
+                    // Consuming told the rest of the pointer pipeline this gesture was
+                    // handled, and after a while events stopped arriving at this handler at
+                    // all — steering worked for a bit and then went dead for the rest of the
+                    // match. This joystick sits in its own corner of the screen with nothing
+                    // competing for the same touches, so it has nothing to claim them from.
+                    //
+                    // Tracking is also NOT bound to `down.id`: a pointer id can change during
+                    // a gesture, and matching on it dropped the finger mid-drag. Any pressed
+                    // pointer inside this handler is the one steering.
                     while (true) {
                         val event = awaitPointerEvent()
-                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                        if (!change.pressed) break
+                        val change = event.changes.firstOrNull { it.pressed } ?: break
                         knob = clampToRing(change.position, size.width, r)
                         onVector(knob / r)
-                        change.consume()
                     }
 
                     held = false

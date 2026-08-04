@@ -283,10 +283,12 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
 
     /// How far behind the newest frame to render.
     ///
-    /// Slightly more than one 10 Hz tick, so there is virtually always a newer frame to
-    /// interpolate towards. Less and the buffer runs dry constantly (the stutter this
-    /// removes); much more and the controls start to feel remote.
-    private static let interpDelay: Double = 0.15
+    /// TWO AND A HALF ticks, not one and a half.
+    ///
+    /// At 1.5 ticks the buffer ran dry on any frame that arrived even slightly late — and on
+    /// a mobile network that is most of them — so the render clock repeatedly caught up with
+    /// the newest frame, held, and jumped. That hold-jump cycle IS the jitter.
+    private static let interpDelay: Double = 0.25
 
     private func buildFrame() -> Uniforms? {
         let frames = engine.snakeFramesSnapshot
