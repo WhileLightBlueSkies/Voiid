@@ -135,12 +135,37 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     private var sampler: MTLSamplerState!
 
     /// Name-plate glyphs, rasterised on demand and packed into one texture.
-    private var labelAtlas: LabelAtlas!
+    private var labelAtlas: LabelAtlas?
 
     // Per-frame CPU-side buffers, reused so a frame allocates nothing.
     private var circles: [CircleInstance] = []
     private var ribbon: [RibbonVertex] = []
     private var sprites: [SpriteInstance] = []
+
+    // GPU-side mirrors of the above.
+    //
+    // These exist because `setVertexBytes` is capped at 4 KB — a limit the arena blows past
+    // immediately (300 pellets alone is ~9 KB of circle instances), and exceeding it is a
+    // hard Metal validation failure, not a silent truncation. That was the startup crash.
+    // Buffers are grown on demand and then reused, so a steady-state frame allocates nothing.
+    private var circleBuffer: MTLBuffer?
+    private var ribbonBuffer: MTLBuffer?
+    private var spriteBuffer: MTLBuffer?
+
+    /// Grow `buffer` if needed and copy `array` into it. Returns nil when empty.
+    private func upload<T>(_ array: [T], into buffer: inout MTLBuffer?) -> MTLBuffer? {
+        guard !array.isEmpty else { return nil }
+        let bytes = MemoryLayout<T>.stride * array.count
+        if buffer == nil || buffer!.length < bytes {
+            // Over-allocate so a slowly growing arena does not reallocate every frame.
+            buffer = device.makeBuffer(length: max(bytes * 2, 4096), options: .storageModeShared)
+        }
+        guard let buffer else { return nil }
+        array.withUnsafeBytes { raw in
+            buffer.contents().copyMemory(from: raw.baseAddress!, byteCount: bytes)
+        }
+        return buffer
+    }
 
     /// Body trails, owned HERE rather than in SwiftUI state — this is the fix for the freeze.
     private let trails = TrailStore()
@@ -159,8 +184,10 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         self.device = device
         queue = device.makeCommandQueue()
 
-        guard let library = try? device.makeDefaultLibrary(bundle: .main) else {
-            assertionFailure("Snake.metal failed to compile into the default library")
+        // No assertionFailure here: that TRAPS in debug builds, so a shader problem became a
+        // crash on entering the game rather than a blank arena with a log line.
+        guard let library = device.makeDefaultLibrary() else {
+            print("[snake] Metal library unavailable — arena will not draw")
             return
         }
 
@@ -222,28 +249,24 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
             var uniforms = frame
             encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
 
-            if !circles.isEmpty {
+            // Bodies first, then circles over them (heads, food), then labels on top.
+            if let buf = upload(ribbon, into: &ribbonBuffer), ribbonPipeline != nil {
+                encoder.setRenderPipelineState(ribbonPipeline)
+                encoder.setVertexBuffer(buf, offset: 0, index: 1)
+                encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: ribbon.count)
+            }
+
+            if let buf = upload(circles, into: &circleBuffer) {
                 encoder.setRenderPipelineState(circlePipeline)
-                encoder.setVertexBytes(&circles,
-                                       length: MemoryLayout<CircleInstance>.stride * circles.count,
-                                       index: 1)
+                encoder.setVertexBuffer(buf, offset: 0, index: 1)
                 encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
                                        instanceCount: circles.count)
             }
 
-            if !ribbon.isEmpty {
-                encoder.setRenderPipelineState(ribbonPipeline)
-                encoder.setVertexBytes(&ribbon,
-                                       length: MemoryLayout<RibbonVertex>.stride * ribbon.count,
-                                       index: 1)
-                encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: ribbon.count)
-            }
-
-            if !sprites.isEmpty, let texture = labelAtlas.texture {
+            if let buf = upload(sprites, into: &spriteBuffer),
+               let texture = labelAtlas?.texture, spritePipeline != nil {
                 encoder.setRenderPipelineState(spritePipeline)
-                encoder.setVertexBytes(&sprites,
-                                       length: MemoryLayout<SpriteInstance>.stride * sprites.count,
-                                       index: 1)
+                encoder.setVertexBuffer(buf, offset: 0, index: 1)
                 encoder.setFragmentTexture(texture, index: 0)
                 encoder.setFragmentSamplerState(sampler, index: 0)
                 encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
@@ -443,7 +466,7 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         guard !name.isEmpty else { return }
         let text = rank > 0 && rank <= 10 ? "#\(rank) \(name)" : name
 
-        guard let entry = labelAtlas.entry(for: text) else { return }
+        guard let entry = labelAtlas?.entry(for: text) else { return }
 
         // Sized in POINTS then converted to world units, so a label stays legible whatever
         // the camera zoom is — the alternative is text that shrinks to nothing as you grow.

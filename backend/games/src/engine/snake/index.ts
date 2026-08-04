@@ -50,7 +50,13 @@ export const TUNING = {
   BASE_SPEED: 240,          // units/sec
   BOOST_SPEED: 420,
   TURN_RATE: 260,           // degrees/sec
-  TURN_RATE_BOOST: 195,
+  // Boosting turns FASTER, not slower.
+  //
+  // The original 195 made boost a commitment you could not steer out of, which is one valid
+  // design — but it reads as the controls going vague exactly when the player is paying most
+  // attention. Turning up with speed keeps the turn RADIUS roughly constant instead of
+  // ballooning, so a boosting snake still feels like it is being steered.
+  TURN_RATE_BOOST: 300,
   START_MASS: 10,
   MIN_BOOST_MASS: 12,
   BOOST_DRAIN: 3.57,        // mass/sec

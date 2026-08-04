@@ -45,7 +45,12 @@ struct SnakeArenaView: View {
             SnakeMetalView(engine: engine, me: me, hud: hud, stick: $stick)
                 .ignoresSafeArea()
 
+            // The chrome deliberately does NOT ignore the safe area, unlike the arena behind
+            // it. The arena should bleed to the edges; the controls must not — the boost
+            // pedal was rendering under the home indicator, where the system swallows the
+            // touch, so the button was visible but unpressable at the bottom of the screen.
             overlay
+                .safeAreaPadding(.bottom)
         }
         .navigationBarBackButtonHidden(true)
         // The tab bar is app chrome and this is a full-screen game — every other game view
@@ -108,7 +113,7 @@ struct SnakeArenaView: View {
                 }
             }
             .padding(.horizontal, 26)
-            .padding(.bottom, 34)
+            .padding(.bottom, 18)
         }
     }
 

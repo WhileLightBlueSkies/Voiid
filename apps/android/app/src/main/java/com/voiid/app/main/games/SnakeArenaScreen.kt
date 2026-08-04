@@ -37,7 +37,6 @@ import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -87,7 +86,6 @@ import kotlin.math.sin
 fun SnakeArenaScreen(matchId: String, onClose: () -> Unit) {
     val context = LocalContext.current
     val engine = remember { GamesEngine.get(context) }
-    val density = LocalDensity.current
 
     val frames by engine.snakeFrames.collectAsState()
 
@@ -125,7 +123,6 @@ fun SnakeArenaScreen(matchId: String, onClose: () -> Unit) {
             state = frames.lastOrNull()?.state,
             me = me,
             boosting = boosting,
-            radiusPx = with(density) { JOY_RADIUS_DP.dp.toPx() },
             onClose = onClose,
             onStick = { v ->
                 stick = v
@@ -546,7 +543,6 @@ private fun Overlay(
     state: GamesEngine.SnakeState?,
     me: String?,
     boosting: Boolean,
-    radiusPx: Float,
     onClose: () -> Unit,
     onStick: (Offset) -> Unit,
     onBoostChange: (Boolean) -> Unit,
@@ -612,7 +608,6 @@ private fun Overlay(
         }
 
         VirtualJoystick(
-            radiusPx = radiusPx,
             onVector = onStick,
             modifier = Modifier
                 .align(Alignment.BottomStart)
@@ -668,7 +663,6 @@ private fun Overlay(
  */
 @Composable
 private fun VirtualJoystick(
-    radiusPx: Float,
     onVector: (Offset) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -695,56 +689,62 @@ private fun VirtualJoystick(
         }
     }
 
+    // Measured from the layout itself rather than passed in. The ring radius, the hit test
+    // and the drawing must all agree on one number; deriving it from the actual box size
+    // means they cannot drift apart, and the gesture no longer restarts if a density-derived
+    // parameter changes identity.
     Box(
         modifier
             // A hit area larger than the ring: a thumb reaching for a joystick lands near it
             // as often as on it, and demanding a precise hit is what makes an on-screen stick
             // feel unresponsive.
             .size((JOY_RADIUS_DP * 2.8f).dp)
-            .pointerInput(radiusPx) {
-                awaitPointerEventScope {
+            // Keyed on Unit, NOT on a parameter: a pointerInput restarts its coroutine
+            // whenever its key changes, and a key that changes identity between recompositions
+            // silently kills the in-flight gesture. That is the class of bug that made
+            // steering stop working.
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    // requireUnconsumed = false so this still wins the touch even if an
+                    // ancestor looked at it first. awaitEachGesture handles the outer loop
+                    // and, critically, cleans up correctly if the composable goes away
+                    // mid-gesture — which a hand-rolled while(true) does not.
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val r = size.width / 2f / 1.4f
+                    held = true
+                    knob = clampToRing(down.position, size.width, r)
+                    onVector(knob / r)
+                    down.consume()
+
+                    // Track until the finger lifts. Reading the event stream directly means
+                    // the knob moves on the very first move event, with no touch slop.
                     while (true) {
-                        // requireUnconsumed = false so this still wins the touch even if an
-                        // ancestor has looked at it first.
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        held = true
-                        knob = clampToRing(down.position, size.width, radiusPx)
-                        onVector(knob / radiusPx)
-                        down.consume()
-
-                        // Track until every finger is up. Reading the event stream directly
-                        // means the knob moves on the very first move event, with no slop.
-                        var pointerId = down.id
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull { it.id == pointerId }
-                                ?: event.changes.firstOrNull { it.pressed }
-                                ?: break
-                            pointerId = change.id
-                            if (!change.pressed) break
-                            knob = clampToRing(change.position, size.width, radiusPx)
-                            onVector(knob / radiusPx)
-                            change.consume()
-                        }
-
-                        held = false
-                        // No steer on release: the snake keeps its heading, matching the
-                        // server model and the genre. Only the knob returns home.
-                        onVector(Offset.Zero)
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!change.pressed) break
+                        knob = clampToRing(change.position, size.width, r)
+                        onVector(knob / r)
+                        change.consume()
                     }
+
+                    held = false
+                    // No steer on release: the snake keeps its heading, matching the server
+                    // model and the genre. Only the knob returns home.
+                    onVector(Offset.Zero)
                 }
             },
         contentAlignment = Alignment.Center,
     ) {
         Canvas(Modifier.fillMaxSize()) {
             val centre = Offset(size.width / 2f, size.height / 2f)
-            drawCircle(Color.White.copy(alpha = 0.10f), radius = radiusPx, center = centre)
-            drawCircle(Color.White.copy(alpha = 0.22f), radius = radiusPx,
+            val r = size.width / 2f / 1.4f
+            drawCircle(Color.White.copy(alpha = 0.10f), radius = r, center = centre)
+            drawCircle(Color.White.copy(alpha = 0.24f), radius = r,
                 center = centre, style = Stroke(width = 4f))
             // A faint centre mark, so the rest position is visible before the thumb lands.
-            drawCircle(Color.White.copy(alpha = 0.10f), radius = 7f, center = centre)
-            drawCircle(Color.White.copy(alpha = 0.9f),
-                radius = JOY_KNOB_DP.dp.toPx(), center = centre + knob)
+            drawCircle(Color.White.copy(alpha = 0.12f), radius = 7f, center = centre)
+            drawCircle(Color.White.copy(alpha = 0.92f),
+                radius = r * 0.42f, center = centre + knob)
         }
     }
 }
