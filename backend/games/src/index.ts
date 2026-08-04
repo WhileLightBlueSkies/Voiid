@@ -119,7 +119,31 @@ function stopLoop(matchId: string): void {
     clearInterval(t);
     loops.delete(matchId);
   }
+  // Drop the live engine with the loop. Leaving it would leak a whole world per finished
+  // match, and a rejoin must rebuild from Redis rather than resume a stale in-memory copy.
+  liveEngines.delete(matchId);
+  tickCounts.delete(matchId);
 }
+
+/**
+ * The LIVE engine for each ticking match, held in this process's memory.
+ *
+ * Continuous games used to be rebuilt from Redis on every single tick — load, JSON.parse,
+ * restore, tick, serialize, save — which put two network round-trips and a full
+ * parse/stringify of the whole world inside a 100 ms budget. When one tick overran, the
+ * `running` guard below dropped the NEXT tick entirely, so the game visibly hitched on a
+ * regular cadence. Holding the engine here removes that work from the hot path; Redis
+ * becomes a crash-recovery snapshot written every few ticks rather than the tick's own
+ * storage.
+ *
+ * Turn-based games are untouched by this: they have no loop and still round-trip per input,
+ * which is correct for them — a move every few seconds is nowhere near a budget.
+ */
+const liveEngines = new Map<string, GameEngine>();
+
+/** Persist every Nth tick. A crash loses at most this many ticks of an arcade match. */
+const PERSIST_EVERY = 5;
+const tickCounts = new Map<string, number>();
 
 async function runTick(matchId: string): Promise<void> {
   const m = await loadMatch(matchId);
@@ -135,7 +159,14 @@ async function runTick(matchId: string): Promise<void> {
     return;
   }
 
-  const engine = factory.restore(m.state, m.secret);
+  // Reuse the live engine; fall back to rebuilding from Redis after a restart, or the very
+  // first tick of a match.
+  let engine = liveEngines.get(matchId);
+  if (!engine) {
+    engine = factory.restore(m.state, m.secret);
+    liveEngines.set(matchId, engine);
+  }
+
   if (!engine.tick) {
     stopLoop(matchId);
     return;
@@ -151,15 +182,22 @@ async function runTick(matchId: string): Promise<void> {
 
   if (!result.changed) return;
 
-  // Order matters: serialize() captures the complete state for Redis, and
-  // serializeForWire() then consumes the per-frame deltas. Reversing these would persist
-  // already-drained delta buffers and the next frame would under-report its changes.
-  m.state = engine.serialize();
+  // Order matters: serialize() captures the complete state, and serializeForWire() then
+  // consumes the per-frame deltas. Reversing these would drain the delta buffers before they
+  // were captured and the next frame would under-report its changes.
+  const full = engine.serialize();
   const wire = engine.serializeForWire?.();
+  m.state = full;
   m.secret = engine.serializeSecret?.();
   m.seq += 1;
-  await saveMatch(m);
+
+  // Broadcast FIRST, persist on a slower cadence. The players are what the tick is for; the
+  // Redis write is only so a process restart does not lose the match outright.
   await broadcast(m, wire);
+
+  const n = (tickCounts.get(matchId) ?? 0) + 1;
+  tickCounts.set(matchId, n);
+  if (n % PERSIST_EVERY === 0) await saveMatch(m);
 }
 
 function startLoop(matchId: string, hz: number): void {

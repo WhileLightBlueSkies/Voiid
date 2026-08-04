@@ -68,12 +68,50 @@ export const TUNING = {
 
 const DEG = Math.PI / 180;
 
+/**
+ * Handles for practice-mode bots.
+ *
+ * Plausible player names, never anything that reads as a machine: a bot labelled as a bot
+ * changes how players treat it, and practice is more useful when the arena feels real.
+ */
+const BOT_NAMES: readonly string[] = [
+  'Vex', 'Nyx', 'Kilo', 'Ora', 'Pike', 'Zeph', 'Juno', 'Rune', 'Axl', 'Wisp',
+  'Bram', 'Coil', 'Dax', 'Echo', 'Fen', 'Gale', 'Hux', 'Iris', 'Jinx', 'Kade',
+  'Lux', 'Mox', 'Nova', 'Onyx', 'Pax', 'Quill', 'Rig', 'Sable', 'Tor', 'Umbra',
+  'Vale', 'Wren', 'Xen', 'Yara', 'Zane', 'Ash', 'Blitz', 'Cobalt', 'Drift',
+  'Ember', 'Flux', 'Grit', 'Haze', 'Ion', 'Jet', 'Kestrel', 'Lark', 'Mica',
+];
+
+/**
+ * Collision radius for a given mass.
+ *
+ * A snake now THICKENS as it eats, not just lengthens, so the radius can no longer be a
+ * constant. Critically this is used for BOTH the hitbox and the drawn width (the head radius
+ * is serialized): if the two ever disagreed, a fat snake would be killed by something that
+ * visually missed it, which is the single most infuriating kind of unfairness in this genre.
+ *
+ * Linear in mass so growth is felt immediately, capped at 2.2x so a late-game snake cannot
+ * fill the arena or make its own turning circle impossible.
+ */
+function radiusFor(mass: number, base: number): number {
+  return base * Math.min(1 + Math.max(0, mass - TUNING.START_MASS) * 0.012, 2.2);
+}
+
 type DeathCause = 'border' | 'body' | 'head';
 
 interface SnakeState {
   /** User id, or `bot:<n>` for a practice-mode bot. */
   id: string;
   bot: boolean;
+  /**
+   * Display handle for a bot; null for humans, whose names the client already resolves from
+   * its own user directory.
+   *
+   * Assigned here rather than client-side so every device in a match shows the SAME name for
+   * the same bot — two players comparing a leaderboard that disagreed on who was who would be
+   * worse than no names at all.
+   */
+  name: string | null;
   x: number;
   y: number;
   /** Radians. */
@@ -301,6 +339,9 @@ class SnakeEngine implements GameEngine {
       if (sn.path.length < 4) continue;
 
       const prevX = sn.path[2], prevY = sn.path[3];
+      // Scales with mass, and is the SAME value the client draws with (serialized as `hr`),
+      // so a thick snake's hitbox and its visible body can never disagree.
+      const headR = radiusFor(sn.mass, TUNING.HEAD_RADIUS);
 
       // Border. Sampled along the swept motion, not just at the endpoint.
       let hitBorder = false;
@@ -308,7 +349,7 @@ class SnakeEngine implements GameEngine {
         const t = k / 3;
         const sx = prevX + (sn.x - prevX) * t;
         const sy = prevY + (sn.y - prevY) * t;
-        if (arenaSdf(this.s.arena, this.s.arenaRadius, sx, sy) + TUNING.HEAD_RADIUS >= 0) {
+        if (arenaSdf(this.s.arena, this.s.arenaRadius, sx, sy) + headR >= 0) {
           hitBorder = true;
           break;
         }
@@ -323,7 +364,7 @@ class SnakeEngine implements GameEngine {
       for (const other of this.s.snakes) {
         if (other.id === sn.id || !other.alive) continue;
         if (this.s.t < other.invulnUntil) continue;
-        const rr = TUNING.HEAD_RADIUS * 2;
+        const rr = headR + radiusFor(other.mass, TUNING.HEAD_RADIUS);
         if (segmentSegmentDist2(prevX, prevY, sn.x, sn.y, other.x, other.y, other.x, other.y) <= rr * rr) {
           const ratio = Math.abs(sn.mass - other.mass) / Math.max(sn.mass, other.mass);
           if (ratio <= 0.05) {
@@ -341,7 +382,7 @@ class SnakeEngine implements GameEngine {
       // Head into another snake's body. The MOVER dies; the snake that was hit is unharmed.
       // That asymmetry is the whole game: it is what lets a short snake kill a long one by
       // cutting in front of it, instead of length being the only thing that matters.
-      const killer = this.bodyHit(sn, prevX, prevY);
+      const killer = this.bodyHit(sn, prevX, prevY, headR);
       if (killer) doomed.push({ snake: sn, cause: 'body', killer });
     }
 
@@ -349,7 +390,9 @@ class SnakeEngine implements GameEngine {
   }
 
   /** Returns the id of the snake whose body was hit, or null. Skips self (self-collision is safe). */
-  private bodyHit(sn: SnakeState, prevX: number, prevY: number): string | null {
+  private bodyHit(
+    sn: SnakeState, prevX: number, prevY: number, headR: number
+  ): string | null {
     for (const other of this.s.snakes) {
       if (!other.alive) continue;
       // A snake cannot die on its own body — it may coil freely. This is a rule, not an
@@ -359,11 +402,11 @@ class SnakeEngine implements GameEngine {
       const path = other.path;
       // Broad phase: bounding-radius reject before walking the polyline. Without it this is
       // O(snakes x pathPoints) every tick and dominates the tick budget once snakes are long.
-      const reach = pathLength(path) + TUNING.HEAD_RADIUS + TUNING.BODY_RADIUS;
+      const reach = pathLength(path) + headR + radiusFor(other.mass, TUNING.BODY_RADIUS);
       const dx = other.x - sn.x, dy = other.y - sn.y;
       if (dx * dx + dy * dy > reach * reach) continue;
 
-      const rr = TUNING.HEAD_RADIUS + TUNING.BODY_RADIUS;
+      const rr = headR + radiusFor(other.mass, TUNING.BODY_RADIUS);
       for (let i = 0; i + 3 < path.length; i += 2) {
         if (segmentSegmentDist2(
           prevX, prevY, sn.x, sn.y,
@@ -531,7 +574,7 @@ class SnakeEngine implements GameEngine {
     const willSendFull = this.wantsFullFood();
 
     return {
-      ...this.common(),
+      ...this.common(false, true),
       food: this.s.food.map((f) => [round(f.x), round(f.y), f.v, f.i]),
       nextFoodId: this.s.nextFoodId,
       // Deltas are cleared by a full frame, so persisting them would resend stale changes.
@@ -563,7 +606,7 @@ class SnakeEngine implements GameEngine {
     // stale value that reset on every restore: the threshold was never reached, every single
     // frame sent a full snapshot, and the delta encoding silently did nothing at all.
     const wantFull = this.wantsFullFood();
-    const base = { ...this.common(true), pathStep: PATH_STEP };
+    const base = { ...this.common(true, wantFull), pathStep: PATH_STEP };
 
     if (wantFull) {
       this.s.added = [];
@@ -599,7 +642,7 @@ class SnakeEngine implements GameEngine {
    * head positions get fed back into collision on the next tick, and quantising them would
    * make the physics drift a little further every tick.
    */
-  private common(wire = false): GameStatePayload {
+  private common(wire = false, full = true): GameStatePayload {
     return {
       players: this.s.players,
       // Short keys, and paths sent as flat number arrays: this payload goes out 12x/sec to
@@ -607,6 +650,13 @@ class SnakeEngine implements GameEngine {
       snakes: this.s.snakes.map((sn) => ({
         id: sn.id,
         bot: sn.bot,
+        // Name is sent only on FULL frames. It never changes for the life of a match, so
+        // resending it 10x/sec was pure overhead — and a full frame is exactly the frame a
+        // client that missed everything needs, so it is also where a late joiner learns it.
+        ...(wire && !full ? {} : { n: sn.name }),
+        // Head radius, so the client draws EXACTLY the circle that kills. Deriving it
+        // client-side would mean two formulas that could drift apart on any tuning change.
+        hr: round(radiusFor(sn.mass, TUNING.HEAD_RADIUS), 1),
         x: round(sn.x), y: round(sn.y),
         h: round(sn.h, 3), th: round(sn.th, 3),
         m: round(sn.mass, 1),
@@ -694,6 +744,7 @@ function restoreState(state: GameStatePayload): State {
   const snakes = (state.snakes as any[]).map((sn) => ({
     id: sn.id as string,
     bot: sn.bot === true,
+    name: (sn.n as string | null) ?? null,
     x: sn.x as number,
     y: sn.y as number,
     h: sn.h as number,
@@ -777,12 +828,25 @@ export const snake: GameFactory = {
       sinceFull: FOOD_FULL_INTERVAL,
     };
 
+    // Names drawn without replacement so no two bots in a match share a handle — a
+    // leaderboard with two "Nova" rows is worse than no names at all. Shuffled with the
+    // match seed, so a replayed seed produces the same arena.
+    const nameRng = new Rng(seed ^ 0x9e3779b9);
+    const pool = BOT_NAMES.slice();
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(nameRng.next() * (i + 1));
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+    const botNames = Array.from(
+      { length: bots },
+      (_, i) => pool[i % pool.length] + (i >= pool.length ? String(Math.floor(i / pool.length) + 1) : ''));
+
     let colorIdx = 0;
     for (const id of playerIds) {
-      state.snakes.push(blankSnake(id, false, colorIdx++));
+      state.snakes.push(blankSnake(id, false, colorIdx++, null));
     }
     for (let i = 0; i < bots; i++) {
-      state.snakes.push(blankSnake(`bot:${i}`, true, colorIdx++));
+      state.snakes.push(blankSnake(`bot:${i}`, true, colorIdx++, botNames[i]));
     }
 
     const engine = new SnakeEngine(state);
@@ -796,9 +860,11 @@ export const snake: GameFactory = {
   },
 };
 
-function blankSnake(id: string, bot: boolean, color: number): SnakeState {
+function blankSnake(
+  id: string, bot: boolean, color: number, name: string | null
+): SnakeState {
   return {
-    id, bot, x: 0, y: 0, h: 0, th: 0,
+    id, bot, name, x: 0, y: 0, h: 0, th: 0,
     mass: TUNING.START_MASS,
     alive: false,
     boost: false,

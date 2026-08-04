@@ -1,12 +1,9 @@
 package com.voiid.app.main.games
 
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.VectorConverter
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -24,7 +21,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.collectAsState
@@ -38,6 +34,7 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -47,8 +44,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.voiid.app.net.GamesEngine
 import com.voiid.app.store.UserDirectory
-import kotlinx.coroutines.launch
-import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
@@ -164,6 +159,18 @@ private fun paletteColor(index: Int): Color =
     PALETTE[((index % PALETTE.size) + PALETTE.size) % PALETTE.size]
 
 /**
+ * What to show above a head and in the leaderboard.
+ *
+ * Bots carry their name on the wire; humans are looked up locally, because only this device
+ * knows what it calls its own contacts.
+ */
+private fun labelFor(snake: GamesEngine.SnakeState.Snake, me: String?): String = when {
+    snake.id == me -> "You"
+    !snake.name.isNullOrEmpty() -> snake.name!!
+    else -> UserDirectory.displayName(snake.id, "Player")
+}
+
+/**
  * How far behind the newest frame to render, in seconds.
  *
  * Slightly more than one 10 Hz tick, so there is virtually always a NEWER frame to interpolate
@@ -259,15 +266,21 @@ private fun DrawScope.drawArena(
         drawBoundary(state.arenaRadius.toFloat())
         drawFood(state)
 
+        // Rank by mass, so a label over a head and the HUD row can never disagree.
+        val ranked = state.snakes.sortedByDescending { it.mass }
+        val rankOf = ranked.withIndex().associate { (i, s) -> s.id to i + 1 }
+
         // Others first, the local player last, so your own body is never buried under
         // someone else's in a scrum.
         state.snakes.filter { it.alive && it.id != me }.forEach {
             drawSnake(it, trails, heads[it.id] ?: Offset.Zero,
-                headings[it.id] ?: 0.0, false, state.time, stick)
+                headings[it.id] ?: 0.0, false, state.time, stick,
+                rankOf[it.id] ?: 0, me, scale)
         }
         state.snakes.firstOrNull { it.id == me && it.alive }?.let {
             drawSnake(it, trails, heads[it.id] ?: Offset.Zero,
-                headings[it.id] ?: 0.0, true, state.time, stick)
+                headings[it.id] ?: 0.0, true, state.time, stick,
+                rankOf[it.id] ?: 0, me, scale)
         }
     }
 }
@@ -303,15 +316,19 @@ private fun DrawScope.drawSnake(
     isMe: Boolean,
     time: Double,
     stick: Offset,
+    rank: Int,
+    me: String?,
+    scale: Float,
 ) {
     val points = trails.points(snake.id)
     if (points.size < 2) return
 
     val color = paletteColor(snake.colorIndex)
 
-    // Sub-linear thickness: linear growth would have a long snake filling the screen, and
-    // length is meant to dominate by covering space, not by being fat.
-    val width = (20.0 * (1 + log10(1 + snake.mass / 25) * 0.55)).toFloat()
+    // Width comes from the SERVER's head radius, so the drawn body is exactly the shape that
+    // kills. A local formula could drift from the hitbox on any tuning change — and the
+    // snake now thickens as it eats, so that drift would grow with the snake.
+    val width = (snake.headRadius * 1.9).toFloat()
 
     val path = Path().apply {
         moveTo(points[0].x, points[0].y)
@@ -320,7 +337,7 @@ private fun DrawScope.drawSnake(
         for (i in 1 until points.size - 1) {
             val mx = (points[i].x + points[i + 1].x) / 2f
             val my = (points[i].y + points[i + 1].y) / 2f
-            quadraticBezierTo(points[i].x, points[i].y, mx, my)
+            quadraticTo(points[i].x, points[i].y, mx, my)
         }
         lineTo(points.last().x, points.last().y)
     }
@@ -345,6 +362,7 @@ private fun DrawScope.drawSnake(
     }
 
     drawHead(head, heading, width, color, alpha, isMe, stick)
+    drawLabel(head, snake, rank, me, width, scale)
 }
 
 private fun DrawScope.drawHead(
@@ -378,6 +396,44 @@ private fun DrawScope.drawHead(
         val py = ey + (sin(look) * eyeR * 0.4).toFloat()
         drawCircle(Color.Black.copy(alpha = alpha), radius = pr, center = Offset(px, py))
     }
+}
+
+/**
+ * Name, prefixed with the rank when the snake is in the top 10.
+ *
+ * Drawn through the native canvas because Compose's own text API is not available inside a
+ * DrawScope without a TextMeasurer, and this needs to run for every visible snake every
+ * frame. Sized in SCREEN terms and divided back out by the camera scale, so a label stays
+ * legible at any zoom instead of shrinking to nothing as the snake grows.
+ */
+private fun DrawScope.drawLabel(
+    head: Offset,
+    snake: GamesEngine.SnakeState.Snake,
+    rank: Int,
+    me: String?,
+    width: Float,
+    scale: Float,
+) {
+    val name = labelFor(snake, me)
+    if (name.isEmpty()) return
+    val text = if (rank in 1..10) "#$rank $name" else name
+
+    val px = 13f / scale.coerceAtLeast(0.0001f)
+    val paint = android.graphics.Paint().apply {
+        isAntiAlias = true
+        textSize = px
+        textAlign = android.graphics.Paint.Align.CENTER
+        typeface = android.graphics.Typeface.create(
+            android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+        color = if (snake.id == me) android.graphics.Color.WHITE
+                else android.graphics.Color.argb(235, 217, 224, 255)
+        // A shadow rather than an outline: labels sit over a busy arena and pure white text
+        // on a bright snake is unreadable without some separation.
+        setShadowLayer(px * 0.25f, 0f, px * 0.06f, android.graphics.Color.argb(200, 0, 0, 0))
+    }
+
+    drawContext.canvas.nativeCanvas.drawText(
+        text, head.x, head.y - width * 0.75f - px * 0.4f, paint)
 }
 
 /**
@@ -517,28 +573,35 @@ private fun Overlay(
                 horizontalAlignment = Alignment.End,
                 verticalArrangement = Arrangement.spacedBy(3.dp),
             ) {
-                state.snakes.sortedByDescending { it.mass }.take(4).forEach { snake ->
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Box(Modifier.size(7.dp)
-                            .background(paletteColor(snake.colorIndex), CircleShape))
-                        Text(
-                            // Bots are named plausibly and never labelled as bots — a "BOT"
-                            // tag would change how players treat them, and practice is more
-                            // useful when it feels like a real arena.
-                            if (snake.id == me) "You"
-                            else if (snake.isBot) snake.id.removePrefix("bot:").uppercase()
-                            else UserDirectory.displayName(snake.id, "Player"),
-                            color = Color.White.copy(alpha = if (snake.id == me) 1f else 0.75f),
-                            fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                        Text(snake.mass.toInt().toString(),
-                            color = Color.White.copy(alpha = 0.55f),
-                            fontSize = 11.sp, fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace)
+                // Top ten, live. Rank is the point of the board, so it is shown explicitly
+                // rather than implied by row order.
+                state.snakes.sortedByDescending { it.mass }.take(10)
+                    .forEachIndexed { index, snake ->
+                        val isMe = snake.id == me
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("#${index + 1}",
+                                color = Color.White.copy(alpha = 0.4f),
+                                fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace)
+                            Box(Modifier.size(7.dp)
+                                .background(paletteColor(snake.colorIndex), CircleShape))
+                            Text(
+                                // Bots are named plausibly and never labelled as bots — a
+                                // "BOT" tag would change how players treat them, and practice
+                                // is more useful when the arena feels real.
+                                labelFor(snake, me),
+                                color = Color.White.copy(alpha = if (isMe) 1f else 0.78f),
+                                fontSize = 11.sp,
+                                fontWeight = if (isMe) FontWeight.ExtraBold else FontWeight.SemiBold)
+                            Text(snake.mass.toInt().toString(),
+                                color = Color.White.copy(alpha = 0.55f),
+                                fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace)
+                        }
                     }
-                }
 
                 val left = (state.duration - state.time).coerceAtLeast(0.0).toInt()
                 Text(String.format("%d:%02d", left / 60, left % 60),
@@ -592,9 +655,16 @@ private fun Overlay(
  * reference it can find without looking, which is exactly what was missing when steering was
  * "toward my finger relative to screen centre".
  *
- * ONE pointerInput, deliberately: the previous screen ran detectDragGestures AND
- * detectTapGestures over the same area, and they competed for the same touches — which is why
- * steering sometimes did nothing at all.
+ * TWO BUGS ARE FIXED HERE, and they are why steering died:
+ *
+ *  1. `detectDragGestures` only reports a drag AFTER the finger crosses touch slop, so a
+ *     thumb that pressed and held perfectly still produced NOTHING. A raw
+ *     `awaitPointerEventScope` loop responds on touch-down with zero slop.
+ *
+ *  2. The knob was animated through `rememberCoroutineScope()`, which is CANCELLED when the
+ *     composable leaves. Coming back for a second match left a dead scope, so the animation
+ *     never ran again — the reason steering worked once and then stopped. The spring-back is
+ *     now plain state driven by the caller's frame loop, with no scope to die.
  */
 @Composable
 private fun VirtualJoystick(
@@ -602,8 +672,28 @@ private fun VirtualJoystick(
     onVector: (Offset) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val scope = rememberCoroutineScope()
-    val knob = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
+    // Plain state, not Animatable: nothing here outlives the composable, so nothing can be
+    // left cancelled between matches.
+    var knob by remember { mutableStateOf(Offset.Zero) }
+    var held by remember { mutableStateOf(false) }
+
+    // Spring-back, driven by the frame clock rather than a coroutine. Critically damped
+    // enough to settle without wobbling, which on a control (as opposed to decoration) reads
+    // as slop rather than as life.
+    LaunchedEffect(Unit) {
+        var lastNanos = 0L
+        while (true) {
+            withFrameNanos { now ->
+                val dt = if (lastNanos == 0L) 0f else ((now - lastNanos) / 1_000_000_000.0).toFloat()
+                lastNanos = now
+                if (!held && knob != Offset.Zero) {
+                    val decay = kotlin.math.exp(-14.0 * dt).toFloat()
+                    val next = knob * decay
+                    knob = if (hypot(next.x, next.y) < 0.5f) Offset.Zero else next
+                }
+            }
+        }
+    }
 
     Box(
         modifier
@@ -612,31 +702,37 @@ private fun VirtualJoystick(
             // feel unresponsive.
             .size((JOY_RADIUS_DP * 2.8f).dp)
             .pointerInput(radiusPx) {
-                detectDragGestures(
-                    onDragStart = { offset ->
-                        scope.launch { knob.snapTo(clampToRing(offset, size.width, radiusPx)) }
-                        onVector(knob.value / radiusPx)
-                    },
-                    onDrag = { change, _ ->
-                        val v = clampToRing(change.position, size.width, radiusPx)
-                        scope.launch { knob.snapTo(v) }
-                        onVector(v / radiusPx)
-                    },
-                    onDragEnd = {
-                        // Springs home like a rubber band. No steer is sent on release: the
-                        // snake keeps its heading, matching the server model and the genre.
-                        scope.launch {
-                            knob.animateTo(
-                                Offset.Zero,
-                                spring(dampingRatio = 0.55f, stiffness = Spring.StiffnessMedium))
+                awaitPointerEventScope {
+                    while (true) {
+                        // requireUnconsumed = false so this still wins the touch even if an
+                        // ancestor has looked at it first.
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        held = true
+                        knob = clampToRing(down.position, size.width, radiusPx)
+                        onVector(knob / radiusPx)
+                        down.consume()
+
+                        // Track until every finger is up. Reading the event stream directly
+                        // means the knob moves on the very first move event, with no slop.
+                        var pointerId = down.id
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == pointerId }
+                                ?: event.changes.firstOrNull { it.pressed }
+                                ?: break
+                            pointerId = change.id
+                            if (!change.pressed) break
+                            knob = clampToRing(change.position, size.width, radiusPx)
+                            onVector(knob / radiusPx)
+                            change.consume()
                         }
+
+                        held = false
+                        // No steer on release: the snake keeps its heading, matching the
+                        // server model and the genre. Only the knob returns home.
                         onVector(Offset.Zero)
-                    },
-                    onDragCancel = {
-                        scope.launch { knob.animateTo(Offset.Zero, spring(dampingRatio = 0.55f)) }
-                        onVector(Offset.Zero)
-                    },
-                )
+                    }
+                }
             },
         contentAlignment = Alignment.Center,
     ) {
@@ -645,9 +741,10 @@ private fun VirtualJoystick(
             drawCircle(Color.White.copy(alpha = 0.10f), radius = radiusPx, center = centre)
             drawCircle(Color.White.copy(alpha = 0.22f), radius = radiusPx,
                 center = centre, style = Stroke(width = 4f))
-            drawCircle(Color.White.copy(alpha = 0.85f),
-                radius = with(this) { JOY_KNOB_DP.dp.toPx() },
-                center = centre + knob.value)
+            // A faint centre mark, so the rest position is visible before the thumb lands.
+            drawCircle(Color.White.copy(alpha = 0.10f), radius = 7f, center = centre)
+            drawCircle(Color.White.copy(alpha = 0.9f),
+                radius = JOY_KNOB_DP.dp.toPx(), center = centre + knob)
         }
     }
 }

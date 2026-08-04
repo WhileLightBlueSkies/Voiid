@@ -156,6 +156,13 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         data class Snake(
             val id: String,
             val isBot: Boolean,
+            /** Server-assigned handle for a bot; null for humans (resolved from the directory). */
+            val name: String?,
+            /**
+             * Head radius in world units, straight from the server — the body is drawn at this
+             * width so the visible snake is exactly the shape that kills.
+             */
+            val headRadius: Double,
             val x: Double,
             val y: Double,
             val heading: Double,
@@ -289,9 +296,15 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         val snakes = rawSnakes.mapNotNull { entry ->
             val o = entry as? JsonObject ?: return@mapNotNull null
             val id = o.str("id") ?: return@mapNotNull null
+            // The name rides only on FULL frames (it never changes), so a delta frame
+            // inherits it from the previous state. Without this every label would blink out
+            // the moment the first delta arrived.
+            val carried = previous?.snakes?.firstOrNull { it.id == id }?.name
             SnakeState.Snake(
                 id = id,
                 isBot = o.bool("bot") ?: false,
+                name = o.str("n") ?: carried,
+                headRadius = o.dbl("hr") ?: 11.0,
                 x = o.dbl("x") ?: 0.0,
                 y = o.dbl("y") ?: 0.0,
                 heading = o.dbl("h") ?: 0.0,

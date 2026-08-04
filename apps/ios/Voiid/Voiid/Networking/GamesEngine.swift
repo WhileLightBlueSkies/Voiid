@@ -187,6 +187,11 @@ struct SnakeState {
     struct Snake: Identifiable {
         let id: String
         let isBot: Bool
+        /// Server-assigned handle for a bot; nil for humans (resolved from the directory).
+        let name: String?
+        /// Head radius in world units, straight from the server — the body is drawn at this
+        /// width so the visible snake is exactly the shape that kills.
+        let headRadius: Double
         let x: Double
         let y: Double
         let heading: Double
@@ -200,6 +205,16 @@ struct SnakeState {
         let score: Int
         let invulnUntil: Double
         let colorIndex: Int
+    }
+
+    /// What to show above the head and in the leaderboard.
+    ///
+    /// Bots carry their name on the wire; humans are looked up locally, because only this
+    /// device knows what it calls its own contacts.
+    static func label(for snake: Snake, me: String?) -> String {
+        if snake.id == me { return "You" }
+        if let n = snake.name, !n.isEmpty { return n }
+        return UserDirectory.shared.displayName(snake.id, fallback: "Player")
     }
 
     struct Food {
@@ -250,9 +265,15 @@ struct SnakeState {
 
         let snakes: [Snake] = rawSnakes.compactMap { s in
             guard let id = s["id"] as? String else { return nil }
+            // The name rides only on FULL frames (it never changes), so a delta frame
+            // inherits it from the previous state. Without this, every label would blink
+            // out the moment the first delta arrived.
+            let carried = previous?.snakes.first { $0.id == id }?.name
             return Snake(
                 id: id,
                 isBot: (s["bot"] as? Bool) ?? false,
+                name: (s["n"] as? String) ?? carried,
+                headRadius: (s["hr"] as? Double) ?? 11,
                 x: (s["x"] as? Double) ?? 0,
                 y: (s["y"] as? Double) ?? 0,
                 heading: (s["h"] as? Double) ?? 0,
@@ -332,6 +353,14 @@ final class GamesEngine: ObservableObject {
     /// Latest snake state, for HUD/overlay code that has no need to interpolate.
     var snake: SnakeState? { snakeFrames.last?.state }
 
+    /// Plain (non-published) read of the frame buffer, for the Metal renderer.
+    ///
+    /// The renderer runs on the display link, not on the main actor's render pass, and must
+    /// not participate in SwiftUI invalidation — reading the @Published array from there is
+    /// what tangled the previous Canvas version into a freeze. This is a value-type copy of
+    /// an array of structs, so the read is safe and cheap.
+    nonisolated(unsafe) private(set) var snakeFramesSnapshot: [SnakeFrame] = []
+
     private static let SNAKE_BUFFER = 4
     /// Set when the join REST call fails, so the screen can show something truthful
     /// instead of an empty board that will never update.
@@ -378,6 +407,7 @@ final class GamesEngine: ObservableObject {
             if snakeFrames.count > Self.SNAKE_BUFFER {
                 snakeFrames.removeFirst(snakeFrames.count - Self.SNAKE_BUFFER)
             }
+            snakeFramesSnapshot = snakeFrames
         default:        state = TicTacToeState.parse(payload)
         }
     }
@@ -391,6 +421,7 @@ final class GamesEngine: ObservableObject {
         self.rps = nil
         self.cricket = nil
         self.snakeFrames = []
+        self.snakeFramesSnapshot = []
         self.joinError = nil
         self.lastSeq = -1
         self.pendingHeading = nil
@@ -560,6 +591,7 @@ final class GamesEngine: ObservableObject {
         rps = nil
         cricket = nil
         snakeFrames = []
+        snakeFramesSnapshot = []
         joinError = nil
         lastSeq = -1
         pendingHeading = nil

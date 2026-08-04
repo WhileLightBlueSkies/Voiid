@@ -253,6 +253,53 @@ console.log('\nSnake engine\n');
     `client ${client.size} vs server ${server.size}`);
 }
 
+// --- 10b. Bot names ---------------------------------------------------------------------
+{
+  const state = snake.create(['u1'], { bots: 8, seed: 4242 }).serialize();
+  const snakes = state.snakes as any[];
+  const bots = snakes.filter((s) => s.bot);
+  const human = snakes.find((s) => !s.bot);
+
+  check('every bot has a name', bots.every((b) => typeof b.n === 'string' && b.n.length > 0));
+  check('bot names are unique within a match',
+    new Set(bots.map((b) => b.n)).size === bots.length);
+  // Humans are named by the client from its own directory; a server-side name would be a
+  // second source of truth that could disagree with it.
+  check('humans carry no server name', human.n === null);
+
+  // Same seed must give the same names, or a replayed match would not reproduce.
+  const again = snake.create(['u1'], { bots: 8, seed: 4242 }).serialize();
+  check('names are deterministic for a seed',
+    JSON.stringify((again.snakes as any[]).map((s) => s.n)) ===
+    JSON.stringify(snakes.map((s) => s.n)));
+}
+
+// --- 10c. Mass-scaled radius --------------------------------------------------------------
+// The drawn width comes from `hr`, so if this stops scaling the client silently goes back to
+// a fixed-width snake whose hitbox no longer matches what is on screen.
+{
+  let state: GameStatePayload = snake.create(['u1'], { bots: 3, seed: 88 }).serialize();
+  const startHr = (state.snakes as any[])[0].hr;
+
+  // Run long enough for something to eat.
+  for (let i = 0; i < TUNING.TICK_HZ * 45; i++) {
+    const e = snake.restore(state);
+    e.tick!();
+    state = e.serialize();
+  }
+
+  const snakes = (state.snakes as any[]).filter((s) => s.a);
+  const grown = snakes.find((s) => s.m > TUNING.START_MASS + 5);
+
+  check('head radius is on the wire', typeof startHr === 'number' && startHr > 0);
+  check('a grown snake is thicker than it started',
+    grown !== undefined && grown.hr > startHr,
+    grown ? `m=${grown.m} hr=${grown.hr} vs start ${startHr}` : 'nothing grew');
+  check('thickness is capped',
+    snakes.every((s) => s.hr <= startHr * 2.2 + 0.001),
+    `max hr ${Math.max(...snakes.map((s) => s.hr))}`);
+}
+
 // --- 11. Wire size ----------------------------------------------------------------------
 // This payload goes to every player 12x/sec. If it is fat, phones pay for it continuously —
 // on mobile data, for the whole match.
