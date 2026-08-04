@@ -54,12 +54,23 @@ class MapLocationProvider(context: Context) {
     fun start(onFix: (lat: Double, lon: Double, acc: Double?) -> Unit): Boolean {
         if (!hasPermission()) return false
         stop()
+        // HIGH ACCURACY in the foreground — GPS, not just cell/wifi.
+        //
+        // BALANCED_POWER caps at roughly 100 m however tight the distance filter is, so the
+        // pin could never land on the right side of a street no matter what we rounded to.
+        // The product target is Snap Map, where a friend's pin is street-level.
+        //
+        // The COST is bounded by the interval, not the priority: at a 5-minute cadence the
+        // radio is idle between fixes either way. This is not the continuous mode — that
+        // remains reserved for a timer-bounded live share.
         val request = LocationRequest.Builder(
-            Priority.PRIORITY_BALANCED_POWER_ACCURACY,
+            Priority.PRIORITY_HIGH_ACCURACY,
             MapConstants.PRESENCE_INTERVAL_MS,
         )
             .setMinUpdateDistanceMeters(MapConstants.PRESENCE_MIN_DISTANCE_M)
-            .setWaitForAccurateLocation(false)
+            // Wait for a real fix rather than shipping the first cached cell-tower estimate,
+            // which is exactly the 500 m-wrong position that made pins look broken.
+            .setWaitForAccurateLocation(true)
             .build()
         val cb = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
@@ -128,6 +139,10 @@ class MapLocationProvider(context: Context) {
     @SuppressLint("MissingPermission") // guarded by hasPermission()
     fun startBackground(): Boolean {
         if (!hasPermission()) return false
+        // BACKGROUND STAYS BALANCED, deliberately. A background fix can wake the whole
+        // process; asking for GPS there would spin the radio while the phone is in a pocket,
+        // for a position nobody is looking at. Foreground is where accuracy is seen, and the
+        // 15-minute cadence means a background pin is approximate by definition anyway.
         val request = LocationRequest.Builder(
             Priority.PRIORITY_BALANCED_POWER_ACCURACY,
             MapConstants.PRESENCE_BACKGROUND_INTERVAL_MS,
@@ -155,7 +170,10 @@ class MapLocationProvider(context: Context) {
     fun requestSingle(onFix: (lat: Double, lon: Double, acc: Double?) -> Unit) {
         if (!hasPermission()) return
         runCatching {
-            client.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, null)
+            // HIGH accuracy: this is the fix that lands the moment the user opens the Map,
+            // so it is the one they judge the feature by. A balanced one-shot returns a
+            // cached cell estimate that can be hundreds of metres out.
+            client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
                 .addOnSuccessListener { loc ->
                     if (loc != null) {
                         onFix(round(loc.latitude), round(loc.longitude), if (loc.hasAccuracy()) loc.accuracy.toDouble() else null)

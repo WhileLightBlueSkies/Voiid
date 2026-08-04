@@ -36,6 +36,7 @@
 //
 
 import Foundation
+import UIKit
 import CoreLocation
 import Combine
 
@@ -96,6 +97,20 @@ final class MapPresenceEngine: ObservableObject {
         // for someone who ghosted — and `start()` is a no-op when not authorized.
         if visibility.isVisible {
             provider.start()
+        }
+
+        // Lifecycle observed HERE, not in MapTabView.
+        //
+        // The view only exists while the Map tab is on screen, so a background transition
+        // from any other tab never reached the provider — the accurate GPS feed kept running
+        // in the background with the blue pill showing, for a map nobody was looking at.
+        NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.noteBackgrounded() }
+        }
+        NotificationCenter.default.addObserver(forName: UIApplication.willEnterForegroundNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.noteForegrounded() }
         }
 
         NotificationCenter.default.addObserver(forName: .voiidDidSignOut, object: nil, queue: .main) { [weak self] _ in
@@ -203,8 +218,19 @@ final class MapPresenceEngine: ObservableObject {
 
     /// Called when the Map appears / the app becomes active. Resets the 24-hour auto-ghost
     /// clock, refreshes a fix if visible, and pushes the server row's ceiling forward.
+    /// The app went to the background — pause the accurate feed, keep presence alive.
+    ///
+    /// NOT `stopEmitting()`: that is the Ghost / kill path and would end the share. This only
+    /// steps the provider down from GPS to significant-change, so the pin keeps updating
+    /// coarsely and can still relaunch a killed app.
+    func noteBackgrounded() {
+        provider.noteBackgrounded()
+    }
+
     func noteForegrounded() {
         visibility.noteForegrounded()
+        // Step the provider back up to the accurate feed before anything reads a fix.
+        provider.noteForegrounded()
         reloadFromStore()
         if visibility.isVisible {
             provider.refreshOnce()

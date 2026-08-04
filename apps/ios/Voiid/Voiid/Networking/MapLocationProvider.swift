@@ -46,16 +46,18 @@ final class MapLocationProvider: NSObject, ObservableObject, CLLocationManagerDe
     private override init() {
         super.init()
         manager.delegate = self
-        // Map presence targets ~100 m. Never ask for BEST accuracy — that is the whole point
-        // of the coarse mode and the difference between <1 %/h and 4–8 %/h.
+        // STREET-LEVEL accuracy, matching Snap Map.
         //
-        // The distance filter is 100 m, down from 250. At 250 you could walk to the next
-        // street, or across a campus, and the pin would not move at all — indistinguishable
-        // from being stale. 100 still rejects the jitter this exists to suppress (a
-        // stationary phone wanders 10–30 m) while tracking a real walk. Matches Android's
-        // PRESENCE_MIN_DISTANCE_M.
-        manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
-        manager.distanceFilter = 100
+        // This was `kCLLocationAccuracyHundredMeters` with a 250 m and then 100 m filter, so
+        // the pin could never be better than ~100 m however finely we rounded — you could
+        // walk the length of a building and it would not move, which reads as stale rather
+        // than coarse. `nearestTenMeters` is the accuracy a friend map needs to be useful.
+        //
+        // Cost is paid by the CADENCE, not the accuracy constant: significant-change plus a
+        // 25 m filter means the GPS is not being held open. This is still not the continuous
+        // mode reserved for a timer-bounded live share.
+        manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+        manager.distanceFilter = 25
         authorization = manager.authorizationStatus
     }
 
@@ -115,12 +117,46 @@ final class MapLocationProvider: NSObject, ObservableObject, CLLocationManagerDe
         // silently, and significant-change is too cheap for the pause to buy anything.
         manager.pausesLocationUpdatesAutomatically = false
 
+        // BOTH APIS, each for what it is actually good at.
+        //
+        // Significant-change alone is ~500 m — it is a "you have moved to a new area" signal,
+        // not a position feed — so on its own the 25 m distance filter above was dead code and
+        // the pin could never be street-level. That is why iOS pins looked coarser than the
+        // constants claimed.
+        //
+        //   startUpdatingLocation      — the accurate foreground feed. Gated by the 25 m
+        //                                filter, so a stationary phone produces nothing and
+        //                                the radio is not held open.
+        //   significant-change         — kept because it is the ONLY thing that RELAUNCHES a
+        //                                terminated app. startUpdatingLocation dies with the
+        //                                process; this is what makes presence survive a kill.
+        //
+        // Neither is the continuous high-rate mode: that needs `kCLLocationAccuracyBest` with
+        // no filter, which is the 4–8 %/h live-share profile and stays out of the Map.
+        manager.startUpdatingLocation()
         manager.startMonitoringSignificantLocationChanges()
         manager.requestLocation()
 
         // Ask to upgrade once the coarse stream is live, so the prompt arrives with the
         // feature it is for rather than at some unrelated moment.
         requestAlwaysIfNeeded()
+    }
+
+    /// Backgrounded: drop the ACCURATE feed, keep the relaunch-capable one.
+    ///
+    /// `startUpdatingLocation` in the background shows the blue system pill and holds the GPS
+    /// — appropriate for a timer-bounded live share, not for ambient presence nobody is
+    /// looking at. Significant-change keeps running, which is what preserves both the
+    /// coarse background pin and the ability to be relaunched after a kill.
+    func noteBackgrounded() {
+        guard running else { return }
+        manager.stopUpdatingLocation()
+    }
+
+    /// Foregrounded: bring the accurate feed back.
+    func noteForegrounded() {
+        guard running, isAuthorized else { return }
+        manager.startUpdatingLocation()
     }
 
     /// One immediate coarse fix — used on foreground to refresh presence without waiting for
@@ -133,6 +169,7 @@ final class MapLocationProvider: NSObject, ObservableObject, CLLocationManagerDe
     func stop() {
         guard running else { return }
         running = false
+        manager.stopUpdatingLocation()
         manager.stopMonitoringSignificantLocationChanges()
         // Drop background privileges the instant we stop. Ghost Mode and the kill switch
         // both route here, and a lingering background grant after the user said "stop" would

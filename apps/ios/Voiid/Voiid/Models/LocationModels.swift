@@ -215,13 +215,17 @@ enum LocationRounding {
         return (value * f).rounded() / f
     }
     static let liveDecimals = 5
-    /// 4 decimals (~11 m), up from 3 (~110 m).
+    /// 6 decimals (~0.1 m) — effectively RAW device GPS, not a coarsening step.
     ///
-    /// 3 decimals quantised every position onto a ~110 m grid, so two people standing
-    /// together could show a block apart and moving within a building never moved the pin.
-    /// That is more imprecision than the privacy model asks for: the defence here is the
-    /// coarse cadence, the audience gate and the encryption — not blurring the coordinate
-    /// past usefulness. 11 m rounds away noise rather than signal. Matches Android's
-    /// PRESENCE_COORD_DECIMALS.
-    static let mapDecimals = 4
+    /// This was 3 decimals (~110 m), then 4 (~11 m). Both quantised the pin onto a grid: at
+    /// 110 m two people standing together showed a block apart, and even at 11 m a pin could
+    /// sit on the wrong side of a street. The product target is Snap Map, which does NOT fuzz
+    /// friend-to-friend pins — its published fuzzing applies to PUBLIC Story heatmaps, a
+    /// different feature with a different threat model.
+    ///
+    /// The privacy model did not weaken, because rounding was never carrying it: a fix is
+    /// end-to-end encrypted to a named allow-list, Ghost Mode is a hard local gate, and a
+    /// 24-hour auto-ghost expires the share. Anyone who can decrypt a position is someone the
+    /// user deliberately chose. Matches Android's PRESENCE_COORD_DECIMALS.
+    static let mapDecimals = 6
 }

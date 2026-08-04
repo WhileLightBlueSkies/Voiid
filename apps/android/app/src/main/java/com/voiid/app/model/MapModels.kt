@@ -106,17 +106,18 @@ object MapConstants {
      */
     const val PRESENCE_BACKGROUND_INTERVAL_MS = 900_000L
     /**
-     * 100 m, down from 250.
+     * 25 m, down from 100.
      *
-     * The filter is what makes a pin feel WRONG rather than merely coarse: at 250 m you could
-     * walk to the next street, or across a campus, and your pin would not move at all —
-     * indistinguishable from being stale. 100 m still rejects the GPS jitter this exists to
-     * suppress (a stationary phone wanders 10–30 m) while tracking a real walk.
+     * The filter decides how far you can move before the pin follows. At 100 m you could walk
+     * the length of a building, or to the far end of a platform, and your pin would not move —
+     * which reads as stale rather than coarse. 25 m tracks walking honestly while still
+     * rejecting the 10–20 m wander of a stationary phone, so a pin left on a desk does not
+     * jitter and burn frames.
      *
-     * Cost is bounded: a fix that passes the filter is a WebSocket frame, not a wake, and the
-     * cadence still gates how often one can arrive at all.
+     * Cost is bounded by the CADENCE, not this: a fix that passes the filter is one WebSocket
+     * frame, and the interval still gates how often one can arrive at all.
      */
-    const val PRESENCE_MIN_DISTANCE_M = 100f
+    const val PRESENCE_MIN_DISTANCE_M = 25f
     const val PRESENCE_CADENCE_SECONDS = 300
 
     // §8 subject-state thresholds, all derived from the fix age (works with zero network).
@@ -138,16 +139,21 @@ object MapConstants {
     const val DEFAULT_KEY_TTL_MS = MAP_MAX_DURATION_SECONDS * 1000L
 
     /**
-     * 4 decimals (~11 m), up from 3 (~110 m). Still rounded BEFORE encryption (§4).
+     * 6 decimals (~0.1 m) — effectively RAW device GPS. Still applied before encryption (§4),
+     * but it no longer coarsens: it only trims float noise so two identical positions encode
+     * identically.
      *
-     * 3 decimals quantised every position onto a ~110 m grid, so two people standing together
-     * could show a block apart, and moving within a building never moved the pin. That is
-     * more imprecision than the privacy model asks for: the DEFENCE here is the coarse
-     * cadence, the audience gate and the encryption — not blurring the coordinate past
-     * usefulness.
+     * WHY THE COARSENING WENT. This was 3 decimals (~110 m), then 4 (~11 m). Both quantised
+     * the pin onto a grid: at 110 m two people standing together showed a block apart, and
+     * even at 11 m a pin could sit on the wrong side of a street. The product target is
+     * Snap Map, which does NOT fuzz friend-to-friend pins — its published fuzzing applies to
+     * PUBLIC Story heatmaps, which is a different feature with a different threat model.
      *
-     * 11 m is well inside what a phone can actually resolve, so this rounds away noise rather
-     * than signal, and the pin lands on the right side of the street.
+     * THE PRIVACY MODEL DID NOT WEAKEN, because rounding was never carrying it. What protects
+     * a position here is that it is end-to-end encrypted to a named allow-list, that Ghost
+     * Mode is a hard local gate, that a 24-hour auto-ghost expires the share, and that the
+     * user chose each recipient. Blurring the coordinate on top of that bought imprecision,
+     * not safety — anyone who can decrypt the fix is someone the user deliberately picked.
      */
-    const val PRESENCE_COORD_DECIMALS = 4
+    const val PRESENCE_COORD_DECIMALS = 6
 }

@@ -108,7 +108,7 @@ Plaintext of one fix (≈100–160 bytes):
 
 `_vloc` is the envelope discriminator (see §4). `n` is a monotonic sequence so an out-of-order relay
 frame is dropped rather than rendered as a jump backwards. `alt`/`hdg`/`spd` are reserved and not drawn
-in v1. Coordinates are rounded to **5 decimals (~1.1 m)** for live shares and **4 decimals (~11 m)**
+in v1. Coordinates are rounded to **5 decimals (~1.1 m)** for live shares and **6 decimals (~0.1 m)**
 for Map presence — rounding at the source, before encryption.
 
 WS frame in:
@@ -272,7 +272,7 @@ Self-hosted / offline vector tiles are out of scope for v1 (§10).
 |---|---|---|---|---|
 | **Static pin** | one fix, 10 s timeout | best available | no | negligible |
 | **(A) Live share** | 10–15 s, 25 m distance filter | ~10 m | **yes** | ~4–8 %/h |
-| **(B) Map presence** | significant-change / 5 min fg, 15 min bg, 100 m filter | ~10–100 m | **yes, coarse** | <1 %/h |
+| **(B) Map presence** | 5 min fg (GPS) / 15 min bg (coarse), 25 m filter | ~10 m fg, ~100 m bg | **yes** | ~1–2 %/h |
 
 **The Map is coarse and last-known. A continuously-broadcasting map is not shipped.**
 
@@ -282,11 +282,24 @@ user last had Voiid open, telling their contacts they were somewhere they had le
 still the cheap ambient stream (significant-change on iOS, a 15-minute PendingIntent request
 on Android), NOT the continuous mode, and the <1 %/h figure is unchanged.
 
-Accuracy was ALSO tightened in the same pass: the distance filter went 250 m → 100 m and the
-coordinate rounding 3 decimals (~110 m) → 4 (~11 m). At 250 m you could cross a campus without
-the pin moving, and a ~110 m grid put two people standing together a block apart — more
-imprecision than the privacy model asks for, since the real defence is the coarse cadence, the
-audience gate and the encryption rather than blurring the coordinate past usefulness.
+ACCURACY NOW TARGETS SNAP MAP. The coordinate coarsening is gone (3 → 4 → 6 decimals, i.e.
+raw device GPS), the distance filter is 25 m, and the foreground feed asks for real GPS
+(`nearestTenMeters` / `PRIORITY_HIGH_ACCURACY`) rather than the ~100 m cell-and-wifi estimate.
+
+This was a deliberate privacy decision, not a drift. Rounding was never what protected a
+position: a fix is end-to-end encrypted to a named allow-list, Ghost Mode is a hard local
+gate, and the 24-hour auto-ghost expires the share. Anyone who can decrypt a fix is someone
+the user explicitly chose, so blurring the coordinate bought imprecision rather than safety —
+at 110 m two people standing together showed a block apart.
+
+Note on the comparison: Snapchat's published location "fuzzing" applies to PUBLIC Story
+heatmaps, NOT to friend-to-friend pins, which are street-level. Citing it as precedent for
+coarsening a friend map would be a category error.
+
+Battery moves from <1 %/h to roughly 1–2 %/h, still far below the 4–8 %/h live-share profile:
+the foreground feed is gated by the 25 m filter (a stationary phone emits nothing) and the
+background feed stays on the cheap coarse mode, because a background fix can wake the process
+and nobody is looking at the map anyway.
 Ghost Mode and the kill switch tear down background delivery along with everything else, and
 both platforms re-read visibility from disk on a cold wake so a kill cannot resurrect a
 share the user ended.
