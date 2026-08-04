@@ -93,9 +93,15 @@ fun SnakeArenaScreen(matchId: String, onClose: () -> Unit) {
     var lastHeading by remember { mutableDoubleStateOf(0.0) }
     /** Live joystick vector, normalized to the ring radius; (0,0) at rest. */
     var stick by remember { mutableStateOf(Offset.Zero) }
-    /** Ticks every display frame purely to drive redraws. */
-    var frameClock by remember { mutableDoubleStateOf(0.0) }
+    // Ticks every display frame purely to drive redraws.
+    //
+    // A plain `var by mutableStateOf` here invalidated the WHOLE composable 60x/s, dragging
+    // the leaderboard, the joystick and every other child through recomposition on every
+    // frame. Only the Canvas needs to repaint, so the clock lives in a state object that
+    // just the draw lambda reads — Compose then invalidates the draw and nothing else.
+    val frameClock = remember { mutableDoubleStateOf(0.0) }
     val trails = remember { TrailStore() }
+    val camera = remember { CameraMemory() }
 
     val me = engine.myUserId
 
@@ -103,7 +109,7 @@ fun SnakeArenaScreen(matchId: String, onClose: () -> Unit) {
 
     LaunchedEffect(Unit) {
         while (true) {
-            withFrameNanos { frameClock = it / 1_000_000_000.0 }
+            withFrameNanos { frameClock.doubleValue = it / 1_000_000_000.0 }
             engine.flushSteering(context)
         }
     }
@@ -114,9 +120,9 @@ fun SnakeArenaScreen(matchId: String, onClose: () -> Unit) {
             .background(Color.Black),
     ) {
         Canvas(Modifier.fillMaxSize()) {
-            // Touch the clock so this redraws every display frame.
-            @Suppress("UNUSED_EXPRESSION") frameClock
-            drawArena(frames, me, trails, stick)
+            // Reading the clock inside the DRAW scope subscribes only this draw to it.
+            @Suppress("UNUSED_EXPRESSION") frameClock.doubleValue
+            drawArena(frames, me, trails, stick, camera)
         }
 
         Overlay(
@@ -225,11 +231,15 @@ private fun lerpAngle(a: Double, b: Double, t: Double): Double {
     return a + delta * t
 }
 
+/** Mutable camera memory, so a respawn does not snap the view to the arena origin. */
+private class CameraMemory { var last: Offset? = null }
+
 private fun DrawScope.drawArena(
     frames: List<GamesEngine.SnakeFrame>,
     me: String?,
     trails: TrailStore,
     stick: Offset,
+    camera: CameraMemory,
 ) {
     val s = pickSample(frames) ?: return
     val state = s.to
@@ -248,7 +258,12 @@ private fun DrawScope.drawArena(
 
     trails.update(state, heads)
 
-    val focus = heads[me] ?: Offset.Zero
+    // Falling back to Offset.Zero teleported the camera to the arena ORIGIN whenever the
+    // player was mid-respawn — the view jumped away from the action and the player's own
+    // snake wandered off screen. Hold the last known focus instead. Owned by the caller so
+    // it resets with the screen rather than leaking between matches.
+    val focus = heads[me] ?: camera.last ?: Offset.Zero
+    heads[me]?.let { camera.last = it }
     val mass = state.snakes.firstOrNull { it.id == me }?.mass ?: 10.0
 
     // Zoom out as the snake grows so it stays framed, easing off so growth is not nauseating.
@@ -671,20 +686,23 @@ private fun VirtualJoystick(
     var knob by remember { mutableStateOf(Offset.Zero) }
     var held by remember { mutableStateOf(false) }
 
-    // Spring-back, driven by the frame clock rather than a coroutine. Critically damped
-    // enough to settle without wobbling, which on a control (as opposed to decoration) reads
-    // as slop rather than as life.
-    LaunchedEffect(Unit) {
+    // Spring-back. Keyed so the loop EXISTS ONLY WHILE THE KNOB IS AWAY FROM CENTRE.
+    //
+    // An unconditional `while (true) { withFrameNanos { ... } }` here was a permanent 60 Hz
+    // wake-up that wrote state every frame, so Compose re-composed continuously and — on top
+    // of the arena's own frame loop — starved the main thread badly enough that touch
+    // dispatch stopped. That is what made the screen go black AND the joystick go dead.
+    val springing = !held && knob != Offset.Zero
+    LaunchedEffect(springing) {
+        if (!springing) return@LaunchedEffect
         var lastNanos = 0L
-        while (true) {
+        while (knob != Offset.Zero && !held) {
             withFrameNanos { now ->
                 val dt = if (lastNanos == 0L) 0f else ((now - lastNanos) / 1_000_000_000.0).toFloat()
                 lastNanos = now
-                if (!held && knob != Offset.Zero) {
-                    val decay = kotlin.math.exp(-14.0 * dt).toFloat()
-                    val next = knob * decay
-                    knob = if (hypot(next.x, next.y) < 0.5f) Offset.Zero else next
-                }
+                val decay = kotlin.math.exp(-14.0 * dt).toFloat()
+                val next = knob * decay
+                knob = if (hypot(next.x, next.y) < 0.5f) Offset.Zero else next
             }
         }
     }

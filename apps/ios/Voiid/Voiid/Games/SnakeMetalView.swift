@@ -171,6 +171,8 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     private let trails = TrailStore()
 
     private var viewSize: CGSize = .zero
+    /// When the HUD was last pushed to SwiftUI; see `publishHud` for why it is throttled.
+    private var lastHudPublish: TimeInterval = 0
 
     init(engine: GamesEngine, me: String?, hud: SnakeHudModel) {
         self.engine = engine
@@ -540,8 +542,17 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         let timeText = String(format: "%d:%02d", Int(left) / 60, Int(left) % 60)
         let myMass = Int(mine?.mass ?? 0)
 
-        // Hop to the main actor for the publish — this runs on the display link's thread and
-        // SwiftUI state must not be written from anywhere else.
+        // THROTTLED TO ~6 Hz, and that matters more than it looks.
+        //
+        // Publishing every frame spawned a Task 60 times a second, each one hopping to the
+        // main actor and writing three @Published values — so SwiftUI re-rendered the whole
+        // HUD 60x/s on top of the Metal draw, and the main thread had no room left for touch
+        // dispatch. A leaderboard does not need 60 Hz; the arena does, and the arena is not
+        // SwiftUI's job any more.
+        let now = CACurrentMediaTime()
+        guard now - lastHudPublish >= 0.16 else { return }
+        lastHudPublish = now
+
         Task { @MainActor in
             hud.board = rows
             hud.timeRemaining = timeText

@@ -242,7 +242,16 @@ async function handleInput(msg: Record<string, any>): Promise<void> {
   const factory = factoryFor(m.slug);
   if (!factory) return;
 
-  const engine = factory.restore(m.state, m.secret);
+  // Use the LIVE engine when one is ticking, and only fall back to rebuilding from Redis
+  // for turn-based games (which have no live engine) or after a restart.
+  //
+  // This is not an optimisation — it is a correctness fix. Once the tick loop started
+  // holding the engine in memory, restoring a second one here meant input was applied to a
+  // THROWAWAY COPY: the steering wrote `th` on an object that was discarded a line later,
+  // while the live engine kept ticking with its old heading. Frames left the phone, the
+  // server accepted them, and the snake still flew in a straight line.
+  const live = liveEngines.get(matchId);
+  const engine = live ?? factory.restore(m.state, m.secret);
   const result = engine.applyInput(userId, msg.payload ?? {});
 
   // Rejected input produces NO broadcast. An illegal move costs the server one Redis read
