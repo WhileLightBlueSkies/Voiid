@@ -17,9 +17,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.AddCircle
 import androidx.compose.material.icons.filled.RemoveRedEye
 import androidx.compose.material.icons.filled.VideoLibrary
@@ -31,9 +34,11 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -58,15 +63,39 @@ import com.voiid.app.ui.theme.VoiidFont
 @Composable
 fun ClipsFeedView(
     clips: ClipsStore,
+    creators: com.voiid.app.model.CreatorStore,
     onOpenClip: (Int) -> Unit,
     onNewClip: () -> Unit,
     onMyClips: () -> Unit,
+    onOpenCreator: (String) -> Unit,
 ) {
     val haptics = LocalVoiidHaptics.current
     val gridState = rememberLazyGridState()
+    val followingState = rememberLazyGridState()
+
+    /**
+     * Which feed the grid is showing. Following is a separate SOURCE, not a filter over
+     * Explore — it is its own endpoint with its own cursor, so mixing them into one list
+     * would break keyset pagination.
+     */
+    var followingScope by androidx.compose.runtime.saveable.rememberSaveable {
+        androidx.compose.runtime.mutableStateOf(false)
+    }
 
     LaunchedEffect(Unit) {
         if (!clips.hasLoadedOnce) clips.refresh()
+        creators.ensureMeLoaded()
+    }
+
+    // Loaded on first switch only; afterwards the cached page is reused so toggling back and
+    // forth is instant rather than a round-trip each way.
+    LaunchedEffect(followingScope) {
+        if (followingScope && !creators.followingLoadedOnce) creators.refreshFollowing()
+    }
+
+    LaunchedEffect(followingState) {
+        snapshotFlow { followingState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }
+            .collect { creators.loadMoreFollowingIfNeeded(it) }
     }
 
     // Page as the grid nears its end. Driven off the last visible index rather than a
@@ -90,6 +119,19 @@ fun ClipsFeedView(
                 },
             )
             Spacer(Modifier.width(16.dp))
+            // Shown only once a creator profile exists — before that there is no page to
+            // open, and the handle picker belongs to the compose flow, not to a stray
+            // toolbar button.
+            creators.me?.let { mine ->
+                Icon(
+                    Icons.Default.AccountCircle, "My creator profile",
+                    tint = VoiidColor.textPrimary,
+                    modifier = Modifier.size(24.dp).softClickable(scale = 0.9f) {
+                        haptics.tap(); onOpenCreator(mine.handle)
+                    },
+                )
+                Spacer(Modifier.width(16.dp))
+            }
             Icon(
                 Icons.Default.AddCircle, "New clip", tint = VoiidColor.primary,
                 modifier = Modifier.size(28.dp).softClickable(scale = 0.9f) {
@@ -98,11 +140,26 @@ fun ClipsFeedView(
             )
         }
 
+        // Explore / Following. Two pills rather than a top tab bar: there are exactly two
+        // sources and they share one grid, so a full tab bar would imply more structure than
+        // exists.
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            ScopePill("Explore", !followingScope) { haptics.tap(); followingScope = false }
+            ScopePill("Following", followingScope) { haptics.tap(); followingScope = true }
+        }
+
         val error = clips.loadError
         // Every branch takes the same weighted slot: this Column's other child is the
         // header, so a child without weight would size to its intrinsic height and the
         // skeleton's fillMaxSize would resolve against an unbounded constraint.
         val slot = Modifier.fillMaxWidth().weight(1f)
+        if (followingScope) {
+            FollowingFeed(creators, followingState, slot, onOpenCreator)
+            return@Column
+        }
         when {
             // Order matters: the error state must win over the empty state. Rendering
             // "No clips yet" for a failed request tells the user the feature is dead.
@@ -234,6 +291,127 @@ private fun ClipTile(clip: VClip, onTap: () -> Unit) {
                     style = VoiidFont.rounded(11, FontWeight.SemiBold),
                     color = Color.White,
                 )
+            }
+        }
+    }
+}
+
+/** One of the two feed-scope pills. Filled when selected, quiet when not. */
+@Composable
+private fun ScopePill(label: String, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(com.voiid.app.ui.theme.VoiidRadius.pill))
+            .background(if (selected) VoiidColor.primary else VoiidColor.fieldFill)
+            .softClickable(scale = 0.96f, onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 7.dp),
+    ) {
+        Text(
+            label,
+            style = VoiidFont.rounded(14, FontWeight.SemiBold),
+            color = if (selected) VoiidColor.textOnPrimary else VoiidColor.textSecondary,
+        )
+    }
+}
+
+/**
+ * Clips from creators you follow. Its empty state is distinct from Explore's on purpose:
+ * "you don't follow anyone yet" is a different problem from "there are no clips", and
+ * offering "post a clip" here would be a non-sequitur.
+ */
+@Composable
+private fun FollowingFeed(
+    creators: com.voiid.app.model.CreatorStore,
+    gridState: androidx.compose.foundation.lazy.grid.LazyGridState,
+    modifier: Modifier,
+    onOpenCreator: (String) -> Unit,
+) {
+    val haptics = LocalVoiidHaptics.current
+    val rows = creators.following
+    val error = creators.followingError
+
+    when {
+        error != null && rows.isEmpty() ->
+            ClipsEmptyState(
+                kind = ClipsEmptyKind.Failed(error),
+                onAction = { creators.refreshFollowing() },
+                modifier = modifier,
+            )
+
+        creators.followingLoading && rows.isEmpty() -> ClipsGridSkeleton(modifier = modifier)
+
+        rows.isEmpty() && creators.followingLoadedOnce ->
+            Column(
+                modifier.padding(top = 80.dp, start = 24.dp, end = 24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    "Nothing here yet",
+                    style = VoiidFont.rounded(17, FontWeight.SemiBold),
+                    color = VoiidColor.textPrimary,
+                )
+                Text(
+                    "Clips from creators you follow will show up here.",
+                    style = VoiidFont.rounded(15),
+                    color = VoiidColor.textSecondary,
+                )
+            }
+
+        else -> LazyVerticalGrid(
+            columns = GridCells.Fixed(3),
+            state = gridState,
+            modifier = modifier,
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            items(rows, key = { it.id }) { clip ->
+                Box(
+                    Modifier.aspectRatio(9f / 16f).softClickable(scale = 0.97f) {
+                        haptics.tap()
+                        // Tapping a following-feed tile opens its creator. The fullscreen
+                        // pager is driven by an index into ClipsStore's own page, which this
+                        // list is not part of, so it cannot be reused here.
+                        clip.author_handle?.let(onOpenCreator)
+                    }
+                ) {
+                    ClipThumbnail(url = clip.thumb_url, modifier = Modifier.fillMaxSize())
+                    Box(
+                        Modifier.fillMaxSize().background(
+                            Brush.verticalGradient(
+                                0.5f to Color.Transparent,
+                                1f to Color.Black.copy(alpha = 0.6f),
+                            )
+                        )
+                    )
+                    Column(Modifier.align(Alignment.BottomStart).padding(6.dp)) {
+                        clip.author_handle?.let {
+                            Text(
+                                "@$it",
+                                style = VoiidFont.rounded(10, FontWeight.SemiBold),
+                                color = Color.White,
+                                maxLines = 1,
+                            )
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp),
+                        ) {
+                            Icon(
+                                Icons.Default.RemoveRedEye, null,
+                                tint = Color.White, modifier = Modifier.size(10.dp),
+                            )
+                            Text(
+                                ClipCount.compact(clip.view_count),
+                                style = VoiidFont.rounded(10, FontWeight.SemiBold),
+                                color = Color.White,
+                            )
+                        }
+                    }
+                }
+            }
+            item(span = { androidx.compose.foundation.lazy.grid.GridItemSpan(3) }) {
+                Spacer(Modifier.height(100.dp))
             }
         }
     }

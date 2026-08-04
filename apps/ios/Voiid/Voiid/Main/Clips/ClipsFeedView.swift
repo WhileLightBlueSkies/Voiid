@@ -19,6 +19,14 @@ struct ClipsFeedView: View {
     @State private var openIndex: Int?
     @State private var showComposer = false
     @State private var showHandleSheet = false
+    @State private var scope: FeedScope = .explore
+    /// The creator page pushed on top of the grid, by handle.
+    @State private var openHandle: String?
+
+    /// Which feed the grid is showing. Following is a separate SOURCE, not a filter over
+    /// Explore — it is its own endpoint with its own cursor, so mixing them into one list
+    /// would break keyset pagination.
+    enum FeedScope: String, CaseIterable { case explore = "Explore", following = "Following" }
 
     /// 3 columns, 2pt gutters, edge-to-edge — the reference layout. Uniform 9:16 tiles;
     /// a staggered grid is deliberately avoided (it needs per-tile aspect data before
@@ -29,7 +37,12 @@ struct ClipsFeedView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 header
+                scopePicker
                 content
+            }
+            .navigationDestination(item: $openHandle) { handle in
+                CreatorProfileView(handle: handle)
+                    .environmentObject(creators)
             }
             .background(VoiidColor.background.ignoresSafeArea())
             .onAppear {
@@ -91,10 +104,121 @@ struct ClipsFeedView: View {
         }
     }
 
+    // MARK: - Scope
+
+    /// Explore / Following. A segmented control rather than a top tab bar: there are exactly
+    /// two sources and they share one grid, so a full tab bar would imply more structure than
+    /// exists.
+    private var scopePicker: some View {
+        Picker("Feed", selection: $scope) {
+            ForEach(FeedScope.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.bottom, VoiidSpacing.sm)
+        .onChange(of: scope) { _, new in
+            // Loaded on first switch only; afterwards the cached page is reused so toggling
+            // back and forth is instant rather than a round-trip each way.
+            if new == .following && !creators.followingLoadedOnce {
+                Task { await creators.refreshFollowing() }
+            }
+        }
+    }
+
     // MARK: - Content
 
     @ViewBuilder
     private var content: some View {
+        if scope == .following {
+            followingContent
+        } else {
+            exploreContent
+        }
+    }
+
+    /// Clips from creators you follow. Its empty state is distinct from Explore's on purpose:
+    /// "you don't follow anyone yet" is a different problem from "there are no clips", and
+    /// offering "post a clip" here would be a non-sequitur.
+    @ViewBuilder
+    private var followingContent: some View {
+        if let error = creators.followingError, creators.following.isEmpty {
+            ScrollView {
+                ClipsEmptyState(kind: .failed(error)) { Task { await creators.refreshFollowing() } }
+            }
+            .refreshable { await creators.refreshFollowing() }
+        } else if creators.followingLoading && creators.following.isEmpty {
+            ScrollView { ClipsGridSkeleton().padding(.top, 2) }
+                .disabled(true)
+        } else if creators.following.isEmpty && creators.followingLoadedOnce {
+            ScrollView {
+                VStack(spacing: VoiidSpacing.sm) {
+                    Image(systemName: "person.2")
+                        .font(.system(size: 34))
+                        .foregroundColor(VoiidColor.textSecondary.opacity(0.6))
+                    Text("Nothing here yet")
+                        .font(VoiidFont.headline)
+                        .foregroundColor(VoiidColor.textPrimary)
+                    Text("Clips from creators you follow will show up here.")
+                        .font(VoiidFont.subhead)
+                        .foregroundColor(VoiidColor.textSecondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.top, VoiidSpacing.xxl)
+                .padding(.horizontal, VoiidSpacing.lg)
+            }
+            .refreshable { await creators.refreshFollowing() }
+        } else {
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 2) {
+                    ForEach(creators.following) { clip in
+                        Button {
+                            Haptics.tap()
+                            // Tapping a following-feed tile opens its creator. The fullscreen
+                            // pager is driven by an index into ClipsEngine's own page, which
+                            // this list is not part of, so it cannot be reused here.
+                            if let h = clip.author_handle { openHandle = h }
+                        } label: {
+                            followingTile(clip)
+                        }
+                        .buttonStyle(.plain)
+                        .task { await creators.loadMoreFollowingIfNeeded(currentItem: clip) }
+                    }
+                }
+                .padding(.top, 2)
+                Color.clear.frame(height: 100)
+            }
+            .refreshable { await creators.refreshFollowing() }
+        }
+    }
+
+    private func followingTile(_ clip: CreatorService.CreatorClipRow) -> some View {
+        ZStack(alignment: .bottomLeading) {
+            ClipThumbnail(url: clip.thumb_url)
+                .aspectRatio(9.0 / 16.0, contentMode: .fill)
+                .clipped()
+            LinearGradient(colors: [.clear, .black.opacity(0.6)],
+                           startPoint: .center, endPoint: .bottom)
+            VStack(alignment: .leading, spacing: 1) {
+                if let h = clip.author_handle {
+                    Text("@\(h)")
+                        .font(VoiidFont.rounded(10, .semibold))
+                        .lineLimit(1)
+                }
+                HStack(spacing: 3) {
+                    Image(systemName: "eye.fill").font(.system(size: 9))
+                    Text(ClipCount.compact(clip.view_count))
+                        .font(VoiidFont.rounded(10, .semibold))
+                }
+            }
+            .foregroundColor(.white)
+            .shadow(radius: 2)
+            .padding(6)
+        }
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private var exploreContent: some View {
         // Order matters: the error state must win over the empty state. Rendering
         // "No clips yet" for a failed request tells the user the feature is dead.
         if let error = engine.loadError, engine.clips.isEmpty {
@@ -223,6 +347,22 @@ struct ClipsFeedView: View {
             }
             .accessibilityLabel("My clips")
             .padding(.trailing, VoiidSpacing.sm)
+
+            // Shown only once a creator profile exists — before that there is no page to
+            // open, and the handle picker belongs to the compose flow, not to a stray
+            // toolbar button.
+            if let mine = creators.me {
+                Button {
+                    Haptics.tap()
+                    openHandle = mine.handle
+                } label: {
+                    Image(systemName: "person.circle")
+                        .font(.system(size: 22))
+                        .foregroundColor(VoiidColor.textPrimary)
+                }
+                .accessibilityLabel("My creator profile")
+                .padding(.trailing, VoiidSpacing.sm)
+            }
 
             Button {
                 Haptics.tap()

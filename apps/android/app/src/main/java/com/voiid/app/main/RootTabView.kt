@@ -130,6 +130,8 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
     val creators: com.voiid.app.model.CreatorStore =
         androidx.lifecycle.viewmodel.compose.viewModel()
     var showHandleSheet by remember { mutableStateOf(false) }
+    /** The creator page open on top of the grid, by handle. */
+    var openCreator by remember { mutableStateOf<String?>(null) }
     // Stories viewer + composer are full-screen overlay siblings (they must cover the tab bar),
     // driven by nullable state exactly like the clip overlay above.
     var openStoryContext by remember { mutableStateOf<Int?>(null) }
@@ -278,9 +280,11 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                     )
                     Tab.CLIPS -> com.voiid.app.main.clips.ClipsFeedView(
                         clips,
+                        creators = creators,
                         onOpenClip = { openClip = it },
                         onNewClip = { startCompose() },
                         onMyClips = { showMyClips = true },
+                        onOpenCreator = { openCreator = it },
                     )
                     // "Open chat" on a map contact card jumps straight into that conversation,
                     // the same push the chat list performs.
@@ -594,6 +598,14 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
         com.voiid.app.main.clips.MyClipsView(
             clips = clips,
             onBack = { showMyClips = false },
+        )
+    }
+    // Full-screen overlay sibling of the clip viewer — a creator page must cover the tab bar.
+    openCreator?.let { handle ->
+        com.voiid.app.main.clips.CreatorProfileView(
+            handle = handle,
+            creators = creators,
+            onBack = { openCreator = null },
         )
     }
     if (showStoryComposer) {
