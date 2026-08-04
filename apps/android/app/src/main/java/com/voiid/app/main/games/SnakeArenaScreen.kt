@@ -7,6 +7,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -83,11 +84,37 @@ import kotlin.math.sin
  * Mirrors iOS `SnakeArenaView.swift`.
  */
 @Composable
-fun SnakeArenaScreen(matchId: String, onClose: () -> Unit) {
+fun SnakeArenaScreen(
+    matchId: String,
+    onClose: () -> Unit,
+    /** Start a fresh practice match. Null hides the Restart action. */
+    onRestart: (() -> Unit)? = null,
+) {
     val context = LocalContext.current
     val engine = remember { GamesEngine.get(context) }
 
-    val frames by engine.snakeFrames.collectAsState()
+    // NOT collectAsState().
+    //
+    // Collecting the frame buffer as composable state recomposed this ENTIRE screen 10 times
+    // a second — every server tick dragged the leaderboard, the joystick and the boost pedal
+    // through recomposition, which is the "whole screen refreshing" flicker. The Canvas reads
+    // the buffer directly inside its draw lambda instead, so a new frame invalidates the draw
+    // and nothing else.
+    val framesRef = remember { mutableStateOf<List<GamesEngine.SnakeFrame>>(emptyList()) }
+    // The HUD is a SEPARATE, slow state: a leaderboard does not need 10 Hz.
+    val hudState = remember { mutableStateOf<GamesEngine.SnakeState?>(null) }
+
+    LaunchedEffect(Unit) {
+        engine.snakeFrames.collect { framesRef.value = it }
+    }
+    LaunchedEffect(Unit) {
+        // ~6 Hz is plenty for names, ranks and a clock, and it keeps the HUD off the render
+        // path entirely.
+        while (true) {
+            hudState.value = engine.snake
+            kotlinx.coroutines.delay(160)
+        }
+    }
 
     var boosting by remember { mutableStateOf(false) }
     var lastHeading by remember { mutableDoubleStateOf(0.0) }
@@ -122,16 +149,28 @@ fun SnakeArenaScreen(matchId: String, onClose: () -> Unit) {
         Canvas(Modifier.fillMaxSize()) {
             // Reading the clock inside the DRAW scope subscribes only this draw to it.
             @Suppress("UNUSED_EXPRESSION") frameClock.doubleValue
-            drawArena(frames, me, trails, stick, camera)
+            drawArena(framesRef.value, me, trails, stick, camera)
         }
 
+        // Death / game-over panel.
+        //
+        // Death is not the end of a match here — Largest Snake respawns you — so the panel
+        // reports the death and gets out of the way, while the END of the match is the one
+        // that actually blocks with Restart / Quit.
+        val hud = hudState.value
+        val mine = hud?.snakes?.firstOrNull { it.id == me }
+        val matchOver = hud?.finished == true
+
         Overlay(
-            state = frames.lastOrNull()?.state,
+            state = hudState.value,
             me = me,
             boosting = boosting,
             onClose = onClose,
             onStick = { v ->
                 stick = v
+                // A zero vector means the thumb lifted: stop the resend loop rather than
+                // steering toward atan2(0,0).
+                if (v == Offset.Zero) engine.releaseSteering()
                 // Deadzone: below this the thumb is resting, not steering, and atan2 on a
                 // near-zero vector is meaningless noise.
                 if (hypot(v.x, v.y) >= 0.15f) {
@@ -145,6 +184,104 @@ fun SnakeArenaScreen(matchId: String, onClose: () -> Unit) {
                 engine.steer(context, lastHeading, held)
             },
         )
+
+        if (matchOver) {
+            GameOverPanel(
+                title = "Match over",
+                detail = mine?.let { "You finished with ${it.mass.toInt()}" } ?: "",
+                onRestart = onRestart,
+                onQuit = onClose,
+            )
+        } else if (mine != null && !mine.alive) {
+            RespawnPanel(mass = mine.mass.toInt(), deaths = mine.deaths, onQuit = onClose)
+        }
+    }
+}
+
+/**
+ * Shown while the player is dead and waiting to respawn.
+ *
+ * Deliberately NOT blocking: the server puts you back in after a couple of seconds, so a
+ * modal with a button would be a worse experience than a notice that dissolves on its own.
+ * Quit is offered because the one thing a dead player might genuinely want is out.
+ */
+@Composable
+private fun BoxScope.RespawnPanel(mass: Int, deaths: Int, onQuit: () -> Unit) {
+    Box(
+        Modifier
+            .align(Alignment.Center)
+            .background(Color(0xE614121F), RoundedCornerShape(18.dp))
+            .padding(horizontal = 26.dp, vertical = 20.dp),
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("You died", color = Color.White, fontSize = 22.sp,
+                fontWeight = FontWeight.ExtraBold)
+            Text("Respawning…", color = Color.White.copy(alpha = 0.6f),
+                fontSize = 13.sp, fontWeight = FontWeight.Medium)
+            Text("Length $mass  ·  Deaths $deaths",
+                color = Color.White.copy(alpha = 0.45f), fontSize = 12.sp)
+            Box(
+                Modifier
+                    .padding(top = 14.dp)
+                    .background(Color.White.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
+                    .pointerInput(Unit) { detectTapGestures { onQuit() } }
+                    .padding(horizontal = 22.dp, vertical = 10.dp),
+            ) {
+                Text("Quit", color = Color.White.copy(alpha = 0.85f),
+                    fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+/** The match itself is over. This one blocks — there is nothing left to play. */
+@Composable
+private fun BoxScope.GameOverPanel(
+    title: String,
+    detail: String,
+    onRestart: (() -> Unit)?,
+    onQuit: () -> Unit,
+) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Color(0xCC07060F))
+            // Swallow taps so the arena underneath cannot be steered while this is up.
+            .pointerInput(Unit) { detectTapGestures { } },
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(title, color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.Black)
+            if (detail.isNotEmpty()) {
+                Text(detail, color = Color.White.copy(alpha = 0.65f),
+                    fontSize = 14.sp, fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(top = 6.dp))
+            }
+
+            if (onRestart != null) {
+                Box(
+                    Modifier
+                        .padding(top = 26.dp)
+                        .background(Color(0xFF22E0F0), RoundedCornerShape(14.dp))
+                        .pointerInput(Unit) { detectTapGestures { onRestart() } }
+                        .padding(horizontal = 46.dp, vertical = 14.dp),
+                ) {
+                    Text("Restart", color = Color(0xFF07060F),
+                        fontSize = 15.sp, fontWeight = FontWeight.Black)
+                }
+            }
+
+            Box(
+                Modifier
+                    .padding(top = 12.dp)
+                    .background(Color.White.copy(alpha = 0.12f), RoundedCornerShape(14.dp))
+                    .pointerInput(Unit) { detectTapGestures { onQuit() } }
+                    .padding(horizontal = 50.dp, vertical = 13.dp),
+            ) {
+                Text("Quit", color = Color.White.copy(alpha = 0.9f),
+                    fontSize = 15.sp, fontWeight = FontWeight.Bold)
+            }
+        }
     }
 }
 

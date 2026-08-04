@@ -482,6 +482,16 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                     "snake" -> com.voiid.app.main.games.SnakeArenaScreen(
                         matchId = matchId,
                         onClose = { openGameMatch = null },
+                        onRestart = {
+                            // A fresh match rather than reusing the finished one: the server
+                            // drops a match's state when it ends, so there is nothing to
+                            // rejoin.
+                            gamesScope.launch {
+                                com.voiid.app.net.GamesEngine.get(context)
+                                    .createSolo("snake", mapOf("bots" to 5))
+                                    ?.let { openGameMatch = it to "snake" }
+                            }
+                        },
                     )
                     else -> com.voiid.app.main.games.TicTacToeScreen(
                         matchId = matchId,
