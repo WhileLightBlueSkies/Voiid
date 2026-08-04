@@ -122,32 +122,12 @@ fun ClipComposerFlow(
         ActivityResultContracts.PickVisualMedia()
     ) { uri -> uri?.let { accept(it) } }
 
-    // The in-app CameraX stack (StoryCameraView) is IMAGE-ONLY — it binds ImageCapture,
-    // not VideoCapture — so it cannot record a clip. The system camera intent is used
-    // instead rather than growing a second capture stack here.
-    //
-    // The target URI is rememberSaveable, NOT a file-level `var`. Launching the system
-    // camera routinely kills this process on low-memory devices; when it is recreated to
-    // deliver the result, a plain global is back to null and the recording is dropped with
-    // no error at all. That was the "record, release, nothing happens, camera opens again"
-    // bug. rememberSaveable survives process death via the saved-instance bundle.
-    var pendingCaptureUri by rememberSaveable { mutableStateOf<String?>(null) }
-
-    val cameraLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CaptureVideo()
-    ) { ok ->
-        val saved = pendingCaptureUri
-        pendingCaptureUri = null
-        when {
-            // Cancelled/back — not an error, say nothing.
-            !ok -> Unit
-            // The URI is gone (process death lost it, or MediaStore refused the insert).
-            // Report it: a silent no-op here is indistinguishable from a broken camera.
-            saved.isNullOrEmpty() ->
-                errorText = "Couldn't save that recording. Please try again."
-            else -> accept(saved.toUri())
-        }
-    }
+    // Recording now happens IN-APP via ClipCameraView (CameraX VideoCapture), replacing the
+    // system camera intent this used to launch. The intent worked, but it is somebody else's
+    // UI: no timer we control, no cap indication, no multi-take, and no route to ever put the
+    // filter strip in the live preview. It also had to survive process death mid-capture,
+    // which is the whole reason the old target URI was rememberSaveable.
+    var showCamera by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding()) {
         // Header with a real back stack.
@@ -185,17 +165,8 @@ fun ClipComposerFlow(
                 errorText = errorText,
                 onCamera = {
                     haptics.tap()
-                    // A failed MediaStore insert used to return Uri.EMPTY, which is non-null
-                    // and sailed through every check before failing much later with nothing
-                    // useful shown. Fail here, where we can still say why.
-                    val uri = newCaptureUri(context)
-                    if (uri == null) {
-                        errorText = "Couldn't access storage for the recording."
-                    } else {
-                        errorText = null
-                        pendingCaptureUri = uri.toString()
-                        cameraLauncher.launch(uri)
-                    }
+                    errorText = null
+                    showCamera = true
                 },
                 onGallery = {
                     haptics.tap()
@@ -239,21 +210,29 @@ fun ClipComposerFlow(
             }
         }
     }
-}
 
-/**
- * Allocate a MediaStore row for the recording. Returns null when the insert fails — the
- * caller must surface that, NOT substitute Uri.EMPTY (which is non-null and therefore
- * defeats every downstream null check).
- */
-private fun newCaptureUri(context: Context): Uri? {
-    val values = android.content.ContentValues().apply {
-        put(MediaStore.Video.Media.DISPLAY_NAME, "voiid_clip_${UUID.randomUUID()}.mp4")
-        put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+    // Full-screen overlay above the flow, not a step in it: the camera has its own back
+    // behaviour (discard takes) and must not land in the SOURCE -> EDIT -> DETAILS stack.
+    if (showCamera) {
+        ClipCameraView(
+            maxSeconds = (ClipCaps.MAX_DURATION_MS / 1000).toInt(),
+            onDone = { takes ->
+                showCamera = false
+                scope.launch {
+                    preparing = true
+                    // Multi-take recordings are joined into the one file the rest of the
+                    // composer expects. Single-take returns as-is, no transcode.
+                    val joined = withContext(Dispatchers.IO) {
+                        ClipSegments.concatenate(context, takes)
+                    }
+                    preparing = false
+                    if (joined == null) errorText = "Couldn't save that recording."
+                    else accept(Uri.fromFile(joined))
+                }
+            },
+            onClose = { showCamera = false },
+        )
     }
-    return runCatching {
-        context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-    }.getOrNull()
 }
 
 @Composable

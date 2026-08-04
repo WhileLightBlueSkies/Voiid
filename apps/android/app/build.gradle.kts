@@ -147,6 +147,9 @@ dependencies {
     implementation(libs.androidx.camera.camera2)
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)
+    // Recording, not just stills — see ClipCameraView. The clip composer used to hand off to
+    // the system camera intent because this artifact was missing.
+    implementation(libs.androidx.camera.video)
 
     // Media3 — Clips: ExoPlayer for the reels player, Transformer + Effect for the
     // editor's trim/filter export. See docs/CLIPS.md §5.3 for why this is the correct
