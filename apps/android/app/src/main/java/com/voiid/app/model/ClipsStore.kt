@@ -133,6 +133,49 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
     var hasLoadedOnce by mutableStateOf(false)
         private set
 
+    /**
+     * Set when a commit was rejected with `profile_required`. The Clips screen observes it to
+     * raise the handle picker, so an upload parked at the last step is recoverable rather than
+     * silently stuck behind a generic "failed" tile.
+     */
+    var needsCreatorProfile by mutableStateOf(false)
+
+    /**
+     * Uploads whose bytes reached R2 but whose row was never created, keyed by clip id.
+     * Holding the lambda means the retry re-sends only the row — the presigned keys and
+     * measured sizes it closes over are still valid, so nothing is uploaded twice.
+     */
+    private val pendingCommits = mutableMapOf<String, suspend () -> Unit>()
+
+    val hasPendingCommits: Boolean get() = pendingCommits.isNotEmpty()
+
+    /**
+     * Finish every upload parked on the profile gate. Called once a creator profile exists;
+     * safe to call when there is nothing pending.
+     */
+    fun retryPendingCommits() {
+        if (pendingCommits.isEmpty()) return
+        val pending = pendingCommits.toMap()
+        pendingCommits.clear()
+        viewModelScope.launch {
+            for ((clipId, commit) in pending) {
+                runCatching { commit() }
+                    .onSuccess {
+                        val i = clips.indexOfFirst { it.id == clipId }
+                        if (i >= 0) clips[i] = clips[i].copy(uploadState = ClipUploadState.None)
+                    }
+                    .onFailure { e ->
+                        val i = clips.indexOfFirst { it.id == clipId }
+                        if (i >= 0) clips[i] =
+                            clips[i].copy(uploadState = ClipUploadState.Failed(message(e)))
+                        // Keep it parked so a later attempt can still finish it.
+                        pendingCommits[clipId] = commit
+                    }
+            }
+            refresh()
+        }
+    }
+
     private var nextCursor: String? = null
     private var reachedEnd = false
 
@@ -480,19 +523,42 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
                 }
 
                 setProgress(clipId, 0.95f)
-                svc.postClip(
-                    clipId = clipId,
-                    r2Key = presign.key,
-                    thumbKey = presign.thumb_key,
-                    caption = caption,
-                    durationMs = ladder.durationMs.toInt(),
-                    width = ladder.width,
-                    height = ladder.height,
-                    byteSize = baselineSize,
-                    renditionKeys = keys,
-                    renditionSizes = sizes,
-                    coverSource = ladder.coverSource,
-                )
+                // Committing the row is retried on `profile_required` ALONE. The bytes are
+                // already in R2 by this point, so re-running `post` would re-upload the whole
+                // ladder; and the gate is normally satisfied before the composer even opens,
+                // so reaching here means the profile vanished mid-flight (deleted on another
+                // device, or a first post racing the check). Only the commit is repeated.
+                val commit: suspend () -> Unit = {
+                    svc.postClip(
+                        clipId = clipId,
+                        r2Key = presign.key,
+                        thumbKey = presign.thumb_key,
+                        caption = caption,
+                        durationMs = ladder.durationMs.toInt(),
+                        width = ladder.width,
+                        height = ladder.height,
+                        byteSize = baselineSize,
+                        renditionKeys = keys,
+                        renditionSizes = sizes,
+                        coverSource = ladder.coverSource,
+                    )
+                }
+                try {
+                    commit()
+                } catch (e: ApiError.Http) {
+                    if (e.code != "profile_required") throw e
+                    // Park the upload rather than fail it: the video is safely in R2, and
+                    // discarding it because the user has no handle yet would throw away work
+                    // they can still complete. The feed surfaces the prompt; retryPendingCommits
+                    // finishes the job once a profile exists.
+                    val i = clips.indexOfFirst { it.id == clipId }
+                    if (i >= 0) clips[i] = clips[i].copy(
+                        uploadState = ClipUploadState.Failed("Choose a handle to finish posting."),
+                    )
+                    pendingCommits[clipId] = commit
+                    needsCreatorProfile = true
+                    return@launch
+                }
             }.onSuccess {
                 val i = clips.indexOfFirst { it.id == clipId }
                 if (i >= 0) clips[i] = clips[i].copy(uploadState = ClipUploadState.None)
@@ -515,6 +581,9 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
     /** Drop a failed optimistic tile (the user tapped dismiss on the retry affordance). */
     fun discardFailedUpload(clipId: String) {
         clips.removeAll { it.id == clipId && it.uploadState != ClipUploadState.None }
+        // Drop any parked commit too, or a tile the user dismissed would quietly reappear
+        // the next time the gate is satisfied.
+        pendingCommits.remove(clipId)
     }
 
     fun deleteClip(clipId: String) {

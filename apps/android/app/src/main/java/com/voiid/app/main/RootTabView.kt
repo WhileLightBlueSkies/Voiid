@@ -125,6 +125,11 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
     var openClip by remember { mutableStateOf<Int?>(null) }
     var showNewClip by remember { mutableStateOf(false) }
     var showMyClips by remember { mutableStateOf(false) }
+    // The creator-profile gate. `creators` is hoisted here rather than inside the Clips tab
+    // so the handle sheet survives a tab switch mid-flow.
+    val creators: com.voiid.app.model.CreatorStore =
+        androidx.lifecycle.viewmodel.compose.viewModel()
+    var showHandleSheet by remember { mutableStateOf(false) }
     // Stories viewer + composer are full-screen overlay siblings (they must cover the tab bar),
     // driven by nullable state exactly like the clip overlay above.
     var openStoryContext by remember { mutableStateOf<Int?>(null) }
@@ -162,6 +167,35 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
     // Creating a match is a suspend call made from a click, so it needs a scope.
     val gamesScope = androidx.compose.runtime.rememberCoroutineScope()
     val appContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
+
+    /**
+     * Opens the composer, or the handle picker first if this account has no creator profile.
+     *
+     * Checked HERE rather than at the end of the upload on purpose. `POST /clips` answers 428
+     * only after the video is already in R2 — the composer exports a 480/720/1080 ladder and
+     * PUTs every rung before the row is committed — so gating on the response would mean
+     * asking for a handle after a 100 MB upload the user could still lose. Asking first costs
+     * one cached GET. The 428 path remains as a backstop for the race.
+     */
+    fun startCompose() {
+        gamesScope.launch {
+            val profile = creators.ensureMeLoaded()
+            // A failed lookup falls through to the composer rather than blocking: the server
+            // still enforces the gate, and refusing to open on a network blip would be a
+            // worse failure than the rare parked upload.
+            if (profile == null && creators.hasLoadedMe) showHandleSheet = true
+            else showNewClip = true
+        }
+    }
+
+    // The store raises this when a commit came back `profile_required` — the backstop for an
+    // upload that started before the profile went away.
+    androidx.compose.runtime.LaunchedEffect(clips.needsCreatorProfile) {
+        if (clips.needsCreatorProfile) {
+            showHandleSheet = true
+            clips.needsCreatorProfile = false
+        }
+    }
 
     // Feature (B) — the Map. Its store (allow-list, ghost state, subjects) is a ViewModel so
     // the Map surface can observe it the Compose way; the underlying engine is a singleton.
@@ -245,7 +279,7 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                     Tab.CLIPS -> com.voiid.app.main.clips.ClipsFeedView(
                         clips,
                         onOpenClip = { openClip = it },
-                        onNewClip = { showNewClip = true },
+                        onNewClip = { startCompose() },
                         onMyClips = { showMyClips = true },
                     )
                     // "Open chat" on a map contact card jumps straight into that conversation,
@@ -543,6 +577,17 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
             myUserId = clips.myUserId,
             myName = clips.myName,
             onClose = { showNewClip = false },
+        )
+    }
+    if (showHandleSheet) {
+        com.voiid.app.main.clips.CreatorHandleSheet(
+            creators = creators,
+            onCreated = {
+                // Whatever raised the gate can now proceed: either finish an upload parked at
+                // the commit step, or open the composer that was blocked.
+                if (clips.hasPendingCommits) clips.retryPendingCommits() else showNewClip = true
+            },
+            onDismiss = { showHandleSheet = false },
         )
     }
     if (showMyClips) {
