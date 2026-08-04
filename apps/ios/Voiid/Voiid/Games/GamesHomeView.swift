@@ -161,7 +161,21 @@ struct GamesHomeView: View {
                     switch m.slug {
                     case "rps":     RpsMatchView(matchId: m.id) { openMatch = nil }
                     case "cricket": CricketMatchView(matchId: m.id) { openMatch = nil }
-                    case "snake":   SnakeArenaView(matchId: m.id) { openMatch = nil }
+                    case "snake":
+                        SnakeArenaView(
+                            matchId: m.id,
+                            onClose: { openMatch = nil },
+                            // A fresh match rather than reusing the finished one: the server
+                            // drops a match's state when it ends, so there is nothing to
+                            // rejoin.
+                            onRestart: {
+                                Task {
+                                    if let id = await GamesEngine.shared.createSolo(
+                                        slug: "snake", options: ["bots": 5]) {
+                                        openMatch = OpenMatch(id: id, slug: "snake")
+                                    }
+                                }
+                            })
                     default:        TicTacToeView(matchId: m.id) { openMatch = nil }
                     }
                 }

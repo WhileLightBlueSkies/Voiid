@@ -25,6 +25,8 @@ import SwiftUI
 struct SnakeArenaView: View {
     let matchId: String
     let onClose: () -> Void
+    /// Start a fresh practice match. Nil hides the Restart action.
+    var onRestart: (() -> Void)? = nil
 
     @EnvironmentObject var session: AppSession
     @ObservedObject private var engine = GamesEngine.shared
@@ -51,6 +53,18 @@ struct SnakeArenaView: View {
             // touch, so the button was visible but unpressable at the bottom of the screen.
             overlay
                 .safeAreaPadding(.bottom)
+
+            // Death is not the end of a match here — Largest Snake respawns you — so the
+            // notice reports it and gets out of the way, while the END of the match is the
+            // one that actually blocks with Restart / Quit.
+            if let state = engine.snake {
+                let mine = state.snakes.first { $0.id == me }
+                if state.finished {
+                    gameOverPanel(mass: mine.map { Int($0.mass) })
+                } else if let mine, !mine.alive {
+                    respawnPanel(mass: Int(mine.mass), deaths: mine.deaths)
+                }
+            }
         }
         .navigationBarBackButtonHidden(true)
         // The tab bar is app chrome and this is a full-screen game — every other game view
@@ -69,6 +83,86 @@ struct SnakeArenaView: View {
         .onDisappear {
             session.hideTabBar = false
             engine.leave()
+        }
+    }
+
+    /// Shown while dead and waiting to respawn. Deliberately NOT blocking — the server puts
+    /// you back in within a couple of seconds, so a modal would be worse than a notice that
+    /// dissolves on its own. Quit is offered because it is the one thing a dead player might
+    /// actually want.
+    private func respawnPanel(mass: Int, deaths: Int) -> some View {
+        VStack(spacing: 4) {
+            Text("You died")
+                .font(.system(size: 22, weight: .heavy))
+            Text("Respawning...")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.white.opacity(0.6))
+            Text("Length \(mass)  -  Deaths \(deaths)")
+                .font(.system(size: 12))
+                .foregroundStyle(.white.opacity(0.45))
+
+            Button {
+                session.hideTabBar = false
+                onClose()
+            } label: {
+                Text("Quit")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .padding(.horizontal, 22)
+                    .padding(.vertical, 10)
+                    .background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+            }
+            .padding(.top, 10)
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 26)
+        .padding(.vertical, 20)
+        .background(Color(red: 0.08, green: 0.07, blue: 0.12).opacity(0.92),
+                    in: RoundedRectangle(cornerRadius: 18))
+    }
+
+    /// The match itself is over. This one blocks — there is nothing left to play.
+    private func gameOverPanel(mass: Int?) -> some View {
+        ZStack {
+            Color.black.opacity(0.8).ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                Text("Match over")
+                    .font(.system(size: 30, weight: .black))
+                if let mass {
+                    Text("You finished with \(mass)")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.65))
+                        .padding(.top, 6)
+                }
+
+                if let onRestart {
+                    Button { onRestart() } label: {
+                        Text("Restart")
+                            .font(.system(size: 15, weight: .black))
+                            .foregroundStyle(Color(red: 0.03, green: 0.02, blue: 0.06))
+                            .padding(.horizontal, 46)
+                            .padding(.vertical, 14)
+                            .background(Color(red: 0.13, green: 0.88, blue: 0.94),
+                                        in: RoundedRectangle(cornerRadius: 14))
+                    }
+                    .padding(.top, 26)
+                }
+
+                Button {
+                    session.hideTabBar = false
+                    onClose()
+                } label: {
+                    Text("Quit")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .padding(.horizontal, 50)
+                        .padding(.vertical, 13)
+                        .background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
+                }
+                .padding(.top, 12)
+            }
+            .foregroundStyle(.white)
         }
     }
 
@@ -101,9 +195,12 @@ struct SnakeArenaView: View {
                 Spacer()
                 HStack(alignment: .bottom) {
                     VirtualJoystick(vector: $stick) { vector in
-                        // Deadzone: below this the thumb is resting, not steering, and atan2
-                        // on a near-zero vector is meaningless noise.
-                        guard hypot(vector.dx, vector.dy) >= 0.15 else { return }
+                        // A zero vector means the thumb lifted: stop the resend loop rather
+                        // than steering toward atan2(0, 0).
+                        guard hypot(vector.dx, vector.dy) >= 0.15 else {
+                            engine.releaseSteering()
+                            return
+                        }
                         let heading = atan2(vector.dy, vector.dx)
                         lastHeading = heading
                         engine.steer(heading: heading, boost: boosting)

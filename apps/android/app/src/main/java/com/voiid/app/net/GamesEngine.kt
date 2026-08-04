@@ -444,9 +444,9 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         _rps.value = null
         _cricket.value = null
         _snakeFrames.value = emptyList()
-        pendingHeading = null
+        desiredHeading = null
+        desiredBoost = false
         lastSentBoost = false
-        lastSentHeading = Double.NaN
         _joinError.value = null
         lastSeq = -1
         runCatching { service.join(matchId) }
@@ -557,59 +557,65 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
      * semantics for a continuous control. A stale heading has no value.
      */
     fun steer(context: Context, heading: Double, boost: Boolean) {
+        // Record the intent unconditionally. Whether it goes on the wire is decided by the
+        // pacer below, never here — a control the player is actively holding must not be
+        // able to fall out of the loop.
+        desiredHeading = heading
+        desiredBoost = boost
+        if (boost != lastSentBoost) flush(context)
+    }
+
+    /**
+     * Send the current desired heading, at most once per interval.
+     *
+     * NO "has it moved enough" TEST. An earlier version skipped sends when the new heading
+     * was within a few degrees of a reference, and every variant of that idea was broken:
+     *
+     *  - against the last SENT heading, a respawn (which resets the snake's heading server
+     *    side) left the client convinced it had nothing to say;
+     *  - against the SERVER's heading it was worse, because the snake is continuously
+     *    turning TOWARD the desired heading, so the two converge by design — sends stopped
+     *    the moment the turn completed, and any later drift was never corrected.
+     *
+     * Both produced the same symptom: steering works, then silently stops forever. A
+     * continuous control is cheap to resend and catastrophic to under-send, so it is simply
+     * paced at a fixed rate while a finger is down and while the heading differs at all.
+     */
+    fun flush(context: Context) {
         val id = matchId ?: return
         val s = snake ?: return
         if (s.finished) return
 
+        val h = desiredHeading ?: return
         val now = android.os.SystemClock.elapsedRealtime()
-        // Boost edges go immediately: a dropped press is a lost fight, and it is an edge
-        // rather than a continuous value.
-        val boostChanged = boost != lastSentBoost
-
-        // A heading that has barely moved is not worth a frame. The thumb jitters by a
-        // fraction of a degree even when held still, and without this floor every one of
-        // those micro-movements consumed a send slot — so a REAL turn arriving moments later
-        // had to wait out the interval behind noise.
-        // Compared against the heading the SERVER last reported, not the last one sent.
-        //
-        // Against lastSentHeading this broke completely after a respawn: the server resets a
-        // respawned snake's heading, but the client still remembered what it sent before
-        // dying — so a thumb held in roughly the same place produced a sub-epsilon delta and
-        // every frame was suppressed as a no-op while the snake actually pointed elsewhere.
-        // Steering looked dead for the whole life, and only a big deliberate swing revived it.
-        val serverHeading = s.snakes.firstOrNull { it.id == myUserId }?.heading
-        val reference = serverHeading ?: lastSentHeading
-        var delta = heading - reference
-        while (delta > Math.PI) delta -= 2 * Math.PI
-        while (delta < -Math.PI) delta += 2 * Math.PI
-        val moved = reference.isNaN() || kotlin.math.abs(delta) >= HEADING_EPSILON
-
-        if (!boostChanged && !(moved && now - lastSteerSentAt >= STEER_INTERVAL_MS)) {
-            if (moved) pendingHeading = heading
-            return
-        }
+        val boostChanged = desiredBoost != lastSentBoost
+        if (!boostChanged && now - lastSteerSentAt < STEER_INTERVAL_MS) return
 
         lastSteerSentAt = now
-        lastSentBoost = boost
-        lastSentHeading = heading
-        pendingHeading = null
-        WebSocketClient.get(context).sendGameInput(id, """{"h":$heading,"boost":$boost}""")
+        lastSentBoost = desiredBoost
+        WebSocketClient.get(context).sendGameInput(id, """{"h":$h,"boost":$desiredBoost}""")
     }
 
     /**
      * Flush a heading that arrived between sends. Called by the renderer each frame, so a
      * finger that stops moving still lands its final direction.
      */
-    fun flushSteering(context: Context) {
-        val heading = pendingHeading ?: return
-        if (android.os.SystemClock.elapsedRealtime() - lastSteerSentAt < STEER_INTERVAL_MS) return
-        steer(context, heading, lastSentBoost)
+    fun flushSteering(context: Context) = flush(context)
+
+    /**
+     * The finger left the stick. Stop resending, but do NOT send a final heading — the snake
+     * keeps whatever direction it had, which is what the genre expects and what the server
+     * already does.
+     */
+    fun releaseSteering() {
+        desiredHeading = null
     }
 
     private var lastSteerSentAt = 0L
     private var lastSentBoost = false
-    private var lastSentHeading = Double.NaN
-    private var pendingHeading: Double? = null
+    /** What the player is asking for right now; resent on a fixed cadence while set. */
+    private var desiredHeading: Double? = null
+    private var desiredBoost = false
 
     /**
      * Create a SOLO match — one human against server-side bots — and enter it.
@@ -636,9 +642,9 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
 
     fun leave() {
         matchId = null
-        pendingHeading = null
+        desiredHeading = null
+        desiredBoost = false
         lastSentBoost = false
-        lastSentHeading = Double.NaN
         _snakeFrames.value = emptyList()
         _state.value = null
         _rps.value = null

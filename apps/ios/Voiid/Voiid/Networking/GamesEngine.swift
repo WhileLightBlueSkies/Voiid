@@ -424,9 +424,9 @@ final class GamesEngine: ObservableObject {
         self.snakeFramesSnapshot = []
         self.joinError = nil
         self.lastSeq = -1
-        self.pendingHeading = nil
+        self.desiredHeading = nil
+        self.desiredBoost = false
         self.lastSentBoost = false
-        self.lastSentHeading = .infinity
         do {
             try await api.join(matchId: matchId)
         } catch {
@@ -536,63 +536,52 @@ final class GamesEngine: ObservableObject {
     /// Unsent changes are not queued — the newest heading simply replaces the last, which is
     /// the correct semantics for a continuous control. A stale heading has no value.
     func steer(heading: Double, boost: Bool) {
+        // Record the intent unconditionally. Whether it goes on the wire is decided by the
+        // pacer below, never here — a control the player is actively holding must not be
+        // able to fall out of the loop.
+        desiredHeading = heading
+        desiredBoost = boost
+        if boost != lastSentBoost { flushSteering() }
+    }
+
+    /**
+     * Send the current desired heading, at most once per interval.
+     *
+     * NO "has it moved enough" TEST. An earlier version skipped sends when the new heading
+     * was within a few degrees of a reference, and every variant of that was broken:
+     * against the last SENT heading a respawn (which resets the heading server side) left
+     * the client convinced it had nothing to say; against the SERVER's heading it was worse,
+     * because the snake continuously turns TOWARD the desired heading, so the two converge
+     * by design and sends stopped the moment a turn completed.
+     *
+     * Both produced the same symptom: steering works, then silently stops forever. A
+     * continuous control is cheap to resend and catastrophic to under-send.
+     */
+    func flushSteering() {
         guard let matchId, let snake, !snake.finished else { return }
+        guard let h = desiredHeading else { return }
 
         let now = CACurrentMediaTime()
-        // Boost changes go immediately: a dropped press is a lost fight, and it is an edge,
-        // not a continuous value.
-        let boostChanged = boost != lastSentBoost
-
-        // A heading that has barely moved is not worth a frame. The thumb jitters by a
-        // fraction of a degree even when held still, and without this floor every one of
-        // those micro-movements consumed a send slot — so a REAL turn arriving moments later
-        // had to wait out the interval behind noise.
-        // Compared against the heading the SERVER last reported, not the last one sent.
-        //
-        // Against lastSentHeading this broke completely after a respawn: the server resets a
-        // respawned snake's heading, but the client still remembered what it sent before
-        // dying — so a thumb held in roughly the same place produced a sub-epsilon delta and
-        // every frame was suppressed as a no-op while the snake actually pointed elsewhere.
-        // Steering looked dead for the whole life, and only a big deliberate swing revived it.
-        let serverHeading = snake.snakes.first { $0.id == TokenStore.shared.userId }?.heading
-        let reference = serverHeading ?? lastSentHeading
-        var delta = heading - reference
-        while delta > .pi { delta -= 2 * .pi }
-        while delta < -.pi { delta += 2 * .pi }
-        let moved = !reference.isFinite || abs(delta) >= Self.headingEpsilon
-
-        guard boostChanged || (moved && now - lastSteerSentAt >= Self.steerInterval) else {
-            if moved { pendingHeading = heading }
-            return
-        }
+        let boostChanged = desiredBoost != lastSentBoost
+        guard boostChanged || now - lastSteerSentAt >= Self.steerInterval else { return }
 
         lastSteerSentAt = now
-        lastSentBoost = boost
-        lastSentHeading = heading
-        pendingHeading = nil
+        lastSentBoost = desiredBoost
         WebSocketClient.shared.sendGameInput(
-            matchId: matchId, payload: ["h": heading, "boost": boost])
+            matchId: matchId, payload: ["h": h, "boost": desiredBoost])
     }
 
-    /// Flush a heading that arrived between sends. Called by the renderer each frame, so a
-    /// finger that stops moving still lands its final direction.
-    func flushSteering() {
-        guard let heading = pendingHeading else { return }
-        guard CACurrentMediaTime() - lastSteerSentAt >= Self.steerInterval else { return }
-        steer(heading: heading, boost: lastSentBoost)
+    /// The finger left the stick. Stop resending; the snake keeps its heading.
+    func releaseSteering() {
+        desiredHeading = nil
     }
 
-    // 60 ms, not the tick period. The server's per-match input limit for a continuous game
-    // is tickHz x 120/min (20/s at 10 Hz), so ~16.7/s sits safely under it — and the extra
-    // granularity means a direction change waits at most 60 ms to leave the device instead
-    // of 100, which is a visible slice of the total input latency.
     private static let steerInterval: TimeInterval = 0.06
-    /// ~3°. Below this the thumb is jittering, not turning.
-    private static let headingEpsilon: Double = 0.05
     private var lastSteerSentAt: TimeInterval = 0
     private var lastSentBoost = false
-    private var lastSentHeading: Double = .infinity
-    private var pendingHeading: Double?
+    /// What the player is asking for right now; resent on a fixed cadence while set.
+    private var desiredHeading: Double?
+    private var desiredBoost = false
 
     func leave() {
         matchId = nil
@@ -603,8 +592,8 @@ final class GamesEngine: ObservableObject {
         snakeFramesSnapshot = []
         joinError = nil
         lastSeq = -1
-        pendingHeading = nil
+        desiredHeading = nil
+        desiredBoost = false
         lastSentBoost = false
-        lastSentHeading = .infinity
     }
 }
