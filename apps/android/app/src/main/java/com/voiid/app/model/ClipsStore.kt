@@ -150,6 +150,31 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
     val hasPendingCommits: Boolean get() = pendingCommits.isNotEmpty()
 
     /**
+     * Everything a failed upload needs to be attempted again. Held so the retry does not
+     * re-run the export: transcoding a 90s clip into three renditions is the expensive part,
+     * and the files are already on disk.
+     */
+    private data class PendingUpload(
+        val ladder: ClipExporter.LadderOutput,
+        val caption: String?,
+    )
+    private val pendingUploads = mutableStateMapOf<String, PendingUpload>()
+
+    /** Whether a failed tile can be retried (as opposed to only dismissed). */
+    fun canRetryUpload(clipId: String): Boolean = pendingUploads.containsKey(clipId)
+
+    /**
+     * Run a failed upload again from the start. The export is not repeated — the ladder is
+     * still on disk, which is the whole point of holding it.
+     */
+    fun retryUpload(clipId: String) {
+        val pending = pendingUploads[clipId] ?: return
+        val i = clips.indexOfFirst { it.id == clipId }
+        if (i >= 0) clips[i] = clips[i].copy(uploadState = ClipUploadState.Uploading(0f))
+        viewModelScope.launch { uploadLadder(clipId, pending.ladder, pending.caption, null) }
+    }
+
+    /**
      * Finish every upload parked on the profile gate. Called once a creator profile exists;
      * safe to call when there is nothing pending.
      */
@@ -464,6 +489,11 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
 
+            // Held so a FAILED upload can be run again from the tile, rather than offering
+            // only "Dismiss" — which threw away a video the user had already waited through
+            // an export for. The ladder files stay on disk until success or explicit discard.
+            pendingUploads[clipId] = PendingUpload(ladder, caption)
+
             // Persist the cover so the tile has something real to draw from here on.
             val thumbFile = File(getApplication<Application>().cacheDir, "clip_thumb_$clipId.jpg")
             runCatching { thumbFile.writeBytes(ladder.thumbnailJpeg) }
@@ -475,6 +505,24 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
                 localThumbPath = thumbFile.absolutePath,
             )
 
+            uploadLadder(clipId, ladder, caption, sourceFile)
+        }
+    }
+
+    /**
+     * One attempt at uploading an already-exported ladder and committing the row. Separate
+     * from [post] so [retryUpload] can run it again WITHOUT re-exporting — the transcode is
+     * the expensive part and its output is still on disk.
+     *
+     * [sourceFile] is the copy made by copyAndProbe, reaped on success. Null on a retry: the
+     * first attempt already deleted it.
+     */
+    private suspend fun uploadLadder(
+        clipId: String,
+        ladder: ClipExporter.LadderOutput,
+        caption: String?,
+        sourceFile: File?,
+    ) {
             runCatching {
                 val presign = svc.presignUpload()
 
@@ -486,8 +534,12 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
                 // Baseline is REQUIRED — it is what every playback falls back to. Streamed from
                 // disk (never readBytes) so a 100 MB clip cannot OOM the process.
                 val baselineSize = ladder.baseline.length()
-                setProgress(clipId, 0.15f)
-                svc.uploadBlob(presign.upload_url, ladder.baseline, "video/mp4")
+                // 0.10..0.40 is the baseline's own band, advanced by BYTES SENT rather than
+                // jumped at the end. The renditions take 0.40..0.95 below.
+                setProgress(clipId, 0.10f)
+                svc.uploadBlob(presign.upload_url, ladder.baseline, "video/mp4") { f ->
+                    setProgress(clipId, 0.10f + 0.30f * f)
+                }
 
                 // Renditions are BEST-EFFORT. A failed rung is dropped from the row rather
                 // than failing the post: the clip still plays from the baseline, and losing
@@ -500,13 +552,16 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
                         ClipQuality.HD to targets.hd,
                         ClipQuality.FHD to targets.fhd,
                     )
-                    var progress = 0.2f
-                    val step = 0.75f / plan.size
+                    var progress = 0.40f
+                    val step = 0.55f / plan.size
                     for ((quality, target) in plan) {
                         val rendition = ladder.renditions[quality]
                         if (rendition != null) {
+                            val base = progress
                             runCatching {
-                                svc.uploadBlob(target.upload_url, rendition.first, "video/mp4")
+                                svc.uploadBlob(
+                                    target.upload_url, rendition.first, "video/mp4",
+                                ) { f -> setProgress(clipId, base + step * f) }
                             }.onSuccess {
                                 keys[quality] = target.key
                                 sizes[quality] = rendition.second
@@ -557,20 +612,22 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
                     )
                     pendingCommits[clipId] = commit
                     needsCreatorProfile = true
-                    return@launch
+                    return
                 }
             }.onSuccess {
                 val i = clips.indexOfFirst { it.id == clipId }
                 if (i >= 0) clips[i] = clips[i].copy(uploadState = ClipUploadState.None)
+                pendingUploads.remove(clipId)
                 cleanUp(ladder)
                 // The copy made by copyAndProbe is ours to reap; the export is done with it.
-                runCatching { sourceFile.delete() }
+                sourceFile?.let { runCatching { it.delete() } }
                 refresh()
             }.onFailure { e ->
+                // The pending entry is deliberately KEPT so retryUpload can run this again.
+                // It is dropped only on success or on an explicit discard.
                 val i = clips.indexOfFirst { it.id == clipId }
                 if (i >= 0) clips[i] = clips[i].copy(uploadState = ClipUploadState.Failed(message(e)))
             }
-        }
     }
 
     /** Three renditions of a 90s clip is a lot of cache to leave lying around. */
@@ -584,6 +641,13 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
         // Drop any parked commit too, or a tile the user dismissed would quietly reappear
         // the next time the gate is satisfied.
         pendingCommits.remove(clipId)
+        // Discard is the ONLY place the retained ladder is reaped on failure — it is kept
+        // across a failed attempt so retry has bytes to send, so without this a dismissed
+        // upload would leave three renditions of a 90s video in the cache forever.
+        pendingUploads.remove(clipId)?.let { pending ->
+            cleanUp(pending.ladder)
+            runCatching { pending.ladder.baseline.delete() }
+        }
     }
 
     fun deleteClip(clipId: String) {

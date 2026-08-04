@@ -155,6 +155,18 @@ final class ClipsEngine: ObservableObject {
     /// measured sizes it closes over are still valid, so nothing is uploaded twice.
     private var pendingCommits: [String: () async throws -> Void] = [:]
 
+    /// Everything a failed upload needs to be attempted again. Held so the retry does not
+    /// re-run the export: transcoding a 90s clip into three renditions is the expensive part,
+    /// and the files are already on disk.
+    private struct PendingUpload {
+        let ladder: ClipExporter.LadderOutput
+        let caption: String?
+    }
+    private var pendingUploads: [String: PendingUpload] = [:]
+
+    /// Whether a failed tile can be retried (as opposed to only dismissed).
+    func canRetryUpload(_ clipId: String) -> Bool { pendingUploads[clipId] != nil }
+
     var hasPendingCommits: Bool { !pendingCommits.isEmpty }
 
     private init() {}
@@ -405,8 +417,31 @@ final class ClipsEngine: ObservableObject {
         placeholder.height = ladder.height
         clips.insert(placeholder, at: 0)
 
+        // Held so a FAILED upload can be run again from the tile, rather than offering only
+        // "Dismiss" — which threw away a video the user had already waited through an export
+        // for. The ladder files live in the temp directory and are only cleaned up on
+        // success or explicit discard, so the retry has real bytes to send.
+        pendingUploads[clipId] = PendingUpload(ladder: ladder, caption: caption)
+        runUpload(clipId: clipId)
+    }
+
+    /// One attempt at the upload for an already-inserted optimistic tile.
+    private func runUpload(clipId: String) {
+        guard let pending = pendingUploads[clipId] else { return }
+        let ladder = pending.ladder
+        let caption = pending.caption
+
+        setUploadProgress(clipId, 0)
+
         Task { [weak self] in
             guard let self else { return }
+            // Keep the app alive briefly if the user leaves mid-upload. This is NOT a
+            // background URLSession — a real one would need a delegate-based rewrite of every
+            // R2 PUT — but it buys the minutes an ordinary clip needs instead of having the
+            // transfer killed the moment the screen is dismissed.
+            let bg = await UIApplication.shared.beginBackgroundTask(withName: "clip-upload")
+            defer { Task { @MainActor in UIApplication.shared.endBackgroundTask(bg) } }
+
             do {
                 let presign = try await svc.presignUpload()
 
@@ -421,9 +456,16 @@ final class ClipsEngine: ObservableObject {
                 // video in memory (Android hit a hard OOM doing the byte-array equivalent).
                 let baselineSize = (try? FileManager.default
                     .attributesOfItem(atPath: ladder.baseline.path)[.size] as? Int) ?? 0
-                self.setUploadProgress(clipId, 0.15)
-                try await Self.putFileToR2(presign.upload_url, file: ladder.baseline,
-                                           contentType: "video/mp4")
+                // 0.10...0.40 is the baseline's own band, advanced by BYTES SENT rather than
+                // jumped at the end. The renditions take 0.40...0.95 below.
+                self.setUploadProgress(clipId, 0.10)
+                try await Self.putFileToR2(
+                    presign.upload_url, file: ladder.baseline, contentType: "video/mp4",
+                    onProgress: { fraction in
+                        Task { @MainActor [weak self] in
+                            self?.setUploadProgress(clipId, 0.10 + 0.30 * fraction)
+                        }
+                    })
 
                 // Renditions are BEST-EFFORT. A failed rung is dropped from the row rather
                 // than failing the post: the clip still plays from the baseline, and losing
@@ -434,14 +476,21 @@ final class ClipsEngine: ObservableObject {
                     let plan: [(ClipQuality, ClipService.RenditionTarget)] = [
                         (.sd, targets.sd), (.hd, targets.hd), (.fhd, targets.fhd),
                     ]
-                    let step = 0.75 / Double(max(1, plan.count))
-                    var progress = 0.2
+                    let step = 0.55 / Double(max(1, plan.count))
+                    var progress = 0.40
                     for (quality, target) in plan {
+                        let base = progress
                         defer { progress += step; self.setUploadProgress(clipId, progress) }
                         guard let rendition = ladder.renditions[quality] else { continue }
                         do {
-                            try await Self.putFileToR2(target.upload_url, file: rendition.url,
-                                                       contentType: "video/mp4")
+                            try await Self.putFileToR2(
+                                target.upload_url, file: rendition.url,
+                                contentType: "video/mp4",
+                                onProgress: { fraction in
+                                    Task { @MainActor [weak self] in
+                                        self?.setUploadProgress(clipId, base + step * fraction)
+                                    }
+                                })
                             uploadedKeys[quality] = target.key
                             uploadedSizes[quality] = rendition.size
                         } catch {
@@ -487,14 +536,24 @@ final class ClipsEngine: ObservableObject {
                 if let i = self.clips.firstIndex(where: { $0.id == clipId }) {
                     self.clips[i].uploadState = .none
                 }
+                self.pendingUploads.removeValue(forKey: clipId)
                 Self.cleanUp(ladder)
                 await self.refresh()
             } catch {
+                // The pending entry is deliberately KEPT so `retryUpload` can run this again.
+                // It is dropped only on success or on an explicit discard.
                 if let i = self.clips.firstIndex(where: { $0.id == clipId }) {
                     self.clips[i].uploadState = .failed(Self.message(error))
                 }
             }
         }
+    }
+
+    /// Run a failed upload again from the start. The export is not repeated — the ladder is
+    /// still on disk, which is the whole point of holding it.
+    func retryUpload(_ clipId: String) {
+        guard pendingUploads[clipId] != nil else { return }
+        runUpload(clipId: clipId)
     }
 
     /// Three renditions of a 90s clip is a lot of temp storage to leave lying around.
@@ -510,6 +569,15 @@ final class ClipsEngine: ObservableObject {
         // Drop any parked commit too, or a tile the user dismissed would quietly reappear
         // the next time the gate is satisfied.
         pendingCommits.removeValue(forKey: clipId)
+        // Discard is the ONLY place the retained ladder is reaped on failure — it is kept
+        // across a failed attempt so retry has bytes to send, so without this a dismissed
+        // upload would leave three renditions of a 90s video in temp forever.
+        if let pending = pendingUploads.removeValue(forKey: clipId) {
+            Self.cleanUp(pending.ladder)
+            // Also the baseline, which cleanUp deliberately leaves alone on the success path
+            // (the upload already read it). On discard nothing else will ever reap it.
+            try? FileManager.default.removeItem(at: pending.ladder.baseline)
+        }
     }
 
     func deleteClip(_ clipId: String) async {
@@ -617,9 +685,21 @@ final class ClipsEngine: ObservableObject {
     /// Streams the file off disk rather than loading it. A clip is capped at 100 MB and the
     /// ladder uploads up to four of them; holding those in memory is what OOM-killed the
     /// Android process, and there is no reason for iOS to carry the same risk.
-    private static func putFileToR2(_ urlString: String, file: URL, contentType: String) async throws {
+    ///
+    /// `onProgress` reports BYTES ACTUALLY SENT. The upload used to advance through fixed
+    /// checkpoints (0.05, 0.15, 0.95…), which on a slow connection meant the bar sat at 15%
+    /// for a minute and then jumped — indistinguishable from a stall.
+    private static func putFileToR2(_ urlString: String, file: URL, contentType: String,
+                                    onProgress: (@Sendable (Double) -> Void)? = nil) async throws {
         let (req, _) = try uploadRequest(urlString, contentType: contentType)
-        let (_, resp) = try await URLSession.shared.upload(for: req, fromFile: file)
+        guard let onProgress else {
+            let (_, resp) = try await URLSession.shared.upload(for: req, fromFile: file)
+            try check(resp)
+            return
+        }
+        let observer = UploadProgressDelegate(onProgress: onProgress)
+        let (_, resp) = try await URLSession.shared.upload(for: req, fromFile: file,
+                                                          delegate: observer)
         try check(resp)
     }
 
@@ -646,6 +726,22 @@ final class ClipsEngine: ObservableObject {
     private static func message(_ error: Error) -> String {
         if let api = error as? APIError, case .http(_, let m, _) = api { return m }
         return "Something went wrong. Try again."
+    }
+
+    /// Reports upload progress as a 0...1 fraction of the request body actually sent.
+    /// URLSession retains its delegate for the life of the task, so this is handed in
+    /// per-upload rather than held by the engine.
+    private final class UploadProgressDelegate: NSObject, URLSessionTaskDelegate, Sendable {
+        private let onProgress: @Sendable (Double) -> Void
+        init(onProgress: @escaping @Sendable (Double) -> Void) { self.onProgress = onProgress }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask,
+                        didSendBodyData bytesSent: Int64,
+                        totalBytesSent: Int64,
+                        totalBytesExpectedToSend: Int64) {
+            guard totalBytesExpectedToSend > 0 else { return }
+            onProgress(Double(totalBytesSent) / Double(totalBytesExpectedToSend))
+        }
     }
 }
 

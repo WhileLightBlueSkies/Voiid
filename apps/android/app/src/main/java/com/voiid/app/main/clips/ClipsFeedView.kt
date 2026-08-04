@@ -187,13 +187,20 @@ fun ClipsFeedView(
                 verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 itemsIndexed(clips.clips, key = { _, c -> c.id }) { index, clip ->
-                    ClipTile(clip) {
-                        // A still-uploading tile has no server row to play yet.
-                        if (clip.uploadState == ClipUploadState.None) {
-                            haptics.tap()
-                            onOpenClip(index)
-                        }
-                    }
+                    ClipTile(
+                        clip = clip,
+                        onTap = {
+                            // A still-uploading tile has no server row to play yet.
+                            if (clip.uploadState == ClipUploadState.None) {
+                                haptics.tap()
+                                onOpenClip(index)
+                            }
+                        },
+                        onRetry = if (clips.canRetryUpload(clip.id)) {
+                            { haptics.tap(); clips.retryUpload(clip.id) }
+                        } else null,
+                        onDiscard = { clips.discardFailedUpload(clip.id) },
+                    )
                 }
                 if (clips.loadingMore) {
                     item(span = { GridItemSpan(maxLineSpan) }) {
@@ -211,7 +218,12 @@ fun ClipsFeedView(
 }
 
 @Composable
-private fun ClipTile(clip: VClip, onTap: () -> Unit) {
+private fun ClipTile(
+    clip: VClip,
+    onTap: () -> Unit,
+    onRetry: (() -> Unit)? = null,
+    onDiscard: (() -> Unit)? = null,
+) {
     Box(
         Modifier
             .fillMaxWidth()
@@ -274,6 +286,25 @@ private fun ClipTile(clip: VClip, onTap: () -> Unit) {
                         style = VoiidFont.rounded(10, FontWeight.SemiBold),
                         color = Color.White,
                     )
+                    // This tile previously offered NOTHING — a failed upload was a dead
+                    // square with no way to retry it and no way to clear it. Retry comes
+                    // first: the video has already cost the user an export.
+                    if (onRetry != null) {
+                        Text(
+                            "Retry",
+                            style = VoiidFont.rounded(10, FontWeight.SemiBold),
+                            color = Color.White,
+                            modifier = Modifier.softClickable(scale = 0.9f, onClick = onRetry),
+                        )
+                    }
+                    if (onDiscard != null) {
+                        Text(
+                            "Dismiss",
+                            style = VoiidFont.rounded(10),
+                            color = Color.White.copy(alpha = 0.7f),
+                            modifier = Modifier.softClickable(scale = 0.9f, onClick = onDiscard),
+                        )
+                    }
                 }
             }
 

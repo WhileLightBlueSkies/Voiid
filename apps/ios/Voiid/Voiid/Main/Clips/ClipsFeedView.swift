@@ -323,9 +323,17 @@ struct ClipsFeedView: View {
                     .font(.system(size: 16)).foregroundColor(VoiidColor.error)
                 Text("Upload failed")
                     .font(VoiidFont.rounded(10, .semibold)).foregroundColor(.white)
+                // Retry comes FIRST and Dismiss is the quiet one: the video has already cost
+                // the user an export, and offering only "Dismiss" (as this did) threw that
+                // away as the single available action.
+                if engine.canRetryUpload(clip.id) {
+                    Button("Retry") { Haptics.tap(); engine.retryUpload(clip.id) }
+                        .font(VoiidFont.rounded(10, .semibold))
+                        .foregroundColor(.white)
+                }
                 Button("Dismiss") { engine.discardFailedUpload(clip.id) }
                     .font(VoiidFont.rounded(10, .medium))
-                    .foregroundColor(.white.opacity(0.8))
+                    .foregroundColor(.white.opacity(0.7))
             }
         }
     }

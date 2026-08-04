@@ -9,6 +9,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import okio.buffer
 import java.io.File
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
@@ -157,16 +158,57 @@ class ClipService(private val tokens: TokenStore) {
      * bug. `asRequestBody` streams from disk with a fixed buffer, so peak heap is a few KB
      * regardless of clip size.
      */
-    suspend fun uploadBlob(url: String, file: File, contentType: String) =
-        withContext(Dispatchers.IO) {
+    /**
+     * [onProgress] reports BYTES ACTUALLY SENT as a 0..1 fraction. The upload used to advance
+     * through fixed checkpoints (0.05, 0.15, 0.95…), which on a slow connection meant the bar
+     * sat at 15% for a minute and then jumped — indistinguishable from a stall.
+     */
+    suspend fun uploadBlob(
+        url: String,
+        file: File,
+        contentType: String,
+        onProgress: ((Float) -> Unit)? = null,
+    ) = withContext(Dispatchers.IO) {
+            val body = file.asRequestBody(contentType.toMediaType())
             val req = Request.Builder()
                 .url(url)
-                .put(file.asRequestBody(contentType.toMediaType()))
+                .put(if (onProgress == null) body else ProgressRequestBody(body, onProgress))
                 .build()
             blobClient.newCall(req).execute().use {
                 if (!it.isSuccessful) throw ApiError.Http(it.code, "clip upload failed (${it.code})")
             }
         }
+
+    /**
+     * Wraps a request body to report write progress. OkHttp has no built-in hook for this —
+     * the body is asked to write itself into a sink, so counting happens by interposing on
+     * that sink.
+     */
+    private class ProgressRequestBody(
+        private val delegate: okhttp3.RequestBody,
+        private val onProgress: (Float) -> Unit,
+    ) : okhttp3.RequestBody() {
+        override fun contentType() = delegate.contentType()
+        override fun contentLength() = delegate.contentLength()
+
+        override fun writeTo(sink: okio.BufferedSink) {
+            val total = contentLength()
+            if (total <= 0) { delegate.writeTo(sink); return }
+            var written = 0L
+            val counting = object : okio.ForwardingSink(sink) {
+                override fun write(source: okio.Buffer, byteCount: Long) {
+                    super.write(source, byteCount)
+                    written += byteCount
+                    onProgress((written.toFloat() / total).coerceIn(0f, 1f))
+                }
+            }
+            // The buffered wrapper must be FLUSHED, not closed: closing it would close the
+            // underlying sink and OkHttp still needs it to finish the request.
+            val buffered = counting.buffer()
+            delegate.writeTo(buffered)
+            buffered.flush()
+        }
+    }
 
     /**
      * Small in-memory payloads only — the cover JPEG, which is bounded to ~1080px q0.8 (tens of
