@@ -4,6 +4,11 @@ Written 2026-08-04, at commit `3fa4a01` on `main`. Everything described here is 
 
 This is the handover for continuing the Clips / creator-economy work on another machine.
 
+> **UPDATE 2026-08-04 — all of §3 is now built on both platforms.** See §7 at the bottom for
+> what changed, what the original §3 got wrong, and what is still unverified. §1 (migrations,
+> secret key, admin seed, clip wipe) is still **not run** — those are live-infrastructure
+> actions and remain outstanding.
+
 ---
 
 ## 1. Run these first (nothing works until you do)
@@ -221,3 +226,76 @@ to, and the product needs server-attributed counts.
 
 **Messages, calls, locations and moments are unaffected and remain E2EE.** Nothing in the
 Clips work touches those paths, and none of it is a precedent for weakening them.
+
+---
+
+## 7. Update — §3 is built (2026-08-04)
+
+All five items in §3 are implemented on **both** platforms and pushed to `main`. Both apps
+build clean, and both were installed and run on real hardware.
+
+### What §3 got wrong
+
+Two of its claims did not survive contact with the code, and the fixes matter:
+
+**3a said "intercept `428 profile_required` and retry the upload."** That is a trap. The
+composer exports a 480/720/1080 ladder and PUTs *every rung to R2* before the row is
+committed, so the 428 only ever arrives **after** a 100 MB upload. Gating on it would ask for
+a handle at the exact moment the user could still lose the work — and "retry the upload"
+would re-send the whole ladder.
+
+What was built instead: the profile check happens **before** the composer opens (one cached
+`GET /creators/me`). The 428 path remains as a backstop for the race, and it **parks** the
+finished upload rather than failing it — the bytes are already in R2, so `retryPendingCommits`
+re-sends only the row.
+
+**3d said "existing composer is gallery-first, wants in-app recording."** False on iOS, which
+already had `StoryCameraView(mode: .clip)` — 90s cap, video-only, tap-to-toggle, hold-to-record,
+flip, live timer. **Android** was the real gap: its CameraX stack binds `ImageCapture` only and
+`camera-video` was not even a dependency, so clips handed off to the system camera intent.
+
+### Also fixed on the way
+
+Both API clients decoded only `{ error }` and **discarded the server's `code`**, leaving the
+status as the only discriminator. Since 428 is a generic "precondition required" that any
+future endpoint may reuse, matching on it alone would fire the handle picker for an unrelated
+precondition. `APIError.http` / `ApiError.Http` now carry `code` — that is why chat, stories,
+calls and profile editing appear in the 3a diff.
+
+| Item | iOS | Android |
+|---|---|---|
+| 3a handle-picker gate | `CreatorHandleSheet.swift` | `CreatorHandleSheet.kt` |
+| 3b creator profile + edit | `CreatorProfileView.swift` | `CreatorProfileView.kt` |
+| 3c Following feed | `ClipsFeedView.swift` (scope picker) | `ClipsFeedView.kt` (scope pills) |
+| 3d in-app camera | already existed | **new** `ClipCameraView.kt` + `ClipSegments.kt` |
+| 3e retry / progress / background | `ClipsEngine.swift` | `ClipsStore.kt`, `ClipService.kt` |
+| Service + store | `CreatorService.swift`, `CreatorEngine.swift` | `CreatorService.kt`, `CreatorStore.kt` |
+
+### Two platform traps worth remembering
+
+- **OkHttp follows redirects by default.** `GET /creators/:handle` signals a rename with a
+  301 whose body is `{ moved_to }` and which has **no Location header**, so with the shared
+  client the 301 is never visible — it re-requests a header-less redirect and the rename hop
+  becomes an unexplained failure. `CreatorService.kt` uses a dedicated
+  `followRedirects(false)` client for that one call. Exactly **one** hop is followed; history
+  can chain a→b→c and looping would let a rename cycle hang the screen.
+- **OkHttp has no write-progress hook.** Byte-level upload progress needed a
+  `ForwardingSink`-based `RequestBody` wrapper. Its buffered sink must be **flushed, not
+  closed** — closing it closes the underlying sink and OkHttp still needs that to finish the
+  request.
+
+### Still unverified — read this before trusting the above
+
+- **The creator endpoints have never returned 200 to a real client.** Everything above is
+  build-verified and installed, but §1a is still unrun, so `creator_profiles` may not exist on
+  the dev database. `/v1/creators/me` does route (it answers 401, not 404), so the *code* is
+  deployed — but a live signed-in round-trip has not been observed. **Apply the migrations
+  first**; until then expect 500s from every creator endpoint.
+- **Verified on device:** Android — installed on a real phone, and `ClipCameraView` was
+  confirmed working (live preview, `00:08 / 01:30` timer against the 90s cap, flip, and the
+  undo/shutter/confirm segment controls appearing only once a take existed). iOS — built,
+  signed, installed and launched on an iPhone 15; process stayed alive, no crash reports.
+- **Not exercised on device:** the handle picker, profile screen, follow button and Following
+  feed — all of which need a working `029` to do anything.
+- **The multi-segment join** (`ClipSegments.concatenate`) has not been run with 2+ takes. The
+  single-take path, which is the common case, short-circuits before any transcode.
