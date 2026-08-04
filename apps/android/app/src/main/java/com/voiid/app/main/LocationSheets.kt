@@ -23,6 +23,18 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
+import com.google.maps.android.compose.GoogleMap
+import com.google.maps.android.compose.MapUiSettings
+import com.google.maps.android.compose.rememberCameraPositionState
+import com.google.android.gms.maps.model.CameraPosition
+import com.google.android.gms.maps.model.LatLng
+import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.offset
+import com.voiid.app.ui.components.LocalVoiidHaptics
+import com.voiid.app.ui.components.softClickable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -68,6 +80,20 @@ fun LocationComposeSheet(conv: VConversation, onDismiss: () -> Unit) {
     val audience = if (isGroup) "Everyone in ${conv.title} (${conv.memberCount} people)" else conv.title
 
     var label by remember { mutableStateOf("") }
+    val haptics = LocalVoiidHaptics.current
+
+    // Picker camera. Starts on the user so the common case — "here" — needs no panning.
+    val pickerCamera = rememberCameraPositionState()
+    var myLocation by remember { mutableStateOf<LatLng?>(null) }
+    LaunchedEffect(Unit) {
+        // One coarse fix to centre on. Without it the map opens on the whole globe and every
+        // pin starts with a hunt.
+        LocationShareEngine.currentFixForPicker(context) { lat, lon ->
+            val here = LatLng(lat, lon)
+            myLocation = here
+            pickerCamera.position = CameraPosition.fromLatLngZoom(here, PICKER_ZOOM)
+        }
+    }
     var status by remember { mutableStateOf<String?>(null) }
     var permanentlyDenied by remember { mutableStateOf(false) }
 
@@ -97,7 +123,9 @@ fun LocationComposeSheet(conv: VConversation, onDismiss: () -> Unit) {
                 status = "Location permission is needed to share."
                 permanentlyDenied = (context as? android.app.Activity)?.let { LocationPermissions.foregroundPermanentlyDenied(it) } ?: false
             } else {
-                LocationShareEngine.sendPin(context, target, label.ifBlank { null })
+                // The coordinate under the crosshair — where the user actually placed the pin.
+                val c = pickerCamera.position.target
+                LocationShareEngine.sendPin(context, target, label.ifBlank { null }, c.latitude, c.longitude)
                 onDismiss()
             }
         }
@@ -113,6 +141,56 @@ fun LocationComposeSheet(conv: VConversation, onDismiss: () -> Unit) {
                 "Your location is end-to-end encrypted — Voiid’s servers never see it.",
                 style = VoiidFont.rounded(12), color = VoiidColor.textSecondary,
             )
+
+            // THE PICKER MAP, which was missing entirely.
+            //
+            // The sheet only offered "send my current location" — so you could not send where
+            // you are MEETING someone, only where you happened to be standing, which is most
+            // of what a location pin is for.
+            //
+            // The pin is FIXED AT THE CENTRE and the map moves under it, rather than a marker
+            // you drag. That is what WhatsApp, Uber and Google Maps all do, for a good reason:
+            // a dragged marker sits under your thumb at the moment you place it, so you cannot
+            // see what you are choosing. Mirrors iOS.
+            Box(
+                Modifier.fillMaxWidth().height(240.dp).clip(RoundedCornerShape(VoiidRadius.lg)),
+            ) {
+                GoogleMap(
+                    modifier = Modifier.fillMaxSize(),
+                    cameraPositionState = pickerCamera,
+                    uiSettings = MapUiSettings(
+                        zoomControlsEnabled = false,
+                        mapToolbarEnabled = false,
+                        myLocationButtonEnabled = false,
+                    ),
+                )
+                // The crosshair, offset up so the pin's POINT is at the centre — centring the
+                // whole glyph would put the tip below the position it marks.
+                Icon(
+                    Icons.Default.LocationOn, null,
+                    tint = VoiidColor.error,
+                    modifier = Modifier.align(Alignment.Center).size(40.dp).offset(y = (-20).dp),
+                )
+                // Recentre. Panning away and losing yourself is the one thing a picker must
+                // let you undo.
+                Box(
+                    Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(8.dp)
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(VoiidColor.surfaceCard)
+                        .softClickable {
+                            haptics.tap()
+                            myLocation?.let {
+                                pickerCamera.position = CameraPosition.fromLatLngZoom(it, PICKER_ZOOM)
+                            }
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Default.MyLocation, "My location", tint = VoiidColor.primary, modifier = Modifier.size(18.dp))
+                }
+            }
 
             // Optional user-typed label (NEVER reverse-geocoded — docs/LOCATION.md §10).
             val shape = RoundedCornerShape(VoiidRadius.md)
@@ -187,3 +265,6 @@ private fun DurationChip(label: String, modifier: Modifier, onClick: () -> Unit)
         Text(label, style = VoiidFont.rounded(13, FontWeight.SemiBold), color = VoiidColor.textPrimary)
     }
 }
+
+/** ~600 m across: close enough to place a pin on a building, wide enough to orient. */
+private const val PICKER_ZOOM = 16f

@@ -147,8 +147,34 @@ final class LocationShareEngine: ObservableObject {
 
     /// Capture one fix and send it as a pin. `label` is user-typed only, never geocoded.
     /// Completion carries success so the compose sheet can show a failure.
+    /// Send a pin.
+    ///
+    /// `coordinate` is the position the user CHOSE on the picker map. When nil this falls back
+    /// to a one-shot fix, which is "send my current location" — the old behaviour, and still
+    /// what the quick path uses.
+    ///
+    /// Accuracy is deliberately nil for a chosen pin: an accuracy radius describes how well a
+    /// SENSOR knows where you are, and a coordinate you dropped by hand has no such
+    /// uncertainty. Drawing a 30 m circle around a deliberately-placed pin would be inventing
+    /// a measurement that was never taken.
     func sendPin(conversationId: String, isGroup: Bool, peerUserId: String?,
-                 label: String?, completion: @escaping (Bool) -> Void) {
+                 label: String?, coordinate: CLLocationCoordinate2D? = nil,
+                 completion: @escaping (Bool) -> Void) {
+        if let coordinate {
+            Task { @MainActor in
+                let env = LocationEnvelope(
+                    vloc: 1, k: .pin, s: nil, t: Date().timeIntervalSince1970 * 1000,
+                    lat: LocationRounding.round(coordinate.latitude, decimals: LocationRounding.liveDecimals),
+                    lon: LocationRounding.round(coordinate.longitude, decimals: LocationRounding.liveDecimals),
+                    acc: nil,
+                    label: (label?.isEmpty == false ? label : nil))
+                let ok = await self.sendControl(env, conversationId: conversationId,
+                                                isGroup: isGroup, peerUserId: peerUserId)
+                completion(ok)
+            }
+            return
+        }
+
         service.requestOneShot { [weak self] loc in
             Task { @MainActor in
                 guard let self, let loc else { completion(false); return }

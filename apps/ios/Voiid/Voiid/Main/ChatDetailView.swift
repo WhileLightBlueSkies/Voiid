@@ -11,6 +11,7 @@
 //
 
 import SwiftUI
+import MapKit
 import PhotosUI
 import UIKit
 import CryptoKit
@@ -174,7 +175,7 @@ struct ChatDetailView: View {
                 conversationTitle: conversation.title,
                 isGroup: conversation.type == .group,
                 audienceCount: conversation.type == .group ? max(1, conversation.memberCount - 1) : 1,
-                onSendPin: { label in sendLocationPin(label: label) },
+                onSendPin: { label, coord in sendLocationPin(label: label, coordinate: coord) },
                 onStartLive: { duration in startLiveShare(duration: duration) })
             .presentationDetents([.medium, .large])
         }
@@ -281,12 +282,13 @@ struct ChatDetailView: View {
 
     /// Send a static pin. The engine captures one fix and sends the E2EE envelope; the
     /// echo appears in this chat, so we refresh once the send returns.
-    private func sendLocationPin(label: String?) {
+    private func sendLocationPin(label: String?, coordinate: CLLocationCoordinate2D? = nil) {
         Task {
             let peer = isGroupChat ? nil : await resolvePeer()
             guard isGroupChat || peer != nil else { return }
             LocationShareEngine.shared.sendPin(conversationId: conversation.id, isGroup: isGroupChat,
-                                               peerUserId: peer, label: label) { _ in
+                                               peerUserId: peer, label: label,
+                                               coordinate: coordinate) { _ in
                 Task { @MainActor in chat.openConversation(conversation) }
             }
         }

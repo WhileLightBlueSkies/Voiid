@@ -118,14 +118,54 @@ object LocationShareEngine {
     // MARK: - Static pin (P1)
 
     /** Send a one-off pin. Renders a bubble immediately (local echo), then E2EE-sends it. */
-    fun sendPin(context: Context, conv: ShareTarget, label: String?) {
+    /**
+     * One coarse fix, for centring the picker map.
+     *
+     * Separate from [sendPin] because it emits NOTHING — it only tells the picker where to
+     * open. Routing it through sendPin would mean a location message every time someone
+     * opened the sheet and changed their mind.
+     */
+    fun currentFixForPicker(context: Context, onFix: (Double, Double) -> Unit) {
         init(context)
+        provider.currentFix { loc -> loc?.let { onFix(it.latitude, it.longitude) } }
+    }
+
+    /**
+     * Send a pin.
+     *
+     * [pickedLat]/[pickedLon] are the position the user CHOSE on the picker map. When null
+     * this falls back to a one-shot fix — "send my current location", the old behaviour.
+     *
+     * Accuracy is deliberately null for a chosen pin: an accuracy radius describes how well a
+     * SENSOR knows where you are, and a coordinate dropped by hand has no such uncertainty.
+     * Drawing a 30 m circle around a deliberately-placed pin would invent a measurement that
+     * was never taken.
+     */
+    fun sendPin(
+        context: Context,
+        conv: ShareTarget,
+        label: String?,
+        pickedLat: Double? = null,
+        pickedLon: Double? = null,
+    ) {
+        init(context)
+
+        fun emit(lat: Double, lon: Double, acc: Double?) {
+            val env = LocationEnvelope(k = LocationEnvelope.K_PIN, t = System.currentTimeMillis(), lat = lat, lon = lon, acc = acc, label = label?.ifBlank { null })
+            // LocationRef.acc is non-null; 0.0 is its "no radius" value, which is exactly
+            // what a hand-placed pin has. The wire envelope keeps a real null.
+            chat.storeLocationOutgoing(conv.conversationId, ChatEngine.LocationRef(kind = LocationEnvelope.K_PIN, lat = lat, lon = lon, acc = acc ?: 0.0, label = label?.ifBlank { null }))
+            scope.launch { sendControl(conv, env) }
+        }
+
+        if (pickedLat != null && pickedLon != null) {
+            emit(round5(pickedLat), round5(pickedLon), null)
+            return
+        }
+
         provider.currentFix { loc ->
             if (loc == null) { Log.w(TAG, "pin: no location fix available"); return@currentFix }
-            val lat = round5(loc.latitude); val lon = round5(loc.longitude); val acc = loc.accuracy.toDouble()
-            val env = LocationEnvelope(k = LocationEnvelope.K_PIN, t = System.currentTimeMillis(), lat = lat, lon = lon, acc = acc, label = label?.ifBlank { null })
-            chat.storeLocationOutgoing(conv.conversationId, ChatEngine.LocationRef(kind = LocationEnvelope.K_PIN, lat = lat, lon = lon, acc = acc, label = label?.ifBlank { null }))
-            scope.launch { sendControl(conv, env) }
+            emit(round5(loc.latitude), round5(loc.longitude), loc.accuracy.toDouble())
         }
     }
 

@@ -13,6 +13,7 @@
 //
 
 import SwiftUI
+import MapKit
 import CoreLocation
 
 struct LocationComposeSheet: View {
@@ -22,7 +23,9 @@ struct LocationComposeSheet: View {
     let audienceCount: Int
 
     /// Send a static pin with an optional label.
-    var onSendPin: (String?) -> Void
+    /// Label, and the coordinate the user placed. A nil coordinate means "wherever I am now"
+    /// — the map never reported a camera, so fall back to a live fix.
+    var onSendPin: (String?, CLLocationCoordinate2D?) -> Void
     /// Start a live share for the chosen duration.
     var onStartLive: (ShareDuration) -> Void
 
@@ -31,6 +34,17 @@ struct LocationComposeSheet: View {
 
     enum Mode { case pin, live }
     @State private var mode: Mode = .pin
+    /// The picker map's camera. Starts on the user so the common case — "here" — needs no
+    /// panning at all.
+    @State private var pickerCamera: MapCameraPosition = .automatic
+    /// Set once, on appear: `.automatic` with no annotations frames the entire globe, which
+    /// is a useless starting point for placing a pin.
+    @State private var didCentrePicker = false
+    /// The coordinate under the crosshair. Nil until the map reports a camera, at which point
+    /// `commit` prefers it over a fresh one-shot fix.
+    @State private var pickedCoordinate: CLLocationCoordinate2D?
+    /// ~600 m across: close enough to place a pin on a building, wide enough to orient.
+    private let pickerSpan = MKCoordinateSpan(latitudeDelta: 0.006, longitudeDelta: 0.006)
     @State private var label = ""
     @State private var duration: ShareDuration = .oneHour
     @State private var sending = false
@@ -76,7 +90,70 @@ struct LocationComposeSheet: View {
 
     private var pinSection: some View {
         VStack(alignment: .leading, spacing: VoiidSpacing.md) {
-            Text("Send your current location as a pin. It stays fixed — it does not update.")
+            // THE MAP, which was missing entirely.
+            //
+            // The sheet only ever offered "send your current location" — so you could not
+            // send where you are MEETING someone, only where you happened to be standing,
+            // which is most of what a location pin is actually for.
+            //
+            // The pin is FIXED AT THE CENTRE and the map moves under it, rather than a marker
+            // you drag. That is what WhatsApp, Uber and Google Maps all do, for a good
+            // reason: a dragged marker sits under your thumb at the moment you place it, so
+            // you cannot see what you are choosing. A fixed crosshair stays visible while the
+            // map pans beneath.
+            ZStack {
+                Map(position: $pickerCamera)
+                    .mapStyle(.standard(emphasis: .muted))
+                    .onMapCameraChange(frequency: .onEnd) { ctx in
+                        pickedCoordinate = ctx.camera.centerCoordinate
+                    }
+
+                // The crosshair. Sits slightly high so the pin's POINT is at the centre —
+                // centring the whole glyph would put the tip below the position it marks.
+                Image(systemName: "mappin")
+                    .font(.system(size: 30, weight: .semibold))
+                    .foregroundStyle(VoiidColor.error)
+                    .shadow(color: .black.opacity(0.3), radius: 3, y: 2)
+                    .offset(y: -15)
+                    .allowsHitTesting(false)
+
+                // Recentre on the user. Panning away and losing yourself is the one thing a
+                // picker must let you undo.
+                Button {
+                    Haptics.tap()
+                    // The Map provider already holds a recent coarse fix, so recentring costs
+                    // no new location request.
+                    if let here = MapLocationProvider.shared.lastFix?.coordinate {
+                        withAnimation { pickerCamera = .region(.init(center: here, span: pickerSpan)) }
+                    }
+                } label: {
+                    Image(systemName: "location.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(VoiidColor.primary)
+                        .frame(width: 36, height: 36)
+                        .background(VoiidColor.surfaceCard, in: Circle())
+                        .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
+                }
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                .padding(VoiidSpacing.sm)
+            }
+            .frame(height: 240)
+            .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
+            .onAppear {
+                guard !didCentrePicker else { return }
+                didCentrePicker = true
+                // Centre on the user, and ask for a fresh fix if we have none — otherwise the
+                // picker opens on the whole world and every pin starts with a hunt.
+                if let here = MapLocationProvider.shared.lastFix?.coordinate {
+                    pickerCamera = .region(.init(center: here, span: pickerSpan))
+                    pickedCoordinate = here
+                } else {
+                    MapLocationProvider.shared.refreshOnce()
+                }
+            }
+
+            Text("Drag the map to place the pin. It stays fixed — it does not update.")
                 .font(VoiidFont.rounded(13, .regular)).foregroundColor(VoiidColor.textSecondary)
             TextField("", text: $label,
                       prompt: Text("Add a label (optional)").foregroundColor(VoiidColor.placeholder))
@@ -164,7 +241,8 @@ struct LocationComposeSheet: View {
         Haptics.success()
         switch mode {
         case .pin:  onSendPin(label.trimmingCharacters(in: .whitespaces).isEmpty ? nil
-                              : label.trimmingCharacters(in: .whitespaces))
+                              : label.trimmingCharacters(in: .whitespaces),
+                              pickedCoordinate)
         case .live: onStartLive(duration)
         }
         dismiss()
