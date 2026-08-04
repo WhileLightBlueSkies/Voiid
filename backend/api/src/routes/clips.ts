@@ -200,6 +200,22 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
     return res.status(400).json({ error: 'clip_id must be a uuid (client-generated)' });
   }
 
+  // THE PROFILE GATE. A clip cannot exist without a creator profile behind it: the feed
+  // attributes every clip to a public handle, and a clip whose author has no public identity
+  // has nothing to attribute it to. Enforced here rather than only in the client because a
+  // client-only gate is not a gate.
+  //
+  // 428 rather than 403 — the request is not forbidden, it is PRECONDITION REQUIRED, and the
+  // client turns this specific code into "choose your handle" rather than an error toast.
+  const profile = await query<{ suspended_at: Date | null }>(
+    `select suspended_at from creator_profiles where user_id = $1`, [user_id]);
+  if (!profile[0]) {
+    return res.status(428).json({ error: 'creator profile required', code: 'profile_required' });
+  }
+  if (profile[0].suspended_at) {
+    return res.status(403).json({ error: 'this profile is suspended', code: 'suspended' });
+  }
+
   // AUTHORIZATION: the caller may only claim object keys inside its OWN namespace,
   // and the tail must be the uuid presign-upload minted (optionally with a rendition
   // suffix). Without the tail check a caller could point a clip at an arbitrary
@@ -305,7 +321,7 @@ router.get('/feed', requireAuth, asyncHandler(async (req, res) => {
     `select ${CLIP_COLUMNS}
        from clips c
        join users u on u.id = c.author_id
-      where c.deleted_at is null and c.status = 'ready'
+      where c.deleted_at is null and c.removed_at is null and c.status = 'ready'
         ${cursor ? 'and (c.created_at, c.id) < ($2::timestamptz, $3::uuid)' : ''}
       order by c.created_at desc, c.id desc
       limit ${limit + 1}`,
@@ -383,7 +399,7 @@ router.get('/:id/playback', requireAuth, asyncHandler(async (req, res) => {
     `select r2_key, r2_key_sd, r2_key_hd, r2_key_fhd,
             byte_size, byte_size_sd, byte_size_hd, byte_size_fhd
        from clips
-      where id = $1 and deleted_at is null and status = 'ready'`,
+      where id = $1 and deleted_at is null and removed_at is null and status = 'ready'`,
     [clipId]
   );
   if (!rows[0]) return res.status(404).json({ error: 'clip not found' });
@@ -435,7 +451,7 @@ router.post('/:id/view', requireAuth, asyncHandler(async (req, res) => {
 
   const inserted = await query<{ clip_id: string }>(
     `insert into clip_views (clip_id, user_id)
-       select $1, $2 from clips where id = $1 and deleted_at is null
+       select $1, $2 from clips where id = $1 and deleted_at is null and removed_at is null
        on conflict do nothing
        returning clip_id`,
     [clipId, user_id]
@@ -452,7 +468,7 @@ router.post('/:id/view', requireAuth, asyncHandler(async (req, res) => {
   // Already viewed (or clip gone) — return the current count so the client's
   // optimistic number is corrected either way.
   const rows = await query<{ view_count: number }>(
-    `select view_count from clips where id = $1 and deleted_at is null`,
+    `select view_count from clips where id = $1 and deleted_at is null and removed_at is null`,
     [clipId]
   );
   if (!rows[0]) return res.status(404).json({ error: 'clip not found' });
@@ -475,7 +491,7 @@ router.post('/:id/like', requireAuth, asyncHandler(async (req, res) => {
 
   const inserted = await query<{ clip_id: string }>(
     `insert into clip_likes (clip_id, user_id)
-       select $1, $2 from clips where id = $1 and deleted_at is null
+       select $1, $2 from clips where id = $1 and deleted_at is null and removed_at is null
        on conflict do nothing
        returning clip_id`,
     [clipId, user_id]
@@ -490,7 +506,7 @@ router.post('/:id/like', requireAuth, asyncHandler(async (req, res) => {
   }
 
   const rows = await query<{ like_count: number }>(
-    `select like_count from clips where id = $1 and deleted_at is null`,
+    `select like_count from clips where id = $1 and deleted_at is null and removed_at is null`,
     [clipId]
   );
   if (!rows[0]) return res.status(404).json({ error: 'clip not found' });
@@ -518,7 +534,7 @@ router.delete('/:id/like', requireAuth, asyncHandler(async (req, res) => {
   }
 
   const rows = await query<{ like_count: number }>(
-    `select like_count from clips where id = $1 and deleted_at is null`,
+    `select like_count from clips where id = $1 and deleted_at is null and removed_at is null`,
     [clipId]
   );
   if (!rows[0]) return res.status(404).json({ error: 'clip not found' });
@@ -540,6 +556,7 @@ router.get('/:id/comments', requireAuth, asyncHandler(async (req, res) => {
             u.full_name as author_name, u.photo_url as author_photo_url
        from clip_comments cc
        join users u on u.id = cc.author_id
+       join clips c on c.id = cc.clip_id and c.removed_at is null
       where cc.clip_id = $1 and cc.deleted_at is null
         ${cursor ? 'and (cc.created_at, cc.id) > ($2::timestamptz, $3::uuid)' : ''}
       order by cc.created_at asc, cc.id asc
@@ -570,7 +587,7 @@ router.post('/:id/comments', requireAuth, asyncHandler(async (req, res) => {
   }
 
   const live = await query<{ one: number }>(
-    `select 1 as one from clips where id = $1 and deleted_at is null and status = 'ready'`,
+    `select 1 as one from clips where id = $1 and deleted_at is null and removed_at is null and status = 'ready'`,
     [clipId]
   );
   if (!live[0]) return res.status(404).json({ error: 'clip not found' });

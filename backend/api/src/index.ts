@@ -25,7 +25,9 @@ import storiesRoutes from './routes/stories';
 import reachabilityRoutes from './routes/reachability';
 import profileKeyRoutes from './routes/profileKeys';
 import gifRoutes from './routes/gifs';
+import adminRoutes from './routes/admin';
 import clipsRoutes from './routes/clips';
+import creatorRoutes from './routes/creators';
 import gamesRoutes from './routes/games';
 import configRoutes from './routes/config';
 import { forceUpdateGate } from './version';
@@ -117,6 +119,11 @@ api.use('/profile-keys', rateLimit({ max: 120, windowSeconds: 60, bucket: 'profi
 // no fixed recipient set to encrypt to); see the header of routes/clips.ts and
 // 022_clips.sql. It does not touch the message/call/location/story paths.
 api.use('/clips', rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), clipsRoutes);
+// Creator profiles + the follow graph — the public identity behind Clips, same scoped
+// non-E2EE exception (029_creator_profiles.sql). A FOLLOW GRANTS NO MESSAGING RIGHT: the
+// three reachability paths in 020 are untouched, and nothing here may ever be used to
+// authorise opening a conversation.
+api.use('/creators', rateLimit({ max: 180, windowSeconds: 60, bucket: 'creators' }), creatorRoutes);
 // Games: match lifecycle only — the catalog, creating/joining a match, history. MOVES DO
 // NOT COME THROUGH HERE; they ride the WebSocket relay to backend/games, which referees
 // them (see the header of routes/games.ts for why the move path is deliberately absent).
@@ -128,6 +135,14 @@ api.use('/games', rateLimit({ max: 120, windowSeconds: 60, bucket: 'games' }), g
 // the chosen GIF, encrypts it, and sends it as ordinary E2EE media, so recipients never touch
 // Tenor. Typing in a search box is bursty, hence the higher ceiling.
 api.use('/gifs', rateLimit({ max: 180, windowSeconds: 60, bucket: 'gifs' }), gifRoutes);
+
+// Admin: the moderation plane. Mounted OUTSIDE `api` because it does not use the app's
+// user auth at all — it has its own email+password credential and its own session table
+// (028_admin_users.sql), so a compromised phone number can never reach it.
+//
+// The rate limit is deliberately tight: this is a password endpoint, and the login route is
+// the one surface where an attacker would grind credentials.
+app.use('/admin', rateLimit({ max: 60, windowSeconds: 60, bucket: 'admin' }), adminRoutes);
 
 app.use('/v1', api);
 app.use(api);   // legacy unversioned alias (migration safety) — remove once all clients send /v1

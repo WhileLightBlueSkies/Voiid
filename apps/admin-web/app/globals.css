@@ -1,0 +1,57 @@
+/*
+ * Dark by default. A moderation panel is looked at for long stretches, often alongside
+ * video, and a bright surface next to playing content is fatiguing. Voiid's own dark
+ * tokens, so the panel reads as part of the product rather than a generic dashboard.
+ */
+:root {
+  --bg: #0d0b14;
+  --surface: #1c1826;
+  --border: #2c2739;
+  --text: #e6e1ef;
+  --text-dim: #a79cbd;
+  --primary: #b59be0;
+  --danger: #ef7a6b;
+  --ok: #63c78d;
+  --radius: 12px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+
+a { color: var(--primary); }
+
+button {
+  font: inherit;
+  cursor: pointer;
+  border: 0;
+  border-radius: 999px;
+  padding: 9px 16px;
+  background: var(--primary);
+  color: #17121f;
+  font-weight: 600;
+}
+button:disabled { opacity: 0.5; cursor: default; }
+button.ghost { background: transparent; color: var(--text-dim); border: 1px solid var(--border); }
+button.danger { background: var(--danger); color: #241016; }
+
+input {
+  font: inherit;
+  width: 100%;
+  padding: 11px 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
