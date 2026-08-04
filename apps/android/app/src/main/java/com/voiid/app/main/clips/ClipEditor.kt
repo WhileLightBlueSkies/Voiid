@@ -144,33 +144,89 @@ enum class ClipFilter(val label: String) {
     TRANSFER("Transfer"),
     INSTANT("Instant");
 
-    /** The Media3 effect chain, or empty for the untouched original. */
+    /**
+     * The Media3 effect chain, or empty for the untouched original.
+     *
+     * ANDROID HAS NO SYSTEM FILTER LIBRARY. iOS gets these looks from Apple's own
+     * CIPhotoEffect set (the filters Photos uses); there is no OS-provided equivalent here —
+     * Google Photos' filters are private to that app. Media3 gives primitives (RgbMatrix,
+     * RgbFilter) and the LOOKS have to be authored. So each entry below reproduces its iOS
+     * counterpart with an explicit colour matrix.
+     *
+     * PREVIOUSLY EVERY NON-MONO FILTER WAS ONLY A SATURATION CHANGE, which made Chrome,
+     * Process, Transfer and Instant near-indistinguishable washes of each other rather than
+     * different looks — and DRAMATIC was grayscale here but colour on iOS, so the same clip
+     * filtered the same way looked different on the two platforms.
+     */
     fun effects(): List<Effect> = when (this) {
         NONE -> emptyList()
-        MONO, DRAMATIC, NOIR -> listOf(RgbFilter.createGrayscaleFilter())
-        VIVID -> listOf(saturation(1.45f))
-        FADE -> listOf(saturation(0.65f))
-        CHROME -> listOf(saturation(1.2f))
-        PROCESS -> listOf(saturation(1.3f))
-        TRANSFER -> listOf(saturation(0.85f))
-        INSTANT -> listOf(saturation(0.75f))
+        // True monochrome.
+        MONO -> listOf(RgbFilter.createGrayscaleFilter())
+        // Mono, then crushed contrast — the high-contrast black and white of CIPhotoEffectNoir.
+        NOIR -> listOf(RgbFilter.createGrayscaleFilter(), contrast(1.4f, -0.06f))
+        // COLOUR, not mono: matches the iOS .dramatic branch exactly.
+        DRAMATIC -> listOf(colorMatrix(saturationMatrix(0.85f)), contrast(1.35f, -0.05f))
+        VIVID -> listOf(colorMatrix(saturationMatrix(1.45f)), contrast(1.05f, 0f))
+        // Lifted blacks and low saturation — the washed-out look of CIPhotoEffectFade.
+        FADE -> listOf(colorMatrix(saturationMatrix(0.65f)), contrast(0.85f, 0.08f))
+        // Cool, bright, punchy.
+        CHROME -> listOf(colorMatrix(channelMatrix(0.98f, 1.02f, 1.10f)), contrast(1.15f, 0f))
+        // Cross-processed: green/blue push with a magenta shadow cast.
+        PROCESS -> listOf(colorMatrix(channelMatrix(1.05f, 1.08f, 0.92f)), contrast(1.2f, -0.02f))
+        // Warm, faded, low contrast — the aged-print look.
+        TRANSFER -> listOf(colorMatrix(channelMatrix(1.12f, 0.98f, 0.88f)), contrast(0.95f, 0.04f))
+        // Polaroid: warm highlights, lifted blacks, muted colour.
+        INSTANT -> listOf(colorMatrix(saturationMatrix(0.75f)), contrast(0.9f, 0.06f))
     }
 
-    /** Approximate the same look for the still preview/cover frame. */
+    /**
+     * The same look for the still preview, the filter-strip thumbnails and the cover frame.
+     *
+     * This MUST track effects() above. The strip is how the author picks a filter, so if it
+     * shows a different transform than export applies, every choice is made against a
+     * preview that lies — and the mismatch only surfaces after upload.
+     */
     fun applyToBitmap(src: Bitmap): Bitmap {
         if (this == NONE) return src
         val out = src.copy(Bitmap.Config.ARGB_8888, true)
         val canvas = android.graphics.Canvas(out)
         val paint = android.graphics.Paint()
+        // ColorMatrix.postConcat composes in the same order effects() chains them.
         val matrix = android.graphics.ColorMatrix()
         when (this) {
-            MONO, DRAMATIC, NOIR -> matrix.setSaturation(0f)
-            VIVID -> matrix.setSaturation(1.45f)
-            FADE -> matrix.setSaturation(0.65f)
-            CHROME -> matrix.setSaturation(1.2f)
-            PROCESS -> matrix.setSaturation(1.3f)
-            TRANSFER -> matrix.setSaturation(0.85f)
-            INSTANT -> matrix.setSaturation(0.75f)
+            MONO -> matrix.setSaturation(0f)
+            NOIR -> {
+                matrix.setSaturation(0f)
+                matrix.postConcat(contrastColorMatrix(1.4f, -0.06f))
+            }
+            DRAMATIC -> {
+                matrix.setSaturation(0.85f)
+                matrix.postConcat(contrastColorMatrix(1.35f, -0.05f))
+            }
+            VIVID -> {
+                matrix.setSaturation(1.45f)
+                matrix.postConcat(contrastColorMatrix(1.05f, 0f))
+            }
+            FADE -> {
+                matrix.setSaturation(0.65f)
+                matrix.postConcat(contrastColorMatrix(0.85f, 0.08f))
+            }
+            CHROME -> {
+                matrix.postConcat(channelColorMatrix(0.98f, 1.02f, 1.10f))
+                matrix.postConcat(contrastColorMatrix(1.15f, 0f))
+            }
+            PROCESS -> {
+                matrix.postConcat(channelColorMatrix(1.05f, 1.08f, 0.92f))
+                matrix.postConcat(contrastColorMatrix(1.2f, -0.02f))
+            }
+            TRANSFER -> {
+                matrix.postConcat(channelColorMatrix(1.12f, 0.98f, 0.88f))
+                matrix.postConcat(contrastColorMatrix(0.95f, 0.04f))
+            }
+            INSTANT -> {
+                matrix.setSaturation(0.75f)
+                matrix.postConcat(contrastColorMatrix(0.9f, 0.06f))
+            }
             NONE -> Unit
         }
         paint.colorFilter = android.graphics.ColorMatrixColorFilter(matrix)
@@ -178,18 +234,77 @@ enum class ClipFilter(val label: String) {
         return out
     }
 
-    private fun saturation(value: Float): RgbMatrix {
-        // Standard luminance-preserving saturation matrix (Rec. 709 weights), the same
-        // transform ColorMatrix.setSaturation applies, expressed for the GL pipeline.
+    /**
+     * Standard luminance-preserving saturation matrix (Rec. 709 weights) — the same transform
+     * ColorMatrix.setSaturation applies, in the column-major 4x4 the GL pipeline wants.
+     */
+    private fun saturationMatrix(value: Float): FloatArray {
         val lr = 0.2126f; val lg = 0.7152f; val lb = 0.0722f
         val inv = 1f - value
-        val m = floatArrayOf(
+        return floatArrayOf(
             lr * inv + value, lr * inv, lr * inv, 0f,
             lg * inv, lg * inv + value, lg * inv, 0f,
             lb * inv, lb * inv, lb * inv + value, 0f,
             0f, 0f, 0f, 1f,
         )
-        return RgbMatrix { _, _ -> m }
+    }
+
+    /** Per-channel gain — how a look gets a colour CAST rather than just more/less colour. */
+    private fun channelMatrix(r: Float, g: Float, b: Float): FloatArray = floatArrayOf(
+        r, 0f, 0f, 0f,
+        0f, g, 0f, 0f,
+        0f, 0f, b, 0f,
+        0f, 0f, 0f, 1f,
+    )
+
+    private fun colorMatrix(m: FloatArray): RgbMatrix = RgbMatrix { _, _ -> m }
+
+    /**
+     * The android.graphics.ColorMatrix twins of contrast()/channelMatrix() above, for the
+     * bitmap preview path.
+     *
+     * NOT the same array layout as the GL versions, and this is an easy place to get it
+     * wrong: android.graphics.ColorMatrix is ROW-major 4x5 and its translation column is in
+     * 0..255 units, while RgbMatrix is column-major 4x4 in 0..1. The same brightness offset
+     * therefore has to be multiplied by 255 here to mean the same thing.
+     */
+    private fun contrastColorMatrix(amount: Float, brightness: Float): android.graphics.ColorMatrix {
+        val t = ((1f - amount) * 0.5f + brightness) * 255f
+        return android.graphics.ColorMatrix(
+            floatArrayOf(
+                amount, 0f, 0f, 0f, t,
+                0f, amount, 0f, 0f, t,
+                0f, 0f, amount, 0f, t,
+                0f, 0f, 0f, 1f, 0f,
+            )
+        )
+    }
+
+    private fun channelColorMatrix(r: Float, g: Float, b: Float): android.graphics.ColorMatrix =
+        android.graphics.ColorMatrix(
+            floatArrayOf(
+                r, 0f, 0f, 0f, 0f,
+                0f, g, 0f, 0f, 0f,
+                0f, 0f, b, 0f, 0f,
+                0f, 0f, 0f, 1f, 0f,
+            )
+        )
+
+    /**
+     * Contrast about mid-grey, plus a brightness offset. Pivoting at 0.5 is what keeps a
+     * contrast boost from also brightening the whole frame: scaling around 0 would push every
+     * value up, which reads as "washed out and too bright" rather than "punchy".
+     */
+    private fun contrast(amount: Float, brightness: Float): RgbMatrix {
+        val t = (1f - amount) * 0.5f + brightness
+        return RgbMatrix { _, _ ->
+            floatArrayOf(
+                amount, 0f, 0f, 0f,
+                0f, amount, 0f, 0f,
+                0f, 0f, amount, 0f,
+                t, t, t, 1f,
+            )
+        }
     }
 }
 

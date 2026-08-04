@@ -73,11 +73,24 @@ enum ClipFilter: String, CaseIterable, Identifiable, Equatable {
     }
 
     /// The Core Image filter name, or nil for the untouched original.
+    ///
+    /// These are Apple's OWN photo-effect filters — the same set Photos ships — so on iOS
+    /// the system really does provide the looks. Android has no equivalent system library
+    /// (Google Photos' filters are private to that app), so its side builds the same looks
+    /// out of colour matrices; see the Android enum for the matching values.
+    ///
+    /// PREVIOUSLY TWO PAIRS WERE DUPLICATES: vivid and chrome both mapped to
+    /// CIPhotoEffectChrome, and dramatic and noir both to CIPhotoEffectNoir. Ten filters
+    /// offered eight distinct looks, and picking "Vivid" silently gave you Chrome. Each
+    /// entry below is now a different transform.
     var ciFilterName: String? {
         switch self {
         case .none: return nil
-        case .vivid: return "CIPhotoEffectChrome"
-        case .dramatic: return "CIPhotoEffectNoir"
+        // Vivid is a saturation boost, not a film emulation — built below rather than
+        // borrowed from a preset, since CIPhotoEffect has no "more colourful" entry.
+        case .vivid: return nil
+        // Dramatic is high-contrast COLOUR. Mapping it to Noir made it a second mono filter.
+        case .dramatic: return nil
         case .mono: return "CIPhotoEffectMono"
         case .noir: return "CIPhotoEffectNoir"
         case .fade: return "CIPhotoEffectFade"
@@ -89,9 +102,33 @@ enum ClipFilter: String, CaseIterable, Identifiable, Equatable {
     }
 
     func apply(to input: CIImage) -> CIImage {
-        guard let name = ciFilterName, let f = CIFilter(name: name) else { return input }
-        f.setValue(input, forKey: kCIInputImageKey)
-        return f.outputImage ?? input
+        switch self {
+        case .none:
+            return input
+
+        case .vivid:
+            // Saturation 1.45 and a touch of contrast — matched to the Android VIVID matrix
+            // so the same clip looks the same on both platforms.
+            let f = CIFilter.colorControls()
+            f.inputImage = input
+            f.saturation = 1.45
+            f.contrast = 1.05
+            return f.outputImage ?? input
+
+        case .dramatic:
+            // Hard contrast, slightly desaturated, slightly darker — a colour look, not mono.
+            let f = CIFilter.colorControls()
+            f.inputImage = input
+            f.saturation = 0.85
+            f.contrast = 1.35
+            f.brightness = -0.05
+            return f.outputImage ?? input
+
+        default:
+            guard let name = ciFilterName, let f = CIFilter(name: name) else { return input }
+            f.setValue(input, forKey: kCIInputImageKey)
+            return f.outputImage ?? input
+        }
     }
 }
 
