@@ -111,6 +111,14 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         com.voiid.app.net.CallManager.onHostForeground()
+        // MAP PRESENCE FOLLOWS THE APP, not the Map tab.
+        //
+        // These were called from MapTabView's DisposableEffect, which fires when you leave
+        // the TAB — so opening the app on Chats never resumed sharing at all, and merely
+        // switching tabs looked like backgrounding. `init` is safe to call repeatedly and is
+        // what restores the share after a process kill.
+        com.voiid.app.net.MapPresenceEngine.init(applicationContext)
+        com.voiid.app.net.MapPresenceEngine.onForeground()
     }
 
     override fun onStop() {
@@ -119,6 +127,9 @@ class MainActivity : ComponentActivity() {
         // background transition may pause the camera.
         val inPip = ::pip.isInitialized && pip.isInPipNow()
         if (!inPip) com.voiid.app.net.CallManager.onHostBackground()
+        // Step the Map down to the cheap background stream. NOT a stop — presence keeps
+        // updating coarsely and can still relaunch a killed process.
+        if (!inPip) com.voiid.app.net.MapPresenceEngine.onBackground()
     }
 
     /**

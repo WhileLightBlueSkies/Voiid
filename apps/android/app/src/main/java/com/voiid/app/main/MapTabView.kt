@@ -124,7 +124,10 @@ fun MapTabView(map: MapStore, chat: ChatStore, onOpenChatWithUser: ((String) -> 
         while (true) { delay(30_000); map.recomputeSubjects() }
     }
     androidx.compose.runtime.DisposableEffect(Unit) {
-        onDispose { map.onBackground() }
+        // Deliberately EMPTY. Leaving the Map TAB is not backgrounding the app — calling
+        // onBackground() here stepped presence down to the coarse stream every time the user
+        // tapped Chats. MainActivity.onStop() owns that transition now.
+        onDispose { }
     }
 
     var showAudience by remember { mutableStateOf(false) }

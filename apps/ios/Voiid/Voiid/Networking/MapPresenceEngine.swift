@@ -108,6 +108,12 @@ final class MapPresenceEngine: ObservableObject {
                                                object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.noteBackgrounded() }
         }
+        // FOREGROUND FOLLOWS THE APP, not the Map tab.
+        //
+        // `noteForegrounded()` was only called from MapTabView.onAppear, so reopening the app
+        // on Chats never resumed sharing — the share stayed dead until the user happened to
+        // visit the Map. This is the full resume path: it re-reads the store, restarts the
+        // provider and extends the server row.
         NotificationCenter.default.addObserver(forName: UIApplication.willEnterForegroundNotification,
                                                object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.noteForegrounded() }
@@ -233,6 +239,14 @@ final class MapPresenceEngine: ObservableObject {
         provider.noteForegrounded()
         reloadFromStore()
         if visibility.isVisible {
+            // RESTART THE STREAM, not just a one-shot.
+            //
+            // This called `refreshOnce()` alone, so reopening the app sent exactly ONE fix
+            // and then went quiet — the pin updated once and froze, which is
+            // indistinguishable from sharing having stopped. After a process kill there is no
+            // stream at all to refresh. `start()` is idempotent (it no-ops when already
+            // running), so a normal foreground costs nothing.
+            provider.start()
             provider.refreshOnce()
             if let sid = outboundShareId {
                 Task { _ = try? await MapShareAPI.extend(shareId: sid) }

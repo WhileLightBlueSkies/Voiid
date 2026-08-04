@@ -303,8 +303,23 @@ object MapPresenceEngine {
                         // while we kept emitting against an expired row.
                         .onFailure { Log.w(TAG, "map share extend failed for $id", it) }
                 }
+                // RESTART THE STREAM, not just a one-shot.
+                //
+                // This called `requestSingle` alone, so reopening the app sent exactly ONE
+                // fix and then went quiet — the pin updated once and froze, which is
+                // indistinguishable from sharing having stopped. `start` is what keeps it
+                // flowing; it is idempotent (it calls stop() first), so a second foreground
+                // does not stack callbacks.
+                //
+                // startBackground too: onBackground() leaves the PendingIntent registered,
+                // but a process that was KILLED lost the in-process half, and re-registering
+                // costs nothing.
+                provider?.start { lat, lon, acc -> emitFix(lat, lon, acc) }
+                provider?.startBackground()
                 provider?.requestSingle { lat, lon, acc -> emitFix(lat, lon, acc) }
             } else {
+                // Intent-visible but no live share — the row lapsed while we were away, or a
+                // create failed offline. Re-open it; openShare() restarts the provider.
                 scope.launch { openShare(rekey = false) }
             }
         }
