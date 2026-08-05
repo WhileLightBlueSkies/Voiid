@@ -29,6 +29,40 @@ const pub = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
 // on, and SDP (which carries host IPs) should not linger.
 const OFFER_BUFFER_TTL = Number(process.env.VOIID_CALL_OFFER_TTL_SECONDS) || 60;
 const offersKey = (userId: string) => `call:offers:${userId}`;
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// CALL SIGNALING AUTHORIZATION
+//
+// This relay authenticates the SENDER (the JWT proves who they are) but until now checked
+// nothing about the RECIPIENT: a `call_offer` naming any `to_user_id` was forwarded, so an
+// authenticated user could ring anyone whose user_id they knew — bypassing the reachability
+// gate 020 built for messages. The comment on `loc_update` ("the receiving client must
+// discard unauthorized frames — that check is the real authorization") does NOT hold here,
+// because the call clients ring for any offer rather than rejecting unknown callers.
+//
+// This service holds NO database connection on purpose — it is stateless fan-out over Redis.
+// So the authorization decision is made in the API (POST /calls/ring, which has the database
+// and runs the conversation-membership query) and deposited in Redis as a short-lived grant
+// naming the two permitted parties. Here we only VERIFY it.
+//
+// Fail-closed: no grant means no relay. The cost of a false negative is one dropped call
+// frame on an expired grant; the cost of a false positive is the hole this closes.
+// ─────────────────────────────────────────────────────────────────────────────────
+const ringGrantKey = (callId: string) => `callgrant:${callId}`;
+
+/** True when `from`/`to` are exactly the pair the API authorized for this call. */
+async function callPairAuthorized(callId: string, from: string, to: string): Promise<boolean> {
+  const raw = await pub.get(ringGrantKey(callId));
+  if (!raw) return false;
+  try {
+    const { a, b } = JSON.parse(raw) as { a: string; b: string };
+    // Direction-agnostic: the grant is written by the caller's ring, but the callee's answer,
+    // ICE and hangup travel the other way over the same authorized pair.
+    return (a === from && b === to) || (a === to && b === from);
+  } catch {
+    return false;
+  }
+}
 // Per-user buffer of "this call was taken on another of your devices" verdicts. Same
 // lifetime as the offer buffer, and cleared the same two ways (the offer's resolution
 // hdel, or TTL). Exists because the verdict must reach a sibling device that was woken
@@ -432,7 +466,19 @@ wss.on('connection', (ws, req) => {
         });
         // Deliver to the callee's devices (never echo back to the sender).
         if (msg.to_user_id !== userId) {
-          pub.publish(`channel:user:${msg.to_user_id}`, out);
+          // AUTHORIZATION GATE — see callPairAuthorized() above. Async, so this whole
+          // delivery is deferred into a promise chain rather than making the outer message
+          // handler async (which would change frame ordering for every other message type).
+          // Frames for one call still land in order because they await the same key.
+          const toUserId = msg.to_user_id as string;
+          void callPairAuthorized(msg.call_id as string, userId, toUserId).then((allowed) => {
+            if (!allowed) {
+              // Fail closed and say nothing useful back: a caller probing which user_ids are
+              // reachable must not learn the difference between "not authorized" and
+              // "authorized but offline".
+              return;
+            }
+            pub.publish(`channel:user:${toUserId}`, out);
 
           // Buffer the offer so a callee whose socket is down (backgrounded/killed,
           // about to be woken by the VoIP push) can still get it. We CANNOT decide
@@ -500,6 +546,7 @@ wss.on('connection', (ws, req) => {
               pub.expire(takenKey(userId), OFFER_BUFFER_TTL);
             }
           }
+          });
         }
         return;
       }

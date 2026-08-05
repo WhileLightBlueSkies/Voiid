@@ -19,10 +19,51 @@ import { requireAuth } from '../auth';
 import { asyncHandler } from '../util';
 import jwt from 'jsonwebtoken';
 import { sendWakePush, sendVoipPush, voipConfigured } from '../push';
+import { redis } from '../redis';
 
 const router = Router();
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// CALL AUTHORIZATION
+//
+// Ringing someone is a REACHABILITY decision, not just an authentication one. 020
+// established three ways to reach a person (mutual contact / one-way contact as a request /
+// @username + the 6-digit PIN), and every one of them resolves to the same artifact: a
+// conversation both parties belong to. So "may A ring B" reduces to "do A and B share an
+// active conversation" — no separate policy to keep in sync with 020, and the PIN gate is
+// inherited rather than reimplemented.
+//
+// This check was MISSING on the 1:1 path: /ring validated only field shapes, so anyone who
+// learned your user_id (a group roster exposes them) could make every device you own ring,
+// VoIP push included, with no PIN, no request and no contact. The group endpoints
+// (/group/token, /group/ring) always verified membership; the 1:1 path never did.
+//
+// BOTH sides are checked, not just the caller. Verifying only the caller would let a member
+// of a large group name that conversation_id and ring a stranger who is also in it.
+// ─────────────────────────────────────────────────────────────────────────────────
+async function sharesConversation(a: string, b: string, conversationId: string): Promise<boolean> {
+  const rows = await query<{ n: string }>(
+    `select count(distinct user_id)::text as n
+       from conversation_members
+      where conversation_id = $1 and left_at is null and user_id in ($2, $3)`,
+    [conversationId, a, b]
+  );
+  return rows[0]?.n === '2';
+}
+
+/**
+ * How long a ring grant stays valid in Redis. Sized to outlive the ring itself (a call rings
+ * for ~45s before timing out) without leaving a stale permit that would let a caller re-ring
+ * long after the callee removed them.
+ */
+const RING_GRANT_TTL_SECONDS = 120;
+
+/** Redis key naming the ONE pair this call is permitted to signal between. */
+export function ringGrantKey(callId: string): string {
+  return `callgrant:${callId}`;
+}
 
 // GET /calls/turn — time-limited ICE servers for the client's RTCPeerConnection.
 // Precedence: Cloudflare (if configured) -> coturn HMAC (if secret set) -> STUN-only.
@@ -50,6 +91,35 @@ router.post('/ring', requireAuth, asyncHandler(async (req, res) => {
   if (typeof call_id !== 'string' || !UUID_RE.test(call_id)) {
     return res.status(400).json({ error: 'call_id must be a uuid (client-generated)' });
   }
+
+  // AUTHORIZATION — see sharesConversation() above. Runs BEFORE the calls row is inserted
+  // and before any push is sent, so an unauthorized ring leaves no history record and never
+  // reaches the callee's device.
+  if (to_user_id === user_id) {
+    return res.status(400).json({ error: 'cannot call yourself' });
+  }
+  if (!(await sharesConversation(user_id, to_user_id, conversation_id))) {
+    // 403 rather than 404: the caller supplied a real conversation id, they are simply not
+    // permitted to ring through it. Deliberately does not distinguish "you are not a member"
+    // from "they are not a member" — that difference would let a caller probe who belongs to
+    // a conversation they can see the id of.
+    return res.status(403).json({ error: 'not permitted to call this user' });
+  }
+
+  // Record the authorized pair for the WebSocket relay. The relay (backend/websocket) holds
+  // no database connection by design — it is a stateless fan-out over Redis — so it cannot
+  // run the membership query itself. This grant is the authorization decision, made here
+  // where the database is, and handed to the relay through the Redis both services share.
+  //
+  // Keyed by call_id and naming BOTH parties, so the relay can verify each signaling frame
+  // belongs to a call that was actually authorized and travels between the two people it was
+  // authorized for — a stolen call_id cannot be pointed at a third party.
+  await redis.set(
+    ringGrantKey(call_id),
+    JSON.stringify({ a: user_id, b: to_user_id }),
+    'EX',
+    RING_GRANT_TTL_SECONDS
+  );
 
   // Lean history record. Use the client-supplied call_id as the row id so the
   // signaling id and the history row correlate; ignore a duplicate (retry) ring.
