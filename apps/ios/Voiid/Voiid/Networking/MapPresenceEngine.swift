@@ -384,13 +384,27 @@ final class MapPresenceEngine: ObservableObject {
         MapPresenceStore.addToAudience(targets)
         reloadFromStore()
         guard visibility.isVisible, let key = MapKeyStore.outboundKey() else { return }
-        // Recreate the server row with the full audience (server auto-ends the prior share),
-        // then hand the current key to the newly-added members.
+        // Recreate the server row with the full audience (server auto-ends the prior share).
         let audienceIds = audience.map(\.userId)
         if let res = try? await MapShareAPI.createMapShare(targetUserIds: audienceIds) {
             outboundShareId = res.share_id
         }
-        await distributeMapKey(key, to: targets)
+
+        // REDISTRIBUTE TO THE WHOLE AUDIENCE, NOT JUST THE NEW MEMBERS.
+        //
+        // Adding one friend used to make you VANISH from every existing viewer's map,
+        // permanently. Recreating the row above makes the server supersede the previous share
+        // and publish `loc_stop` for the OLD share id to all of its targets — every existing
+        // viewer included. On each of them receiveStop matches the id it is tracking and
+        // erases the inbound map key, which is keyed by SENDER rather than by share, so it
+        // takes the whole relationship with it. Every later fix is then dropped as
+        // "not authorized to us yet", forever, until the sender ghosts and re-shares.
+        //
+        // Handing the key to `targets` (the added members) alone left the existing viewers
+        // with nothing to restore. The key itself has not changed — adding never rekeys, only
+        // removal does — so re-sending it to everyone is idempotent for the newly added and
+        // repairs exactly the viewers the supersede just cleared.
+        await distributeMapKey(key, to: audienceIds)
     }
 
     /// Remove one person. Revocation is a REKEY (§3): stop that recipient, mint a new key,
