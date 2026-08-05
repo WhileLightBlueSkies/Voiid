@@ -46,17 +46,27 @@ object LocalStore {
     suspend fun conversations(context: Context): List<VConversation> = withContext(Dispatchers.IO) {
         val rows = runCatching { db(context).conversations().recent() }.getOrDefault(emptyList())
         rows.map { r ->
-            val isGroup = r.kind == "group"
+            // Three-way, not group/not-group. Collapsing `self` into `direct` made Note to
+            // Self re-read as an ordinary chat after a cold launch, losing its pin and its
+            // title. `kind` is free text with no CHECK constraint, so rows already written as
+            // "direct" self-heal on the next fetch-and-save (the server is authoritative).
+            val type = when (r.kind) {
+                "group" -> ConversationType.GROUP
+                "self" -> ConversationType.SELF
+                else -> ConversationType.DIRECT
+            }
             val peer = r.peerUserId
             val title = when {
-                isGroup -> r.title?.takeIf { it.isNotBlank() } ?: "Group"
+                type == ConversationType.GROUP -> r.title?.takeIf { it.isNotBlank() } ?: "Group"
+                // Before the peer branch: a self row has no peer and would fall to "Unknown".
+                type == ConversationType.SELF -> "Note to Self"
                 // Never fall through to the raw id — that's the UUID-on-screen bug.
                 peer != null -> UserDirectory.displayName(peer, fallback = r.title)
                 else -> r.title ?: "Unknown"
             }
             VConversation(
                 id = r.id,
-                type = if (isGroup) ConversationType.GROUP else ConversationType.DIRECT,
+                type = type,
                 title = title,
                 lastMessagePreview = r.lastMessagePreview,
                 lastMessageAt = r.lastMessageAt?.let { it * 1000 },
@@ -79,7 +89,11 @@ object LocalStore {
         val rows = convs.map { c ->
             ConversationRow(
                 id = c.id,
-                kind = if (c.type == ConversationType.GROUP) "group" else "direct",
+                kind = when (c.type) {
+                    ConversationType.GROUP -> "group"
+                    ConversationType.SELF -> "self"
+                    else -> "direct"
+                },
                 title = c.title.takeIf { it.isNotBlank() },
                 peerUserId = c.peerUserId,
                 photoUrl = c.photoURL,

@@ -51,6 +51,11 @@ enum LocalStore {
             let title: String
             if kind == "group" {
                 title = storedTitle?.isEmpty == false ? storedTitle! : "Group"
+            } else if kind == "self" {
+                // BEFORE the peer branch. A self row has no peer, so without this it fell to
+                // `storedTitle ?? "Unknown"` and the chat list showed "Unknown" for your own
+                // notes on every cold launch.
+                title = "Note to Self"
             } else if let peer = peerUserId {
                 // Never fall through to the raw id — that's the UUID-on-screen bug.
                 title = UserDirectory.shared.displayName(peer, fallback: storedTitle)
@@ -60,7 +65,13 @@ enum LocalStore {
 
             return VConversation(
                 id: id,
-                type: kind == "group" ? .group : .direct,
+                // Three-way, not group/not-group. Collapsing `self` into `direct` here made
+                // the chat list (which renders straight from SQLite) re-read Note to Self as
+                // an ordinary chat on the next cold launch — the self short-circuit in
+                // ChatStore never fired, send fell through to resolvePeer and threw 404, and
+                // the top-pin was lost. `kind` is free text with no CHECK constraint, so rows
+                // already written as "direct" self-heal on the next fetch-and-save.
+                type: ConversationType(rawValue: kind) ?? .direct,
                 title: title,
                 photoName: nil,
                 lastMessagePreview: row["last_message_preview"],
@@ -101,7 +112,7 @@ enum LocalStore {
                         updated_at      = excluded.updated_at
                     """, arguments: [
                         c.id,
-                        c.type == .group ? "group" : "direct",
+                        c.type.rawValue,
                         c.title,
                         c.peerUserId,
                         c.photoURL,

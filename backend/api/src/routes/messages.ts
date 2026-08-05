@@ -63,7 +63,19 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
   }
 
   // ── Fan-out path: one opaque ciphertext per target device ──────────────────
-  if (Array.isArray(messages) && messages.length > 0) {
+  // PRESENCE, not non-emptiness. A single-device NOTE TO SELF legitimately produces an
+  // EMPTY bundle — encryptFanout returns [] by design, because there is genuinely no other
+  // device to encrypt to. Gating on length sent that legitimate case down the legacy
+  // single-ciphertext path, which then 400s for want of a top-level `ciphertext` field. Only
+  // the text path short-circuits on an empty bundle, so media, reactions, replies, forwards,
+  // delete-for-everyone and location all failed — and on iOS a 400 is not retryable, so the
+  // user got a red failed bubble.
+  //
+  // The body below is already correct for an empty array: the metadata insert writes
+  // ciphertext = null unconditionally, the per-device loop is a no-op, no Redis publish
+  // fires, and the wake push is guarded by deviceIds.length. It returns delivered_devices: 0,
+  // which is the honest answer.
+  if (Array.isArray(messages)) {
     if (!conversation_id) {
       return res.status(400).json({ error: 'conversation_id required' });
     }
