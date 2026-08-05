@@ -5,6 +5,12 @@ Scope: the clip **capture and edit** experience on both platforms — `ClipCompo
 (`StoryCameraView` in `.clip` mode). Goal: full-screen camera, segmented record, speed control,
 filter carousel over the live preview, and an IG-grade trim/cover/caption flow.
 
+> Verification status: every file:line citation below was re-read against the working tree at
+> commit `41eefc7`, and the Signal citations were re-read against `/Users/devacc/Signal stack`.
+> Claims about media3/CameraX APIs were checked against the actual pinned `.aar`s, not from memory.
+> Statements about Instagram's UI are from product knowledge and are labelled as such (§3.1) —
+> they are the design target, not code claims.
+
 Hard constraints honoured: the colour-filter pipeline was **just rebuilt** (iOS `CIPhotoEffect*` +
 custom `CIColorControls`; Android media3 `RgbMatrix`/`RgbFilter` with a matching
 `android.graphics.ColorMatrix` preview path) and is **reused, not redesigned** by every
@@ -56,9 +62,17 @@ Four steps with a real back stack — `[1] Source → [2] Capture/Pick → [3] E
   actually granted (:111-116); recording stopped on dispose so the file isn't left open (:139-141).
 - A thin progress bar under the top bar (:227-241).
 
-Dependencies: CameraX **1.3.4** and media3 **1.4.1**
-(`apps/android/gradle/libs.versions.toml:36,41`); `camera-video` was added specifically for this
-camera (`apps/android/app/build.gradle.kts:146-161`, versions.toml:87-89).
+Dependencies: CameraX **1.3.4** (`libs.versions.toml:36`) and media3 **1.4.1**
+(`libs.versions.toml:41`); `camera-video` was added specifically for this camera
+(`libs.versions.toml:87-89`, wired at `apps/android/app/build.gradle.kts:152`). Note the same
+CameraX version is shared with the stories camera, which imports `androidx.camera.core/lifecycle/
+view` (`apps/android/app/src/main/java/com/voiid/app/main/stories/StoryCameraView.kt:4-10`) — so a
+CameraX upgrade (Step 5) is not a clips-only change.
+
+**API availability verified against the pinned artifacts** (unzipped from the Gradle cache, so the
+recommendations below cannot fail on a missing class): `androidx/media3/effect/SpeedChangeEffect`,
+`RgbMatrix`, `RgbFilter` and `Presentation` are all present in `media3-effect-1.4.1.aar`;
+`SonicAudioProcessor` and `ExoPlayer.setVideoEffects` are present in `media3-exoplayer-1.4.1.aar`.
 
 ### 1.3 Recording — iOS
 
@@ -147,11 +161,15 @@ port:
    anchor for *where* start/end land; the cover scrubber has the same problem
    (ClipEditor.swift:298-301, ClipEditor.kt:488-498).
 7. **Android in-app recordings can never produce the 1080p rung.** The recorder asks for
-   `Quality.HD` (=720p) with a comment reasoning about not recording *4K* (ClipCameraView.kt:100-104),
-   but the export ladder's FHD rung requires a source long edge ≥ 1080×0.9
-   (ClipEditor.kt:748). Gallery imports get 1080p; in-app recordings top out at 720p. Root cause:
-   `Quality.HD` chosen where `Quality.FHD` matches the stated intent ("the export ladder tops out
-   at 1080p").
+   `Quality.HD` (=1280×720) with a comment reasoning about not recording *4K*
+   (ClipCameraView.kt:100-104). The ladder skips a rung when
+   `sourceEdge < quality.longEdge * 0.9` (ClipEditor.kt:748), and `ClipQuality.FHD.longEdge = 1920`
+   (`apps/android/app/src/main/java/com/voiid/app/net/ClipQuality.kt`), so the FHD rung needs a
+   source long edge ≥ **1728**. A 720p recording's long edge is **1280** — it fails, always.
+   Gallery imports get 1080p; in-app recordings silently top out at 720p. Root cause: `Quality.HD`
+   was chosen while the comment reasons about avoiding 4K, so the argument ("the ladder tops out at
+   1080p") actually justifies `Quality.FHD`, not `Quality.HD`. The comment and the code disagree
+   about which rung is the ceiling.
 8. **Android progress bar: comment/code mismatch.** The comment promises "one bar per take"
    (ClipCameraView.kt:225-227) but the implementation draws a **single** proportional `Box`
    (:228-240) — no segment tick marks, so undo has no visual anchor. (IG shows white ticks at each
@@ -252,8 +270,11 @@ new call sites are added.
 ### Step 2 (Android, medium) — record at FHD; per-segment ticks in the progress bar
 
 - `ClipCameraView.kt:100-104`: `Quality.HD` → `QualitySelector.from(Quality.FHD,
-  FallbackStrategy.higherQualityOrLowerThan(Quality.HD))`, and fix the comment — the ladder's top
-  rung *is* 1080p (`ClipEditor.kt:748`), so 720p capture silently amputates it.
+  FallbackStrategy.higherQualityOrLowerThan(Quality.HD))`, and fix the comment. The rung test is
+  `sourceEdge < quality.longEdge * 0.9` (`ClipEditor.kt:748`) with `FHD.longEdge = 1920`, i.e. a
+  source long edge ≥ 1728 is required; 720p capture gives 1280 and silently amputates the top rung.
+  `FallbackStrategy` matters here — devices without a 1080p profile must still record rather than
+  fail to bind.
 - `ClipCameraView.kt:227-241`: render one `Box` per finished segment (widths from each segment's
   `durationMsOf`) plus the live segment, with 2 dp gaps — making the code match its own comment
   (:225-227) and giving undo a visual anchor.

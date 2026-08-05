@@ -325,9 +325,23 @@ class ChatEngine private constructor(context: Context) {
             // Our OWN sent message: can't decrypt our ratchet output, but the server
             // reports the recipient's receipt state — advance Sent→Delivered→Seen even
             // if the live WS receipt push was missed (WS-independent status).
+            // Our OWN account sent this. Two different cases, and conflating them is what
+            // kept sent messages from ever appearing on a linked device — and made NOTE TO
+            // SELF show nothing at all, since there every message has sender_id == myId.
+            //
+            //  * Sent from THIS device — there is genuinely nothing to decrypt (we never
+            //    encrypt to ourselves), so only the receipt state matters.
+            //  * Sent from ANOTHER of my devices — the fan-out addressed a real per-device
+            //    ciphertext to this device precisely so it could sync. Decrypting it is the
+            //    entire point; skipping it threw that ciphertext away.
             if (m.sender_id == myId) {
-                m.receipt_status?.let { applyReceipt(m.id, it) }
-                continue
+                val fromThisDevice = m.sender_device_id == null || m.sender_device_id == e2e.deviceId
+                if (fromThisDevice || m.ciphertext == null) {
+                    m.receipt_status?.let { applyReceipt(m.id, it) }
+                    continue
+                }
+                // Falls through to the normal decrypt path below: a sibling device's message
+                // is ordinary inbound ciphertext, just authored by us.
             }
             if (seen.contains(m.id)) continue
             // A null ciphertext means the server had no per-device blob for us yet (e.g. our
@@ -338,7 +352,12 @@ class ChatEngine private constructor(context: Context) {
                 null
             } ?: continue
             runCatching {
-                val plain = decryptInbound(wire, peerUserId, m.sender_device_id)
+                // Session lookup keys on WHO SENT IT, not on who the conversation is with.
+                // For a sibling-device sync (m.sender_id == myId) the session is with our own
+                // account, so passing the conversation's peer would look up the wrong session
+                // and fail to decrypt. Identical for every other message, where sender_id IS
+                // the peer.
+                val plain = decryptInbound(wire, m.sender_id, m.sender_device_id)
                 android.util.Log.i("VOIID", "✅ decrypted inbound id=${m.id} senderDev=${m.sender_device_id}")
                 // Location-protocol message (docs/LOCATION.md §4). Recognise it by
                 // content_type OR by the `_vloc` marker — an iOS envelope that didn't route on
@@ -669,12 +688,24 @@ class ChatEngine private constructor(context: Context) {
      *  minus this sending device. */
     private suspend fun resolveTargets(peerUserId: String): List<TargetDevice> {
         val targets = mutableListOf<TargetDevice>()
-        val peerDevs: DevicesResponse = api.requestAs("GET", "devices/$peerUserId")
-        peerDevs.devices.forEach { targets.add(TargetDevice(peerUserId, it.id)) }
-        // Our own OTHER devices (linked-device sync of sent messages), excluding this one.
+        // THIS device is never a target — you do not encrypt to yourself. Filtering here
+        // rather than only in the own-devices block below is what makes NOTE TO SELF work:
+        // there peerUserId IS my id, so the peer loop would otherwise return the sending
+        // device itself, and the note would be encrypted to the device that wrote it.
         val myId = tokens.userId
         val myDev = e2e.deviceId
-        if (myId != null) {
+
+        val peerDevs: DevicesResponse = api.requestAs("GET", "devices/$peerUserId")
+        peerDevs.devices
+            .filterNot { peerUserId == myId && it.id == myDev }
+            .forEach { targets.add(TargetDevice(peerUserId, it.id)) }
+
+        // Our own OTHER devices (linked-device sync of sent messages), excluding this one.
+        // SKIPPED when the peer is me: the loop above already returned exactly those devices,
+        // and appending them again meant every note was encrypted TWICE to each linked device
+        // — two ratchet steps for one message, one of whose outputs the server then discards
+        // as a duplicate row, leaving the receiving ratchet to absorb a skipped key.
+        if (myId != null && peerUserId != myId) {
             val mine: DevicesResponse = api.requestAs("GET", "devices/$myId")
             mine.devices.filter { it.id != myDev }.forEach { targets.add(TargetDevice(myId, it.id)) }
         }

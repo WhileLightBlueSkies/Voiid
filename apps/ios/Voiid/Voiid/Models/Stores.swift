@@ -635,6 +635,13 @@ final class ChatStore: ObservableObject {
 
     /// Resolve (and cache) the peer user_id for a direct conversation.
     private func peerUserId(for conv: VConversation) async throws -> String {
+        // NOTE TO SELF: the peer IS me. Without this case the generic path below asks
+        // ChatService.resolvePeer for "the member who isn't me" — of a conversation whose only
+        // member is me — gets nil, and throws 404 "no peer". That throw is why the whole
+        // feature was dead: every send failed before it reached the fan-out that was already
+        // written to handle this case correctly.
+        if conv.type == .self { return TokenStore.shared.userId ?? "" }
+
         if let p = conv.peerUserId { return p }
         if let i = directConversations.firstIndex(where: { $0.id == conv.id }),
            let p = directConversations[i].peerUserId { return p }

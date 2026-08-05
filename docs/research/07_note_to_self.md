@@ -1,261 +1,588 @@
-# 07 — Note to Self: why it does not work, and how to fix it
+# 07 — Note to Self is broken
 
-Researched 2026-08-05 against the live tree (`main`, 41eefc7). All line numbers cite that state.
+Research doc. Every claim below cites `file:line` against the tree at commit `41eefc7`.
+Hypotheses are labelled **HYPOTHESIS**; everything else was read directly from source.
 
-## TL;DR
-
-Note to Self exists end-to-end (its own `'self'` conversation type on the server, creation on
-every launch, pinned row in the chat list, a dedicated ChatEngine send path for "no other
-devices") — but **the store layer on both platforms was never taught that the self
-conversation's "peer" is you**. `peerUserId(...)` resolves the peer by looking for a member
-whose id is not yours; the self conversation has exactly one member (you), so resolution
-throws `404 "no peer"`. Every send aborts before the engine's note-to-self path is ever
-reached (the note sits on a clock forever, plus a "Couldn't resolve the recipient." banner),
-and every open/sync of the chat surfaces "Couldn't load messages.". The engine's carefully
-commented note-to-self handling is dead code. Two further latent bugs sit behind that one:
-`resolveTargets` does not exclude the sending device when the peer is yourself (so the
-documented "empty target list on a single device" invariant is false), and the sync path
-skips every message with `sender_id == myId`, which for Note to Self is *every* message, so a
-second linked device would render an empty notes chat.
+**Scope note.** Note to Self is E2EE like any other message — it is *not* one of the
+scoped non-E2EE exceptions (Clips / creators / games). Nothing recommended here weakens
+that: every fix keeps the note encrypted on-device to the author's own devices, with the
+server holding only ciphertext it cannot read.
 
 ---
 
-## 1. What exists today (cited)
+## 1. What exists today
 
-### Backend
+The feature was built end-to-end in a past session. All three tiers have real code; it is
+the seams between them that fail.
 
-- `POST /conversations/create` accepts `type: 'self'` — idempotent, one per user, one member
-  row: `backend/api/src/routes/conversations.ts:30-60`. The design comment (lines 16-29)
-  correctly states the E2E model: notes are encrypted to the author's OTHER devices; with a
-  single device there are no targets and the client keeps the note local.
-- A `'direct'` with yourself is explicitly blocked so self-chats can't collide with the
-  two-member 1:1 lookup: `conversations.ts:64-66`.
-- No DB constraint blocks the type — `conversations.type` is free text with no CHECK
-  (`database/migrations/005_conversations.sql:6`), so the `'self'` insert succeeds.
-- The list endpoint returns the self conversation: membership filter is
-  `request_state = 'accepted'` (`conversations.ts:152`) and the column defaults to
-  `'accepted'` (`database/migrations/020_reachability.sql:47`), which the self-create's
-  member insert (`conversations.ts:48-50`) inherits. Verified: nothing server-side hides it.
-- Cosmetic: the fall-through error still says `"type must be 'direct' or 'group'"`
-  (`conversations.ts:128`).
+### 1.1 Backend — its own conversation type
 
-### iOS
+`POST /conversations/create` takes `type: 'self'` and creates a conversation with exactly
+one member (the caller):
 
-- `ChatService.createSelfChat()` posts `{type:"self"}` (`Networking/ChatService.swift:130-134`;
-  Swift `JSONEncoder` always encodes the stored property, so the known
-  kotlinx-`encodeDefaults` bug class does not apply here).
-- Called on every launch before the list fetch: `Models/Stores.swift:261-264`.
-- `ConversationType` has a `self` case (`Models/Models.swift:95`), the DTO maps `"self"` →
-  title "Note to Self" (`Networking/ChatService.swift:82-83`), and the list pins self chats
-  first (`Models/Stores.swift:311-315`). UI affordances exist throughout
-  (`Main/ChatListRows.swift:116`, `Main/DraggableChatGrid.swift:160`,
-  `Main/ChatsHomeView.swift:664-671`, `Main/ChatDetailView.swift:145-155, 520-523`).
-- The engine has a dedicated note-to-self send path: if the fan-out returns no target
-  devices, the note is kept local and marked sent (`Networking/ChatEngine.swift:321-329`),
-  backed by an early return in `encryptFanout` when `targets.isEmpty && peerUserId == my id`
-  (`Networking/ChatEngine.swift:1040-1052`).
+- `backend/api/src/routes/conversations.ts:30` — `if (type === 'self')` branch.
+- `backend/api/src/routes/conversations.ts:32-40` — idempotent lookup: `where c.type = 'self'`
+  joined to the caller's active membership row, `limit 1`. Returns `{conversation_id, existed:true}`.
+- `backend/api/src/routes/conversations.ts:44-47` — insert `conversations (type='self', created_by)`.
+- `backend/api/src/routes/conversations.ts:48-51` — insert exactly ONE `conversation_members` row.
 
-### Android
+The design rationale is documented in place at `conversations.ts:16-29`: a self-chat is its
+own `type` rather than a `direct` with two duplicate member rows, because the direct-lookup
+query identifies a 1:1 by "exactly two active members" (`conversations.ts:70-77`) and a
+duplicated member row would collide with it. That reasoning is sound. The `direct` path
+explicitly rejects `member_id === user_id` (`conversations.ts:64`).
 
-- Mirror of all of the above: `createSelfChat()` with an explicit
-  `Json { encodeDefaults = true }` **specifically to dodge the encodeDefaults bug class**
-  (`net/ChatService.kt:57-65` — `type` equals its default `"self"`, so the shared
-  `ApiClient.json` would have omitted it and the server would have created a *direct* chat);
-  `ConversationType.SELF` (`model/Models.kt:86`); explicit `"self"` mapping with a comment
-  warning against `else -> DIRECT` (`net/ChatService.kt:73-80`); create-on-launch + pin-first
-  (`model/Stores.kt:238-241, 256-257`); the engine's empty-target note-to-self path
-  (`net/ChatEngine.kt:208-216`) and `encryptFanout` early return (`net/ChatEngine.kt:633-642`).
+**The schema does not constrain `type`.** `database/migrations/005_conversations.sql:6`
+declares `type text not null default 'direct'` with only a comment (`-- direct | group`) and
+no `CHECK`. So `'self'` inserts cleanly — this is *not* a break, and no migration is needed
+for the server-side row to exist.
 
-So: server OK, models OK, list OK, engine OK. The break is in the one layer between them.
+**The list query does not filter self-chats out.** `GET /conversations`
+(`conversations.ts:135-171`) joins only on the caller's own membership and
+`me.request_state = 'accepted'` (`conversations.ts:152`). `request_state` defaults to
+`'accepted'` (`database/migrations/020_reachability.sql:47`), so the self-chat's single
+member row passes the reachability gate. **A self-conversation with one member is returned
+by the list endpoint correctly** — the server does not reject or hide it.
 
----
+`GET /conversations/:id` (`conversations.ts:174-196`) also works: the caller is a member, so
+the 403 at `conversations.ts:180` does not fire, and `members` comes back as a one-element
+array containing the caller.
 
-## 2. What is broken (cited, with root cause)
+Cosmetic only: the fall-through error at `conversations.ts:128` still reads
+`"type must be 'direct' or 'group'"`.
 
-### BREAK 1 — the store's peer resolution throws for the self conversation (the actual "not working at all")
+### 1.2 iOS
 
-Both stores resolve "the peer" of any non-group conversation by finding a member whose
-user_id differs from mine:
+- `apps/ios/Voiid/Voiid/Models/Models.swift:95` — `enum ConversationType: String { case direct, group, `self` }`.
+- `apps/ios/Voiid/Voiid/Networking/ChatService.swift:130-134` — `createSelfChat()` posts `{type:"self"}`.
+- `apps/ios/Voiid/Voiid/Networking/ChatService.swift:82` — explicit `ConversationType(rawValue: c.type) ?? .direct` mapping.
+- `apps/ios/Voiid/Voiid/Networking/ChatService.swift:83` — title `"Note to Self"`.
+- `apps/ios/Voiid/Voiid/Networking/ChatService.swift:92` — peer enrichment restricted to `.direct`, so no futile peer hunt.
+- `apps/ios/Voiid/Voiid/Models/Stores.swift:264` — `createSelfChat()` called on every launch (idempotent).
+- `apps/ios/Voiid/Voiid/Models/Stores.swift:314-315` — self-chats pinned to the top of `directConversations`.
+- `apps/ios/Voiid/Voiid/Models/Stores.swift:643` — **`peerUserId(for:)` returns own userId for `.self`.** The comment
+  at `Stores.swift:638-642` records that the absence of this line is what killed the feature
+  the first time.
+- `apps/ios/Voiid/Voiid/Networking/ChatEngine.swift:1090-1114` — `resolveTargets` correctly
+  excludes the sending device from the peer loop (`ChatEngine.swift:1101`) and skips the
+  own-devices block when `peerUserId == myId` (`ChatEngine.swift:1109`) so linked devices
+  aren't double-targeted.
+- `apps/ios/Voiid/Voiid/Networking/ChatEngine.swift:1050-1052` — empty target list for a self
+  send returns `[]` instead of throwing the retryable 409.
+- UI: `ChatDetailView.swift:145-149` (no profile), `ChatDetailView.swift:331` (header not a link),
+  `ChatDetailView.swift:523` (no "say hi" nudge), `ChatListRows.swift:116`,
+  `DraggableChatGrid.swift:160` (bookmark mark, not a face), `ChatsHomeView.swift:74`
+  (self excluded from the "no real chats" empty test), `ChatsHomeView.swift:666-673`
+  (empty state offers "Open Note to Self").
 
-- iOS `ChatService.resolvePeer` — `Networking/ChatService.swift:111-118`:
-  `members.first(where: { $0.user_id != myId })` → for the self conversation (single member =
-  me) this is `nil` and the caller gets `(nil, …)`.
-- iOS `ChatStore.peerUserId(for:)` — `Models/Stores.swift:637-647`: no `type == .self` case;
-  falls through to `resolvePeer`, then `throw APIError.http(status: 404, message: "no peer")`
-  (line 642). Note also that `fetchConversations` only ever populates `conv.peerUserId` for
-  `.direct` rows (`Networking/ChatService.swift:92`), so the cached-peer fast paths (lines
-  638-640) never hit for self.
-- Android identical: `net/ChatService.kt:103-115` (`resolvePeer` returns
-  `PeerInfo(null, …)`), `model/Stores.kt:512-520` (`throw ApiError.Http(404, "no peer")`),
-  peer only resolved for `DIRECT` (`net/ChatService.kt:88-91`).
+### 1.3 Android
 
-Consequences, per platform:
+Structurally a mirror, with named gaps:
 
-- **Send never happens.** iOS `ChatStore.send` enqueues the note as PENDING, then
-  `guard let peer = try? await peerUserId(for: conv) else { loadError = "Couldn't resolve
-  the recipient."; return }` (`Models/Stores.swift:709-715`) — the guard always fails for
-  Note to Self, `flushPending` is never called, and the note sits at `.sending` (clock icon)
-  forever. Android is the same code shape: `model/Stores.kt:644-652`. Media sends die the
-  same way (`Models/Stores.swift:624`; `model/Stores.kt:497`), as do replies
-  (`Models/Stores.swift:693`; `model/Stores.kt:629`).
-- **Opening the chat shows an error.** `syncMessages` resolves the peer before syncing
-  (`Models/Stores.swift:483-484`) and the catch sets `loadError = "Couldn't load messages."`
-  (lines 498-500). Android: `model/Stores.kt:396-410`.
-- **The engine's note-to-self path is dead code.** `flushPending` → `encryptFanout` →
-  the `peerUserId == my id` early return (`Networking/ChatEngine.swift:1050`,
-  `net/ChatEngine.kt:642`) is unreachable because no caller ever passes the own user id.
-
-Root cause: the feature was built top-down (server type, engine fan-out semantics, UI) and
-bottom-up, but the middle layer — "for a self conversation, the peer *is* me" — was never
-written. One store method on each platform is missing a two-line special case.
-
-### BREAK 2 — `resolveTargets` includes the sending device (and duplicates) when peer == self
-
-The engine comments promise: *"NOTE TO SELF … `peerUserId` is our own id, so `resolveTargets`
-correctly returns our other devices MINUS this one — which on one device is an empty list"*
-(`Networking/ChatEngine.swift:1040-1044`; `net/ChatEngine.kt:633-635`). The code does not do
-that:
-
-- iOS `resolveTargets` — `Networking/ChatEngine.swift:1090-1101`: the peer-devices loop
-  (lines 1092-1093) appends **every** device of `peerUserId` with no `!= myDev` filter; when
-  `peerUserId` is my own id that includes the *current sending device*. The own-devices block
-  (lines 1095-1098) then appends my other devices **a second time**.
-- Android identical: `net/ChatEngine.kt:670-682` (unfiltered peer loop at 672-673, duplicate
-  own-device append at 677-680).
-
-So once BREAK 1 is fixed, a single-device user's note would target *its own device*: the
-empty-targets local-save path (`ChatEngine.swift:326-329` / `ChatEngine.kt:213-216`) never
-fires. Instead the client fetches its own prekey bundle — `GET /prekeys/:user_id` hands out a
-bundle for **all** of the user's active devices including the caller's own, consuming a
-one-time prekey (`backend/api/src/routes/prekeys.ts:59-112`) — TOFU-pins its own identity,
-mints a vodozemac session with itself, and uploads ciphertext addressed to itself. On a
-multi-device account, every other own device is targeted twice → two encrypts per note (the
-ratchet advances twice; the server drops the duplicate row via
-`on conflict (message_id, recipient_device_id) do nothing`,
-`backend/api/src/routes/messages.ts:96-104`, so one ratchet step's output is discarded —
-skipped-message-key handling has to absorb it on receive).
-
-Root cause: the peer loop was written for the strict "peer ≠ me" case and the note-to-self
-comment was added to `encryptFanout` without checking what `resolveTargets` actually returns
-for `peer == me`. (Hypothesis, marked as such: this was never seen in testing because BREAK 1
-prevents this code from ever running with `peerUserId == my id`.)
-
-### BREAK 3 — sync skips every own-sent message, so a linked device shows an empty Note to Self
-
-The inbound decrypt loop skips anything with `sender_id == myId` (receipt bookkeeping only):
-`Networking/ChatEngine.swift:782-786`; `net/ChatEngine.kt:328-331`. In Note to Self **every**
-message has `sender_id == myId`, so a second (linked) device — the only party the fan-out
-encrypts to — never decrypts or displays a single note, even though a per-device ciphertext
-addressed to it sits in `message_ciphertexts`. (This is the same gap that keeps *any* own
-sent message from appearing on a linked device; Note to Self is just the 100% case.)
-
-### Not broken (checked, to save the next agent time)
-
-- kotlinx `encodeDefaults` on the create body: already defended on Android
-  (`net/ChatService.kt:60-63`); iOS `JSONEncoder` unaffected.
-- Server-side visibility: `request_state` defaults to `'accepted'` — the self conversation
-  is returned by `GET /conversations` (see §1).
-- Unread badge: `sender_id <> $1` in the unread lateral (`conversations.ts:165`) means Note
-  to Self can never accumulate a bogus unread count.
-- iOS enum decode: `ConversationType(rawValue: "self")` matches the backticked case
-  (`Models/Models.swift:95`); no Codable keyNotFound risk (type is always present).
+- `apps/android/app/src/main/java/com/voiid/app/model/Models.kt:82` — `SELF` in `ConversationType`.
+- `apps/android/app/src/main/java/com/voiid/app/net/ChatService.kt:57-65` — `createSelfChat()`, and
+  it *correctly* forces `encodeDefaults = true` (`ChatService.kt:62`) with an explicit comment
+  about the known kotlinx default-omission bug class. That known bug class is already handled
+  here — without it the server would see no `type` and silently create a DIRECT chat.
+- `ChatService.kt:76-81` — explicit `"self" -> ConversationType.SELF` mapping and title.
+- `ChatService.kt:90` — peer enrichment restricted to `DIRECT`.
+- `apps/android/app/src/main/java/com/voiid/app/model/Stores.kt:241` — `createSelfChat()` on reload.
+- `Stores.kt:256-257` — SELF pinned above DIRECT.
+- `apps/android/app/src/main/java/com/voiid/app/net/ChatEngine.kt:642` — empty-targets self short-circuit exists.
+- `ChatEngine.kt:213-216` — text flush short-circuits on an empty bundle.
+- UI: `ChatDetailView.kt:115`, `:295`, `:362`, `:611-614`; `ChatListRows.kt:123`;
+  `ChatsHomeView.kt:246`, `:958`.
 
 ---
 
-## 3. How WhatsApp + Signal do it (from the Signal source)
+## 2. What is broken
 
-Signal has no dedicated conversation type — Note to Self is a 1:1 whose recipient is your own
-account, special-cased at the send boundary:
+Five distinct defects. **B1 and B2 are independently sufficient to make the feature "not
+work at all" as reported** — B1 on Android, B2 on both platforms after the first cold launch.
 
-- **Recipient == self → the message becomes a sync message, never a DataMessage.**
-  `Signal-Android/app/src/main/java/org/thoughtcrime/securesms/jobs/IndividualSendJob.kt:352-356`:
-  `if (SignalStore.account.aci == address.serviceId) { messageSender.sendSyncMessage(mediaMessage) … }`.
-  The note travels as a *sent transcript* to your own other devices only
-  (`createSelfSendSyncMessage`, `lib/libsignal-service/.../SignalServiceMessageSender.java:703-708, 1936-1947`).
-- **Single device → no network at all.** `SignalServiceMessageSender.java:718-726`:
-  `if (!aciStore.isMultiDevice()) { "We do not have any linked devices. Skipping." return SendMessageResult.success(…) }`.
-  This is exactly the invariant Voiid's `encryptFanout` comment describes.
-- **The sending device is always excluded from its own fan-out.**
-  `SignalServiceMessageSender.java:2860-2866`: when the recipient matches the local address,
-  `deviceIds.remove(localDeviceId)`. This is the line Voiid's `resolveTargets` is missing.
-- **Receipts are short-circuited locally.** `IndividualSendJob.kt:186-190`: a self-send is
-  immediately marked delivered + read + viewed — no waiting for a receipt that will never
-  come. (Voiid's local `markSent` on the empty-target path is the moral equivalent.)
-- **Linked devices render notes from the sent transcript**, i.e. the receive pipeline
-  processes own-sent sync content into the thread instead of skipping it — the capability
-  Voiid's `sender_id == myId → continue` forecloses (BREAK 3).
+### B1 (CRITICAL, Android) — `peerUserId()` throws 404 for a SELF conversation, so every send fails
 
-Voiid's separate `'self'` type (vs. Signal's self-1:1) is a legitimate design divergence and
-should be kept — it avoids the duplicate-member-row ambiguity the backend comment explains
-(`conversations.ts:21-24`). What must be copied is Signal's *send-boundary* behavior: peer =
-me, exclude my own device, empty target set = local success.
+`apps/android/app/src/main/java/com/voiid/app/model/Stores.kt:512-520`:
+
+```kotlin
+private suspend fun peerUserId(conv: VConversation): String {
+    conv.peerUserId?.let { return it }
+    val di = directConversations.indexOfFirst { it.id == conv.id }
+    if (di >= 0) directConversations[di].peerUserId?.let { return it }
+    val resolved = chatService.resolvePeer(conv.id)
+    val peer = resolved.peerUserId ?: throw com.voiid.app.net.ApiError.Http(404, "no peer")
+    if (di >= 0) directConversations[di] = directConversations[di].copy(peerUserId = peer)
+    return peer
+}
+```
+
+**Root cause.** There is no `SELF` case. For a self-chat, `conv.peerUserId` is null
+(`ChatService.kt:90` deliberately skips peer enrichment for non-DIRECT), so it falls through
+to `chatService.resolvePeer(conv.id)`. `resolvePeer` (`ChatService.kt:103-115`) asks for "the
+member who isn't me" — `env.members.firstOrNull { it.user_id != myId }` at `ChatService.kt:106`
+— of a conversation whose only member IS me. It returns `PeerInfo(null, ...)`
+(`ChatService.kt:107`), and line 517 throws `Http(404, "no peer")`.
+
+**This is the exact bug iOS already fixed** at `apps/ios/Voiid/Voiid/Models/Stores.swift:643`,
+with the comment at `Stores.swift:638-642` explicitly naming it as "why the whole feature was
+dead". The Android port never received that line.
+
+Every Android entry point into a self-chat routes through it and dies:
+
+| Call site | Effect |
+| --- | --- |
+| `Stores.kt:646` (text send) | throws → caught at `Stores.kt:649-651` → `loadError = "Couldn't resolve the recipient."` — message stays PENDING forever |
+| `Stores.kt:629` (reply) | same, `Stores.kt:632-634` |
+| `Stores.kt:497` (media) | throws → `markStatus(FAILED)` at `Stores.kt:505` — red failed bubble |
+| `Stores.kt:397` (`syncMessages`) | throws → caught `Stores.kt:408-410` → `loadError = "Couldn't load messages."` — **the chat cannot even open cleanly** |
+| `Stores.kt:746` (forward media) | `getOrNull() ?: return@launch` — silently drops |
+| `Stores.kt:767` (delete for everyone) | silently drops |
+| `Stores.kt:800` (react) | silently drops |
+
+Note `syncMessages` at `Stores.kt:397` is on the *open-the-chat* path, so on Android opening
+Note to Self shows an error banner before the user types anything.
+
+### B2 (CRITICAL, both platforms) — local persistence collapses `self` into `direct`
+
+Both local stores write the conversation type as a group/not-group boolean, silently
+demoting Note to Self to a normal 1:1 on disk.
+
+iOS write — `apps/ios/Voiid/Voiid/Storage/LocalStore.swift:104`:
+```swift
+c.type == .group ? "group" : "direct",
+```
+iOS read — `apps/ios/Voiid/Voiid/Storage/LocalStore.swift:63`:
+```swift
+type: kind == "group" ? .group : .direct,
+```
+
+Android write — `apps/android/app/src/main/java/com/voiid/app/store/LocalStore.kt:82`:
+```kotlin
+kind = if (c.type == ConversationType.GROUP) "group" else "direct",
+```
+Android read — `apps/android/app/src/main/java/com/voiid/app/store/LocalStore.kt:49,59`:
+```kotlin
+val isGroup = r.kind == "group"
+type = if (isGroup) ConversationType.GROUP else ConversationType.DIRECT,
+```
+
+**Root cause.** The persistence layer predates the third conversation type and was never
+widened. `ConversationType` gained a third case (`Models.swift:95`, `Models.kt:82`) but the
+store still round-trips a binary.
+
+**Why this is fatal on iOS specifically.** `Stores.swift:302-317` (`applyLocalConversations`)
+renders the chat list **straight from SQLite** — the comment at `Stores.swift:303-308` states
+this is deliberate for instant/offline cold launch. So after the first launch every consumer
+sees `.direct`:
+
+- `Stores.swift:314` — `convs.filter { $0.type == .self }` is empty, so the pin is lost.
+- `Stores.swift:643` — the self short-circuit **never fires**, because `conv.type` is now
+  `.direct`. Send falls through to `Stores.swift:648-649`, `resolvePeer` returns nil
+  (`ChatService.swift:114-116`), and it throws `APIError.http(status: 404, "no peer")` —
+  reproducing B1 on iOS.
+- `ChatService.swift:83` title logic runs on the *network* payload, but
+  `LocalStore.swift:54-59` re-derives the title on read: with `peerUserId == nil` the
+  `else` branch at `LocalStore.swift:58` yields `storedTitle ?? "Unknown"`. The stored title
+  is "Note to Self" so the label survives — but the *type* does not.
+- UI checks at `ChatDetailView.swift:145`, `:331`, `:523`, `ChatListRows.swift:116`,
+  `DraggableChatGrid.swift:160`, `ChatsHomeView.swift:74`, `:666` all silently take the
+  `.direct` branch: the bookmark mark reverts to a face, the header becomes a link into a
+  profile of nobody, and the "say hi" nudge appears in your own notes.
+
+On iOS `Stores.swift:264` re-runs `createSelfChat()` and `fetchConversations()` on each
+launch, and `applyLocalConversations()` is called again at `Stores.swift:278` — but it reads
+from SQLite, which was just written by `saveConversations` at `Stores.swift:268` with the
+demoted `"direct"` kind. **The network-correct type is destroyed by the round-trip before it
+is ever consumed.** This makes iOS Note to Self work only until the first `saveConversations`
+call and never again.
+
+The `kind` column is free text — `LocalStore.swift:37,91` and the Room `ConversationRow`
+(`LocalStore.kt:80-89`) store a `String` with no enum/CHECK — so widening it to accept
+`"self"` needs **no schema migration**, only the two write sites and two read sites.
+
+### B3 (HIGH, both platforms + backend) — every non-text send posts `messages: []` and the backend 400s
+
+`encryptFanout` deliberately returns an empty array for a single-device self send
+(`ChatEngine.swift:1050-1052`, `ChatEngine.kt:642`). Only the **text** path handles that:
+
+- iOS `ChatEngine.swift:326-329` — `if messages.isEmpty { markSent(...); continue }`
+- Android `ChatEngine.kt:213-216` — same.
+
+Every other sender passes the empty array straight into `SendBundleBody` and POSTs it:
+
+| Path | iOS | Android |
+| --- | --- | --- |
+| media | `ChatEngine.swift:424-431` | `ChatEngine.kt:288-293` |
+| reaction | `ChatEngine.swift:454-460` | `ChatEngine.kt:889+` |
+| delete-for-everyone | `ChatEngine.swift:474-480` | `ChatEngine.kt:901+` |
+| reply | `ChatEngine.swift:494-500` | `ChatEngine.kt:913+` |
+| forward media | `ChatEngine.swift:519-525` | `ChatEngine.kt:931+` |
+| location | `ChatEngine.swift:572-576` | `ChatEngine.kt:974+` |
+
+**Root cause, server side.** `backend/api/src/routes/messages.ts:66`:
+```ts
+if (Array.isArray(messages) && messages.length > 0) {
+```
+An empty `messages` array fails the `length > 0` guard, so the request **falls through to the
+legacy single-ciphertext path** at `messages.ts:141-144`:
+```ts
+if (!conversation_id || !ciphertext) {
+    return res.status(400).json({ error: 'conversation_id and ciphertext required' });
+}
+```
+The client sent no top-level `ciphertext` (the fan-out body has no such field —
+`ChatEngine.swift:1481-1488`, `ChatEngine.kt:1393-1400`), so this is a hard **400**.
+
+Consequence: on a single-device account, sending a photo, a voice note, a reply, a reaction,
+a forward, or a location into Note to Self fails outright. On iOS 400 is not in the retryable
+set (`ChatEngine.swift:345-350` retries only 409/404/transport), so media shows a red failed
+bubble via `Stores.swift:630-631`. Android behaves the same (`ChatEngine.kt:231-232`).
+
+This is also a *server contract* defect independent of Note to Self: a zero-recipient fan-out
+is a legitimate state that the endpoint has no representation for.
+
+### B4 (HIGH, Android) — `resolveTargets` encrypts the note to the sending device and double-targets linked devices
+
+`apps/android/app/src/main/java/com/voiid/app/net/ChatEngine.kt:670-682`:
+
+```kotlin
+private suspend fun resolveTargets(peerUserId: String): List<TargetDevice> {
+    val targets = mutableListOf<TargetDevice>()
+    val peerDevs: DevicesResponse = api.requestAs("GET", "devices/$peerUserId")
+    peerDevs.devices.forEach { targets.add(TargetDevice(peerUserId, it.id)) }     // ← no self-device filter
+    val myId = tokens.userId
+    val myDev = e2e.deviceId
+    if (myId != null) {
+        val mine: DevicesResponse = api.requestAs("GET", "devices/$myId")
+        mine.devices.filter { it.id != myDev }.forEach { targets.add(TargetDevice(myId, it.id)) }  // ← not skipped when peer == me
+    }
+    return targets
+}
+```
+
+Compare iOS `apps/ios/Voiid/Voiid/Networking/ChatEngine.swift:1096-1112`, which has both
+guards and documents exactly why:
+
+- `ChatEngine.swift:1101` — `.filter { !(peerUserId == myId && $0.id == myDev) }` keeps THIS
+  device out of the peer loop. The comment at `ChatEngine.swift:1092-1095` states this filter
+  "is what makes NOTE TO SELF work".
+- `ChatEngine.swift:1109` — `if let myId, peerUserId != myId` skips the own-devices block
+  entirely for a self send. The comment at `ChatEngine.swift:1105-1108` records the bug it
+  fixes: "every note was encrypted TWICE to each linked device — two ratchet steps for one
+  message, one of whose outputs the server then discards as a duplicate row, leaving the
+  receiving ratchet to absorb a skipped key."
+
+Android has neither. Two consequences on a self send:
+
+1. **The sending device is a target of its own message.** `targets` is therefore never empty
+   for a self send, so the `targets.isEmpty() && peerUserId == tokens.userId` short-circuit at
+   `ChatEngine.kt:642` is **dead code on Android** — it can never fire. The engine builds an
+   Olm session to itself at `ChatEngine.kt:686+` and encrypts the note to the device that
+   wrote it. The server then stores a `message_ciphertexts` row addressed to the sender
+   (`messages.ts:97-101`), the sender's own `sync` skips it as an own-message
+   (`ChatEngine.kt:328-331`), and it is never read by anyone. **HYPOTHESIS:** building a
+   self-addressed Olm session may also consume one of this device's own one-time prekeys per
+   note via `fetchBundles` (`ChatEngine.kt:650`), depleting the prekey pool. I did not read
+   `backend/api/src/routes/prekeys.ts` to confirm the consumption semantics.
+2. **Linked devices are targeted twice** — once by the peer loop (line 673, since
+   `peerUserId == myId`) and once by the own-devices loop (line 679). Two ratchet advances for
+   one note; the `on conflict … do nothing` at `messages.ts:99` discards the second row, so
+   the receiving ratchet must absorb a skipped message key. This is the precise failure iOS
+   documented and fixed.
+
+### B5 (HIGH, both platforms) — a linked device never renders a note, because inbound skips all own-sender messages
+
+iOS `apps/ios/Voiid/Voiid/Networking/ChatEngine.swift:778-786`:
+```swift
+for m in env.messages.reversed() {
+    if m.sender_id == myId {
+        let applied = m.receipt_status.flatMap { applyReceipt(messageId: m.id, status: $0) } != nil
+        NSLog(...)
+        continue
+    }
+```
+Android `apps/android/app/src/main/java/com/voiid/app/net/ChatEngine.kt:328-331` — identical.
+
+**Root cause.** The guard is keyed on **user** identity (`sender_id == myId`), but the
+multi-device fan-out is addressed at **device** granularity. In every normal conversation
+"sent by me" implies "I already hold the plaintext", so `continue` is correct. In Note to
+Self *every* message has `sender_id == myId`, including one written on your **other** device
+and legitimately fan-out-encrypted to this one. This device holds a real, decryptable
+ciphertext for it (`messages.ts:203`, `messages.ts:236-249` return it) and throws it away at
+the `continue`.
+
+Net effect: **Note to Self never syncs across devices.** Notes written on the phone are
+invisible on the tablet and vice-versa. The in-code comments at `ChatEngine.swift:1046-1049`
+and `ChatEngine.kt:638-641` promise exactly the opposite — "The moment a second device is
+linked it starts receiving new notes like any other message" — which is not true while B5
+stands.
+
+The fix has a clean discriminator already on the wire: `sender_device_id` is populated on
+send (`ChatEngine.swift:334`, `ChatEngine.kt:220`), stored (`messages.ts:85-88`), and
+returned on read (`messages.ts:202`, DTO at `ChatEngine.swift:1496` / `ChatEngine.kt:1411`).
+The guard should be "sent by **this device**", not "sent by this user".
 
 ---
 
-## 4. Recommended fixes (ordered)
+## 3. How WhatsApp and Signal do it
 
-### Fix 1 — CRITICAL, both mobile: teach `peerUserId` that the self conversation's peer is me
+### Signal — Note to Self is an ordinary 1:1 whose recipient is you
 
-- **iOS** `apps/ios/Voiid/Voiid/Models/Stores.swift` — at the top of
-  `peerUserId(for:)` (line 637): if `conv.type == .self`, return
-  `TokenStore.shared.userId` (throw `.notAuthenticated` if nil) before any resolution.
-  Also gate the self case out of presence + session-reset in `syncMessages`
-  (lines 489-497): skip `fetchPresence` and the `resetSession`/`sendSessionReset` branch
-  when `conv.type == .self` (a session reset addressed to yourself is meaningless, and the
-  header must not show your own "online").
-- **Android** `apps/android/app/src/main/java/com/voiid/app/model/Stores.kt` — same two
-  changes: early return `tokens.userId` in `peerUserId()` (line 512) when
-  `conv.type == ConversationType.SELF`; skip presence/reset in `syncMessages`
-  (lines 401-407) for SELF.
-- **Risk:** low. The value flows into `ChatEngine.sync`/`flushPending`, both of which are
-  written for `peerUserId == my id` (the note-to-self comments) — but do not ship without
-  Fix 2, or single-device sends will start encrypting to themselves (see BREAK 2).
+Signal has **no distinct conversation type**. It is a normal thread whose `Recipient` is the
+local account, tested with `recipient.isSelf`:
 
-### Fix 2 — HIGH, both mobile: `resolveTargets` must exclude the sending device (and not duplicate) when peer == self
+- `Signal-Android/app/src/main/java/org/thoughtcrime/securesms/util/MessageConstraintsUtil.kt:83`
+  — `val isNoteToSelf = targetMessage.toRecipient.isSelf && targetMessage.fromRecipient.isSelf`
+- `Signal-Android/app/src/main/java/org/thoughtcrime/securesms/conversation/v2/ConversationFragment.kt:3054`
+  — `val isNoteToSelf = viewModel.recipientSnapshot?.isSelf ?: false`
+- `Signal-Android/app/src/main/java/org/thoughtcrime/securesms/mediapreview/MediaPreviewV2Fragment.kt:689`
 
-- **iOS** `apps/ios/Voiid/Voiid/Networking/ChatEngine.swift` — in `resolveTargets`
-  (lines 1090-1101): when `peerUserId == TokenStore.shared.userId`, skip the peer-devices
-  fetch/append entirely and let the existing own-other-devices block (lines 1095-1098, which
-  already filters `!= myDev`) produce the target list. Equivalently: filter
-  `$0.id != myDev` in the peer loop *and* dedupe by device id; the skip is simpler and
-  halves the `GET /devices` calls.
-- **Android** `apps/android/app/src/main/java/com/voiid/app/net/ChatEngine.kt` — same change
-  in `resolveTargets` (lines 670-682).
-- This makes the documented invariant true: single device → `targets` empty →
-  `encryptFanout` returns `[]` → `flushPending` marks the note sent locally
-  (`ChatEngine.swift:326-329` / `ChatEngine.kt:213-216`); linked devices → encrypt once per
-  *other* device only. Matches Signal's `deviceIds.remove(localDeviceId)`
-  (`SignalServiceMessageSender.java:2860-2866`).
-- **Risk:** low; strictly narrows the target set for the peer==self case, which no working
-  flow currently exercises (BREAK 1 gated it). No E2EE weakening — notes remain encrypted
-  per-device to the author's own other devices, ciphertext-only on the server.
+The send path special-cases it in exactly one place —
+`Signal-Android/app/src/main/java/org/thoughtcrime/securesms/jobs/IndividualSendJobV2.kt:406-411`:
 
-### Fix 3 — MEDIUM, both mobile: let a linked device decrypt own-sent fan-out ciphertexts (notes are invisible on a second device otherwise)
+```kotlin
+// If this is a note to self message, don't actually send it. Instead, craft a result of
+// what we *would* send. Then it'll be sent via sync message if appropriate.
+if (SignalStore.account.aci == recipient.serviceId.getOrNull()) {
+  Log.i(TAG, "${logPrefix(dataMessage.timestamp)} Note to self. Skipping primary send.")
+  return MessageService.SendSuccess(envelopeContent, true, listOf(SignalServiceAddress.DEFAULT_DEVICE_ID))
+}
+```
 
-- **iOS** `apps/ios/Voiid/Voiid/Networking/ChatEngine.swift` — in `decryptInboundLocked`
-  (lines 778-786): in the `m.sender_id == myId` branch, before `continue`, if the row is not
-  already in the local store (`!seen.contains(m.id)`) **and** carries a ciphertext for this
-  device (`m.ciphertext != nil`) **and** `m.sender_device_id != E2EManager.shared.deviceId`,
-  decrypt it (the fan-out encrypted it to this device's session with the sending device) and
-  append it with `isMine: true`. That is the sent-transcript equivalent of Signal's linked
-  device behavior.
-- **Android** `apps/android/app/src/main/java/com/voiid/app/net/ChatEngine.kt` — same change
-  in the sync loop (lines 324-331).
-- **Risk:** medium — this branch also runs for ordinary 1:1s (it is the general
-  linked-device sent-message sync gap), so test that receipts bookkeeping (the current sole
-  purpose of the branch) still runs, and that the sending device itself (whose
-  `sender_device_id` equals its own id) still skips. Can ship after 1+2; single-device Note
-  to Self works without it.
+The primary send is **skipped entirely** — no self-addressed ciphertext is ever produced.
+Multi-device delivery is then carried by the ordinary sync-transcript mechanism that every
+outgoing Signal message already uses:
 
-### Fix 4 — LOW, backend: stale error string
+- `IndividualSendJobV2.kt:372-376` — `if (SignalStore.account.isMultiDevice) { sendSyncMessage(...) }`
+- `IndividualSendJobV2.kt:424-466` — builds `SyncMessage.Sent(destinationServiceId, timestamp, message = dataMessage, ...)`
+  and calls `messageService.sendSyncMessage(...)`.
 
-- `backend/api/src/routes/conversations.ts:128` — `"type must be 'direct' or 'group'"` →
-  `"type must be 'direct', 'group' or 'self'"`. Cosmetic; no behavior change.
+Receipts are synthesised locally rather than awaited, because there is no counterparty —
+`IndividualSendJobV2.kt:230-233`:
+```kotlin
+if (recipient.isSelf) {
+  SignalDatabase.messages.incrementDeliveryReceiptCount(...)
+  SignalDatabase.messages.incrementReadReceiptCount(...)
+  SignalDatabase.messages.incrementViewedReceiptCount(...)
+}
+```
 
-### Explicitly not recommended
+Three transferable lessons:
 
-- Do **not** add a server-side "loopback" (storing a self-readable ciphertext or plaintext
-  for single-device backfill). The backend comment (`conversations.ts:26-29`) and engine
-  comments (`ChatEngine.swift:1045-1049`) are right: with one device there is nothing to
-  encrypt *to*, and pre-link notes staying on the writing device is the honest E2EE
-  consequence — identical to Signal's `isMultiDevice()` skip.
+1. **Never encrypt to the sending device.** Signal skips the primary send outright rather than
+   filtering targets afterwards. Voiid's iOS filters (`ChatEngine.swift:1101,1109`) reach the
+   same end state; Android's missing filters (B4) do not.
+2. **Linked-device delivery is the *same* mechanism as normal multi-device sync**, not a
+   special case. Voiid's fan-out to own other devices is the direct analogue — it just has to
+   be *received*, which B5 currently blocks.
+3. **Receipt/status state is synthesised locally**, since no recipient will ever ack. Voiid's
+   `markSent` on an empty bundle (`ChatEngine.swift:327`, `ChatEngine.kt:214`) is the same
+   idea, and should be extended to the non-text paths (B3).
+
+Notably, Signal's model makes the whole class of "type collapsed on persistence" bugs (B2)
+impossible, because there is no third type to lose — self-ness is derived from the recipient
+id, which round-trips through the DB as a normal identifier. Voiid's separate `'self'` type is
+still the right call for the reason given at `conversations.ts:16-29` (the two-member 1:1
+lookup), but it obligates every persistence and mapping layer to carry three cases — which is
+exactly where B2 bites.
+
+### WhatsApp (behavioural, from the product — no source available)
+
+- "Message yourself" appears in the chat list as a normal chat titled "(You)", created lazily
+  on first use.
+- It syncs across linked devices through the same multi-device fan-out as any chat.
+- Media, replies, forwards, and reactions all work — WhatsApp's primary use case for the
+  feature is forwarding links and files to yourself, which is precisely what B3 breaks in Voiid.
+- There is no "delivered/read" tick pair; state settles at sent.
+
+---
+
+## 4. Recommended fixes
+
+Ordered. F1–F3 together restore a working feature on a single device; F4–F5 make it correct
+across linked devices.
+
+### F1 — Android: give `peerUserId()` a SELF case (unblocks Android entirely)
+
+**Platform:** android. **Risk:** very low — one branch, mirrors shipped iOS code.
+
+`apps/android/app/src/main/java/com/voiid/app/model/Stores.kt:512`, as the first line of the
+function body, before the `conv.peerUserId?.let` cache check:
+
+```kotlin
+if (conv.type == ConversationType.SELF) return tokens.userId ?: ""
+```
+
+(`tokens` is the same `TokenStore` used at `ChatService.kt:47`; if it is not already a field
+on the store, read the user id from the existing token accessor rather than adding a new
+dependency.)
+
+This is a literal port of `apps/ios/Voiid/Voiid/Models/Stores.swift:643`. It unblocks all
+seven call sites listed in B1, including the chat-open path at `Stores.kt:397`.
+
+**Verify:** open Note to Self on Android — no "Couldn't load messages." banner; send text —
+bubble goes to SENT, not stuck pending.
+
+### F2 — Both: persist and restore the `self` conversation type
+
+**Platform:** both-mobile. **Risk:** low. `kind` is free-text in both stores
+(`LocalStore.swift:37,91`; `LocalStore.kt` `ConversationRow.kind: String`), so **no schema
+migration is required**. Existing rows already written as `"direct"` self-heal on the next
+`fetchConversations` + `saveConversations` cycle, since the server is authoritative on type.
+
+iOS — `apps/ios/Voiid/Voiid/Storage/LocalStore.swift:104`, write:
+```swift
+c.type.rawValue,            // "direct" | "group" | "self"
+```
+iOS — `apps/ios/Voiid/Voiid/Storage/LocalStore.swift:63`, read:
+```swift
+type: ConversationType(rawValue: kind) ?? .direct,
+```
+Also widen the title derivation at `LocalStore.swift:51-59`: add a `kind == "self"` branch
+returning `"Note to Self"` before the `peerUserId` branch, so a self row never falls to the
+`"Unknown"` default at `LocalStore.swift:58`.
+
+Android — `apps/android/app/src/main/java/com/voiid/app/store/LocalStore.kt:82`, write:
+```kotlin
+kind = when (c.type) { ConversationType.GROUP -> "group"; ConversationType.SELF -> "self"; else -> "direct" },
+```
+Android — `LocalStore.kt:49,59`, read: replace the `isGroup` boolean with a three-way mapping
+(`"group" -> GROUP; "self" -> SELF; else -> DIRECT`), and add the corresponding
+`"self" -> "Note to Self"` title branch alongside `LocalStore.kt:51-56`.
+
+**Verify:** cold-launch with airplane mode on. Note to Self is still pinned at the top with
+the bookmark mark (not a face), the header is not tappable, and sending still works.
+
+### F3 — Backend: accept a zero-recipient fan-out instead of 400-ing
+
+**Platform:** backend. **Risk:** low, additive.
+
+`backend/api/src/routes/messages.ts:66` currently gates on `messages.length > 0`, dropping an
+empty array into the legacy path that then demands a top-level `ciphertext`
+(`messages.ts:142-144`).
+
+Change the discriminator to presence rather than non-emptiness:
+```ts
+if (Array.isArray(messages)) {
+```
+The body below is already safe for an empty array: the metadata insert at `messages.ts:84-89`
+writes `ciphertext = null` unconditionally, the per-device loop at `messages.ts:95-103` is a
+no-op, `deviceIds` stays `[]` so the `owners` lookup at `messages.ts:110-113` returns nothing,
+no Redis publish fires (`messages.ts:120`), and the push is already guarded by
+`if (deviceIds.length)` at `messages.ts:130`. It returns `{message_id, delivered_devices: 0}`
+— a real server-side row for a note with no other device to reach, which is the right
+semantics.
+
+Then let the non-text client paths proceed into this now-successful POST rather than 400-ing.
+Preferring the server round-trip over a client-side short-circuit is deliberate: it gives the
+note a canonical `message_id` and `created_at`.
+
+**Note:** F3 has a benefit beyond unblocking media — single-device notes get a server row
+*now*, so a later-linked device can be given history via the normal fan-out rather than the
+"notes stay on the device that wrote them" compromise documented at `ChatEngine.swift:1046-1049`.
+(Actually sending that backfill still requires a re-encrypt on the original device; out of
+scope here.)
+
+**Verify:** send a photo, a reply, a reaction, and a location into Note to Self on a
+single-device account. All succeed; none show a red failed bubble.
+
+### F4 — Android: port the two `resolveTargets` self-device filters from iOS
+
+**Platform:** android. **Risk:** low, but it touches the ratchet — test with a linked device.
+
+`apps/android/app/src/main/java/com/voiid/app/net/ChatEngine.kt:670-682`. Two changes,
+mirroring `apps/ios/Voiid/Voiid/Networking/ChatEngine.swift:1096-1112`:
+
+1. Move `val myId = tokens.userId` / `val myDev = e2e.deviceId` above the peer loop, and
+   filter the sending device out of it (currently line 673):
+   ```kotlin
+   peerDevs.devices
+       .filter { !(peerUserId == myId && it.id == myDev) }
+       .forEach { targets.add(TargetDevice(peerUserId, it.id)) }
+   ```
+2. Skip the own-devices block entirely when the peer is me (currently line 677):
+   ```kotlin
+   if (myId != null && peerUserId != myId) { ... }
+   ```
+
+Without (1), the `targets.isEmpty()` self short-circuit at `ChatEngine.kt:642` is unreachable
+and every note is encrypted to the device that wrote it. Without (2), each linked device is
+targeted twice per note.
+
+**Verify:** on a single-device Android account, log the target count for a self send — it must
+be 0. With one linked device, it must be 1, not 2.
+
+### F5 — Both: make the inbound own-message skip device-scoped, not user-scoped
+
+**Platform:** both-mobile. **Risk:** medium — this is the main receive loop for *every*
+conversation, so a mistake affects all chats, not just Note to Self. Test a normal 1:1
+alongside.
+
+iOS `apps/ios/Voiid/Voiid/Networking/ChatEngine.swift:782`:
+```swift
+if m.sender_id == myId {
+```
+Android `apps/android/app/src/main/java/com/voiid/app/net/ChatEngine.kt:328`:
+```kotlin
+if (m.sender_id == myId) {
+```
+
+Replace with a check that the message came from **this device**, falling back to the current
+user-level behaviour when the server did not record a sender device (legacy rows have
+`sender_device_id` null — `messages.ts:81,148`):
+
+```swift
+// iOS
+let fromThisDevice = m.sender_device_id == nil
+    ? (m.sender_id == myId)                                  // legacy row: no device attribution
+    : (m.sender_device_id == E2EManager.shared.deviceId)
+if m.sender_id == myId && fromThisDevice { /* receipt */ ; continue }
+```
+```kotlin
+// Android
+val fromThisDevice = if (m.sender_device_id == null) m.sender_id == myId
+                     else m.sender_device_id == e2e.deviceId
+if (m.sender_id == myId && fromThisDevice) { m.receipt_status?.let { applyReceipt(m.id, it) }; continue }
+```
+
+Keeping the `m.sender_id == myId` conjunct preserves today's semantics for all normal chats (a
+message from a peer is never from my device, so nothing changes there), while letting a note
+written on my *other* device fall through to the decrypt at `ChatEngine.swift:796` /
+`ChatEngine.kt:341`.
+
+One follow-on to check while making this change: messages decrypted on this path are appended
+with `isMine: false` (e.g. `ChatEngine.swift:860-862`, and the Android equivalents). For a
+self-chat, a note synced from your other device **is** yours and should render as an outgoing
+bubble. **HYPOTHESIS:** the cleanest fix is to set `isMine = (m.sender_id == myId)` at the
+append sites rather than hardcoding `false`; I did not audit every append site to confirm none
+depends on the literal. Verify against `ChatEngine.swift:818,826,841,849,860,872` before
+changing them wholesale.
+
+**Verify:** with two linked devices, write a note on A. It appears on B as an outgoing
+(right-aligned) bubble, and vice-versa. A normal 1:1 chat still shows peer messages as
+incoming and does not duplicate your own sent messages.
+
+### F6 (cosmetic) — Backend: fix the create-conversation error string
+
+**Platform:** backend. **Risk:** none. `backend/api/src/routes/conversations.ts:128` still
+reads `"type must be 'direct' or 'group'"` despite `'self'` being valid since the feature
+landed. Update to include `'self'`.
+
+---
+
+## 5. Summary of the break
+
+The feature was designed correctly — the backend type, the idempotent create, the fan-out
+target logic on iOS, and the whole UI layer are all sound. It fails because of four wiring
+gaps and one server contract hole:
+
+- **Android never got the `peerUserId` SELF case** that iOS's own comment identifies as the
+  original killer (B1) — this alone makes it "not working at all" on Android.
+- **Both local stores silently demote `self` to `direct`** (B2), which re-breaks iOS after the
+  first cold launch by disabling the very SELF case that fixed it.
+- **The backend has no representation for a zero-recipient fan-out** (B3), so every non-text
+  send 400s on a single-device account.
+- **Android's `resolveTargets` lacks both self-device filters** (B4), so it encrypts notes to
+  the sending device and double-ratchets linked ones.
+- **Both inbound loops skip on user identity instead of device identity** (B5), so notes never
+  reach a linked device — contradicting the in-code promise that they would.

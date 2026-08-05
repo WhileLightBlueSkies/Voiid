@@ -779,10 +779,25 @@ final class ChatEngine {
             // Our OWN sent message: we can't decrypt our ratchet output, but the server
             // tells us the recipient's receipt state — advance Sent→Delivered→Seen even
             // if the live WS receipt push was missed (WS-independent status).
+            // Our OWN account sent this. Two different cases, and conflating them is what
+            // kept sent messages from ever appearing on a linked device — and made NOTE TO
+            // SELF show nothing at all, since there every message has sender_id == myId.
+            //
+            //  * Sent from THIS device — there is genuinely nothing to decrypt (we never
+            //    encrypt to ourselves), so only the receipt state matters.
+            //  * Sent from ANOTHER of my devices — the fan-out addressed a real per-device
+            //    ciphertext to this device precisely so it could sync. Decrypting it is the
+            //    entire point; skipping it threw that ciphertext away.
             if m.sender_id == myId {
-                let applied = m.receipt_status.flatMap { applyReceipt(messageId: m.id, status: $0) } != nil
-                NSLog("[VOIID] 🟦 own msg \(m.id) receipt_status=\(m.receipt_status ?? "nil")\(applied ? " → applied" : "")")
-                continue
+                let fromThisDevice = m.sender_device_id == nil
+                    || m.sender_device_id == E2EManager.shared.deviceId
+                if fromThisDevice || m.ciphertext == nil {
+                    let applied = m.receipt_status.flatMap { applyReceipt(messageId: m.id, status: $0) } != nil
+                    NSLog("[VOIID] 🟦 own msg \(m.id) receipt_status=\(m.receipt_status ?? "nil")\(applied ? " → applied" : "")")
+                    continue
+                }
+                // Falls through to the normal decrypt path below: a sibling device's message
+                // is ordinary inbound ciphertext, just authored by us.
             }
             if seen.contains(m.id) { continue }
             // A null ciphertext means the server had no per-device blob for us yet (e.g. our
@@ -793,7 +808,12 @@ final class ChatEngine {
                 continue
             }
             do {
-                let plain = try await decryptInbound(wire, peerUserId: peerUserId,
+                // Session lookup keys on WHO SENT IT, not on who the conversation is with.
+                // For a sibling-device sync (m.sender_id == myId) the session is with our own
+                // account, so passing the conversation's peer would look up the wrong session
+                // and fail to decrypt. Identical for every other message, where sender_id IS
+                // the peer.
+                let plain = try await decryptInbound(wire, peerUserId: m.sender_id,
                                                      senderDeviceId: m.sender_device_id)
                 newlyReceived.append(m.id)
                 NSLog("[VOIID] ✅ decrypted inbound id=\(m.id) senderDev=\(m.sender_device_id ?? "nil")")
@@ -1089,11 +1109,24 @@ final class ChatEngine {
     /// minus this sending device.
     private func resolveTargets(_ peerUserId: String) async throws -> [TargetDevice] {
         var targets: [TargetDevice] = []
-        let peerDevs: DevicesResponse = try await api.request("GET", "devices/\(peerUserId)")
-        peerDevs.devices.forEach { targets.append(TargetDevice(userId: peerUserId, deviceId: $0.id)) }
-        // Our own OTHER devices (linked-device sync of sent messages), excluding this one.
+        // THIS device is never a target — you do not encrypt to yourself. Filtering here
+        // rather than only in the own-devices block below is what makes NOTE TO SELF work:
+        // there peerUserId IS my id, so the peer loop would otherwise return the sending
+        // device itself, and the note would be encrypted to the device that wrote it.
         let myDev = E2EManager.shared.deviceId
-        if let myId = TokenStore.shared.userId {
+        let myId = TokenStore.shared.userId
+
+        let peerDevs: DevicesResponse = try await api.request("GET", "devices/\(peerUserId)")
+        peerDevs.devices
+            .filter { !(peerUserId == myId && $0.id == myDev) }
+            .forEach { targets.append(TargetDevice(userId: peerUserId, deviceId: $0.id)) }
+
+        // Our own OTHER devices (linked-device sync of sent messages), excluding this one.
+        // SKIPPED when the peer is me: the loop above already returned exactly those devices,
+        // and appending them again meant every note was encrypted TWICE to each linked device
+        // — two ratchet steps for one message, one of whose outputs the server then discards
+        // as a duplicate row, leaving the receiving ratchet to absorb a skipped key.
+        if let myId, peerUserId != myId {
             let mine: DevicesResponse = try await api.request("GET", "devices/\(myId)")
             mine.devices.filter { $0.id != myDev }.forEach { targets.append(TargetDevice(userId: myId, deviceId: $0.id)) }
         }

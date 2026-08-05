@@ -148,6 +148,56 @@ volume of collection.
 9. **Admin plane has no roles and no report-queue/DPDP surface.** Single implicit
    superadmin role (§1.2); every admin can permanently purge clips (`admin.ts:268-286`).
 
+10. **A deleted account is silently RESURRECTED by the next login.** `POST /auth/firebase`
+    upserts on phone number with `on conflict (phone_number) do update set updated_at =
+    now()` (`backend/api/src/routes/auth.ts:32-38`) and **never inspects `deleted_at`**.
+    Because `DELETE /users/me` only sets `deleted_at` and nulls profile text
+    (`users.ts:204`), the row — and its `id`, `username`, `phone_number`, and every child
+    row that was never deleted (clips, contact_sync, message_ciphertexts) — is still
+    present. Re-authenticating with the same number returns that same `user_id` with
+    `deleted_at` still set, so the account is neither erased nor usable: every read path
+    filters `deleted_at is null` (`users.ts:50`, `reachability.ts:113`), so the user gets
+    a working token addressing a profile that no endpoint will return. Root cause: erasure
+    was modelled as a flag with no lifecycle — no job clears it (§2.2) and no login path
+    either blocks or intentionally reinstates it. This is simultaneously a DPDP erasure
+    failure (s.8(7): data survives the request indefinitely) and a product bug. **Counsel
+    must decide the policy** [COUNSEL]: within the grace window, does re-login *cancel* the
+    erasure request (requiring an explicit, logged un-delete) or is the account gone?
+
+11. **A soft-deleted user's existing JWT keeps full API access.** `requireAuth`
+    (`backend/api/src/auth.ts:22-33`) verifies the JWT signature only and never loads the
+    user row — grep for `deleted_at` in `backend/api/src/auth.ts` returns **0 hits**. With
+    `JWT_EXPIRY` defaulting to **30 days** (`auth.ts:6`) and `POST /auth/logout` a no-op
+    (`routes/auth.ts:47-48`), a user who deletes their account keeps a valid token for up
+    to 30 days and can continue posting clips and sending ciphertext. This is the same
+    non-revocability the admin plane explicitly rejected for itself (`admin.ts:9-12`).
+
+12. **Deleted users stay reachable and keep receiving ciphertext.** Neither
+    `GET /devices/:user_id` (`routes/devices.ts:86-97`) nor `GET /prekeys/:user_id`
+    (`routes/prekeys.ts:59-68`) joins `users` or filters `deleted_at` — grep for
+    `deleted_at` in `devices.ts`, `prekeys.ts` and `messages.ts` returns **0 hits in all
+    three**. Devices are revoked at deletion (`users.ts:205`) and both queries do filter
+    `revoked_at is null`, so today the bundle list comes back *empty* rather than stale —
+    the harm is a confusing failure ("peer has no available prekeys") rather than a leak.
+    But the safety depends entirely on that one `update devices` statement succeeding; it
+    is not written as an erasure invariant anywhere, and Fix 10's resurrection path can
+    re-register a device onto a `deleted_at`-set row. Deletion should be enforced at the
+    identity layer, not inferred from device revocation.
+
+13. **`DELETE /devices/:device_id` has no ownership check.** The handler updates
+    `devices set revoked_at = now() where id = $1` and deletes that device's one-time
+    prekeys using **only the path parameter** (`routes/devices.ts:101-105`) — `user_id`
+    from `req.auth` is never read, and there is no `and user_id = $1` clause. Any
+    authenticated user who learns another user's `device_id` can revoke that device and
+    destroy its prekeys, denying the victim inbound sessions. Device ids are not secret:
+    `GET /devices/:user_id` returns them for **any** user id to any authenticated caller
+    (`devices.ts:86-93`), so the attack is two unprivileged requests. The correct pattern
+    is already used one function above, in `/voip-token`, which scopes its update with
+    `where id = $1 and user_id = $2` and explains exactly why (`devices.ts:70-77`). This
+    is a security bug found while auditing the device data model for the admin session
+    viewer; it is not DPDP-specific but it is in the blast radius of "admin can revoke
+    devices" (Fix 7) and should be fixed first.
+
 ---
 
 ## 3. How WhatsApp + Signal do it
@@ -306,8 +356,41 @@ Redis denylist checked in `backend/api/src/auth.ts`'s `requireAuth`). Without re
 Fix 7's "revoke devices" button doesn't actually end API access until token expiry — the
 exact flaw the admin plane called out and solved for itself (`admin.ts:9-12`). Risk:
 medium — touches every authed request; roll out with a dual-accept window.
+**Sequencing:** Fix 10 adds the first per-request user lookup in `requireAuth`; build the
+denylist/refresh mechanism on top of that same lookup rather than as a second, parallel
+one. If both are done independently, `requireAuth` ends up with two caches to invalidate.
 
-### Fix 10 — Publish the legal surface (all, **medium**, mostly non-code)
+### Fix 10 — Close the deletion lifecycle: resurrection, live JWTs, reachability (backend, **critical**)
+Files: `backend/api/src/routes/auth.ts:32-38`, `backend/api/src/auth.ts:22-33`,
+`backend/api/src/routes/users.ts:200-207`.
+Three defects share one root cause — `deleted_at` is a flag with no lifecycle (§2.10-2.12):
+(a) the login upsert re-issues a token for a soft-deleted row without ever reading
+`deleted_at`, so a deleted account is silently resurrected into an unusable state;
+(b) `requireAuth` never loads the user, so an existing 30-day JWT (`auth.ts:6`) keeps full
+API access after deletion; (c) deletion is enforced only by the `update devices` in
+`users.ts:205` rather than at the identity layer. Change the upsert to select `deleted_at`
+in its `returning` clause and branch explicitly: either reject the login, or — if counsel
+chooses reinstatement-within-grace [COUNSEL] — clear `deleted_at` as a deliberate, audited
+un-delete rather than as a side effect. Add a `deleted_at is null` check to `requireAuth`
+(cache the lookup in Redis for a few seconds to avoid a DB round-trip per request; this is
+the same trade the admin plane already pays at `admin.ts:73-80`). Risk: medium — `requireAuth`
+is on every authed request, so the cache and its failure mode (fail *closed* for deleted
+users, but do not fail closed on a Redis outage) need care. Do this **before** Fix 1: an
+erasure worker that deletes rows while stale JWTs still authenticate against them creates
+orphaned writes.
+
+### Fix 11 — Scope `DELETE /devices/:device_id` to the caller (backend, **critical**, small)
+Files: `backend/api/src/routes/devices.ts:101-105`.
+The handler revokes a device and deletes its one-time prekeys using only the path parameter;
+`user_id` from `req.auth` is never read (§2.13). Any authenticated user can revoke any other
+user's device — ids are freely readable via `GET /devices/:user_id` (`devices.ts:86-93`).
+Add `and user_id = $2` to the update, pass `req.auth.user_id`, return 404 when no row
+matches, and scope the prekey delete to the same guard (do not delete prekeys unless the
+revoke matched). Copy the pattern and rationale already present in `/voip-token`
+(`devices.ts:70-77`). Risk: minimal — a strictly narrowing change; the only callers are the
+user's own linked-devices screen. Ship independently of everything else in this doc.
+
+### Fix 12 — Publish the legal surface (all, **medium**, mostly non-code)
 Files: `apps/ios/Voiid/Voiid/Main/Settings/AboutView.swift:46-48` (set the three URLs),
 `apps/ios/Voiid/Voiid/Onboarding/OnboardingFlow.swift:~106-108` (make Terms/Privacy
 tappable), Android settings/onboarding equivalents, plus hosting the documents (the

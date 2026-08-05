@@ -510,6 +510,15 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
 
     /** Resolve + cache the peer user_id for a direct conversation. */
     private suspend fun peerUserId(conv: VConversation): String {
+        // NOTE TO SELF: the peer IS me. Without this case the generic path below asks
+        // resolvePeer for "the member who isn't me" — of a conversation whose only member is
+        // me — gets null, and throws 404 "no peer". That throw is why the whole feature was
+        // dead: every send failed before it reached the fan-out that was already written to
+        // handle this case correctly.
+        if (conv.type == ConversationType.SELF) {
+            return com.voiid.app.net.TokenStore.get(getApplication()).userId ?: ""
+        }
+
         conv.peerUserId?.let { return it }
         val di = directConversations.indexOfFirst { it.id == conv.id }
         if (di >= 0) directConversations[di].peerUserId?.let { return it }
