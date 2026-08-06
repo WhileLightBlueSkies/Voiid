@@ -9,9 +9,39 @@ const router = Router();
 // POST /prekeys/upload  { device_id, one_time_prekeys:[{key_id,public_key(b64)}], signed_prekey?:{key_id,public_key,signature} }
 // signed_prekey is OPTIONAL — e2e-core (vodozemac) bundles don't include a
 // separate signed prekey; a session needs only identity_key + one one-time key.
+/**
+ * A device is only ever writable by the account that owns it.
+ *
+ * /upload and /refresh took `device_id` straight from the request BODY and never read the
+ * authenticated caller, so any signed-in user could write prekey material against ANY
+ * device id — and device ids are not secret (GET /devices/:user_id returns them to any
+ * authenticated caller). The identity key is still TOFU-pinned per device, so this is not
+ * by itself a session takeover; but planting one-time prekeys on someone else's device
+ * lets a sender consume an attacker-supplied key the victim cannot match, which breaks
+ * inbound sessions for that device — denial of service against a person's ability to
+ * receive messages at all.
+ *
+ * Same flaw class as the ownership check just added to DELETE /devices/:device_id; this is
+ * the one file over where it survived.
+ */
+async function ownsDevice(deviceId: string, userId: string): Promise<boolean> {
+  const rows = await query<{ one: number }>(
+    `select 1 as one from devices
+      where id = $1 and user_id = $2 and revoked_at is null
+      limit 1`,
+    [deviceId, userId]
+  );
+  return rows.length > 0;
+}
+
 router.post('/upload', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id } = (req as any).auth;
   const { device_id, signed_prekey, one_time_prekeys } = req.body ?? {};
   if (!device_id) return res.status(400).json({ error: 'device_id required' });
+  // 404, not 403: a caller must not learn whether a device id they do not own exists.
+  if (!(await ownsDevice(device_id, user_id))) {
+    return res.status(404).json({ error: 'device not found' });
+  }
 
   if (signed_prekey) {
     await query(
@@ -113,8 +143,12 @@ router.get('/:user_id', requireAuth, async (req, res) => {
 
 // POST /prekeys/refresh — client replenishes one-time prekeys (same shape as upload's one_time_prekeys)
 router.post('/refresh', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id } = (req as any).auth;
   const { device_id, one_time_prekeys } = req.body ?? {};
   if (!device_id) return res.status(400).json({ error: 'device_id required' });
+  if (!(await ownsDevice(device_id, user_id))) {
+    return res.status(404).json({ error: 'device not found' });
+  }
   for (const otp of (one_time_prekeys ?? [])) {
     await query(
       `insert into one_time_prekeys (device_id, key_id, public_key)
