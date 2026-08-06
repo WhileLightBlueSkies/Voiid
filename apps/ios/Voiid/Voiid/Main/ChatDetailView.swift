@@ -71,6 +71,7 @@ struct ChatDetailView: View {
             if selectionMode { selectionHeader }
             // "You are sharing your location" — pinned at the top of the chat, one-tap Stop.
             LocationBanner(conversationId: conversation.id)
+            ongoingCallBanner
             messageList
             inputBar
         }
@@ -232,6 +233,17 @@ struct ChatDetailView: View {
             ImageViewer(image: wrapper.image) { fullscreenImage = nil }
         }
         .fullScreenCover(item: $activeCall) { CallScreen(request: $0) }
+    }
+
+    /// "Ongoing call — Join". Groups only: a 1:1 call rings the peer directly, so there is no
+    /// such thing as a 1:1 call you could be missing quietly.
+    ///
+    /// Extracted rather than inlined into `body` — as an inline `if` it pushed that VStack past
+    /// the type-checker's budget and failed the build outright.
+    @ViewBuilder private var ongoingCallBanner: some View {
+        if conversation.type == .group {
+            OngoingCallBanner(conversationId: conversation.id) { startCall(.voice) }
+        }
     }
 
     private func startCall(_ kind: CallKind) {

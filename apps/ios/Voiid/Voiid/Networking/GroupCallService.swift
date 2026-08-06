@@ -213,6 +213,7 @@ final class GroupCallService: NSObject, ObservableObject {
         configureAudioSession()
         subscribeToEpochChanges(conversationId: conversationId)
         state = .connected
+        startPresenceHeartbeat(conversationId: conversationId)
 
         // Advertise to the other members so they get a "join" notification — without this the
         // call is join-only and no one else learns it started.
@@ -358,7 +359,52 @@ final class GroupCallService: NSObject, ObservableObject {
         state = .idle
     }
 
+    // MARK: - Ongoing-call presence
+    //
+    // Backs the in-chat "ongoing call — Join" banner. The server holds a short-TTL marker per
+    // conversation; while we are on the call we keep re-arming it, and when we leave we clear
+    // our entry immediately. Both halves matter: without the heartbeat the banner would blink
+    // off mid-call, and without the leave the chat would keep advertising a call that ended.
+
+    /// Comfortably under the server's 60s TTL, so a single dropped request does not expire the
+    /// marker while we are still on the call.
+    private static let presenceHeartbeatSeconds: TimeInterval = 20
+
+    private var presenceTask: Task<Void, Never>?
+
+    private func startPresenceHeartbeat(conversationId: String) {
+        presenceTask?.cancel()
+        struct Body: Encodable { let conversation_id: String }
+        presenceTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds:
+                    UInt64(Self.presenceHeartbeatSeconds * 1_000_000_000))
+                guard !Task.isCancelled, let self else { return }
+                // Failures are ignored on purpose: a missed heartbeat degrades to the banner
+                // disappearing for others, which is not worth interrupting a live call over.
+                _ = try? await self.api.request("POST", "calls/group/heartbeat",
+                                                body: Body(conversation_id: conversationId),
+                                                as: EmptyResponse.self)
+            }
+        }
+    }
+
+    private func stopPresenceHeartbeat(conversationId: String?) {
+        presenceTask?.cancel()
+        presenceTask = nil
+        guard let conversationId else { return }
+        struct Body: Encodable { let conversation_id: String }
+        // Detached from teardown's lifetime — we are being torn down, so awaiting this here
+        // would delay the hang-up for a request whose only job is to save others 60 seconds.
+        Task { [api] in
+            _ = try? await api.request("POST", "calls/group/leave",
+                                       body: Body(conversation_id: conversationId),
+                                       as: EmptyResponse.self)
+        }
+    }
+
     private func teardown() async {
+        stopPresenceHeartbeat(conversationId: conversationId)
         stopTicking()
         epochSubscription?.cancel()
         epochSubscription = nil

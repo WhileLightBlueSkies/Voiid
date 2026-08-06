@@ -345,6 +345,12 @@ fun ChatDetailView(
             // Persistent "sharing live location" banner for THIS chat (docs/LOCATION.md §8.A).
             LocationBanner(conversationId = conversation.id)
 
+            // "Ongoing call — Join". Groups only: a 1:1 call rings the peer directly, so there
+            // is no such thing as a 1:1 call you could be missing quietly.
+            if (isGroup) {
+                OngoingCallBanner(conversationId = conversation.id) { startCall(CallKind.VOICE) }
+            }
+
             // Messages
             LazyColumn(
                 state = listState,

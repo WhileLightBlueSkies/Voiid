@@ -295,7 +295,127 @@ router.post('/group/token', requireAuth, asyncHandler(async (req, res) => {
   // and jsonwebtoken rejects combining them with the equivalent options.
   const token = jwt.sign(grant, apiSecret, { algorithm: 'HS256' });
 
+  // Mark the call LIVE so members who never saw the ring push can still find it. This is a
+  // presence hint, not a source of truth: the key is short-lived and refreshed by connected
+  // clients, so if everyone leaves (or crashes) it simply expires and the banner disappears
+  // on its own. Nothing needs to write a "call ended" event, which is exactly why this is a
+  // TTL key and not a row.
+  await touchGroupCallPresence(conversation_id, identity);
+
   return res.json({ url, token, room, identity, ttl_seconds: LIVEKIT_TOKEN_TTL_SECONDS });
+}));
+
+/**
+ * How long an ongoing-call marker survives without a heartbeat. Deliberately a small
+ * multiple of the client heartbeat interval (clients refresh every ~20s): long enough that
+ * one dropped request does not blink the banner off, short enough that a crashed client
+ * stops advertising a call nobody is in within a minute.
+ */
+const GROUP_CALL_PRESENCE_TTL_SECONDS = 60;
+
+/** Key holding the identities currently in a conversation's call. */
+const groupCallPresenceKey = (conversationId: string) => `call:group:live:${conversationId}`;
+
+/**
+ * Record that `identity` is in this conversation's call, and re-arm the expiry.
+ *
+ * A sorted set scored by timestamp, not a plain key, so a participant count is honest:
+ * a set of members with per-member staleness cannot be expressed by one TTL, and showing
+ * "3 on the call" when two of them died an hour ago is worse than showing nothing.
+ */
+async function touchGroupCallPresence(conversationId: string, identity: string): Promise<void> {
+  const key = groupCallPresenceKey(conversationId);
+  const now = Date.now();
+  await redis
+    .multi()
+    .zadd(key, now, identity)
+    // Drop anyone who has not heartbeat within the TTL. Done on WRITE rather than on read so
+    // the read path stays a single command and cannot be made to do unbounded work.
+    .zremrangebyscore(key, '-inf', now - GROUP_CALL_PRESENCE_TTL_SECONDS * 1000)
+    .expire(key, GROUP_CALL_PRESENCE_TTL_SECONDS)
+    .exec();
+}
+
+// GET /calls/group/active?conversation_id= — "is there a call happening in this chat right
+// now?", which backs the in-chat "ongoing call — Join" banner. Before this, a group call was
+// discoverable ONLY by catching the ring push: miss the notification and the call was
+// invisible even while your friends were sitting in it.
+router.get('/group/active', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id } = (req as any).auth;
+  const conversation_id = req.query.conversation_id;
+
+  if (typeof conversation_id !== 'string' || !UUID_RE.test(conversation_id)) {
+    return res.status(400).json({ error: 'conversation_id must be a uuid' });
+  }
+
+  // Membership first, and NOT as an afterthought: this endpoint reports who is on a call.
+  // Without the check, any authenticated user could poll arbitrary conversation ids and read
+  // out the live social graph of rooms they have no part in.
+  const member = await query<{ one: number }>(
+    `select 1 as one from conversation_members
+       where conversation_id = $1 and user_id = $2 and left_at is null`,
+    [conversation_id, user_id]
+  );
+  if (!member[0]) return res.status(403).json({ error: 'not a member of this conversation' });
+
+  const key = groupCallPresenceKey(conversation_id);
+  const fresh = Date.now() - GROUP_CALL_PRESENCE_TTL_SECONDS * 1000;
+  const identities = await redis.zrangebyscore(key, fresh, '+inf');
+
+  // Identity is `user_id:device_id`, so one user on two devices is ONE participant. Counting
+  // raw entries would show "2 people" for one person who answered on their watch.
+  const users = new Set(identities.map((i) => i.split(':')[0]));
+
+  return res.json({
+    active: users.size > 0,
+    participant_count: users.size,
+    // Whether YOU are already on it, so the banner can say "Return to call" rather than
+    // inviting you to join something you are in.
+    self_present: users.has(user_id),
+  });
+}));
+
+// POST /calls/group/heartbeat  { conversation_id } — re-arm the presence marker while a
+// client stays on the call. The LiveKit token is minted once and lasts far longer than the
+// presence TTL, so without this the banner would vanish mid-call for everyone else.
+router.post('/group/heartbeat', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id, device_id } = (req as any).auth;
+  const { conversation_id } = req.body ?? {};
+
+  if (typeof conversation_id !== 'string' || !UUID_RE.test(conversation_id)) {
+    return res.status(400).json({ error: 'conversation_id must be a uuid' });
+  }
+
+  const member = await query<{ one: number }>(
+    `select 1 as one from conversation_members
+       where conversation_id = $1 and user_id = $2 and left_at is null`,
+    [conversation_id, user_id]
+  );
+  if (!member[0]) return res.status(403).json({ error: 'not a member of this conversation' });
+
+  await touchGroupCallPresence(conversation_id, device_id ? `${user_id}:${device_id}` : user_id);
+  return res.json({ ok: true, ttl_seconds: GROUP_CALL_PRESENCE_TTL_SECONDS });
+}));
+
+// POST /calls/group/leave  { conversation_id } — drop this device from the presence set as
+// soon as the user hangs up, instead of waiting out the TTL. Best-effort by design: a client
+// that is killed rather than closed never sends this, which is precisely why the TTL exists
+// and why this endpoint is an optimisation rather than the mechanism.
+router.post('/group/leave', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id, device_id } = (req as any).auth;
+  const { conversation_id } = req.body ?? {};
+
+  if (typeof conversation_id !== 'string' || !UUID_RE.test(conversation_id)) {
+    return res.status(400).json({ error: 'conversation_id must be a uuid' });
+  }
+
+  // No membership check: this only ever REMOVES the caller's own identity, so the worst a
+  // non-member can do is delete an entry that was never there.
+  await redis.zrem(
+    groupCallPresenceKey(conversation_id),
+    device_id ? `${user_id}:${device_id}` : user_id
+  );
+  return res.json({ ok: true });
 }));
 
 // POST /calls/group/ring  { conversation_id, call_kind } — advertise that a group call

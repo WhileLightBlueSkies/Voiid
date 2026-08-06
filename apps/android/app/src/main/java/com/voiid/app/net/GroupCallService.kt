@@ -18,6 +18,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -227,6 +229,8 @@ object GroupCallManager {
         // this the call is join-only and nobody else ever learns it started.
         runCatching { ringGroup(ctx, conversationId, kind) }
             .onFailure { Log.w("VOIID", "group call: ring fan-out failed (call still usable)", it) }
+
+        startPresenceHeartbeat(ctx, conversationId)
 
         // 4) Publish. Mic always; camera only for a video call.
         runCatching { r.localParticipant.setMicrophoneEnabled(true) }
@@ -488,7 +492,69 @@ object GroupCallManager {
     }
 
     /** Release the room + service. Never throws — teardown runs on error paths. */
+    // ── Ongoing-call presence ───────────────────────────────────────────────────────
+    //
+    // Backs the in-chat "ongoing call — Join" banner. The server keeps a short-TTL Redis
+    // marker per conversation which connected clients re-arm; when everyone stops
+    // heartbeating the marker expires and the banner disappears on its own. That is why
+    // there is no "call ended" event to deliver — a TTL says it without anyone announcing it.
+
+    /** Comfortably under the server's 60s TTL, so one dropped request does not expire it. */
+    private const val PRESENCE_HEARTBEAT_MS = 20_000L
+
+    private var presenceJob: Job? = null
+
+    private fun startPresenceHeartbeat(ctx: Context, conversationId: String) {
+        presenceJob?.cancel()
+        presenceConversationId = conversationId
+        val app = ctx.applicationContext
+        presenceJob = scope.launch {
+            while (isActive) {
+                delay(PRESENCE_HEARTBEAT_MS)
+                // Failures are swallowed deliberately: a missed heartbeat costs other members
+                // a stale banner, which is not worth disturbing a live call over.
+                runCatching {
+                    val api = ApiClient(TokenStore.get(app))
+                    api.request(
+                        "POST", "calls/group/heartbeat",
+                        jsonBody = ApiClient.json.encodeToString(
+                            GroupTokenBody.serializer(), GroupTokenBody(conversationId)),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun stopPresenceHeartbeat(conversationId: String?) {
+        presenceJob?.cancel()
+        presenceJob = null
+        val app = appContext ?: return
+        if (conversationId.isNullOrBlank()) return
+        // Best-effort, and on its OWN scope: teardown may be cancelling `scope`, and a leave
+        // launched there would be cancelled before it ever reached the network. A client that
+        // is killed rather than closed never sends this at all — which is exactly why the
+        // server-side TTL is the mechanism and this is only an optimisation.
+        CoroutineScope(Dispatchers.IO).launch {
+            runCatching {
+                ApiClient(TokenStore.get(app)).request(
+                    "POST", "calls/group/leave",
+                    jsonBody = ApiClient.json.encodeToString(
+                        GroupTokenBody.serializer(), GroupTokenBody(conversationId)),
+                )
+            }
+        }
+    }
+
+    /**
+     * The conversation we are advertising presence for, tracked separately from `_state`
+     * because `endInternal` nulls the state BEFORE calling `teardown()` — reading it there
+     * would always find null and we would never clear our presence entry.
+     */
+    private var presenceConversationId: String? = null
+
     private fun teardown() {
+        stopPresenceHeartbeat(presenceConversationId)
+        presenceConversationId = null
         eventJob?.cancel()
         eventJob = null
         epochJob?.cancel()
