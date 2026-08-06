@@ -54,6 +54,7 @@ class GroupEngine private constructor(context: Context) {
             }
 
         /** How many KeyPackages to publish per batch (each is consumed by one add). */
+        private const val KEYPACKAGE_LOW_WATER = 4
         private const val KEYPACKAGE_BATCH = 10
         private const val PREF_MEMBER = "member_blob"
         private const val PREF_GROUPMAP = "group_map"
@@ -179,6 +180,13 @@ class GroupEngine private constructor(context: Context) {
                 if (prefs.getString(PREF_KP_PUBLISHED, null) == null) {
                     publishKeyPackagesLocked(m)
                     prefs.edit().putString(PREF_KP_PUBLISHED, "1").apply()
+                } else {
+                    // THE ALREADY-BOOTSTRAPPED CASE IS THE ONE THAT NEEDED WORK. The batch
+                    // published on first run is consumed one package at a time as people add
+                    // this device to groups, and nothing replenished it — so a long-lived
+                    // device eventually ran dry and OTHER people silently failed to add it,
+                    // while this device saw nothing wrong at all.
+                    topUpKeyPackagesIfLowLocked(m)
                 }
             }
         }.onFailure { Log.e("VOIID", "MLS: bootstrap failed", it) }
@@ -196,6 +204,30 @@ class GroupEngine private constructor(context: Context) {
             UploadKeyPackagesBody.serializer(), UploadKeyPackagesBody(deviceId, packages))
         api.request("POST", "mls/keypackages", jsonBody = body)
         Log.i("VOIID", "MLS: published ${packages.size} key packages")
+    }
+
+    @Serializable
+    private data class KeyPackageCountResponse(val available: Int = 0)
+
+    /**
+     * Republish when this device is running low. Mirrors the one-time-prekey top-up, and
+     * exists for the same reason: the cost of running out lands on OTHER people (they cannot
+     * add you to a group), never on the device that ran out.
+     *
+     * Best-effort throughout — a device that cannot top up right now is no worse off than
+     * before the check, and surfacing it would put an error in front of a user who did
+     * nothing and can do nothing about it.
+     */
+    private suspend fun topUpKeyPackagesIfLowLocked(m: GroupMember) {
+        val deviceId = e2e.deviceId ?: return
+        runCatching {
+            val res: KeyPackageCountResponse =
+                api.requestAs("GET", "mls/keypackages/count?device_id=$deviceId")
+            if (res.available < KEYPACKAGE_LOW_WATER) {
+                publishKeyPackagesLocked(m)
+                Log.i("VOIID", "MLS: topped up key packages (had ${res.available})")
+            }
+        }.onFailure { Log.w("VOIID", "MLS: key-package top-up skipped", it) }
     }
 
     // MARK: - Create group

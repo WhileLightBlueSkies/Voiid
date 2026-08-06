@@ -142,7 +142,14 @@ final class GroupEngine {
         // `withGroupState` performs the create-or-restore (reloadSharedState → restoreMember);
         // minting KeyPackages mutates the member, so it must run under the same lock.
         await withGroupState {
-            if bootstrapped { return }
+            // ALREADY BOOTSTRAPPED IS THE CASE THAT NEEDED WORK. The batch published on the
+            // first run is consumed one package at a time as people add this device to
+            // groups, and nothing replenished it — so a long-lived device eventually ran dry
+            // and OTHER people silently failed to add it. Every later launch now checks.
+            if bootstrapped {
+                await topUpKeyPackagesIfLow(deviceId: deviceId)
+                return
+            }
             do {
                 try await publishKeyPackages(deviceId: deviceId)
                 bootstrapped = true
@@ -217,10 +224,51 @@ final class GroupEngine {
             body: PublishKPBody(device_id: deviceId, key_packages: packages))
     }
 
+    // MARK: - KeyPackage upkeep
+
+    private struct KPCountResponse: Decodable { let available: Int }
+
+    /**
+     A device publishes a fixed batch at bootstrap and consumes one every time somebody adds
+     it to a group. Nothing replenished them, so a device eventually ran dry — and the
+     failure lands on OTHER PEOPLE: they try to add you, the server has nothing for that
+     device, and you are silently left out of the group. The device that ran out sees
+     nothing wrong at all.
+
+     Checked on a cheap count endpoint and topped up below a low-water mark, mirroring the
+     one-time-prekey flow. Best-effort throughout: failing to top up must never break the
+     call that triggered the check.
+     */
+    func topUpKeyPackagesIfLow(deviceId: String) async {
+        do {
+            let res: KPCountResponse = try await api.request(
+                "GET", "mls/keypackages/count?device_id=\(deviceId)")
+            guard res.available < Self.keyPackageLowWater else { return }
+            try await publishKeyPackages(deviceId: deviceId)
+            NSLog("[VOIID] MLS: topped up key packages (had \(res.available))")
+        } catch {
+            // Deliberately swallowed. A device that cannot top up right now is no worse off
+            // than before the check, and surfacing it would put an error in front of a user
+            // who did nothing and can do nothing.
+            NSLog("[VOIID] MLS: key-package top-up skipped: \(error)")
+        }
+    }
+
+    /// Below this, republish. Chosen so a burst of group adds cannot drain the batch between
+    /// two checks — the cost of being wrong in this direction is a few unused packages.
+    private static let keyPackageLowWater = 4
+
     // MARK: - Create group
 
     private struct KeyPackageDTO: Decodable { let device_id: String; let key_package: String }
-    private struct KeyPackagesResponse: Decodable { let key_packages: [KeyPackageDTO] }
+    private struct KeyPackagesResponse: Decodable {
+        let key_packages: [KeyPackageDTO]
+        /// How many active devices the target has, and whether some could not be keyed.
+        /// OPTIONAL because Swift's Codable throws `keyNotFound` on an absent key — a
+        /// non-optional here would break this call against any server older than the field.
+        let device_count: Int?
+        let partial: Bool?
+    }
 
     /// One control message queued for /mls/group-events.
     private struct GroupEventOut: Encodable {

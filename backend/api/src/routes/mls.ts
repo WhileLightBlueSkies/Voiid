@@ -99,7 +99,55 @@ router.get('/keypackages/:user_id', requireAuth, asyncHandler(async (req, res) =
     key_package: r.key_package.toString('base64'),
   }));
   if (packages.length === 0) return res.status(409).json({ error: 'no key packages available for user' });
-  res.json({ key_packages: packages });
+
+  // ── A PARTIAL RESULT IS REPORTED, NOT SWALLOWED ─────────────────────────────
+  //
+  // This used to 409 only when EVERY device was drained. If a user had three devices and
+  // one had run out of KeyPackages, that device was simply absent from the result — the
+  // caller added the other two and the third was silently, permanently excluded from the
+  // group. No error, nothing in the UI, and the person on that device just never receives
+  // anything. Silent partial failure is the worst shape this can take.
+  //
+  // The count is returned so the caller can say "added on 2 of their 3 devices" instead of
+  // implying success. Deliberately still a 200: adding someone on two devices is a real,
+  // useful outcome, and failing the whole request would be worse than reporting it.
+  const active = await query<{ n: string }>(
+    `select count(*)::text as n from devices where user_id = $1 and revoked_at is null`,
+    [req.params.user_id]
+  );
+  const deviceCount = Number(active[0]?.n ?? 0);
+  res.json({
+    key_packages: packages,
+    device_count: deviceCount,
+    // True when at least one of the target's devices could not be keyed. The client should
+    // surface this rather than treating the add as complete.
+    partial: packages.length < deviceCount,
+  });
+}));
+
+/**
+ * GET /mls/keypackages/count?device_id= — how many unconsumed packages this device has left.
+ *
+ * Mirrors the one-time-prekey count endpoint, and exists for the same reason: a device that
+ * publishes a fixed batch at bootstrap and never checks will eventually run dry, and the
+ * failure lands on OTHER people (they cannot add you) rather than on the device that ran
+ * out. The client polls this and tops up below a low-water mark.
+ */
+router.get('/keypackages/count', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id } = (req as any).auth;
+  const deviceId = typeof req.query.device_id === 'string' ? req.query.device_id : null;
+  if (!deviceId) return res.status(400).json({ error: 'device_id required' });
+
+  // Scoped to the caller's own devices: the remaining-package count of someone else's
+  // device is not information this endpoint should hand out.
+  const rows = await query<{ n: string }>(
+    `select count(*)::text as n
+       from mls_key_packages kp
+       join devices d on d.id = kp.device_id
+      where kp.device_id = $1 and d.user_id = $2 and kp.consumed_at is null`,
+    [deviceId, user_id]
+  );
+  res.json({ available: Number(rows[0]?.n ?? 0) });
 }));
 
 // POST /mls/group-events  { conversation_id, events: [{ recipient_user_id, kind, payload(b64), ratchet_tree?(b64) }] }
