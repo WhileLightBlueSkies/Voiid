@@ -286,8 +286,43 @@ client for a feature, update the site in the same change. Communities in particu
 still described there as not shipping — that is now stale and should be corrected before
 the site goes live.
 
-**Not started:** MLS multi-device event delivery (`3.13`), the 1000-member scale test
-(`3.14`), the group-call UI overhaul (`3.15`), tournaments and ticketing (`3.22`/`3.23`),
-and the user-facing report flow (`3.29` — the admin side of reports has a schema but no
-queue screen yet).
-All are specified in `docs/research/00_REPAIR_PLAN.md` with file lists and conflict notes.
+**Also now complete:** MLS multi-device event delivery (`3.13`), the 1000-member scale
+measurement (`3.14`), the group-call UI overhaul (`3.15` — fill-the-frame grid, speaker
+emphasis, participant roster, and an in-chat "ongoing call — Join" banner), tournaments
+(`3.22`), events and ticketing (`3.23`), and the report flow (`3.29`) on both the user and
+admin sides.
+
+Everything in `docs/research/00_REPAIR_PLAN.md` is now built. Two caveats stand:
+
+- **Neither mobile app has been RUN.** Every claim above is compiler-, test- or
+  database-verified only. No screen in this repo has been seen working on a device.
+- **Paid events return 501.** `POST /events/:id/orders` refuses a paid event because no
+  payment provider is wired up. The clients say so rather than offering a button that
+  errors. Free events work end to end.
+
+---
+
+## 8. What the 1000-member measurement actually found
+
+Run with `cargo test -p e2e-core --release group_scale_welcome_and_tree_size`. These are
+measured numbers from this tree, not estimates — and one of them contradicts the plan.
+
+| Quantity | At n=1000 | Note |
+|---|---|---|
+| Welcome message | **1,467 B, constant** | Does not grow with group size. |
+| Ratchet tree | 1.3 MB | Fetched once by a joiner. |
+| Commit traffic to build the group | **572 MB** | Adding members one at a time. |
+
+**The plan feared the wrong thing.** It predicted multi-megabyte Welcomes; a Welcome is
+constant and small. The real cost is the **fan-out**: building a 1000-member group one add
+at a time means ~500,000 commit deliveries, and that is where the half-gigabyte goes.
+
+Two consequences that matter before anyone creates a large group:
+
+1. **Add members in batches, not one per commit.** One commit carrying 50 adds costs
+   roughly one commit's fan-out, not 50. Nothing in the API forces this yet — it is a
+   client-side discipline that is currently unenforced.
+2. **`max_past_epochs = 0` makes a missed commit fatal**, which is why `037` moved delivery
+   to per-DEVICE tracking. A member who misses one commit cannot decrypt from that epoch
+   onward and cannot catch up; the only repair is removal and re-add. Do not "optimise"
+   delivery tracking back to per-user.
