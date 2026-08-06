@@ -174,9 +174,23 @@ class MainActivity : ComponentActivity() {
                 DeepLinkRouter.openCommunityInvite(link)
             }
         }
-        intent?.getStringExtra(DeepLinkRouter.EXTRA_CONVERSATION_ID)?.let { DeepLinkRouter.open(it) }
+        intent?.getStringExtra(DeepLinkRouter.EXTRA_CONVERSATION_ID)?.let {
+            // Consumed as it is read, for the same reason the accept extras below are: a
+            // singleTop Activity is handed the SAME Intent object again on every later
+            // resume, so a lingering extra re-fires its action every time the app is
+            // foregrounded.
+            intent.removeExtra(DeepLinkRouter.EXTRA_CONVERSATION_ID)
+            DeepLinkRouter.open(it)
+        }
         intent?.getStringExtra(DeepLinkRouter.EXTRA_GROUP_CALL_CONVERSATION)?.let { conv ->
-            DeepLinkRouter.joinGroupCall(conv, intent.getStringExtra(DeepLinkRouter.EXTRA_GROUP_CALL_KIND) == "video")
+            val video = intent.getStringExtra(DeepLinkRouter.EXTRA_GROUP_CALL_KIND) == "video"
+            // MUST be consumed too. Without this, leaving a group call and then merely
+            // switching back to the app re-joined it — the extra was still on the Intent and
+            // fired again on every resume, which is indistinguishable from the app dragging
+            // you back into a call you deliberately left.
+            intent.removeExtra(DeepLinkRouter.EXTRA_GROUP_CALL_CONVERSATION)
+            intent.removeExtra(DeepLinkRouter.EXTRA_GROUP_CALL_KIND)
+            DeepLinkRouter.joinGroupCall(conv, video)
         }
         // Accept from the ring notification lands here, not in a BroadcastReceiver — see
         // CallForegroundService.acceptActivityIntent. The extra is removed as it is read: a
