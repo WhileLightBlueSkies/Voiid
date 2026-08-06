@@ -19,6 +19,9 @@ struct GroupInfoView: View {
     @State private var memberAction: VMember?
     @State private var viewPhoto = false
     @State private var showAllMedia = false
+    /// Surfaced verbatim from the server so "only the owner can dismiss an admin" reaches
+    /// the person who tried, instead of a generic failure.
+    @State private var actionError: String?
 
     var body: some View {
         ScrollView {
@@ -44,11 +47,34 @@ struct GroupInfoView: View {
             ProfilePhotoViewer(title: conversation.title, imageName: conversation.photoName) { viewPhoto = false }
         }
         .sheet(isPresented: $showAllMedia) { SharedMediaSheet(title: conversation.title, conversationId: conversation.id) }
+        .alert("Couldn't do that", isPresented: Binding(
+            get: { actionError != nil }, set: { if !$0 { actionError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(actionError ?? "") }
         .confirmationDialog(memberAction?.name ?? "", isPresented: Binding(
             get: { memberAction != nil }, set: { if !$0 { memberAction = nil } }),
             titleVisibility: .visible) {
             Button("Message") {}
-            Button(memberAction?.role == .admin ? "Dismiss as admin" : "Make group admin") {}
+            // WIRED. This was an empty closure: the button rendered, said the right thing,
+            // and did nothing at all. The server decides whether the caller may act — an
+            // admin can promote, but only the OWNER can dismiss an admin — so the error is
+            // surfaced rather than the action being hidden, which would leave an admin
+            // wondering why a button they can see refuses to work.
+            if memberAction?.role != .owner {
+                Button(memberAction?.role == .admin ? "Dismiss as admin" : "Make group admin") {
+                    guard let m = memberAction else { return }
+                    let next: MemberRole = m.role == .admin ? .member : .admin
+                    Task { await setRole(of: m, to: next) }
+                }
+            }
+            // Only the owner sees this, and only for someone else: handing the group over is
+            // a one-way action with no undo, so it is deliberately not folded into the role
+            // menu above.
+            if myRole == .owner, let m = memberAction, m.role != .owner {
+                Button("Transfer ownership to \(m.name)") {
+                    Task { await transferOwnership(to: m) }
+                }
+            }
             Button("Remove from group", role: .destructive) {
                 if let m = memberAction {
                     members.removeAll { $0.id == m.id }
@@ -155,10 +181,15 @@ struct GroupInfoView: View {
                 }
             }
             Spacer()
-            if m.role == .admin {
-                Text("admin").font(VoiidFont.rounded(11, .medium)).foregroundColor(VoiidColor.primary)
+            // The owner used to render as NOTHING — this branch only knew 'admin', so the
+            // one person who can transfer the group looked like an ordinary member.
+            if m.role != .member {
+                Text(m.role == .owner ? "owner" : "admin")
+                    .font(VoiidFont.rounded(11, .medium))
+                    .foregroundColor(m.role == .owner ? VoiidColor.textOnPrimary : VoiidColor.primary)
                     .padding(.horizontal, 8).padding(.vertical, 3)
-                    .background(VoiidColor.accent.opacity(0.4)).clipShape(Capsule())
+                    .background(m.role == .owner ? VoiidColor.primary : VoiidColor.accent.opacity(0.4))
+                    .clipShape(Capsule())
             }
         }
         .padding(.vertical, 6)
@@ -184,6 +215,34 @@ struct GroupInfoView: View {
 
     /// Load the real group membership from the backend (GET /conversations/:id).
     /// The creator/you is flagged via the current user id; admins show a badge.
+    /// This device's own role in the group — what the menu above is allowed to offer.
+    private var myRole: MemberRole {
+        members.first(where: { $0.isYou })?.role ?? .member
+    }
+
+    /// Promote or demote, then reload so the badge and the menu agree with the server.
+    /// Reloading rather than mutating locally is deliberate: the server may refuse, and a
+    /// local flip would show a role the group does not actually have.
+    private func setRole(of member: VMember, to role: MemberRole) async {
+        do {
+            try await ChatService.shared.setMemberRole(
+                conversationId: conversation.id, userId: member.id, role: role.rawValue)
+            await loadMembers()
+        } catch {
+            actionError = (error as? APIError)?.errorDescription ?? "Couldn't change that role."
+        }
+    }
+
+    private func transferOwnership(to member: VMember) async {
+        do {
+            try await ChatService.shared.transferOwnership(
+                conversationId: conversation.id, userId: member.id)
+            await loadMembers()
+        } catch {
+            actionError = (error as? APIError)?.errorDescription ?? "Couldn't transfer ownership."
+        }
+    }
+
     private func loadMembers() async {
         loadingMembers = true
         defer { loadingMembers = false }
@@ -195,14 +254,18 @@ struct GroupInfoView: View {
                     name: m.name ?? "VOIID user",
                     phone: "",
                     photoName: nil,
-                    role: m.isAdmin ? .admin : .member,
+                    role: m.role,
                     statusText: nil,
                     isYou: m.userId == myId)
         }
-        // Put "You" first, then admins, then everyone else (alphabetical).
+        // "You" first, then the owner, then admins, then everyone else alphabetically.
+        // Ranked rather than compared pairwise on `.admin`: that test sorted the owner in
+        // with ordinary members, so the one person who runs the group sat wherever the
+        // alphabet put them.
+        func rank(_ r: MemberRole) -> Int { r == .owner ? 0 : (r == .admin ? 1 : 2) }
         members.sort {
             if $0.isYou != $1.isYou { return $0.isYou }
-            if ($0.role == .admin) != ($1.role == .admin) { return $0.role == .admin }
+            if rank($0.role) != rank($1.role) { return rank($0.role) < rank($1.role) }
             return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
     }

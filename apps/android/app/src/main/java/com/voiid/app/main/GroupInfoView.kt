@@ -172,10 +172,35 @@ fun GroupInfoView(conversation: VConversation, chat: com.voiid.app.model.ChatSto
             onDismissRequest = { memberAction = null },
             containerColor = VoiidColor.surfaceCard,
             title = { Text(m.name, style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary) },
-            text = null,
+            // AlertDialog gives two buttons; transfer is a third action, so it lives in the
+            // body. It is deliberately not folded into the role menu — handing the group over
+            // has no undo, and should not sit one mis-tap away from "make admin".
+            text = {
+                val myRole = members.firstOrNull { it.isYou }?.role ?: MemberRole.MEMBER
+                if (myRole == MemberRole.OWNER && m.role != MemberRole.OWNER) {
+                    TextButton(onClick = {
+                        chat.transferOwnership(conversation.id, m.id) { reloadMembers() }
+                        memberAction = null
+                    }) {
+                        Text("Transfer ownership to ${m.name}", color = VoiidColor.primary)
+                    }
+                }
+            },
             confirmButton = {
-                TextButton(onClick = { memberAction = null }) {
-                    Text(if (m.role == MemberRole.ADMIN) "Dismiss as admin" else "Make group admin", color = VoiidColor.primary)
+                // WIRED. This used to call `memberAction = null` and nothing else: the button
+                // rendered, said the right thing, and did nothing. The owner's role is not
+                // changeable here at all — that is a transfer, not a badge.
+                if (m.role != MemberRole.OWNER) {
+                    TextButton(onClick = {
+                        val next = if (m.role == MemberRole.ADMIN) MemberRole.MEMBER else MemberRole.ADMIN
+                        chat.setMemberRole(conversation.id, m.id, next) { reloadMembers() }
+                        memberAction = null
+                    }) {
+                        Text(
+                            if (m.role == MemberRole.ADMIN) "Dismiss as admin" else "Make group admin",
+                            color = VoiidColor.primary,
+                        )
+                    }
                 }
             },
             dismissButton = {
@@ -281,10 +306,18 @@ private fun MemberRow(m: VMember, onClick: () -> Unit) {
             Text(if (m.isYou) "You" else m.name, style = VoiidFont.rounded(16), color = VoiidColor.textPrimary)
             m.statusText?.let { Text(it, style = VoiidFont.rounded(12), color = VoiidColor.textSecondary) }
         }
-        if (m.role == MemberRole.ADMIN) {
+        // The owner used to render as NOTHING — this only knew ADMIN, so the one person who
+        // can transfer the group looked like an ordinary member.
+        if (m.role != MemberRole.MEMBER) {
+            val isOwner = m.role == MemberRole.OWNER
             Text(
-                "admin", style = VoiidFont.rounded(11, FontWeight.Medium), color = VoiidColor.primary,
-                modifier = Modifier.clip(RoundedCornerShape(999.dp)).background(VoiidColor.accent.copy(alpha = 0.4f)).padding(horizontal = 8.dp, vertical = 3.dp),
+                if (isOwner) "owner" else "admin",
+                style = VoiidFont.rounded(11, FontWeight.Medium),
+                color = if (isOwner) VoiidColor.textOnPrimary else VoiidColor.primary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(if (isOwner) VoiidColor.primary else VoiidColor.accent.copy(alpha = 0.4f))
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
             )
         }
     }

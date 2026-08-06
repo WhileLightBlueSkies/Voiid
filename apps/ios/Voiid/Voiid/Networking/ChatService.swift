@@ -42,7 +42,10 @@ struct ConvMember {
     let userId: String
     let name: String?
     let photoURL: String?
-    let isAdmin: Bool
+    /// The real role, not a boolean. `isAdmin` could not express an owner, so the owner badge
+    /// had nothing to render from and ownership transfer had no state to read.
+    let role: MemberRole
+    var isAdmin: Bool { role == .admin || role == .owner }
 }
 
 /// A user's public profile (no phone number — not exposed by the backend).
@@ -147,8 +150,29 @@ final class ChatService {
         let env: ConvDetailEnvelope = try await api.request("GET", "conversations/\(conversationId)")
         return env.members.map {
             ConvMember(userId: $0.user_id, name: $0.full_name,
-                       photoURL: $0.photo_url, isAdmin: ($0.role ?? "member") == "admin")
+                       photoURL: $0.photo_url, role: MemberRole.from($0.role))
         }
+    }
+
+    /// Promote a member to admin, or demote one back.
+    ///
+    /// The server owns the policy — an admin may promote, but only the OWNER may dismiss an
+    /// admin — so a refusal comes back as an error with a readable message rather than this
+    /// method trying to second-guess who is allowed to do what.
+    func setMemberRole(conversationId: String, userId: String, role: String) async throws {
+        struct Body: Encodable { let role: String }
+        _ = try await api.request("PATCH",
+            "conversations/\(conversationId)/members/\(userId)/role",
+            body: Body(role: role)) as EmptyResponse
+    }
+
+    /// Hand the group to someone else. Owner-only; the server demotes and promotes in one
+    /// transaction so the group is never briefly ownerless.
+    func transferOwnership(conversationId: String, userId: String) async throws {
+        struct Body: Encodable { let user_id: String }
+        _ = try await api.request("POST",
+            "conversations/\(conversationId)/transfer-ownership",
+            body: Body(user_id: userId)) as EmptyResponse
     }
 
     /// Public profile for a user (name, photo, bio/about). The backend does NOT

@@ -2,7 +2,21 @@ package com.voiid.app.model
 
 /** Models for group info + 1:1 contact profile (dummy phase) — port of iOS `GroupModels.swift`. */
 
-enum class MemberRole { ADMIN, MEMBER }
+/**
+ * OWNER exists because 036_group_roles.sql made it real: exactly one per group, enforced by
+ * a partial unique index. Before that the creator was merely an 'admin' and nothing could
+ * transfer a group, so the UI had no owner to render.
+ */
+enum class MemberRole { OWNER, ADMIN, MEMBER;
+    companion object {
+        /** Unknown strings fall back to MEMBER — a future server role must not crash an old client. */
+        fun from(raw: String?): MemberRole = when (raw) {
+            "owner" -> OWNER
+            "admin" -> ADMIN
+            else -> MEMBER
+        }
+    }
+}
 
 data class VMember(
     val id: String,

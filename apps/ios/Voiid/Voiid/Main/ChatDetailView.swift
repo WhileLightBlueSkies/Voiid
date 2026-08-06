@@ -99,7 +99,7 @@ struct ChatDetailView: View {
             let myId = TokenStore.shared.userId
             groupMembers = cm.map { m in
                 VMember(id: m.userId, name: m.name ?? "VOIID user", phone: "", photoName: nil,
-                        role: m.isAdmin ? .admin : .member, statusText: nil, isYou: m.userId == myId)
+                        role: m.role, statusText: nil, isYou: m.userId == myId)
             }
         }
         .task(id: conversation.id) {

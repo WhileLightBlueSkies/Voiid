@@ -584,6 +584,31 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Promote a member to admin, or demote one back.
+     *
+     * The server owns the policy (036_group_roles.sql + conversations.ts): an admin may
+     * promote, but only the OWNER may dismiss an admin. A refusal comes back as a readable
+     * message and is surfaced verbatim — a generic "couldn't do that" would leave an admin
+     * puzzling over a button they can see but cannot use.
+     */
+    fun setMemberRole(conversationId: String, userId: String, role: MemberRole, onDone: () -> Unit = {}) {
+        viewModelScope.launch {
+            runCatching { chatService.setMemberRole(conversationId, userId, role.name.lowercase()) }
+                .onFailure { loadError = (it as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t change that role." }
+            onDone()
+        }
+    }
+
+    /** Hand the group over. Owner-only; the server does both halves in one transaction. */
+    fun transferOwnership(conversationId: String, userId: String, onDone: () -> Unit = {}) {
+        viewModelScope.launch {
+            runCatching { chatService.transferOwnership(conversationId, userId) }
+                .onFailure { loadError = (it as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t transfer ownership." }
+            onDone()
+        }
+    }
+
     /** Send a real E2EE message in a direct chat. Groups keep a local echo for now. */
     fun send(
         text: String,

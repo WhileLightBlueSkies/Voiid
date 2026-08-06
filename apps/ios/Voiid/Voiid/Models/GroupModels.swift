@@ -7,7 +7,16 @@
 
 import Foundation
 
-enum MemberRole: String { case admin, member }
+/// OWNER exists because 036_group_roles.sql made it real: exactly one per group, enforced
+/// by a partial unique index. Before that the creator was merely an 'admin', so there was no
+/// owner to show and nothing could transfer a group.
+enum MemberRole: String {
+    case owner, admin, member
+
+    /// Unknown strings fall back to `.member` — a future server role must not break an old
+    /// client, and `MemberRole(rawValue:)` returning nil is exactly that hazard.
+    static func from(_ raw: String?) -> MemberRole { MemberRole(rawValue: raw ?? "") ?? .member }
+}
 
 struct VMember: Identifiable, Hashable {
     let id: String          // user id

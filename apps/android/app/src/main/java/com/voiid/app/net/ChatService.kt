@@ -28,7 +28,15 @@ private data class ConvDTO(
 private data class ConversationsEnvelope(val conversations: List<ConvDTO>)
 
 @Serializable private data class ConvDetailDTO(val id: String, val type: String, val name: String? = null)
-@Serializable private data class MemberDTO(val user_id: String, val full_name: String? = null, val photo_url: String? = null)
+// `role` carries A DEFAULT rather than being a bare nullable. kotlinx throws on an absent
+// key, and this is the bug class that has already broken read receipts and stories here — an
+// older server that omits the field would otherwise fail the whole decode.
+@Serializable private data class MemberDTO(
+    val user_id: String,
+    val full_name: String? = null,
+    val photo_url: String? = null,
+    val role: String = "member",
+)
 @Serializable private data class ConvDetailEnvelope(val conversation: ConvDetailDTO, val members: List<MemberDTO>)
 // Backend returns a FLAT shape: direct → { conversation_id, existed }, group → { conversation_id }.
 @Serializable private data class CreateConvEnvelope(val conversation_id: String, val existed: Boolean = false)
@@ -40,7 +48,13 @@ private data class ConversationsEnvelope(val conversations: List<ConvDTO>)
 data class PeerInfo(val peerUserId: String?, val title: String?, val photoURL: String?)
 
 /** One member of a group conversation (for GroupInfoView). */
-data class GroupMemberInfo(val userId: String, val name: String, val photoURL: String?, val isYou: Boolean)
+data class GroupMemberInfo(
+    val userId: String,
+    val name: String,
+    val photoURL: String?,
+    val isYou: Boolean,
+    val role: com.voiid.app.model.MemberRole = com.voiid.app.model.MemberRole.MEMBER,
+)
 
 class ChatService(context: Context) {
     private val appContext = context.applicationContext
@@ -114,6 +128,29 @@ class ChatService(context: Context) {
         return PeerInfo(peer.user_id, peer.full_name ?: env.conversation.name, peer.photo_url)
     }
 
+    /**
+     * Promote a member to admin, or demote one back. The server decides who may do this —
+     * an admin can promote, but only the OWNER can dismiss an admin (036/conversations.ts).
+     * Errors surface verbatim so "only the owner can dismiss an admin" reaches the user
+     * rather than a generic failure.
+     */
+    suspend fun setMemberRole(conversationId: String, userId: String, role: String) {
+        api.request(
+            "PATCH", "conversations/$conversationId/members/$userId/role",
+            // encodeDefaults is irrelevant here: the body is a literal, not a @Serializable
+            // with defaults that could be omitted.
+            jsonBody = """{"role":"$role"}""",
+        )
+    }
+
+    /** Hand the group to someone else. Owner-only; the server does both halves atomically. */
+    suspend fun transferOwnership(conversationId: String, userId: String) {
+        api.request(
+            "POST", "conversations/$conversationId/transfer-ownership",
+            jsonBody = """{"user_id":"$userId"}""",
+        )
+    }
+
     /** Create (or fetch existing) a 1:1 conversation with [memberId]. Returns its id. */
     suspend fun createDirect(memberId: String): String {
         val body = """{"type":"direct","member_id":"$memberId"}"""
@@ -140,7 +177,11 @@ class ChatService(context: Context) {
             com.voiid.app.store.UserDirectory.upsertFromServer(
                 userId = it.user_id, fullName = it.full_name, photoUrl = it.photo_url,
             )
-            GroupMemberInfo(it.user_id, it.full_name ?: "Member", it.photo_url, isYou = it.user_id == myId)
+            GroupMemberInfo(
+                it.user_id, it.full_name ?: "Member", it.photo_url,
+                isYou = it.user_id == myId,
+                role = com.voiid.app.model.MemberRole.from(it.role),
+            )
         }
     }
 
