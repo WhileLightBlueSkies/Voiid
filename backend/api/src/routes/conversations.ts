@@ -2,6 +2,8 @@
 // Server stores only metadata + membership; message content stays ciphertext (see messages.ts).
 import { Router } from 'express';
 import { pool, query } from '../db';
+import { publisher } from '../redis';
+import { asyncHandler } from '../util';
 import { requireAuth } from '../auth';
 
 const router = Router();
@@ -9,6 +11,72 @@ const router = Router();
 // POST /conversations/create
 //   direct: { type:'direct', member_id }              -> idempotent (returns existing 1:1 if present)
 //   group:  { type:'group', name, photo_url?, member_ids:[...] }
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// GROUP SCALE AND ROLES (036_group_roles.sql)
+//
+// A group has EXACTLY ONE owner, up to 50 admins and up to 1000 members. The one-owner
+// rule is enforced by a partial unique index rather than by these routes, so a bug here
+// cannot produce two owners — the insert simply fails.
+//
+// 1000 is a transport limit, not a product opinion: MLS generates O(members) commit rows
+// per join, so the ceiling is set where the fan-out still behaves. Signal's equivalent is
+// a hard 1001 delivered by remote config.
+// ─────────────────────────────────────────────────────────────────────────────────
+const MAX_GROUP_MEMBERS = 1000;
+const MAX_GROUP_ADMINS = 50;
+
+type SystemEventKind =
+  | 'members_added' | 'member_removed' | 'member_left'
+  | 'role_changed' | 'ownership_transferred';
+
+/**
+ * Write a system event into the conversation's timeline.
+ *
+ * STRUCTURED, NOT PRE-BAKED ENGLISH. The row names the kind and the actors; the client
+ * composes the sentence. That is the only way the same event reads as "You made Priyanshu
+ * an admin" for one person and "Nehal made Priyanshu an admin" for another — and the only
+ * way it can ever be localized.
+ *
+ * ciphertext is NULL, which is exactly what the fan-out path already writes for its
+ * canonical metadata row, so nothing downstream needs a new case. The opacity assertion
+ * that guards client bodies does not apply: this body is ours, and it carries no message
+ * content — only ids the server already stores in order to route.
+ */
+async function emitSystemEvent(
+  conversationId: string,
+  actorId: string,
+  kind: SystemEventKind,
+  detail: Record<string, unknown> = {},
+  client?: { query: (q: string, v?: unknown[]) => Promise<{ rows: any[] }> }
+): Promise<void> {
+  const run = client
+    ? (q: string, v: unknown[]) => client.query(q, v).then(r => r.rows)
+    : (q: string, v: unknown[]) => query<any>(q, v);
+  const rows = await run(
+    `insert into messages (conversation_id, sender_id, ciphertext, content_type, system_event)
+          values ($1, $2, null, 'system', $3::jsonb)
+       returning id, created_at`,
+    [conversationId, actorId, JSON.stringify({ kind, actor_id: actorId, ...detail })]
+  );
+  const row = rows[0];
+  if (!row) return;
+  // Live members hear it on the channel they already listen to, so a role change lands in
+  // an open conversation without a refetch.
+  const members = await run(
+    `select user_id from conversation_members
+      where conversation_id = $1 and left_at is null`,
+    [conversationId]
+  );
+  const frame = JSON.stringify({
+    type: 'system_event', conversation_id: conversationId, message_id: row.id,
+    created_at: row.created_at, event: { kind, actor_id: actorId, ...detail },
+  });
+  for (const m of members) {
+    publisher.publish(`channel:user:${m.user_id}`, frame).catch(() => { /* best effort */ });
+  }
+}
+
 router.post('/create', requireAuth, async (req, res) => {
   const { user_id } = (req as any).auth;
   const { type = 'direct', member_id, name, photo_url, member_ids } = req.body ?? {};
@@ -101,6 +169,14 @@ router.post('/create', requireAuth, async (req, res) => {
   if (type === 'group') {
     if (!name) return res.status(400).json({ error: 'name required for group' });
     const members: string[] = Array.from(new Set([user_id, ...((member_ids as string[]) ?? [])]));
+      // Checked before anything is written: a 1200-member create should fail as a request,
+    // not halfway through inserting rows.
+    if (members.length > MAX_GROUP_MEMBERS) {
+      return res.status(400).json({
+        error: `a group can have at most ${MAX_GROUP_MEMBERS} members`,
+        code: 'group_full',
+      });
+    }
     const client = await pool.connect();
     try {
       await client.query('begin');
@@ -108,11 +184,12 @@ router.post('/create', requireAuth, async (req, res) => {
         `insert into conversations (type, name, photo_url, created_by) values ('group', $1, $2, $3) returning id`,
         [name, photo_url ?? null, user_id]
       )).rows[0];
-      // creator is admin; others are members
+      // The creator is the OWNER, not merely an admin. Every group needs exactly one, and
+      // creation is the only moment one can be assigned without a transfer.
       for (const m of members) {
         await client.query(
           `insert into conversation_members (conversation_id, user_id, role) values ($1, $2, $3)`,
-          [conv.id, m, m === user_id ? 'admin' : 'member']
+          [conv.id, m, m === user_id ? 'owner' : 'member']
         );
       }
       await client.query('commit');
@@ -218,19 +295,227 @@ router.post('/:id/members', requireAuth, async (req, res) => {
     [convId, user_id]
   ))[0];
   if (!caller) return res.status(403).json({ error: 'not a member of this conversation' });
-  if (caller.role !== 'admin') return res.status(403).json({ error: 'only an admin can add members' });
-
-  // Upsert each as an active member. `left_at` reset reinstates a prior member;
-  // role left untouched on conflict so an existing admin stays an admin.
-  for (const uid of userIds as string[]) {
-    await query(
-      `insert into conversation_members (conversation_id, user_id, role) values ($1, $2, 'member')
-         on conflict (conversation_id, user_id) do update set left_at = null`,
-      [convId, uid]
-    );
+  if (caller.role !== 'admin' && caller.role !== 'owner') {
+    return res.status(403).json({ error: 'only an admin can add members' });
   }
-  res.json({ added: (userIds as string[]).length });
+
+  // COUNTED INSIDE A TRANSACTION HOLDING THE CONVERSATION ROW. Two admins adding at the
+  // same moment would each read a count below the cap and both proceed, so a "1000-member
+  // limit" checked outside a lock is not a limit. `for update` on the conversations row
+  // serialises them without locking the membership itself.
+  const addClient = await pool.connect();
+  try {
+    await addClient.query('begin');
+    await addClient.query(`select 1 from conversations where id = $1 for update`, [convId]);
+
+    const active = Number((await addClient.query(
+      `select count(*)::text as n from conversation_members
+        where conversation_id = $1 and left_at is null`,
+      [convId]
+    )).rows[0].n);
+
+    // Only people who are not already present count against the cap — re-adding someone who
+    // never left must not be refused because the group is full of them.
+    const incoming = [...new Set(userIds as string[])];
+    const present = new Set((await addClient.query(
+      `select user_id from conversation_members
+        where conversation_id = $1 and user_id = any($2::uuid[]) and left_at is null`,
+      [convId, incoming]
+    )).rows.map((r: any) => r.user_id));
+    const joining = incoming.filter((u) => !present.has(u));
+
+    if (active + joining.length > MAX_GROUP_MEMBERS) {
+      await addClient.query('rollback');
+      return res.status(409).json({
+        error: `a group can have at most ${MAX_GROUP_MEMBERS} members`,
+        code: 'group_full',
+      });
+    }
+
+    for (const uid of joining) {
+      // ROLE IS RESET ON REINSTATE, and this is not cosmetic: a former OWNER re-added while
+      // still carrying role='owner' trips the one-owner index in 036 and the insert fails
+      // outright, making that person impossible to re-add. Anyone who returns comes back as
+      // a member and can be promoted again.
+      await addClient.query(
+        `insert into conversation_members (conversation_id, user_id, role) values ($1, $2, 'member')
+           on conflict (conversation_id, user_id)
+           do update set left_at = null, role = 'member'`,
+        [convId, uid]
+      );
+    }
+    await addClient.query('commit');
+    if (joining.length) {
+      await emitSystemEvent(convId, user_id, 'members_added', { target_ids: joining });
+    }
+    return res.json({ added: joining.length });
+  } catch (e) {
+    await addClient.query('rollback');
+    throw e;
+  } finally {
+    addClient.release();
+  }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// PATCH /:id/members/:userId/role  { role: 'admin' | 'member' }
+//
+// Promote a member to admin, or demote an admin back. Ownership is NOT changed here —
+// that is a transfer, and giving a group away should not share a code path with handing
+// someone a moderation badge.
+//
+// WHO MAY DO WHAT, and the asymmetry is deliberate: an admin may promote, because growing
+// the moderation team is how a large group stays manageable. Only the OWNER may demote an
+// admin, because otherwise fifty admins are fifty people who can each strip the other
+// forty-nine, and the first one to act wins.
+// ─────────────────────────────────────────────────────────────────────────────────
+router.patch('/:id/members/:userId/role', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id } = (req as any).auth;
+  const convId = req.params.id;
+  const targetId = req.params.userId;
+  const nextRole = req.body?.role;
+
+  if (nextRole !== 'admin' && nextRole !== 'member') {
+    return res.status(400).json({ error: "role must be 'admin' or 'member'" });
+  }
+  if (targetId === user_id) {
+    return res.status(400).json({ error: 'you cannot change your own role' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    // Same lock as the add path: the admin cap is only a cap if concurrent promotions
+    // cannot each read a count below it.
+    await client.query(`select 1 from conversations where id = $1 for update`, [convId]);
+
+    const rows = (await client.query(
+      `select user_id, role from conversation_members
+        where conversation_id = $1 and user_id = any($2::uuid[]) and left_at is null`,
+      [convId, [user_id, targetId]]
+    )).rows as Array<{ user_id: string; role: string }>;
+
+    const caller = rows.find((r) => r.user_id === user_id);
+    const target = rows.find((r) => r.user_id === targetId);
+    if (!caller) { await client.query('rollback'); return res.status(403).json({ error: 'not a member of this conversation' }); }
+    if (!target) { await client.query('rollback'); return res.status(404).json({ error: 'that person is not in this group' }); }
+
+    if (caller.role !== 'owner' && caller.role !== 'admin') {
+      await client.query('rollback');
+      return res.status(403).json({ error: 'only an admin can change roles' });
+    }
+    if (target.role === 'owner') {
+      await client.query('rollback');
+      return res.status(403).json({ error: "the owner's role can only change by transferring ownership" });
+    }
+    if (nextRole === 'member' && target.role === 'admin' && caller.role !== 'owner') {
+      await client.query('rollback');
+      return res.status(403).json({ error: 'only the owner can dismiss an admin' });
+    }
+    if (target.role === nextRole) {
+      await client.query('rollback');
+      return res.json({ role: nextRole, unchanged: true });
+    }
+
+    if (nextRole === 'admin') {
+      const admins = Number((await client.query(
+        `select count(*)::text as n from conversation_members
+          where conversation_id = $1 and role = 'admin' and left_at is null`,
+        [convId]
+      )).rows[0].n);
+      if (admins >= MAX_GROUP_ADMINS) {
+        await client.query('rollback');
+        return res.status(409).json({
+          error: `a group can have at most ${MAX_GROUP_ADMINS} admins`,
+          code: 'too_many_admins',
+        });
+      }
+    }
+
+    await client.query(
+      `update conversation_members set role = $3
+        where conversation_id = $1 and user_id = $2 and left_at is null`,
+      [convId, targetId, nextRole]
+    );
+    await client.query('commit');
+
+    await emitSystemEvent(convId, user_id, 'role_changed', {
+      target_id: targetId, new_role: nextRole, previous_role: target.role,
+    });
+    return res.json({ role: nextRole });
+  } catch (e) {
+    await client.query('rollback');
+    throw e;
+  } finally {
+    client.release();
+  }
+}));
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// POST /:id/transfer-ownership  { user_id }
+//
+// Hand the group to someone else. Owner-only, and the two halves run in ONE transaction:
+// the one-owner index in 036 means a demote-then-promote that failed between the two
+// statements would leave a group with no owner at all — unable to transfer again, and
+// unable to block a last-admin exit. Demoting first (rather than promoting first) is what
+// keeps the index from tripping mid-transaction.
+// ─────────────────────────────────────────────────────────────────────────────────
+router.post('/:id/transfer-ownership', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id } = (req as any).auth;
+  const convId = req.params.id;
+  const targetId = req.body?.user_id;
+
+  if (typeof targetId !== 'string' || !targetId) {
+    return res.status(400).json({ error: 'user_id required' });
+  }
+  if (targetId === user_id) {
+    return res.status(400).json({ error: 'you already own this group' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    await client.query(`select 1 from conversations where id = $1 for update`, [convId]);
+
+    const rows = (await client.query(
+      `select user_id, role from conversation_members
+        where conversation_id = $1 and user_id = any($2::uuid[]) and left_at is null`,
+      [convId, [user_id, targetId]]
+    )).rows as Array<{ user_id: string; role: string }>;
+
+    const caller = rows.find((r) => r.user_id === user_id);
+    const target = rows.find((r) => r.user_id === targetId);
+    if (caller?.role !== 'owner') {
+      await client.query('rollback');
+      return res.status(403).json({ error: 'only the owner can transfer ownership' });
+    }
+    if (!target) {
+      await client.query('rollback');
+      return res.status(404).json({ error: 'that person is not in this group' });
+    }
+
+    // Order matters: demote first so the partial unique index never sees two owners.
+    await client.query(
+      `update conversation_members set role = 'admin'
+        where conversation_id = $1 and user_id = $2`,
+      [convId, user_id]
+    );
+    await client.query(
+      `update conversation_members set role = 'owner'
+        where conversation_id = $1 and user_id = $2`,
+      [convId, targetId]
+    );
+    await client.query('commit');
+
+    await emitSystemEvent(convId, user_id, 'ownership_transferred', { target_id: targetId });
+    return res.json({ owner_id: targetId });
+  } catch (e) {
+    await client.query('rollback');
+    throw e;
+  } finally {
+    client.release();
+  }
+}));
 
 // DELETE /:id/members/:userId — remove a member from a group (admin removes
 // anyone; a member may remove themselves to leave). Sets left_at so fan-out stops
