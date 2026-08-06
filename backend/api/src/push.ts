@@ -52,6 +52,23 @@ export interface PushMeta {
   // no ICE, no SRTP keys, no media — signaling stays on the WS/E2E path.
   type?: string; // 'wake' (default) | 'call' | 'story'
   call_id?: string;
+  /**
+   * TRUE when this ring is an invitation to join an ad-hoc CONFERENCE rather than a 1:1
+   * call. It rides the same `type: 'call'` push on purpose — CallKit/Telecom, the
+   * full-screen intent, the system call log and the ringtone all keep working with no
+   * second code path — but the client MUST route it differently once it lands:
+   *
+   *   * a 1:1 ring promises an SDP offer over the socket within seconds, and the clients
+   *     arm an offer timeout that ends the call when none arrives;
+   *   * a conference invitee NEVER receives an offer — it joins the SFU by fetching a
+   *     token — so that timeout would reliably kill every invite about 30s in.
+   *
+   * Without this flag the two are indistinguishable at the push layer, so a
+   * FCM/VoIP-woken invitee was routed into the 1:1 handler and the invite always died.
+   * The conference-invite handlers on both clients were only reachable over the
+   * WebSocket, which a backgrounded or killed device does not have.
+   */
+  conference?: boolean;
   call_kind?: string; // 'voice' | 'video'
   caller_id?: string;
   // Story routing (Section 4.14): a NON-SECRET identifier so a woken device knows to

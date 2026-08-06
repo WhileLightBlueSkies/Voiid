@@ -91,6 +91,8 @@ export function buildFcmData(meta?: PushMeta): Record<string, string> {
   if (meta?.call_id) data.call_id = meta.call_id;
   if (meta?.call_kind) data.call_kind = meta.call_kind;
   if (meta?.caller_id) data.caller_id = meta.caller_id;
+  // FCM data values must be strings — a boolean here is dropped silently by the SDK.
+  if (meta?.conference) data.conference = 'true';
   // Story routing (non-secret): the woken client calls GET /stories/feed and pulls
   // its own encrypted key envelope. NOTHING about the story's content ships here.
   if (meta?.story_id) data.story_id = meta.story_id;
@@ -154,6 +156,10 @@ export function buildVoipPayload(meta?: PushMeta): Record<string, unknown> {
   if (meta?.call_kind) payload.call_kind = meta.call_kind;
   if (meta?.conversation_id) payload.conversation_id = meta.conversation_id;
   if (meta?.caller_id) payload.caller_id = meta.caller_id;
+  // A conference invite rides the same VoIP push as a 1:1 ring so CallKit still reports it
+  // correctly; the flag is what stops the client arming an offer timeout for an offer that
+  // is never coming. JSON, not FCM data, so a real boolean is fine here.
+  if (meta?.conference) payload.conference = true;
   return payload;
 }
 

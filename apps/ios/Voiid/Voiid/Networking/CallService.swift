@@ -883,11 +883,18 @@ final class CallService: NSObject, ObservableObject {
         UserDirectory.shared.displayName(userId, fallback: fallback)
     }
 
+    /// - Parameter isConference: TRUE when this push invites us into an ad-hoc CONFERENCE
+    ///   rather than a 1:1 call. It arrives on the same VoIP push so CallKit still reports
+    ///   it correctly, but it MUST NOT arm the offer timeout: a conference invitee never
+    ///   receives an SDP offer (it joins the SFU by fetching a token), so the 30s watchdog
+    ///   ended every push-woken invite. Defaults to false so every existing caller keeps
+    ///   the 1:1 behaviour byte for byte.
     func reportIncomingCallFromVoIPPush(callId: String,
                                         callerId: String,
                                         kind: String,
                                         conversationId: String?,
                                         displayName: String?,
+                                        isConference: Bool = false,
                                         completion: @escaping () -> Void) {
         // The WS offer beat the push (app was alive), or this is a duplicate push —
         // the call is already ringing, nothing to do. Still must call completion.
@@ -947,7 +954,15 @@ final class CallService: NSObject, ObservableObject {
         // Now get the socket up so the offer (and ICE) can actually reach us — the
         // app may have been cold-launched by this push with no live connection.
         WebSocketClient.shared.reconnect()
-        startOfferTimeout(for: callId)
+        // NO OFFER TIMEOUT FOR A CONFERENCE INVITE. There is no offer coming — the invitee
+        // joins the SFU by fetching a token — so arming the watchdog killed every invite 30
+        // seconds in. The ring cap still applies: an unanswered invite must stop ringing.
+        if isConference {
+            active?.isConferenceInvite = true
+            awaitingOfferCallIds.remove(callId)
+        } else {
+            startOfferTimeout(for: callId)
+        }
         startIncomingRingCap(for: callId)
     }
 

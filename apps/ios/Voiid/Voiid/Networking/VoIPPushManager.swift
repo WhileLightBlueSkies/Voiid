@@ -135,6 +135,12 @@ extension VoIPPushManager: PKPushRegistryDelegate {
         let callerId = (info["caller_id"] as? String) ?? ""
         let conversationId = info["conversation_id"] as? String
         let displayName = (info["caller_name"] as? String)
+        // A conference invite rides the same VoIP push as a 1:1 ring (so CallKit, the system
+        // call log and the ringtone all keep working) — but the client must not then wait for
+        // an SDP offer that is never sent. Accepts a real bool or the string form, since the
+        // FCM side of the same contract has to stringify it.
+        let isConference = (info["conference"] as? Bool) == true
+            || (info["conference"] as? String) == "true"
 
         MainActor.assumeIsolated {
             // MUST report to CallKit before `completion()` — CallService does that
@@ -145,6 +151,7 @@ extension VoIPPushManager: PKPushRegistryDelegate {
                 kind: kind,
                 conversationId: conversationId,
                 displayName: displayName,
+                isConference: isConference,
                 completion: completion
             )
         }

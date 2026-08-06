@@ -281,7 +281,12 @@ struct ChatsHomeView: View {
                     }
                 }
             }
-            .fullScreenCover(item: $activeCall) { CallScreen(request: $0) }
+            // ChatStore is injected BY HAND, not inherited. CallScreen needs it (for the
+            // add-to-call picker) and a fullScreenCover does not reliably inherit the root's
+            // environment objects — the failure is a RUNTIME CRASH the moment the screen
+            // appears, not a compile error. CallScreen's own comment documents this hazard
+            // for the sheet one level deeper; the same rule applies to CallScreen itself.
+            .fullScreenCover(item: $activeCall) { CallScreen(request: $0).environmentObject(chat) }
         }
     }
 

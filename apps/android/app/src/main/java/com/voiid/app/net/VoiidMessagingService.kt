@@ -70,6 +70,30 @@ class VoiidMessagingService : FirebaseMessagingService() {
             val kind = if (data["call_kind"] == "video") com.voiid.app.main.CallKind.VIDEO
             else com.voiid.app.main.CallKind.VOICE
             CallManager.init(ctx)
+
+            // A CONFERENCE INVITE, not a 1:1 ring. It rides the same `type: 'call'` push so
+            // Telecom, the full-screen intent, the call log and the ringtone all keep working
+            // — but it must NOT go to onRingPush, which arms an offer timeout. A conference
+            // invitee never receives an SDP offer (it joins the SFU by fetching a token), so
+            // that timeout killed every push-woken invite about 30 seconds in.
+            //
+            // This is why "add to call" only ever worked when the invitee already had a live
+            // socket: onConferenceInvitePush was reachable from the WS path alone, and a
+            // backgrounded or killed device does not have one.
+            if (data["conference"] == "true") {
+                UserDirectory.init(ctx)
+                CallManager.onConferenceInvitePush(callId, callerId, kind, ctx)
+                scope.launch {
+                    UserDirectory.ready(ctx)
+                    CallManager.refinePeerName(
+                        callId,
+                        UserDirectory.user(callerId)?.displayName()
+                            ?.takeIf { it.isNotBlank() && it != callerId },
+                    )
+                }
+                return
+            }
+
             // RING FIRST, NAME SECOND. The push deliberately carries no caller name (that would
             // tell Google who calls whom), and resolving one used to block here on the directory
             // load plus a 6-second network lookup — up to six seconds of a 45-second ring window

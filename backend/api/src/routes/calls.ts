@@ -1004,6 +1004,13 @@ router.post('/:id/escalate', requireAuth, asyncHandler(async (req, res) => {
     call_id: callId,
     call_kind: call.call_kind,
     caller_id: user_id,
+    // THE FLAG THAT MAKES A PUSH-WOKEN INVITE WORK. Without it this push is byte-identical
+    // to a 1:1 ring, so a backgrounded or killed invitee routed it into the 1:1 handler,
+    // which arms an offer timeout — and a conference invitee never receives an offer (it
+    // joins the SFU by fetching a token), so the invite died ~30s later, every time. Both
+    // clients already have a conference-invite handler; it was reachable only over the
+    // WebSocket, which a woken device does not yet have.
+    conference: true,
   } as const;
 
   const voipTokens: string[] = [];

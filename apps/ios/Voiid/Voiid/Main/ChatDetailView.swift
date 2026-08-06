@@ -232,7 +232,10 @@ struct ChatDetailView: View {
         ) { wrapper in
             ImageViewer(image: wrapper.image) { fullscreenImage = nil }
         }
-        .fullScreenCover(item: $activeCall) { CallScreen(request: $0) }
+        // ChatStore injected by hand — see the note at the matching call site in
+        // ChatsHomeView. A fullScreenCover does not reliably inherit environment objects and
+        // the failure is a runtime crash, not a compile error.
+        .fullScreenCover(item: $activeCall) { CallScreen(request: $0).environmentObject(chat) }
     }
 
     /// "Ongoing call — Join". Groups only: a 1:1 call rings the peer directly, so there is no
