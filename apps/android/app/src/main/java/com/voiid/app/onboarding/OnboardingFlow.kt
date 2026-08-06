@@ -59,10 +59,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.voiid.app.R
@@ -189,12 +187,62 @@ fun SplashScreen() {
 
 // MARK: - Terms & Conditions
 
+/**
+ * The consent screen — and, since this is where the affirmative action actually happens,
+ * the DPDP s.5/s.6 surface of the whole app.
+ *
+ * WHAT CHANGED AND WHY
+ * --------------------
+ * "Terms & Conditions" and "Privacy Policy" used to be inert spans inside one
+ * `buildAnnotatedString`: users ticked a box agreeing to two documents they could not open,
+ * and no document existed to open. Both halves are fixed — the documents are bundled
+ * (`com.voiid.app.legal.LegalDocuments`) and both phrases are now real links.
+ *
+ * The tick is also RECORDED now. `POST /users/consent` had existed for months with zero
+ * callers on either platform, so `consent_given_at` was null for every account ever
+ * created. It cannot be posted from here — there is no account and no token until several
+ * screens later — so the decision is stored locally the moment it is made and flushed once
+ * an account exists (see `ConsentService`).
+ *
+ * "I already have an account" deliberately does not record consent: someone signing back in
+ * has not been shown this notice as a decision. They are caught by the backfill prompt after
+ * sign-in (`MainActivity.VoiidRoot`), which asks properly rather than assuming.
+ */
 @Composable
 fun TermsScreen(onContinue: () -> Unit) {
     val cfg = LocalConfiguration.current
     val haptics = LocalVoiidHaptics.current
+    val context = androidx.compose.ui.platform.LocalContext.current
     var agreed by remember { mutableStateOf(false) }
     var contentIn by remember { mutableStateOf(false) }
+    /** Set by tapping a link in the consent line. Rendered in place of this screen rather
+     *  than over it: the onboarding host is a single AnimatedContent with no dialog layer,
+     *  and a document is a full read, not a peek. */
+    var openDocument by remember { mutableStateOf<com.voiid.app.legal.LegalDocument?>(null) }
+
+    /**
+     * Ticking IS the consent, so it is recorded here rather than on Continue: a user who
+     * ticks and then abandons the flow still ticked, and a process death between the two
+     * must not lose the record. Un-ticking clears it — a retracted tick is an ABSENCE of
+     * consent, not a withdrawal, and posting it later would manufacture agreement.
+     */
+    fun setAgreed(next: Boolean) {
+        agreed = next
+        if (next) {
+            com.voiid.app.net.ConsentService.recordLocalConsent(
+                context = context,
+                purposes = com.voiid.app.legal.LegalDocuments.purposes.associate { it.id to true },
+            )
+        } else {
+            com.voiid.app.net.ConsentService.clearLocalConsent(context)
+        }
+    }
+
+    val document = openDocument
+    if (document != null) {
+        com.voiid.app.main.LegalDocumentScreen(document = document, onBack = { openDocument = null })
+        return
+    }
     val contentAlpha by animateFloatAsState(if (contentIn) 1f else 0f, tween(450), label = "termsAlpha")
     val contentOffset by animateFloatAsState(if (contentIn) 0f else 16f, tween(450), label = "termsOffset")
     LaunchedEffect(Unit) { delay(250); contentIn = true }
@@ -246,7 +294,7 @@ fun TermsScreen(onContinue: () -> Unit) {
                             .clickable(
                                 interactionSource = remember { MutableInteractionSource() },
                                 indication = null,
-                            ) { agreed = !agreed },
+                            ) { setAgreed(!agreed) },
                         contentAlignment = Alignment.Center,
                     ) {
                         // Fade the check in/out with the box's plum fill (animateColorAsState
@@ -262,16 +310,46 @@ fun TermsScreen(onContinue: () -> Unit) {
                             modifier = Modifier.size(10.dp).alpha(checkAlpha),
                         )
                     }
-                    Text(
-                        text = buildAnnotatedString {
-                            append("I accept the ")
-                            withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) { append("Terms & Conditions") }
-                            append(" and ")
-                            withStyle(SpanStyle(color = VoiidColor.textSecondary)) { append("Privacy Policy") }
-                        },
-                        style = VoiidFont.rounded(13),
-                        color = VoiidColor.textPrimary,
-                    )
+                    // FOUR Text nodes, not one AnnotatedString with link annotations.
+                    // Compose's `LinkAnnotation` would keep this as a single wrapping
+                    // paragraph and is the nicer API, but it is version-sensitive, and this
+                    // line is on the path every single user walks on first launch: a plain
+                    // `clickable` per span cannot break, and the design already constrains
+                    // this to one line (see the padding comment on the Row).
+                    //
+                    // They live in their OWN Row because the outer one is `spacedBy(8.dp)`
+                    // — which is the gap between the checkbox and the sentence, not between
+                    // its words. Putting them in the outer Row would render "I accept the
+                    // ⎵⎵ Terms & Conditions ⎵⎵ and ⎵⎵ Privacy Policy".
+                    //
+                    // Underlined as well as coloured. Colour alone is not an affordance —
+                    // it fails for colour-blind users and it failed here for everyone, which
+                    // is exactly how "Privacy Policy" looked like a link for months while
+                    // being inert text.
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("I accept the ", style = VoiidFont.rounded(13), color = VoiidColor.textPrimary)
+                        Text(
+                            "Terms & Conditions",
+                            style = VoiidFont.rounded(13, FontWeight.SemiBold),
+                            color = VoiidColor.textPrimary,
+                            textDecoration = TextDecoration.Underline,
+                            modifier = Modifier.clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                            ) { haptics.tap(); openDocument = com.voiid.app.legal.LegalDocuments.terms },
+                        )
+                        Text(" and ", style = VoiidFont.rounded(13), color = VoiidColor.textPrimary)
+                        Text(
+                            "Privacy Policy",
+                            style = VoiidFont.rounded(13, FontWeight.SemiBold),
+                            color = VoiidColor.textPrimary,
+                            textDecoration = TextDecoration.Underline,
+                            modifier = Modifier.clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                            ) { haptics.tap(); openDocument = com.voiid.app.legal.LegalDocuments.privacy },
+                        )
+                    }
                 }
 
                 // iOS uses a plain Button here (no press scale/dim), with a tap haptic

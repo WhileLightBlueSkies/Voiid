@@ -35,12 +35,19 @@ class CommunityService(context: Context) {
     private val api = ApiClient(TokenStore.get(context))
 
     /**
-     * The public info card.
+     * The public info card — the object the server nests under `community`, plus the two facts
+     * the join sheet needs that arrive ALONGSIDE it rather than inside it.
      *
      * EVERY FIELD EXCEPT THE IDENTITY TRIO IS DEFAULTED. The shared Json has
      * `ignoreUnknownKeys = true`, so a server that adds fields is fine — but a server that has
      * not yet grown one of these (this client can ship ahead of the backend) would otherwise
      * throw on decode and turn a working link into "something went wrong".
+     *
+     * [membership_state] and [invite_valid] are NOT part of the nested `community` object on the
+     * wire and will always decode as absent from it. They are folded in by [resolve], from the
+     * envelope's sibling field and from a separate probe respectively, because that is where the
+     * server puts them — deliberately: the card is a property of the community, whereas both of
+     * these are properties of the CALLER holding this link.
      */
     @Serializable
     data class CommunityCard(
@@ -48,11 +55,17 @@ class CommunityService(context: Context) {
         val handle: String,
         val name: String,
         val description: String? = null,
-        /** Plaintext R2 URL, like creator avatars (029). NOT the E2EE profile photo from 021. */
+        /** Plaintext presigned R2 URL, like creator avatars (029). NOT the E2EE photo from 021. */
         val avatar_url: String? = null,
         val member_count: Int = 0,
         /** open | approval | invite_only — decides what the join button promises. */
         val join_policy: String = "open",
+        /** Whether it appears in search. A link works regardless; that is what links are for. */
+        val discoverable: Boolean = false,
+        /** The host. Present so a card can offer "Message host" (3.18) without a roster query. */
+        val owner_id: String? = null,
+        /** Suspended communities still resolve so the card can say why joining is refused. */
+        val suspended: Boolean = false,
         /**
          * THE ONLY SOURCE OF TRUTH FOR "AM I IN THIS". Null means not a member. Never infer
          * this from the fact that a link resolved; a forwarded link resolves for everyone.
@@ -60,17 +73,33 @@ class CommunityService(context: Context) {
         val membership_state: String? = null,
         /**
          * Whether the token in the link is currently redeemable. Null when the link carried no
-         * token. False for revoked / expired / exhausted, with [invite_error] explaining which
-         * — the user needs to know whether to ask for a new link or to give up.
+         * token.
+         *
+         * There is deliberately no accompanying reason code. The server answers revoked,
+         * expired, used-up and never-existed with ONE identical 404, because a probe that
+         * distinguishes them is an oracle for guessing tokens — and the user's next move is the
+         * same in every case: ask the host for a new link.
          */
         val invite_valid: Boolean? = null,
-        val invite_error: String? = null,
-        /** Suspended communities still resolve so the card can say why joining is refused. */
-        val suspended: Boolean = false,
     ) {
         val isMember: Boolean get() = membership_state == "active"
         val isPending: Boolean get() = membership_state == "pending"
         val isBanned: Boolean get() = membership_state == "banned"
+    }
+
+    /**
+     * What both read endpoints actually return: the card, plus the caller's own relationship to
+     * it as SIBLING fields. The nesting is the server's way of keeping the two apart — a card is
+     * the same for everybody, a membership state is not.
+     */
+    @Serializable
+    data class CommunityEnvelope(
+        val community: CommunityCard,
+        val membership_state: String? = null,
+        val membership_role: String? = null,
+    ) {
+        fun merged(inviteValid: Boolean?): CommunityCard =
+            community.copy(membership_state = membership_state, invite_valid = inviteValid)
     }
 
     /**
@@ -87,24 +116,54 @@ class CommunityService(context: Context) {
     @Serializable
     private data class JoinBody(val invite_token: String?)
 
-    /** `state` is what the caller's membership row landed on: 'active' or 'pending'. */
+    /**
+     * `state` is what the caller's membership row landed on: 'active' or 'pending'.
+     * `existed` is true when the caller was already in — pressing Join twice is idempotent
+     * server-side, and the sheet should say "you're in", not "joined!" a second time.
+     */
     @Serializable
-    data class JoinResult(val state: String = "active")
+    data class JoinResult(val state: String = "active", val existed: Boolean = false)
 
     /**
-     * Resolve a link to its card. The token rides as a query parameter so the server can report
-     * whether it is live — a non-discoverable or invite_only community is otherwise invisible,
-     * and the person holding the link would be told "no such community" for one that exists.
+     * Resolve a link to the card the join sheet shows.
+     *
+     * TWO ENDPOINTS, because the server splits the two questions on purpose:
+     *   GET /communities/<handle>          — what is this community (works for non-members)
+     *   GET /communities/invites/<token>   — is this token live, WITHOUT redeeming it
+     *
+     * The invite probe is tried first when the link carries a token, because it answers both
+     * questions in one round trip and because a resolve must never spend a use of a max_uses
+     * link — a link preview or an accidental tap would otherwise burn it.
+     *
+     * A FAILED PROBE IS NOT A FAILED LINK. Falling back to the handle lookup is what lets an
+     * open community still be joined from a poster whose printed token expired months ago: the
+     * user is told the invite is dead and handed the Join button anyway, because the community's
+     * own policy — not the link — is what decides who may join.
+     *
+     * THE HANDLE IN THE URL WINS. If the probe resolves a token minted for a DIFFERENT community
+     * than the handle names, the token is treated as not applying here. Otherwise a link reading
+     * `voiid.app/c/friendly_book_club?i=<token for something else>` would show one community's
+     * name and enrol the user in another.
      *
      * The token is presented here and nowhere else. It is not persisted, not logged, and not
      * echoed back into the UI.
      */
     suspend fun resolve(link: CommunityLink): CommunityCard {
-        val query = link.inviteToken
-            ?.let { "?" + CommunityLink.QUERY_TOKEN + "=" + android.net.Uri.encode(it) }
-            ?: ""
-        return api.requestAs("GET", "communities/${link.handle}$query")
+        val token = link.inviteToken
+        if (token != null) {
+            val probe = runCatching {
+                api.requestAs<CommunityEnvelope>("GET", "communities/invites/$token")
+            }.getOrNull()
+            if (probe != null && probe.community.handle.equals(link.handle, ignoreCase = true)) {
+                return probe.merged(inviteValid = true)
+            }
+            return byHandle(link.handle).merged(inviteValid = false)
+        }
+        return byHandle(link.handle).merged(inviteValid = null)
     }
+
+    private suspend fun byHandle(handle: String): CommunityEnvelope =
+        api.requestAs("GET", "communities/$handle")
 
     /**
      * Join. [communityId] comes from the resolved card, never from the URL — the link names a

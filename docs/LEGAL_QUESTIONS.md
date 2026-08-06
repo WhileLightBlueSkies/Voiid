@@ -81,6 +81,28 @@ commercial license publicly offered). We do **not** want to open-source our apps
 ---
 
 ## 6. User-facing legal documents  🟡
-15. Draft/review **Terms & Conditions** + **Privacy Policy** (Terms screen already links to them).
+15. Review — and complete — the **Terms of Use** + **Privacy Notice** that now ship inside both
+    apps as version `2026-08-01` (`apps/ios/Voiid/Voiid/Legal/LegalDocuments.swift` and its
+    Android twin; published in `database/migrations/031_consent_notice.sql`; consent recorded
+    against that exact version by `backend/api/src/routes/consent.ts`).
+    **These were written by engineering, not by a lawyer.** They describe accurately what the
+    system does and does not do — which is the part engineering can answer — and deliberately
+    OMIT everything that is a legal determination. Each app renders the omissions to the user
+    under a "Still being finalised" heading. What is missing, and needed:
+    - the **grievance officer**'s name, address and response SLA (see also #13);
+    - whether the stated retention periods (90d security logs, 30d erasure grace, OTP+24h) are
+      defensible, and whether IT Rules 2021 set a retention **floor** that conflicts with them;
+    - Voiid's **children's-data** position and what "verifiable parental consent" means for a
+      phone-number-only signup;
+    - where each processor (Firebase, Cloudflare R2, LiveKit, APNs/FCM) physically stores data
+      and what its contract must say under DPDP s.8(2)/s.16;
+    - whether the notice must be published in **languages other than English**;
+    - for the Terms: limitation of liability, warranties, indemnity, governing law and disputes,
+      minimum age, and notice-and-takedown timelines — all absent by design, none invented.
+    Also for counsel: the v1 notice marks **every purpose as required**, so consent is one tick
+    for the bundle. DPDP s.6 wants consent that is specific and unconditional — confirm whether
+    bundling service-necessary purposes is acceptable, or whether each needs its own toggle.
+    And confirm whether withdrawing consent must **automatically** trigger erasure; today it is
+    recorded and the user is pointed at account deletion as a separate, confirmed act.
 16. **Backup disclaimer:** v1 = "lose device → lose chat history" (by design; we never hold
     decryption keys). Confirm we can/should disclose this to limit liability.

@@ -1,0 +1,20 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["CV7L84G776.com.voiid.app"],
+        "components": [
+          {
+            "/": "/c/*",
+            "comment": "Community invite links (https://voiid.app/c/<handle>?i=<token>). This is the ONLY path the app claims: everything else on voiid.app stays in the browser, so a future marketing page or help article never gets swallowed by the app."
+          },
+          {
+            "/": "*",
+            "exclude": true,
+            "comment": "Explicit deny for the rest of the domain. iOS matches components in order and takes the first hit, so this must stay last."
+          }
+        ]
+      }
+    ]
+  }
+}

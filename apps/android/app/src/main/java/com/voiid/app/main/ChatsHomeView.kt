@@ -170,6 +170,7 @@ fun ChatsHomeView(
     var showStorage by remember { mutableStateOf(false) }
     var showLinkedDevices by remember { mutableStateOf(false) }
     var showAbout by remember { mutableStateOf(false) }
+    var showLegal by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var allContacts by remember { mutableStateOf<List<VContact>>(emptyList()) }
     val scope = rememberCoroutineScope()
@@ -348,6 +349,7 @@ fun ChatsHomeView(
                 onStorage = { showStorage = true },
                 onLinkedDevices = { showLinkedDevices = true },
                 onAbout = { showAbout = true },
+                onLegal = { showLegal = true },
             )
         }
     }
@@ -399,6 +401,18 @@ fun ChatsHomeView(
             properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
         ) {
             AboutScreen(onBack = { showAbout = false })
+        }
+    }
+
+    // Privacy & Legal — fullscreen dialog. Hosted here beside About rather than nested
+    // inside it: this is also where consent is WITHDRAWN, and DPDP s.6(4) wants that at
+    // the same depth as the tick that gave it, not one screen further in.
+    if (showLegal) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showLegal = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            LegalScreen(onBack = { showLegal = false })
         }
     }
 

@@ -104,6 +104,43 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- ===== Community invite links (App Links) ================================
+                 https://voiid.app/c/<handle>?i=<token> — see net/CommunityLink.kt.
+
+                 VERIFIED App Links, not a custom scheme. `voiid://` would be trivially
+                 hijackable: any installed app may claim a custom scheme, and the OS would
+                 then hand a LIVE INVITE TOKEN to whatever also registered it. autoVerify
+                 makes Android fetch https://voiid.app/.well-known/assetlinks.json and only
+                 route the URL to us if that file names this package + signing certificate
+                 (see infrastructure/deployment/well-known/assetlinks.json). Until that file
+                 is actually served, verification FAILS SILENTLY and links open in the
+                 browser instead — the feature degrades, it does not break.
+
+                 pathPrefix="/c/" is deliberately narrow: this app claims community links and
+                 nothing else on the domain, so a future marketing page or help article at
+                 voiid.app/anything-else keeps opening in the browser.
+
+                 www is listed as a separate <data> host because Android matches the host
+                 literally — a link someone copied out of a desktop browser is routinely the
+                 www form, and without this it would silently fall through to Chrome. Both
+                 hosts must serve the same assetlinks.json, since one autoVerify filter is
+                 verified as a whole.
+
+                 SECURITY NOTE: adding a BROWSABLE VIEW filter means any app on the device
+                 can also start MainActivity with a forged voiid.app URL. That is harmless
+                 here and it is why CommunityLink.parse trusts nothing: the URI carries only
+                 a handle and an opaque token, both re-validated on arrival, and every fact
+                 shown to the user comes back from the server over the caller's own session.
+                 A forged link can therefore make the join sheet appear; it cannot make it
+                 say anything untrue, and it cannot join anyone to anything. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="voiid.app" android:pathPrefix="/c/" />
+                <data android:scheme="https" android:host="www.voiid.app" android:pathPrefix="/c/" />
+            </intent-filter>
         </activity>
 
         <!-- ===== Google Maps (docs/LOCATION.md §7) ================================

@@ -184,6 +184,30 @@ struct VoiidApp: App {
                 .onContinueUserActivity("INStartVideoCallIntent") { activity in
                     CallIntentRouter.startCall(from: activity, forceVideo: true)
                 }
+                // ===== Universal Links ==========================================
+                // A community invite link — https://voiid.app/c/<handle>?i=<token>.
+                //
+                // NSUserActivityTypeBrowsingWeb is the ONLY inbound path, and there is
+                // deliberately no `voiid://` custom-scheme twin: any app on the device can
+                // claim a custom scheme, and iOS would then hand a LIVE INVITE TOKEN to
+                // whichever app registered it. A universal link is bound to a domain we
+                // control by the associated-domains entitlement plus the AASA file at
+                // https://voiid.app/.well-known/apple-app-site-association (see
+                // infrastructure/deployment/well-known/). Until that file is served, the
+                // link opens Safari instead — the feature degrades, it does not break.
+                //
+                // Handled HERE rather than in AppDelegate: SwiftUI's scene owns
+                // `application(_:continue:restorationHandler:)` in this lifecycle, and
+                // implementing it on the delegate would silently stop the Siri call-intent
+                // handlers directly above from firing. It covers the cold-launch case too —
+                // the activity is replayed into the scene once the window exists.
+                //
+                // The router only PARKS the parsed link. Nothing is trusted, nothing is
+                // decoded, and no request is made until a view with a signed-in session
+                // asks the server what this handle actually is.
+                .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+                    CommunityLinkRouter.shared.handle(activity.webpageURL)
+                }
         }
     }
 }

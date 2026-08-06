@@ -1,0 +1,133 @@
+.card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: var(--space-md);
+  padding-block-start: calc(var(--space-md) + 4px);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface);
+  /* In dark, the hairline is what separates a card from the ground — shadow barely
+   * registers on #0D0B14. In light, the shadow does the work and the line recedes. */
+  border: 1px solid var(--color-divider);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+  transition:
+    border-color var(--dur-base) var(--ease-out),
+    transform var(--dur-base) var(--ease-out),
+    box-shadow var(--dur-base) var(--ease-out);
+}
+
+@media (min-width: 640px) {
+  .card { padding: var(--space-lg); padding-block-start: calc(var(--space-lg) + 4px); }
+}
+
+/* The hue rail across the top: the only place a card states its domain in colour. */
+.rail {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline: 0;
+  height: 3px;
+  background: linear-gradient(
+    90deg,
+    var(--hue) 0%,
+    color-mix(in srgb, var(--hue) 30%, transparent) 70%,
+    transparent 100%
+  );
+}
+
+.span2 { grid-column: span 1; }
+
+@media (min-width: 900px) {
+  .span2 { grid-column: span 2; }
+}
+
+.glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-md);
+  color: var(--hue);
+  background: var(--hue-wash);
+  margin-block-end: var(--space-3xs);
+}
+
+.title {
+  font-size: var(--text-h3);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-tight);
+  color: var(--color-text);
+}
+
+.titleLink {
+  text-decoration: none;
+  color: inherit;
+}
+
+/* The whole card is clickable, but the anchor's accessible name is just the title. */
+.stretch {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+.linked:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--hue) 45%, var(--color-divider));
+  box-shadow: var(--shadow-lift);
+}
+
+/* The focus ring belongs to the card, not to the invisible stretched span. */
+.linked:has(.titleLink:focus-visible) {
+  outline: 2px solid var(--hue);
+  outline-offset: 3px;
+}
+.titleLink:focus-visible { outline: none; }
+
+.body {
+  color: var(--color-text-dim);
+  font-size: var(--text-small);
+  line-height: var(--leading-body);
+}
+
+.body > * + * { margin-top: var(--space-2xs); }
+
+.meta { margin-block-start: var(--space-3xs); }
+
+.cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  margin-block-start: auto;
+  padding-block-start: var(--space-2xs);
+  color: var(--hue);
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+}
+
+.ctaArrow { transition: transform var(--dur-fast) var(--ease-out); }
+.linked:hover .ctaArrow { transform: translateX(3px); }
+
+/* ---- StatLine ------------------------------------------------------------ */
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-inline-start: var(--space-sm);
+  border-inline-start: 2px solid var(--hue);
+}
+
+.statValue {
+  font-size: var(--text-h3);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-tight);
+  color: var(--color-text);
+}
+
+.statLabel {
+  font-size: var(--text-caption);
+  color: var(--color-text-dim);
+}

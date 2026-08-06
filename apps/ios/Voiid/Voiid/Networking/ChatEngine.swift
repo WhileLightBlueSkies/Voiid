@@ -1640,6 +1640,70 @@ final class ChatEngine {
         }
     }
 
+    // MARK: - Call-key transport (conference §3.3 / verified 1:1 keying §3.8)
+    //
+    // A CALL SECRET IS NOT A MESSAGE. These two methods hand the call engine the ratchet
+    // and nothing else: `encryptCallKeyEnvelope` produces per-device ciphertexts that ride
+    // the WS `call_key` frame, and `decryptCallKeyEnvelope` opens one. Nothing here writes
+    // the durable message store, posts to /messages/send, or touches a conversation — the
+    // call path must leave no chat artifact and no messaging edge behind it (020/029).
+    //
+    // Establishing a session with a stranger's device is deliberately fine: key exchange is
+    // orthogonal to conversation authorization (020_reachability.sql:17-19). Sharing a call
+    // still grants no right to message anyone.
+
+    /// Encrypt `envelope` once per active device of `userId` (excluding THIS device) over
+    /// the existing Double Ratchet, establishing sessions from prekey bundles where none
+    /// exists. Returns `[(deviceId, ciphertext)]` for one `call_key` frame.
+    ///
+    /// ONE USER PER CALL, deliberately: the `call_key` frame is unicast to a single
+    /// `to_user_id`, so the caller has to know which device ids belong to which recipient.
+    /// A flattened multi-user result could not be split back apart.
+    ///
+    /// Devices with no bundle / no free one-time prekey are skipped and logged — partial
+    /// delivery is normal on this transport, and the key is re-fanned on the next membership
+    /// change anyway. Ratchet-mutating, so it runs under the cross-process lock like every
+    /// other fan-out.
+    func encryptCallKeyEnvelope(_ envelope: Data, toUserId userId: String,
+                                includeOwnDevices: Bool = false) async throws -> [(deviceId: String, ciphertext: String)] {
+        return try await CrossProcessLock.withLock {
+            reloadCryptoState()
+            let targets = try await resolveStoryTargets([userId], includeOwnDevices: includeOwnDevices)
+            guard !targets.isEmpty else { return [] }
+            let out = try await fanOut(envelope, targets: targets)
+            return out.map { ($0.recipient_device_id, $0.ciphertext) }
+        }
+    }
+
+    /// Open one inbound `call_key` ciphertext. `senderDeviceId` selects the sender device
+    /// whose session produced it; pass nil and every known device of the sender is tried
+    /// (the relay does not have to stamp a device id). Returns nil to DROP — a call key we
+    /// cannot open must never be guessed at.
+    func decryptCallKeyEnvelope(ciphertextB64: String, fromUserId: String,
+                                senderDeviceId: String?) async -> Data? {
+        guard let wire = decodeWire(ciphertextB64) else { return nil }
+        return await CrossProcessLock.withLock {
+            reloadCryptoState()
+            if let senderDeviceId {
+                if let plain = try? await decryptInbound(wire, peerUserId: fromUserId,
+                                                         senderDeviceId: senderDeviceId) {
+                    return Data(plain.utf8)
+                }
+                return nil
+            }
+            guard let devs: DevicesResponse = try? await api.request("GET", "devices/\(fromUserId)") else {
+                return nil
+            }
+            for d in devs.devices {
+                if let plain = try? await decryptInbound(wire, peerUserId: fromUserId,
+                                                         senderDeviceId: d.id) {
+                    return Data(plain.utf8)
+                }
+            }
+            return nil
+        }
+    }
+
     /// Send a story reply as an ordinary 1:1 message (content_type "story_reply", §5). It
     /// lands in the chat with the author and does NOT expire with the story. Reuses the
     /// exact fan-out used for a text message.

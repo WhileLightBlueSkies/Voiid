@@ -226,6 +226,88 @@ final class GroupCallService: NSObject, ObservableObject {
         refreshParticipants()
     }
 
+    // MARK: - Ad-hoc conference (1:1 escalation)
+
+    /// Join an AD-HOC, call-scoped room — the SFU side of escalating a 1:1 into a conference.
+    ///
+    /// Four deliberate differences from `join(conversationId:…)`, and each is load-bearing:
+    ///
+    ///  1. NO `CallService.shared.active == nil` GUARD. That guard exists so a group call cannot
+    ///     stomp a live 1:1. Here the live 1:1 is precisely what we are escalating: both legs run
+    ///     briefly side by side (make-before-break) so the user never hears a gap.
+    ///  2. THE KEY IS A CALL KEY, NOT A GROUP KEY. It is handed in, derived per call and
+    ///     distributed pairwise over the ratchet. Nothing here consults MLS, because a conference
+    ///     is not a group — that is the whole point, and deriving from a group would mean an
+    ///     invited stranger had to be in one.
+    ///  3. NO EPOCH SUBSCRIPTION. There is no MLS group whose epoch could move; the conference
+    ///     layer rekeys on join and leave instead.
+    ///  4. NO `calls/group/ring`. Invitations are issued by the escalation endpoint, to named
+    ///     participants — not broadcast to a conversation's membership.
+    ///
+    /// `deferAudioSession` is true while the 1:1 leg is still up: two `AVAudioSession`
+    /// configurations fighting mid-cutover is what makes audio drop out on the switch. The
+    /// conference layer calls `adoptAudioSession()` once the old leg is retired.
+    func joinAdhoc(callId: String, url: String, token: String, room roomName: String,
+                   passphrase: String, isVideo: Bool, deferAudioSession: Bool) async -> Bool {
+        guard !joining, !state.isActive else { return false }
+        joining = true
+        defer { joining = false }
+
+        // Left nil on purpose: every path keyed on it (epoch subscription, group rekey, the
+        // group ring) must stay inert for an ad-hoc room.
+        conversationId = nil
+        groupCallingUnavailable = false
+        state = .connecting
+        videoEnabled = isVideo
+        muted = false
+
+        let options = RoomOptions(
+            defaultCameraCaptureOptions: CameraCaptureOptions(position: .front),
+            adaptiveStream: true,
+            dynacast: true,
+            encryptionOptions: EncryptionOptions.sharedKey(passphrase)
+        )
+        let room = Room(delegate: self, roomOptions: options)
+        self.room = room
+
+        do {
+            try await room.connect(url: url, token: token)
+            try await room.localParticipant.setMicrophone(enabled: true)
+            if isVideo {
+                try await room.localParticipant.setCamera(enabled: true)
+            }
+        } catch {
+            await teardown()
+            state = .failed("Couldn't join the call.")
+            return false
+        }
+
+        if !deferAudioSession { configureAudioSession() }
+        state = .connected
+        startTicking()
+        refreshParticipants()
+        NSLog("[VOIID] adhoc conference joined call=\(callId) room=\(roomName)")
+        return true
+    }
+
+    /// Take over the audio route once the 1:1 leg has been retired. Separate from `joinAdhoc`
+    /// so the cutover happens exactly once, after the old leg is gone rather than while it is
+    /// still configuring the same session.
+    func adoptAudioSession() {
+        guard state.isActive else { return }
+        configureAudioSession()
+    }
+
+    /// Leave an ad-hoc conference room. Distinct from `leave()` only in what it does NOT do:
+    /// there is no conversation to clear and no MLS epoch subscription to drop, because
+    /// `joinAdhoc` never set either. Idempotent — the conference layer calls this from the
+    /// abort path, the explicit-leave path and the call-ended path, and any of the three may
+    /// run after another already tore the room down.
+    func leaveAdhoc() async {
+        guard state.isActive || room != nil else { return }
+        await teardown()
+    }
+
     // MARK: - Mid-call re-key (MLS epoch skew)
 
     /// Subscribe to the active group's MLS epoch changes. Rapid consecutive commits

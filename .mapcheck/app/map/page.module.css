@@ -1,0 +1,996 @@
+/* =============================================================================
+ * /map — the friends Map and live location.
+ *
+ * Hue: map. Everything below reads var(--hue), set once by the page's <Hero>,
+ * <Section> and <PhoneMockup> props. No raw hex anywhere; the single amber is
+ * `.visiblePill`, which is the app's own accent pill for "you are broadcasting"
+ * and is the one warm moment this page spends.
+ * ========================================================================== */
+
+/* ---- hero -------------------------------------------------------------- */
+
+.heroChip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3xs);
+  padding: var(--space-3xs) var(--space-xs);
+  border-radius: var(--radius-pill);
+  border: 1px solid color-mix(in srgb, var(--hue) 32%, transparent);
+  background: var(--hue-wash);
+  color: var(--hue);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  line-height: 1.3;
+}
+
+/* ---- the Map screen inside the phone ------------------------------------ */
+
+.mapScreen {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.mapCanvas {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(110% 80% at 28% 18%, var(--hue-wash), transparent 70%),
+    var(--color-surface-2);
+}
+
+/* Streets. A rotated double set of hairlines — no image, nothing to fetch. */
+.mapGrid {
+  position: absolute;
+  inset: -30%;
+  transform: rotate(-7deg);
+  background:
+    repeating-linear-gradient(
+      90deg,
+      transparent 0 2.1em,
+      color-mix(in srgb, var(--color-text) 11%, transparent) 2.1em 2.32em
+    ),
+    repeating-linear-gradient(
+      0deg,
+      transparent 0 2.5em,
+      color-mix(in srgb, var(--color-text) 11%, transparent) 2.5em 2.72em
+    );
+}
+
+/* A block of parkland and a river, so the grid reads as a city, not graph paper. */
+.mapPark {
+  position: absolute;
+  inset-inline-start: 8%;
+  inset-block-start: 46%;
+  width: 42%;
+  height: 22%;
+  border-radius: 1.4em 0.6em 1.8em 0.8em;
+  background: color-mix(in srgb, var(--color-surface) 70%, transparent);
+}
+
+.mapRiver {
+  position: absolute;
+  inset-inline-start: -20%;
+  inset-block-start: 16%;
+  width: 150%;
+  height: 1.9em;
+  transform: rotate(14deg);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--hue) 20%, transparent);
+}
+
+/* THE PAGE'S ONE AMBER MOMENT. The app puts this pill on accent precisely so
+ * "you are visible right now" cannot be missed from across a room. */
+.visiblePill {
+  position: absolute;
+  inset-block-start: 0.7em;
+  inset-inline: 0.7em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4em;
+  padding: 0.4em 0.7em;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+  color: var(--color-text-on-accent);
+  font-size: 0.72em;
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.01em;
+}
+
+.visibleDot {
+  width: 0.5em;
+  height: 0.5em;
+  border-radius: 50%;
+  background: var(--color-text-on-accent);
+  animation: livePulse 2.4s var(--ease-in-out) infinite;
+}
+
+@keyframes livePulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.72); }
+}
+
+/* Avatar pins. Circle + a small tail, the way a map marker actually sits. */
+.pin {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.1em;
+  height: 2.1em;
+  border-radius: 50%;
+  background: var(--color-surface);
+  border: 2px solid var(--hue);
+  color: var(--hue);
+  font-size: 0.72em;
+  font-weight: var(--weight-semibold);
+  box-shadow: 0 0.2em 0.5em -0.15em color-mix(in srgb, var(--color-text) 45%, transparent);
+}
+
+.pin::after {
+  content: '';
+  position: absolute;
+  inset-block-end: -0.42em;
+  inset-inline-start: 50%;
+  width: 0.5em;
+  height: 0.5em;
+  translate: -50% 0;
+  rotate: 45deg;
+  background: var(--color-surface);
+  border-inline-end: 2px solid var(--hue);
+  border-block-end: 2px solid var(--hue);
+}
+
+.pinA { inset-inline-start: 22%; inset-block-start: 34%; }
+.pinB { inset-inline-start: 58%; inset-block-start: 22%; }
+
+/* Stale: desaturated, dashed, and named in the sheet below — never colour alone. */
+.pinStale {
+  inset-inline-start: 47%;
+  inset-block-start: 62%;
+  border-style: dashed;
+  border-color: var(--color-text-dim);
+  color: var(--color-text-dim);
+  opacity: 0.8;
+  box-shadow: none;
+}
+
+.pinStale::after {
+  border-inline-end-color: var(--color-text-dim);
+  border-block-end-color: var(--color-text-dim);
+}
+
+/* Your own dot is drawn even while ghosted — it is a local convenience, not a share. */
+.selfDot {
+  position: absolute;
+  inset-inline-start: 34%;
+  inset-block-start: 76%;
+  width: 0.78em;
+  height: 0.78em;
+  border-radius: 50%;
+  background: var(--hue);
+  box-shadow:
+    0 0 0 0.2em var(--color-surface),
+    0 0 0 0.75em color-mix(in srgb, var(--hue) 26%, transparent);
+}
+
+.mapSheet {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5em;
+  padding: 0.5em 0.8em 0.7em;
+  border-block-start: 1px solid var(--color-divider);
+  border-start-start-radius: 1em;
+  border-start-end-radius: 1em;
+  background: var(--color-surface);
+}
+
+.mapSheetGrip {
+  width: 2.4em;
+  height: 0.22em;
+  margin-inline: auto;
+  border-radius: var(--radius-pill);
+  background: var(--color-border);
+}
+
+.mapSheetRow {
+  display: flex;
+  align-items: center;
+  gap: 0.55em;
+}
+
+.mapSheetText { display: flex; flex-direction: column; min-width: 0; }
+.mapSheetName { font-size: 0.85em; font-weight: var(--weight-semibold); }
+.mapSheetMeta { font-size: 0.72em; color: var(--color-text-dim); }
+
+/* ---- the three gates ---------------------------------------------------- */
+
+.gates {
+  position: relative;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+  padding: 0;
+  margin: 0;
+}
+
+.gate {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-md);
+  align-items: start;
+}
+
+/* The rail that ties the three together, drawn from the marker downwards. */
+.gate:not(:last-child) .gateMark::after {
+  content: '';
+  position: absolute;
+  inset-inline-start: 50%;
+  inset-block-start: 100%;
+  translate: -50% 0;
+  width: 2px;
+  height: calc(100% + var(--space-lg));
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--hue) 45%, transparent),
+    color-mix(in srgb, var(--hue) 8%, transparent)
+  );
+}
+
+.gateMark {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2xs);
+  width: 56px;
+}
+
+.gateNum {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--hue);
+  color: var(--color-text-on-primary);
+  font-size: var(--text-small);
+  font-weight: var(--weight-bold);
+  font-variant-numeric: tabular-nums;
+}
+
+.gateGlyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--hue) 26%, transparent);
+  background: var(--hue-wash);
+  color: var(--hue);
+}
+
+.gateBody { min-width: 0; }
+
+.gateTitle {
+  font-size: var(--text-h3);
+  margin-block-end: var(--space-2xs);
+  max-width: 32ch;
+}
+
+.gateText {
+  color: var(--color-text-dim);
+  max-width: 62ch;
+}
+
+/* ---- figures ------------------------------------------------------------ */
+
+.figure { margin: 0; }
+
+.figCaption {
+  margin-block-start: var(--space-sm);
+  font-size: var(--text-small);
+  line-height: var(--leading-body);
+  color: var(--color-text-dim);
+  max-width: 64ch;
+}
+
+/* ---- the ghost / key timeline ------------------------------------------- */
+
+/*
+ * The diagram carries labels at a readable size, so below roughly 700px it scrolls
+ * inside its own container rather than shrinking its own text into illegibility.
+ * The page itself still never scrolls sideways.
+ */
+.timelineScroll {
+  padding-block-end: var(--space-2xs);
+  border-radius: var(--radius-lg);
+}
+
+.timeline {
+  width: 100%;
+  min-width: 680px;
+  height: auto;
+  overflow: visible;
+}
+
+.hatch {
+  stroke: color-mix(in srgb, var(--color-text-dim) 55%, transparent);
+  stroke-width: 1.4;
+}
+
+.bandOn {
+  fill: var(--hue-wash);
+  stroke: color-mix(in srgb, var(--hue) 45%, transparent);
+  stroke-width: 1.5;
+}
+
+.bandGhost {
+  fill: url(#voiid-map-hatch);
+  stroke: var(--color-border);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 5;
+}
+
+.phase {
+  fill: var(--color-text-dim);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+}
+
+/* One sealed fix. Lit as the playhead passes it, so the eye reads the emptiness
+ * of the ghost band as an absence of events rather than as blank decoration. */
+.fix {
+  fill: var(--color-surface);
+  stroke: var(--hue);
+  stroke-width: 2;
+  opacity: 0.3;
+  animation: blip 9s linear infinite;
+  animation-delay: var(--blip-delay, 0s);
+}
+
+@keyframes blip {
+  0% { opacity: 0.3; }
+  3% { opacity: 1; }
+  16% { opacity: 0.62; }
+  100% { opacity: 0.3; }
+}
+
+.bandNoteOn {
+  fill: var(--color-text-dim);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  text-anchor: middle;
+}
+
+.bandNoteGhost {
+  fill: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 17px;
+  font-weight: var(--weight-semibold);
+  text-anchor: middle;
+}
+
+.bandNoteGhostSub {
+  fill: var(--color-text-dim);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  text-anchor: middle;
+}
+
+.keyBar {
+  fill: var(--hue);
+  opacity: 0.85;
+}
+
+.keyGap {
+  stroke: var(--color-border);
+  stroke-width: 2;
+  stroke-dasharray: 5 6;
+}
+
+.keyLabel {
+  fill: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  font-weight: var(--weight-semibold);
+}
+
+.keySub {
+  fill: var(--color-text-dim);
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+}
+
+.keyGapLabel {
+  fill: var(--color-text-dim);
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  font-style: italic;
+  text-anchor: middle;
+}
+
+.playhead {
+  stroke: var(--color-text);
+  fill: var(--color-text);
+  stroke-width: 1.5;
+  opacity: 0.55;
+  animation: sweep 9s linear infinite;
+}
+
+@keyframes sweep {
+  from { transform: translateX(0); }
+  to { transform: translateX(640px); }
+}
+
+/* Parked inside the ghost band: the still frame should say "this is the dark
+ * period", not leave the playhead at the start looking like it failed to run. */
+@media (prefers-reduced-motion: reduce) {
+  .playhead { animation: none; transform: translateX(325px); }
+  .fix { animation: none; opacity: 1; }
+}
+
+/* ---- the three ghost facts ---------------------------------------------- */
+
+.ghostFacts {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-md);
+  margin-block-start: var(--space-xl);
+}
+
+@media (min-width: 720px) {
+  .ghostFacts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+.fact {
+  min-width: 0;
+  padding-block-start: var(--space-sm);
+  border-block-start: 2px solid color-mix(in srgb, var(--hue) 55%, transparent);
+}
+
+.factTitle {
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  margin-block-end: var(--space-3xs);
+}
+
+.factBody {
+  font-size: var(--text-small);
+  color: var(--color-text-dim);
+}
+
+/* ---- the fan-out diagram ------------------------------------------------ */
+
+.fanout {
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.node {
+  fill: var(--color-surface);
+  stroke: var(--color-text-dim);
+  stroke-width: 2;
+}
+
+.nodeScreen {
+  fill: var(--hue);
+  fill-opacity: 0.16;
+  stroke: none;
+}
+
+.relay {
+  fill: var(--color-surface-2);
+  stroke: var(--color-border);
+  stroke-width: 2;
+  stroke-dasharray: 7 5;
+}
+
+.wire {
+  stroke: color-mix(in srgb, var(--hue) 60%, transparent);
+  stroke-width: 2;
+  stroke-dasharray: 5 5;
+  animation: crawl 2.4s linear infinite;
+}
+
+@keyframes crawl {
+  to { stroke-dashoffset: -20; }
+}
+
+.packet {
+  fill: var(--color-surface);
+  stroke: var(--hue);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  transform: translate(91px, 150px);
+  animation: ride 3.4s var(--ease-in-out) infinite;
+}
+
+@keyframes ride {
+  0%, 6% { transform: translate(91px, 150px); opacity: 0; }
+  14% { opacity: 1; }
+  62%, 100% { transform: translate(155px, 150px); opacity: 1; }
+}
+
+/* The relay's crossed-out key: it moves the bytes, it cannot open them. */
+.noKey {
+  fill: none;
+  stroke: var(--color-text-dim);
+  stroke-width: 2;
+  stroke-linecap: round;
+  opacity: 0.9;
+}
+
+.hasKey {
+  fill: none;
+  stroke: var(--hue);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.fanWire {
+  fill: none;
+  stroke: color-mix(in srgb, var(--hue) 55%, transparent);
+  stroke-width: 2;
+  stroke-dasharray: 5 5;
+  animation: crawl 2.4s linear infinite;
+  animation-delay: var(--fan-delay, 0s);
+}
+
+.fanLabel {
+  fill: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: var(--weight-semibold);
+  text-anchor: middle;
+}
+
+.fanSub {
+  fill: var(--color-text-dim);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  text-anchor: middle;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .packet { animation: none; transform: translate(126px, 150px); opacity: 1; }
+  .wire,
+  .fanWire { animation: none; }
+}
+
+/* ---- copy + the tally --------------------------------------------------- */
+
+.copy {
+  color: var(--color-text-dim);
+  max-width: 60ch;
+}
+
+.copy + .copy { margin-block-start: var(--space-sm); }
+
+.tally {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-sm);
+  list-style: none;
+  margin-block: var(--space-lg);
+}
+
+.tally li {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3xs);
+  min-width: 0;
+  padding-inline-start: var(--space-sm);
+  border-inline-start: 2px solid color-mix(in srgb, var(--hue) 45%, transparent);
+}
+
+.tally strong {
+  font-size: var(--text-h2);
+  font-weight: var(--weight-bold);
+  line-height: 1;
+  color: var(--hue);
+  font-variant-numeric: tabular-nums;
+}
+
+.tally span {
+  font-size: var(--text-caption);
+  line-height: var(--leading-body);
+  color: var(--color-text-dim);
+}
+
+/* ---- the server row ledger ---------------------------------------------- */
+
+.rowCard {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-lg);
+  padding: var(--space-lg);
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card);
+}
+
+@media (min-width: 800px) {
+  .rowCard {
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    gap: var(--space-xl);
+  }
+}
+
+.rowCol { min-width: 0; }
+
+.rowHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  color: var(--hue);
+  margin-block-end: var(--space-sm);
+}
+
+.rowHeadAbsent { color: var(--color-text-dim); }
+
+.cols { display: flex; flex-direction: column; gap: var(--space-2xs); margin: 0; }
+
+.col {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-3xs) var(--space-2xs);
+  padding-block: var(--space-2xs);
+  border-block-end: 1px solid var(--color-divider);
+}
+
+.col:last-child { border-block-end: 0; }
+
+.col dt {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-medium);
+  color: var(--color-text);
+}
+
+.col dd {
+  margin: 0;
+  font-size: var(--text-caption);
+  color: var(--color-text-dim);
+}
+
+.absent {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2xs);
+  list-style: none;
+}
+
+.absent li {
+  padding: var(--space-3xs) var(--space-2xs);
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--color-border);
+  background: var(--color-surface-2);
+  color: var(--color-text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--color-text-dim) 70%, transparent);
+}
+
+.absentNote {
+  margin-block-start: var(--space-sm);
+  font-size: var(--text-caption);
+  line-height: var(--leading-body);
+  color: var(--color-text-dim);
+}
+
+.pullQuote {
+  margin-block-start: var(--space-lg);
+  padding-inline-start: var(--space-md);
+  border-inline-start: 3px solid var(--hue);
+  font-size: var(--text-lede);
+  line-height: var(--leading-body);
+  color: var(--color-text);
+  max-width: 60ch;
+}
+
+/* ---- the four render states --------------------------------------------- */
+
+.states {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  gap: var(--space-md);
+  margin-block-end: var(--space-lg);
+}
+
+.state {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3xs);
+  padding: var(--space-md);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-divider);
+  background: var(--color-surface);
+}
+
+.marker {
+  position: relative;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  margin-block-end: var(--space-2xs);
+  flex: none;
+}
+
+.marker-live {
+  background: var(--hue);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--hue) 22%, transparent);
+}
+
+.marker-stale {
+  background: color-mix(in srgb, var(--color-text-dim) 40%, transparent);
+  outline: 2px dashed var(--color-text-dim);
+  outline-offset: 3px;
+}
+
+.marker-aged {
+  background: transparent;
+  border: 2px dashed var(--color-text-dim);
+  opacity: 0.7;
+}
+
+/* A struck-through marker: the position is gone, not faded. */
+.marker-off {
+  background: transparent;
+  border: 2px solid var(--color-border);
+}
+
+.marker-off::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  background: linear-gradient(
+    to bottom right,
+    transparent calc(50% - 1px),
+    var(--color-text-dim) calc(50% - 1px),
+    var(--color-text-dim) calc(50% + 1px),
+    transparent calc(50% + 1px)
+  );
+}
+
+.stateName {
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+}
+
+.stateWhen {
+  font-size: var(--text-micro);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--hue);
+}
+
+.stateBody {
+  margin-block-start: var(--space-3xs);
+  font-size: var(--text-small);
+  color: var(--color-text-dim);
+}
+
+/* ---- the chat mockup ---------------------------------------------------- */
+
+.thread {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 0.3em;
+  padding-block-end: 0.5em;
+}
+
+/* The location card as the app draws it: a locally rendered thumbnail, never an
+ * uploaded picture, with the countdown and an inline Stop. */
+.locCard {
+  align-self: flex-end;
+  width: 74%;
+  margin-inline-end: 0.7em;
+  border-radius: 0.75em;
+  overflow: hidden;
+  border: 1px solid var(--color-divider);
+  background: var(--color-surface);
+}
+
+.locMap {
+  position: relative;
+  display: block;
+  height: 4.6em;
+  overflow: hidden;
+  background: var(--color-surface-2);
+}
+
+.locGrid {
+  position: absolute;
+  inset: -30%;
+  transform: rotate(-9deg);
+  background:
+    repeating-linear-gradient(
+      90deg,
+      transparent 0 1.5em,
+      color-mix(in srgb, var(--color-text) 12%, transparent) 1.5em 1.68em
+    ),
+    repeating-linear-gradient(
+      0deg,
+      transparent 0 1.7em,
+      color-mix(in srgb, var(--color-text) 12%, transparent) 1.7em 1.88em
+    );
+}
+
+.locPin {
+  position: absolute;
+  inset-inline-start: 50%;
+  inset-block-start: 50%;
+  width: 0.62em;
+  height: 0.62em;
+  translate: -50% -50%;
+  border-radius: 50%;
+  background: var(--hue);
+  box-shadow: 0 0 0 0.18em var(--color-surface);
+}
+
+.locPulse {
+  position: absolute;
+  inset-inline-start: 50%;
+  inset-block-start: 50%;
+  width: 2.2em;
+  height: 2.2em;
+  translate: -50% -50%;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--hue) 30%, transparent);
+  animation: ping 2.8s var(--ease-out) infinite;
+}
+
+@keyframes ping {
+  0% { transform: scale(0.4); opacity: 0.85; }
+  70%, 100% { transform: scale(1); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .locPulse { animation: none; transform: scale(0.8); opacity: 0.4; }
+  .visibleDot { animation: none; }
+}
+
+.locFoot {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  padding: 0.45em 0.6em;
+}
+
+.locFootText { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.locTitle { font-size: 0.8em; font-weight: var(--weight-semibold); }
+.locMeta { font-size: 0.68em; color: var(--color-text-dim); }
+
+.locStop {
+  flex: none;
+  padding: 0.25em 0.6em;
+  border-radius: var(--radius-pill);
+  border: 1px solid color-mix(in srgb, var(--hue) 45%, transparent);
+  color: var(--hue);
+  font-size: 0.7em;
+  font-weight: var(--weight-semibold);
+}
+
+.systemNote {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35em;
+  margin: 0.6em 1.2em 0.2em;
+  padding: 0.45em 0.7em;
+  border-radius: 0.7em;
+  background: var(--color-surface-2);
+  color: var(--color-text-dim);
+  font-size: 0.7em;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.composer {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  flex: none;
+  padding: 0.55em 0.7em;
+  border-block-start: 1px solid var(--color-divider);
+}
+
+.composerField {
+  flex: 1;
+  padding: 0.45em 0.8em;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-divider);
+  color: var(--color-text-dim);
+  font-size: 0.88em;
+}
+
+/* ---- the live-share spec list ------------------------------------------- */
+
+.spec { margin: 0; display: flex; flex-direction: column; gap: var(--space-md); }
+
+.spec > div {
+  padding-inline-start: var(--space-md);
+  border-inline-start: 2px solid color-mix(in srgb, var(--hue) 35%, transparent);
+}
+
+.spec dt {
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  margin-block-end: var(--space-3xs);
+}
+
+.spec dd {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--leading-body);
+  color: var(--color-text-dim);
+  max-width: 58ch;
+}
+
+/* ---- the limits ledger --------------------------------------------------- */
+
+.limits {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.limit {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-sm);
+  align-items: start;
+  padding-block-end: var(--space-md);
+  border-block-end: 1px solid var(--color-divider);
+}
+
+.limit:last-child { border-block-end: 0; padding-block-end: 0; }
+
+.limitGlyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  color: var(--color-text-dim);
+}
+
+.limitTitle {
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  margin-block-end: var(--space-3xs);
+}
+
+.limitBody {
+  font-size: var(--text-small);
+  line-height: var(--leading-body);
+  color: var(--color-text-dim);
+}

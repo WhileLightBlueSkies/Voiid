@@ -103,6 +103,33 @@ final class WebSocketClient {
     /// Peer took the call off hold. (fromUserId, callId)
     var onCallUnhold: ((_ fromUserId: String, _ callId: String) -> Void)?
 
+    // MARK: - Conference escalation frames (docs/research/02_conference_1to1.md §4.1)
+    //
+    // Five frames added for "add a third person to a live 1:1". They are relayed with the
+    // same discipline as the nine above — unicast `to_user_id`, `from_user_id` stamped from
+    // the socket JWT, never logged — and they carry NO conversation id, because an invited
+    // stranger is not a member of the call's conversation and must never be handed its id.
+    // A shared call grants no messaging rights (020/029): none of these frames creates one.
+
+    /// The inviter is adding us to a live call. (fromUserId, callId, room, callKind, otherUserId)
+    ///
+    /// `otherUserId` is the ORIGINAL peer — supplied so the invitee's roster is complete
+    /// before it has a token; it may be empty and every reader must tolerate that.
+    var onCallInvite: ((_ fromUserId: String, _ callId: String, _ room: String,
+                        _ callKind: String, _ otherUserId: String) -> Void)?
+    /// The invitee accepted. (fromUserId, callId)
+    var onCallInviteAccept: ((_ fromUserId: String, _ callId: String) -> Void)?
+    /// The invitee declined. (fromUserId, callId)
+    var onCallInviteDecline: ((_ fromUserId: String, _ callId: String) -> Void)?
+    /// The inviter is escalating: connect to the SFU room, but KEEP 1:1 media running
+    /// until it is up (make-before-break). (fromUserId, callId, room)
+    var onCallMigrate: ((_ fromUserId: String, _ callId: String, _ room: String) -> Void)?
+    /// Opaque pairwise-ratchet ciphertext carrying a call secret. The relay applies the same
+    /// base64-only structural check it applies to location payloads and can never read this.
+    /// (fromUserId, callId, senderDeviceId, ciphertexts keyed by RECIPIENT device id)
+    var onCallKey: ((_ fromUserId: String, _ callId: String, _ senderDeviceId: String?,
+                     _ ciphertexts: [String: String]) -> Void)?
+
     // MARK: Call-signaling senders
 
     // All of these pass `queueIfDown: true` — see the outbound-queue note above.
@@ -140,6 +167,48 @@ final class WebSocketClient {
     }
     func sendCallUnhold(toUserId: String, callId: String) {
         sendJSON(["type": "call_unhold", "to_user_id": toUserId, "call_id": callId], queueIfDown: true)
+    }
+
+    // MARK: Conference escalation senders
+
+    /// Tell the invitee a live call is being opened to them. Queued while down: the invite
+    /// is the invitee's only in-app signal when the push is what woke them.
+    func sendCallInvite(toUserId: String, callId: String, room: String,
+                        callKind: String, otherUserId: String) {
+        var frame: [String: Any] = ["type": "call_invite", "to_user_id": toUserId,
+                                    "call_id": callId, "room": room, "call_kind": callKind]
+        if !otherUserId.isEmpty { frame["other_user_id"] = otherUserId }
+        sendJSON(frame, queueIfDown: true)
+    }
+    func sendCallInviteAccept(toUserId: String, callId: String) {
+        sendJSON(["type": "call_invite_accept", "to_user_id": toUserId, "call_id": callId],
+                 queueIfDown: true)
+    }
+    func sendCallInviteDecline(toUserId: String, callId: String) {
+        sendJSON(["type": "call_invite_decline", "to_user_id": toUserId, "call_id": callId],
+                 queueIfDown: true)
+    }
+    /// "I am escalating this call — join the room, keep 1:1 audio until SFU media flows."
+    func sendCallMigrate(toUserId: String, callId: String, room: String) {
+        sendJSON(["type": "call_migrate", "to_user_id": toUserId, "call_id": callId, "room": room],
+                 queueIfDown: true)
+    }
+    /// One recipient's pairwise-encrypted copies of a call secret. `ciphertexts` is keyed by
+    /// the RECIPIENT's device id; every value is base64 the relay must treat as opaque.
+    ///
+    /// `queueIfDown: false`, deliberately unlike the other call frames: a call key is only
+    /// valid for the membership generation that produced it, and the rekey is re-fanned on
+    /// the next join/leave. Delivering a superseded key out of a queue is worse than not
+    /// delivering it — the receiver would install a key nobody is encrypting with.
+    func sendCallKey(toUserId: String, callId: String, senderDeviceId: String?,
+                     ciphertexts: [String: String]) {
+        guard !ciphertexts.isEmpty else { return }
+        var frame: [String: Any] = [
+            "type": "call_key", "to_user_id": toUserId, "call_id": callId,
+            "ciphertexts": ciphertexts.map { ["device_id": $0.key, "body": $0.value] },
+        ]
+        if let senderDeviceId, !senderDeviceId.isEmpty { frame["sender_device_id"] = senderDeviceId }
+        sendJSON(frame)
     }
 
     func connect() {
@@ -382,6 +451,50 @@ final class WebSocketClient {
         case "call_taken":
             if let cid = obj["call_id"] as? String {
                 onCallTaken?(cid, (obj["reason"] as? String) ?? "answer")
+            }
+        // ── Conference escalation. EVERY field except type/from/call_id is optional here:
+        // these frames are new, the relay is deployed separately, and an older relay that
+        // rebuilds outbound frames from its own field list will drop whatever it does not
+        // know about. A missing `room` is recoverable (the client derives it from the
+        // call_id); a hard `guard` on it would silently break escalation against a relay
+        // that is otherwise working.
+        case "call_invite":
+            if let from = obj["from_user_id"] as? String, let cid = obj["call_id"] as? String {
+                onCallInvite?(from, cid,
+                              (obj["room"] as? String) ?? "",
+                              (obj["call_kind"] as? String) ?? "voice",
+                              (obj["other_user_id"] as? String) ?? "")
+            }
+        case "call_invite_accept":
+            if let from = obj["from_user_id"] as? String, let cid = obj["call_id"] as? String {
+                onCallInviteAccept?(from, cid)
+            }
+        case "call_invite_decline":
+            if let from = obj["from_user_id"] as? String, let cid = obj["call_id"] as? String {
+                onCallInviteDecline?(from, cid)
+            }
+        case "call_migrate":
+            if let from = obj["from_user_id"] as? String, let cid = obj["call_id"] as? String {
+                onCallMigrate?(from, cid, (obj["room"] as? String) ?? "")
+            }
+        case "call_key":
+            if let from = obj["from_user_id"] as? String, let cid = obj["call_id"] as? String {
+                // Accept both shapes: the documented array of {device_id, body}, and a plain
+                // {device_id: body} map, so a relay that normalises one into the other cannot
+                // strand a rekey. The bodies are opaque base64 — never parsed here.
+                var byDevice: [String: String] = [:]
+                if let arr = obj["ciphertexts"] as? [[String: Any]] {
+                    for entry in arr {
+                        if let dev = entry["device_id"] as? String, let body = entry["body"] as? String {
+                            byDevice[dev] = body
+                        }
+                    }
+                } else if let map = obj["ciphertexts"] as? [String: String] {
+                    byDevice = map
+                }
+                if !byDevice.isEmpty {
+                    onCallKey?(from, cid, obj["sender_device_id"] as? String, byDevice)
+                }
             }
         case "call_hold":
             if let from = obj["from_user_id"] as? String, let cid = obj["call_id"] as? String { onCallHold?(from, cid) }

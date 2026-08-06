@@ -21,9 +21,18 @@ is not there, the token is missing: add it to `globals.css` in *both* themes and
 what it is for. Do not "improve" an existing value — fix `Theme.swift` and copy it
 down, or the site and the product drift.
 
-The only sanctioned exceptions are commented where they occur: the two
-`<meta name="theme-color">` values in `app/layout.tsx` (read before any stylesheet
-parses) and the phone's Dynamic-Island cutout (a hole, not a colour).
+The only sanctioned exceptions are the four below, each commented where it occurs.
+Three of them are not colour choices at all, which is the test to apply if you think
+you have found a fifth:
+
+- the two `<meta name="theme-color">` values in `app/layout.tsx` — the browser chrome
+  reads them before any stylesheet parses, so `var()` is not available;
+- the phone's Dynamic-Island cutout in `PhoneMockup.module.css` — a hole in the
+  display, the same near-black in both themes because physics has no light mode;
+- the `#000` stops in the Hero's `mask-image` — a mask samples *alpha*, so that is an
+  opacity keyword wearing a colour's clothes;
+- the `#ffffff` operand in the accent button's hover `color-mix()` — a lightening
+  *operation* applied to `var(--color-accent)`, not a second colour.
 
 **2. Never overclaim.** This is a privacy product, so a wrong sentence here is a
 liability rather than a pitch. Before you write a claim, check it:
@@ -38,13 +47,25 @@ liability rather than a pitch. Before you write a claim, check it:
 | **Creator profiles, follows, likes, comments** | **Server-readable** | `022_clips.sql`, `029_creator_profiles.sql` |
 | **Game moves, scores, results** | **Server-readable — it is the referee** | `024_games.sql` header |
 | Games catalogue | Exactly four: Tic Tac Toe, Rock Paper Scissors, Snake, Hand Cricket | `024`, `025`, `026_games_snake` |
-| Communities | **Does not ship.** Do not build the page. | `docs/research/04_communities_plan.md` |
+| Communities | **Does not ship. Do not build the page** — see the note below. | `RootTabView` (both platforms) |
 | Payments | **Does not exist.** There is a `payments` domain *hue*, not a feature. | — |
 | App Store / Play links | **None exist.** Do not invent one. | — |
 
 If you are unsure whether something ships, grep before you write the sentence. Reach
 for `<E2EEBadge>` and `<Callout>` — they exist so the honest sentence has somewhere
 designed to live.
+
+**A warning about Communities specifically**, because a grep makes it look shipped and
+it is not. You will find `database/migrations/030_communities.sql`, a backend route
+(`backend/api/src/routes/communityHostThreads.ts`) and an Android networking layer
+(`net/CommunityService.kt`, `net/CommunityLink.kt`). None of that is reachable by a
+user: **there is no Communities UI on either platform.** Both clients route the tab to
+a placeholder — `apps/ios/Voiid/Voiid/Main/ComingSoonView.swift` via `RootTabView.swift`,
+and `main/ComingSoonView.kt` on Android. Back end without a front end is not a feature,
+so the site does not mention Communities at all — it is absent from `lib/nav.ts` by
+design. (Note also that the `ComingSoonView` header comment names *Games* alongside
+Communities; that comment is stale. Games is fully built on both platforms — iOS routes
+`.games` to a real `GamesHomeView()` — so the Games claims on this site are sound.)
 
 **3. One amber moment per page.** Amber (`--color-accent`) is the single warm colour
 in the system and its power is entirely its rarity. Count these as amber before you

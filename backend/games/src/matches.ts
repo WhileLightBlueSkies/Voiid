@@ -1,6 +1,7 @@
 // Match lifecycle: the Redis live-state record and the two Postgres writes that bracket it.
 import { query } from './db';
 import { state, stateKey, STATE_TTL_SECONDS } from './redis';
+import { advanceTournamentForMatch } from './tournaments';
 import type { GameOutcome, GameStatePayload } from './engine/GameEngine';
 
 /**
@@ -95,4 +96,22 @@ export async function finishMatch(
   }
 
   await clearMatch(matchId);
+
+  // BRACKET ADVANCEMENT HANGS OFF THE ORDINARY FINISH PATH, and only off it.
+  //
+  // A tournament match is the same object as a friendly one — same engine, same Redis state,
+  // same result rows — so "this was a tournament match" is a fact discovered here rather than
+  // a second lifecycle running alongside. A friendly match pays one indexed lookup for the
+  // null tournament_id and nothing else.
+  //
+  // WRAPPED, AND THE MATCH STILL COUNTS AS FINISHED IF THIS THROWS. The writes above are the
+  // ones that must not be lost: they are the players' result. A bug in bracket arithmetic must
+  // not be able to roll back a game that was actually played, and advancement is idempotent —
+  // it re-derives the whole bracket from the match rows — so the next finished match in the
+  // round, or an operator re-running it, repairs the gap.
+  try {
+    await advanceTournamentForMatch(matchId);
+  } catch (e) {
+    console.error('[games] tournament advance failed for', matchId, e);
+  }
 }

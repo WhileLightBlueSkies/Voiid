@@ -1,0 +1,436 @@
+/* =============================================================================
+ * Messaging — page-local composition only. Every colour is a token; the gate
+ * diagram and the PIN panel are the two authored visuals on this page.
+ *
+ * The page's one amber moment is `.pinDigits`. Nothing else here may reach for
+ * --color-accent.
+ * ========================================================================== */
+
+/* A handle, wherever it appears in prose. Not a link — it is an example. */
+.handle {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  color: var(--hue, var(--color-primary));
+}
+
+/* ---- the chat inside the hero phone -------------------------------------- */
+
+.thread {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding-block-end: 0.6em;
+  gap: 0.1em;
+}
+
+.systemNote {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35em;
+  margin: 0.8em 1.4em 0.2em;
+  padding: 0.45em 0.7em;
+  border-radius: 0.7em;
+  background: var(--color-surface-2);
+  color: var(--color-text-dim);
+  font-size: 0.72em;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.composer {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  flex: none;
+  padding: 0.55em 0.7em;
+  border-block-start: 1px solid var(--color-divider);
+}
+
+.composerField {
+  flex: 1;
+  padding: 0.45em 0.8em;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-divider);
+  color: var(--color-text-dim);
+  font-size: 0.88em;
+}
+
+/* ---- body copy inside a <Split> ------------------------------------------ */
+
+.subhead {
+  font-size: var(--text-h3);
+  margin-block-end: var(--space-xs);
+}
+
+.copy {
+  color: var(--color-text-dim);
+  max-width: 62ch;
+}
+
+.copy + .copy {
+  margin-block-start: var(--space-sm);
+}
+
+/* The <Callout> is an <aside>; this is the gap before it, without reaching into
+ * that component's own (hashed) class name. */
+.copy + aside {
+  margin-block-start: var(--space-md);
+}
+
+/* =============================================================================
+ * THE GATE DIAGRAM — the four routes into your inbox.
+ *
+ * Built as an ordered list, not a picture of one: the words carry the meaning and
+ * the drawn gate agrees with them, so a screen reader and a colour-blind reader
+ * both get the whole thing. Each lane sets --lane once; everything in the row
+ * reads it, which is why no state is spelled out twice.
+ * ========================================================================== */
+
+.figure {
+  margin: 0 0 var(--space-xl);
+}
+
+/* Four cards that belong in two rows of two. `Grid` auto-fits, which packs three
+ * across at desktop width and orphans the fourth; these four read as pairs. */
+@media (min-width: 640px) {
+  .pairGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.lanes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  list-style: none;
+}
+
+.lane {
+  --lane: var(--hue);
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-areas:
+    'step  gate'
+    'body  body'
+    'out   out';
+  gap: var(--space-xs) var(--space-sm);
+  align-items: center;
+  padding: var(--space-md);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+  /* The state, restated as a rail down the leading edge. */
+  box-shadow: inset 3px 0 0 0 var(--lane);
+  min-width: 0;
+}
+
+/* The chat hue is the default; only the two ends of the range differ. */
+.lane[data-state='open'] {
+  --lane: var(--color-success);
+}
+.lane[data-state='shut'] {
+  --lane: var(--color-text-dim);
+}
+
+@media (min-width: 760px) {
+  .lane {
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+    grid-template-areas: 'step gate body out';
+    gap: var(--space-md);
+    align-items: center;
+  }
+}
+
+.laneStep {
+  grid-area: step;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--lane) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--lane) 34%, transparent);
+  color: var(--lane);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-bold);
+  font-variant-numeric: tabular-nums;
+}
+
+.laneGate {
+  grid-area: gate;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-2xs);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--lane) 8%, transparent);
+}
+
+.laneBody {
+  grid-area: body;
+  min-width: 0;
+}
+
+.laneTitle {
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  margin-block-end: var(--space-3xs);
+}
+
+.laneCopy {
+  font-size: var(--text-small);
+  color: var(--color-text-dim);
+  max-width: 58ch;
+}
+
+.laneOutcome {
+  grid-area: out;
+  justify-self: start;
+  display: inline-block;
+  padding: var(--space-3xs) var(--space-xs);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--lane) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--lane) 30%, transparent);
+  color: var(--lane);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  white-space: nowrap;
+}
+
+@media (min-width: 760px) {
+  .laneOutcome {
+    justify-self: end;
+  }
+}
+
+/* ---- the gate itself ------------------------------------------------------ */
+
+.gate {
+  width: 64px;
+  height: 56px;
+  flex: none;
+  overflow: visible;
+}
+
+.gatePost {
+  stroke: var(--color-text-dim);
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  opacity: 0.8;
+}
+
+.gateBar {
+  stroke: var(--lane);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+.gateHinge {
+  fill: var(--lane);
+}
+
+.gateMark {
+  fill: none;
+  stroke: var(--lane);
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.figCaption {
+  margin-block-start: var(--space-md);
+  font-size: var(--text-small);
+  color: var(--color-text-dim);
+  max-width: 68ch;
+}
+
+/* =============================================================================
+ * THE CONTACT PIN PANEL — the page's single amber moment.
+ * ========================================================================== */
+
+.pinPanel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  width: 100%;
+  max-width: 420px;
+  padding: var(--space-lg);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-card);
+  min-width: 0;
+}
+
+.pinLabel {
+  font-size: var(--text-micro);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--color-text-dim);
+}
+
+.pinSpoken {
+  font-size: var(--text-small);
+  color: var(--color-text-dim);
+}
+
+/* AMBER. The one warm element on this page — see the note at the top of the file. */
+.pinDigits {
+  align-self: flex-start;
+  margin-block: var(--space-3xs) var(--space-sm);
+  padding: var(--space-2xs) var(--space-sm);
+  border-radius: var(--radius-md);
+  background: var(--color-accent-quiet);
+  color: var(--color-accent);
+  font-family: var(--font-mono);
+  font-size: var(--text-h3);
+  font-weight: var(--weight-bold);
+  letter-spacing: 0.34em;
+  /* The tracking adds a phantom gap after the last digit; pull it back. */
+  padding-inline-end: calc(var(--space-sm) - 0.34em);
+  font-variant-numeric: tabular-nums;
+}
+
+.meters {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding-block-start: var(--space-sm);
+  border-block-start: 1px solid var(--color-divider);
+}
+
+.meter {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  min-width: 0;
+}
+
+.meterHead {
+  font-size: var(--text-small);
+  color: var(--color-text-dim);
+}
+
+.meterHead strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.meterDots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--hue) 55%, transparent);
+  background: color-mix(in srgb, var(--hue) 16%, transparent);
+}
+
+.meterDotsFine {
+  gap: 4px;
+}
+
+.tick {
+  width: 4px;
+  height: 14px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--hue) 40%, transparent);
+}
+
+/* =============================================================================
+ * THE REQUESTS SCREEN, inside the phone. Everything is sized in em off the
+ * display width, the way PhoneMockup's own furniture is.
+ * ========================================================================== */
+
+.requestList {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6em;
+  padding: 0.7em;
+  min-height: 0;
+}
+
+.request {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55em;
+  padding: 0.7em;
+  border-radius: 0.9em;
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+}
+
+.requestWho {
+  display: flex;
+  align-items: center;
+  gap: 0.55em;
+  min-width: 0;
+}
+
+.requestText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.requestName {
+  font-size: 0.95em;
+  font-weight: var(--weight-semibold);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.requestVia {
+  font-size: 0.78em;
+  color: var(--color-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.requestActions {
+  display: flex;
+  gap: 0.45em;
+}
+
+.requestDecline,
+.requestAccept {
+  flex: 1;
+  padding: 0.4em 0.5em;
+  border-radius: var(--radius-pill);
+  font-size: 0.82em;
+  font-weight: var(--weight-semibold);
+  text-align: center;
+}
+
+.requestDecline {
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-divider);
+  color: var(--color-text-dim);
+}
+
+.requestAccept {
+  background: var(--hue);
+  color: var(--color-text-on-primary);
+  border: 1px solid var(--hue);
+}
+
+.requestFoot {
+  margin-block-start: auto;
+  padding: 0.6em 0.2em 0.2em;
+  font-size: 0.74em;
+  line-height: 1.4;
+  color: var(--color-text-dim);
+  text-align: center;
+}

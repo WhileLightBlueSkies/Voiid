@@ -8,28 +8,40 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,24 +50,35 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.Player
 import androidx.media3.effect.Presentation
 import androidx.media3.effect.RgbFilter
 import androidx.media3.effect.RgbMatrix
+import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.EditedMediaItem
 import androidx.media3.transformer.Effects
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.Transformer
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
 import com.google.common.collect.ImmutableList
 import com.voiid.app.net.ClipQuality
 import com.voiid.app.ui.components.LocalVoiidHaptics
@@ -73,6 +96,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.UUID
 import kotlin.coroutines.resume
+import kotlin.math.roundToInt
 
 /**
  * Step 3 of the composer: trim, filter, cover frame. Port of iOS `ClipEditor.swift`.
@@ -321,6 +345,12 @@ enum class ClipFilter(val label: String) {
     }
 }
 
+/** Frames in the trim/cover filmstrip. Ten is enough to read the shape of a 90s clip. */
+private const val FILMSTRIP_FRAMES = 10
+
+/** Long edge of a filmstrip / filter thumb, in px. */
+private const val THUMB_EDGE = 240
+
 @Composable
 fun ClipEditorView(
     sourceFile: File,
@@ -330,12 +360,43 @@ fun ClipEditorView(
 ) {
     val context = LocalContext.current
     val haptics = LocalVoiidHaptics.current
+    val lifecycleOwner = LocalLifecycleOwner.current
 
     var durationMs by remember { mutableStateOf(0L) }
-    var preview by remember { mutableStateOf<Bitmap?>(null) }
-    var scrubMs by remember { mutableStateOf(0L) }
+    var coverPreview by remember { mutableStateOf<Bitmap?>(null) }
     val filterThumbs = remember { mutableStateMapOf<ClipFilter, Bitmap>() }
+    val filmstrip = remember { mutableStateListOf<Bitmap>() }
     val scope = rememberCoroutineScope()
+
+    /**
+     * A LOOPING PLAYER, not a still frame.
+     *
+     * The preview used to be one bitmap out of MediaMetadataRetriever, which meant you could
+     * not judge a trim, could not see a filter on motion, and could not hear the audio at all —
+     * making the mute switch a decision taken blind. ExoPlayer is already a dependency for the
+     * feed; the clipping configuration below turns it into a loop of exactly the range that
+     * will be exported.
+     */
+    val player = remember {
+        ExoPlayer.Builder(context).build().apply {
+            repeatMode = Player.REPEAT_MODE_ONE
+            playWhenReady = true
+        }
+    }
+    DisposableEffect(Unit) { onDispose { player.release() } }
+
+    // Playing video under a backgrounded app is a battery and audio-focus bug, not a feature.
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_PAUSE -> player.pause()
+                Lifecycle.Event.ON_RESUME -> player.play()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     val coverPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
@@ -350,24 +411,83 @@ fun ClipEditorView(
         }
     }
 
+    // The range the PLAYER is currently looping. Deliberately separate from edit.trim*: a
+    // clipping configuration can only be changed by rebuilding the media item, which forces a
+    // re-prepare and a seek, so it is committed when a handle is RELEASED rather than on every
+    // pixel of a drag — otherwise scrubbing the trim would stutter through a hundred seeks.
+    var loopRange by remember { mutableStateOf<Pair<Long, Long>?>(null) }
+
     LaunchedEffect(sourceFile) {
         durationMs = withContext(Dispatchers.IO) { ClipExporter.durationMs(sourceFile) }
-        if (edit.trimEndMs <= 0L) {
-            onEditChange(edit.copy(trimEndMs = minOf(durationMs, ClipCaps.MAX_DURATION_MS)))
-        }
-        // One decode, N filter applications — decoding per filter would make the strip
-        // take ten times as long to populate.
+        val end = if (edit.trimEndMs <= 0L) minOf(durationMs, ClipCaps.MAX_DURATION_MS)
+                  else edit.trimEndMs
+        if (edit.trimEndMs <= 0L) onEditChange(edit.copy(trimEndMs = end))
+        loopRange = edit.trimStartMs to end
+
+        // One decode, N filter applications — decoding per filter would make the strip take
+        // ten times as long to populate. Scaled down first: ten ARGB copies of a 1080p frame
+        // is ~80 MB of bitmap for thumbnails that are drawn 54dp wide.
         val base = withContext(Dispatchers.IO) {
             ClipExporter.frameBitmap(sourceFile, edit.trimStartMs.coerceAtLeast(100))
+                ?.let { downscale(it) }
         }
         if (base != null) {
             ClipFilter.entries.forEach { f -> filterThumbs[f] = f.applyToBitmap(base) }
         }
     }
 
-    LaunchedEffect(scrubMs, edit.filter) {
-        val bmp = withContext(Dispatchers.IO) { ClipExporter.frameBitmap(sourceFile, scrubMs) }
-        preview = bmp?.let { edit.filter.applyToBitmap(it) }
+    // The filmstrip itself: the visual anchor the two abstract labelled sliders never gave.
+    // OPTION_CLOSEST_SYNC and Dispatchers.IO both matter — an exact seek on long-GOP H.264 is
+    // slow and often returns null, and every one of these is a file read.
+    LaunchedEffect(sourceFile, durationMs) {
+        if (durationMs <= 0L) return@LaunchedEffect
+        val frames = withContext(Dispatchers.IO) {
+            (0 until FILMSTRIP_FRAMES).mapNotNull { i ->
+                ClipExporter.frameBitmap(sourceFile, durationMs * i / FILMSTRIP_FRAMES)
+                    ?.let { downscale(it) }
+            }
+        }
+        filmstrip.clear()
+        filmstrip.addAll(frames)
+    }
+
+    LaunchedEffect(loopRange, edit.filter) {
+        val range = loopRange ?: return@LaunchedEffect
+        // Effects are set BEFORE prepare(): media3 wires the effect pipeline into the video
+        // renderer at preparation, so setting them on a prepared player is not guaranteed to
+        // take. The cost is that changing filter restarts the loop — on a local file that is a
+        // frame, and restarting at the trim start is what you want to judge a look anyway.
+        // This is the SAME chain the exporter will bake in; a preview that showed a different
+        // transform would make every filter choice a guess.
+        player.setVideoEffects(edit.filter.effects())
+        player.setMediaItem(
+            MediaItem.Builder()
+                .setUri(android.net.Uri.fromFile(sourceFile))
+                .setClippingConfiguration(
+                    MediaItem.ClippingConfiguration.Builder()
+                        .setStartPositionMs(range.first)
+                        .setEndPositionMs(range.second)
+                        .build()
+                )
+                .build()
+        )
+        player.prepare()
+        player.play()
+    }
+
+    // Mute is no longer a blind switch — it is audible the moment it is flipped.
+    LaunchedEffect(edit.muted) { player.volume = if (edit.muted) 0f else 1f }
+
+    LaunchedEffect(edit.coverMs, edit.filter, edit.customCoverJpeg) {
+        val custom = edit.customCoverJpeg
+        coverPreview = withContext(Dispatchers.IO) {
+            if (custom != null) {
+                android.graphics.BitmapFactory.decodeByteArray(custom, 0, custom.size)
+            } else {
+                ClipExporter.frameBitmap(sourceFile, edit.coverMs)
+                    ?.let { edit.filter.applyToBitmap(downscale(it)) }
+            }
+        }
     }
 
     Column(
@@ -383,14 +503,39 @@ fun ClipEditorView(
                 .background(Color.Black),
             contentAlignment = Alignment.Center,
         ) {
-            preview?.let {
-                androidx.compose.foundation.Image(
-                    bitmap = it.asImageBitmap(),
-                    contentDescription = null,
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.fillMaxSize(),
+            AndroidView(
+                factory = { ctx ->
+                    PlayerView(ctx).apply {
+                        useController = false
+                        this.player = player
+                        // FIT, not ZOOM: cropping the preview to fill would hide exactly the
+                        // edges the author is about to publish.
+                        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                        setShutterBackgroundColor(android.graphics.Color.BLACK)
+                    }
+                },
+                modifier = Modifier.fillMaxSize(),
+            )
+
+            Box(
+                Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(12.dp)
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.45f))
+                    .softClickable(scale = 0.9f) {
+                        haptics.tap()
+                        onEditChange(edit.copy(muted = !edit.muted))
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    if (edit.muted) Icons.Default.VolumeOff else Icons.Default.VolumeUp,
+                    if (edit.muted) "Unmute" else "Mute",
+                    tint = Color.White,
                 )
-            } ?: ClipShimmer(Modifier.fillMaxSize())
+            }
         }
 
         // Trim
@@ -403,18 +548,19 @@ fun ClipEditorView(
             )
         }
         if (durationMs > 0) {
-            LabeledSlider("Start", edit.trimStartMs.toFloat(), 0f, durationMs.toFloat()) { v ->
-                val start = v.toLong().coerceAtMost((edit.trimEndMs - 500).coerceAtLeast(0))
-                onEditChange(edit.copy(trimStartMs = start))
-                scrubMs = start
-            }
-            LabeledSlider("End", edit.trimEndMs.toFloat(), 0f, durationMs.toFloat()) { v ->
-                // Clamp to the 90s cap here as well as at intake: a long source can be
-                // trimmed DOWN into range rather than rejected.
-                val capped = v.toLong().coerceAtMost(edit.trimStartMs + ClipCaps.MAX_DURATION_MS)
-                onEditChange(edit.copy(trimEndMs = capped.coerceAtLeast(edit.trimStartMs + 500)))
-                scrubMs = capped
-            }
+            TrimStrip(
+                frames = filmstrip,
+                durationMs = durationMs,
+                startMs = edit.trimStartMs,
+                endMs = edit.trimEndMs,
+                onChange = { start, end ->
+                    onEditChange(edit.copy(trimStartMs = start, trimEndMs = end))
+                },
+                onCommit = {
+                    haptics.tap()
+                    loopRange = edit.trimStartMs to edit.trimEndMs
+                },
+            )
         }
 
         // Cover — the grid is entirely cover images, so this is the highest-leverage
@@ -448,13 +594,7 @@ fun ClipEditorView(
                     .size(width = 54.dp, height = 72.dp)
                     .clip(RoundedCornerShape(VoiidRadius.sm)),
             ) {
-                val customBitmap = remember(edit.customCoverJpeg) {
-                    edit.customCoverJpeg?.let {
-                        android.graphics.BitmapFactory.decodeByteArray(it, 0, it.size)
-                    }
-                }
-                val shown = customBitmap ?: preview
-                shown?.let {
+                coverPreview?.let {
                     androidx.compose.foundation.Image(
                         bitmap = it.asImageBitmap(),
                         contentDescription = null,
@@ -465,23 +605,11 @@ fun ClipEditorView(
             }
 
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                if (edit.customCoverJpeg == null) {
-                    Text(
-                        "Use current frame",
-                        style = VoiidFont.rounded(15),
-                        color = VoiidColor.primary,
-                        modifier = Modifier.softClickable(scale = 0.95f) {
-                            haptics.tap()
-                            onEditChange(edit.copy(coverMs = scrubMs))
-                        },
-                    )
-                } else {
-                    Text(
-                        "Custom image",
-                        style = VoiidFont.rounded(15),
-                        color = VoiidColor.textPrimary,
-                    )
-                }
+                Text(
+                    if (edit.customCoverJpeg == null) "Drag to pick a frame" else "Custom image",
+                    style = VoiidFont.rounded(15),
+                    color = VoiidColor.textPrimary,
+                )
                 Text(
                     if (edit.customCoverJpeg == null) "Upload an image" else "Change image",
                     style = VoiidFont.rounded(15),
@@ -499,14 +627,13 @@ fun ClipEditorView(
         // The scrubber is meaningless while a custom image is in force — hide it rather
         // than leave a control that silently does nothing.
         if (durationMs > 0 && edit.customCoverJpeg == null) {
-            Slider(
-                value = scrubMs.toFloat(),
-                onValueChange = { scrubMs = it.toLong() },
-                valueRange = 0f..durationMs.toFloat(),
-                colors = SliderDefaults.colors(
-                    thumbColor = VoiidColor.accent,
-                    activeTrackColor = VoiidColor.accent,
-                ),
+            CoverStrip(
+                frames = filmstrip,
+                durationMs = durationMs,
+                coverMs = edit.coverMs,
+                startMs = edit.trimStartMs,
+                endMs = edit.trimEndMs,
+                onChange = { onEditChange(edit.copy(coverMs = it)) },
             )
         }
 
@@ -583,31 +710,181 @@ private fun loadCustomCover(context: Context, uri: android.net.Uri): ByteArray? 
     }
 }.getOrNull()
 
+/**
+ * Shrink a decoded video frame to thumbnail size, recycling the original.
+ *
+ * Ten filmstrip frames plus ten filter thumbnails at full 1080p ARGB would be ~160 MB of
+ * bitmap held live, for images drawn a few dp wide — an OOM on any mid-range device.
+ */
+private fun downscale(src: Bitmap): Bitmap {
+    val longEdge = maxOf(src.width, src.height)
+    if (longEdge <= THUMB_EDGE) return src
+    val scale = THUMB_EDGE.toFloat() / longEdge
+    val out = Bitmap.createScaledBitmap(
+        src, (src.width * scale).toInt().coerceAtLeast(1),
+        (src.height * scale).toInt().coerceAtLeast(1), true,
+    )
+    if (out !== src) src.recycle()
+    return out
+}
+
+/** The strip of frames itself, shared by the trim and cover scrubbers. */
 @Composable
-private fun LabeledSlider(
-    label: String,
-    value: Float,
-    min: Float,
-    max: Float,
-    onChange: (Float) -> Unit,
+private fun FilmstripRow(frames: List<Bitmap>, modifier: Modifier = Modifier) {
+    Row(
+        modifier
+            .clip(RoundedCornerShape(VoiidRadius.sm))
+            .background(VoiidColor.surfaceCard),
+    ) {
+        if (frames.isEmpty()) {
+            ClipShimmer(Modifier.fillMaxSize())
+        } else {
+            frames.forEach { frame ->
+                androidx.compose.foundation.Image(
+                    bitmap = frame.asImageBitmap(),
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Trim with real frames under two draggable handles.
+ *
+ * The two abstract labelled sliders this replaces gave no clue WHERE in the clip a start or
+ * end landed — you set a number, then scrolled up to a still that may not even have changed.
+ */
+@Composable
+private fun TrimStrip(
+    frames: List<Bitmap>,
+    durationMs: Long,
+    startMs: Long,
+    endMs: Long,
+    onChange: (start: Long, end: Long) -> Unit,
+    onCommit: () -> Unit,
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(
-            label,
-            style = VoiidFont.rounded(12),
-            color = VoiidColor.textSecondary,
-            modifier = Modifier.width(40.dp),
+    val density = LocalDensity.current
+    BoxWithConstraints(Modifier.fillMaxWidth().height(64.dp)) {
+        val widthPx = with(density) { maxWidth.toPx() }
+        if (widthPx <= 0f) return@BoxWithConstraints
+        val msPerPx = durationMs / widthPx
+
+        FilmstripRow(frames, Modifier.matchParentSize())
+
+        val startX = startMs.toFloat() / durationMs * widthPx
+        val endX = endMs.toFloat() / durationMs * widthPx
+
+        // What the trim throws away, dimmed rather than hidden: the discarded frames are the
+        // context that tells you whether the cut is in the right place.
+        Box(
+            Modifier.matchParentSize().drawWithContent {
+                drawContent()
+                val scrim = Color.Black.copy(alpha = 0.55f)
+                drawRect(scrim, size = androidx.compose.ui.geometry.Size(startX, size.height))
+                drawRect(
+                    scrim,
+                    topLeft = androidx.compose.ui.geometry.Offset(endX, 0f),
+                    size = androidx.compose.ui.geometry.Size(
+                        (size.width - endX).coerceAtLeast(0f), size.height,
+                    ),
+                )
+            }
         )
-        Slider(
-            value = value.coerceIn(min, max.coerceAtLeast(min + 1f)),
-            onValueChange = onChange,
-            valueRange = min..max.coerceAtLeast(min + 1f),
-            colors = SliderDefaults.colors(
-                thumbColor = VoiidColor.primary,
-                activeTrackColor = VoiidColor.primary,
+
+        TrimHandle(startX, onCommit) { delta ->
+            val moved = (startMs + delta * msPerPx).toLong()
+            onChange(moved.coerceIn(0L, (endMs - 500).coerceAtLeast(0L)), endMs)
+        }
+        TrimHandle(endX, onCommit) { delta ->
+            val moved = (endMs + delta * msPerPx).toLong()
+            // Clamped to the 90s cap here as well as at intake, so a long source can be
+            // trimmed DOWN into range rather than rejected outright.
+            val ceiling = minOf(durationMs, startMs + ClipCaps.MAX_DURATION_MS)
+            onChange(startMs, moved.coerceIn((startMs + 500).coerceAtMost(ceiling), ceiling))
+        }
+    }
+}
+
+/** A 6dp bar inside a 44dp grab area — thin enough to aim with, wide enough to hit. */
+@Composable
+private fun BoxScope.TrimHandle(x: Float, onCommit: () -> Unit, onDelta: (Float) -> Unit) {
+    val touch = 44.dp
+    val touchPx = with(LocalDensity.current) { touch.toPx() }
+    Box(
+        Modifier
+            .offset { IntOffset((x - touchPx / 2f).roundToInt(), 0) }
+            .width(touch)
+            .fillMaxHeight()
+            .draggable(
+                orientation = Orientation.Horizontal,
+                state = rememberDraggableState { onDelta(it) },
+                onDragStopped = { onCommit() },
             ),
-            modifier = Modifier.weight(1f),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier
+                .width(6.dp)
+                .fillMaxHeight()
+                .clip(RoundedCornerShape(VoiidRadius.sm))
+                .background(VoiidColor.primary)
         )
+    }
+}
+
+/**
+ * The cover scrubber: the same filmstrip with a SINGLE handle — exactly Instagram's "Edit
+ * cover". The handle is confined to the trimmed range because a cover frame outside it is one
+ * the published clip never shows.
+ */
+@Composable
+private fun CoverStrip(
+    frames: List<Bitmap>,
+    durationMs: Long,
+    coverMs: Long,
+    startMs: Long,
+    endMs: Long,
+    onChange: (Long) -> Unit,
+) {
+    val density = LocalDensity.current
+    BoxWithConstraints(Modifier.fillMaxWidth().height(64.dp)) {
+        val widthPx = with(density) { maxWidth.toPx() }
+        if (widthPx <= 0f) return@BoxWithConstraints
+        val msPerPx = durationMs / widthPx
+
+        FilmstripRow(frames, Modifier.matchParentSize())
+
+        val clamped = coverMs.coerceIn(startMs, (endMs - 100).coerceAtLeast(startMs))
+        val x = clamped.toFloat() / durationMs * widthPx
+        val touch = 44.dp
+        val touchPx = with(density) { touch.toPx() }
+        Box(
+            Modifier
+                .offset { IntOffset((x - touchPx / 2f).roundToInt(), 0) }
+                .width(touch)
+                .fillMaxHeight()
+                .draggable(
+                    orientation = Orientation.Horizontal,
+                    state = rememberDraggableState { d ->
+                        onChange(
+                            (clamped + d * msPerPx).toLong()
+                                .coerceIn(startMs, (endMs - 100).coerceAtLeast(startMs))
+                        )
+                    },
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(
+                Modifier
+                    .width(34.dp)
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(VoiidRadius.sm))
+                    .border(2.dp, VoiidColor.accent, RoundedCornerShape(VoiidRadius.sm))
+            )
+        }
     }
 }
 

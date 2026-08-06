@@ -16,6 +16,10 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -37,16 +41,29 @@ import com.voiid.app.ui.theme.VoiidRadius
  * Settings -> About. Port of iOS `AboutView.swift`.
  *
  * Every value here is read live, never a literal — the exact bug this screen's iOS
- * counterpart calls out (`OnboardingFlow.swift` hardcoding "v1.0.0 (15)"). No Legal
- * section: Voiid has no privacy-policy, terms, or help URL anywhere in the repo (not in
- * Info.plist/manifest, not in /config, not in docs/) — a row that opens nothing, or a
- * plausible-looking invented URL, would be the exact failure this screen exists to avoid.
+ * counterpart calls out (`OnboardingFlow.swift` hardcoding "v1.0.0 (15)").
  * No "Send Logs": there is no log sink in the app to send.
+ *
+ * THE LEGAL SECTION, WHICH USED NOT TO EXIST. This screen previously had none, because
+ * Voiid had no privacy policy, terms or help URL anywhere in the repo, and a row that opens
+ * nothing — or a plausible-looking invented URL — is the exact failure this screen exists
+ * to avoid. Two of the three now exist and are NOT web URLs: the notice and the terms are
+ * bundled in the APK (`com.voiid.app.legal.LegalDocuments`) and render natively, because
+ * DPDP s.5 requires the notice to be reachable at or before consent — which happens on the
+ * first onboarding screen, offline, before an account exists. There is still no help URL,
+ * so there is still no Help row.
  */
 @Composable
 fun AboutScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val haptics = LocalVoiidHaptics.current
+    var openDocument by remember { mutableStateOf<com.voiid.app.legal.LegalDocument?>(null) }
+
+    val document = openDocument
+    if (document != null) {
+        LegalDocumentScreen(document = document, onBack = { openDocument = null })
+        return
+    }
 
     val appVersion = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
     val server = runCatching { java.net.URI(ApiConfig.baseUrl).host }.getOrNull() ?: "—"
@@ -117,6 +134,27 @@ fun AboutScreen(onBack: () -> Unit) {
             "Includes only the values shown above. No messages, contacts or keys.",
             style = VoiidFont.rounded(12), color = VoiidColor.textSecondary,
         )
+
+        Spacer(Modifier.height(20.dp))
+
+        AboutSection(
+            header = "Legal",
+            footer = "Version ${com.voiid.app.legal.LegalDocuments.NOTICE_VERSION}. Stored in the app, " +
+                "so they open without a connection. Settings → Privacy & Legal is where you review " +
+                "or withdraw your consent.",
+        ) {
+            com.voiid.app.legal.LegalDocuments.all.forEach { doc ->
+                Row(
+                    Modifier.fillMaxWidth().height(52.dp)
+                        .softClickable { haptics.tap(); openDocument = doc }
+                        .padding(horizontal = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(doc.title, style = VoiidFont.rounded(15), color = VoiidColor.textPrimary)
+                }
+            }
+        }
+        Spacer(Modifier.height(16.dp))
     }
 }
 

@@ -100,4 +100,36 @@ enum CallSDPTuning {
         let rendered = pairs.map { $0.1.isEmpty ? $0.0 : "\($0.0)=\($0.1)" }.joined(separator: ";")
         return prefix + rendered
     }
+
+    // MARK: - DTLS fingerprint (verified 1:1 keying, repair plan §3.8)
+
+    /// The DTLS certificate fingerprint asserted by an SDP, normalised to
+    /// `"<hash-func> <UPPERCASE-HEX-WITH-COLONS>"`, or nil if the SDP carries none.
+    ///
+    /// WHY THIS IS READ AT ALL: 1:1 media is protected by DTLS-SRTP, and the only thing
+    /// binding that DTLS handshake to the person you dialled is this fingerprint — which
+    /// travels through a server-relayed SDP. A colluding relay could substitute its own and
+    /// sit in the middle. §3.8 closes that by having both sides commit to the *pair* of
+    /// fingerprints under a secret exchanged over the Double Ratchet, which the relay cannot
+    /// read or forge. This function is the parsing half of that check and nothing more; it
+    /// never changes the SDP and never affects whether a call connects.
+    ///
+    /// Total, like every other function here: an unexpected SDP yields nil and the call
+    /// proceeds exactly as it does today (unverified, DTLS-only).
+    static func dtlsFingerprint(in sdp: String) -> String? {
+        for rawLine in sdp.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            guard line.hasPrefix("a=fingerprint:") else { continue }
+            let value = line.dropFirst("a=fingerprint:".count)
+                .trimmingCharacters(in: .whitespaces)
+            // "sha-256 AB:CD:…" — split on the FIRST run of whitespace only.
+            let parts = value.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+            guard parts.count == 2 else { continue }
+            let algorithm = parts[0].lowercased()
+            let digest = parts[1].trimmingCharacters(in: .whitespaces).uppercased()
+            guard !algorithm.isEmpty, !digest.isEmpty else { continue }
+            return "\(algorithm) \(digest)"
+        }
+        return nil
+    }
 }

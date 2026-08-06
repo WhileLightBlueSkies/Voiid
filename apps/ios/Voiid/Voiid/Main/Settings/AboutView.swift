@@ -27,24 +27,24 @@ import SwiftUI
 
 // MARK: - Legal destinations
 //
-// Voiid has no privacy policy URL, no terms URL and no support/help URL — not in
-// Info.plist, not in the server's /config payload, not in docs/, not anywhere in the
-// repo. Rather than ship a row that opens nothing, a row that opens a plausible-looking
-// URL somebody invented, or a greyed "coming soon" label, the destinations are declared
-// here as nils and the Legal section is rendered behind `if let`. Nothing renders, so
-// nothing lies.
+// RESOLVED, PARTLY. This file used to declare three nil URLs and render nothing, because
+// Voiid had no privacy policy, no terms and no help page anywhere — and a row that opens
+// a plausible-looking URL somebody invented is worse than no row.
 //
-// ACTION REQUIRED FROM PRODUCT: supply the real Privacy Policy, Terms of Service and Help
-// URLs. Filling in these three constants is the entire iOS change — the section, its rows,
-// its glyphs and its footer are already written below and appear on their own.
+// Two of the three now exist, and they are NOT web URLs: the privacy notice and the terms
+// are bundled in the app (`Legal/LegalDocuments.swift`) and render natively, because DPDP
+// s.5 requires the notice to be reachable at or before consent — which happens on the
+// first onboarding screen, offline, before an account exists. So the Legal rows below push
+// `LegalDocumentView` instead of opening Safari, and there is no URL to be wrong.
 //
-// Whoever supplies them must, in the SAME change, fix `Onboarding/OnboardingFlow.swift`
-// (~line 106), where "Terms & Conditions" and "Privacy Policy" are non-tappable `Text`
-// inside the consent checkbox: users currently agree to documents they cannot open. That
-// is a separate ticket and is deliberately not attempted from here.
+// STILL ACTION REQUIRED FROM PRODUCT: `helpURL` remains nil because there is still no
+// support site and no support address in this repo. It stays nil until one exists; the row
+// is behind `if let` and will appear on its own when it does.
+//
+// The onboarding half of this — "Terms & Conditions" and "Privacy Policy" rendered as
+// non-tappable `Text` inside the consent checkbox, so users agreed to documents they could
+// not open — is fixed in `Onboarding/OnboardingFlow.swift` in the same change.
 
-private let privacyPolicyURL: URL? = nil
-private let termsOfServiceURL: URL? = nil
 private let helpURL: URL? = nil
 
 // MARK: -
@@ -122,16 +122,22 @@ struct AboutView: View {
 
     // MARK: - Legal
 
-    /// Renders only when at least one destination exists. In this build that is never, so
-    /// the section does not exist at runtime.
+    /// The documents always render (they are in the binary); Help renders only if a URL
+    /// exists, which today it does not.
     @ViewBuilder
     private var legal: some View {
-        if privacyPolicyURL != nil || termsOfServiceURL != nil || helpURL != nil {
-            SettingsSection("Legal", footer: "Opens in Safari.") {
-                if let privacyPolicyURL { externalLink("Privacy Policy", to: privacyPolicyURL) }
-                if let termsOfServiceURL { externalLink("Terms of Service", to: termsOfServiceURL) }
-                if let helpURL { externalLink("Help", to: helpURL) }
+        SettingsSection("Legal",
+                        footer: "Version \(LegalDocuments.noticeVersion). Stored in the app, so they open without a connection. Settings → Privacy & Legal is where you review or withdraw your consent.") {
+            ForEach(LegalDocuments.all) { doc in
+                NavigationLink {
+                    LegalDocumentView(document: doc)
+                } label: {
+                    Text(doc.title)
+                        .font(.body)
+                        .foregroundStyle(VoiidColor.textPrimary)
+                }
             }
+            if let helpURL { externalLink("Help", to: helpURL) }
         }
     }
 

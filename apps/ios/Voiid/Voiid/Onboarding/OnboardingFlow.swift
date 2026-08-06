@@ -75,11 +75,39 @@ struct SplashScreen: View {
 
 // MARK: - Terms & Conditions (exact Figma)
 
+/// The consent screen — and, since this is where the affirmative action actually happens,
+/// the DPDP s.5/s.6 surface of the whole app.
+///
+/// WHAT CHANGED AND WHY
+/// --------------------
+/// "Terms & Conditions" and "Privacy Policy" used to be plain `Text` inside a single
+/// concatenated string: users ticked a box agreeing to two documents they could not open,
+/// and no document existed to open. Both halves are fixed — the documents are bundled
+/// (`Legal/LegalDocuments.swift`) and both phrases are now real links.
+///
+/// The tick is also *recorded* now. `POST /users/consent` had existed for months with zero
+/// callers, so `consent_given_at` was null for every account ever created. It cannot be
+/// posted from here — there is no account and no token until several screens later — so
+/// the decision is stored locally the moment it is made and flushed once an account
+/// exists (see `ConsentService`).
+///
+/// "I already have an account" deliberately does not record consent: someone signing back
+/// in has not been shown this notice as a decision. They are caught by the backfill prompt
+/// after sign-in (`ContentView`), which asks properly rather than assuming.
+///
+/// `@MainActor` on the whole struct, not just `body`: the link handler and the tick
+/// handler both touch `ConsentService` (a main-actor singleton) and `@State`, and leaving
+/// them nonisolated would make that a concurrency diagnostic the first time this file is
+/// compiled under stricter checking.
+@MainActor
 struct TermsScreen: View {
     var logoNS: Namespace.ID
     let onContinue: () -> Void
     @State private var agreed = false
     @State private var contentIn = false
+    /// Set by tapping a link in the consent line; presented as a sheet because this screen
+    /// is the root of the navigation stack and pushing would replace the consent context.
+    @State private var presentedDocument: LegalDocument?
 
     var body: some View {
         ZStack {
@@ -93,7 +121,7 @@ struct TermsScreen: View {
 
                 Group {
                 HStack(spacing: VoiidSpacing.sm) {
-                    Button { withAnimation(.spring(response: 0.25)) { agreed.toggle() } } label: {
+                    Button { toggleAgreement() } label: {
                         RoundedRectangle(cornerRadius: 3)
                             .stroke(VoiidColor.textSecondary, lineWidth: 1)
                             .background(agreed ? VoiidColor.primary : Color.clear)
@@ -101,13 +129,24 @@ struct TermsScreen: View {
                             .overlay(agreed ? Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundColor(VoiidColor.textOnPrimary) : nil)
                             .clipShape(RoundedRectangle(cornerRadius: 3))
                     }
-                    // SF Pro Rounded; "Terms & Conditions" emphasized like the design
-                    (Text("I accept the ")
-                        + Text("Terms & Conditions").fontWeight(.semibold)
-                        + Text(" and ")
-                        + Text("Privacy Policy").foregroundColor(VoiidColor.textSecondary))
+                    .accessibilityLabel("I accept the Terms & Conditions and Privacy Policy")
+                    .accessibilityAddTraits(agreed ? [.isSelected] : [])
+                    // One `Text` carrying an AttributedString, not four concatenated ones:
+                    // concatenation cannot hold a link, and the design needs this to stay on
+                    // a single 13pt line. The link targets use a private scheme handled by
+                    // the `openURL` action below — nothing here reaches the network.
+                    Text(consentLine)
                         .font(VoiidFont.rounded(13, .regular))
                         .foregroundColor(VoiidColor.textPrimary)
+                        .environment(\.openURL, OpenURLAction { url in
+                            guard url.scheme == Self.legalScheme,
+                                  let doc = LegalDocuments.all.first(where: { $0.id == url.host }) else {
+                                return .discarded
+                            }
+                            Haptics.tap()
+                            presentedDocument = doc
+                            return .handled
+                        })
                 }
                 .padding(.horizontal, VoiidSpacing.lg)
                 .padding(.bottom, VoiidSpacing.md)
@@ -142,6 +181,62 @@ struct TermsScreen: View {
         .navigationBarBackButtonHidden(true)
         .onAppear {
             withAnimation(.easeOut(duration: 0.45).delay(0.25)) { contentIn = true }
+        }
+        .sheet(item: $presentedDocument) { doc in
+            NavigationStack {
+                LegalDocumentView(document: doc, showsDoneButton: true)
+            }
+            .preferredColorScheme(nil)
+        }
+    }
+
+    // MARK: - Consent
+
+    /// Private URL scheme for the two in-app documents. Not `https`: these documents are in
+    /// the binary, and a scheme that looks like the web would eventually be "fixed" by
+    /// someone into a real URL that 404s.
+    private static let legalScheme = "voiid-legal"
+
+    /// The consent sentence, with both document names as real links.
+    ///
+    /// Underlined as well as coloured. Colour alone is not an affordance — it fails for
+    /// colour-blind users and it fails against this screen's low-contrast secondary token,
+    /// which is exactly how "Privacy Policy" managed to look like a link for months while
+    /// being inert text.
+    private var consentLine: AttributedString {
+        var line = AttributedString("I accept the ")
+
+        var terms = AttributedString("Terms & Conditions")
+        terms.font = VoiidFont.rounded(13, .semibold)
+        terms.link = URL(string: "\(Self.legalScheme)://terms")
+        terms.underlineStyle = .single
+
+        var and = AttributedString(" and ")
+        and.foregroundColor = VoiidColor.textPrimary
+
+        var privacy = AttributedString("Privacy Policy")
+        privacy.font = VoiidFont.rounded(13, .semibold)
+        privacy.link = URL(string: "\(Self.legalScheme)://privacy")
+        privacy.underlineStyle = .single
+
+        line.append(terms)
+        line.append(and)
+        line.append(privacy)
+        return line
+    }
+
+    /// Ticking IS the consent, so it is recorded here rather than on Continue: a user who
+    /// ticks and then abandons the flow still ticked, and a crash between the two must not
+    /// lose the record. Un-ticking clears it — a retracted tick is an absence of consent,
+    /// not a withdrawal, and posting it later would manufacture agreement.
+    private func toggleAgreement() {
+        withAnimation(.spring(response: 0.25)) { agreed.toggle() }
+        if agreed {
+            ConsentService.shared.recordLocalConsent(
+                purposes: Dictionary(uniqueKeysWithValues:
+                    LegalDocuments.purposes.map { ($0.id, true) }))
+        } else {
+            ConsentService.shared.clearLocalConsent()
         }
     }
 }

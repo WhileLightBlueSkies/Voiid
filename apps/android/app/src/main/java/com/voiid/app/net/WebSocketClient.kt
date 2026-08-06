@@ -301,6 +301,75 @@ class WebSocketClient private constructor(context: Context) {
         send("""{"type":"call_unhold","to_user_id":${enc(toUserId)},"call_id":${enc(callId)}}""", queueIfDown = true)
     }
 
+    // ---- Conference escalation signaling (repair plan §3.2 wire types) ----------
+    //
+    // Five NEW unicast frames, built with the identical discipline as the nine above: a single
+    // `to_user_id`, `from_user_id` stamped server-side from the socket JWT, and the outbound
+    // frame rebuilt by the relay from a fixed field list.
+    //
+    // *** THE RELAY DOES NOT UNDERSTAND THESE YET. *** `backend/websocket/src/index.ts` is owned
+    // by another fleet and its whitelist still lists only the nine 1:1 types, so until §3.2 lands
+    // every frame below is dropped at the relay. That is deliberate and safe: the escalation
+    // engine treats a missing `call_migrate`/`call_key` as "the SFU leg did not come up" and
+    // falls back to the still-standing 1:1 call (see ConferenceManager). Nothing here can break
+    // an ordinary 1:1 call, because an ordinary 1:1 call never sends any of it.
+    //
+    // FIELDS THE RELAY MUST CARRY when it does land (anything else it may drop):
+    //   call_invite         : call_id, to_user_id, call_kind, room
+    //   call_invite_accept  : call_id, to_user_id
+    //   call_invite_decline : call_id, to_user_id
+    //   call_migrate        : call_id, to_user_id, room
+    //   call_key            : call_id, to_user_id, device_id, sender_device_id, ciphertext
+    //
+    // `call_key.ciphertext` is pairwise Double-Ratchet output and is OPAQUE — the relay must
+    // apply the same base64-only structural check `loc_update` uses so this process can never
+    // carry readable key material, and must never log it. Everything the key frame needs to say
+    // beyond routing (which call, which rekey epoch) lives INSIDE the ciphertext, so the relay
+    // sees routing ids and an opaque blob and nothing else.
+
+    /** Inviter -> invitee: "you are being added to call [callId]". Rides alongside the ring push. */
+    fun sendCallInvite(toUserId: String, callId: String, kind: com.voiid.app.main.CallKind, room: String) {
+        val k = if (kind == com.voiid.app.main.CallKind.VIDEO) "video" else "voice"
+        send("""{"type":"call_invite","to_user_id":${enc(toUserId)},"call_id":${enc(callId)},"call_kind":"$k","room":${enc(room)}}""", queueIfDown = true)
+    }
+
+    /** Invitee -> inviter: "I took it." The inviter uses this to start the rekey. */
+    fun sendCallInviteAccept(toUserId: String, callId: String) {
+        send("""{"type":"call_invite_accept","to_user_id":${enc(toUserId)},"call_id":${enc(callId)}}""", queueIfDown = true)
+    }
+
+    /** Invitee -> inviter: "no thanks." Also the invitee's other devices stop ringing. */
+    fun sendCallInviteDecline(toUserId: String, callId: String) {
+        send("""{"type":"call_invite_decline","to_user_id":${enc(toUserId)},"call_id":${enc(callId)}}""", queueIfDown = true)
+    }
+
+    /** Inviter -> current 1:1 peer: "join the SFU room; keep our leg up until you're on it." */
+    fun sendCallMigrate(toUserId: String, callId: String, room: String) {
+        send("""{"type":"call_migrate","to_user_id":${enc(toUserId)},"call_id":${enc(callId)},"room":${enc(room)}}""", queueIfDown = true)
+    }
+
+    /**
+     * One participant's copy of the per-call secret, encrypted to ONE of their devices over the
+     * existing Double Ratchet. [ciphertextB64] is opaque to us and to the relay.
+     *
+     * [deviceId] names WHICH of the recipient's devices this copy is for — a user's devices all
+     * share one Redis channel, so every device sees every copy and must pick its own.
+     */
+    fun sendCallKey(
+        toUserId: String,
+        callId: String,
+        deviceId: String,
+        senderDeviceId: String?,
+        ciphertextB64: String,
+    ) {
+        send(
+            """{"type":"call_key","to_user_id":${enc(toUserId)},"call_id":${enc(callId)},""" +
+                """"device_id":${enc(deviceId)},"sender_device_id":${enc(senderDeviceId ?: "")},""" +
+                """"ciphertext":${enc(ciphertextB64)}}""",
+            queueIfDown = true,
+        )
+    }
+
     /** JSON-encode a string as a quoted literal (escapes quotes/newlines). */
     private fun enc(s: String): String = JsonPrimitive(s).toString()
 
@@ -402,6 +471,26 @@ class WebSocketClient private constructor(context: Context) {
             "story", "story_receipt", "story_deleted" -> onStorySignal?.invoke()
             "session_reset" -> obj["conversation_id"]?.jsonPrimitive?.contentOrNull?.let { onSessionReset?.invoke(it) }
             "mls_event" -> onMlsEvent?.invoke(obj["conversation_id"]?.jsonPrimitive?.contentOrNull)
+            // Conference escalation (§3.2). Routed to their own seam — exactly as loc_* goes to
+            // LocationRelay and game_state to GamesRelay — rather than widening [CallSignal],
+            // so the 1:1 signaling struct keeps meaning "one peer-to-peer session" and the
+            // conference engine can consume these without CallManager having to forward them.
+            // `ciphertext` is copied to the relay seam verbatim and NEVER parsed or logged here.
+            "call_invite", "call_invite_accept", "call_invite_decline", "call_migrate", "call_key" -> {
+                val from = obj["from_user_id"]?.jsonPrimitive?.contentOrNull ?: return
+                val callId = obj["call_id"]?.jsonPrimitive?.contentOrNull ?: return
+                ConferenceRelay.dispatch(
+                    type = t,
+                    fromUserId = from,
+                    callId = callId,
+                    callKind = obj["call_kind"]?.jsonPrimitive?.contentOrNull,
+                    room = obj["room"]?.jsonPrimitive?.contentOrNull,
+                    deviceId = obj["device_id"]?.jsonPrimitive?.contentOrNull,
+                    senderDeviceId = obj["sender_device_id"]?.jsonPrimitive?.contentOrNull
+                        ?.takeIf { it.isNotBlank() },
+                    ciphertextB64 = obj["ciphertext"]?.jsonPrimitive?.contentOrNull,
+                )
+            }
             "call_offer", "call_answer", "call_ice", "call_hangup", "call_decline", "call_busy",
             "call_ringing", "call_hold", "call_unhold",
             -> {

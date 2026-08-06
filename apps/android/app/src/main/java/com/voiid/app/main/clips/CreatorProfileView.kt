@@ -390,9 +390,10 @@ private fun FollowButton(
     )
     Box(
         modifier
-            // 40dp of drawn height, but the tap target is the whole row height plus the
-            // padding around it; see the 48dp frame on the parent Row's spacing.
-            .height(44.dp)
+            // 48dp, not the 44 this started at: it is the primary act on someone else's page
+            // and it sits directly above a scrolling grid, so an under-target miss scrolls the
+            // page instead of following them.
+            .height(48.dp)
             .clip(shape)
             .background(fill)
             .then(
@@ -424,7 +425,9 @@ private fun HeaderButton(
     val shape = RoundedCornerShape(VoiidRadius.md)
     Box(
         modifier
-            .height(44.dp)
+            // Matches [FollowButton] exactly — the two share a row, and a two-up pair whose
+            // halves differ by 4dp reads as a rendering bug.
+            .height(48.dp)
             .clip(shape)
             .background(VoiidColor.fieldFill)
             .border(1.dp, VoiidColor.fieldBorder, shape)
@@ -445,7 +448,7 @@ private fun CreatorClipTile(
     modifier: Modifier = Modifier,
     onTap: () -> Unit,
 ) {
-    Box(modifier.aspectRatio(9f / 16f).softClickable(scale = 0.98f, onClick = onTap)) {
+    Box(modifier.aspectRatio(9f / 16f).clipZoomSource(scale = 0.98f, onTap = onTap)) {
         ClipThumbnail(url = clip.thumb_url, modifier = Modifier.fillMaxSize())
         Box(
             Modifier

@@ -178,7 +178,12 @@ struct ClipEditorView: View {
         .navigationTitle("Edit")
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
-        .onDisappear { preview.teardown() }
+        // Pushing Details fires onDisappear but leaves this view alive in the stack, so
+        // `.task` never runs again — releasing the player here would leave a black preview
+        // on the way back. Pause instead; the player is released in ClipPreviewPlayer.deinit
+        // when the whole composer goes away.
+        .onAppear { preview.resume() }
+        .onDisappear { preview.pause() }
         .onChange(of: edit.filter) { _, f in
             Task {
                 await preview.applyFilter(f, source: sourceURL)
@@ -485,13 +490,6 @@ final class ClipPreviewPlayer: ObservableObject {
 
     func resume() { if wasPlaying { player.play() } }
 
-    func teardown() {
-        player.pause()
-        if let observer { player.removeTimeObserver(observer) }
-        observer = nil
-        player.replaceCurrentItem(with: nil)
-    }
-
     private func installObserver() {
         if let observer { player.removeTimeObserver(observer) }
         observer = player.addPeriodicTimeObserver(
@@ -516,7 +514,10 @@ final class ClipPreviewPlayer: ObservableObject {
     }
 
     deinit {
+        // The periodic observer retains a block referencing the player; without removing it
+        // the decode keeps running after the composer is gone.
         if let observer { player.removeTimeObserver(observer) }
+        player.replaceCurrentItem(with: nil)
     }
 }
 

@@ -1,0 +1,421 @@
+/* =============================================================================
+ * Calls — page-local composition. Tokens only; no raw hex, no colour that is not
+ * either a token or a mix of one. The page's hue (calls) is set by <Hero hue> and
+ * each <Section hue>, so nothing below ever names green.
+ * ========================================================================== */
+
+/* ---- the setup sequence --------------------------------------------------- */
+
+.steps {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-sm);
+  list-style: none;
+  margin-block-end: var(--space-xl);
+  counter-reset: none;
+}
+
+@media (min-width: 720px) {
+  .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* The last step is the payoff — "and we drop out" — so it gets the full width. */
+  .steps > li:last-child { grid-column: 1 / -1; }
+}
+
+.step {
+  display: flex;
+  gap: var(--space-sm);
+  align-items: flex-start;
+  min-width: 0;
+  padding: var(--space-md);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-divider);
+  background: var(--color-surface);
+}
+
+/* The number is a rhythm marker, not information — the <ol> already conveys order
+ * to assistive tech, which is why it is aria-hidden in the markup. */
+.stepNum {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.4rem;
+  height: 2.4rem;
+  border-radius: var(--radius-md);
+  background: var(--hue-wash);
+  color: var(--hue);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-wide);
+  font-variant-numeric: tabular-nums;
+}
+
+.stepBody {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3xs);
+}
+
+.stepTitle {
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+}
+
+.stepText {
+  font-size: var(--text-small);
+  line-height: var(--leading-body);
+  color: var(--color-text-dim);
+}
+
+/* ---- the in-call screen, inside <PhoneMockup> ----------------------------- *
+ * Everything here is sized in `em`, which the frame sets from the display width,
+ * so the screen scales with the mockup's `size` prop and never with the page. */
+
+.callScreen {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  overflow: hidden;
+}
+
+/*
+ * A stand-in for the remote camera, drawn rather than photographed: a soft mass
+ * where a head and shoulders would be. No stock image, no CDN, no face that
+ * belongs to a real person who never agreed to be on a marketing page.
+ */
+.remote {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(
+      52% 30% at 50% 30%,
+      color-mix(in srgb, var(--hue) 55%, transparent),
+      transparent 72%
+    ),
+    radial-gradient(
+      86% 46% at 50% 96%,
+      color-mix(in srgb, var(--hue) 40%, transparent),
+      transparent 74%
+    ),
+    linear-gradient(180deg, var(--color-surface-2) 0%, var(--color-surface) 100%);
+}
+
+.callHead {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.18em;
+  padding: 1em 1em 0;
+  text-align: center;
+}
+
+.callName {
+  font-size: 1.15em;
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+}
+
+.callSecure {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  padding: 0.2em 0.6em;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--color-background) 72%, transparent);
+  border: 1px solid var(--color-divider);
+  color: var(--color-success);
+  font-size: 0.7em;
+  font-weight: var(--weight-medium);
+}
+
+.callTimer {
+  font-size: 0.78em;
+  color: var(--color-text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.selfTile {
+  position: absolute;
+  inset-inline-end: 0.7em;
+  inset-block-end: 4.6em;
+  width: 3.4em;
+  height: 5em;
+  border-radius: 0.7em;
+  overflow: hidden;
+  border: 1px solid var(--color-divider);
+  background:
+    radial-gradient(
+      60% 34% at 50% 32%,
+      color-mix(in srgb, var(--color-primary) 48%, transparent),
+      transparent 72%
+    ),
+    linear-gradient(180deg, var(--color-surface) 0%, var(--color-surface-2) 100%);
+}
+
+.selfLabel {
+  position: absolute;
+  inset-block-end: 0.25em;
+  inset-inline-start: 0.35em;
+  font-size: 0.6em;
+  color: var(--color-text-dim);
+}
+
+.callControls {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5em;
+  padding: 0.8em 0.7em 1.1em;
+}
+
+.ctl {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5em;
+  height: 2.5em;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--color-text) 12%, var(--color-surface));
+  border: 1px solid var(--color-divider);
+  color: var(--color-text);
+}
+
+.ctl svg {
+  width: 1.25em;
+  height: 1.25em;
+}
+
+.ctlEnd {
+  background: var(--color-error);
+  border-color: var(--color-error);
+  color: var(--color-text-on-primary);
+}
+
+/* ---- reliability numbers -------------------------------------------------- */
+
+.stats {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-md);
+  margin-block-end: var(--space-xl);
+  padding-block-end: var(--space-lg);
+  border-block-end: 1px solid var(--color-divider);
+}
+
+@media (min-width: 640px) {
+  .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+/* ---- the chat list with a floating call window ---------------------------- */
+
+.listStage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/*
+ * The floating "return to call" window. Deliberately overlapping the list rather
+ * than docked to an edge — the point of the graphic is that the call is ON TOP of
+ * whatever you went to look at.
+ */
+.floatingCall {
+  position: absolute;
+  inset-inline-end: 0.8em;
+  inset-block-end: 1.4em;
+  width: 5.4em;
+  border-radius: 0.8em;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--hue) 45%, transparent);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-lift);
+}
+
+.floatingVideo {
+  display: block;
+  height: 5.4em;
+  background:
+    radial-gradient(
+      56% 34% at 50% 32%,
+      color-mix(in srgb, var(--hue) 58%, transparent),
+      transparent 72%
+    ),
+    linear-gradient(180deg, var(--color-surface-2) 0%, var(--color-surface) 100%);
+}
+
+.floatingMeta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.3em;
+  padding: 0.3em 0.45em 0.4em;
+}
+
+.floatingName {
+  font-size: 0.72em;
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+}
+
+.floatingTime {
+  font-size: 0.66em;
+  color: var(--color-text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- prose beside a mockup ------------------------------------------------ */
+
+.prosePlus {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  max-width: 60ch;
+}
+
+.prosePlus p {
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  color: var(--color-text-dim);
+}
+
+.prosePlus > * + h3 { margin-block-start: var(--space-md); }
+.prosePlus > aside { margin-block-start: var(--space-sm); }
+
+.subhead {
+  font-size: var(--text-h3);
+  color: var(--color-text);
+}
+
+/* ---- the SFU diagram and its caption -------------------------------------- */
+
+.diagramFrame {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-md);
+  margin-block-end: var(--space-xl);
+  padding: var(--space-lg) var(--space-md);
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--color-divider);
+  background: var(--color-surface);
+}
+
+.diagramFrame svg {
+  width: 100%;
+  max-width: 620px;
+  height: auto;
+}
+
+.diagramNote {
+  max-width: 62ch;
+  text-align: center;
+  font-size: var(--text-small);
+  line-height: var(--leading-body);
+  color: var(--color-text-dim);
+}
+
+/* ---- the kept / not-kept ledger ------------------------------------------- */
+
+.ledger {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-lg);
+  margin-block-end: var(--space-lg);
+}
+
+@media (min-width: 720px) {
+  .ledger { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+.ledgerCol {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  min-width: 0;
+  padding: var(--space-md);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-divider);
+  background: var(--color-surface);
+}
+
+.ledgerHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+}
+
+.ledgerIconOk,
+.ledgerIconOpen {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+  flex: none;
+}
+
+.ledgerIconOk {
+  color: var(--color-success);
+  background: color-mix(in srgb, var(--color-success) 14%, transparent);
+}
+
+/* Neutral, not alarming: keeping a call record is a decision we stand behind and
+ * explain, not a leak. Colouring it red would be its own kind of dishonesty. */
+.ledgerIconOpen {
+  color: var(--color-text-dim);
+  background: var(--color-surface-2);
+}
+
+.ledgerList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  list-style: none;
+  font-size: var(--text-small);
+  line-height: var(--leading-body);
+  color: var(--color-text-dim);
+}
+
+.ledgerList li {
+  position: relative;
+  padding-inline-start: var(--space-sm);
+}
+
+/* A dash rather than a tick: these are inventory lines, not achievements. */
+.ledgerList li::before {
+  content: '';
+  position: absolute;
+  inset-inline-start: 0;
+  inset-block-start: 0.72em;
+  width: 8px;
+  height: 1px;
+  background: var(--color-text-dim);
+  opacity: 0.7;
+}
+
+.ledgerListOk li::before {
+  background: var(--color-success);
+  opacity: 1;
+}
+
+.ledgerFoot {
+  margin-block-start: auto;
+  padding-block-start: var(--space-2xs);
+  font-size: var(--text-caption);
+  line-height: var(--leading-body);
+  color: var(--color-text-dim);
+}
+
+/* A Callout that follows a <Grid> needs the gap the Grid does not carry. */
+.afterGrid { margin-block-start: var(--space-md); }

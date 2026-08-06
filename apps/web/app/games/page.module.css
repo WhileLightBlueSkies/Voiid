@@ -1,0 +1,715 @@
+/* =============================================================================
+ * /games — page-specific composition only. Every colour is a token; the page hue
+ * (--hue) is `games`, which is the amber, and the only component-level amber on
+ * the page is the "Server-refereed" badge in the hero.
+ * ========================================================================== */
+
+/* ---- the four authored game marks ---------------------------------------- */
+
+.mark {
+  color: var(--hue);
+  width: 100%;
+  height: 100%;
+}
+
+/* =============================================================================
+ * The referee loop (hero aside).
+ * ========================================================================== */
+
+.loop {
+  width: 100%;
+  height: auto;
+  max-width: 100%;
+  overflow: visible;
+}
+
+/* Gradient stops live here rather than as SVG attributes: var() inside a
+ * presentation attribute is not reliable across engines, but is in a stylesheet. */
+.bloomIn { stop-color: var(--hue); stop-opacity: 0.2; }
+.bloomOut { stop-color: var(--hue); stop-opacity: 0; }
+
+.refBox {
+  fill: var(--color-surface);
+  stroke: color-mix(in srgb, var(--hue) 45%, transparent);
+  stroke-width: 1.5;
+}
+
+.board {
+  fill: none;
+  stroke: var(--color-text-dim);
+  stroke-width: 1.4;
+  opacity: 0.85;
+}
+
+.boardMark {
+  stroke: var(--hue);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+/* ---- the wires ------------------------------------------------------------ */
+
+/* The move: solid and in the hue, because this one is readable. */
+.wireOpen {
+  fill: none;
+  stroke: var(--hue);
+  stroke-width: 2.2;
+  opacity: 0.9;
+}
+
+/* The state coming back: quieter, and there are two of them. */
+.wireState {
+  fill: none;
+  stroke: var(--color-text-dim);
+  stroke-width: 1.8;
+  stroke-dasharray: 4 7;
+  stroke-linecap: round;
+  opacity: 0.8;
+}
+
+/* The invite: a different language entirely — it does not pass through the box. */
+.wireSealed {
+  fill: none;
+  stroke: var(--color-success);
+  stroke-width: 1.8;
+  stroke-dasharray: 3 8;
+  stroke-linecap: round;
+  opacity: 0.7;
+}
+
+.arrowOpen,
+.arrowState {
+  fill: none;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.arrowOpen { stroke: var(--hue); }
+.arrowState { stroke: var(--color-text-dim); }
+
+/* ---- devices -------------------------------------------------------------- */
+
+.phone {
+  fill: none;
+  stroke: var(--color-text-dim);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.phoneScreen {
+  fill: var(--hue);
+  fill-opacity: 0.12;
+  stroke: none;
+}
+
+/* ---- the sealed invite ---------------------------------------------------- */
+
+.sealed {
+  fill: none;
+  stroke: var(--color-success);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+
+.sealedBody { fill: var(--color-background); }
+
+.shackle { stroke-linecap: round; }
+
+/* ---- labels --------------------------------------------------------------- */
+
+.loopLabel {
+  fill: var(--color-text-dim);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: var(--weight-medium);
+}
+
+.loopMicro {
+  fill: var(--color-text-dim);
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+
+.loopCaption {
+  fill: var(--color-text-dim);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  opacity: 0.8;
+}
+
+/* ---- the travelling chips ------------------------------------------------- *
+ * Geometry is duplicated from page.tsx (MOVE_PATH / STATE_L_PATH / STATE_R_PATH).
+ * If you edit a path there, edit it here. CSS offset-path rather than SMIL, so
+ * that prefers-reduced-motion can actually switch it off. */
+
+.chipMove,
+.chipStateL,
+.chipStateR {
+  stroke-width: 1.6;
+  offset-rotate: 0deg;
+  offset-distance: 0%;
+}
+
+.chipMove {
+  fill: var(--color-surface);
+  stroke: var(--hue);
+  offset-path: path('M96 250 C 130 200, 158 170, 206 154');
+  animation: chip-up 6.4s var(--ease-in-out) infinite;
+}
+
+.chipStateL {
+  fill: var(--color-surface);
+  stroke: var(--color-text-dim);
+  offset-path: path('M196 166 C 148 186, 110 214, 78 252');
+  animation: chip-down 6.4s var(--ease-in-out) infinite;
+}
+
+.chipStateR {
+  fill: var(--color-surface);
+  stroke: var(--color-text-dim);
+  offset-path: path('M320 160 C 372 182, 412 210, 442 250');
+  animation: chip-down 6.4s var(--ease-in-out) infinite;
+}
+
+.chipText {
+  fill: var(--hue);
+  stroke: none;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: var(--weight-semibold);
+}
+
+.chipLines {
+  stroke: var(--color-text-dim);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  fill: none;
+}
+
+/* Up first, then both boards come back — the round trip is the whole point, so
+ * the two halves never overlap in time. */
+@keyframes chip-up {
+  0% { offset-distance: 0%; opacity: 0; }
+  6% { opacity: 1; }
+  34% { offset-distance: 100%; opacity: 1; }
+  40%, 100% { offset-distance: 100%; opacity: 0; }
+}
+
+@keyframes chip-down {
+  0%, 44% { offset-distance: 0%; opacity: 0; }
+  50% { opacity: 1; }
+  80% { offset-distance: 100%; opacity: 1; }
+  86%, 100% { offset-distance: 100%; opacity: 0; }
+}
+
+/*
+ * The global reduced-motion rule collapses durations, which would leave every chip
+ * parked on its 0% keyframe — invisible. Park them mid-flight instead, so the still
+ * frame reads as "a move going up, a board coming back".
+ */
+@media (prefers-reduced-motion: reduce) {
+  .chipMove,
+  .chipStateL,
+  .chipStateR {
+    animation: none;
+    opacity: 1;
+  }
+  .chipMove { offset-distance: 52%; }
+  .chipStateL,
+  .chipStateR { offset-distance: 44%; }
+}
+
+/* =============================================================================
+ * The catalogue
+ * ========================================================================== */
+
+/* Four cards read best two-up. Below this width <Grid> is already one column and
+ * this rule must not fight it. */
+@media (min-width: 720px) {
+  /* Doubled class on purpose: <Grid>'s own auto-fit rule has the same specificity,
+   * and stylesheet order between a component module and a page module is not a
+   * guarantee to build on. */
+  .catalogueGrid.catalogueGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+.gameCard {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  min-width: 0;
+  padding: var(--space-md);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+
+/* A single sweep of the hue along the top edge — the card's identity is in its
+ * words as well, so this is decoration and nothing depends on seeing it. */
+.gameCard::before {
+  content: '';
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline: 0;
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    var(--hue),
+    color-mix(in srgb, var(--hue) 10%, transparent)
+  );
+}
+
+.gameHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.gameMark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 54px;
+  height: 54px;
+  padding: 10px;
+  border-radius: var(--radius-lg);
+  background: var(--hue-wash);
+  border: 1px solid color-mix(in srgb, var(--hue) 26%, transparent);
+}
+
+.gameTitles {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.gameName {
+  font-size: var(--text-h3);
+  text-wrap: balance;
+}
+
+.gameKind {
+  font-size: var(--text-caption);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--color-text-dim);
+}
+
+.specs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3xs);
+  list-style: none;
+  font-size: var(--text-small);
+  color: var(--color-text-dim);
+}
+
+.specs li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2xs);
+}
+
+.specTick {
+  flex: none;
+  margin-block-start: 4px;
+  color: var(--hue);
+}
+
+.gameReferee {
+  /* Pushes the rule to the bottom of the card so the four line up across a row. */
+  margin-block-start: auto;
+  padding-block-start: var(--space-sm);
+  border-block-start: 1px solid var(--color-divider);
+  font-size: var(--text-small);
+  line-height: var(--leading-body);
+  color: var(--color-text-dim);
+}
+
+.gameReferee em {
+  font-style: normal;
+  color: var(--color-text);
+}
+
+.catalogueNote {
+  margin-block-start: var(--space-md);
+  max-width: 62ch;
+  font-size: var(--text-small);
+  color: var(--color-text-dim);
+}
+
+/* =============================================================================
+ * Invites — the numbered steps and the phone screen
+ * ========================================================================== */
+
+.steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  margin: 0 0 var(--space-md);
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+}
+
+.steps > li {
+  position: relative;
+  counter-increment: step;
+  padding-inline-start: calc(var(--space-lg) + var(--space-2xs));
+}
+
+.steps > li::before {
+  content: counter(step);
+  position: absolute;
+  inset-inline-start: 0;
+  inset-block-start: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--hue-wash);
+  border: 1px solid color-mix(in srgb, var(--hue) 32%, transparent);
+  color: var(--hue);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-bold);
+  font-variant-numeric: tabular-nums;
+}
+
+.steps h3 {
+  margin-block-end: var(--space-3xs);
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  /* The number sits in the gutter; the heading should start level with it. */
+  padding-block-start: 4px;
+}
+
+.steps p {
+  font-size: var(--text-small);
+  line-height: var(--leading-body);
+  color: var(--color-text-dim);
+}
+
+/* ---- inside the phone. Everything is em, off the display width. ---------- */
+
+.phoneBody {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7em;
+  min-height: 0;
+  padding: 0.7em;
+}
+
+.inviteCard {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45em;
+  padding: 0.7em;
+  border-radius: 0.9em;
+  background: var(--color-surface-2);
+  border: 1px solid color-mix(in srgb, var(--hue) 34%, transparent);
+}
+
+.inviteTop {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+}
+
+.inviteText {
+  font-size: 0.8em;
+  line-height: 1.3;
+  color: var(--color-text);
+}
+
+.inviteMeta {
+  font-size: 0.68em;
+  color: var(--color-text-dim);
+}
+
+.inviteActions {
+  display: flex;
+  gap: 0.45em;
+}
+
+.inviteJoin,
+.inviteDecline {
+  flex: 1;
+  padding: 0.4em 0.6em;
+  border-radius: var(--radius-pill);
+  font-size: 0.72em;
+  font-weight: var(--weight-semibold);
+  text-align: center;
+}
+
+.inviteJoin {
+  background: var(--hue);
+  color: var(--color-text-on-accent);
+}
+
+.inviteDecline {
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+  color: var(--color-text-dim);
+}
+
+.tileGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55em;
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5em;
+  aspect-ratio: 4 / 3;
+  padding: 0.6em;
+  border-radius: 0.8em;
+  background: var(--hue-wash);
+  border: 1px solid var(--color-divider);
+}
+
+.tile .mark {
+  width: auto;
+  height: auto;
+}
+
+.tileName {
+  font-size: 0.66em;
+  font-weight: var(--weight-semibold);
+  line-height: 1.2;
+  color: var(--color-text);
+}
+
+/* =============================================================================
+ * The referee: the ledger and the simultaneous-reveal figure
+ * ========================================================================== */
+
+.ledger {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-sm);
+  margin: 0;
+}
+
+@media (min-width: 640px) {
+  .ledger { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+.ledgerRow {
+  min-width: 0;
+  padding: var(--space-md);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+}
+
+.ledgerTerm {
+  margin-block-end: var(--space-3xs);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--hue);
+}
+
+.ledgerDetail {
+  margin: 0;
+  font-size: var(--text-small);
+  line-height: var(--leading-body);
+  color: var(--color-text-dim);
+}
+
+/* ---- the reveal figure ---------------------------------------------------- */
+
+.reveal {
+  margin: var(--space-xl) 0 var(--space-lg);
+  padding: var(--space-md);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-divider);
+}
+
+@media (min-width: 640px) {
+  .reveal { padding: var(--space-lg); }
+}
+
+.revealHead {
+  max-width: 60ch;
+  margin-block-end: var(--space-lg);
+}
+
+.revealTitle {
+  font-size: var(--text-h3);
+  margin-block-end: var(--space-2xs);
+}
+
+.revealLede {
+  font-size: var(--text-small);
+  line-height: var(--leading-body);
+  color: var(--color-text-dim);
+}
+
+.revealSteps {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-md);
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+@media (min-width: 720px) {
+  .revealSteps {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--space-lg);
+  }
+}
+
+.revealStep {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  min-width: 0;
+  padding: var(--space-sm);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+}
+
+.revealIndex {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--hue-wash);
+  color: var(--hue);
+  font-size: var(--text-micro);
+  font-weight: var(--weight-bold);
+  font-variant-numeric: tabular-nums;
+}
+
+.revealCards {
+  display: flex;
+  gap: var(--space-2xs);
+}
+
+.card {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 62px;
+  border-radius: var(--radius-md);
+  font-size: var(--text-h3);
+  font-weight: var(--weight-bold);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+}
+
+/* Held server-side: you can see that a pick exists, and nothing else about it. */
+.cardDown {
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+}
+
+.cardHatch {
+  width: 100%;
+  height: 100%;
+  background: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--color-text-dim) 30%, transparent) 0 2px,
+    transparent 2px 7px
+  );
+}
+
+/* Nothing picked yet — the slot exists, the pick does not. */
+.cardEmpty {
+  background: transparent;
+  border: 1px dashed var(--color-border);
+}
+
+.cardUp {
+  background: var(--hue-wash);
+  border: 1px solid color-mix(in srgb, var(--hue) 45%, transparent);
+  color: var(--hue);
+}
+
+.revealBody {
+  font-size: var(--text-small);
+  line-height: var(--leading-body);
+  color: var(--color-text-dim);
+}
+
+.revealBody em {
+  font-style: italic;
+  color: var(--color-text);
+}
+
+.refereeActions { margin-block-start: var(--space-md); }
+
+/* =============================================================================
+ * Practice + leaderboard
+ * ========================================================================== */
+
+.pair {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-md);
+}
+
+@media (min-width: 720px) {
+  .pair { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+.pairCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  min-width: 0;
+  padding: var(--space-md);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+}
+
+.pairGlyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  margin-block-end: var(--space-2xs);
+  border-radius: var(--radius-md);
+  color: var(--hue);
+  background: var(--hue-wash);
+  border: 1px solid color-mix(in srgb, var(--hue) 26%, transparent);
+}
+
+.pairCard h3 {
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+}
+
+.pairCard p {
+  font-size: var(--text-small);
+  line-height: var(--leading-body);
+  color: var(--color-text-dim);
+}

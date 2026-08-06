@@ -1,0 +1,16 @@
+<!doctype html><meta charset=utf-8>
+<iframe id="f" src="/" style="width:320px;height:900px;border:0"></iframe>
+<pre id="out">pending</pre>
+<script>
+document.getElementById('f').onload = function () {
+  var d = this.contentDocument, w = this.contentWindow;
+  var vw = d.documentElement.clientWidth, bad = [];
+  d.querySelectorAll('*').forEach(function (el) {
+    var r = el.getBoundingClientRect(), cs = w.getComputedStyle(el);
+    if (cs.position === 'absolute' || cs.position === 'fixed') return;
+    if (r.width > 0 && (r.right > vw + 1 || r.left < -1))
+      bad.push(el.tagName + '.' + (el.className.baseVal !== undefined ? el.className.baseVal : el.className) + ' [' + Math.round(r.left) + '→' + Math.round(r.right) + ']');
+  });
+  document.getElementById('out').textContent = JSON.stringify({viewport: vw, docScrollWidth: d.documentElement.scrollWidth, overflowing: bad.slice(0,12)}, null, 1);
+};
+</script>

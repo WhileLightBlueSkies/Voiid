@@ -1,0 +1,124 @@
+.diagram {
+  width: 100%;
+  height: auto;
+  max-width: 100%;
+}
+
+/* ---- the mesh: deliberately inert. It is the option we rejected. --------- */
+
+.meshLines {
+  stroke: var(--color-text-dim);
+  stroke-width: 1.4;
+  opacity: 0.45;
+}
+
+.nodeMuted {
+  fill: var(--color-surface-2);
+  stroke: var(--color-text-dim);
+  stroke-width: 1.6;
+  opacity: 0.75;
+}
+
+/* ---- the SFU: the built thing, so it carries the hue -------------------- */
+
+.spokeLines {
+  stroke: var(--hue);
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  opacity: 0.55;
+}
+
+.node {
+  fill: var(--hue-wash);
+  stroke: var(--hue);
+  stroke-width: 2;
+}
+
+/* Opaque, so the four spokes visually terminate at its edge rather than crossing. */
+.hub {
+  fill: var(--color-background);
+  stroke: var(--hue);
+  stroke-width: 2;
+}
+
+.hubLabel {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  fill: var(--hue);
+}
+
+.divider {
+  stroke: var(--color-divider);
+  stroke-width: 1.4;
+  stroke-dasharray: 3 8;
+}
+
+/* ---- one frame in, one frame out ---------------------------------------- */
+
+.frame {
+  fill: var(--color-surface);
+  stroke: var(--hue);
+  stroke-width: 1.8;
+  offset-rotate: 0deg;
+}
+
+/* Geometry duplicated from nothing else — these two short runs exist only here,
+ * deliberately stopping short of the hub so they never sit on its label. */
+.frameIn {
+  offset-path: path('M390 52 L390 84');
+  animation: slide 3.2s var(--ease-in-out) infinite;
+}
+
+.frameOut {
+  offset-path: path('M366 108 L328 108');
+  animation: slide 3.2s var(--ease-in-out) infinite;
+  animation-delay: 1.6s;
+}
+
+@keyframes slide {
+  0% { offset-distance: 0%; opacity: 0; }
+  14% { opacity: 1; }
+  46% { offset-distance: 100%; opacity: 1; }
+  56%, 100% { offset-distance: 100%; opacity: 0; }
+}
+
+/* ---- type ---------------------------------------------------------------- */
+
+.heading,
+.headingMuted,
+.figure,
+.figureMuted {
+  font-family: var(--font-sans);
+}
+
+.heading {
+  font-size: 14px;
+  font-weight: var(--weight-semibold);
+  fill: var(--color-text);
+}
+
+.headingMuted {
+  font-size: 14px;
+  font-weight: var(--weight-semibold);
+  fill: var(--color-text-dim);
+}
+
+.figure,
+.figureMuted {
+  font-size: 13px;
+  fill: var(--color-text-dim);
+}
+
+.figureMuted { opacity: 0.8; }
+
+/* A parked frame at each end reads as "one arrived, one is leaving". */
+@media (prefers-reduced-motion: reduce) {
+  .frameIn,
+  .frameOut {
+    animation: none;
+    opacity: 1;
+    offset-distance: 60%;
+  }
+}

@@ -55,6 +55,14 @@ struct ActiveCall: Identifiable, Equatable {
     /// user: `POST /calls/ring`, the local call-history row, and the missed-call
     /// notification's thread + tap deep-link.
     var conversationId: String?
+    /// This call arrived as an invitation into an existing CONFERENCE rather than as a 1:1
+    /// ring. It gates the "add someone" affordance: a conference cannot be escalated again,
+    /// and offering it would try to migrate a call that is already on the SFU.
+    ///
+    /// Note it is deliberately possible for this to be true while `conversationId` is nil —
+    /// a conference is keyed on the CALL and belongs to no conversation, which is what keeps
+    /// an invited stranger outside the contact-PIN gate in 020_reachability.sql.
+    var isConferenceInvite: Bool = false
 }
 
 @MainActor
@@ -1437,6 +1445,79 @@ final class CallService: NSObject, ObservableObject {
     }
 
     /// Hang up from the in-app button.
+    // MARK: - Conference migration (1:1 -> SFU)
+
+    /// The call id currently migrating from the 1:1 leg onto the SFU, if any.
+    ///
+    /// While this is set, an inbound `call_hangup` for that id is the EXPECTED end of the old
+    /// leg rather than the end of the call: the conversation continues on the SFU. Without
+    /// this distinction the peer's hangup would tear down a call the user is still in.
+    private(set) var migratingCallId: String?
+
+    /// Enter the make-before-break window. Both legs run briefly side by side so the user
+    /// never hears a gap, and the `calls` row must stay live throughout or `/escalate` and
+    /// `/join` would 409 against an ended call.
+    func beginMigration(callId: String) {
+        guard active?.id == callId else { return }
+        migratingCallId = callId
+    }
+
+    /// The SFU leg has taken over: retire the 1:1 leg ONLY.
+    ///
+    /// Emphatically not `endActiveCall` — the call has not ended, it changed transport.
+    /// CallKit keeps its session, the audio route stays claimed until the conference layer
+    /// calls `adoptAudioSession()`, and no call-history row is written, because writing an
+    /// outcome here would file a completed call that is still in progress.
+    func finishMigration(callId: String, notifyPeer: Bool) {
+        guard let call = active, call.id == callId else { migratingCallId = nil; return }
+        if notifyPeer {
+            WebSocketClient.shared.sendCallHangup(toUserId: call.peerUserId, callId: callId)
+        }
+        migratingCallId = nil
+
+        // THE LEG ONLY. Everything the full teardown also does — marking the call .ended,
+        // clearing `active`, disabling the RTC audio session, reporting to CallKit — must NOT
+        // happen: the user is still on this call, and the SFU is about to take the same audio
+        // session over.
+        offerTimeoutTask?.cancel(); offerTimeoutTask = nil
+        videoCapturer?.stopCapture()
+        videoCapturer = nil
+        videoSource = nil
+        localVideoTrack = nil
+        remoteVideoTrack = nil
+        localAudioTrack = nil
+        pc?.close()
+        pc = nil
+        hasRemoteDescription = false
+        pendingRemoteCandidates.removeAll()
+        pendingIncomingOfferSDP = nil
+    }
+
+    /// The escalation failed before handover. The 1:1 leg was never touched, so there is
+    /// nothing to undo but the flag — clearing it restores the normal meaning of a hangup.
+    func cancelMigration(callId: String) {
+        guard migratingCallId == callId else { return }
+        migratingCallId = nil
+    }
+
+    /// Report an invitation into an existing conference to CallKit, through the same surface
+    /// as a 1:1 ring so the native UI, the system call log and the ringtone all work
+    /// unchanged. `conversationId` is nil by design: a conference belongs to no conversation.
+    func reportConferenceInvite(callId: String, inviterUserId: String, isVideo: Bool) {
+        if let active, active.id == callId { return }
+        reportIncomingCallFromVoIPPush(
+            callId: callId,
+            callerId: inviterUserId,
+            kind: isVideo ? "video" : "voice",
+            conversationId: nil,
+            displayName: nil,
+            completion: {}
+        )
+        // Marked after reporting: the report path builds the ActiveCall, and this is the one
+        // field it cannot infer from a push that looks identical to a 1:1 ring.
+        if active?.id == callId { active?.isConferenceInvite = true }
+    }
+
     func hangUp() {
         guard let call = active else { return }
         CallManager.shared.requestEnd(uuid: call.uuid)   // routes back via callKitEnd

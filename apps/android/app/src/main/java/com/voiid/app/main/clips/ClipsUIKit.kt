@@ -43,7 +43,12 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.findRootCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
@@ -271,7 +276,9 @@ fun ClipsEmptyState(
             Box(
                 Modifier
                     .padding(top = 8.dp)
-                    .heightIn(min = 44.dp)
+                    // 48, not 44: the text plus its 12dp padding only reached ~46, and this is
+                    // the ONE control on an otherwise empty screen.
+                    .heightIn(min = 48.dp)
                     .clip(CircleShape)
                     .background(VoiidColor.primary)
                     .softClickable(scale = 0.95f) { haptics.tap(); onAction() }
@@ -305,6 +312,66 @@ fun VerifiedSeal(size: Dp = 16.dp, modifier: Modifier = Modifier) {
         tint = VoiidColor.accent,
         modifier = modifier.size(size),
     )
+}
+
+/**
+ * Where on screen the tile that opened the fullscreen player sat, as a [TransformOrigin].
+ *
+ * The player grows out of that point instead of sliding up from the bottom edge. A slide says
+ * "here is an unrelated screen"; the tile and the player are the same clip, and the eye needs
+ * to be told so.
+ *
+ * PARKED IN AN OBJECT rather than threaded through the open callbacks because the player is not
+ * a child of any grid — it is a full-screen overlay drawn as a SIBLING of the whole tab surface,
+ * and three separate grids (explore, following, a creator's page) can raise it. Widening three
+ * `(Int) -> Unit` callbacks to carry a transform origin would push a purely presentational
+ * detail through every screen in between.
+ *
+ * Deliberately NOT a `SharedTransitionLayout` morph: the shared scope would have to wrap the
+ * entire tab surface to cover both the grid and the overlay, and Compose's shared elements do
+ * not survive `LazyVerticalGrid` recycling the tile they are anchored to mid-transition.
+ */
+object ClipZoomOrigin {
+    var value by mutableStateOf(TransformOrigin.Center)
+        private set
+
+    fun record(coords: LayoutCoordinates?) {
+        val tile = coords?.takeIf { it.isAttached } ?: return
+        val root = tile.findRootCoordinates()
+        val w = root.size.width.toFloat()
+        val h = root.size.height.toFloat()
+        // A zero-sized root means the tile was measured before layout settled; the previous
+        // origin is a better guess than a divide by zero.
+        if (w <= 0f || h <= 0f) return
+        val center = tile.boundsInRoot().center
+        value = TransformOrigin(center.x / w, center.y / h)
+    }
+}
+
+/**
+ * A grid tile that opens the fullscreen player: notes where it is before firing [onTap], so the
+ * overlay can grow out of it. See [ClipZoomOrigin].
+ *
+ * The position hook comes FIRST in the chain so it reads the tile's settled bounds rather than
+ * the press-scale layer [softClickable] adds beneath it.
+ */
+@Composable
+fun Modifier.clipZoomSource(scale: Float = 0.98f, onTap: () -> Unit): Modifier {
+    // A PLAIN holder, never snapshot state: `onGloballyPositioned` fires on every frame of a
+    // scroll, and a state write there would recompose every visible tile for the whole fling.
+    // Nothing in composition reads this — only the click handler does, at which point the
+    // coordinates object is live and reports the tile's current position.
+    val tile = remember { ClipTileCoords() }
+    return this
+        .onGloballyPositioned { tile.value = it }
+        .softClickable(scale = scale) {
+            ClipZoomOrigin.record(tile.value)
+            onTap()
+        }
+}
+
+private class ClipTileCoords {
+    var value: LayoutCoordinates? = null
 }
 
 /**

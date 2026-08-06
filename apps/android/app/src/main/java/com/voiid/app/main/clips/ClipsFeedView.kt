@@ -279,7 +279,7 @@ private fun ClipTile(
         modifier
             .fillMaxWidth()
             .aspectRatio(9f / 16f)
-            .softClickable(scale = 0.98f) { onTap() },
+            .clipZoomSource(scale = 0.98f) { onTap() },
     ) {
         ClipThumbnail(
             url = clip.thumbUrl,
@@ -473,7 +473,7 @@ private fun FollowingFeed(
                     Modifier
                         .aspectRatio(9f / 16f)
                         .clipTileEntrance(index, entrance)
-                        .softClickable(scale = 0.97f) {
+                        .clipZoomSource(scale = 0.97f) {
                             haptics.tap()
                             // Opens the CLIP now, not its creator. The pager takes an
                             // injected list, so this feed's own rows can drive it — the

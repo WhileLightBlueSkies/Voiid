@@ -425,6 +425,89 @@ object CallManager {
     }
 
     /**
+     * An invitation to join an ad-hoc CONFERENCE, delivered by the same content-free push as a
+     * 1:1 ring. Routed through the same incoming surface on purpose: Telecom, the full-screen
+     * intent, the system call log and the ringtone all keep working with no second code path.
+     *
+     * TWO DELIBERATE DIFFERENCES FROM [onRingPush], and both matter:
+     *
+     *  - NO OFFER TIMEOUT. A 1:1 ring promises an SDP offer over the socket within seconds, and
+     *    [startOfferTimeout] ends the call when none arrives. A conference invitee never receives
+     *    one — it joins the SFU by fetching a token — so arming that timeout would reliably kill
+     *    every conference invite 30 seconds in.
+     *
+     *  - NO conversationId, and that is the requirement rather than an omission. A conference is
+     *    keyed on the CALL, never on a conversation; nothing in this path may create or imply a
+     *    messaging relationship. Being invited into a call with a stranger leaves the contact-PIN
+     *    gate in 020_reachability.sql exactly where it was.
+     */
+    fun onConferenceInvitePush(
+        callId: String,
+        inviterUserId: String,
+        kind: CallKind,
+        context: Context,
+    ) {
+        init(context)
+        if (!TokenStore.get(context).isAuthenticated) return
+        if (_state.value?.callId == callId) return
+        if (_waiting.value?.callId == callId) return
+        if (GroupCallManager.isActive) {
+            runCatching { WebSocketClient.get(appContext).sendCallBusy(inviterUserId, callId) }
+            return
+        }
+        // Never a raw user id on screen — resolvePeerName falls back through the directory.
+        val name = resolvePeerName(inviterUserId, null)
+        if (_state.value != null) {
+            raiseWaiting(WaitingCall(callId, inviterUserId, name, null, kind))
+            return
+        }
+        callStartedAtMs = System.currentTimeMillis()
+        _state.value = CallState(
+            callId = callId, peerUserId = inviterUserId, peerName = name,
+            conversationId = null, kind = kind, incoming = true,
+            phase = Phase.RINGING_IN, videoEnabled = kind == CallKind.VIDEO,
+            speaker = kind == CallKind.VIDEO,
+        )
+        // Logged as missed up front for the same reason a 1:1 ring is: an invite ignored until
+        // the process dies is exactly the one that must still appear in the log.
+        recordCall(_state.value!!, outcome = "missed")
+        runCatching {
+            WebSocketClient.get(appContext).apply {
+                callActive = true
+                reconnect()
+            }
+        }
+        raiseIncomingAlert(_state.value!!)
+    }
+
+    /**
+     * Both original participants have made it onto the SFU, so the 1:1 PeerConnection that
+     * carried the call until now is redundant. Tear down THAT LEG ONLY.
+     *
+     * This is emphatically not [endInternal]: the call is still in progress, just on different
+     * transport. Everything that represents "the user is on a call" — the Telecom session, the
+     * foreground service, the audio route, the call state — must survive, or the user would
+     * watch their live call disappear from the system UI mid-sentence. What goes is the
+     * WebRTC peer connection and, if asked, a hangup to the peer so their leg retires too.
+     *
+     * No call-history row is written here. The call has not ended; it ends once, later,
+     * through the conference path, and writing an outcome now would file a completed call
+     * that is still happening.
+     */
+    fun retire1to1LegForConference(notifyPeer: Boolean) {
+        val s = _state.value ?: return
+        cancelOfferTimeout()
+        CallTones.stopRingback()
+        if (notifyPeer && s.phase != Phase.ENDED) {
+            // The peer's engine knows this call is escalating and treats the hangup as
+            // "retire the leg". A peer that somehow missed the migrate simply ends — which is
+            // the honest outcome for a client that never reached the SFU.
+            runCatching { WebSocketClient.get(appContext).sendCallHangup(s.peerUserId, s.callId) }
+        }
+        exec.execute { releaseWebRtc() }
+    }
+
+    /**
      * A ring push promises an offer over the socket. If it never comes — the caller hung up
      * before we attached, or the frame was lost — the ring would otherwise sit there forever
      * with no way to end it but the user. iOS has had this bound since day one

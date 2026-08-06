@@ -107,6 +107,68 @@ object UserDirectory {
 
     fun photoUrl(userId: String): String? = byId[userId]?.photoUrl
 
+    // MARK: - Call rosters (repair plan §3.5 — identity disclosure)
+    //
+    // A CONFERENCE ROSTER IS NOT A CONTACT LIST. Someone can be on a call with you because a
+    // mutual friend added them; that shares a call and nothing else — no messaging right, no
+    // profile access, and (deliberately) no full name. `GET /v1/calls/:id/participants` is the
+    // only roster source for exactly this reason: it returns `username` and `state` and nothing
+    // else, where `GET /users/:id` would hand a stranger the private-plane profile name.
+    //
+    // NOTHING HERE WRITES. Resolving a roster entry must never upsert the stranger into this
+    // directory: that would make them "known" on the next call, and would quietly turn a shared
+    // call into a persistent identity edge. Callers pass the server's `username` in; it is used
+    // for display and then dropped.
+
+    /**
+     * True when we hold a LOCALLY-OWNED identity for [userId] — an address-book match, or a
+     * profile we learned by being in an accepted conversation with them (both of which are the
+     * only writers of this table; see the Writes section).
+     *
+     * This is the client half of the reachability question, and it is deliberately conservative:
+     * "we know who this is", not "we are allowed to message them". The server owns the latter.
+     */
+    fun isKnownPeer(userId: String): Boolean {
+        val row = byId[userId] ?: return false
+        return !row.savedName.isNullOrBlank() ||
+            !row.fullName.isNullOrBlank() ||
+            !row.phoneE164.isNullOrBlank()
+    }
+
+    /**
+     * The name to show for one entry of a CALL roster.
+     *
+     * PRECEDENCE, and it is not [displayName]'s:
+     *   1. a known peer (see [isKnownPeer]) -> their local name, exactly as everywhere else, so
+     *      a saved contact still reads "Mum" on a conference tile;
+     *   2. anyone else -> "@" + [username], and nothing more. No full name, no photo, no phone;
+     *   3. username null/blank -> "Unknown".
+     *
+     * NEVER a raw user id and never a uuid prefix — that was the bug this replaces (iOS showed
+     * the first 6 chars of the uuid, Android showed the LiveKit identity prefix).
+     *
+     * [username] comes from the call-roster endpoint. A username we happen to already hold
+     * locally is used as a fallback so an offline roster refresh still renders a handle rather
+     * than "Unknown", but it can never promote an unknown participant to a full name.
+     */
+    fun callRosterName(userId: String, username: String?): String {
+        if (isKnownPeer(userId)) return displayName(userId)
+        val handle = username?.trim()?.takeIf { it.isNotEmpty() }
+            ?: byId[userId]?.username?.trim()?.takeIf { it.isNotEmpty() }
+        if (handle != null) return "@" + handle.removePrefix("@")
+        return "Unknown"
+    }
+
+    /**
+     * The photo for a call-roster entry, or null for a stranger.
+     *
+     * A photo is private-plane profile data on the same footing as a full name, so an unknown
+     * participant gets an initial-glyph tile and nothing else. Callers must render the fallback
+     * rather than reaching for [photoUrl] directly.
+     */
+    fun callRosterPhotoUrl(userId: String): String? =
+        if (isKnownPeer(userId)) byId[userId]?.photoUrl else null
+
     /**
      * Every user id in the local directory (address-book matches + resolved profiles).
      *

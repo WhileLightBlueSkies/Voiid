@@ -16,13 +16,19 @@
 //
 //  What is deliberately absent, and why
 //  ------------------------------------
-//  Clips settings, a "Chats" screen, Privacy Policy and Help have no rows here — not
-//  disabled, not greyed, not "coming soon". None of them exist in this app (Clips is
-//  DummyData end-to-end and the server reports feature_flags.clips = false; no
-//  privacy-policy or support URL exists anywhere in the repo). A top-level row for a
-//  feature that does not exist has no peers, no precondition and no path to resolution;
-//  it is an unactionable control that also advertises the feature as if it shipped.
-//  Absent features get no pixels.
+//  Clips settings, a "Chats" screen and Help have no rows here — not disabled, not
+//  greyed, not "coming soon". None of them exist in this app (Clips is DummyData
+//  end-to-end and the server reports feature_flags.clips = false; no support URL exists
+//  anywhere in the repo). A top-level row for a feature that does not exist has no peers,
+//  no precondition and no path to resolution; it is an unactionable control that also
+//  advertises the feature as if it shipped. Absent features get no pixels.
+//
+//  Privacy & Legal used to be on that list for the same reason — there was no privacy
+//  policy anywhere in the repo to link to. There is now: the notice and the terms are
+//  bundled in the app (Legal/LegalDocuments.swift), so the row is no longer a door to
+//  nowhere. It sits beside About rather than under Privacy because it is also where
+//  consent is withdrawn, and DPDP s.6(4) requires that to be as easy as giving it was —
+//  which means at the depth of a root row, not buried under a settings screen.
 //
 //  Stories now EXISTS, so its earlier absence here no longer applies — but it still gets
 //  no root row: its one setting is a privacy concern (whether you send story view
@@ -159,6 +165,7 @@ enum SettingsRoute: Hashable {
     case privacy
     case storage
     case about
+    case legal
 }
 
 // MARK: - Root
@@ -204,6 +211,7 @@ struct SettingsSheet: View {
                 case .privacy:       PrivacySettingsView()
                 case .storage:       StorageSettingsView()
                 case .about:         AboutView()
+                case .legal:         LegalView()
                 }
             }
             .toolbar {
@@ -470,6 +478,12 @@ struct SettingsSheet: View {
 
     private var about: some View {
         SettingsSection {
+            // Above About, not below: "what may Voiid see, and can I take that back" is a
+            // question people go looking for, and About is a terminal informational screen
+            // nobody scrolls past.
+            NavigationLink(value: SettingsRoute.legal) {
+                rowLabel("Privacy & Legal", systemImage: "hand.raised")
+            }
             NavigationLink(value: SettingsRoute.about) {
                 rowLabel("About", systemImage: "info.circle")
             }

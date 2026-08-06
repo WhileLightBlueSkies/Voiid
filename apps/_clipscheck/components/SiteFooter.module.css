@@ -1,0 +1,158 @@
+.footer {
+  border-block-start: 1px solid var(--color-divider);
+  background: var(--color-surface-2);
+  padding-block: var(--space-2xl) var(--space-lg);
+  padding-inline: var(--container-pad);
+  font-size: var(--text-small);
+}
+
+.inner {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-xl);
+  max-width: var(--container-wide);
+  margin-inline: auto;
+}
+
+@media (min-width: 720px) {
+  .inner { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (min-width: 1040px) {
+  /* The grievance block gets its own wider column — it is the one thing here a
+   * regulator or a worried user is actually looking for. */
+  .inner { grid-template-columns: 1.4fr 0.8fr 0.9fr 1.5fr; }
+}
+
+.brandCol {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  align-items: flex-start;
+}
+
+.tagline {
+  color: var(--color-text-dim);
+  max-width: 30ch;
+}
+
+.built {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45em;
+  color: var(--color-text-dim);
+  font-size: var(--text-caption);
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.colTitle {
+  font-size: var(--text-micro);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--color-text);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  list-style: none;
+  color: var(--color-text-dim);
+}
+
+.list a {
+  color: var(--color-text-dim);
+  text-decoration: none;
+}
+
+.list a:hover {
+  color: var(--color-primary);
+  text-decoration: underline;
+}
+
+/* ---- grievance ----------------------------------------------------------- */
+
+.grievance {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: var(--space-md);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-divider);
+  background: var(--color-surface);
+}
+
+.grievanceIntro {
+  color: var(--color-text-dim);
+  font-size: var(--text-caption);
+  line-height: var(--leading-body);
+}
+
+.dl {
+  display: grid;
+  grid-template-columns: minmax(6.5rem, auto) 1fr;
+  gap: var(--space-3xs) var(--space-sm);
+  margin: 0;
+  font-size: var(--text-caption);
+}
+
+.dl dt {
+  color: var(--color-text-dim);
+}
+
+.dl dd {
+  margin: 0;
+  color: var(--color-text);
+  /* A long address must wrap rather than push the footer sideways. */
+  overflow-wrap: anywhere;
+}
+
+/* An unfilled field is drawn as unfilled — dashed, dimmed, unmistakably not an
+ * address you can write to. */
+.pending {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--color-border);
+  color: var(--color-text-dim);
+  font-style: italic;
+}
+
+.notice {
+  font-size: var(--text-caption);
+  line-height: var(--leading-body);
+  color: var(--color-text-dim);
+  border-inline-start: 2px solid var(--color-border);
+  padding-inline-start: var(--space-2xs);
+}
+
+/* ---- baseline ------------------------------------------------------------ */
+
+.baseline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  max-width: var(--container-wide);
+  margin-inline: auto;
+  margin-block-start: var(--space-2xl);
+  padding-block-start: var(--space-md);
+  border-block-start: 1px solid var(--color-divider);
+  color: var(--color-text-dim);
+  font-size: var(--text-caption);
+}
+
+.legal {
+  display: flex;
+  gap: var(--space-sm);
+  list-style: none;
+}
+
+.legal a { color: var(--color-text-dim); }

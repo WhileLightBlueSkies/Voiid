@@ -21,6 +21,9 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -150,6 +153,27 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleDeepLink(intent: Intent?) {
+        // A community invite link (https://voiid.app/c/<handle>?i=<token>) arrives as
+        // ACTION_VIEW from the App Links filter, NOT as an extra — it comes from outside the
+        // app, so there is nothing we put there to read back.
+        //
+        // The data is cleared as it is read, for the same reason the accept-call extras below
+        // are removed: a singleTop Activity is handed the SAME Intent object again on every
+        // later resume, and a lingering URI would re-open the join sheet every time the user
+        // came back to the app.
+        //
+        // Parsing only; nothing is trusted. `parse` returns null for any URI that is not an
+        // https voiid.app /c/ link with a well-formed handle, so a crafted intent from another
+        // app produces nothing at all. Whether the community exists, whether the token is
+        // live, and whether the user is already a member are all questions only the server
+        // answers — see CommunityService.
+        if (intent?.action == Intent.ACTION_VIEW) {
+            val link = com.voiid.app.net.CommunityLink.parse(intent.data)
+            if (link != null) {
+                intent.data = null
+                DeepLinkRouter.openCommunityInvite(link)
+            }
+        }
         intent?.getStringExtra(DeepLinkRouter.EXTRA_CONVERSATION_ID)?.let { DeepLinkRouter.open(it) }
         intent?.getStringExtra(DeepLinkRouter.EXTRA_GROUP_CALL_CONVERSATION)?.let { conv ->
             DeepLinkRouter.joinGroupCall(conv, intent.getStringExtra(DeepLinkRouter.EXTRA_GROUP_CALL_KIND) == "video")
@@ -236,11 +260,57 @@ private fun VoiidRoot() {
         return
     }
 
+    // A community invite link the user tapped. Held by DeepLinkRouter rather than consumed on
+    // read, so a link opened on a fresh install SURVIVES onboarding: the sheet resolves against
+    // the server with the caller's own session, and until there is a session there is nobody to
+    // resolve it for. Waiting is the whole point — throwing the link away at that moment would
+    // send a brand-new user to a blank Chats screen wondering what the link did.
+    val communityInvite by DeepLinkRouter.pendingCommunityInvite.collectAsState()
+
+    // DPDP consent. Two jobs here: flush the tick taken on the onboarding Terms screen once
+    // there is an account to attach it to, and prompt accounts that predate consent capture
+    // entirely (every account created before this shipped, because the endpoint had no
+    // callers). Keyed on the ROUTE, not on Unit: the pending record is created several
+    // screens into onboarding, so a launch-only effect would miss the very sign-up that
+    // produced it and defer the post by a whole app session.
+    LaunchedEffect(session.route) {
+        if (session.route == AppRoute.MAIN) com.voiid.app.net.ConsentService.syncOnLaunch(context)
+    }
+    val needsConsent by com.voiid.app.net.ConsentService.needsBackfill.collectAsState()
+    // "Not now" holds for this process only. Deliberately not persisted: a dismissal is not
+    // an answer, and a permanent "never ask again" would leave the account being processed
+    // with nothing recorded at all.
+    var consentDeferred by remember { mutableStateOf(false) }
+
     Crossfade(targetState = session.route, animationSpec = tween(350), label = "rootRoute") { route ->
         when (route) {
             AppRoute.ONBOARDING -> OnboardingFlow(session)
             AppRoute.MAIN -> MainScreen(chat, ai, clips, stories)
         }
+    }
+
+    if (session.route == AppRoute.MAIN && needsConsent && !consentDeferred) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { consentDeferred = true },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            com.voiid.app.main.ConsentPromptScreen(
+                onDefer = { consentDeferred = true },
+                onAccepted = { consentDeferred = false },
+            )
+        }
+    }
+
+    // Presented HERE, above the route crossfade, rather than from MainScreen's tab body: a link
+    // can land while any tab is showing, and the sheet is not the Communities tab's content —
+    // it is a modal about one community. Keeping it out of RootTabView also keeps this feature
+    // from having an opinion about how that tab is eventually built.
+    val invite = communityInvite
+    if (invite != null && session.route == AppRoute.MAIN) {
+        com.voiid.app.main.CommunityJoinSheet(
+            link = invite,
+            onDismiss = { DeepLinkRouter.consumeCommunityInvite() },
+        )
     }
 }
 

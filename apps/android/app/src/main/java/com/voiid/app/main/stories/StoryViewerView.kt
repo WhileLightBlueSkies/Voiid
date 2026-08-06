@@ -8,8 +8,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
@@ -43,8 +45,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -95,6 +100,10 @@ fun StoryViewerView(
             ContextPage(
                 context = contexts[page],
                 active = page == pagerState.currentPage,
+                // Where the FOLLOWING author's page will actually open, so this page's prefetch
+                // window can spill across the boundary. Without it every sideways swipe between
+                // people was a guaranteed cold start on a black frame.
+                nextContextStories = headOfNextContext(contexts, page),
                 stories = stories,
                 muted = muted,
                 onToggleMute = { muted = !muted },
@@ -110,10 +119,20 @@ fun StoryViewerView(
     }
 }
 
+/**
+ * The stories the author after [page] would show first — from THEIR resume point, since a context
+ * page opens at [StoryContext.startIndex], not at zero.
+ */
+private fun headOfNextContext(contexts: List<StoryContext>, page: Int): List<Story> {
+    val next = contexts.getOrNull(page + 1) ?: return emptyList()
+    return next.stories.drop(next.startIndex).take(StoriesStore.PREFETCH_DEPTH)
+}
+
 @Composable
 private fun ContextPage(
     context: StoryContext,
     active: Boolean,
+    nextContextStories: List<Story>,
     stories: StoriesStore,
     muted: Boolean,
     onToggleMute: () -> Unit,
@@ -134,14 +153,32 @@ private fun ContextPage(
 
     val story = context.stories.getOrNull(index) ?: return
 
-    // Download the current story (and prefetch ONLY the immediate next).
+    // Download the current story. This one stays on the PAGE's scope on purpose — its result
+    // writes this page's state, so a page the pager recycles should take it down with it.
     LaunchedEffect(context.authorId, index, active) {
         if (!active) return@LaunchedEffect
         progress = 0f
         loadState = StoryDownloadState.DOWNLOADING
         localPath = stories.ensureDownloaded(story)
         loadState = if (localPath != null) StoryDownloadState.READY else StoryDownloadState.GONE
-        context.stories.getOrNull(index + 1)?.let { next -> launch { stories.ensureDownloaded(next) } }
+    }
+
+    val configuration = LocalConfiguration.current
+    val density = LocalDensity.current
+    val screenW = with(density) { configuration.screenWidthDp.dp.roundToPx() }
+    val screenH = with(density) { configuration.screenHeightDp.dp.roundToPx() }
+
+    // Prefetch: three deep, spilling into the next author once this context is nearly done.
+    // Handed to the STORE so it survives the index change that fires the next one — this
+    // LaunchedEffect is cancelled on every step, and that cancellation is exactly what used to
+    // kill each warm before it landed.
+    LaunchedEffect(context.authorId, index, active, nextContextStories) {
+        if (!active) return@LaunchedEffect
+        val ahead = context.stories.drop(index + 1).take(StoriesStore.PREFETCH_DEPTH)
+        val window = ahead + nextContextStories.take(StoriesStore.PREFETCH_DEPTH - ahead.size)
+        stories.prefetch(window) { offset, s, path ->
+            warmStoryFrame(path, s.isVideo, screenW, screenH, fullSize = offset == 0)
+        }
     }
 
     // Record "viewed" once the story has actually been on screen (image ≥1s / video reaching 1s).
@@ -228,6 +265,24 @@ private fun ContextPage(
                 CircularProgressIndicator(color = Color.White)
             }
         }
+
+        // ── SCRIMS ───────────────────────────────────────────────────────────────────────
+        //
+        // The progress capsules, author name, timestamp, caption and reply rail are all white
+        // drawn straight onto arbitrary user media — over a snow shot or a white wall none of it
+        // is readable. Two gradients give the chrome a contrast floor that does not depend on the
+        // frame behind it, the same construction Clips uses and the same one Signal and WhatsApp
+        // Status use. They fade WITH the chrome: a scrim with nothing on it is just a smudge over
+        // the moment the viewer came to look at.
+        val chromeAlpha = if (chromeVisible) 1f else 0f
+        Box(
+            Modifier.fillMaxWidth().height(140.dp).align(Alignment.TopCenter).alpha(chromeAlpha)
+                .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.5f), Color.Transparent))),
+        )
+        Box(
+            Modifier.fillMaxWidth().fillMaxHeight(0.35f).align(Alignment.BottomCenter).alpha(chromeAlpha)
+                .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.75f)))),
+        )
 
         // Chrome (progress + header + footer), faded on long-press.
         Column(Modifier.fillMaxSize().alpha(if (chromeVisible) 1f else 0f)) {

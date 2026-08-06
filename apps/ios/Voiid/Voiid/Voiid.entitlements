@@ -4,6 +4,19 @@
 <dict>
 	<key>aps-environment</key>
 	<string>development</string>
+	<!-- Universal Links for community invites: https://voiid.app/c/<handle>?i=<token>.
+	     iOS fetches https://<domain>/.well-known/apple-app-site-association at install and
+	     only routes those URLs here if the file names CV7L84G776.com.voiid.app (see
+	     infrastructure/deployment/well-known/). www is listed separately because the AASA
+	     lookup is per-domain and a link copied out of a desktop browser is routinely the www
+	     form. Without the served file the entitlement is inert: links open Safari.
+	     No `voiid://` custom scheme is claimed anywhere, deliberately — a custom scheme any
+	     app can register would be handed live invite tokens. -->
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>applinks:voiid.app</string>
+		<string>applinks:www.voiid.app</string>
+	</array>
 	<key>com.apple.developer.icloud-container-identifiers</key>
 	<array>
 		<string>iCloud.com.voiid.app</string>

@@ -16,6 +16,7 @@
 import { sub, pub, GAMES_INPUT_CHANNEL } from './redis';
 import { factoryFor } from './engine/registry';
 import { loadMatch, saveMatch, finishMatch, markStarted, type LiveMatch } from './matches';
+import { advanceTournament, forfeitFixtures } from './tournaments';
 import { query } from './db';
 import type { GameEngine, GameOutcome, GameStatePayload } from './engine/GameEngine';
 import http from 'http';
@@ -352,6 +353,30 @@ async function handleJoin(msg: Record<string, any>): Promise<void> {
   }
 }
 
+/**
+ * `tournament_forfeit` — published by the API when a player withdraws from a LIVE bracket.
+ *
+ * The API could mark the walkover rows itself; it deliberately does not. "A walkover awards
+ * the slot but scores nothing" is a rule about how a match ends, and every other such rule is
+ * in this process. Splitting it would put two definitions of a finished match in two services,
+ * which is the drift 031_tournaments.sql refuses a parallel match table to avoid.
+ *
+ * The frame carries no authority of its own: withdrawal is authorised by the API against the
+ * community roster before it is published, exactly as `game_join` is authorised there.
+ */
+async function handleTournamentForfeit(msg: Record<string, any>): Promise<void> {
+  const tournamentId = msg.tournament_id;
+  const userId = msg.user_id;
+  if (typeof tournamentId !== 'string' || typeof userId !== 'string') return;
+
+  const forfeited = await forfeitFixtures(tournamentId, userId);
+  // Advance regardless of whether anything was forfeited: a duplicate frame (two taps, a
+  // retry) must converge rather than double-apply, and advanceTournament re-derives the
+  // bracket from the rows instead of stepping it.
+  await advanceTournament(tournamentId);
+  if (forfeited > 0) console.log(`[games] forfeited ${forfeited} fixture(s) in ${tournamentId}`);
+}
+
 sub.subscribe(GAMES_INPUT_CHANNEL, (err) => {
   if (err) {
     console.error('[games] failed to subscribe', err);
@@ -374,7 +399,9 @@ sub.on('message', (_channel, raw) => {
       ? handleInput(msg)
       : msg.type === 'game_join'
         ? handleJoin(msg)
-        : null;
+        : msg.type === 'tournament_forfeit'
+          ? handleTournamentForfeit(msg)
+          : null;
   if (run) run.catch((e) => console.error('[games] handler error', e));
 });
 

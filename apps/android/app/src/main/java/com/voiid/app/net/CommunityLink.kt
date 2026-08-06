@@ -21,8 +21,9 @@ import android.net.Uri
  * THE LINK IS NOT A MEMBERSHIP CLAIM
  * ----------------------------------
  * Holding this URL proves nothing and reveals nothing on its own. Everything the user is shown
- * comes back from `GET /v1/communities/<handle>` — the server decides what a link-holder may
- * see, and the public card it returns deliberately contains no roster. In particular the client
+ * comes back from the server — `GET /v1/communities/<handle>` for the card and
+ * `GET /v1/communities/invites/<token>` for whether the token is still live. The server decides
+ * what a link-holder may see, and the public card it returns contains no roster. In particular the client
  * must never infer "you are a member" from the fact that a link opened: whether you are in is
  * `CommunityCard.membership_state`, which only the server can answer. Nothing here is decoded,
  * decrypted or trusted locally.

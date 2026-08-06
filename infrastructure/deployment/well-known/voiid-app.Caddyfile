@@ -1,0 +1,60 @@
+# VOIID — serving the app-association files for community invite links.
+#
+# WHAT THIS IS FOR
+# ----------------
+# Invite links are https://voiid.app/c/<handle>?i=<token> (docs/research/04_communities_plan.md
+# §"Invite links"). Both platforms claim them as VERIFIED links — Android App Links, iOS
+# Universal Links — and both verifications are a fetch of a file from the domain itself:
+#
+#   https://voiid.app/.well-known/assetlinks.json                 (Android)
+#   https://voiid.app/.well-known/apple-app-site-association      (iOS)
+#
+# Until these are served, BOTH platforms fall back to the browser. That is a degraded feature,
+# not a broken one, and it is why neither app ships a `voiid://` custom-scheme fallback: a
+# custom scheme is registrable by any app on the device, and the OS would hand a live invite
+# token to whichever one claimed it. A domain we control cannot be claimed by anyone else.
+#
+# BEFORE THIS WORKS, TWO THINGS ARE STILL MISSING:
+#
+#   1. assetlinks.json carries PLACEHOLDER fingerprints. Replace them with the real SHA-256
+#      certificate digests:
+#        - the Play App Signing key   (Play Console -> Setup -> App integrity), which is what
+#          actually signs installs from the store, and
+#        - the upload key and/or the local debug key, so verification also passes on internal
+#          and developer builds.
+#      Multiple fingerprints in the array is the supported way to cover all of them. Wrong or
+#      missing fingerprints fail SILENTLY: links just open Chrome, with no error anywhere.
+#      Verify with `adb shell pm verify-app-links --re-verify com.voiid.app` then
+#      `adb shell pm get-app-links com.voiid.app`.
+#
+#   2. The apex A/AAAA record for voiid.app (and www) has to point at whatever box runs this
+#      config. Today only api-dev.voiid.app is served (see ../Caddyfile.dev); this file is a
+#      separate site block precisely so the API host and the public apex stay independent.
+#
+# NOTES THAT MATTER
+# -----------------
+# - The AASA file has NO .json extension and must be served as application/json. Caddy guesses
+#   Content-Type from the extension, so it is set explicitly below.
+# - Neither file may be behind a redirect. iOS follows none at all when fetching the AASA, and
+#   an http->https redirect on the /.well-known path is the classic silent failure.
+# - Both files are PUBLIC by design and contain no secrets: a bundle id, a package name and
+#   certificate fingerprints, all of which are already readable from any installed copy of the
+#   app. Nothing here touches E2EE material.
+# - The www host must serve the same files. Android matches intent-filter hosts literally and
+#   iOS looks up the AASA per-domain, so a link copied out of a desktop browser (routinely the
+#   www form) falls through to the browser unless www is covered too.
+
+voiid.app, www.voiid.app {
+	# The association files. `header` before `file_server` so the Content-Type applies to
+	# the extension-less AASA file as well.
+	handle /.well-known/* {
+		header Content-Type application/json
+		root * /var/www/voiid.app
+		file_server
+	}
+
+	# Everything else is the marketing site / whatever lands here later. Deliberately not
+	# defined by this file: the app claims only /c/*, so the rest of the domain is free.
+
+	encode gzip
+}

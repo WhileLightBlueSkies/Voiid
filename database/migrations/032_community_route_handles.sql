@@ -1,0 +1,45 @@
+-- 032_community_route_handles.sql — one more word a community must not be able to own.
+--
+-- ── NOT AN E2EE CHANGE ───────────────────────────────────────────────────────────
+-- This file adds a row to `reserved_handles`. It creates no table, stores no user data and
+-- touches no message, call, location or moment. Handles are already server-readable by
+-- construction — they are printed in invite links people paste into other apps — and were
+-- declared as such in the NOT-END-TO-END-ENCRYPTED header of 030_communities.sql. Nothing
+-- here weakens anything; it closes a routing footgun.
+--
+-- ── WHY ──────────────────────────────────────────────────────────────────────────
+--
+-- The communities API resolves an info card at `GET /communities/:handle` — one path segment,
+-- a wildcard. Two literal one-segment routes sit beside it on the same router:
+--
+--   GET /communities/search   the directory query
+--   GET /communities/mine     the caller's own communities
+--
+-- Express matches literals in declaration order, so those two win. A community that managed
+-- to register the handle @mine would therefore be PERMANENTLY UNREACHABLE through its own
+-- card route, and the failure would look like a mysterious 404 for one community rather than
+-- like a name collision. 030_communities.sql already reserved the route words it knew about
+-- at the time (`join`, `invite`, `invites`, `discover`, `events`, `tickets`, …) and 029
+-- reserved `search` — the router word that was added afterwards, and the only gap, is `mine`.
+--
+-- `search` is listed again below anyway, guarded by ON CONFLICT DO NOTHING. Restating it
+-- costs nothing and keeps the whole invariant "every literal segment of the communities
+-- router is an unavailable handle" readable in one place, instead of requiring the next
+-- person who adds a route to diff two migrations to find out what is already covered.
+--
+-- Deliberately NOT solved by renaming the endpoints (`/communities/_search`) or by moving
+-- handle lookup to `/communities/handle/:handle`: reserving the name is one row, costs
+-- nothing at request time, and keeps the URL shape that the deep link
+-- https://voiid.app/c/<handle> mirrors.
+--
+-- ── SCOPE ────────────────────────────────────────────────────────────────────────
+--
+-- `reserved_handles` is checked by assert_handle_available(), which is a BEFORE trigger — it
+-- never runs over rows that already exist. Nobody currently holding @search or @mine as a
+-- username or creator handle loses it; only future claims are refused. That asymmetry is
+-- intentional: taking a name away from someone who already answers to it is a worse outcome
+-- than one endpoint needing a workaround for one legacy row.
+insert into reserved_handles (handle, reason) values
+    ('search', 'route'),
+    ('mine',   'route')
+on conflict (handle) do nothing;

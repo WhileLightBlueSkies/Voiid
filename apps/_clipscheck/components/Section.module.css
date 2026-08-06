@@ -1,0 +1,113 @@
+.section {
+  position: relative;
+  padding-block: var(--section-gap);
+}
+
+.flush-top { padding-block-start: 0; }
+.flush-bottom { padding-block-end: 0; }
+.flush-both { padding-block: 0; }
+
+.measure {
+  position: relative;
+  width: 100%;
+  margin-inline: auto;
+  padding-inline: var(--container-pad);
+}
+
+.narrow { max-width: calc(var(--container-narrow) + var(--container-pad) * 2); }
+.default { max-width: calc(var(--container) + var(--container-pad) * 2); }
+.wide { max-width: calc(var(--container-wide) + var(--container-pad) * 2); }
+.full { max-width: none; }
+
+/* ---- tones --------------------------------------------------------------- */
+
+/* A raised band draws its own surface edge-to-edge; the hairline is what separates
+ * it from the ground in dark, where shadow does almost nothing. */
+.raised {
+  background: var(--color-surface);
+  border-block: 1px solid var(--color-divider);
+}
+
+.inset {
+  background: var(--color-surface-2);
+  border-block: 1px solid var(--color-divider);
+}
+
+/* ---- header -------------------------------------------------------------- */
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  max-width: 62ch;
+  margin-block-end: var(--space-xl);
+}
+
+.center .header {
+  margin-inline: auto;
+  text-align: center;
+  align-items: center;
+}
+
+.title {
+  max-width: 22ch;
+}
+
+.center .title {
+  max-width: 26ch;
+}
+
+.lede {
+  font-size: var(--text-lede);
+  line-height: var(--leading-body);
+  color: var(--color-text-dim);
+  max-width: 58ch;
+}
+
+/* ---- grid ---------------------------------------------------------------- */
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr;
+}
+
+.gap-sm { gap: var(--space-sm); }
+.gap-md { gap: var(--space-md); }
+.gap-lg { gap: var(--space-lg); }
+
+/*
+ * `auto-fit` + `minmax` rather than fixed column counts: it degrades continuously
+ * across the awkward 600–900px band (folded phones, split-screen tablets) instead of
+ * snapping, and it can never produce a column narrower than its content, which is
+ * what causes sideways scroll on a phone.
+ */
+@media (min-width: 640px) {
+  .cols2 { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+  .cols3 { grid-template-columns: repeat(auto-fit, minmax(268px, 1fr)); }
+  .cols4 { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+}
+
+/* ---- split --------------------------------------------------------------- */
+
+.split {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-xl);
+  align-items: center;
+}
+
+.splitStart { align-items: start; }
+
+.splitCopy { min-width: 0; }
+.splitAside { min-width: 0; display: flex; justify-content: center; }
+
+@media (min-width: 900px) {
+  .split {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--space-3xl);
+  }
+  /* Visual order only — the DOM order (copy first) is what a screen reader and a
+   * keyboard follow, and that stays correct. */
+  .splitReverse .splitCopy { order: 2; }
+  .splitReverse .splitAside { order: 1; }
+}

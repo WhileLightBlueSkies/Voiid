@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.RemoveRedEye
 import androidx.compose.material.icons.filled.Storage
@@ -99,6 +100,7 @@ fun SettingsScreen(
     onStorage: () -> Unit,
     onLinkedDevices: () -> Unit,
     onAbout: () -> Unit,
+    onLegal: () -> Unit,
 ) {
     val haptics = LocalVoiidHaptics.current
     val context = LocalContext.current
@@ -496,6 +498,13 @@ fun SettingsScreen(
                 // sealed sender to hide it. The opt-out is reciprocal: OFF = you send none AND see
                 // none. Written straight to the shared story prefs (see StoryPrefs).
                 StoryReceiptsRow()
+                SettingsDivider()
+                // Above About, not below: "what may Voiid see, and can I take that back" is
+                // a question people go looking for, and About is a terminal informational
+                // screen nobody scrolls past. It sits at root depth rather than inside
+                // Privacy because DPDP s.6(4) requires withdrawing consent to be as easy as
+                // giving it was, and giving it was one tick on one screen.
+                SettingsRow(Icons.Default.Shield, "Privacy & Legal") { onClose(); onLegal() }
                 SettingsDivider()
                 SettingsRow(Icons.Default.Info, "About") { onClose(); onAbout() }
             }

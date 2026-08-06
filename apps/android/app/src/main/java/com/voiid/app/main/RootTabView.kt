@@ -6,8 +6,11 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
@@ -346,10 +349,18 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
         }
 
         // Clip fullscreen — full-screen cover.
+        //
+        // It ZOOMS out of the thumbnail that was tapped rather than sliding up from the bottom
+        // edge like every other overlay here. The tile and the player are the same clip, and a
+        // slide from an unrelated edge read as "some other screen has appeared". The origin is
+        // recorded by the tile itself — three different grids can open this.
+        val clipZoom = com.voiid.app.main.clips.ClipZoomOrigin.value
         AnimatedVisibility(
             visible = openClip != null,
-            enter = slideInVertically { it } + fadeIn(),
-            exit = slideOutVertically { it } + fadeOut(),
+            enter = scaleIn(tween(240), initialScale = 0.4f, transformOrigin = clipZoom) +
+                fadeIn(tween(140)),
+            exit = scaleOut(tween(200), targetScale = 0.4f, transformOrigin = clipZoom) +
+                fadeOut(tween(200)),
         ) {
             openClip?.let { source ->
                 com.voiid.app.main.clips.ClipPagerHost(

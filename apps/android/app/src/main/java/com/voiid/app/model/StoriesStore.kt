@@ -232,6 +232,47 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
     /** Ensure a story's plaintext is downloaded; returns the local path (or null on failure). */
     suspend fun ensureDownloaded(story: Story): String? = engine.ensureDownloaded(story)
 
+    /**
+     * Story ids with a prefetch in flight. Only ever touched on the main thread — the viewer calls
+     * in from composition and the coroutines run on `viewModelScope`'s Main dispatcher — so a plain
+     * set is enough.
+     */
+    private val prefetching = mutableSetOf<String>()
+
+    /**
+     * Warm the stories the viewer is about to reach — on the STORE's scope, deliberately.
+     *
+     * This used to be a one-ahead `ensureDownloaded` inside the viewer page's
+     * `LaunchedEffect(authorId, index, active)`, which Compose cancels on every index change: a
+     * fast tapper killed each prefetch a moment before it landed, so every story still arrived
+     * cold. It also never crossed the author boundary, making each sideways swipe a guaranteed
+     * spinner on black.
+     *
+     * The caller caps [window] (see PREFETCH_DEPTH) and that cap is also the concurrency cap —
+     * at most three R2 downloads in flight, preserving the throttle intent of the feed-side
+     * auto-download rule rather than starting twenty at once.
+     *
+     * [warm] runs after the bytes land, so the caller can pay the DECODE here too: downloading is
+     * the cheap half, and a downloaded-but-undecoded story still stalls on display. Its `offset`
+     * is the story's distance from the one on screen.
+     */
+    fun prefetch(window: List<Story>, warm: suspend (offset: Int, story: Story, localPath: String) -> Unit) {
+        for ((offset, story) in window.withIndex()) {
+            // A story already in flight must not be re-issued: the viewer recomputes this window
+            // on every step, and a fast tapper would otherwise stack duplicate downloads of the
+            // same object on top of each other.
+            if (!prefetching.add(story.id)) continue
+            viewModelScope.launch {
+                try {
+                    val path = engine.ensureDownloaded(story) ?: return@launch
+                    warm(offset, story, path)
+                } finally {
+                    prefetching.remove(story.id)
+                }
+            }
+        }
+    }
+
     /** First full display of a story: record it viewed locally (always) + send a receipt if opted in. */
     fun onViewed(story: Story) {
         viewModelScope.launch {
@@ -282,5 +323,12 @@ class StoriesStore(app: Application) : AndroidViewModel(app) {
     companion object {
         private const val KEY_AUDIENCE_ALL = "audience_all"
         private const val KEY_AUDIENCE_CUSTOM = "audience_custom"
+
+        /**
+         * How many stories ahead of the one on screen to warm. Three matches what Signal keeps
+         * ahead of the current item; past that it is bandwidth spent on stories most viewers
+         * never reach.
+         */
+        const val PREFETCH_DEPTH = 3
     }
 }
