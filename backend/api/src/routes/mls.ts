@@ -136,11 +136,33 @@ router.post('/group-events', requireAuth, asyncHandler(async (req, res) => {
     .join(', ');
   const params: unknown[] = [conversation_id, user_id];
   for (const e of valid) params.push(e.recipient_user_id, e.kind, b64(e.payload), b64(e.ratchet_tree));
-  await query(
+  const inserted = await query<{ id: string; recipient_user_id: string }>(
     `insert into mls_group_events (conversation_id, sender_user_id, recipient_user_id, kind, payload, ratchet_tree)
-          values ${tuples}`,
+          values ${tuples}
+       returning id, recipient_user_id`,
     params
   );
+
+  // ── DELIVERY IS TRACKED PER DEVICE, NOT PER USER ────────────────────────────
+  //
+  // The old scheme marked every undelivered row for a USER delivered on the first fetch,
+  // so on a two-device account whichever device polled first consumed the commits and the
+  // other never saw them. That is unrecoverable: max_past_epochs = 0, so a member who
+  // misses one commit cannot decrypt anything afterwards and cannot catch up.
+  //
+  // One row per (event, device). Written with unnest rather than a loop because a commit in
+  // a large group fans out to every member's every device, and a per-row insert there is
+  // thousands of sequential round trips.
+  if (inserted.length) {
+    await query(
+      `insert into mls_event_deliveries (event_id, device_id, recipient_user_id)
+       select e.id, d.id, e.uid
+         from unnest($1::uuid[], $2::uuid[]) as e(id, uid)
+         join devices d on d.user_id = e.uid and d.revoked_at is null
+       on conflict do nothing`,
+      [inserted.map((r) => r.id), inserted.map((r) => r.recipient_user_id)]
+    );
+  }
 
   // ── ONE PIPELINE for the wake-ups ───────────────────────────────────────────
   // Deduplicated by recipient: a fan-out that sends a Welcome and a Commit to the same person
@@ -169,21 +191,41 @@ router.post('/group-events', requireAuth, asyncHandler(async (req, res) => {
 
 // GET /mls/group-events — undelivered Welcome/Commit events for the caller; marks delivered.
 router.get('/group-events', requireAuth, async (req, res) => {
-  const { user_id } = (req as any).auth;
+  const { user_id, device_id: authDeviceId } = (req as any).auth;
+  // The device asks for its OWN backlog. Taken from the query string when the JWT does not
+  // carry one (older tokens predate device-scoped claims), and validated against the caller
+  // — otherwise a client could drain another device's queue and destroy that device's group.
+  const claimed = typeof req.query.device_id === 'string' ? req.query.device_id : null;
+  const deviceId = authDeviceId ?? claimed;
+  if (!deviceId) {
+    return res.status(400).json({ error: 'device_id required' });
+  }
+  if (claimed && authDeviceId && claimed !== authDeviceId) {
+    return res.status(403).json({ error: 'device_id does not match this session' });
+  }
+  const owns = await query<{ one: number }>(
+    `select 1 as one from devices where id = $1 and user_id = $2 and revoked_at is null limit 1`,
+    [deviceId, user_id]
+  );
+  if (!owns.length) return res.status(403).json({ error: 'unknown device' });
+
   const rows = await query(
-    `select id, conversation_id, sender_user_id, kind,
-            encode(payload,'base64') as payload,
-            encode(ratchet_tree,'base64') as ratchet_tree, created_at
-       from mls_group_events
-      where recipient_user_id = $1 and delivered_at is null
-      order by created_at asc`,
-    [user_id]
+    `select e.id, e.conversation_id, e.sender_user_id, e.kind,
+            encode(e.payload,'base64') as payload,
+            encode(e.ratchet_tree,'base64') as ratchet_tree, e.created_at
+       from mls_event_deliveries d
+       join mls_group_events e on e.id = d.event_id
+      where d.device_id = $1 and d.delivered_at is null
+      order by e.created_at asc`,
+    [deviceId]
   );
   if (rows.length) {
+    // Marks only THIS device's rows. Another device of the same account still has its own
+    // copy of the queue and is unaffected — which is the entire point of the change.
     await query(
-      `update mls_group_events set delivered_at = now()
-         where recipient_user_id = $1 and delivered_at is null`,
-      [user_id]
+      `update mls_event_deliveries set delivered_at = now()
+        where device_id = $1 and delivered_at is null`,
+      [deviceId]
     );
   }
   res.json({ events: rows });
