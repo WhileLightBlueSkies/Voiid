@@ -28,6 +28,8 @@ import gifRoutes from './routes/gifs';
 import adminRoutes from './routes/admin';
 import clipsRoutes from './routes/clips';
 import creatorRoutes from './routes/creators';
+import communityRoutes from './routes/communities';
+import communityHostThreadRoutes from './routes/communityHostThreads';
 import gamesRoutes from './routes/games';
 import configRoutes from './routes/config';
 import { forceUpdateGate } from './version';
@@ -136,6 +138,26 @@ api.use('/profile-keys', rateLimit({ max: 120, windowSeconds: 60, bucket: 'profi
 // no fixed recipient set to encrypt to); see the header of routes/clips.ts and
 // 022_clips.sql. It does not touch the message/call/location/story paths.
 api.use('/clips', rateLimit({ max: 240, windowSeconds: 60, bucket: 'clips' }), clipsRoutes);
+// ─────────────────────────────────────────────────────────────────────────────────
+// Communities. The container, its roster, search and invites are NOT E2EE (see the
+// header of 030_communities.sql); the channels themselves are ordinary MLS group
+// conversations and stay encrypted.
+//
+// JOINING A COMMUNITY IS NOT A MESSAGING RIGHT. Membership lets you into the
+// community's channels and grants exactly one private line — to the OWNER, and only
+// the owner (community_host_threads has nowhere to put a second member, so widening it
+// takes a migration and a review). Reaching any other member still requires one of the
+// three paths in 020_reachability.sql.
+//
+// THE HOST-THREAD ROUTER MOUNTS FIRST, AND AT THE ROOT. It declares its paths in full
+// ('/communities/:id/host-thread'), so it needs no prefix — and mounting it ahead of the
+// communities router keeps a future one-segment '/:handle' route from shadowing it.
+// A tighter ceiling than the general API guard because this endpoint CREATES
+// conversations: walking a directory opening a line to every host is the abuse it invents.
+api.use(rateLimit({ max: 30, windowSeconds: 60, bucket: 'community-host-thread' }),
+        communityHostThreadRoutes);
+api.use('/communities', rateLimit({ max: 120, windowSeconds: 60, bucket: 'communities' }),
+        communityRoutes);
 // Creator profiles + the follow graph — the public identity behind Clips, same scoped
 // non-E2EE exception (029_creator_profiles.sql). A FOLLOW GRANTS NO MESSAGING RIGHT: the
 // three reachability paths in 020 are untouched, and nothing here may ever be used to

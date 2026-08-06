@@ -1,7 +1,7 @@
 // User / profile routes (Section 10). Identity is ours (Supabase Postgres); profile is not E2E content.
 import { Router } from 'express';
 import { query } from '../db';
-import { requireAuth, invalidateAccountState } from '../auth';
+import { requireAuth, invalidateAccountState, revokeAccountSessions } from '../auth';
 
 const router = Router();
 
@@ -198,16 +198,45 @@ router.post('/consent', requireAuth, async (req, res) => {
 });
 
 // DELETE /users/me — account deletion (DPDP true purge, Section 4.13).
-// Soft-delete immediately; an erasure job performs the hard purge. Devices/prekeys removed now (revoke trust).
+// Soft-delete immediately; the erasure worker performs the hard purge. Device trust is
+// revoked now, because that is what stops the account being USED while it waits.
 router.delete('/me', requireAuth, async (req, res) => {
   const { user_id } = (req as any).auth;
-  await query(`update users set deleted_at = now(), full_name = null, email = null, photo_url = null, bio = null, status_text = null where id = $1`, [user_id]);
+  // photo_url and encrypted_photo_url are deliberately NOT nulled here.
+  //
+  // They are the only pointers to the avatar objects in R2, and backend/workers/src/erasure.ts
+  // reads them to delete those objects. Clearing them at soft-delete time destroyed the
+  // pointer before the worker could follow it, so the images survived in the bucket forever —
+  // unreachable, unenumerable, and still personal data. That is the opposite of erasure.
+  //
+  // Not nulling them exposes nothing: every read path already filters on `deleted_at`, so the
+  // row is not served to anyone. The worker nulls them once the objects are actually gone.
+  await query(
+    `update users set deleted_at = now(), full_name = null, email = null,
+                      bio = null, status_text = null
+      where id = $1`,
+    [user_id]
+  );
   await query(`update devices set revoked_at = now() where user_id = $1`, [user_id]);
+  // The route's comment claimed prekeys were removed here; nothing removed them. An
+  // unconsumed one-time prekey belonging to a deleted account is material a sender could
+  // still be handed to open a session with an identity that no longer exists.
+  await query(
+    `delete from one_time_prekeys where device_id in (select id from devices where user_id = $1)`,
+    [user_id]
+  );
+  await query(
+    `delete from signed_prekeys where device_id in (select id from devices where user_id = $1)`,
+    [user_id]
+  );
   // Revoking devices does not revoke the TOKEN — it infers reachability from device state,
   // while the JWT names an identity and is good for up to 30 more days. requireAuth is what
   // actually enforces the deletion now; this just drops its cached verdict so the very next
   // request is rejected instead of the one after the cache TTL.
   await invalidateAccountState(user_id);
+  // …and tell the WebSocket relay, which has no database and would otherwise keep honouring
+  // this user's token for the life of the JWT on the service that carries the actual traffic.
+  await revokeAccountSessions(user_id);
   res.json({ deleted: true, note: 'soft-deleted; hard purge runs via erasure job (DPDP)' });
 });
 

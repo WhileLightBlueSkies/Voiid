@@ -11,6 +11,7 @@ import { assertOpaque } from '@voiid/common-utils';
 import { query } from '../db';
 import { publisher } from '../redis';
 import { requireAuth } from '../auth';
+import { announcementPostDeniedReason } from '../communityGuard';
 import { b64, asyncHandler } from '../util';
 import { sendWakePush, PushMeta } from '../push';
 
@@ -118,6 +119,12 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
     if (!(await isConversationMember(conversation_id, user_id))) {
       return res.status(403).json({ error: 'not a member of this conversation' });
     }
+    // An ANNOUNCEMENT channel is readable by every member and writable only by the owner and
+    // admins. Enforced here rather than only in the client, because a client-side restriction
+    // is not a restriction — the guard was written but nothing called it, so until now any
+    // member could post to an announcement channel with curl.
+    const announceDenied = await announcementPostDeniedReason(conversation_id, user_id);
+    if (announceDenied) return res.status(403).json({ error: announceDenied });
     for (const entry of messages) {
       if (!entry?.recipient_device_id || !entry?.ciphertext) {
         return res.status(400).json({ error: 'each messages[] entry requires recipient_device_id and ciphertext' });
@@ -196,6 +203,10 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
   if (!(await isConversationMember(conversation_id, user_id))) {
     return res.status(403).json({ error: 'not a member of this conversation' });
   }
+  // Same announcement-channel restriction as the fan-out path above. Guarding only one path
+  // leaves the other as a way in.
+  const legacyAnnounceDenied = await announcementPostDeniedReason(conversation_id, user_id);
+  if (legacyAnnounceDenied) return res.status(403).json({ error: legacyAnnounceDenied });
   // Which of OUR devices encrypted this — so a multi-device recipient resolves the
   // correct sender identity key on acceptSession (else decrypt fails). The JWT may
   // not carry a device id, so the client sends it in the body.

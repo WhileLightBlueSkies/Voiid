@@ -63,6 +63,35 @@ export async function invalidateAccountState(user_id: string): Promise<void> {
   try { await redis.del(`auth:active:${user_id}`); } catch { /* TTL will expire it anyway */ }
 }
 
+/**
+ * How long a revocation tombstone outlives the account. Sized to the JWT ceiling: the token
+ * a deleted user is holding cannot outlive its own expiry, so a marker that lasts as long as
+ * the longest possible token covers every token that could still be presented.
+ */
+const REVOCATION_TTL_SECONDS = 30 * 24 * 60 * 60;
+
+/**
+ * Mark an account revoked for every service, not just this one.
+ *
+ * THE WEBSOCKET RELAY IS THE REASON THIS EXISTS. It carries the messages, calls and
+ * locations, and it holds no database connection by design — it is stateless fan-out over
+ * Redis. So it cannot run `accountIsActive` itself, and a deleted user's token kept opening
+ * sockets on the service that actually moves the traffic.
+ *
+ * A tombstone rather than reusing `auth:active:<id>`: that key has a 10-SECOND TTL, so
+ * ABSENT is its normal state and a relay that denied on absence would lock out every user
+ * within ten seconds. Presence of THIS key is unambiguous — it is written only by deletion —
+ * so the relay can fail closed on it and open on everything else.
+ */
+export async function revokeAccountSessions(user_id: string): Promise<void> {
+  try {
+    await redis.set(`auth:revoked:${user_id}`, '1', 'EX', REVOCATION_TTL_SECONDS);
+    // Live sockets are not covered by a connect-time check. The relay listens on each user's
+    // channel and closes on this frame, so a deletion also ends sessions already open.
+    await redis.publish(`channel:user:${user_id}`, JSON.stringify({ type: 'force_signout', reason: 'account_deleted' }));
+  } catch { /* best effort: the connect-time check still applies to any new socket */ }
+}
+
 // Express middleware — rejects unauthenticated requests (Section 4.6: no unprotected endpoints).
 export async function requireAuth(req: Request, res: Response, next: NextFunction) {
   const header = req.headers.authorization;

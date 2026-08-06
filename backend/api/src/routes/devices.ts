@@ -90,7 +90,7 @@ router.post('/voip-token', requireAuth, asyncHandler(async (req, res) => {
 // GET /devices/:user_id — active devices (public info only).
 // identity_public_key (base64) is PUBLIC and required by peers to acceptSession
 // on an inbound PreKey message — without it the receive path can't decrypt.
-router.get('/:user_id', requireAuth, async (req, res) => {
+router.get('/:user_id', requireAuth, asyncHandler(async (req, res) => {
   const rows = await query<{ id: string; identity_public_key: Buffer }>(
     `select id, platform, device_name, registration_id, last_seen_at, identity_public_key
        from devices where user_id = $1 and revoked_at is null
@@ -102,7 +102,7 @@ router.get('/:user_id', requireAuth, async (req, res) => {
     identity_public_key: d.identity_public_key ? d.identity_public_key.toString('base64') : null,
   }));
   res.json({ devices });
-});
+}));
 
 // DELETE /devices/:device_id — revocation: invalidate immediately (Section 4.3)
 //
@@ -110,7 +110,7 @@ router.get('/:user_id', requireAuth, async (req, res) => {
 // hands them to any authenticated caller — so an unscoped revoke would let anyone knock
 // out anyone else's device and delete its one-time prekeys, denying the victim inbound
 // sessions. The only legitimate caller is the user's own linked-devices screen.
-router.delete('/:device_id', requireAuth, async (req, res) => {
+router.delete('/:device_id', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const rows = await query<{ id: string }>(
     `update devices set revoked_at = now()
@@ -123,6 +123,6 @@ router.delete('/:device_id', requireAuth, async (req, res) => {
   // so a miss never touches another user's prekeys.
   await query(`delete from one_time_prekeys where device_id = $1`, [req.params.device_id]);
   res.json({ revoked: true });
-});
+}));
 
 export default router;

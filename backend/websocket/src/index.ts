@@ -244,8 +244,23 @@ sub.on('pmessage', (_pattern, channel, payload) => {
   const userId = channel.replace('channel:user:', '');
   const sockets = socketMap.get(userId);
   if (!sockets) return; // socket lives on another instance; that instance delivers it
+
+  // `force_signout` is a CONTROL frame, not something to relay: the API publishes it when an
+  // account is deleted. The connect-time revocation check only guards NEW sockets, so without
+  // this a user who is already connected keeps their live session — on the service carrying
+  // the traffic — until they happen to reconnect. Deliver it (so the client can clear local
+  // state and show why) and then close.
+  let isSignout = false;
+  try { isSignout = JSON.parse(payload)?.type === 'force_signout'; } catch { /* not JSON: relay it */ }
+
   for (const ws of sockets) {
     if (ws.readyState === WebSocket.OPEN) ws.send(payload);
+  }
+  if (isSignout) {
+    for (const ws of sockets) {
+      if (ws.readyState === WebSocket.OPEN) ws.close(4403, 'account deleted');
+    }
+    socketMap.delete(userId);
   }
 });
 
@@ -262,6 +277,20 @@ wss.on('connection', (ws, req) => {
     ws.close(4401, 'unauthorized');
     return;
   }
+
+  // A VALID SIGNATURE IS NOT A LIVE ACCOUNT. Tokens run to 30 days with no server-side
+  // session, so a deleted user kept opening sockets here — on the service that carries the
+  // messages, calls and locations — long after every API read path had stopped returning
+  // their row. This process holds no database connection by design, so the API writes a
+  // revocation tombstone into the Redis both share and this reads it.
+  //
+  // Deliberately keyed on `auth:revoked:` rather than the API's `auth:active:` cache: that
+  // one has a 10-second TTL, so absence is its normal state and denying on absence would
+  // disconnect every user within ten seconds. Presence of THIS key is written only by
+  // account deletion, so it is safe to fail closed on and open on everything else.
+  presence.get(`auth:revoked:${userId}`).then((revoked) => {
+    if (revoked) ws.close(4403, 'account deleted');
+  }).catch(() => { /* Redis down: the API remains the authority and still fails closed there */ });
 
   if (!socketMap.has(userId)) socketMap.set(userId, new Set());
   socketMap.get(userId)!.add(ws);

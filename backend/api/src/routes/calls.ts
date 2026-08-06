@@ -64,11 +64,21 @@ async function sharesConversation(a: string, b: string, conversationId: string):
 }
 
 /**
- * How long a ring grant stays valid in Redis. Sized to outlive the ring itself (a call rings
- * for ~45s before timing out) without leaving a stale permit that would let a caller re-ring
- * long after the callee removed them.
+ * How long a ring grant stays valid in Redis.
+ *
+ * THIS IS A CALL-LIFETIME BUDGET, NOT A RING TIMEOUT. It was originally 120s, sized to
+ * outlive the ~45s ring — but the relay verifies EVERY call frame against this grant, not
+ * just the offer. So on a 1:1 call lasting longer than two minutes the grant expired
+ * mid-conversation and the hangup, ICE restarts and hold/unhold frames were all silently
+ * dropped: the call could not be ended cleanly and could not recover from a network change.
+ * Conference grants never had this problem because escalate/join/leave rewrite the key.
+ *
+ * Now matched to the conference budget. A stale permit is far less costly than it looks: it
+ * authorises signalling between two people who were authorised to call each other when it was
+ * written, and re-ringing still goes through POST /ring, which re-checks membership from the
+ * database every time.
  */
-const RING_GRANT_TTL_SECONDS = 120;
+const RING_GRANT_TTL_SECONDS = CONFERENCE_GRANT_TTL_SECONDS;
 
 /** Redis key naming the ONE pair this call is permitted to signal between. */
 export function ringGrantKey(callId: string): string {
