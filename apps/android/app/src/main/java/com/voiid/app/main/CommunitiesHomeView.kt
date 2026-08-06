@@ -251,6 +251,8 @@ private fun CommunityDetailView(
         if (state.isMember) {
             Spacer(Modifier.height(20.dp))
             CommunityTournamentsSection(communityId = state.id)
+            Spacer(Modifier.height(20.dp))
+            CommunityEventsSection(communityId = state.id)
         }
 
         Spacer(Modifier.weight(1f))

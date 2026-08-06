@@ -36,6 +36,8 @@ struct CommunityDetailView: View {
                     if card.isMember {
                         Divider().background(VoiidColor.divider)
                         CommunityTournamentsSection(communityId: card.id)
+                        Divider().background(VoiidColor.divider)
+                        CommunityEventsSection(communityId: card.id)
                     }
                     Divider().background(VoiidColor.divider)
                     notice
