@@ -35,6 +35,13 @@ struct Clip: Identifiable, Hashable {
     var likedByMe: Bool
     var createdAt: Date
 
+    /// The author's CREATOR handle, when the row that produced this clip carried one.
+    /// The explore feed joins `users`, not `creator_profiles`, so it has none — which is
+    /// why every affordance keyed on it (the fullscreen Follow chip) hides rather than
+    /// guesses when this is nil.
+    var authorHandle: String?
+    var authorVerified = false
+
     /// Local-only: a clip being uploaded shows in the grid immediately with progress.
     var uploadState: ClipUploadState = .none
     /// Local-only path to the source file, so an optimistic tile has something to draw
@@ -56,6 +63,37 @@ struct Clip: Identifiable, Hashable {
         commentCount = row.comment_count
         likedByMe = row.liked_by_me
         createdAt = ISO8601DateFormatter.voiidParse(row.created_at) ?? Date()
+    }
+
+    /// A row from a creator's grid or the Following feed.
+    ///
+    /// Those endpoints return a lighter shape than the explore feed, and the omission that
+    /// matters is `liked_by_me`: their queries are not parameterised on the viewer, so there
+    /// is no per-caller like state to read. The heart therefore starts unfilled and is
+    /// corrected either by `ClipsEngine.knownLikeState` — when the same clip is already on a
+    /// grid this engine owns — or by the server's authoritative answer on the first tap.
+    ///
+    /// `handle` is passed in for a creator's own grid, whose rows carry no author columns at
+    /// all because every one of them belongs to the profile being viewed.
+    init(creatorRow r: CreatorService.CreatorClipRow, handle: String? = nil) {
+        id = r.id
+        authorId = r.author_id ?? ""
+        authorHandle = r.author_handle ?? handle
+        authorName = r.author_display_name
+            ?? authorHandle.map { "@\($0)" }
+            ?? "Unknown"
+        authorVerified = r.author_verified ?? false
+        authorPhotoURL = nil
+        thumbURL = r.thumb_url
+        caption = r.caption
+        durationMs = r.duration_ms
+        width = r.width
+        height = r.height
+        viewCount = r.view_count
+        likeCount = r.like_count
+        commentCount = r.comment_count
+        likedByMe = false
+        createdAt = ISO8601DateFormatter.voiidParse(r.created_at) ?? Date()
     }
 
     /// Optimistic local placeholder for a clip that is still uploading.
@@ -335,16 +373,58 @@ final class ClipsEngine: ObservableObject {
         likeInFlight.remove(clipId)
     }
 
-    /// Call after a >=2s watch, never on tile appearance.
-    func markViewed(_ clipId: String) async {
-        guard !viewedThisSession.contains(clipId) else { return }
+    /// Like/unlike a clip this engine does NOT own.
+    ///
+    /// The fullscreen pager also runs over a creator's grid and the Following feed, whose
+    /// rows belong to `CreatorEngine`. Those callers hold their own optimistic copy, so this
+    /// returns the server's authoritative answer — or nil, meaning "revert", which covers
+    /// both a failed call and a tap that arrived while the previous one was still in flight.
+    func setLike(_ clipId: String, liked: Bool) async -> (liked: Bool, count: Int)? {
+        guard !likeInFlight.contains(clipId) else { return nil }
+        likeInFlight.insert(clipId)
+        defer { likeInFlight.remove(clipId) }
+        do {
+            let resp = liked ? try await svc.like(clipId: clipId)
+                             : try await svc.unlike(clipId: clipId)
+            // The same clip is very often on the explore grid too; keeping that copy in step
+            // stops the like appearing to undo itself when the user scrolls back to it there.
+            if let j = clips.firstIndex(where: { $0.id == clipId }) {
+                clips[j].likedByMe = resp.liked
+                clips[j].likeCount = resp.like_count
+            }
+            if let j = myClips.firstIndex(where: { $0.id == clipId }) {
+                myClips[j].likedByMe = resp.liked
+                myClips[j].likeCount = resp.like_count
+            }
+            return (resp.liked, resp.like_count)
+        } catch {
+            return nil
+        }
+    }
+
+    /// What this engine already knows about a clip's like state, from a grid it owns.
+    /// The creator endpoints carry no per-caller like state, so a pager over one of them
+    /// seeds from here rather than drawing every heart as unliked.
+    func knownLikeState(_ clipId: String) -> (liked: Bool, count: Int)? {
+        if let c = clips.first(where: { $0.id == clipId }) { return (c.likedByMe, c.likeCount) }
+        if let c = myClips.first(where: { $0.id == clipId }) { return (c.likedByMe, c.likeCount) }
+        return nil
+    }
+
+    /// Call after a >=2s watch, never on tile appearance. Returns the authoritative count so
+    /// a pager over a list this engine does not own can update its own copy.
+    @discardableResult
+    func markViewed(_ clipId: String) async -> Int? {
+        guard !viewedThisSession.contains(clipId) else { return nil }
         viewedThisSession.insert(clipId)
         do {
             let count = try await svc.markViewed(clipId: clipId)
             if let i = clips.firstIndex(where: { $0.id == clipId }) { clips[i].viewCount = count }
+            return count
         } catch {
             // Allow a retry later in the session if it failed.
             viewedThisSession.remove(clipId)
+            return nil
         }
     }
 
@@ -364,9 +444,14 @@ final class ClipsEngine: ObservableObject {
 
     /// Inserts a `.sending` row immediately, then swaps in the server row. On failure the
     /// row is marked `.failed` and kept — never silently dropped.
-    func addComment(clipId: String, text: String, authorId: String, authorName: String) async {
+    ///
+    /// Returns whether the comment landed, so a pager over a list this engine does not own
+    /// can move its own comment count without having to guess.
+    @discardableResult
+    func addComment(clipId: String, text: String, authorId: String,
+                    authorName: String) async -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return false }
 
         let tempId = "pending-\(UUID().uuidString)"
         let pending = ClipComment(pendingId: tempId, authorId: authorId,
@@ -379,6 +464,7 @@ final class ClipsEngine: ObservableObject {
             if let j = comments[clipId]?.firstIndex(where: { $0.id == tempId }) {
                 comments[clipId]?[j] = ClipComment(row: row)
             }
+            return true
         } catch {
             if let j = comments[clipId]?.firstIndex(where: { $0.id == tempId }) {
                 comments[clipId]?[j].sendState = .failed
@@ -386,14 +472,18 @@ final class ClipsEngine: ObservableObject {
             if let i = clips.firstIndex(where: { $0.id == clipId }) {
                 clips[i].commentCount = max(0, clips[i].commentCount - 1)
             }
+            return false
         }
     }
 
-    func retryComment(clipId: String, commentId: String, authorId: String, authorName: String) async {
+    @discardableResult
+    func retryComment(clipId: String, commentId: String, authorId: String,
+                      authorName: String) async -> Bool {
         guard let idx = comments[clipId]?.firstIndex(where: { $0.id == commentId }),
-              let failed = comments[clipId]?[idx], failed.sendState == .failed else { return }
+              let failed = comments[clipId]?[idx], failed.sendState == .failed else { return false }
         comments[clipId]?.remove(at: idx)
-        await addComment(clipId: clipId, text: failed.text, authorId: authorId, authorName: authorName)
+        return await addComment(clipId: clipId, text: failed.text,
+                                authorId: authorId, authorName: authorName)
     }
 
     // MARK: - Posting

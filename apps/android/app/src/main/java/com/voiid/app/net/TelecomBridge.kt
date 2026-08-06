@@ -387,6 +387,17 @@ object TelecomBridge {
     /** Non-null only while Telecom actually owns this call. */
     fun connection(callId: String): VoiidConnection? = connections[callId]
 
+    /**
+     * A better caller name finished resolving after the ring was already raised (see
+     * [CallManager.refinePeerName]). No-op when Telecom never took the call.
+     */
+    fun updateCallerName(callId: String, name: String) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        runCatching {
+            connections[callId]?.setCallerDisplayName(name, TelecomManager.PRESENTATION_ALLOWED)
+        }
+    }
+
     /** Media is up. Mirrors [CallManager.markConnected]. */
     fun setActive(callId: String) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return

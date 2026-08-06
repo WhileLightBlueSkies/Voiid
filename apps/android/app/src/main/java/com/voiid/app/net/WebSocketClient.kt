@@ -380,7 +380,10 @@ class WebSocketClient private constructor(context: Context) {
             "loc_stop" -> {
                 val sid = obj["share_id"]?.jsonPrimitive?.contentOrNull ?: return
                 val from = obj["from_user_id"]?.jsonPrimitive?.contentOrNull ?: return
-                LocationRelay.dispatchStop(sid, from)
+                // Only the API stamps these; a stop relayed from another client has neither.
+                val kind = obj["kind"]?.jsonPrimitive?.contentOrNull ?: ""
+                val reason = obj["reason"]?.jsonPrimitive?.contentOrNull ?: ""
+                LocationRelay.dispatchStop(sid, from, kind, reason)
             }
             // A story was posted to us, viewed, or deleted. All three mean the same thing to
             // this client — re-sync the feed — so they share one seam, exactly as iOS routes

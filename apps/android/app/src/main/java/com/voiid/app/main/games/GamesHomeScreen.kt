@@ -31,6 +31,7 @@ import androidx.compose.material.icons.outlined.PanTool
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -49,11 +50,11 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.voiid.app.net.ApiClient
 import com.voiid.app.net.GamesService
 import com.voiid.app.net.TokenStore
 import com.voiid.app.ui.theme.VoiidColor
+import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
 import com.voiid.app.ui.theme.VoiidSpacing
 
@@ -127,9 +128,8 @@ fun GamesHomeScreen(
         ) {
             Text(
                 "Games",
+                style = VoiidFont.rounded(28, FontWeight.Bold),
                 color = VoiidColor.textPrimary,
-                fontSize = 28.sp,
-                fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f),
             )
             // Standings sit behind an icon: a reference you check occasionally, not a
@@ -139,6 +139,7 @@ fun GamesHomeScreen(
                 contentDescription = "Leaderboard",
                 tint = VoiidColor.primary,
                 modifier = Modifier
+                    .minimumInteractiveComponentSize()
                     .clip(CircleShape)
                     .clickable { onLeaderboard() }
                     .padding(VoiidSpacing.sm),
@@ -176,18 +177,21 @@ fun GamesHomeScreen(
                     // An empty list and a failed fetch look identical to a user; say which.
                     Text(
                         "Couldn't load games",
+                        style = VoiidFont.rounded(17, FontWeight.SemiBold),
                         color = VoiidColor.textPrimary,
-                        fontSize = 17.sp,
-                        fontWeight = FontWeight.SemiBold,
                     )
                     Text(
                         "Try again",
+                        style = VoiidFont.rounded(15, FontWeight.SemiBold),
                         color = VoiidColor.primary,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.SemiBold,
                         modifier = Modifier
                             .padding(top = VoiidSpacing.sm)
-                            .clickable { reloadToken++ },
+                            // A bare text link measured ~20dp tall — under the 48dp floor. This
+                            // expands only the touch target, leaving the type where it is.
+                            .minimumInteractiveComponentSize()
+                            .clip(RoundedCornerShape(VoiidRadius.sm))
+                            .clickable { reloadToken++ }
+                            .padding(horizontal = VoiidSpacing.sm, vertical = VoiidSpacing.xs),
                     )
                 }
 
@@ -267,9 +271,8 @@ private fun GameCard(game: GamesService.CatalogGame, onClick: () -> Unit) {
                     )
                     Text(
                         game.name,
+                        style = VoiidFont.rounded(15, FontWeight.SemiBold),
                         color = VoiidColor.textPrimary,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.SemiBold,
                         maxLines = 2,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.padding(horizontal = VoiidSpacing.sm),

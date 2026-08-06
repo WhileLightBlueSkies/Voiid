@@ -1,0 +1,61 @@
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  align-items: flex-start;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45em;
+  border-radius: var(--radius-pill);
+  border: 1px solid transparent;
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.sm {
+  font-size: var(--text-caption);
+  padding: 5px 11px 5px 9px;
+}
+
+.md {
+  font-size: var(--text-small);
+  padding: 7px 14px 7px 11px;
+}
+
+/*
+ * The three states must be told apart WITHOUT relying on hue — roughly 1 in 12 men
+ * has a colour-vision deficiency — so each carries its own glyph and its own words.
+ * The colour is the third signal, not the only one.
+ */
+
+.e2ee {
+  color: var(--color-success);
+  background: color-mix(in srgb, var(--color-success) 12%, transparent);
+  border-color: color-mix(in srgb, var(--color-success) 30%, transparent);
+}
+
+/* NOT a warning colour. Clips being public is a design decision we stand behind, not
+ * a defect — styling it as an error would misrepresent it in the other direction. */
+.public {
+  color: var(--color-text-dim);
+  background: var(--color-surface-2);
+  border-color: var(--color-border);
+}
+
+.refereed {
+  color: var(--color-accent);
+  background: var(--color-accent-quiet);
+  border-color: color-mix(in srgb, var(--color-accent) 32%, transparent);
+}
+
+.detail {
+  font-size: var(--text-caption);
+  line-height: var(--leading-body);
+  color: var(--color-text-dim);
+  max-width: 46ch;
+}

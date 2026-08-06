@@ -1,7 +1,7 @@
 // User / profile routes (Section 10). Identity is ours (Supabase Postgres); profile is not E2E content.
 import { Router } from 'express';
 import { query } from '../db';
-import { requireAuth } from '../auth';
+import { requireAuth, invalidateAccountState } from '../auth';
 
 const router = Router();
 
@@ -203,6 +203,11 @@ router.delete('/me', requireAuth, async (req, res) => {
   const { user_id } = (req as any).auth;
   await query(`update users set deleted_at = now(), full_name = null, email = null, photo_url = null, bio = null, status_text = null where id = $1`, [user_id]);
   await query(`update devices set revoked_at = now() where user_id = $1`, [user_id]);
+  // Revoking devices does not revoke the TOKEN — it infers reachability from device state,
+  // while the JWT names an identity and is good for up to 30 more days. requireAuth is what
+  // actually enforces the deletion now; this just drops its cached verdict so the very next
+  // request is rejected instead of the one after the cache TTL.
+  await invalidateAccountState(user_id);
   res.json({ deleted: true, note: 'soft-deleted; hard purge runs via erasure job (DPDP)' });
 });
 

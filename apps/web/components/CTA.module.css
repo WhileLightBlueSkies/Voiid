@@ -1,0 +1,97 @@
+.cta {
+  padding-block: var(--section-gap);
+  padding-inline: var(--container-pad);
+}
+
+.panel {
+  position: relative;
+  overflow: hidden;
+  max-width: var(--container);
+  margin-inline: auto;
+  padding: clamp(var(--space-xl), 6vw, var(--space-3xl)) clamp(var(--space-md), 5vw, var(--space-2xl));
+  border-radius: var(--radius-2xl);
+  border: 1px solid var(--color-divider);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card);
+  text-align: center;
+}
+
+.edge {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline: 0;
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--hue) 50%,
+    transparent 100%
+  );
+}
+
+.bloom {
+  position: absolute;
+  inset-block-start: -60%;
+  inset-inline-start: 50%;
+  transform: translateX(-50%);
+  width: min(760px, 130%);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--hue) 22%, transparent),
+    transparent 100%
+  );
+  pointer-events: none;
+}
+
+.body {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-md);
+}
+
+.title {
+  font-size: var(--text-h2);
+  max-width: 22ch;
+}
+
+.lede {
+  font-size: var(--text-lede);
+  line-height: var(--leading-body);
+  color: var(--color-text-dim);
+  max-width: 50ch;
+}
+
+.actions { margin-block-start: var(--space-2xs); }
+
+.note {
+  font-size: var(--text-caption);
+  color: var(--color-text-dim);
+  max-width: 52ch;
+}
+
+/* ---- the amber variant. Rare by design. ---------------------------------- */
+.accent .panel {
+  border-color: color-mix(in srgb, var(--color-accent) 40%, transparent);
+  background: linear-gradient(
+    180deg,
+    var(--color-accent-quiet) 0%,
+    var(--color-surface) 60%
+  );
+}
+
+.accent .edge {
+  background: linear-gradient(90deg, transparent, var(--color-accent) 50%, transparent);
+}
+
+.accent .bloom {
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--color-accent) 26%, transparent),
+    transparent 100%
+  );
+}

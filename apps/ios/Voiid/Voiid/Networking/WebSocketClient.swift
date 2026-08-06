@@ -65,8 +65,14 @@ final class WebSocketClient {
     // per-share key the server (and this relay) cannot read.
     /// One encrypted position fix for a share. (shareId, fromUserId, ciphertext-b64)
     var onLocationUpdate: ((_ shareId: String, _ fromUserId: String, _ ciphertext: String) -> Void)?
-    /// A share was stopped (instant effect on live sockets). (shareId, fromUserId)
-    var onLocationStop: ((_ shareId: String, _ fromUserId: String) -> Void)?
+    /// A share was stopped (instant effect on live sockets). (shareId, fromUserId, kind, reason)
+    ///
+    /// `kind` ("map" / "conversation") and `reason` ("ended" / "superseded") are only present
+    /// on a stop the API published; a stop relayed straight from another client carries
+    /// neither, so both arrive as "" and a subscriber must fall back to its own bookkeeping.
+    /// `superseded` in particular is NOT "the sharer went dark" — it means they replaced the
+    /// row, and erasing their key or cached position there is the pin-blink bug.
+    var onLocationStop: ((_ shareId: String, _ fromUserId: String, _ kind: String, _ reason: String) -> Void)?
 
     // MARK: - 1:1 call signaling (relayed over the same WS)
     // Each inbound frame is stamped server-side with `from_user_id` (authenticated).
@@ -318,9 +324,12 @@ final class WebSocketClient {
         case "loc_stop":
             if let sid = obj["share_id"] as? String,
                let from = obj["from_user_id"] as? String {
-                onLocationStop?(sid, from)
+                // Absent on a client-relayed stop — see `onLocationStop`.
+                let kind = (obj["kind"] as? String) ?? ""
+                let reason = (obj["reason"] as? String) ?? ""
+                onLocationStop?(sid, from, kind, reason)
                 NotificationCenter.default.post(name: .voiidLocationRelayStop, object: nil,
-                    userInfo: ["share_id": sid, "from": from])
+                    userInfo: ["share_id": sid, "from": from, "kind": kind, "reason": reason])
             }
         case "game_state":
             // Full authoritative state for one match. NotificationCenter rather than a

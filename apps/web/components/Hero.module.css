@@ -1,0 +1,172 @@
+.hero {
+  position: relative;
+  /* `clip` rather than `hidden`: it contains the mesh without creating a scroll
+   * container, so `position: sticky` still works for anything inside. */
+  overflow: clip;
+  padding-block: clamp(var(--space-2xl), 8vw, var(--space-4xl))
+    clamp(var(--space-2xl), 6vw, var(--space-3xl));
+  border-block-end: 1px solid var(--color-divider);
+}
+
+.inner {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: calc(var(--container) + var(--container-pad) * 2);
+  margin-inline: auto;
+  padding-inline: var(--container-pad);
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-2xl);
+  align-items: center;
+}
+
+@media (min-width: 900px) {
+  .split .inner {
+    grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+    gap: var(--space-3xl);
+  }
+  .split.reverse .copy { order: 2; }
+  .split.reverse .aside { order: 1; }
+}
+
+.copy {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  min-width: 0;
+}
+
+.center .copy {
+  align-items: center;
+  text-align: center;
+  max-width: 46rem;
+  margin-inline: auto;
+}
+
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 0.5em;
+  padding: 6px 14px;
+  border-radius: var(--radius-pill);
+  border: 1px solid color-mix(in srgb, var(--hue) 34%, transparent);
+  background: var(--hue-wash);
+  color: var(--hue);
+  font-size: var(--text-micro);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+.center .eyebrow { align-self: center; }
+
+.title {
+  font-size: var(--text-display);
+  font-weight: var(--weight-bold);
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-tight);
+  max-width: 17ch;
+}
+
+.center .title { max-width: 20ch; }
+
+.lede {
+  font-size: var(--text-lede);
+  line-height: var(--leading-body);
+  color: var(--color-text-dim);
+  max-width: 52ch;
+}
+
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2xs);
+}
+
+.center .badges { justify-content: center; }
+
+.actions { margin-block-start: var(--space-2xs); }
+
+.note {
+  font-size: var(--text-caption);
+  color: var(--color-text-dim);
+  max-width: 46ch;
+}
+
+.aside {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+}
+
+/* ---- backdrop ------------------------------------------------------------ *
+ * A gradient mesh: three large, heavily blurred colour fields at different
+ * offsets. Cheaper and sharper than an image, and it recolours itself with the
+ * theme because the fields are token-driven. */
+
+.backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.mesh1,
+.mesh2,
+.mesh3 {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(70px);
+}
+
+.mesh1 {
+  width: 46rem;
+  height: 34rem;
+  inset-block-start: -14rem;
+  inset-inline-start: -12rem;
+  background: var(--mesh-1);
+}
+
+.mesh2 {
+  width: 38rem;
+  height: 30rem;
+  inset-block-start: 8%;
+  inset-inline-end: -14rem;
+  background: var(--mesh-2);
+}
+
+.mesh3 {
+  width: 32rem;
+  height: 26rem;
+  inset-block-end: -16rem;
+  inset-inline-start: 32%;
+  background: var(--mesh-3);
+}
+
+/* A 64px hairline grid, faded out at the edges so it never terminates in a hard
+ * line. It gives the mesh something to sit on and stops the hero reading as a
+ * generic blurry gradient. */
+.grid {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: radial-gradient(ellipse 90% 70% at 50% 32%, #000 20%, transparent 78%);
+  -webkit-mask-image: radial-gradient(ellipse 90% 70% at 50% 32%, #000 20%, transparent 78%);
+}
+
+/* The blur is the single most expensive thing on the page. On a phone the fields
+ * are mostly off-canvas anyway, so shrink them and cut the blur radius. */
+@media (max-width: 640px) {
+  .mesh1, .mesh2, .mesh3 { filter: blur(48px); }
+  .mesh1 { width: 26rem; height: 22rem; }
+  .mesh2 { width: 24rem; height: 20rem; }
+  .mesh3 { display: none; }
+  .grid { background-size: 40px 40px; }
+}

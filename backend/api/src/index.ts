@@ -33,6 +33,23 @@ import configRoutes from './routes/config';
 import { forceUpdateGate } from './version';
 
 const app = express();
+
+// Client IP keys the per-IP rate limiter and is written into admin_sessions,
+// security_events and the admin audit log — the records a breach investigation reads —
+// so it must not be attacker-supplied. Express only honours x-forwarded-for when the
+// connection itself arrives from a trusted address; with this unset it ignores the
+// header, and any hand-rolled parse of it is forgeable by anyone who can reach the port.
+//
+// 'loopback' covers both deployed topologies (docs/VULTR_DEPLOY.md): prod puts Caddy on
+// the same box reverse-proxying to localhost:4000, so the single trusted hop is
+// 127.0.0.1; dev exposes :4000 directly with no proxy at all, where loopback never
+// matches a real client and req.ip falls back to the socket address. TRUST_PROXY (a hop
+// count or a comma-separated CIDR list) overrides it if a proxy ever moves off-box —
+// a wrong value fails in BOTH directions: too permissive and spoofing works again, too
+// restrictive and every request looks like the proxy, throttling all users as one client.
+const trustProxy = process.env.TRUST_PROXY?.trim() || 'loopback';
+app.set('trust proxy', /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy);
+
 app.use(express.json({ limit: '5mb' }));
 
 // Health (Section 8 minimal ops). Reports DB + Redis reachability for Uptime Kuma / load balancer.

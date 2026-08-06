@@ -180,6 +180,11 @@ object CallManager {
      * to still ring inside the window the user would call "immediately".
      */
     private const val TELECOM_RING_WATCHDOG_MS = 2_500L
+    /**
+     * How long a ring push may alert with no `call_offer` behind it before we give up. Matches
+     * the iOS `offerTimeout`, and sits well inside the 45s ring window both platforms use.
+     */
+    private const val OFFER_TIMEOUT_MS = 30_000L
     /** TURN credentials are short-lived; re-fetch rather than restart with expired ones. */
     private const val ICE_SERVER_TTL_MS = 4 * 60_000L
 
@@ -199,6 +204,14 @@ object CallManager {
     @Volatile private var hasNegotiated = false
     private var disconnectGrace: Runnable? = null
     private var restartWatchdog: Runnable? = null
+    /** Armed by a ring push, cancelled by the offer it is waiting for. See [startOfferTimeout]. */
+    private var offerTimeout: Runnable? = null
+    /**
+     * The call we rang from a push and have not yet seen a `call_offer` for. Read from the
+     * main thread by the timeout below, so it cannot be inferred from [pc] — that lives on
+     * [exec] and would race.
+     */
+    @Volatile private var awaitingOfferCallId: String? = null
 
     private var netMonitor: CallNetworkMonitor? = null
     private var metrics: CallMetricsCollector? = null
@@ -394,8 +407,80 @@ object CallManager {
         // Written before the user has done anything: a call ignored until the process dies
         // is exactly the one that must still show up as missed.
         recordCall(_state.value!!, outcome = "missed")
+        // THE OFFER STILL NEEDS A LIVE SOCKET, and a process this push just cold-started has
+        // none. Nothing used to connect it: the socket came up only as a side effect of
+        // `announceRinging` queueing into a down socket and tripping `scheduleReconnect`'s
+        // jittered backoff, which also delayed the server-side offer-buffer flush that fires
+        // on socket attach. `callActive` first, so that backoff uses the 5s call cap rather
+        // than the idle one. Mirrors iOS `CallService.swift`.
+        runCatching {
+            WebSocketClient.get(appContext).apply {
+                callActive = true
+                reconnect()
+            }
+        }
         raiseIncomingAlert(_state.value!!)
         announceRinging(callerId, callId)
+        startOfferTimeout(callId)
+    }
+
+    /**
+     * A ring push promises an offer over the socket. If it never comes — the caller hung up
+     * before we attached, or the frame was lost — the ring would otherwise sit there forever
+     * with no way to end it but the user. iOS has had this bound since day one
+     * (`startOfferTimeout`); Android had nothing.
+     */
+    private fun startOfferTimeout(callId: String) {
+        cancelOfferTimeout()
+        awaitingOfferCallId = callId
+        val r = Runnable {
+            offerTimeout = null
+            if (awaitingOfferCallId != callId) return@Runnable   // the offer arrived
+            val s = _state.value ?: return@Runnable
+            if (s.callId != callId) return@Runnable
+            android.util.Log.w("VOIID", "ring push with no offer for $callId — ending as missed")
+            // No decline frame: the caller never reached us, so there is nobody to tell, and
+            // claiming we refused would file the wrong outcome on their side.
+            endInternal(notifyPeer = false, reason = "no-offer")
+        }
+        offerTimeout = r
+        mainHandler.postDelayed(r, OFFER_TIMEOUT_MS)
+    }
+
+    private fun cancelOfferTimeout() {
+        awaitingOfferCallId = null
+        offerTimeout?.let { mainHandler.removeCallbacks(it) }
+        offerTimeout = null
+    }
+
+    /**
+     * A better caller name arrived AFTER we started ringing.
+     *
+     * The ring is raised from whatever the local directory can answer synchronously, because
+     * blocking the ring on a network lookup cost up to six seconds of a 45-second window on a
+     * cold-started process (see [VoiidMessagingService]). [fallbackName] is only ever a hint —
+     * it goes through the same precedence chain as every other name, so a directory entry that
+     * has since loaded still wins over a conversation title.
+     *
+     * Called from the FCM service's IO scope; hops to the main thread because the Telecom
+     * Connection below is not safe to touch from anywhere else.
+     */
+    fun refinePeerName(callId: String, fallbackName: String?) {
+        mainHandler.post {
+            val s = _state.value ?: return@post
+            if (s.callId != callId || !s.incoming) return@post
+            val name = resolvePeerName(s.peerUserId, fallbackName)
+            if (name == s.peerName) return@post
+            update { it.copy(peerName = name) }
+            if (s.phase != Phase.RINGING_IN) return@post
+            runCatching { TelecomBridge.updateCallerName(callId, name) }
+            // Re-post in place, but never post for the FIRST time here: with Telecom adopted it
+            // is Telecom that decides when we may alert, and jumping that gate would ring over
+            // a cellular call the OS was about to take.
+            if (CallForegroundService.incomingShown) {
+                _state.value?.let { CallForegroundService.showIncoming(appContext, it) }
+            }
+        }
     }
 
     /**
@@ -466,6 +551,7 @@ object CallManager {
         // the reviewer flagged) and a duplicate notification. Attach the SDP to the
         // existing call and set up the peer connection; never re-ring, never re-report.
         if (current != null && current.callId == sig.callId && !hasNegotiated) {
+            cancelOfferTimeout()
             // Refine the name only if the push had none; never downgrade a resolved name.
             if (current.peerName.isBlank()) {
                 _state.value = current.copy(peerName = resolvePeerName(sig.fromUserId))
@@ -714,8 +800,9 @@ object CallManager {
      * The user always chooses. That is the substantive change over the old behaviour, where a
      * second call was silently refused with `call_busy` and the user never learned it happened.
      */
-    fun acceptWaiting() {
+    fun acceptWaiting(expectedCallId: String? = null) {
         val w = _waiting.value ?: return
+        if (expectedCallId != null && w.callId != expectedCallId) return
         val sdp = waitingOfferSdp
         _waiting.value = null
         waitingOfferSdp = null
@@ -747,10 +834,20 @@ object CallManager {
 
     // ---- user actions (from the call UI) --------------------------------------
 
-    /** Answer an incoming call. */
-    fun accept() {
+    /**
+     * Answer an incoming call.
+     *
+     * [expectedCallId] scopes the answer to one call: the notification's Accept PendingIntent
+     * outlives the call it was built for, and answering whatever happens to be ringing later
+     * would be worse than doing nothing. The RINGING_IN guard is what makes the two accept
+     * paths (Telecom's `onAnswer` and the notification's activity) safe to both fire — a
+     * second answer would create and send a second SDP answer for the same call.
+     */
+    fun accept(expectedCallId: String? = null) {
         val s = _state.value ?: return
         if (!s.incoming) return
+        if (expectedCallId != null && s.callId != expectedCallId) return
+        if (s.phase != Phase.RINGING_IN) return
         update { it.copy(phase = Phase.CONNECTING) }
         CallForegroundService.cancelIncoming(appContext)
         startForegroundService()
@@ -1322,6 +1419,7 @@ object CallManager {
     private fun endInternal(notifyPeer: Boolean, reason: String) {
         val s = _state.value ?: return
         endReason = endReason ?: reason
+        cancelOfferTimeout()
         // Ringback must die here no matter which path ended the call — timeout, local hangup,
         // ICE giving up. A tone that outlives its call is the worst version of this feature.
         CallTones.stopRingback()

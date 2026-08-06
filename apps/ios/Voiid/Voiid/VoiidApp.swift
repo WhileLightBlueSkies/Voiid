@@ -118,12 +118,25 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         completionHandler([.banner, .sound, .list])
     }
 
-    // APNs token -> Firebase Auth (used for silent-push app verification).
+    // APNs token -> Firebase Auth (used for silent-push app verification) AND the
+    // backend. Firebase keeps the token to itself; without the second call
+    // `devices.push_token` stays NULL and every alert/wake push aimed at this device —
+    // messages, the call-ring fallback, group-call invites — has nowhere to go.
     func application(
         _ application: UIApplication,
         didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
     ) {
         Auth.auth().setAPNSToken(deviceToken, type: .unknown)
+        E2EManager.shared.registerPushToken(deviceToken)
+    }
+
+    func application(
+        _ application: UIApplication,
+        didFailToRegisterForRemoteNotificationsWithError error: Error
+    ) {
+        // Silent otherwise: no token means no pushes at all, and the only symptom is
+        // an app that never rings.
+        NSLog("[VOIID] APNs registration failed: \(error.localizedDescription)")
     }
 
     // Let Firebase Auth consume its verification push before the app sees it.

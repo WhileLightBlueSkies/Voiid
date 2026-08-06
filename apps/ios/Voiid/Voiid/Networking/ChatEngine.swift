@@ -1744,9 +1744,14 @@ enum LocationWire {
                 // Harmless in the NSE (no observers there).
                 // String name (not the typed constant) because this file also compiles into
                 // the NSE target, which does not include LocationShareEngine.swift.
+                //
+                // The share id rides along because it is the engine's ONLY proof of which
+                // stream a later `loc_stop` belongs to: without it, a stop for this contact's
+                // unrelated CHAT live share erased them from the Map.
                 NotificationCenter.default.post(name: Notification.Name("voiidMapControlReceived"),
                                                 object: nil,
-                                                userInfo: ["kind": "map_key", "fromUserId": fromUserId])
+                                                userInfo: ["kind": "map_key", "fromUserId": fromUserId,
+                                                           "shareId": (obj["s"] as? String) ?? ""])
             }
         case "map_off":
             if !fromUserId.isEmpty {

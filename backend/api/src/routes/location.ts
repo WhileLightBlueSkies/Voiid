@@ -67,6 +67,9 @@ interface ShareRow {
   ended_at: string | null;
 }
 
+/** Why a share stopped. See `signalStop` — the distinction is load-bearing on the client. */
+type StopReason = 'ended' | 'superseded';
+
 /**
  * Tell a set of recipients that a share is over, on every channel that can carry it.
  *
@@ -78,12 +81,30 @@ interface ShareRow {
  * Deleting the buffered last fix is the part that MUST happen: without it a recipient
  * who reconnects within LOC_BUFFER_TTL gets replayed the final position of a share the
  * sharer has already stopped.
+ *
+ * `kind` and `reason` are the frame's DISCRIMINATORS, and the map's correctness depends on
+ * them. A `loc_stop` used to carry an id and a sender and nothing else, so a recipient had
+ * to guess which of the two location features it belonged to and whether the sharer had
+ * actually gone dark. Recreating a map share — adding one person to the audience, re-arming
+ * on foreground — supersedes the previous row and stops it, and a recipient reading that as
+ * "went dark" erased the cached position: the visible pin-blinks-on-every-reopen bug.
+ * `superseded` means "this ROW is retired, the person is still sharing"; `ended` means the
+ * sharer stopped, was revoked, or left. Both fields are additive — a client from before they
+ * existed simply ignores them and behaves exactly as it did.
  */
-async function signalStop(shareId: string, ownerUserId: string, targetUserIds: string[]): Promise<void> {
+async function signalStop(
+  shareId: string,
+  ownerUserId: string,
+  targetUserIds: string[],
+  kind: string,
+  reason: StopReason
+): Promise<void> {
   const frame = JSON.stringify({
     type: 'loc_stop',
     share_id: shareId,
     from_user_id: ownerUserId,
+    kind,
+    reason,
     ts: Date.now(),
   });
   await Promise.all(
@@ -99,8 +120,14 @@ async function signalStop(shareId: string, ownerUserId: string, targetUserIds: s
   );
 }
 
-/** End one share and notify its (non-revoked) audience. Idempotent. */
-async function endShare(share: ShareRow): Promise<void> {
+/**
+ * End one share and notify its (non-revoked) audience. Idempotent.
+ *
+ * `reason` is threaded from the caller because only the caller knows which it is: the
+ * create path retires a row the owner is replacing (`superseded`), every other path is a
+ * genuine stop. Defaulting it here would erase exactly the distinction the frame exists for.
+ */
+async function endShare(share: ShareRow, reason: StopReason): Promise<void> {
   await query(
     `update location_shares set ended_at = coalesce(ended_at, now()) where id = $1`,
     [share.id]
@@ -110,7 +137,8 @@ async function endShare(share: ShareRow): Promise<void> {
        where share_id = $1 and revoked_at is null`,
     [share.id]
   );
-  await signalStop(share.id, share.owner_user_id, targets.map((t) => t.target_user_id));
+  await signalStop(share.id, share.owner_user_id, targets.map((t) => t.target_user_id),
+                   share.kind, reason);
 }
 
 /** Load a share the caller OWNS and that is still active. 404/403 otherwise. */
@@ -237,7 +265,7 @@ router.post('/shares', requireAuth, asyncHandler(async (req, res) => {
         and ended_at is null and expires_at > now()`,
     [user_id, kind, convId]
   );
-  for (const prior of superseded) await endShare(prior);
+  for (const prior of superseded) await endShare(prior, 'superseded');
 
   const inserted = await query<{ id: string; expires_at: string }>(
     `insert into location_shares (owner_user_id, kind, conversation_id, expires_at)
@@ -372,7 +400,7 @@ router.delete('/shares/:id', requireAuth, asyncHandler(async (req, res) => {
 
   // Deliberately NOT gated on "still active": stopping an already-stopped share is the
   // normal shape of a retry, and re-publishing the stop is harmless and idempotent.
-  await endShare(share);
+  await endShare(share, 'ended');
   return res.json({ share_id: share.id, ended: true });
 }));
 
@@ -400,7 +428,10 @@ router.delete('/shares/:id/targets/:user_id', requireAuth, asyncHandler(async (r
   );
   if (!revoked[0]) return res.status(404).json({ error: 'target is not on this share' });
 
-  await signalStop(loaded.share.id, loaded.share.owner_user_id, [targetId]);
+  // `ended`, not `superseded`: the share row lives on for everyone else, but for THIS
+  // recipient it is over and the cached position must be erased.
+  await signalStop(loaded.share.id, loaded.share.owner_user_id, [targetId],
+                   loaded.share.kind, 'ended');
   return res.json({ share_id: loaded.share.id, revoked_user_id: targetId });
 }));
 
@@ -416,16 +447,16 @@ router.post('/shares/:id/leave', requireAuth, asyncHandler(async (req, res) => {
 
   if (!UUID_RE.test(req.params.id)) return res.status(400).json({ error: 'invalid share id' });
 
-  const rows = await query<{ owner_user_id: string }>(
+  const rows = await query<{ owner_user_id: string; kind: string }>(
     `update location_share_targets t set revoked_at = coalesce(t.revoked_at, now())
        from location_shares s
       where t.share_id = s.id and t.share_id = $1 and t.target_user_id = $2
-      returning s.owner_user_id`,
+      returning s.owner_user_id, s.kind`,
     [req.params.id, user_id]
   );
   if (!rows[0]) return res.status(404).json({ error: 'you are not a target of this share' });
 
-  await signalStop(req.params.id, rows[0].owner_user_id, [user_id]);
+  await signalStop(req.params.id, rows[0].owner_user_id, [user_id], rows[0].kind, 'ended');
   return res.json({ share_id: req.params.id, left: true });
 }));
 

@@ -64,7 +64,10 @@ class VoiidConnectionService : ConnectionService() {
         val name = extras.getString(TelecomBridge.EXTRA_PEER_NAME) ?: return
         runCatching {
             CallForegroundService.showIncoming(
-                applicationContext, name, extras.getBoolean(TelecomBridge.EXTRA_VIDEO, false),
+                applicationContext,
+                extras.getString(TelecomBridge.EXTRA_CALL_ID),
+                name,
+                extras.getBoolean(TelecomBridge.EXTRA_VIDEO, false),
             )
         }
     }

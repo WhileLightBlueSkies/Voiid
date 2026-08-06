@@ -15,7 +15,7 @@ import bcrypt from 'bcryptjs';
 import { randomInt, timingSafeEqual } from 'crypto';
 import { pool, query } from '../db';
 import { requireAuth } from '../auth';
-import { logSecurityEvent } from '../security';
+import { clientIp, logSecurityEvent } from '../security';
 import { open, seal, secretboxAvailable } from '../secretbox';
 
 const router = Router();
@@ -56,12 +56,6 @@ const PIN_MAX_PER_DAY = 20;
  */
 function hasPin(u: { contact_pin_hash: string | null; contact_pin_enc: string | null }): boolean {
   return !!(u.contact_pin_hash || u.contact_pin_enc);
-}
-
-function clientIp(req: any): string | null {
-  return (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim()
-    || req.socket?.remoteAddress
-    || null;
 }
 
 /** A fresh 6-digit PIN. `randomInt` is CSPRNG-backed — never Math.random for a credential. */

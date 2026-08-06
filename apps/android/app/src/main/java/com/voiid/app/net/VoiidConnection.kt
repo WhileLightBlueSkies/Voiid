@@ -1,13 +1,11 @@
 package com.voiid.app.net
 
 import android.content.Context
-import android.content.Intent
 import android.os.Build
 import android.telecom.CallAudioState
 import android.telecom.Connection
 import android.telecom.DisconnectCause
 import androidx.annotation.RequiresApi
-import com.voiid.app.MainActivity
 
 /**
  * One live call as Telecom sees it — the Android counterpart of a CXCall.
@@ -55,7 +53,7 @@ class VoiidConnection(
      * Budget: the notification must be posted within 5 seconds of `addNewIncomingCall`.
      */
     override fun onShowIncomingCallUi() {
-        runCatching { CallForegroundService.showIncoming(appContext, peerName, video) }
+        runCatching { CallForegroundService.showIncoming(appContext, callId, peerName, video) }
     }
 
     override fun onAnswer() = answer()
@@ -63,16 +61,14 @@ class VoiidConnection(
     override fun onAnswer(videoState: Int) = answer()
 
     private fun answer() {
+        // Answered from a watch / headset / Auto: bring the in-call UI forward too, so the user
+        // isn't left in a call with no visible surface (and, for video, no preview). BEFORE the
+        // ring notification is cancelled — this runs in a Telecom binder callback, so it is a
+        // background activity start the OS may drop, and while the full-screen intent is still
+        // posted the user keeps a way back into the call.
+        runCatching { CallForegroundService.openInCallUi(appContext, callId) }
         runCatching { CallForegroundService.cancelIncoming(appContext) }
-        // Answered from a watch / headset / Auto: bring the in-call UI forward too, so the
-        // user isn't left in a call with no visible surface (and, for video, no preview).
-        runCatching {
-            appContext.startActivity(
-                Intent(appContext, MainActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
-            )
-        }
-        runCatching { CallManager.accept() }
+        runCatching { CallManager.accept(callId) }
         endIfEngineGone(DisconnectCause.LOCAL)
     }
 

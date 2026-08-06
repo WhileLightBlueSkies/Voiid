@@ -30,6 +30,42 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // knowledge, and it lives in exactly one place.
 const GAMES_INPUT_CHANNEL = 'channel:games:input';
 
+// ─────────────────────────────────────────────────────────────────────────────────
+// REACHABILITY GATE — the same hole that was closed on the call path (POST /calls/ring),
+// closed here for the same reason.
+//
+// Minting a match row is not a neutral act: GET /games/invites is keyed only on
+// `player_ids @> [me]`, so naming someone in a match puts a banner carrying the creator's
+// profile name on their games screen. Without this check anyone who learns or enumerates a
+// user id could do that to a stranger, bypassing the mutual-contact and username+PIN gates
+// every ordinary message has to pass. The E2EE invite message would fail for lack of a
+// session, but the banner is driven by the row alone and would appear regardless.
+//
+// 'accepted' on BOTH sides, not just membership. reachability.ts opens a direct conversation
+// for the sender the moment they send a request — the recipient sits at 'pending' until they
+// agree. Accepting only membership would therefore let an unanswered request act as a permit,
+// which is exactly the state a spammer can create for themselves at will.
+//
+// Returns the subset that IS reachable rather than a boolean, so the caller can gate the
+// whole array in one round trip.
+// ─────────────────────────────────────────────────────────────────────────────────
+async function reachableOpponents(userId: string, opponentIds: string[]): Promise<Set<string>> {
+  if (opponentIds.length === 0) return new Set();
+  const rows = await query<{ user_id: string }>(
+    `select distinct m2.user_id
+       from conversations c
+       join conversation_members m1
+            on m1.conversation_id = c.id and m1.user_id = $1
+           and m1.left_at is null and m1.request_state = 'accepted'
+       join conversation_members m2
+            on m2.conversation_id = c.id and m2.user_id = any($2::uuid[])
+           and m2.left_at is null and m2.request_state = 'accepted'
+      where c.type = 'direct'`,
+    [userId, opponentIds]
+  );
+  return new Set(rows.map((r) => r.user_id));
+}
+
 /** GET /games — the catalog. Static, tiny, and the client caches it. */
 router.get(
   '/',
@@ -93,6 +129,19 @@ router.post(
     const players = [userId, ...opponents];
     if (players.length < game.min_players || players.length > game.max_players) {
       return res.status(400).json({ error: 'wrong number of players for this game' });
+    }
+
+    // AUTHORIZATION — see reachableOpponents() above. Runs BEFORE the insert so an
+    // unauthorized attempt leaves no row, and therefore no invite banner and no history
+    // entry, on anyone's screen. Solo matches skip it for free: opponents is empty.
+    if (opponents.length > 0) {
+      const reachable = await reachableOpponents(userId, opponents);
+      if (opponents.some((id) => !reachable.has(id))) {
+        // 403 for the whole request, and deliberately WITHOUT naming which opponent failed.
+        // Saying which one would turn this endpoint into an oracle for "is this user id real,
+        // and are they in my contacts" — the same reasoning as the call path's opaque 403.
+        return res.status(403).json({ error: 'not permitted to invite one of these players' });
+      }
     }
 
     const rows = await query<{ id: string }>(

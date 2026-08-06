@@ -21,6 +21,7 @@ import bcrypt from 'bcryptjs';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { pool, query } from '../db';
 import { presignGet, deleteObject, r2Configured } from '../r2';
+import { clientIp } from '../security';
 
 const router = Router();
 
@@ -36,12 +37,6 @@ const SESSION_TTL_SECONDS = 12 * 60 * 60;
  */
 function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
-}
-
-function clientIp(req: Request): string | null {
-  return (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim()
-    || req.socket?.remoteAddress
-    || null;
 }
 
 /** Record an admin action. Best-effort: a failed audit write must not fail the action. */

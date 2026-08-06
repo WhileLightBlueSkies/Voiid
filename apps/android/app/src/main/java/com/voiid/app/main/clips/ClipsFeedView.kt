@@ -12,20 +12,20 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.AddCircle
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.RemoveRedEye
-import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -47,10 +47,12 @@ import com.voiid.app.model.ClipCount
 import com.voiid.app.model.ClipUploadState
 import com.voiid.app.model.ClipsStore
 import com.voiid.app.model.VClip
+import com.voiid.app.net.CreatorService
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.softClickable
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
+import com.voiid.app.ui.theme.VoiidRadius
 
 /**
  * The Clips grid — a dense 3-column Instagram/Explore-style grid of cover frames.
@@ -65,6 +67,7 @@ fun ClipsFeedView(
     clips: ClipsStore,
     creators: com.voiid.app.model.CreatorStore,
     onOpenClip: (Int) -> Unit,
+    onOpenFollowingClip: (Int) -> Unit,
     onNewClip: () -> Unit,
     onMyClips: () -> Unit,
     onOpenCreator: (String) -> Unit,
@@ -107,37 +110,37 @@ fun ClipsFeedView(
 
     Column(Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding()) {
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("Clips", style = VoiidFont.display, color = VoiidColor.textPrimary)
+            Text(
+                "Clips",
+                style = VoiidFont.display,
+                color = VoiidColor.textPrimary,
+                modifier = Modifier.padding(start = 8.dp),
+            )
             Spacer(Modifier.weight(1f))
-            Icon(
-                Icons.Default.VideoLibrary, "My clips", tint = VoiidColor.textPrimary,
-                modifier = Modifier.size(24.dp).softClickable(scale = 0.9f) {
-                    haptics.tap(); onMyClips()
-                },
-            )
-            Spacer(Modifier.width(16.dp))
-            // Shown only once a creator profile exists — before that there is no page to
-            // open, and the handle picker belongs to the compose flow, not to a stray
-            // toolbar button.
+            // A GRID glyph, not a film reel: this opens your clips as the same 3-column grid
+            // the screen behind it is already showing, and the reel icon read as "video
+            // library" — a place to pick footage from.
+            HeaderIcon(Icons.Default.GridView, "My clips") { haptics.tap(); onMyClips() }
+            // Your own avatar is the identity anchor, the way it is on every other feed the
+            // user has ever used; a generic person glyph told them nothing about whose page
+            // it opened. Shown only once a creator profile exists — before that there is no
+            // page to open, and the handle picker belongs to the compose flow.
             creators.me?.let { mine ->
-                Icon(
-                    Icons.Default.AccountCircle, "My creator profile",
-                    tint = VoiidColor.textPrimary,
-                    modifier = Modifier.size(24.dp).softClickable(scale = 0.9f) {
-                        haptics.tap(); onOpenCreator(mine.handle)
-                    },
-                )
-                Spacer(Modifier.width(16.dp))
+                Box(
+                    Modifier
+                        .size(48.dp)
+                        .softClickable(scale = 0.9f) { haptics.tap(); onOpenCreator(mine.handle) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    MyCreatorAvatar(mine)
+                }
             }
-            Icon(
-                Icons.Default.AddCircle, "New clip", tint = VoiidColor.primary,
-                modifier = Modifier.size(28.dp).softClickable(scale = 0.9f) {
-                    haptics.tap(); onNewClip()
-                },
-            )
+            HeaderIcon(Icons.Default.AddCircle, "New clip", tint = VoiidColor.primary, size = 28.dp) {
+                haptics.tap(); onNewClip()
+            }
         }
 
         // Explore / Following. Two pills rather than a top tab bar: there are exactly two
@@ -157,9 +160,16 @@ fun ClipsFeedView(
         // skeleton's fillMaxSize would resolve against an unbounded constraint.
         val slot = Modifier.fillMaxWidth().weight(1f)
         if (followingScope) {
-            FollowingFeed(creators, followingState, slot, onOpenCreator)
+            FollowingFeed(
+                creators = creators,
+                gridState = followingState,
+                modifier = slot,
+                onOpenClip = onOpenFollowingClip,
+                onExplore = { haptics.tap(); followingScope = false },
+            )
             return@Column
         }
+        val entrance = rememberGridEntrance(ready = clips.clips.isNotEmpty())
         when {
             // Order matters: the error state must win over the empty state. Rendering
             // "No clips yet" for a failed request tells the user the feature is dead.
@@ -189,6 +199,7 @@ fun ClipsFeedView(
                 itemsIndexed(clips.clips, key = { _, c -> c.id }) { index, clip ->
                     ClipTile(
                         clip = clip,
+                        modifier = Modifier.clipTileEntrance(index, entrance),
                         onTap = {
                             // A still-uploading tile has no server row to play yet.
                             if (clip.uploadState == ClipUploadState.None) {
@@ -217,15 +228,55 @@ fun ClipsFeedView(
     }
 }
 
+/** A header action in a 48dp frame — the glyph alone was well under the minimum target. */
+@Composable
+private fun HeaderIcon(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    tint: Color = VoiidColor.textPrimary,
+    size: androidx.compose.ui.unit.Dp = 24.dp,
+    onClick: () -> Unit,
+) {
+    Box(
+        Modifier.size(48.dp).softClickable(scale = 0.9f, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, label, tint = tint, modifier = Modifier.size(size))
+    }
+}
+
+/** 28dp circle: the real avatar when there is one, the handle's initial when there is not. */
+@Composable
+private fun MyCreatorAvatar(me: CreatorService.Profile) {
+    if (me.avatar_url != null) {
+        ClipThumbnail(
+            url = me.avatar_url,
+            modifier = Modifier.size(28.dp).clip(CircleShape),
+        )
+    } else {
+        Box(
+            Modifier.size(28.dp).clip(CircleShape).background(VoiidColor.fieldFill),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                me.handle.take(1).uppercase(),
+                style = VoiidFont.rounded(13, FontWeight.SemiBold),
+                color = VoiidColor.textSecondary,
+            )
+        }
+    }
+}
+
 @Composable
 private fun ClipTile(
     clip: VClip,
+    modifier: Modifier = Modifier,
     onTap: () -> Unit,
     onRetry: (() -> Unit)? = null,
     onDiscard: (() -> Unit)? = null,
 ) {
     Box(
-        Modifier
+        modifier
             .fillMaxWidth()
             .aspectRatio(9f / 16f)
             .softClickable(scale = 0.98f) { onTap() },
@@ -275,7 +326,7 @@ private fun ClipTile(
             ) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
                     Icon(
                         Icons.Default.WarningAmber, null,
@@ -289,21 +340,42 @@ private fun ClipTile(
                     // This tile previously offered NOTHING — a failed upload was a dead
                     // square with no way to retry it and no way to clear it. Retry comes
                     // first: the video has already cost the user an export.
+                    //
+                    // Both targets are 48dp tall even though the tile is only a third of
+                    // the screen wide. This is the ONE tile where a mis-tap throws away a
+                    // video the user has already waited through an export for, so the
+                    // targets overlap the tile's own tap area rather than being sized to
+                    // the text that labels them.
                     if (onRetry != null) {
-                        Text(
-                            "Retry",
-                            style = VoiidFont.rounded(10, FontWeight.SemiBold),
-                            color = Color.White,
-                            modifier = Modifier.softClickable(scale = 0.9f, onClick = onRetry),
-                        )
+                        Box(
+                            Modifier
+                                .sizeIn(minWidth = 64.dp, minHeight = 48.dp)
+                                .padding(top = 2.dp)
+                                .clip(CircleShape)
+                                .background(VoiidColor.fieldFill)
+                                .softClickable(scale = 0.92f, onClick = onRetry),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                "Retry",
+                                style = VoiidFont.rounded(12, FontWeight.SemiBold),
+                                color = VoiidColor.textPrimary,
+                            )
+                        }
                     }
                     if (onDiscard != null) {
-                        Text(
-                            "Dismiss",
-                            style = VoiidFont.rounded(10),
-                            color = Color.White.copy(alpha = 0.7f),
-                            modifier = Modifier.softClickable(scale = 0.9f, onClick = onDiscard),
-                        )
+                        Box(
+                            Modifier
+                                .sizeIn(minWidth = 64.dp, minHeight = 48.dp)
+                                .softClickable(scale = 0.92f, onClick = onDiscard),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                "Dismiss",
+                                style = VoiidFont.rounded(12),
+                                color = Color.White.copy(alpha = 0.75f),
+                            )
+                        }
                     }
                 }
             }
@@ -330,18 +402,27 @@ private fun ClipTile(
 /** One of the two feed-scope pills. Filled when selected, quiet when not. */
 @Composable
 private fun ScopePill(label: String, selected: Boolean, onClick: () -> Unit) {
+    // The PILL is unchanged — this is the treatment iOS is being aligned TO. What is new is
+    // the frame around it: the tap area is 48dp tall while the drawn capsule stays ~34dp, so
+    // the control meets the minimum target without growing into a slab.
     Box(
         Modifier
-            .clip(RoundedCornerShape(com.voiid.app.ui.theme.VoiidRadius.pill))
-            .background(if (selected) VoiidColor.primary else VoiidColor.fieldFill)
-            .softClickable(scale = 0.96f, onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 7.dp),
+            .sizeIn(minHeight = 48.dp)
+            .softClickable(scale = 0.96f, onClick = onClick),
+        contentAlignment = Alignment.Center,
     ) {
-        Text(
-            label,
-            style = VoiidFont.rounded(14, FontWeight.SemiBold),
-            color = if (selected) VoiidColor.textOnPrimary else VoiidColor.textSecondary,
-        )
+        Box(
+            Modifier
+                .clip(RoundedCornerShape(VoiidRadius.pill))
+                .background(if (selected) VoiidColor.primary else VoiidColor.fieldFill)
+                .padding(horizontal = 16.dp, vertical = 7.dp),
+        ) {
+            Text(
+                label,
+                style = VoiidFont.rounded(14, FontWeight.SemiBold),
+                color = if (selected) VoiidColor.textOnPrimary else VoiidColor.textSecondary,
+            )
+        }
     }
 }
 
@@ -355,11 +436,13 @@ private fun FollowingFeed(
     creators: com.voiid.app.model.CreatorStore,
     gridState: androidx.compose.foundation.lazy.grid.LazyGridState,
     modifier: Modifier,
-    onOpenCreator: (String) -> Unit,
+    onOpenClip: (Int) -> Unit,
+    onExplore: () -> Unit,
 ) {
     val haptics = LocalVoiidHaptics.current
     val rows = creators.following
     val error = creators.followingError
+    val entrance = rememberGridEntrance(ready = rows.isNotEmpty())
 
     when {
         error != null && rows.isEmpty() ->
@@ -372,22 +455,11 @@ private fun FollowingFeed(
         creators.followingLoading && rows.isEmpty() -> ClipsGridSkeleton(modifier = modifier)
 
         rows.isEmpty() && creators.followingLoadedOnce ->
-            Column(
-                modifier.padding(top = 80.dp, start = 24.dp, end = 24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text(
-                    "Nothing here yet",
-                    style = VoiidFont.rounded(17, FontWeight.SemiBold),
-                    color = VoiidColor.textPrimary,
-                )
-                Text(
-                    "Clips from creators you follow will show up here.",
-                    style = VoiidFont.rounded(15),
-                    color = VoiidColor.textSecondary,
-                )
-            }
+            ClipsEmptyState(
+                kind = ClipsEmptyKind.FollowingNobody,
+                onAction = onExplore,
+                modifier = modifier,
+            )
 
         else -> LazyVerticalGrid(
             columns = GridCells.Fixed(3),
@@ -396,15 +468,19 @@ private fun FollowingFeed(
             verticalArrangement = Arrangement.spacedBy(2.dp),
             horizontalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            items(rows, key = { it.id }) { clip ->
+            itemsIndexed(rows, key = { _, c -> c.id }) { index, clip ->
                 Box(
-                    Modifier.aspectRatio(9f / 16f).softClickable(scale = 0.97f) {
-                        haptics.tap()
-                        // Tapping a following-feed tile opens its creator. The fullscreen
-                        // pager is driven by an index into ClipsStore's own page, which this
-                        // list is not part of, so it cannot be reused here.
-                        clip.author_handle?.let(onOpenCreator)
-                    }
+                    Modifier
+                        .aspectRatio(9f / 16f)
+                        .clipTileEntrance(index, entrance)
+                        .softClickable(scale = 0.97f) {
+                            haptics.tap()
+                            // Opens the CLIP now, not its creator. The pager takes an
+                            // injected list, so this feed's own rows can drive it — the
+                            // old creator-page detour existed only because the pager could
+                            // index nothing but ClipsStore's page.
+                            onOpenClip(index)
+                        }
                 ) {
                     ClipThumbnail(url = clip.thumb_url, modifier = Modifier.fillMaxSize())
                     Box(

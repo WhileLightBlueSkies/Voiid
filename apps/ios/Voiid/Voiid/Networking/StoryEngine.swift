@@ -304,7 +304,12 @@ final class StoryEngine: ObservableObject {
     /// URL, or nil on a decrypt failure / R2 404 (the caller shows the right failure copy).
     @discardableResult
     func ensureDownloaded(_ story: Story) async -> URL? {
-        if let path = story.localPath, FileManager.default.fileExists(atPath: path) {
+        // Re-read the row rather than trusting the caller's copy. The viewer holds a `Story`
+        // snapshotted when its page was built, so a story downloaded since then still looks
+        // undownloaded to it — with the prefetch window now revisiting the same stories on
+        // every step, that meant paying for the same blob again and again.
+        let known = StoryStore.story(story.id)?.localPath ?? story.localPath
+        if let path = known, FileManager.default.fileExists(atPath: path) {
             return URL(fileURLWithPath: path)
         }
         StoryStore.setDownload(story.id, state: .downloading)

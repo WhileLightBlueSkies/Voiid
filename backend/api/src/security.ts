@@ -3,6 +3,17 @@ import type { Request, Response, NextFunction } from 'express';
 import { query } from './db';
 import { redis } from './redis';
 
+/**
+ * The caller's address, as resolved by Express against `trust proxy` (set in index.ts).
+ *
+ * Never parse x-forwarded-for by hand: the header is client-supplied and Express is the
+ * only thing here that knows which hops are ours. Returns null rather than a placeholder
+ * so an unknown address is stored as SQL NULL instead of a string that looks like data.
+ */
+export function clientIp(req: Request): string | null {
+  return req.ip || req.socket?.remoteAddress || null;
+}
+
 type SecurityEventType =
   | 'failed_login' | 'otp_abuse' | 'api_abuse'
   | 'device_link' | 'suspicious_session' | 'anomalous_traffic';
@@ -28,7 +39,10 @@ export async function logSecurityEvent(
  */
 export function rateLimit(opts: { max: number; windowSeconds: number; bucket: string }) {
   return async (req: Request, res: Response, next: NextFunction) => {
-    const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
+    // req.ip, not a hand-parsed x-forwarded-for: Express resolves it against the app's
+    // `trust proxy` setting (index.ts), so a client that reaches the port directly cannot
+    // hand itself a fresh bucket — or push someone else's address over the limit.
+    const ip = clientIp(req) ?? 'unknown';
     const key = `ratelimit:${opts.bucket}:${ip}`;
     try {
       const count = await redis.incr(key);

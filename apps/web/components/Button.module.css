@@ -1,0 +1,103 @@
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55em;
+  border-radius: var(--radius-pill);
+  border: 1px solid transparent;
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.005em;
+  line-height: 1.2;
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+
+/* 44px minimum target on the small size — this is read on phones. */
+.md {
+  font-size: var(--text-small);
+  padding: 12px 20px;
+  min-height: 44px;
+}
+
+.lg {
+  font-size: var(--text-body);
+  padding: 15px 26px;
+  min-height: 52px;
+}
+
+.icon {
+  display: inline-flex;
+  margin-inline-start: -0.15em;
+}
+
+.arrow {
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+
+.btn:hover .arrow {
+  transform: translateX(3px);
+}
+
+/* ---- primary ------------------------------------------------------------- */
+.primary {
+  background: var(--color-primary);
+  color: var(--color-text-on-primary);
+}
+.primary:hover {
+  background: color-mix(in srgb, var(--color-primary) 86%, var(--color-text));
+}
+
+/* ---- secondary ----------------------------------------------------------- */
+.secondary {
+  background: transparent;
+  color: var(--color-text);
+  border-color: var(--color-border);
+}
+.secondary:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 7%, transparent);
+}
+
+/* ---- ghost --------------------------------------------------------------- */
+.ghost {
+  background: transparent;
+  color: var(--hue, var(--color-primary));
+  padding-inline: 0;
+  min-height: 0;
+}
+.ghost:hover {
+  color: color-mix(in srgb, var(--hue, var(--color-primary)) 80%, var(--color-text));
+}
+
+/* ---- accent — THE amber moment. One per page. ---------------------------- */
+.accent {
+  background: var(--color-accent);
+  color: var(--color-text-on-accent);
+}
+.accent:hover {
+  background: color-mix(in srgb, var(--color-accent) 88%, #ffffff);
+}
+
+/* Press feedback is a 1px settle, not a bounce; it is suppressed under
+ * prefers-reduced-motion by the global rule. */
+.btn:active {
+  transform: translateY(1px);
+}
+
+/* ---- row ----------------------------------------------------------------- */
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs) var(--space-sm);
+}
+
+.rowCenter {
+  justify-content: center;
+}

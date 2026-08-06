@@ -30,15 +30,16 @@ enum LocationStore {
             try database.execute(sql: """
                 INSERT INTO location_shares
                     (id, kind, direction, conversation_id, peer_user_id,
-                     started_at, expires_at, ended_at, cadence_seconds, state)
-                VALUES (?, 'conversation', 'out', ?, NULL, ?, ?, NULL, ?, 'live')
+                     started_at, expires_at, ended_at, cadence_seconds, state, is_group)
+                VALUES (?, 'conversation', 'out', ?, NULL, ?, ?, NULL, ?, 'live', ?)
                 ON CONFLICT(id) DO UPDATE SET
                     expires_at = excluded.expires_at,
                     cadence_seconds = excluded.cadence_seconds,
+                    is_group = excluded.is_group,
                     ended_at = NULL,
                     state = 'live'
                 """, arguments: [id, conversationId, nowSeconds(),
-                                 secs(expiresAtMillis) ?? nowSeconds(), cadenceSeconds])
+                                 secs(expiresAtMillis) ?? nowSeconds(), cadenceSeconds, isGroup])
             for uid in targets {
                 try database.execute(sql: """
                     INSERT INTO location_share_targets (share_id, user_id, revoked_at)
@@ -94,7 +95,7 @@ enum LocationStore {
         let now = nowSeconds()
         let rows = db.read { database -> [Row] in
             try Row.fetchAll(database, sql: """
-                SELECT s.id, s.conversation_id, s.expires_at, s.cadence_seconds,
+                SELECT s.id, s.conversation_id, s.expires_at, s.cadence_seconds, s.is_group,
                        (SELECT COUNT(*) FROM location_share_targets t
                           WHERE t.share_id = s.id AND t.revoked_at IS NULL) AS audience
                   FROM location_shares s
@@ -108,7 +109,8 @@ enum LocationStore {
             let expSecs: Int64 = row["expires_at"] ?? now
             let cadence: Int = row["cadence_seconds"] ?? 15
             let audience: Int = row["audience"] ?? 0
-            return OutboundShare(id: id, conversationId: convId ?? "", isGroup: false,
+            let isGroup: Bool = row["is_group"] ?? false
+            return OutboundShare(id: id, conversationId: convId ?? "", isGroup: isGroup,
                                  audienceCount: audience,
                                  expiresAt: Date(timeIntervalSince1970: TimeInterval(expSecs)),
                                  cadenceSeconds: cadence)

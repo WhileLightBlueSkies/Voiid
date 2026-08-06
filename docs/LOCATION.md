@@ -329,9 +329,23 @@ Runtime:
 - `showsBackgroundLocationIndicator = true` — we *want* the system blue pill. It is free privacy UX.
 - `pausesLocationUpdatesAutomatically = false` while a share is active; `activityType = .other`.
 - Live share: `desiredAccuracy = kCLLocationAccuracyNearestTenMeters`, `distanceFilter = 25`.
-- Map presence: `startMonitoringSignificantLocationChanges()` (~500 m / ~5 min, essentially free — it
-  rides the cell/wifi radio the OS already runs) plus one `requestLocation()` on foreground.
-  **No `startUpdatingLocation` for the Map, ever.**
+- Map presence: **both** CoreLocation streams, each for what it is actually good at, plus one
+  `requestLocation()` on foreground so the map is never blank on open:
+  - `startUpdatingLocation()` **in the foreground only**, gated by the 25 m `distanceFilter` and
+    `kCLLocationAccuracyNearestTenMeters`. This is dropped (`stopUpdatingLocation`) the moment the app
+    backgrounds, so it never holds the GPS or shows the blue pill for a map nobody is looking at.
+  - `startMonitoringSignificantLocationChanges()` for background and relaunch (~500 m / ~5 min,
+    essentially free — it rides the cell/wifi radio the OS already runs). It is the **only** API that
+    relaunches a terminated app, which is what stops the pin freezing where the user last had Voiid
+    open. Background delivery of it requires `authorizedAlways`; with WhenInUse the stream simply
+    pauses until the next foreground, which is not fatal.
+
+  The spec previously said *"no `startUpdatingLocation` for the Map, ever"*. Significant-change alone is
+  a ~500 m "you have moved to a new area" signal, so under that rule the 25 m filter was dead code and a
+  street-level pin was unreachable — the Map looked permanently coarser than the constants above claim.
+  What the rule was really protecting against is the **continuous high-rate profile** (`…AccuracyBest`,
+  no distance filter, running in the background), and that stays out of the Map: it is the 4–8 %/h
+  live-share profile and belongs only to a timer-bounded share.
 
 Authorization ladder:
 
@@ -738,6 +752,14 @@ Creating a share auto-ends any prior active share with the same `(owner, kind, c
 
 `DELETE /shares/:id` also publishes a `loc_stop` routing signal to each target's `channel:user:<id>` and
 `hdel`s the last-fix buffer.
+
+Every API-published `loc_stop` carries two discriminators the receiving client needs, because the same
+frame reaches every location surface: `kind` (`map` | `conversation`) and `reason` (`ended` |
+`superseded`). **`superseded` is not "the sharer went dark"** — it is emitted by the auto-end above when
+the owner recreates their share (adding one person to a map audience, re-arming on foreground), and a
+recipient that erases the key or the cached position on it makes the pin disappear on every re-open. It
+means *retire this share id, the person is still sharing*. Both fields are absent from a `loc_stop`
+relayed client-to-client over the WS, so a receiver must still fall back to its own share bookkeeping.
 
 **No background worker is required.** `expires_at` is on the row and *every read path filters
 `expires_at > now() and ended_at is null`*, so expiry is correct even with no reaper running. Rows are

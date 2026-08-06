@@ -18,7 +18,14 @@ router.post('/register', requireAuth, asyncHandler(async (req, res) => {
        values ($1, $2, $3, $4, $5, $6, $7)
        on conflict (user_id, registration_id)
        do update set identity_public_key = excluded.identity_public_key,
-                     push_token = excluded.push_token, revoked_at = null, updated_at = now()
+                     push_token = excluded.push_token,
+                     -- Every push query requires BOTH token and provider to be non-null.
+                     -- A row first registered before its push token existed has a null
+                     -- provider forever if this only ever runs on insert, so the device
+                     -- stays unreachable no matter how often it re-registers. Coalesced
+                     -- so a later token-less register cannot blank a live provider.
+                     push_provider = coalesce(excluded.push_provider, devices.push_provider),
+                     revoked_at = null, updated_at = now()
        returning id`,
     [user_id, platform, registration_id, b64(identity_public_key), device_name, push_token, push_provider]
   );
@@ -98,9 +105,22 @@ router.get('/:user_id', requireAuth, async (req, res) => {
 });
 
 // DELETE /devices/:device_id — revocation: invalidate immediately (Section 4.3)
+//
+// Scoped to the CALLER's own devices. Device ids are not secret — GET /devices/:user_id
+// hands them to any authenticated caller — so an unscoped revoke would let anyone knock
+// out anyone else's device and delete its one-time prekeys, denying the victim inbound
+// sessions. The only legitimate caller is the user's own linked-devices screen.
 router.delete('/:device_id', requireAuth, async (req, res) => {
-  await query(`update devices set revoked_at = now() where id = $1`, [req.params.device_id]);
-  // prekeys cascade-cleaned by removing the device's keys
+  const { user_id } = (req as any).auth;
+  const rows = await query<{ id: string }>(
+    `update devices set revoked_at = now()
+       where id = $1 and user_id = $2
+       returning id`,
+    [req.params.device_id, user_id]
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'device not found' });
+  // prekeys cascade-cleaned by removing the device's keys — only once the revoke matched,
+  // so a miss never touches another user's prekeys.
   await query(`delete from one_time_prekeys where device_id = $1`, [req.params.device_id]);
   res.json({ revoked: true });
 });

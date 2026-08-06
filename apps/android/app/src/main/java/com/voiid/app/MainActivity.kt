@@ -111,6 +111,10 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         com.voiid.app.net.CallManager.onHostForeground()
+        // Re-checked on every foreground, not just at launch: both the notification permission
+        // and (on Android 14+) the full-screen-intent one are user-revocable from Settings, and
+        // the banner that explains a phone which can't ring has to clear itself when they fix it.
+        com.voiid.app.net.CallRingCapability.refresh(this)
         // MAP PRESENCE FOLLOWS THE APP, not the Map tab.
         //
         // These were called from MapTabView's DisposableEffect, which fires when you leave
@@ -149,6 +153,19 @@ class MainActivity : ComponentActivity() {
         intent?.getStringExtra(DeepLinkRouter.EXTRA_CONVERSATION_ID)?.let { DeepLinkRouter.open(it) }
         intent?.getStringExtra(DeepLinkRouter.EXTRA_GROUP_CALL_CONVERSATION)?.let { conv ->
             DeepLinkRouter.joinGroupCall(conv, intent.getStringExtra(DeepLinkRouter.EXTRA_GROUP_CALL_KIND) == "video")
+        }
+        // Accept from the ring notification lands here, not in a BroadcastReceiver — see
+        // CallForegroundService.acceptActivityIntent. The extra is removed as it is read: a
+        // singleTop Activity is handed the same Intent object again on every later resume, and
+        // a lingering call id would re-answer a call that is long over.
+        val accepted = intent?.getStringExtra(DeepLinkRouter.EXTRA_ACCEPT_CALL_ID)
+        val acceptedWaiting = intent?.getStringExtra(DeepLinkRouter.EXTRA_ACCEPT_WAITING_CALL_ID)
+        if (accepted != null || acceptedWaiting != null) {
+            intent?.removeExtra(DeepLinkRouter.EXTRA_ACCEPT_CALL_ID)
+            intent?.removeExtra(DeepLinkRouter.EXTRA_ACCEPT_WAITING_CALL_ID)
+            com.voiid.app.net.CallManager.init(applicationContext)
+            if (accepted != null) DeepLinkRouter.answerCall(accepted)
+            else DeepLinkRouter.answerCall(acceptedWaiting!!, waiting = true)
         }
     }
 
@@ -198,6 +215,20 @@ private fun VoiidRoot() {
 
     // Fetch remote config on launch (version negotiation + feature flags + force-update).
     LaunchedEffect(Unit) { ConfigService.fetch(context) }
+
+    // Answer a call the user accepted from the ring notification. Deliberately here rather
+    // than in the Activity's intent handling: by the time this composes the window is up, so
+    // the foreground service the answer starts is a legal foreground start.
+    val pendingAnswer by DeepLinkRouter.pendingCallAnswer.collectAsState()
+    LaunchedEffect(pendingAnswer) {
+        val answer = pendingAnswer ?: return@LaunchedEffect
+        DeepLinkRouter.consumeCallAnswer()
+        val calls = com.voiid.app.net.CallManager
+        if (answer.waiting) calls.acceptWaiting(answer.callId) else calls.accept(answer.callId)
+        // The process may have been killed between the ring and the tap, leaving nothing to
+        // answer — the ongoing ring notification would then sit there forever.
+        com.voiid.app.net.CallForegroundService.cancelIncoming(context)
+    }
 
     val updateRequired by UpdateGate.required.collectAsState()
     if (updateRequired) {

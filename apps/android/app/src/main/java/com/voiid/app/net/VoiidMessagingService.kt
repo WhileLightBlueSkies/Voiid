@@ -59,42 +59,55 @@ class VoiidMessagingService : FirebaseMessagingService() {
         // Incoming 1:1 call: wake the incoming-call UI (full-screen ring). The matching
         // call_offer arrives over the WebSocket once the app/socket is live.
         if (data["type"] == "call") {
+            val ctx = applicationContext
+            // A signed-out device whose token the server has not cleared yet must not raise a
+            // ring it cannot possibly answer — the accept path needs a JWT to bring the socket
+            // up. The story branch below has always checked this; the call branches did not.
+            if (!TokenStore.get(ctx).isAuthenticated) return
             val callId = data["call_id"] ?: return
             val callerId = data["caller_id"] ?: return
             val conversationId = data["conversation_id"]
             val kind = if (data["call_kind"] == "video") com.voiid.app.main.CallKind.VIDEO
             else com.voiid.app.main.CallKind.VOICE
-            val ctx = applicationContext
             CallManager.init(ctx)
-            // The push deliberately carries NO caller name (that would tell Google who calls
-            // whom). Resolve it on-device: the local directory first — it needs no network and
-            // works on a process this push just cold-started — and only then the conversation
-            // lookup. Never the raw caller id: a UUID on the ring screen is the bug being fixed.
-            val name = runBlocking {
+            // RING FIRST, NAME SECOND. The push deliberately carries no caller name (that would
+            // tell Google who calls whom), and resolving one used to block here on the directory
+            // load plus a 6-second network lookup — up to six seconds of a 45-second ring window
+            // during which a cold-started callee saw and heard nothing at all. Ring with what the
+            // local mirror can answer synchronously (never the raw caller id — see
+            // [UserDirectory]) and refine it below. Signal-Android starts its service before any
+            // fetch work for exactly this reason.
+            UserDirectory.init(ctx)
+            CallManager.onRingPush(callId, callerId, UserDirectory.displayName(callerId), kind, conversationId)
+            scope.launch {
                 UserDirectory.ready(ctx)
-                UserDirectory.user(callerId)?.displayName()
+                val better = UserDirectory.user(callerId)?.displayName()
                     ?: withTimeoutOrNull(6_000L) {
                         conversationId?.let { runCatching { ChatService(ctx).resolvePeer(it).title }.getOrNull() }
                     }?.takeIf { it.isNotBlank() && it != callerId }
-                    ?: UserDirectory.displayName(callerId)
+                CallManager.refinePeerName(callId, better)
             }
-            CallManager.onRingPush(callId, callerId, name, kind, conversationId)
             return
         }
 
         // A group call started — post a "join" notification (a group call has no single callee,
         // so this is a tappable invite, not a full-screen 1:1 ring).
         if (data["type"] == "group_call") {
+            val ctx = applicationContext
+            if (!TokenStore.get(ctx).isAuthenticated) return
             val conversationId = data["conversation_id"] ?: return
             val video = data["call_kind"] == "video"
-            val ctx = applicationContext
-            val name = runBlocking {
+            // Same reasoning as the 1:1 branch: post immediately with no title (the notification
+            // reads "Group call"), then re-post in place — same id, so it updates — once the
+            // conversation name is known.
+            Notifier.postGroupCallNotification(ctx, conversationId, null, video)
+            scope.launch {
                 UserDirectory.ready(ctx)
-                withTimeoutOrNull(6_000L) {
-                    conversationId.let { runCatching { ChatService(ctx).resolvePeer(it).title }.getOrNull() }
-                }?.takeIf { it.isNotBlank() } ?: "Group call"
+                val name = withTimeoutOrNull(6_000L) {
+                    runCatching { ChatService(ctx).resolvePeer(conversationId).title }.getOrNull()
+                }?.takeIf { it.isNotBlank() } ?: return@launch
+                Notifier.postGroupCallNotification(ctx, conversationId, name, video)
             }
-            Notifier.postGroupCallNotification(ctx, conversationId, name, video)
             return
         }
 
@@ -323,8 +336,14 @@ object Notifier {
             .onFailure { android.util.Log.e("VOIID", "notify failed", it) }
     }
 
-    /** A tappable "join group call" notification. Tapping opens the app and joins the room. */
-    fun postGroupCallNotification(ctx: Context, conversationId: String, name: String, video: Boolean) {
+    /**
+     * A tappable "join group call" notification. Tapping opens the app and joins the room.
+     *
+     * [name] is null on the first post, before the conversation title has resolved — passing
+     * a placeholder instead would permanently name this conversation's notification channel
+     * "Group call", since a channel's name is fixed at creation.
+     */
+    fun postGroupCallNotification(ctx: Context, conversationId: String, name: String?, video: Boolean) {
         ensureChannel(ctx, conversationId, name)
         val intent = Intent(ctx, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
@@ -337,7 +356,7 @@ object Notifier {
         )
         val notification = NotificationCompat.Builder(ctx, channelId(conversationId))
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle(name)
+            .setContentTitle(name ?: "Group call")
             .setContentText(if (video) "Incoming group video call · tap to join" else "Incoming group call · tap to join")
             .setAutoCancel(true)
             .setCategory(NotificationCompat.CATEGORY_CALL)

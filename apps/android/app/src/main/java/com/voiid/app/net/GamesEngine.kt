@@ -494,9 +494,15 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
             // push that woke their device said only "New message".
             val meta = GameInvite.Meta(
                 game = gameName,
-                from = myUserId?.let {
-                    com.voiid.app.store.UserDirectory.displayName(it, "")
-                }.orEmpty(),
+                // "Unknown" is the directory's INTERNAL sentinel for "no row", not a name — and on
+                // a fresh install our own row isn't written until the first profile fetch lands,
+                // so an invite sent before then would literally read "🎮 Unknown invited you to…".
+                // Collapsing it to empty lets GameInvite.encode's existing blank-guard say
+                // "Someone", which is what the sender meant.
+                from = myUserId
+                    ?.let { com.voiid.app.store.UserDirectory.displayName(it, "") }
+                    ?.takeIf { it != "Unknown" }
+                    .orEmpty(),
                 overs = options["overs"] ?: 0,
                 format = if (slug == "rps") "first to 3" else "",
                 sentAt = System.currentTimeMillis(),

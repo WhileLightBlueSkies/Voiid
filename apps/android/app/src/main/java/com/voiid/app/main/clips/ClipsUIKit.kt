@@ -1,5 +1,6 @@
 package com.voiid.app.main.clips
 
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -9,10 +10,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -20,7 +23,9 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.filled.WarningAmber
+import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.PlayCircleOutline
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -33,12 +38,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.voiid.app.ui.components.LocalVoiidHaptics
@@ -46,6 +54,7 @@ import com.voiid.app.ui.components.softClickable
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
+import com.voiid.app.ui.theme.VoiidSpacing
 import kotlinx.coroutines.delay
 
 /**
@@ -186,6 +195,13 @@ fun ClipVideoLoader(
 sealed class ClipsEmptyKind {
     object NoClips : ClipsEmptyKind()
     object NoneFromYou : ClipsEmptyKind()
+
+    /**
+     * You follow nobody yet. A DIFFERENT problem from [NoClips] — there is plenty to watch,
+     * you just have not picked anyone — so it gets its own copy and its own CTA. Offering
+     * "post a clip" here would be a non-sequitur.
+     */
+    object FollowingNobody : ClipsEmptyKind()
     data class Failed(val message: String) : ClipsEmptyKind()
 }
 
@@ -199,23 +215,52 @@ fun ClipsEmptyState(
     val (title, subtitle) = when (kind) {
         is ClipsEmptyKind.NoClips -> "No clips yet" to "Be the first to post one."
         is ClipsEmptyKind.NoneFromYou -> "You haven't posted a clip" to "Your clips will appear here."
+        is ClipsEmptyKind.FollowingNobody ->
+            "Nothing here yet" to "Follow a few creators and their clips will land here."
         is ClipsEmptyKind.Failed -> "Couldn't load clips" to kind.message
     }
-    val actionTitle = if (kind is ClipsEmptyKind.Failed) "Retry" else "Create clip"
+    val actionTitle = when (kind) {
+        is ClipsEmptyKind.Failed -> "Retry"
+        is ClipsEmptyKind.FollowingNobody -> "Explore creators"
+        else -> "Create clip"
+    }
+    val icon: ImageVector = when (kind) {
+        is ClipsEmptyKind.Failed -> Icons.Default.WarningAmber
+        is ClipsEmptyKind.FollowingNobody -> Icons.Outlined.Groups
+        else -> Icons.Outlined.PlayCircleOutline
+    }
+
+    // A slow breath on the icon. An empty screen with nothing moving on it reads as a
+    // screen that failed to load; this is the cheapest signal that it is alive and
+    // deliberate. Failure is deliberately EXCLUDED — a pulsing warning implies work is
+    // still happening when in fact it stopped.
+    val pulse = rememberInfiniteTransition(label = "emptyPulse")
+    val iconAlpha by pulse.animateFloat(
+        initialValue = 1f,
+        targetValue = if (kind is ClipsEmptyKind.Failed) 1f else 0.55f,
+        animationSpec = infiniteRepeatable(tween(1400), RepeatMode.Reverse),
+        label = "emptyPulseAlpha",
+    )
 
     Column(
         modifier.fillMaxWidth().padding(top = 80.dp, start = 24.dp, end = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Icon(
-            if (kind is ClipsEmptyKind.Failed) Icons.Default.WarningAmber
-            else Icons.Outlined.PlayCircleOutline,
-            null,
-            tint = VoiidColor.textSecondary.copy(alpha = 0.5f),
-            modifier = Modifier.size(44.dp),
-        )
-        Text(title, style = VoiidFont.rounded(18, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+        Box(
+            Modifier.size(72.dp).clip(CircleShape).background(VoiidColor.fieldFill),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                icon, null,
+                // Primary, not a dimmed grey: the disc already carries the "quiet" job, and a
+                // faded icon inside a faded circle left nothing for the eye to land on.
+                tint = if (kind is ClipsEmptyKind.Failed) VoiidColor.error else VoiidColor.primary,
+                modifier = Modifier.size(32.dp).alpha(iconAlpha),
+            )
+        }
+        Spacer(Modifier.height(VoiidSpacing.xs))
+        Text(title, style = VoiidFont.rounded(22, FontWeight.SemiBold), color = VoiidColor.textPrimary)
         Text(
             subtitle,
             style = VoiidFont.rounded(15),
@@ -226,10 +271,12 @@ fun ClipsEmptyState(
             Box(
                 Modifier
                     .padding(top = 8.dp)
+                    .heightIn(min = 44.dp)
                     .clip(CircleShape)
                     .background(VoiidColor.primary)
                     .softClickable(scale = 0.95f) { haptics.tap(); onAction() }
-                    .padding(horizontal = 24.dp, vertical = 12.dp)
+                    .padding(horizontal = 24.dp, vertical = 12.dp),
+                contentAlignment = Alignment.Center,
             ) {
                 Text(
                     actionTitle,
@@ -239,6 +286,63 @@ fun ClipsEmptyState(
             }
         }
     }
+}
+
+/**
+ * The verification seal, shared so a creator page and a player chrome cannot draw two
+ * different badges.
+ *
+ * AMBER ([VoiidColor.accent]), never [VoiidColor.primary]: primary is the colour of every
+ * button on a creator page, so a seal drawn in it reads as one more control rather than a
+ * badge. Amber is the palette's scarcity colour — see the SPARK note in Color.kt — which is
+ * exactly the job a verification mark has.
+ */
+@Composable
+fun VerifiedSeal(size: Dp = 16.dp, modifier: Modifier = Modifier) {
+    Icon(
+        Icons.Filled.Verified,
+        "Verified",
+        tint = VoiidColor.accent,
+        modifier = modifier.size(size),
+    )
+}
+
+/**
+ * True while the first page's entrance animation should still play.
+ *
+ * Hoisted out of the tile because a LazyGrid DISPOSES the composables it scrolls past: a
+ * per-tile `remember` would replay the fade every time a tile came back into view, which
+ * reads as flicker rather than an entrance. [ready] should be "the first page has landed".
+ */
+@Composable
+fun rememberGridEntrance(ready: Boolean): Boolean {
+    var played by remember { mutableStateOf(false) }
+    LaunchedEffect(ready) {
+        if (ready && !played) {
+            delay(700)
+            played = true
+        }
+    }
+    return ready && !played
+}
+
+/**
+ * Staggered opacity fade-in for a grid tile. Only the first screenful is staggered — past
+ * that the delay would be dead time on a tile the user has already scrolled to, so the
+ * offset is capped.
+ */
+@Composable
+fun Modifier.clipTileEntrance(index: Int, enabled: Boolean): Modifier {
+    // [enabled] is read only at the first composition of this tile, deliberately: branching
+    // on it would make `remember`/`LaunchedEffect` conditional, and a tile that entered
+    // mid-animation would lose the state driving it.
+    val alpha = remember { Animatable(if (enabled) 0f else 1f) }
+    LaunchedEffect(Unit) {
+        if (!enabled) return@LaunchedEffect
+        delay((index.coerceAtMost(11) * 18).toLong())
+        alpha.animateTo(1f, tween(250))
+    }
+    return this.alpha(alpha.value)
 }
 
 /** Placeholder tiles in the real grid geometry, so nothing reflows when content lands. */

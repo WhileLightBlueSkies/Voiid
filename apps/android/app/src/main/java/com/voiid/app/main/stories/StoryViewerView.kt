@@ -2,6 +2,7 @@ package com.voiid.app.main.stories
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -28,6 +30,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -43,6 +46,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.voiid.app.main.ProfileAvatar
 import com.voiid.app.model.StoriesStore
@@ -54,9 +58,13 @@ import com.voiid.app.ui.components.bouncyClickable
 import com.voiid.app.ui.components.softClickable
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 private const val IMAGE_DURATION_MS = 5_000L
+/** Fraction of the page height a downward drag must pass to dismiss instead of springing back. */
+private const val DISMISS_FRACTION = 0.18f
 private val QUICK_REACTIONS = listOf("❤️", "😂", "😮", "😢", "👏", "🔥")
 
 /**
@@ -77,6 +85,10 @@ fun StoryViewerView(
     val scope = rememberCoroutineScope()
     // Mute preference remembered for the session.
     var muted by remember { mutableStateOf(true) }
+
+    // Full-screen frames are the largest bitmaps the app holds; nothing outside the viewer wants
+    // them at that size, so hand the heap back on the way out.
+    DisposableEffect(Unit) { onDispose { clearStoryFrameCache() } }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
@@ -117,6 +129,8 @@ private fun ContextPage(
     var showViewers by remember { mutableStateOf(false) }
     var chromeVisible by remember { mutableStateOf(true) }
     var replyText by remember(index) { mutableStateOf("") }
+    var dragY by remember { mutableFloatStateOf(0f) }
+    var dragging by remember { mutableStateOf(false) }
 
     val story = context.stories.getOrNull(index) ?: return
 
@@ -156,12 +170,24 @@ private fun ContextPage(
 
     Box(
         Modifier.fillMaxSize().background(Color.Black)
+            .offset { IntOffset(0, dragY.roundToInt()) }
             .pointerInput(context.authorId, index) {
                 detectTapGestures(
                     onPress = {
-                        paused = true; chromeVisible = false
-                        tryAwaitRelease()
-                        paused = false; chromeVisible = true
+                        // Hold-to-pause must outlive the long-press threshold before it does
+                        // anything: pausing on touch-down made every ordinary advance-tap blink
+                        // the chrome off and stall the timer for the duration of the touch.
+                        coroutineScope {
+                            val hold = launch {
+                                kotlinx.coroutines.delay(viewConfiguration.longPressTimeoutMillis)
+                                paused = true; chromeVisible = false
+                            }
+                            tryAwaitRelease()
+                            hold.cancel()
+                        }
+                        // A release also arrives when the drag detector takes the pointer over;
+                        // resuming there would let the story advance out from under the swipe.
+                        if (!dragging) { paused = false; chromeVisible = true }
                     },
                     onTap = { offset ->
                         if (offset.x < size.width / 3f) {
@@ -173,6 +199,22 @@ private fun ContextPage(
                         }
                     },
                 )
+            }
+            // Swipe down to dismiss, following the finger. Its own pointerInput so the vertical
+            // slop is measured independently: a sideways swipe never crosses it, leaving the
+            // enclosing HorizontalPager free to take the context change.
+            .pointerInput(Unit) {
+                detectVerticalDragGestures(
+                    onDragStart = { dragging = true; paused = true },
+                    onDragEnd = {
+                        dragging = false
+                        // `size` is read here, not when the block was launched — it is still zero
+                        // before the first measure pass.
+                        if (dragY > size.height * DISMISS_FRACTION) onClose()
+                        else { dragY = 0f; paused = false; chromeVisible = true }
+                    },
+                    onDragCancel = { dragging = false; dragY = 0f; paused = false; chromeVisible = true },
+                ) { _, dragAmount -> dragY = (dragY + dragAmount).coerceAtLeast(0f) }
             },
     ) {
         // Media

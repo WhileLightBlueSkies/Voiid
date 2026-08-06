@@ -25,8 +25,19 @@ object LocationRelay {
     /** Inbound streamed position fix (WS `loc_update`). ciphertext is base64, opaque. */
     fun interface FixSink { fun onFix(shareId: String, fromUserId: String, ciphertextB64: String, ts: Long) }
 
-    /** Inbound instant stop (WS `loc_stop`), or a server-published revocation signal. */
-    fun interface StopSink { fun onStop(shareId: String, fromUserId: String) }
+    /**
+     * Inbound instant stop (WS `loc_stop`), or a server-published revocation signal.
+     *
+     * [kind] ("map" / "conversation") and [reason] ("ended" / "superseded") are stamped by the
+     * API when it publishes the stop, and are BOTH EMPTY on a stop relayed straight from
+     * another client, which carries neither — so a subscriber must still fall back to its own
+     * bookkeeping and never treat an empty discriminator as a match.
+     *
+     * `superseded` does NOT mean the sharer went dark. It means they replaced the row (adding
+     * to their audience, re-arming on foreground), and erasing their key or last position on
+     * it is the pin-disappears-on-every-reopen bug.
+     */
+    fun interface StopSink { fun onStop(shareId: String, fromUserId: String, kind: String, reason: String) }
 
     /**
      * Inbound DURABLE control message (`_vloc` plaintext off the ratchet): map_key / map_off,
@@ -53,9 +64,9 @@ object LocationRelay {
         for (s in snapshot) runCatching { s.onFix(shareId, fromUserId, ciphertextB64, ts) }
     }
 
-    fun dispatchStop(shareId: String, fromUserId: String) {
+    fun dispatchStop(shareId: String, fromUserId: String, kind: String, reason: String) {
         val snapshot = synchronized(stopSinks) { stopSinks.toList() }
-        for (s in snapshot) runCatching { s.onStop(shareId, fromUserId) }
+        for (s in snapshot) runCatching { s.onStop(shareId, fromUserId, kind, reason) }
     }
 
     fun dispatchControl(plaintextJson: String, fromUserId: String, conversationId: String) {

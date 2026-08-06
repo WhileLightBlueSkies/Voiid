@@ -187,10 +187,25 @@ enum class ClipFilter(val label: String) {
      * preview that lies — and the mismatch only surfaces after upload.
      */
     fun applyToBitmap(src: Bitmap): Bitmap {
-        if (this == NONE) return src
+        val matrix = colorMatrix() ?: return src
         val out = src.copy(Bitmap.Config.ARGB_8888, true)
         val canvas = android.graphics.Canvas(out)
         val paint = android.graphics.Paint()
+        paint.colorFilter = android.graphics.ColorMatrixColorFilter(matrix)
+        canvas.drawBitmap(src, 0f, 0f, paint)
+        return out
+    }
+
+    /**
+     * The look as a single [android.graphics.ColorMatrix], or null for the untouched original.
+     *
+     * Split out of [applyToBitmap] so the LIVE viewfinder can wear the same look without a
+     * second copy of the numbers: the camera preview is a TextureView, and its composite takes
+     * a ColorMatrixColorFilter directly (see ClipCameraView). One definition, three surfaces —
+     * strip thumbnails, cover frame, viewfinder — so they cannot drift apart.
+     */
+    fun colorMatrix(): android.graphics.ColorMatrix? {
+        if (this == NONE) return null
         // ColorMatrix.postConcat composes in the same order effects() chains them.
         val matrix = android.graphics.ColorMatrix()
         when (this) {
@@ -229,9 +244,7 @@ enum class ClipFilter(val label: String) {
             }
             NONE -> Unit
         }
-        paint.colorFilter = android.graphics.ColorMatrixColorFilter(matrix)
-        canvas.drawBitmap(src, 0f, 0f, paint)
-        return out
+        return matrix
     }
 
     /**

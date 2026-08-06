@@ -757,12 +757,22 @@ private fun GameInviteBubble(
                     color = VoiidColor.textSecondary,
                 )
             }
-            meta?.from?.takeIf { it.isNotBlank() && !message.isMine }?.let {
-                Text(
-                    "from $it",
-                    style = VoiidFont.rounded(12),
-                    color = VoiidColor.textSecondary,
-                )
+            // ATTRIBUTION COMES FROM THE ENVELOPE, NOT THE PAYLOAD. `meta.from` is a string the
+            // SENDER wrote, so a modified client could put anyone's name in it — including yours.
+            // The authenticated `senderId` is the only trustworthy identity here, and the local
+            // directory is the only thing that knows what YOU call that person. `meta.from` stays
+            // on the wire (older clients and the pre-marker human line still read it) but survives
+            // here purely as the fallback for a sender not yet in the directory.
+            if (!message.isMine) {
+                val fromName = com.voiid.app.store.UserDirectory
+                    .displayName(message.senderId, meta?.from)
+                if (fromName != "Unknown") {
+                    Text(
+                        "from $fromName",
+                        style = VoiidFont.rounded(12),
+                        color = VoiidColor.textSecondary,
+                    )
+                }
             }
 
             Box(

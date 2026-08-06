@@ -40,6 +40,9 @@ final class E2EManager {
         identity = nil
         _deviceId = nil
         bootstrapped = false
+        // The next account registers a DIFFERENT device row; the token has to be
+        // published against it even though its value did not change.
+        lastUploadedPushToken = nil
     }
 
     private let kc = KeychainData(service: "com.voiid.e2e")
@@ -216,12 +219,59 @@ final class E2EManager {
         return n
     }
 
+    // MARK: - APNs alert token
+    //
+    // `devices.push_token` is what every NON-VoIP wake push is addressed to: message
+    // pushes, the ring fallback the backend uses when VoIP is unconfigured or this
+    // device has no PushKit token, and group-call invites (which have no VoIP path at
+    // all). iOS hands the token over asynchronously and it can change (reinstall,
+    // restore from backup), so it is captured here and re-published when it moves.
+
+    /// Latest APNs alert token as lowercase hex. UserDefaults rather than the Keychain:
+    /// the Keychain survives uninstall, and a resurrected token addresses a dead install.
+    private var pushToken: String? {
+        get { UserDefaults.standard.string(forKey: Self.pushTokenKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.pushTokenKey) }
+    }
+    /// The token the server last accepted — lets us skip no-op re-registrations.
+    private var lastUploadedPushToken: String?
+    private static let pushTokenKey = "voiid.apns_push_token"
+
+    /// Record the token APNs just issued and publish it. Called from the AppDelegate,
+    /// which can fire either side of `bootstrap()` — so this both stores it for the
+    /// register inside bootstrap and, when we already have an identity, re-registers now.
+    func registerPushToken(_ deviceToken: Data) {
+        let hex = deviceToken.map { String(format: "%02x", $0) }.joined()
+        if hex != pushToken {
+            pushToken = hex
+            lastUploadedPushToken = nil
+        }
+        uploadPushTokenIfNeeded()
+    }
+
+    /// Re-publish the stored token when the server hasn't taken it yet. No-ops without a
+    /// token, a JWT (not signed in) or an identity — in that last case bootstrap's own
+    /// `register` carries the token instead. There is no alert-token-only endpoint; the
+    /// device upsert is the single place the backend accepts it.
+    func uploadPushTokenIfNeeded(force: Bool = false) {
+        guard let hex = pushToken, TokenStore.shared.jwt != nil, let id = identity else { return }
+        if !force, lastUploadedPushToken == hex { return }
+        Task {
+            do { _ = try await withTransportRetry { try await self.register(id) } }
+            catch { NSLog("[VOIID] push token publish failed: \(error.localizedDescription)") }
+        }
+    }
+
     // MARK: - Publish to backend
 
     private struct RegisterDeviceBody: Encodable {
         let platform: String
         let registration_id: Int
         let identity_public_key: String
+        // Push routing: attached to the SAME device row (the upsert keys on
+        // (user_id, registration_id)) so the backend can address a wake push here.
+        let push_token: String?
+        let push_provider: String?
     }
     private struct DeviceResponse: Decodable { let device_id: String }
     private struct OTK: Encodable { let key_id: Int; let public_key: String }
@@ -234,13 +284,19 @@ final class E2EManager {
     private func register(_ id: Identity) async throws -> String {
         let identityKey = id.publishBundle(oneTimeKeyCount: 0).identityKey
         try persist(id)
+        // Carry whatever APNs token we already hold, so registration/refresh also
+        // attaches this device's alert-push endpoint in one call (mirrors Android).
+        let token = pushToken
         let dev: DeviceResponse = try await api.request(
             "POST", "devices/register",
             body: RegisterDeviceBody(platform: "ios",
                                      registration_id: registrationId(),
-                                     identity_public_key: identityKey))
+                                     identity_public_key: identityKey,
+                                     push_token: token,
+                                     push_provider: token == nil ? nil : "apns"))
         _deviceId = dev.device_id
         kc.set(dev.device_id, deviceIdName)
+        lastUploadedPushToken = token
         return dev.device_id
     }
 

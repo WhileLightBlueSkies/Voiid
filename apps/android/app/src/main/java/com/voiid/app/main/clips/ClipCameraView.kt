@@ -79,7 +79,7 @@ import java.io.File
 @Composable
 fun ClipCameraView(
     maxSeconds: Int = 90,
-    onDone: (List<File>) -> Unit,
+    onDone: (List<ClipTake>) -> Unit,
     onClose: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -92,7 +92,11 @@ fun ClipCameraView(
     /** Whole seconds already banked in finished segments, plus the live one. */
     var bankedMs by remember { mutableStateOf(0L) }
     var liveMs by remember { mutableStateOf(0L) }
-    val segments = remember { mutableStateListOf<File>() }
+    // ClipTake, not File: each take carries its own measured duration and (once the speed
+    // control lands) its own playback rate, which ClipSegments.concatenate bakes in at export.
+    // Speed is stored rather than applied at capture — re-timing between takes would mean a
+    // transcode mid-shoot and would discard the original footage.
+    val segments = remember { mutableStateListOf<ClipTake>() }
     var errorText by remember { mutableStateOf<String?>(null) }
 
     val previewView = remember { PreviewView(context) }
@@ -164,7 +168,10 @@ fun ClipCameraView(
                             isRecording = false
                             val ok = !event.hasError() && target.length() > 0
                             if (ok) {
-                                segments.add(target)
+                                // liveMs is CameraX's own recordingStats figure for this take —
+                                // authoritative and already measured, so the take is banked
+                                // without a MediaMetadataRetriever round-trip on the main thread.
+                                segments.add(ClipTake(target, speed = 1f, recordedMs = liveMs))
                                 bankedMs += liveMs
                             } else {
                                 runCatching { target.delete() }
@@ -194,7 +201,7 @@ fun ClipCameraView(
             CircleButton(Icons.Default.Close, "Close") {
                 stopRecording()
                 // Discard half-finished takes; nothing here has been handed to the composer.
-                segments.forEach { runCatching { it.delete() } }
+                segments.forEach { runCatching { it.file.delete() } }
                 onClose()
             }
             androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
@@ -266,10 +273,12 @@ fun ClipCameraView(
                     CircleButton(Icons.AutoMirrored.Filled.Undo, "Undo last take") {
                         haptics.tap()
                         val last = segments.removeAt(segments.lastIndex)
-                        // Re-derive the banked total from what remains; subtracting the last
-                        // measured duration would drift after a discarded take.
-                        runCatching { last.delete() }
-                        bankedMs = segments.sumOf { durationMsOf(context, it) }
+                        runCatching { last.file.delete() }
+                        // Re-derived from what remains rather than by subtracting the discarded
+                        // take, which would drift. Each take already knows its own length, so
+                        // this no longer re-probes every file with MediaMetadataRetriever on the
+                        // main thread — that was a stutter on every undo.
+                        bankedMs = segments.sumOf { it.recordedMs }
                     }
                 }
             }

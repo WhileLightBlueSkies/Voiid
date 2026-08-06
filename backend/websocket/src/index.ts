@@ -30,6 +30,23 @@ const pub = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
 const OFFER_BUFFER_TTL = Number(process.env.VOIID_CALL_OFFER_TTL_SECONDS) || 60;
 const offersKey = (userId: string) => `call:offers:${userId}`;
 
+// Trickle ICE needs the same buffer, and losing it fails WORSE than losing the offer.
+// Because the offer is trickle it carries no candidates of its own, so a push-woken callee
+// that receives the buffered offer but none of the caller's candidates is left relying on
+// peer-reflexive discovery — which stalls or fails outright behind symmetric NAT and on
+// TURN-only networks. That is the "rings, accepts, never connects" shape on Android when
+// the process was killed.
+//
+// A LIST per (recipient, call) rather than a JSON array inside the per-user offers hash:
+// candidates arrive as a burst of independent frames, and read-modify-write on a single
+// hash field silently loses one whenever two of them interleave. RPUSH is atomic, so it
+// cannot. Same TTL and same resolution-time cleanup as the offer it belongs to.
+const iceKey = (userId: string, callId: string) => `call:ice:${userId}:${callId}`;
+// Bounded so the relay can never be parked full of arbitrary data. A real session trickles
+// well under this; the trim drops the OLDEST because host candidates gather first and
+// relay/srflx ones — the candidates that actually work behind symmetric NAT — arrive last.
+const ICE_BUFFER_MAX = 64;
+
 // ─────────────────────────────────────────────────────────────────────────────────
 // CALL SIGNALING AUTHORIZATION
 //
@@ -167,9 +184,39 @@ async function flushPendingOffers(userId: string, ws: WebSocket): Promise<void> 
     for (const frame of frames) {
       if (ws.readyState === WebSocket.OPEN) ws.send(frame);
     }
+    // The offer alone is not enough to connect — it is trickle, so it names no candidates.
+    // The hash FIELDS are the call ids, which is exactly the set of calls this device can
+    // still be ringing for, so they double as the lookup for the parked candidates.
+    await flushPendingIce(userId, Object.keys(pending), ws);
   } catch {
     // Never let a Redis hiccup take down the connection — a missed flush degrades to
     // the pre-existing behaviour (caller times out), not a dropped socket.
+  }
+}
+
+/**
+ * Deliver the trickle-ICE candidates parked for calls whose offers were just flushed.
+ *
+ * Called from flushPendingOffers rather than from the connection handler so it is strictly
+ * ordered AFTER the offer: both clients queue candidates that arrive before the remote
+ * description (iOS/Android `pendingRemoteCandidates`), so leading with the offer is not
+ * required for correctness, but it avoids making every push-woken call depend on that path.
+ *
+ * Non-draining for the same reason as the offer buffer: a second device on the account
+ * attaches later and needs the same candidates. Re-delivery is safe — a duplicate
+ * candidate is a no-op for the peer connection.
+ */
+async function flushPendingIce(userId: string, callIds: string[], ws: WebSocket): Promise<void> {
+  for (const callId of callIds) {
+    try {
+      const frames = await pub.lrange(iceKey(userId, callId), 0, -1);
+      for (const frame of frames) {
+        if (ws.readyState === WebSocket.OPEN) ws.send(frame);
+      }
+    } catch {
+      // Degrades to peer-reflexive discovery — where this call was before the buffer
+      // existed — rather than to a dropped socket. Keep going for the other calls.
+    }
   }
 }
 
@@ -424,12 +471,14 @@ wss.on('connection', (ws, req) => {
       // NOTE: sdp/candidate can carry host IPs; they are relayed verbatim but MUST
       // NOT be logged (no info-level logging of these frames anywhere here).
       //
-      // ONE EXCEPTION to "never stored": `call_offer` is buffered in Redis for
-      // OFFER_BUFFER_TTL seconds (see below). Redis pub/sub has no persistence, so an
-      // offer published while the callee has no live socket is dropped forever — the
-      // callee then wakes from a VoIP push, answers, and waits for an offer that no
-      // longer exists (stuck on "Connecting"). The buffer is deleted the moment the
-      // call resolves, and never holds SRTP keys or any message content.
+      // ONE EXCEPTION to "never stored": `call_offer`, and the `call_ice` candidates
+      // that belong to it, are buffered in Redis for OFFER_BUFFER_TTL seconds (see
+      // below). Redis pub/sub has no persistence, so a frame published while the callee
+      // has no live socket is dropped forever — the callee then wakes from a VoIP push,
+      // answers, and waits for an offer that no longer exists (stuck on "Connecting"),
+      // or gets the offer but none of the candidates and never completes ICE. The
+      // buffer is deleted the moment the call resolves, and never holds SRTP keys or any
+      // message content.
       // `call_ringing` is what lets the CALLER hear a ringback tone. The tone itself
       // is played locally on the caller's device (server-generated ringback would mean
       // streaming audio, which is wrong for a P2P/E2EE app) — this frame only tells the
@@ -492,6 +541,27 @@ wss.on('connection', (ws, req) => {
             pub.hset(key, msg.call_id, out);
             pub.expire(key, OFFER_BUFFER_TTL);
           }
+          // Park the caller's candidates alongside that offer, for exactly as long as the
+          // offer is parked. The `hexists` gate is what keeps this purposeful: candidates
+          // are only worth holding for a call whose offer is still waiting to be collected
+          // (a callee mid-wake), and once the call resolves the offer is hdel'd — so this
+          // stops buffering at the same instant rather than holding candidates for a call
+          // that is already up or already dead.
+          if (msg.type === 'call_ice') {
+            const callId = msg.call_id as string;
+            void pub
+              .hexists(offersKey(toUserId), callId)
+              .then((parked) => {
+                if (!parked) return;
+                const key = iceKey(toUserId, callId);
+                pub.rpush(key, out);
+                pub.ltrim(key, -ICE_BUFFER_MAX, -1);
+                pub.expire(key, OFFER_BUFFER_TTL);
+              })
+              .catch(() => {
+                // Unbuffered is the pre-existing behaviour; never surface as a rejection.
+              });
+          }
           // The call resolved (or died) — drop any buffered offer immediately rather
           // than letting it sit out its TTL and re-ring a settled call on reconnect.
           if (
@@ -509,6 +579,9 @@ wss.on('connection', (ws, req) => {
             // is free.
             pub.hdel(offersKey(userId), msg.call_id);
             pub.hdel(offersKey(msg.to_user_id), msg.call_id);
+            // Candidates carry host IPs just like the SDP does, so they die with the offer
+            // and in both directions for the same reason.
+            pub.del(iceKey(userId, msg.call_id), iceKey(msg.to_user_id, msg.call_id));
 
             // …and tell the sender's OWN other devices that this call is settled.
             //

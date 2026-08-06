@@ -99,7 +99,8 @@ final class LocationShareEngine: ObservableObject {
         NotificationCenter.default.addObserver(forName: .voiidLocationRelayStop, object: nil,
                                                queue: .main) { [weak self] note in
             guard let sid = note.userInfo?["share_id"] as? String else { return }
-            Task { @MainActor in self?.handleInboundStop(shareId: sid) }
+            let kind = (note.userInfo?["kind"] as? String) ?? ""
+            Task { @MainActor in self?.handleInboundStop(shareId: sid, kind: kind) }
         }
         reloadFromStore()
         resumeOutboundIfNeeded()
@@ -118,11 +119,13 @@ final class LocationShareEngine: ObservableObject {
         for share in LocationStore.activeOutbound() where emitting[share.id] == nil {
             let targets = LocationStore.targets(shareId: share.id)
             guard !targets.isEmpty, LocationKeyStore.shared.key(shareId: share.id) != nil else { continue }
-            // isGroup can't be recovered precisely after a cold start, so infer it (a share
-            // with more than one recipient is a group). The durable stop is best-effort
-            // anyway — the WS stop + expiresAt are the real guarantees.
+            // isGroup comes off the row, not from the recipient count: a group of exactly two
+            // has one other member, and inferring "1 recipient ⇒ 1:1" routed its durable
+            // `live_stop` down the 1:1 ratchet carrying the GROUP conversation id, where it
+            // was lost. (The WS stop and expiresAt still covered it, which is why this only
+            // ever showed up for an offline recipient.)
             emitting[share.id] = Emit(recipientIds: targets, cadenceSeconds: share.cadenceSeconds,
-                                      isGroup: targets.count > 1, conversationId: share.conversationId,
+                                      isGroup: share.isGroup, conversationId: share.conversationId,
                                       seq: Int(Date().timeIntervalSince1970))
             resumedAny = true
         }
@@ -325,7 +328,18 @@ final class LocationShareEngine: ObservableObject {
         version &+= 1
     }
 
-    private func handleInboundStop(shareId: String) {
+    /// `kind` is "map" / "conversation" when the API stamped it, "" on a client-relayed stop.
+    private func handleInboundStop(shareId: String, kind: String = "") {
+        // OWNERSHIP GUARD. Every location surface consumes this notification, so a friend's
+        // Map ghost lands here too — and this used to run its full teardown on it. That is a
+        // no-op only by accident: conversation keys are filed under the share id in a separate
+        // Keychain service and the Map's share ids are never in that table, so the delete and
+        // the row update both miss. A future key-naming change or an upsert on the store would
+        // silently turn that accident into cross-feature teardown, which is precisely the bug
+        // the Map side already had to fix. Act only on a share we actually hold.
+        if kind == "map" { return }
+        guard emitting[shareId] != nil || stopped.contains(shareId)
+                || LocationStore.hasActiveInbound(shareId: shareId) else { return }
         stopped.insert(shareId)
         LocationStore.end(id: shareId)
         LocationKeyStore.shared.deleteKey(shareId: shareId)
@@ -434,6 +448,7 @@ extension Notification.Name {
     /// `map_off`) is decrypted, so MapPresenceEngine can reconcile its in-memory view.
     /// The key itself is already written/erased in the Keychain by the decoder (that has to
     /// happen in the NSE too); this only carries the EFFECT. userInfo: kind, fromUserId,
-    /// shareId (map_off only).
+    /// shareId — present on both kinds, since it is what identifies WHICH stream a later
+    /// stop belongs to.
     static let voiidMapControlReceived = Notification.Name("voiidMapControlReceived")
 }

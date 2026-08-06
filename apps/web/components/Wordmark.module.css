@@ -1,0 +1,41 @@
+.mark {
+  display: inline-flex;
+  align-items: baseline;
+  color: var(--color-primary);
+  font-weight: var(--weight-black);
+  letter-spacing: -0.045em;
+  line-height: 1;
+  user-select: none;
+}
+
+.muted { color: var(--color-text); }
+
+.glyphs {
+  display: inline-flex;
+  align-items: baseline;
+}
+
+/* Dotless ı, with the dot supplied as a drawn element so it can be styled. */
+.stem {
+  position: relative;
+  display: inline-block;
+}
+
+.dotFilled,
+.dotHollow {
+  position: absolute;
+  inset-block-start: -0.30em;
+  inset-inline-start: 50%;
+  transform: translateX(-50%);
+  width: 0.2em;
+  height: 0.2em;
+  border-radius: 50%;
+}
+
+.dotFilled { background: currentColor; }
+
+/* The hollow one is the key: same footprint, no fill. */
+.dotHollow {
+  border: 0.055em solid currentColor;
+  background: transparent;
+}

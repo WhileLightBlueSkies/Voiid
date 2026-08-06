@@ -1,0 +1,147 @@
+.motif {
+  width: 100%;
+  height: auto;
+  max-width: 100%;
+  overflow: visible;
+}
+
+/* ---- gradient stops. Set here rather than as attributes because var() in an SVG
+ * presentation attribute is not reliable across engines; in a stylesheet it is. --- */
+.railStart { stop-color: var(--hue-chat); stop-opacity: 0.12; }
+.railMid { stop-color: var(--hue-chat); stop-opacity: 0.65; }
+.railEnd { stop-color: var(--hue-map); stop-opacity: 0.12; }
+.bloomIn { stop-color: var(--hue-chat); stop-opacity: 0.26; }
+.bloomOut { stop-color: var(--hue-chat); stop-opacity: 0; }
+
+/* ---- the wire ------------------------------------------------------------ */
+
+.wire {
+  stroke: var(--hue-chat);
+  opacity: 0.75;
+  animation: crawl 2.6s linear infinite;
+}
+
+@keyframes crawl {
+  to { stroke-dashoffset: -32; }
+}
+
+/* ---- devices ------------------------------------------------------------- */
+
+.device {
+  fill: none;
+  stroke: var(--color-text-dim);
+  stroke-width: 2;
+}
+
+.deviceScreen {
+  fill: var(--hue-chat);
+  fill-opacity: 0.14;
+  stroke: none;
+}
+
+/* ---- keys. They are the point of the diagram, so they carry the brand hue. */
+
+.key {
+  fill: none;
+  stroke: var(--hue-chat);
+  stroke-width: 2.4;
+  stroke-linecap: round;
+}
+
+/* ---- server -------------------------------------------------------------- */
+
+.server {
+  fill: none;
+  stroke: var(--color-text-dim);
+  stroke-width: 2;
+  opacity: 0.85;
+}
+
+.led { fill: var(--color-success); stroke: none; }
+.ledDim { fill: var(--color-text-dim); stroke: none; opacity: 0.5; }
+
+/* ---- padlock ------------------------------------------------------------- */
+
+.lock {
+  stroke: var(--hue-chat);
+  stroke-width: 2.4;
+  fill: none;
+}
+
+.lockBody {
+  fill: var(--color-background);
+  stroke: var(--hue-chat);
+}
+
+.shackle {
+  stroke-linecap: round;
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: latch 5.2s var(--ease-in-out) infinite;
+}
+
+/* The shackle lifts and settles once per packet — the visual rhyme is "sealed". */
+@keyframes latch {
+  0%, 62% { transform: translateY(0); }
+  70% { transform: translateY(-5px); }
+  86%, 100% { transform: translateY(0); }
+}
+
+.lockPin { fill: var(--hue-chat); stroke: var(--hue-chat); }
+
+/* ---- the packet ---------------------------------------------------------- */
+
+.packet {
+  fill: var(--color-surface);
+  stroke: var(--hue-chat);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  /* Same geometry as the two <path> elements above. Keep them in step. */
+  offset-path: path('M118 232 C 190 232, 190 168, 250 168 C 310 168, 310 232, 382 232');
+  offset-rotate: 0deg;
+  offset-distance: 0%;
+  animation: travel 5.2s var(--ease-in-out) infinite;
+}
+
+@keyframes travel {
+  0%, 8% { offset-distance: 0%; opacity: 0; }
+  14% { opacity: 1; }
+  76% { offset-distance: 100%; opacity: 1; }
+  84%, 100% { offset-distance: 100%; opacity: 0; }
+}
+
+/* ---- labels -------------------------------------------------------------- */
+
+.label {
+  fill: var(--color-text-dim);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: var(--weight-medium);
+  letter-spacing: 0.01em;
+}
+
+.caption {
+  fill: var(--color-text-dim);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  opacity: 0.75;
+}
+
+/*
+ * The global reduced-motion rule collapses durations, which would leave the packet
+ * at its 0% keyframe — invisible, at the left end. Park it mid-flight instead, so
+ * the still frame reads as "a sealed thing in transit" rather than as a bug.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .packet {
+    animation: none;
+    offset-distance: 46%;
+    opacity: 1;
+  }
+  .wire,
+  .shackle {
+    animation: none;
+  }
+}

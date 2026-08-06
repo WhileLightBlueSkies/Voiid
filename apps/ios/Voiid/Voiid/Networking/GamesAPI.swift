@@ -97,6 +97,13 @@ struct GamesAPI {
     }
 
     /// An invite the caller has received but not joined. Drives the home-screen banners.
+    ///
+    /// DECODED BY HAND, and it has to be. Swift's synthesized `Decodable` ignores property
+    /// default values: with the synthesized conformance every one of `overs`, `sent_at`,
+    /// `expires_at` and `missed` throws `keyNotFound` the moment the server omits it, one throw
+    /// fails the whole array, and the poll's `try?` swallows it — the user just never sees a
+    /// banner again, with nothing anywhere to say why. Android's kotlinx defaults DO apply, so
+    /// the same payload would work there and the two platforms would diverge silently.
     struct PendingInvite: Decodable, Identifiable {
         let match_id: String
         let slug: String
@@ -112,6 +119,27 @@ struct GamesAPI {
         var missed: Bool = false
 
         var id: String { match_id }
+
+        private enum CodingKeys: String, CodingKey {
+            case match_id, slug, name, icon_key, overs
+            case inviter_id, inviter_name, sent_at, expires_at, missed
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            // Required: without these there is no invite to show or join.
+            match_id = try c.decode(String.self, forKey: .match_id)
+            slug     = try c.decode(String.self, forKey: .slug)
+            name     = try c.decode(String.self, forKey: .name)
+
+            icon_key      = try c.decodeIfPresent(String.self, forKey: .icon_key)
+            overs         = try c.decodeIfPresent(Int.self,    forKey: .overs) ?? 0
+            inviter_id    = try c.decodeIfPresent(String.self, forKey: .inviter_id)
+            inviter_name  = try c.decodeIfPresent(String.self, forKey: .inviter_name)
+            sent_at       = try c.decodeIfPresent(Int64.self,  forKey: .sent_at) ?? 0
+            expires_at    = try c.decodeIfPresent(Int64.self,  forKey: .expires_at) ?? 0
+            missed        = try c.decodeIfPresent(Bool.self,   forKey: .missed) ?? false
+        }
     }
 
     private struct InvitesResponse: Decodable { let invites: [PendingInvite] }

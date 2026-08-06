@@ -125,7 +125,7 @@ router.post('/create', requireAuth, async (req, res) => {
     }
   }
 
-  return res.status(400).json({ error: "type must be 'direct' or 'group'" });
+  return res.status(400).json({ error: "type must be 'direct', 'group', or 'self'" });
 });
 
 // GET /conversations?device_id= — list the caller's active conversations with last-message

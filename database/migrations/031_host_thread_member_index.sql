@@ -1,0 +1,25 @@
+-- 031_host_thread_member_index.sql — the member's half of community_host_threads.
+--
+-- 030_communities.sql indexes host threads from the HOST's side (idx_host_threads_community:
+-- "everyone asking me about this community"). The member's side has no index at all: the
+-- table's pk is (community_id, member_user_id), and a btree cannot serve a lookup that
+-- supplies only the SECOND column. Two queries in the host-thread route do exactly that, and
+-- both run on the create path:
+--
+--   * THE ABUSE LIMIT — "how many host threads has this user opened in the last hour/day".
+--     Without this index that count is a sequential scan of every host thread on the
+--     deployment, executed on every single "Message host" press. A rate limit that gets more
+--     expensive the more the feature is used is a denial-of-service with extra steps.
+--   * THE MEMBER'S INBOX — "which of my chats are community host threads", which the clients
+--     use to group those conversations into a Community section.
+--
+-- created_at descending because both callers are time-ordered: the limit counts a recent
+-- window, the inbox lists newest first.
+--
+-- NOT AN E2EE CHANGE, and not a new retention surface: this indexes columns 030 already
+-- stores. The host-thread row records that a member was authorised to open a line to a host —
+-- it holds no message, no key and no content, and the conversation it points at is an
+-- ordinary Double-Ratchet 1:1 the server cannot read. Nothing here widens the scoped
+-- reachability exception; it only makes enforcing its limits affordable.
+create index if not exists idx_host_threads_member
+    on community_host_threads (member_user_id, created_at desc);

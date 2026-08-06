@@ -41,6 +41,19 @@ internal object MapInboundKeyStore {
         SecurePrefs.open(ctx, NAME).edit().remove(shareId).apply()
     }
 
+    /**
+     * Every sender we still hold a key for. The Map's "sharing — waiting for location" set is
+     * persisted separately, so it can only be pruned by asking BOTH stores who is still
+     * sharing — a `map_off` processed by background sync alone removes the key here and
+     * touches nothing else.
+     */
+    fun senders(ctx: Context): Set<String> {
+        val shareIds = SecurePrefs.open(ctx, NAME).all.keys.toList()
+        // Through get() so an expired entry counts as gone (and is dropped) rather than
+        // keeping its sender pinned in the waiting set forever.
+        return shareIds.mapNotNullTo(HashSet()) { get(ctx, it)?.fromUserId }
+    }
+
     /** The stored key for a share, or null. Expired entries are dropped and return null. */
     fun get(ctx: Context, shareId: String): Entry? {
         val raw = SecurePrefs.open(ctx, NAME).getString(shareId, null) ?: return null

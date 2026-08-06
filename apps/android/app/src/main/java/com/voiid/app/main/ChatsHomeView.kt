@@ -233,6 +233,8 @@ fun ChatsHomeView(
                 Icon(Icons.Default.ChevronRight, null, tint = VoiidColor.textSecondary, modifier = Modifier.size(16.dp))
             }
         }
+        // The OS is stopping calls from ringing, and nothing else would ever say so.
+        CallRingBanner()
         // Persistent "sharing live location" banner across all chats (docs/LOCATION.md §8.A).
         LocationBanner()
         if (search.isBlank()) {

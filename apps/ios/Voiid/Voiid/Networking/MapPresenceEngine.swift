@@ -55,7 +55,9 @@ final class MapPresenceEngine: ObservableObject {
     @Published private(set) var inboundSenders: Set<String> = []
     /// Your own allow-list — who can see you.
     @Published private(set) var audience: [MapAudienceMember] = []
-    /// Your active server share id while visible, else nil.
+    /// Your active server share id while visible, else nil. PERSISTED (with its server
+    /// ceiling) — see `setOutboundShare`; every emitted fix is gated on it, so losing it to a
+    /// process kill left the server row live while this device emitted nothing.
     @Published private(set) var outboundShareId: String?
     /// A human-readable reason the last visibility action could not complete (e.g. location
     /// permission denied, server unreachable). Surfaced honestly; never a silent failure.
@@ -72,11 +74,20 @@ final class MapPresenceEngine: ObservableObject {
     var controlSender: ((_ envelopeJSON: Data, _ toUserId: String) async -> Bool)?
 
     private var emitSeq = 0
+    /// The MAP share id we last learned per sender (from their `map_key`, refreshed by every
+    /// decrypted fix). This is the ownership proof `receiveStop` matches against — without it
+    /// a stop had to be judged by sender alone, which let a different feature's stop through.
+    private var inboundShareIds: [String: String] = [:]
     private let knownInboundKey = "voiid.map.inboundSenders.v1"
+    private let inboundShareIdsKey = "voiid.map.inboundShareIds.v1"
+    private let outboundShareKey = "voiid.map.outbound.shareId.v1"
+    private let outboundExpiryKey = "voiid.map.outbound.expiresAt.v1"   // Double, 0 = unknown
 
     private init() {
         reloadFromStore()
         inboundSenders = loadKnownInbound()
+        inboundShareIds = loadInboundShareIds()
+        restoreOutboundShare()
         wireProvider()
         wireWebSocket()
         // A cold start must not resurrect a stale trail: drop anything past the 8-hour
@@ -94,7 +105,9 @@ final class MapPresenceEngine: ObservableObject {
         // contacts they are somewhere they left an hour ago.
         //
         // Visibility is read from the store, so a kill cannot silently turn sharing back on
-        // for someone who ghosted — and `start()` is a no-op when not authorized.
+        // for someone who ghosted — and `start()` is a no-op when not authorized. The share
+        // id restored above is the other half: restarting the provider without it produced
+        // fixes that all died on `emitFix`'s guard.
         if visibility.isVisible {
             provider.start()
         }
@@ -145,11 +158,19 @@ final class MapPresenceEngine: ObservableObject {
         switch kind {
         case "map_key":
             NSLog("[VOIID] map_key received from=\(fromUserId) — now visible to us")
-            noteInboundSender(fromUserId)
+            noteInboundSender(fromUserId, shareId: shareId)
             reloadFromStore()
         case "map_off":
             NSLog("[VOIID] map_off received from=\(fromUserId) — erasing cached position")
-            receiveStop(shareId: shareId ?? "", fromUserId: fromUserId)
+            // A `map_off` carrying no id (the sender's row was already gone when they went
+            // dark) is still unambiguously about the Map — the kind says so — so fall back to
+            // the id we recorded for them rather than letting `receiveStop` reject it.
+            var sid = shareId ?? ""
+            if sid.isEmpty { sid = inboundShareIds[fromUserId] ?? "" }
+            // A durable `map_off` is only ever sent when the sender genuinely goes dark
+            // (ghost, kill switch, revoke) — a supersede is a server-side row swap and emits
+            // no control message — so this is unambiguously `ended`.
+            receiveStop(shareId: sid, fromUserId: fromUserId, kind: "map", reason: "ended")
         default:
             break
         }
@@ -194,9 +215,9 @@ final class MapPresenceEngine: ObservableObject {
             self?.receiveFix(shareId: shareId, fromUserId: fromUserId, ciphertext: ciphertext)
         }
         let priorStop = ws.onLocationStop
-        ws.onLocationStop = { [weak self] shareId, fromUserId in
-            priorStop?(shareId, fromUserId)
-            self?.receiveStop(shareId: shareId, fromUserId: fromUserId)
+        ws.onLocationStop = { [weak self] shareId, fromUserId, kind, reason in
+            priorStop?(shareId, fromUserId, kind, reason)
+            self?.receiveStop(shareId: shareId, fromUserId: fromUserId, kind: kind, reason: reason)
         }
     }
 
@@ -249,7 +270,22 @@ final class MapPresenceEngine: ObservableObject {
             provider.start()
             provider.refreshOnce()
             if let sid = outboundShareId {
-                Task { _ = try? await MapShareAPI.extend(shareId: sid) }
+                Task { [weak self] in
+                    let res = try? await MapShareAPI.extend(shareId: sid)
+                    // Keep the persisted ceiling in step with the server's, or a session held
+                    // open past the original 24 h would be discarded on the next cold launch.
+                    if let res { self?.noteOutboundExtended(res.expires_at) }
+                }
+            } else if !audience.isEmpty {
+                // Still visible, but no share row to emit into — the persisted one lapsed, or
+                // this build is the first to persist it at all. Fixes would silently go
+                // nowhere, so run the full go-visible path (fresh key, new row, redistribute)
+                // rather than pretending. We are already inside the `isVisible` branch, so
+                // this can never resurrect sharing for someone who ghosted.
+                Task { [weak self] in
+                    guard let ids = self?.audience.map(\.userId), !ids.isEmpty else { return }
+                    await self?.goVisible(to: ids)
+                }
             }
         } else {
             // The auto-ghost may have fired while we were away — make sure we are not still
@@ -322,7 +358,7 @@ final class MapPresenceEngine: ObservableObject {
         let audienceIds = audience.map(\.userId)
         do {
             let res = try await MapShareAPI.createMapShare(targetUserIds: audienceIds)
-            outboundShareId = res.share_id
+            setOutboundShare(res.share_id, expiresAt: parseISO(res.expires_at))
         } catch {
             // Do not claim visibility the server never recorded.
             MapKeyStore.clearOutboundKey()
@@ -359,7 +395,7 @@ final class MapPresenceEngine: ObservableObject {
         await distributeMapOff(shareId: sid, to: audienceIds)
         if let sid { await MapShareAPI.endShare(shareId: sid) }
 
-        outboundShareId = nil
+        setOutboundShare(nil, expiresAt: nil)
         MapKeyStore.clearOutboundKey()   // rotate: anyone holding the old key sees nothing new
     }
 
@@ -387,7 +423,7 @@ final class MapPresenceEngine: ObservableObject {
         // Recreate the server row with the full audience (server auto-ends the prior share).
         let audienceIds = audience.map(\.userId)
         if let res = try? await MapShareAPI.createMapShare(targetUserIds: audienceIds) {
-            outboundShareId = res.share_id
+            setOutboundShare(res.share_id, expiresAt: parseISO(res.expires_at))
         }
 
         // REDISTRIBUTE TO THE WHOLE AUDIENCE, NOT JUST THE NEW MEMBERS.
@@ -427,7 +463,7 @@ final class MapPresenceEngine: ObservableObject {
         guard !remaining.isEmpty else { await enterGhost(); return }
         let newKey = MapKeyStore.mintOutboundKey()
         if let res = try? await MapShareAPI.createMapShare(targetUserIds: remaining) {
-            outboundShareId = res.share_id
+            setOutboundShare(res.share_id, expiresAt: parseISO(res.expires_at))
         }
         emitSeq = 0
         await distributeMapKey(newKey, to: remaining)
@@ -516,29 +552,52 @@ final class MapPresenceEngine: ObservableObject {
             senderUserId: fromUserId, shareId: shareId,
             coordinate: CLLocationCoordinate2D(latitude: lat, longitude: lon),
             accuracy: env.acc ?? 0, seq: Int(clamping: seq64), fixedAt: fixedAt)
-        if changed {
-            noteInboundSender(fromUserId)
-            reloadFromStore()
-        }
+        // Recorded even when the upsert was a no-op (duplicate or out-of-order seq): the id
+        // on an authenticated fix is the same ownership proof a `map_key` carries, and it is
+        // how a contact who was already sharing before this build gets one at all.
+        noteInboundSender(fromUserId, shareId: shareId)
+        if changed { reloadFromStore() }
     }
 
-    private func receiveStop(shareId: String, fromUserId: String) {
-        // ONLY ACT ON A STOP FOR *THIS* SENDER'S MAP SHARE.
+    private func receiveStop(shareId: String, fromUserId: String, kind: String, reason: String) {
+        // A stop the API stamped `conversation` belongs to the chat live-share feature and can
+        // never be about the Map, whatever ids happen to collide. Free early-out; the share-id
+        // match below is still the real guard, since a client-relayed stop carries no kind.
+        if kind == "conversation" { return }
+
+        // ONLY ACT ON A STOP FOR *THIS* SENDER'S MAP SHARE, MATCHED BY SHARE ID.
         //
         // THE BUG: the Map and the chat live-share engine both hang off the SAME
         // `ws.onLocationStop`, so ending a conversation live-share fired this too — and this
         // erased the sender from the Map entirely. Stopping a chat share with someone made
         // them vanish from Friends Map, which is a different feature they had not turned off.
         //
-        // The test is the same one `receiveFix` uses: a Map share from this sender exists only
-        // if they have handed us a `map_key`. A conversation share carries no map_key, so its
-        // stop is correctly ignored here — the chat engine handles that one.
-        guard MapKeyStore.inboundKey(forSender: fromUserId) != nil else { return }
+        // Guarding by SENDER (does an inbound map_key exist?) was not enough, because the id
+        // was only checked when a presence row happened to exist. A contact who is map-visible
+        // but has no row yet — first fix not in, or the row pruned by the 8-hour age-out — had
+        // nothing to compare against, so their CHAT share's ordinary expiry fell straight
+        // through and erased their map key, presence and inbound entry. The id we learned from
+        // their `map_key` is the ownership proof; an id we do not recognise belongs to some
+        // other stream and is never a reason to erase them. (Android keys its handler by share
+        // id and has always been immune here — this is the same shape.)
+        let known = inboundShareIds[fromUserId] ?? MapPresenceStore.presence(for: fromUserId)?.shareId
+        guard let known, known == shareId else { return }
 
-        // Confirm the id belongs to the MAP share we are tracking for them, not some other
-        // share that happens to be from the same person. A stale id means a share we already
-        // forgot, which is also not a reason to erase them.
-        if let known = MapPresenceStore.presence(for: fromUserId)?.shareId, known != shareId { return }
+        // A SUPERSEDE IS NOT "WENT DARK".
+        //
+        // The server retires the previous row every time a sender recreates their map share —
+        // adding one person to the audience, re-arming on foreground, going visible again —
+        // and publishes a stop for the OLD id to the whole audience. Treating that as a stop
+        // erased the key and the cached position, so the pin vanished on every re-open and did
+        // not come back until a fresh `map_key` AND the next 5-minute fix had both landed.
+        // The sender is still sharing: retire the dead id (so a later stop for it can no longer
+        // match) and keep everything else. The next fix carries the new id, and if the sender
+        // rekeyed, the new key is already on its way over the ratchet — a few frames failing to
+        // decrypt in the gap is far better than dropping them from the map.
+        if reason == "superseded" {
+            if inboundShareIds.removeValue(forKey: fromUserId) != nil { persistInboundShareIds() }
+            return
+        }
 
         // An explicit stop ERASES the cached position (the load-bearing distinction from an
         // age-out, which keeps it) and rotates the sender out of our view.
@@ -593,13 +652,21 @@ final class MapPresenceEngine: ObservableObject {
 
     // MARK: - Inbound-sender bookkeeping (who is on my map)
 
-    private func noteInboundSender(_ userId: String) {
+    /// `shareId` is the sender's MAP share id, when the frame we learned this from carried
+    /// one. It supersedes any earlier id for that sender — a supersede or a rekey gives them
+    /// a new row, and only the newest one's stop is ours to act on.
+    private func noteInboundSender(_ userId: String, shareId: String? = nil) {
+        if let shareId, !shareId.isEmpty, inboundShareIds[userId] != shareId {
+            inboundShareIds[userId] = shareId
+            persistInboundShareIds()
+        }
         guard !inboundSenders.contains(userId) else { return }
         inboundSenders.insert(userId)
         persistKnownInbound()
     }
 
     private func forgetInboundSender(_ userId: String) {
+        if inboundShareIds.removeValue(forKey: userId) != nil { persistInboundShareIds() }
         guard inboundSenders.contains(userId) else { return }
         inboundSenders.remove(userId)
         persistKnownInbound()
@@ -612,17 +679,66 @@ final class MapPresenceEngine: ObservableObject {
         UserDefaults.standard.set(Array(inboundSenders), forKey: knownInboundKey)
     }
 
+    private func loadInboundShareIds() -> [String: String] {
+        (UserDefaults.standard.dictionary(forKey: inboundShareIdsKey) as? [String: String]) ?? [:]
+    }
+    private func persistInboundShareIds() {
+        UserDefaults.standard.set(inboundShareIds, forKey: inboundShareIdsKey)
+    }
+
+    // MARK: - Outbound share bookkeeping (survives a process kill)
+
+    /// The single write point for the outbound share id, so the persisted copy can never
+    /// drift from the in-memory one. `expiresAt` is the server's ceiling for that row; nil
+    /// falls back to the 24-hour default so a restore has something honest to test.
+    private func setOutboundShare(_ shareId: String?, expiresAt: Date?) {
+        outboundShareId = shareId
+        let d = UserDefaults.standard
+        guard let shareId else {
+            d.removeObject(forKey: outboundShareKey)
+            d.removeObject(forKey: outboundExpiryKey)
+            return
+        }
+        let ceiling = expiresAt ?? Date().addingTimeInterval(TimeInterval(MapShareAPI.mapDurationSeconds))
+        d.set(shareId, forKey: outboundShareKey)
+        d.set(ceiling.timeIntervalSince1970, forKey: outboundExpiryKey)
+    }
+
+    /// Reload the share id a previous process left behind. A row whose ceiling has already
+    /// passed is dropped rather than resumed: the server ended it, so emitting under that id
+    /// would be routed to nobody while the UI claimed we were sharing.
+    private func restoreOutboundShare() {
+        let d = UserDefaults.standard
+        guard let sid = d.string(forKey: outboundShareKey), !sid.isEmpty else { return }
+        let ceiling = d.double(forKey: outboundExpiryKey)
+        guard ceiling <= 0 || Date().timeIntervalSince1970 < ceiling else {
+            d.removeObject(forKey: outboundShareKey)
+            d.removeObject(forKey: outboundExpiryKey)
+            return
+        }
+        outboundShareId = sid
+    }
+
+    private func noteOutboundExtended(_ expiresAt: String?) {
+        guard let sid = outboundShareId else { return }
+        setOutboundShare(sid, expiresAt: parseISO(expiresAt))
+    }
+
+    private func parseISO(_ s: String?) -> Date? { s.flatMap { ISO8601DateFormatter().date(from: $0) } }
+
     // MARK: - Teardown
 
     private func handleSignOut() {
         stopEmitting()
-        outboundShareId = nil
+        setOutboundShare(nil, expiresAt: nil)
         MapKeyStore.clearOutboundKey()
         MapPresenceStore.clearPresence()
         MapPresenceStore.clearAudience()
         for uid in inboundSenders { MapKeyStore.clearInboundKey(forSender: uid) }
         inboundSenders = []
         persistKnownInbound()
+        inboundShareIds = [:]
+        persistInboundShareIds()
         presences = []
         audience = []
     }

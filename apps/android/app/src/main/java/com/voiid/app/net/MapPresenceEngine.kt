@@ -164,7 +164,7 @@ object MapPresenceEngine {
 
     private fun subscribe() {
         LocationRelay.subscribeFix { shareId, from, ct, ts -> onFix(shareId, from, ct, ts) }
-        LocationRelay.subscribeStop { shareId, from -> onStop(shareId, from) }
+        LocationRelay.subscribeStop { shareId, from, kind, reason -> onStop(shareId, from, kind, reason) }
         LocationRelay.subscribeControl { plain, from, _ -> onControl(plain, from) }
     }
 
@@ -549,7 +549,12 @@ object MapPresenceEngine {
         return share
     }
 
-    private fun onStop(stopShareId: String, fromUserId: String) {
+    private fun onStop(stopShareId: String, fromUserId: String, kind: String, reason: String) {
+        // A stop the API stamped `conversation` is the chat live-share feature's and can never
+        // be about the Map. Free early-out; the registry test below is still the real guard,
+        // since a stop relayed from another client carries no kind at all.
+        if (kind == "conversation") return
+
         // ONLY ACT ON A STOP FOR A SHARE *THIS* ENGINE IS TRACKING.
         //
         // THE BUG: the Map and the chat live-share engine both consume the same
@@ -561,11 +566,38 @@ object MapPresenceEngine {
         // `inbound` holds only MAP shares (they are the ones that arrived with a map_key), so
         // its membership IS the test: an unknown id belongs to the chat feature, or to a share
         // we already forgot. Neither is a reason to erase the person.
-        if (!inbound.containsKey(stopShareId)) return
+        //
+        // The background key store is the second half of that same test, and consulting it is
+        // what makes a stop land at all when the map_key was captured while we were dead and
+        // no fix has decrypted in-process yet: memory-only, the stop was dropped, the key
+        // survived, and the sender stayed "sharing" for someone who had gone dark.
+        val share = inbound[stopShareId]
+            ?: ctx?.let { MapInboundKeyStore.get(it, stopShareId) }?.let { InboundShare(it.fromUserId, it.key, it.expiresAt) }
+            ?: return
+
+        // A SUPERSEDE IS NOT "WENT DARK".
+        //
+        // The server retires the previous row every time a sender recreates their map share —
+        // adding one person to their audience, re-arming on foreground, a retried openShare —
+        // and publishes a stop for the OLD id to the whole audience. Erasing the subject there
+        // made the pin vanish on every re-open and stay gone until a fresh `map_key` AND the
+        // next 5-minute fix had both landed. The person is still sharing: drop the dead id from
+        // the live registry (no fix will ever carry it again) and keep everything else. The
+        // persisted key entry is deliberately left alone — it is what holds them in
+        // [_waitingSenders] across the gap until the replacement `map_key` arrives.
+        if (reason == "superseded") {
+            inbound.remove(stopShareId)
+            subjectSeq.remove(stopShareId)
+            persist()
+            return
+        }
 
         inbound.remove(stopShareId)
+        ctx?.let { MapInboundKeyStore.remove(it, stopShareId) }
         subjectSeq.remove(stopShareId)
-        eraseSubject(fromUserId)
+        // The owner recorded with the key came over the E2EE ratchet; the relay frame's sender
+        // is whatever the socket said. Erase the person whose share this actually is.
+        eraseSubject(share.fromUserId.ifEmpty { fromUserId })
         persist()
     }
 
@@ -604,6 +636,29 @@ object MapPresenceEngine {
             e.setValue(e.value.copy(state = state))
         }
         _subjects.value = next
+        // Off the caller's thread: this reads the encrypted key store, and recompute runs on a
+        // 30 s UI tick.
+        scope.launch { pruneWaitingSenders() }
+    }
+
+    /**
+     * Drop anyone from [_waitingSenders] we hold no key for in EITHER store.
+     *
+     * A durable `map_off` handled by BACKGROUND sync alone (ChatEngine removes the key from
+     * [MapInboundKeyStore] and nothing else) never reaches [onControl], so the sender was left
+     * showing "sharing — waiting for location" indefinitely for someone who had gone dark.
+     * Key expiry lands here too: [MapInboundKeyStore.senders] treats a lapsed entry as gone.
+     */
+    private fun pruneWaitingSenders() {
+        val current = _waitingSenders.value
+        if (current.isEmpty()) return
+        val holding = HashSet<String>()
+        inbound.values.forEach { holding.add(it.fromUserId) }
+        ctx?.let { holding.addAll(MapInboundKeyStore.senders(it)) }
+        val next = current.filterTo(HashSet()) { holding.contains(it) }
+        if (next.size == current.size) return
+        _waitingSenders.value = next
+        persist()
     }
 
     /**

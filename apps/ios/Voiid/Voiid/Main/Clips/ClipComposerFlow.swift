@@ -2,9 +2,15 @@
 //  ClipComposerFlow.swift
 //  Voiid
 //
-//  The clip upload flow — a full-screen, four-step pushed flow with a real back stack:
+//  The clip upload flow — a full-screen pushed flow with a real back stack:
 //
-//      [1] Source  ->  [2] Capture / Pick  ->  [3] Edit  ->  [4] Details & Post
+//      [1] Camera  ->  [2] Edit  ->  [3] Details & Post
+//
+//  CAMERA-FIRST. There used to be a Camera/Gallery tile chooser in front of this, which
+//  cost a whole screen and a decision before anyone could record. The viewfinder is now the
+//  front door and the library lives as a thumbnail inside it, which is where every camera
+//  app people already use puts it. Imports still land in the same `accept()` as recordings,
+//  so duration and cap validation are identical for both.
 //
 //  Deliberately NOT a sheet. The old NewClipView was a 47-line popup whose Share button
 //  called dismiss() and threw the video away; a modal sheet also cannot host a camera,
@@ -24,14 +30,12 @@ struct ClipComposerFlow: View {
     @State private var path: [ClipComposerStep] = []
     @State private var sourceURL: URL?
     @State private var edit = ClipEdit()
-    @State private var showCamera = false
-    @State private var pickerItem: PhotosPickerItem?
     @State private var loadingPick = false
     @State private var errorText: String?
 
     var body: some View {
         NavigationStack(path: $path) {
-            sourceScreen
+            cameraScreen
                 .navigationDestination(for: ClipComposerStep.self) { step in
                     switch step {
                     case .edit:
@@ -49,128 +53,51 @@ struct ClipComposerFlow: View {
                     }
                 }
         }
-        .fullScreenCover(isPresented: $showCamera) {
-            // The stories camera already implements press-and-hold record, flip and a
-            // duration ring — reused rather than forked.
-            // .clip: 90s cap and video-only. With the story defaults a tap produced a photo
-            // this composer could only drop on the floor, and anything past 30s was truncated.
-            StoryCameraView(mode: .clip) { _, videoURL in
-                showCamera = false
-                guard let videoURL else { return }
-                Task { await accept(url: videoURL) }
-            }
-        }
-        .onChange(of: pickerItem) { _, item in
-            guard let item else { return }
-            Task { await loadPicked(item) }
-        }
     }
 
-    // MARK: - Step 1: source
+    // MARK: - Step 1: the viewfinder
 
-    private var sourceScreen: some View {
-        VStack(spacing: VoiidSpacing.lg) {
-            HStack {
-                Button("Cancel") { dismiss() }
-                    .foregroundColor(VoiidColor.textSecondary)
-                Spacer()
-                Text("New clip")
-                    .font(VoiidFont.headline)
-                    .foregroundColor(VoiidColor.textPrimary)
-                Spacer()
-                // Balances the Cancel button so the title stays optically centred.
-                Text("Cancel").opacity(0)
-            }
-            .padding(.horizontal, VoiidSpacing.md)
-            .padding(.top, VoiidSpacing.md)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Create a clip")
-                    .font(VoiidFont.rounded(28, .bold))
-                    .foregroundColor(VoiidColor.textPrimary)
-                Text("Record something new, or pick a video you already have.")
-                    .font(VoiidFont.subhead)
-                    .foregroundColor(VoiidColor.textSecondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, VoiidSpacing.md)
-
-            VStack(spacing: VoiidSpacing.md) {
-                sourceCard(icon: "camera.fill", title: "Camera",
-                           subtitle: "Record up to 90 seconds",
-                           tint: [VoiidColor.primary, VoiidColor.primary.opacity(0.72)]) {
-                    Haptics.tap()
-                    showCamera = true
-                }
-                PhotosPicker(selection: $pickerItem, matching: .videos) {
-                    sourceCardLabel(icon: "photo.on.rectangle.angled", title: "Gallery",
-                                    subtitle: "Choose an existing video",
-                                    tint: [VoiidColor.accent, VoiidColor.accent.opacity(0.72)])
-                }
-                .buttonStyle(SoftPressStyle())
-            }
-            .padding(.horizontal, VoiidSpacing.md)
+    private var cameraScreen: some View {
+        ZStack {
+            ClipCameraView(
+                onDone: { url, filter in
+                    // The camera records CLEAN and reports which look was chosen; baking it
+                    // here as an edit keeps the filter reversible in the editor and applied
+                    // exactly once, at export.
+                    Task { await accept(url: url, filter: filter) }
+                },
+                onGalleryPicked: { item in
+                    Task { await loadPicked(item) }
+                },
+                onClose: { dismiss() })
 
             if loadingPick {
-                ProgressView("Preparing…").tint(VoiidColor.primary)
+                ZStack {
+                    Color.black.opacity(0.55).ignoresSafeArea()
+                    ProgressView("Preparing…").tint(.white).foregroundColor(.white)
+                }
             }
             if let errorText {
                 Text(errorText)
-                    .font(VoiidFont.caption)
-                    .foregroundColor(VoiidColor.error)
+                    .font(VoiidFont.footnote)
+                    .foregroundColor(.white)
                     .multilineTextAlignment(.center)
+                    .padding(VoiidSpacing.md)
+                    .background(Color.black.opacity(0.7))
+                    .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
                     .padding(.horizontal, VoiidSpacing.lg)
             }
-            Spacer()
         }
-        .background(VoiidColor.background.ignoresSafeArea())
         .navigationBarHidden(true)
-    }
-
-    private func sourceCard(icon: String, title: String, subtitle: String,
-                            tint: [Color], tap: @escaping () -> Void) -> some View {
-        Button(action: tap) {
-            sourceCardLabel(icon: icon, title: title, subtitle: subtitle, tint: tint)
-        }
-        .buttonStyle(SoftPressStyle())
-    }
-
-    /// A tall gradient tile rather than a plain list row. The two sources are the entire
-    /// first screen of the flow, so they should read as the choice — a thin row with a
-    /// chevron reads as settings.
-    private func sourceCardLabel(icon: String, title: String, subtitle: String,
-                                 tint: [Color]) -> some View {
-        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
-            ZStack {
-                Circle()
-                    .fill(.white.opacity(0.22))
-                    .frame(width: 56, height: 56)
-                Image(systemName: icon)
-                    .font(.system(size: 26, weight: .semibold))
-                    .foregroundColor(.white)
-            }
-            Spacer(minLength: VoiidSpacing.sm)
-            Text(title)
-                .font(VoiidFont.rounded(20, .bold))
-                .foregroundColor(.white)
-            Text(subtitle)
-                .font(VoiidFont.caption)
-                .foregroundColor(.white.opacity(0.85))
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(VoiidSpacing.lg)
-        .frame(height: 168)
-        .background(
-            LinearGradient(colors: tint, startPoint: .topLeading, endPoint: .bottomTrailing)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .shadow(color: tint.first?.opacity(0.28) ?? .clear, radius: 12, y: 6)
     }
 
     // MARK: - Intake
 
     private func loadPicked(_ item: PhotosPickerItem) async {
         loadingPick = true
+        // The banner now sits over a live viewfinder, so a stale message would hang there
+        // for the rest of the session rather than scrolling away with a screen.
+        errorText = nil
         defer { loadingPick = false }
         do {
             guard let data = try await item.loadTransferable(type: Data.self) else {
@@ -188,7 +115,7 @@ struct ClipComposerFlow: View {
 
     /// Validate against the caps BEFORE the user invests time in the editor — telling
     /// someone their 4-minute video is too long only at Post is the wrong order.
-    private func accept(url: URL) async {
+    private func accept(url: URL, filter: ClipFilter = .none) async {
         let asset = AVURLAsset(url: url)
         let seconds = (try? await asset.load(.duration))?.seconds ?? 0
         guard seconds > 0 else {
@@ -201,7 +128,8 @@ struct ClipComposerFlow: View {
         }
         errorText = nil
         sourceURL = url
-        edit = ClipEdit(trimStart: 0, trimEnd: min(seconds, ClipCaps.maxDurationSeconds))
+        edit = ClipEdit(trimStart: 0, trimEnd: min(seconds, ClipCaps.maxDurationSeconds),
+                        filter: filter)
         path.append(.edit)
     }
 

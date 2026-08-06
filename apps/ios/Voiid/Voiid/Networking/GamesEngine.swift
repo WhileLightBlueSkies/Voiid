@@ -466,10 +466,18 @@ final class GamesEngine: ObservableObject {
             // Everything the poster bubble and the rich notification need travels INSIDE the
             // encrypted body — which is what lets the recipient's banner name the game while the
             // push that woke their device said only "New message".
+            // "Unknown" is the directory's sentinel for "no row", not a name — and an empty
+            // fallback can't suppress it, because the resolver rejects an empty fallback and
+            // returns the sentinel instead. Left as-is it ships inside the invite and the peer
+            // reads "🎮 Unknown invited you to Tic Tac Toe". Mapping it back to "" hands the
+            // encoder the empty string its own guard is already waiting for, which reads
+            // "Someone". The window is a fresh install that invites before the first profile
+            // fetch has written the own-row.
+            let ownName = TokenStore.shared.userId
+                .map { UserDirectory.shared.displayName($0, fallback: "") } ?? ""
             let meta = GameInvite.Meta(
                 game: gameName,
-                from: TokenStore.shared.userId
-                    .map { UserDirectory.shared.displayName($0, fallback: "") } ?? "",
+                from: ownName == "Unknown" ? "" : ownName,
                 overs: options["overs"] ?? 0,
                 format: slug == "rps" ? "first to 3" : "",
                 sentAt: GameInvite.nowMs())

@@ -116,9 +116,17 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
 
     private func fireOneShot(_ location: CLLocation?) {
         oneShotTimeout?.cancel(); oneShotTimeout = nil
-        // Stop the convergence stream. Leaving it running would hold the GPS open for a pin
-        // that has already been sent.
-        if !isLiveStreaming { manager.stopUpdatingLocation() }
+        if isLiveStreaming {
+            // The share owns the stream, so it stays up — but it must get its own profile
+            // back. `requestOneShot` raises accuracy to Best for convergence, and leaving it
+            // there ran a share that only needs ten metres at full GPS power until something
+            // restarted it.
+            manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+        } else {
+            // Stop the convergence stream. Leaving it running would hold the GPS open for a
+            // pin that has already been sent.
+            manager.stopUpdatingLocation()
+        }
         let cb = oneShot; oneShot = nil
         // Fall back to the best candidate seen, not nil: a 90 m pin beats "couldn't get your
         // location" when the user is indoors and GPS never sharpens.
@@ -133,6 +141,15 @@ final class LocationService: NSObject, CLLocationManagerDelegate {
         guard let loc = locations.last else { return }
 
         if oneShot != nil {
+            // A LIVE SHARE MUST NOT STARVE WHILE A PIN IS CONVERGING.
+            //
+            // One manager serves both, and this branch used to swallow every fix until the
+            // one-shot resolved — so sending a pin mid-share stopped the share's stream for up
+            // to the full 10 s timeout, which the recipient reads as the share having frozen.
+            // The fix is good enough for the share either way; the extra scrutiny below is
+            // only about whether it is good enough to become a PIN.
+            if isLiveStreaming { onFix?(loc) }
+
             // DO NOT ACCEPT THE FIRST FIX BLINDLY.
             //
             // `requestLocation()` delivers whatever CoreLocation already has, which on a cold

@@ -199,6 +199,54 @@ struct ClipVideoLoader: View {
     }
 }
 
+// MARK: - Verified seal
+
+/// The verified mark, shared by every Clips surface that shows an identity.
+///
+/// AMBER RATHER THAN PRIMARY. Primary is the fill of every button in the app, so a seal
+/// drawn in it reads as one more control the user should try to press. Amber is the token
+/// reserved for the rare thing that must be seen (see the accent note in Theme.swift), and
+/// a seal is exactly that. Hierarchical rendering keeps the tick legible inside the fill.
+struct VerifiedSeal: View {
+    var size: CGFloat = 16
+
+    var body: some View {
+        Image(systemName: "checkmark.seal.fill")
+            .font(.system(size: size))
+            .symbolRenderingMode(.hierarchical)
+            .foregroundStyle(VoiidColor.accent)
+            .accessibilityLabel("Verified")
+    }
+}
+
+// MARK: - Grid fade-in
+
+/// A short staggered fade for tiles as they land.
+///
+/// The stagger is capped at the first dozen: past that the user is scrolling, and a delay
+/// tied to the absolute index would leave a tile blank for the better part of a second on
+/// row forty. Opacity only — moving or scaling a tile would fight the grid's own geometry.
+struct ClipTileFadeIn: ViewModifier {
+    let index: Int
+    @State private var shown = false
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(shown ? 1 : 0)
+            .onAppear {
+                withAnimation(.easeOut(duration: 0.25)
+                    .delay(Double(min(index, 11)) * 0.02)) { shown = true }
+            }
+    }
+}
+
+extension View {
+    /// Fade this grid tile in, staggered by its position in the first screenful.
+    func clipTileFadeIn(index: Int) -> some View {
+        modifier(ClipTileFadeIn(index: index))
+    }
+}
+
 // MARK: - Empty / error states
 
 /// The one empty-state shape for the Clips surface.
@@ -210,6 +258,7 @@ struct ClipsEmptyState: View {
     enum Kind {
         case noClips            // the global grid really is empty
         case noneFromYou        // the author's own grid
+        case followingNobody    // you follow nobody yet, so Following has nothing to show
         case failed(String)     // the request errored
     }
 
@@ -218,11 +267,15 @@ struct ClipsEmptyState: View {
 
     var body: some View {
         VStack(spacing: VoiidSpacing.sm) {
-            Image(systemName: icon)
-                .font(.system(size: 44))
-                .foregroundColor(VoiidColor.textSecondary.opacity(0.5))
+            ZStack {
+                Circle().fill(VoiidColor.fieldFill)
+                icon
+            }
+            .frame(width: 72, height: 72)
+            .padding(.bottom, VoiidSpacing.xs)
+
             Text(title)
-                .font(VoiidFont.headline)
+                .font(VoiidFont.rounded(22, .semibold))
                 .foregroundColor(VoiidColor.textPrimary)
             Text(subtitle)
                 .font(VoiidFont.subhead)
@@ -243,6 +296,7 @@ struct ClipsEmptyState: View {
                         .background(VoiidColor.primary)
                         .clipShape(Capsule())
                 }
+                .buttonStyle(SoftPressStyle())
                 .padding(.top, VoiidSpacing.sm)
             }
         }
@@ -250,29 +304,48 @@ struct ClipsEmptyState: View {
         .padding(.top, 80)
     }
 
-    private var icon: String {
+    /// The pulse is deliberately withheld from `.failed`: an error is already the loudest
+    /// thing on the screen, and animating it forever reads as the app still trying.
+    @ViewBuilder
+    private var icon: some View {
+        let glyph = Image(systemName: iconName)
+            .font(.system(size: 30))
+            .foregroundColor(VoiidColor.primary)
+        if isFailure { glyph } else { glyph.symbolEffect(.pulse) }
+    }
+
+    private var isFailure: Bool {
+        if case .failed = kind { return true }
+        return false
+    }
+
+    private var iconName: String {
         switch kind {
         case .noClips, .noneFromYou: return "play.rectangle.on.rectangle"
-        case .failed: return "exclamationmark.triangle"
+        case .followingNobody:       return "person.2"
+        case .failed:                return "exclamationmark.triangle"
         }
     }
     private var title: String {
         switch kind {
-        case .noClips:     return "No clips yet"
-        case .noneFromYou: return "You haven't posted a clip"
-        case .failed:      return "Couldn't load clips"
+        case .noClips:          return "No clips yet"
+        case .noneFromYou:      return "You haven't posted a clip"
+        case .followingNobody:  return "Nothing here yet"
+        case .failed:           return "Couldn't load clips"
         }
     }
     private var subtitle: String {
         switch kind {
-        case .noClips:     return "Be the first to post one."
-        case .noneFromYou: return "Your clips will appear here."
-        case .failed(let m): return m
+        case .noClips:          return "Be the first to post one."
+        case .noneFromYou:      return "Your clips will appear here."
+        case .followingNobody:  return "Clips from creators you follow will show up here."
+        case .failed(let m):    return m
         }
     }
     private var actionTitle: String {
         switch kind {
         case .noClips, .noneFromYou: return "Create clip"
+        case .followingNobody:       return "Explore creators"
         case .failed:                return "Retry"
         }
     }

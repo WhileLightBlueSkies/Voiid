@@ -26,6 +26,16 @@ export const OFFLINE_TTL_MS = 2419200000; // 28 days
 export const VOIP_TTL_SECONDS = 30;
 
 /**
+ * The FCM/APNs-alert ring path needs the same short life as the VoIP one above. A ring
+ * is dead the moment the caller gives up — iOS caps an incoming ring at 45s
+ * (`CallService.incomingRingCap`) — so a device that comes back online tomorrow must
+ * not be woken to full-screen-ring a call that ended last week. Worse than cosmetic:
+ * the relay's offer buffer expires in 60s, so a late-delivered ring is unanswerable —
+ * the callee accepts into nothing and hangs. 60s = the 45s ring cap plus delivery slack.
+ */
+export const CALL_RING_TTL_SECONDS = 60;
+
+/**
  * A story is dead after 24h, so holding its wake push for the default 28 days is
  * wrong twice over: the device would be woken to fetch a story the feed query has
  * already filtered out (`expires_at > now()`), and the push would sit in Apple's /
@@ -64,6 +74,7 @@ export const ALLOWED_PUSH_KEYS = [
  */
 export function wakeTtlSeconds(meta?: PushMeta): number {
   if (meta?.type === 'story') return STORY_TTL_SECONDS;
+  if (meta?.type === 'call' || meta?.type === 'group_call') return CALL_RING_TTL_SECONDS;
   return Math.floor(OFFLINE_TTL_MS / 1000);
 }
 
@@ -150,8 +161,8 @@ export type ApnsHeaders = Record<string, string>;
 
 /**
  * APNs HTTP/2 headers for the alert path: `alert` push type, and a PER-TYPE expiry —
- * 28 days for a message wake, 24h for a story (see wakeTtlSeconds). Passing `meta` is
- * optional so existing callers keep the 28-day behaviour byte for byte.
+ * 28 days for a message wake, 24h for a story, 60s for a ring (see wakeTtlSeconds).
+ * Passing `meta` is optional so existing callers keep the 28-day behaviour byte for byte.
  */
 export function buildApnsAlertHeaders(args: {
   token: string;

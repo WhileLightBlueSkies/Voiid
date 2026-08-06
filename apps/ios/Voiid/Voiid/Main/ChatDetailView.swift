@@ -1420,6 +1420,19 @@ private struct GameInviteBubble: View {
     /// live would send the tapper into a match the server has already abandoned.
     private var expired: Bool { invite.meta?.isExpired == true }
 
+    /// Who this came from, resolved locally from the AUTHENTICATED sender id.
+    ///
+    /// `meta.from` is written by the sender's client into the payload, so rendering it verbatim
+    /// meant a modified client could attribute an invite to any name it liked, including someone
+    /// else's. Attribution comes from the envelope; a name inside a payload is at most a fallback
+    /// for a peer we have never seen. It stays in the wire format for older clients and for the
+    /// pre-marker human line, it just no longer outranks your own address book.
+    private var attributedSender: String? {
+        let resolved = UserDirectory.shared.displayName(message.senderId,
+                                                        fallback: invite.meta?.from)
+        return resolved == "Unknown" ? nil : resolved
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Artwork by NAME, the same runtime lookup the catalog cards use — so a game whose art
@@ -1466,7 +1479,7 @@ private struct GameInviteBubble: View {
                         .font(VoiidFont.rounded(12, .medium))
                         .foregroundStyle(VoiidColor.textSecondary)
                 }
-                if let from = invite.meta?.from, !from.isEmpty, !message.isMine {
+                if !message.isMine, let from = attributedSender {
                     Text("from \(from)")
                         .font(VoiidFont.rounded(12, .regular))
                         .foregroundStyle(VoiidColor.textSecondary)

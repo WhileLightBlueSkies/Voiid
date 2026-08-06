@@ -27,6 +27,10 @@ struct CreatorProfileView: View {
     @State private var loadError: String?
     @State private var loading = false
     @State private var showEdit = false
+    @State private var bioExpanded = false
+    /// Which tile the user opened, as an index into this creator's grid.
+    @State private var openIndex: Int?
+    @Namespace private var zoom
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 2), count: 3)
 
@@ -50,6 +54,35 @@ struct CreatorProfileView: View {
                     CreatorEditSheet(profile: profile).environmentObject(creators)
                 }
             }
+            // A profile used to be a gallery you could never play: the tiles had a content
+            // shape and nothing else behind them. The pager takes an injected feed now, so
+            // this creator's grid opens in the same player as Explore.
+            .fullScreenCover(item: $openIndex.asIdentifiable()) { boxed in
+                ClipFullscreenView(startIndex: boxed.value, feed: pagerFeed)
+                    .navigationTransition(.zoom(sourceID: zoomID(boxed.value), in: zoom))
+                    .environmentObject(ClipsEngine.shared)
+                    .environmentObject(creators)
+            }
+    }
+
+    /// This creator's rows as pager pages. Every clip here belongs to the profile being
+    /// viewed, so the handle is supplied explicitly — the grid endpoint returns no author
+    /// columns precisely because they would be the same on every row.
+    private var pagerFeed: ClipFullscreenView.Feed {
+        let rows = creators.clips(for: handle)
+        return ClipFullscreenView.Feed(
+            clips: rows.map { Clip(creatorRow: $0, handle: handle) },
+            loadMore: { clip in
+                guard let row = rows.first(where: { $0.id == clip.id }) else { return }
+                await creators.loadMoreClipsIfNeeded(handle: handle, currentItem: row)
+            })
+    }
+
+    /// The zoom transition is anchored on the clip id rather than the index, so a page
+    /// appended mid-scroll cannot re-point the animation at a different tile.
+    private func zoomID(_ index: Int) -> String {
+        let rows = creators.clips(for: handle)
+        return rows.indices.contains(index) ? rows[index].id : handle
     }
 
     @ViewBuilder
@@ -95,7 +128,9 @@ struct CreatorProfileView: View {
                 // above the fold on a small phone.
                 HStack(spacing: 0) {
                     stat(ClipCount.compact(p.clip_count), "Clips")
+                    statDivider
                     stat(ClipCount.compact(p.follower_count), "Followers")
+                    statDivider
                     stat(ClipCount.compact(p.following_count), "Following")
                 }
                 .frame(maxWidth: .infinity)
@@ -104,74 +139,73 @@ struct CreatorProfileView: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 4) {
                     Text(p.display_name ?? "@\(p.handle)")
-                        .font(VoiidFont.headline)
+                        .font(VoiidFont.rounded(19, .semibold))
                         .foregroundColor(VoiidColor.textPrimary)
-                    if p.is_verified {
-                        Image(systemName: "checkmark.seal.fill")
-                            .font(.system(size: 13))
-                            .foregroundColor(VoiidColor.primary)
-                    }
+                    if p.is_verified { VerifiedSeal() }
                 }
                 if p.display_name != nil {
                     Text("@\(p.handle)")
                         .font(VoiidFont.footnote)
                         .foregroundColor(VoiidColor.textSecondary)
                 }
-                if let bio = p.bio, !bio.isEmpty {
-                    Text(bio)
-                        .font(VoiidFont.subhead)
-                        .foregroundColor(VoiidColor.textPrimary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.top, 2)
-                }
-                if let link = p.link_url, !link.isEmpty {
-                    // Rendered as a tappable link only when it actually parses as one; a
-                    // creator-supplied string is not guaranteed to be a URL.
-                    if let url = URL(string: link), url.scheme != nil {
-                        Link(destination: url) {
-                            Text(link)
-                                .font(VoiidFont.footnote)
-                                .foregroundColor(VoiidColor.primary)
-                                .lineLimit(1)
-                        }
-                    } else {
-                        Text(link)
-                            .font(VoiidFont.footnote)
-                            .foregroundColor(VoiidColor.textSecondary)
-                            .lineLimit(1)
-                    }
-                }
+                if let bio = p.bio, !bio.isEmpty { bioBlock(bio) }
+                if let link = p.link_url, !link.isEmpty { linkRow(link) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            actionButton(p)
+            actionRow(p)
         }
         .padding(VoiidSpacing.md)
     }
 
+    /// 96pt portrait inside a gradient ring, with a 3pt gap of background between the two so
+    /// the ring reads as a frame rather than a border drawn on the photo. Primary→accent is
+    /// the only two-token gradient in the system, and it is what makes a creator page look
+    /// like a creator page instead of a settings row with a circle on it.
     @ViewBuilder
     private func avatar(_ p: CreatorService.Profile) -> some View {
+        avatarImage(p)
+            .frame(width: 96, height: 96)
+            .clipShape(Circle())
+            .padding(3)
+            .overlay(
+                Circle().strokeBorder(
+                    LinearGradient(colors: [VoiidColor.primary, VoiidColor.accent],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing),
+                    lineWidth: 2.5)
+            )
+    }
+
+    @ViewBuilder
+    private func avatarImage(_ p: CreatorService.Profile) -> some View {
         // ClipThumbnail already handles async load, failure and shimmer; a creator avatar is
         // the same problem (a presigned URL that may expire or 404).
         if let url = p.avatar_url {
             ClipThumbnail(url: url)
-                .frame(width: 84, height: 84)
-                .clipShape(Circle())
         } else {
             ZStack {
                 Circle().fill(VoiidColor.fieldFill)
                 Text(String(p.handle.prefix(1)).uppercased())
-                    .font(VoiidFont.rounded(32, .semibold))
+                    .font(VoiidFont.rounded(36, .semibold))
                     .foregroundColor(VoiidColor.textSecondary)
             }
-            .frame(width: 84, height: 84)
         }
     }
 
+    /// Hairlines between the counts. Without them three numbers in a row read as one
+    /// sentence; a full-height rule would draw more attention than the numbers do.
+    private var statDivider: some View {
+        Rectangle()
+            .fill(VoiidColor.divider)
+            .frame(width: 1, height: 24)
+    }
+
+    /// Deliberately NOT buttons. There is no followers list to open, and a control that
+    /// presses but goes nowhere is exactly the dead affordance this screen was fixed for.
     private func stat(_ value: String, _ label: String) -> some View {
         VStack(spacing: 2) {
             Text(value)
-                .font(VoiidFont.rounded(17, .bold))
+                .font(VoiidFont.rounded(20, .bold))
                 .foregroundColor(VoiidColor.textPrimary)
             Text(label)
                 .font(VoiidFont.caption)
@@ -180,39 +214,131 @@ struct CreatorProfileView: View {
         .frame(maxWidth: .infinity)
     }
 
+    /// Three lines, then a "more" expander. A creator bio has no length limit worth
+    /// trusting, and an unclamped one can push the grid — the reason to be here — off screen.
+    @ViewBuilder
+    private func bioBlock(_ bio: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(bio)
+                .font(VoiidFont.subhead)
+                .foregroundColor(VoiidColor.textPrimary)
+                .lineLimit(bioExpanded ? nil : 3)
+                .fixedSize(horizontal: false, vertical: true)
+            if !bioExpanded && bio.count > 120 {
+                Button {
+                    withAnimation(.easeOut(duration: 0.2)) { bioExpanded = true }
+                } label: {
+                    Text("more")
+                        .font(VoiidFont.rounded(13, .semibold))
+                        .foregroundColor(VoiidColor.textSecondary)
+                        .frame(height: 44)
+                        .contentShape(Rectangle())
+                }
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    @ViewBuilder
+    private func linkRow(_ link: String) -> some View {
+        // Rendered as a tappable link only when it actually parses as one; a
+        // creator-supplied string is not guaranteed to be a URL.
+        if let url = URL(string: link), url.scheme != nil {
+            Link(destination: url) {
+                HStack(spacing: VoiidSpacing.xs) {
+                    Image(systemName: "link").font(.system(size: 11))
+                    Text(link).lineLimit(1)
+                }
+                .font(VoiidFont.footnote)
+                .foregroundColor(VoiidColor.primary)
+                .frame(height: 44)
+                .contentShape(Rectangle())
+            }
+        } else {
+            HStack(spacing: VoiidSpacing.xs) {
+                Image(systemName: "link").font(.system(size: 11))
+                Text(link).lineLimit(1)
+            }
+            .font(VoiidFont.footnote)
+            .foregroundColor(VoiidColor.textSecondary)
+        }
+    }
+
     /// Your own page shows Edit; everyone else's shows Follow. There is deliberately no
     /// Message button — see the header note.
-    @ViewBuilder
-    private func actionButton(_ p: CreatorService.Profile) -> some View {
-        if p.is_self {
-            Button {
-                Haptics.tap()
-                showEdit = true
-            } label: {
-                Text("Edit profile")
-                    .font(VoiidFont.headline)
-                    .foregroundColor(VoiidColor.textPrimary)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 44)
-                    .background(VoiidColor.fieldFill)
-                    .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+    private func actionRow(_ p: CreatorService.Profile) -> some View {
+        HStack(spacing: VoiidSpacing.sm) {
+            if p.is_self {
+                headerButton("Edit profile", filled: true) {
+                    Haptics.tap()
+                    showEdit = true
+                }
+            } else {
+                followButton(p)
             }
-            .buttonStyle(SoftPressStyle())
-        } else {
-            Button {
-                Haptics.tap()
-                Task { await creators.toggleFollow(p.handle) }
-            } label: {
-                Text(p.following ? "Following" : "Follow")
-                    .font(VoiidFont.headline)
-                    .foregroundColor(p.following ? VoiidColor.textPrimary : VoiidColor.textOnPrimary)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 44)
-                    .background(p.following ? VoiidColor.fieldFill : VoiidColor.primary)
-                    .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
-            }
-            .buttonStyle(SoftPressStyle())
+            shareButton(p)
         }
+    }
+
+    /// Follow flips to a quiet outlined "Following" rather than staying loud: once the state
+    /// is achieved the button is a status, and a filled primary rectangle would keep asking
+    /// for a tap the user has already given.
+    private func followButton(_ p: CreatorService.Profile) -> some View {
+        Button {
+            Haptics.success()
+            Task { await creators.toggleFollow(p.handle) }
+        } label: {
+            Text(p.following ? "Following" : "Follow")
+                .font(VoiidFont.rounded(15, .semibold))
+                .foregroundColor(p.following ? VoiidColor.textPrimary : VoiidColor.textOnPrimary)
+                .frame(maxWidth: .infinity)
+                .frame(height: 40)
+                .background(p.following ? VoiidColor.fieldFill : VoiidColor.primary)
+                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+                // strokeBorder (not stroke) and AFTER the clip, so the 1pt outline sits
+                // inside the shape instead of having its outer half clipped away.
+                .overlay(
+                    RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
+                        .strokeBorder(VoiidColor.fieldBorder, lineWidth: p.following ? 1 : 0)
+                )
+                .padding(.vertical, 4)     // 48pt of hit height around a 40pt button
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(SoftPressStyle())
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: p.following)
+    }
+
+    /// Shares the same invite text NewChatView uses. Deliberately not a per-handle deep
+    /// link: nothing in the app resolves one yet, and a shared link that opens nothing is
+    /// worse than no link at all.
+    private func shareButton(_ p: CreatorService.Profile) -> some View {
+        ShareLink(item: "Watch @\(p.handle)'s clips on VOIID — https://voiid.app") {
+            Text("Share profile")
+                .font(VoiidFont.rounded(15, .semibold))
+                .foregroundColor(VoiidColor.textPrimary)
+                .frame(maxWidth: .infinity)
+                .frame(height: 40)
+                .background(VoiidColor.fieldFill)
+                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
+        }
+    }
+
+    private func headerButton(_ title: String, filled: Bool,
+                              _ tap: @escaping () -> Void) -> some View {
+        Button(action: tap) {
+            Text(title)
+                .font(VoiidFont.rounded(15, .semibold))
+                .foregroundColor(filled ? VoiidColor.textOnPrimary : VoiidColor.textPrimary)
+                .frame(maxWidth: .infinity)
+                .frame(height: 40)
+                .background(filled ? VoiidColor.primary : VoiidColor.fieldFill)
+                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(SoftPressStyle())
     }
 
     // MARK: - Grid
@@ -228,46 +354,58 @@ struct CreatorProfileView: View {
                 .padding(.top, VoiidSpacing.xl)
         } else {
             LazyVGrid(columns: columns, spacing: 2) {
-                ForEach(rows) { clip in
-                    // THE ASPECT RATIO BELONGS ON THE CELL, NOT THE IMAGE.
-                    //
-                    // This grid overlapped its own rows. `ClipThumbnail` uses scaledToFill,
-                    // which reports an UNBOUNDED ideal height — putting .aspectRatio on the
-                    // image only clips the picture, it never tells the cell how tall to be.
-                    // The other grids get away with it because they sit directly inside a
-                    // ScrollView, which hands its children a definite width to resolve
-                    // against; this one is nested in a VStack beside the profile header,
-                    // where nothing constrains the cell and every row bleeds into the next.
-                    //
-                    // Constraining the ZStack fixes it at the source: the cell is a 9:16 box,
-                    // the image fills and clips inside it, and the layout is identical to the
-                    // other grids by construction rather than by luck.
-                    ZStack(alignment: .bottomLeading) {
-                        ClipThumbnail(url: clip.thumb_url)
-                            .scaledToFill()
-
-                        LinearGradient(colors: [.clear, .black.opacity(0.55)],
-                                       startPoint: .center, endPoint: .bottom)
-
-                        HStack(spacing: 3) {
-                            Image(systemName: "eye.fill").font(.system(size: 10))
-                            Text(ClipCount.compact(clip.view_count))
-                                .font(VoiidFont.rounded(11, .semibold))
-                        }
-                        .foregroundColor(.white)
-                        .shadow(radius: 2)
-                        .padding(6)
+                ForEach(Array(rows.enumerated()), id: \.element.id) { index, clip in
+                    Button {
+                        Haptics.tap()
+                        openIndex = index
+                    } label: {
+                        tile(clip)
                     }
-                    .frame(maxWidth: .infinity)
-                    .aspectRatio(9.0 / 16.0, contentMode: .fit)
-                    .clipped()
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
+                    .matchedTransitionSource(id: clip.id, in: zoom)
+                    .clipTileFadeIn(index: index)
                     .task {
                         await creators.loadMoreClipsIfNeeded(handle: handle, currentItem: clip)
                     }
                 }
             }
         }
+    }
+
+    private func tile(_ clip: CreatorService.CreatorClipRow) -> some View {
+        // THE ASPECT RATIO BELONGS ON THE CELL, NOT THE IMAGE.
+        //
+        // This grid overlapped its own rows. `ClipThumbnail` uses scaledToFill, which
+        // reports an UNBOUNDED ideal height — putting .aspectRatio on the image only clips
+        // the picture, it never tells the cell how tall to be. The other grids get away with
+        // it because they sit directly inside a ScrollView, which hands its children a
+        // definite width to resolve against; this one is nested in a VStack beside the
+        // profile header, where nothing constrains the cell and every row bleeds into the
+        // next.
+        //
+        // Constraining the ZStack fixes it at the source: the cell is a 9:16 box, the image
+        // fills and clips inside it, and the layout is identical to the other grids by
+        // construction rather than by luck.
+        ZStack(alignment: .bottomLeading) {
+            ClipThumbnail(url: clip.thumb_url)
+                .scaledToFill()
+
+            LinearGradient(colors: [.clear, .black.opacity(0.55)],
+                           startPoint: .center, endPoint: .bottom)
+
+            HStack(spacing: 3) {
+                Image(systemName: "eye.fill").font(.system(size: 10))
+                Text(ClipCount.compact(clip.view_count))
+                    .font(VoiidFont.rounded(11, .semibold))
+            }
+            .foregroundColor(.white)
+            .shadow(radius: 2)
+            .padding(6)
+        }
+        .frame(maxWidth: .infinity)
+        .aspectRatio(9.0 / 16.0, contentMode: .fit)
+        .clipped()
+        .contentShape(Rectangle())
     }
 
     // MARK: - Loading

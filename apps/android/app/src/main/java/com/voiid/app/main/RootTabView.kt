@@ -120,9 +120,12 @@ private const val TAB_LABEL_LIMIT = 5
 fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voiid.app.model.StoriesStore) {
     var tab by remember { mutableStateOf(Tab.CHAT) }
     var openConversation by remember { mutableStateOf<VConversation?>(null) }
-    // The INDEX into the loaded feed page, not a clip: the fullscreen player is a pager
-    // over the whole page, so it has to know where to start.
-    var openClip by remember { mutableStateOf<Int?>(null) }
+    // WHICH grid was tapped and where in it. The fullscreen player is a pager over a list,
+    // and there are three lists that can produce one (explore, following, a creator's page),
+    // so a bare index would not say what it indexes.
+    var openClip by remember {
+        mutableStateOf<com.voiid.app.main.clips.ClipPagerSource?>(null)
+    }
     var showNewClip by remember { mutableStateOf(false) }
     var showMyClips by remember { mutableStateOf(false) }
     // The creator-profile gate. `creators` is hoisted here rather than inside the Clips tab
@@ -281,7 +284,12 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                     Tab.CLIPS -> com.voiid.app.main.clips.ClipsFeedView(
                         clips,
                         creators = creators,
-                        onOpenClip = { openClip = it },
+                        onOpenClip = {
+                            openClip = com.voiid.app.main.clips.ClipPagerSource.Explore(it)
+                        },
+                        onOpenFollowingClip = {
+                            openClip = com.voiid.app.main.clips.ClipPagerSource.Following(it)
+                        },
                         onNewClip = { startCompose() },
                         onMyClips = { showMyClips = true },
                         onOpenCreator = { openCreator = it },
@@ -321,18 +329,34 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
             }
         }
 
+        // Creator page — full-screen cover; it must clear the tab bar.
+        //
+        // ORDER MATTERS: this sits BELOW the clip player that follows it, because a tile on
+        // a creator's page now opens that player. Drawn after it, the profile would cover
+        // the very clip it was asked to play.
+        openCreator?.let { handle ->
+            com.voiid.app.main.clips.CreatorProfileView(
+                handle = handle,
+                creators = creators,
+                onBack = { openCreator = null },
+                onOpenClip = {
+                    openClip = com.voiid.app.main.clips.ClipPagerSource.Creator(handle, it)
+                },
+            )
+        }
+
         // Clip fullscreen — full-screen cover.
         AnimatedVisibility(
             visible = openClip != null,
             enter = slideInVertically { it } + fadeIn(),
             exit = slideOutVertically { it } + fadeOut(),
         ) {
-            openClip?.let { index ->
-                com.voiid.app.main.clips.ClipFullscreenView(
+            openClip?.let { source ->
+                com.voiid.app.main.clips.ClipPagerHost(
+                    source = source,
                     clips = clips,
-                    startIndex = index,
-                    myUserId = clips.myUserId,
-                    myName = clips.myName,
+                    creators = creators,
+                    onOpenCreator = { openCreator = it },
                     onClose = { openClip = null },
                 )
             }
@@ -598,14 +622,6 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
         com.voiid.app.main.clips.MyClipsView(
             clips = clips,
             onBack = { showMyClips = false },
-        )
-    }
-    // Full-screen overlay sibling of the clip viewer — a creator page must cover the tab bar.
-    openCreator?.let { handle ->
-        com.voiid.app.main.clips.CreatorProfileView(
-            handle = handle,
-            creators = creators,
-            onBack = { openCreator = null },
         )
     }
     if (showStoryComposer) {

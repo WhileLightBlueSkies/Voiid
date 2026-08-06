@@ -93,6 +93,19 @@ data class VClipComment(
 
 enum class CommentSendState { SENDING, SENT, FAILED }
 
+/**
+ * The four counts the fullscreen player mutates. Extracted so like/view/comment can be
+ * applied to a clip the store does not have a row for — a creator's grid and the Following
+ * feed are separate sources with their own list, and before this the player simply gave up
+ * (`indexOfFirst` returned -1) and a like on someone's profile page did nothing at all.
+ */
+data class ClipInteraction(
+    val likedByMe: Boolean,
+    val likeCount: Int,
+    val commentCount: Int,
+    val viewCount: Int,
+)
+
 // ── Store ─────────────────────────────────────────────────────────────────────────
 
 /**
@@ -331,36 +344,91 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
     // ── Interactions ──────────────────────────────────────────────────────────────
 
     /**
+     * Counts for clips this store has no row for, keyed by clip id.
+     *
+     * The fullscreen player is now driven by an INJECTED list (a creator's grid, the
+     * Following feed, or the explore page) rather than only [clips], so its like and view
+     * mutations need somewhere to land even when the clip is not in any list here. The
+     * player reads this on top of whatever row it was handed.
+     *
+     * Bounded by clips actually opened in a session, so it does not need eviction.
+     */
+    val interactions = mutableStateMapOf<String, ClipInteraction>()
+
+    /**
+     * Record a clip's counts so [interactions] can track them from here on. Never overwrites
+     * an entry that already exists: the row a caller passes is a snapshot from a list that
+     * may be older than a like performed thirty seconds ago in the player.
+     */
+    fun seedInteraction(
+        clipId: String,
+        likedByMe: Boolean,
+        likeCount: Int,
+        commentCount: Int,
+        viewCount: Int,
+    ) {
+        if (clipId in interactions) return
+        if (clips.any { it.id == clipId } || myClips.any { it.id == clipId }) return
+        interactions[clipId] = ClipInteraction(likedByMe, likeCount, commentCount, viewCount)
+    }
+
+    /** The lists win over [interactions]: a fresh page is more authoritative than an overlay. */
+    private fun readInteraction(clipId: String): ClipInteraction? {
+        (clips.firstOrNull { it.id == clipId } ?: myClips.firstOrNull { it.id == clipId })?.let {
+            return ClipInteraction(it.likedByMe, it.likeCount, it.commentCount, it.viewCount)
+        }
+        return interactions[clipId]
+    }
+
+    /** Applies counts everywhere the clip appears — both lists AND the overlay. */
+    private fun writeInteraction(clipId: String, v: ClipInteraction) {
+        if (clipId in interactions) interactions[clipId] = v
+        listOf(clips, myClips).forEach { list ->
+            val i = list.indexOfFirst { it.id == clipId }
+            if (i >= 0) list[i] = list[i].copy(
+                likedByMe = v.likedByMe,
+                likeCount = v.likeCount,
+                commentCount = v.commentCount,
+                viewCount = v.viewCount,
+            )
+        }
+    }
+
+    /**
      * Optimistic flip, then OVERWRITE with the server's authoritative count. Optimistic UI
      * must never become the source of truth.
      */
     fun toggleLike(clipId: String) {
         if (clipId in likeInFlight) return
-        val i = clips.indexOfFirst { it.id == clipId }
-        if (i < 0) return
+        val before = readInteraction(clipId) ?: return
 
-        val wasLiked = clips[i].likedByMe
-        val previousCount = clips[i].likeCount
         likeInFlight += clipId
-        clips[i] = clips[i].copy(
-            likedByMe = !wasLiked,
-            likeCount = (previousCount + if (wasLiked) -1 else 1).coerceAtLeast(0),
+        writeInteraction(
+            clipId,
+            before.copy(
+                likedByMe = !before.likedByMe,
+                likeCount = (before.likeCount + if (before.likedByMe) -1 else 1).coerceAtLeast(0),
+            ),
         )
 
         viewModelScope.launch {
-            runCatching { if (wasLiked) svc.unlike(clipId) else svc.like(clipId) }
+            runCatching { if (before.likedByMe) svc.unlike(clipId) else svc.like(clipId) }
                 .onSuccess { resp ->
-                    val j = clips.indexOfFirst { it.id == clipId }
-                    if (j >= 0) clips[j] = clips[j].copy(
-                        likedByMe = resp.liked, likeCount = resp.like_count,
-                    )
+                    readInteraction(clipId)?.let {
+                        writeInteraction(
+                            clipId,
+                            it.copy(likedByMe = resp.liked, likeCount = resp.like_count),
+                        )
+                    }
                 }
                 .onFailure {
                     // Revert — a like that silently failed is a lie the user acts on.
-                    val j = clips.indexOfFirst { it.id == clipId }
-                    if (j >= 0) clips[j] = clips[j].copy(
-                        likedByMe = wasLiked, likeCount = previousCount,
-                    )
+                    readInteraction(clipId)?.let {
+                        writeInteraction(
+                            clipId,
+                            it.copy(likedByMe = before.likedByMe, likeCount = before.likeCount),
+                        )
+                    }
                 }
             likeInFlight -= clipId
         }
@@ -373,8 +441,9 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             runCatching { svc.markViewed(clipId) }
                 .onSuccess { count ->
-                    val i = clips.indexOfFirst { it.id == clipId }
-                    if (i >= 0) clips[i] = clips[i].copy(viewCount = count)
+                    readInteraction(clipId)?.let {
+                        writeInteraction(clipId, it.copy(viewCount = count))
+                    }
                 }
                 .onFailure { viewedThisSession -= clipId }
         }
@@ -433,9 +502,10 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
     }
 
     private fun bumpCommentCount(clipId: String, delta: Int) {
-        val i = clips.indexOfFirst { it.id == clipId }
-        if (i >= 0) clips[i] = clips[i].copy(
-            commentCount = (clips[i].commentCount + delta).coerceAtLeast(0),
+        val current = readInteraction(clipId) ?: return
+        writeInteraction(
+            clipId,
+            current.copy(commentCount = (current.commentCount + delta).coerceAtLeast(0)),
         )
     }
 

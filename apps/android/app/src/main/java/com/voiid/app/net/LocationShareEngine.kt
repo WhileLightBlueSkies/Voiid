@@ -110,7 +110,7 @@ object LocationShareEngine {
             // Receiving side of the shared seam. Client-side authorization: a fix for a share we
             // hold no key for is dropped (docs/LOCATION.md §9, §11).
             LocationRelay.subscribeFix { shareId, from, ct, _ -> onFixFrame(shareId, from, ct) }
-            LocationRelay.subscribeStop { shareId, _ -> endInbound(shareId) }
+            LocationRelay.subscribeStop { shareId, _, kind, _ -> if (kind != "map") endInbound(shareId) }
             LocationRelay.subscribeControl { plain, from, convId -> onControl(plain, from, convId) }
         }
     }
@@ -359,6 +359,14 @@ object LocationShareEngine {
     }
 
     private fun endInbound(shareId: String) {
+        // OWNERSHIP GUARD. Both location engines consume the same relay stop stream, so a
+        // friend's Map ghost reaches here too — and this used to run its full teardown on it.
+        // That is a no-op only by accident: conversation keys are filed under the share id in
+        // a SEPARATE prefs file the Map never writes, and there is no row to mark ended. A
+        // future key-naming change would silently turn that accident into cross-feature
+        // teardown, which is exactly the bug the Map side already had to fix. Act only on a
+        // share we actually hold.
+        if (!inboundViews.containsKey(shareId) && !keyStore.contains(shareId)) return
         keyStore.edit().remove(shareId).apply()
         inboundViews[shareId]?.let { inboundViews[shareId] = it.copy(endedExplicit = true) }
         scope.launch { withContext(Dispatchers.IO) { runCatching { dao.markEnded(shareId, nowSec()) } } }
@@ -375,10 +383,20 @@ object LocationShareEngine {
                 val keyB64 = keyStore.getString(s.share_id, null) ?: continue
                 val convId = s.conversation_id ?: continue
                 val expiresAt = parseIso(s.expires_at)
+                // Routing context comes from the local row written at share creation, never
+                // from the server response (which carries none) and never from the target
+                // count — a 2-member group is indistinguishable from a 1:1 that way. Getting
+                // it wrong costs the DURABLE live_stop, so an offline recipient would keep
+                // rendering the share until expiry. A missing row (local DB cleared under a
+                // surviving key) leaves no route at all; the share is still registered so
+                // Stop does the WS stop + endShare, and sendControl logs what it can't send.
+                val row = runCatching { withContext(Dispatchers.IO) { dao.share(s.share_id) } }.getOrNull()
+                val peer = row?.peerUserId
                 // Reconstructed context: Stop works (loc_stop + endShare). We do NOT resume
                 // emission here — one emitting device per share, and the timer still guards it.
                 outbound[s.share_id] = Outbound(
-                    shareId = s.share_id, conversationId = convId, isGroup = false, peerUserId = null,
+                    shareId = s.share_id, conversationId = convId,
+                    isGroup = row != null && peer == null, peerUserId = peer,
                     recipientIds = s.target_user_ids, keyB64 = keyB64, expiresAt = expiresAt,
                     cadenceSeconds = LIVE_CADENCE_SECONDS, liveStartSent = true,
                 )
@@ -400,9 +418,16 @@ object LocationShareEngine {
 
     private suspend fun sendControl(conv: ShareTarget, env: LocationEnvelope) {
         val json = ApiClient.json.encodeToString(LocationEnvelope.serializer(), env)
+        val peer = conv.peerUserId
+        if (!conv.isGroup && peer == null) {
+            // Never silent: durability is the whole reason this path exists (a live_stop must
+            // reach an OFFLINE recipient), so a control we cannot route has to leave a trace.
+            Log.w(TAG, "location control k=${env.k} NOT SENT: no 1:1 peer for conv=${conv.conversationId}")
+            return
+        }
         runCatching {
             if (conv.isGroup) group.sendGroupLocationControl(conv.conversationId, json)
-            else chat.sendLocationControl(json, conv.conversationId, conv.peerUserId ?: return)
+            else chat.sendLocationControl(json, conv.conversationId, peer!!)
         }.onFailure { Log.e(TAG, "location control send failed k=${env.k}", it) }
     }
 

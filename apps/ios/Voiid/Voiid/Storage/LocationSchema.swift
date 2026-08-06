@@ -69,5 +69,17 @@ enum LocationSchema {
                 t.primaryKey(["share_id", "sender_user_id"])
             }
         }
+
+        // Whether an OUTBOUND share was started in a group. Not inferable after a cold
+        // start: the resume path guessed "more than one recipient means group", so a group
+        // of exactly two resumed as a 1:1 and sent its durable `live_stop` down the 1:1
+        // Double Ratchet addressed with the GROUP's conversation id — a ratchet message into
+        // an MLS conversation, which is simply lost. Defaults to false so every pre-existing
+        // row keeps the behaviour it already had.
+        m.registerMigration("v4_location_is_group") { db in
+            try db.alter(table: "location_shares") { t in
+                t.add(column: "is_group", .boolean).notNull().defaults(to: false)
+            }
+        }
     }
 }
