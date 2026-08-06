@@ -25,6 +25,10 @@ struct GroupCallScreen: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var call = GroupCallService.shared
 
+    /// Presents the participant roster. Past a handful of people the tiles are too small to
+    /// read a name off, so the roster — not the grid — is what answers "who is here".
+    @State private var showRoster = false
+
     private var isVideo: Bool { kind == .video }
 
     var body: some View {
@@ -46,6 +50,9 @@ struct GroupCallScreen: View {
             if !call.isActive {
                 Task { await call.join(conversationId: conversationId, title: title, isVideo: isVideo) }
             }
+        }
+        .sheet(isPresented: $showRoster) {
+            GroupCallRosterSheet(participants: call.participants)
         }
         .onChange(of: call.state) { _, new in
             // Terminal states close the screen. `.failed` stays up so the user can
@@ -216,6 +223,11 @@ struct GroupCallScreen: View {
             ctrl(call.speakerOn ? "speaker.wave.2.fill" : "speaker.fill", call.speakerOn) {
                 call.toggleSpeaker()
             }
+
+            // Who is actually on the call. Past a handful of people the grid tiles get too
+            // small to read a name off, and mute state is a corner badge — the roster is where
+            // you go to answer "is Priya here, and can she hear us?"
+            ctrl("person.2.fill", false) { showRoster = true }
 
             Button {
                 Haptics.rigid()

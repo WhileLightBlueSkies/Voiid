@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.VideocamOff
 import androidx.compose.material3.Icon
@@ -37,6 +38,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -75,6 +77,9 @@ import livekit.org.webrtc.SurfaceViewRenderer
 @Composable
 fun GroupCallOverlay(state: GroupCallManager.GroupCallState) {
     val haptics = LocalVoiidHaptics.current
+    // Past a handful of people the tiles are too small to read a name off, so the roster —
+    // not the grid — is what answers "who is here".
+    var showRoster by remember { mutableStateOf(false) }
 
     // A failed/blocked call shows its reason instead of an empty grid.
     if (state.error != null) {
@@ -154,9 +159,14 @@ fun GroupCallOverlay(state: GroupCallManager.GroupCallState) {
                 onFlip = { haptics.tap(); GroupCallManager.switchCamera() },
                 onSpeaker = { haptics.tap(); GroupCallManager.toggleSpeaker() },
                 onLeave = { haptics.rigid(); GroupCallManager.leave() },
+                onRoster = { haptics.tap(); showRoster = true },
             )
             Spacer(Modifier.height(40.dp))
         }
+    }
+
+    if (showRoster) {
+        GroupCallRosterSheet(state.participants) { showRoster = false }
     }
 }
 
@@ -354,6 +364,7 @@ private fun GroupCallControls(
     onFlip: () -> Unit,
     onSpeaker: () -> Unit,
     onLeave: () -> Unit,
+    onRoster: () -> Unit,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(24.dp)) {
         GroupCtrl(if (muted) Icons.Default.MicOff else Icons.Default.Mic, muted, onMute)
@@ -367,6 +378,10 @@ private fun GroupCallControls(
             speakerOn,
             onSpeaker,
         )
+        // Who is actually on the call. Past a handful of people the tiles get too small to
+        // read a name off and mute state is a corner badge — the roster is where you go to
+        // answer "is Priya here, and can she hear us?"
+        GroupCtrl(Icons.Default.People, false, onRoster)
         Box(
             Modifier.size(64.dp).clip(CircleShape).background(VoiidColor.error).softClickable(onClick = onLeave),
             contentAlignment = Alignment.Center,
