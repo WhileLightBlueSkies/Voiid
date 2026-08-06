@@ -29,6 +29,11 @@ import adminRoutes from './routes/admin';
 import clipsRoutes from './routes/clips';
 import creatorRoutes from './routes/creators';
 import reportRoutes from './routes/reports';
+import consentRoutes from './routes/consent';
+import dpdpRoutes from './routes/dpdp';
+import eventRoutes from './routes/events';
+import paymentRoutes from './routes/payments';
+import tournamentRoutes from './routes/tournaments';
 import communityRoutes from './routes/communities';
 import communityHostThreadRoutes from './routes/communityHostThreads';
 import gamesRoutes from './routes/games';
@@ -52,6 +57,17 @@ const app = express();
 // restrictive and every request looks like the proxy, throttling all users as one client.
 const trustProxy = process.env.TRUST_PROXY?.trim() || 'loopback';
 app.set('trust proxy', /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy);
+
+// THE PAYMENT WEBHOOK MOUNTS BEFORE express.json(), and this ordering is load-bearing.
+// Body parsing consumes the request stream once, so a webhook parsed as JSON first receives
+// nothing and its signature can NEVER verify — every payment would fail as a bad signature,
+// which is a very hard failure to read from the outside. routes/payments.ts installs its own
+// raw-body parser and detects the wrong order explicitly, but the right order is here.
+//
+// It is also the one endpoint in this API called by a stranger: no requireAuth, because the
+// caller is a payment provider. Its authenticity comes from the signature, and its
+// idempotency from an insert into payment_webhook_events — a provider WILL deliver twice.
+app.use(paymentRoutes);
 
 app.use(express.json({ limit: '5mb' }));
 
@@ -168,6 +184,16 @@ api.use('/creators', rateLimit({ max: 180, windowSeconds: 60, bucket: 'creators'
 // firing them in bulk is either broken or report-bombing. The per-(reporter,target)
 // uniqueness in 035 stops duplicates; this stops volume.
 api.use('/reports', rateLimit({ max: 20, windowSeconds: 60, bucket: 'reports' }), reportRoutes);
+// Consent and data-principal requests (DPDP). Both declare relative paths, so both take a
+// prefix. A LOW ceiling on /dpdp: an export is expensive to produce and a right that is
+// exercised occasionally, not in a loop.
+api.use('/consent', rateLimit({ max: 30, windowSeconds: 60, bucket: 'consent' }), consentRoutes);
+api.use('/dpdp', rateLimit({ max: 10, windowSeconds: 60, bucket: 'dpdp' }), dpdpRoutes);
+// Tournaments and community events declare their paths IN FULL ('/communities/:id/events',
+// '/tournaments/:id'), so they mount at the router root with no prefix — giving them one
+// would produce '/events/communities/:id/events'.
+api.use(rateLimit({ max: 120, windowSeconds: 60, bucket: 'tournaments' }), tournamentRoutes);
+api.use(rateLimit({ max: 120, windowSeconds: 60, bucket: 'events' }), eventRoutes);
 // Games: match lifecycle only — the catalog, creating/joining a match, history. MOVES DO
 // NOT COME THROUGH HERE; they ride the WebSocket relay to backend/games, which referees
 // them (see the header of routes/games.ts for why the move path is deliberately absent).
