@@ -246,6 +246,13 @@ private fun CommunityDetailView(
             Text(it, style = VoiidFont.rounded(13), color = VoiidColor.error)
         }
 
+        // Members only: the endpoint 403s everyone else, and an empty section would read as
+        // "no tournaments" rather than "not visible to you".
+        if (state.isMember) {
+            Spacer(Modifier.height(20.dp))
+            CommunityTournamentsSection(communityId = state.id)
+        }
+
         Spacer(Modifier.weight(1f))
         // Stated rather than buried: users deserve to know which half of a feature is encrypted.
         Text(

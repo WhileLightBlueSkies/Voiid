@@ -31,6 +31,12 @@ struct CommunityDetailView: View {
                             .foregroundColor(VoiidColor.textPrimary)
                     }
                     joinRow(card)
+                    // Members only: the endpoint 403s everyone else, and an empty section
+                    // would read as "no tournaments" rather than "not visible to you".
+                    if card.isMember {
+                        Divider().background(VoiidColor.divider)
+                        CommunityTournamentsSection(communityId: card.id)
+                    }
                     Divider().background(VoiidColor.divider)
                     notice
                 }
