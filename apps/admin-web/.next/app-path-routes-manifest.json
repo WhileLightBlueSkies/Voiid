@@ -1,6 +1,8 @@
 {
   "/_not-found/page": "/_not-found",
   "/page": "/",
+  "/dpdp/page": "/dpdp",
   "/clips/page": "/clips",
+  "/users/page": "/users",
   "/login/page": "/login"
 }

@@ -39,10 +39,22 @@
       "namedRegex": "^/clips(?:/)?$"
     },
     {
+      "page": "/dpdp",
+      "regex": "^/dpdp(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/dpdp(?:/)?$"
+    },
+    {
       "page": "/login",
       "regex": "^/login(?:/)?$",
       "routeKeys": {},
       "namedRegex": "^/login(?:/)?$"
+    },
+    {
+      "page": "/users",
+      "regex": "^/users(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/users(?:/)?$"
     }
   ],
   "dataRoutes": [],

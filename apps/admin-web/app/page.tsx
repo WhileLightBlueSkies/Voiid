@@ -50,6 +50,11 @@ export default function Dashboard() {
 
       <nav style={{ marginTop: 28, display: 'flex', gap: 12 }}>
         <Link href="/clips"><button>Moderate clips</button></Link>
+        {/* The DPDP queue is ordered by DEADLINE, not recency — an overdue request is the
+            one failure this panel exists to prevent, so it gets its own entry rather than
+            living behind the users list. */}
+        <Link href="/dpdp"><button className="ghost">Data requests</button></Link>
+        <Link href="/users"><button className="ghost">Users &amp; devices</button></Link>
       </nav>
 
       {/* Said plainly, on the one screen where someone might assume otherwise. An admin
