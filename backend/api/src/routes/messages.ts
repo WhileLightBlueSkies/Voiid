@@ -147,17 +147,42 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
     );
     const message = rows[0];
 
-    // One opaque ciphertext per target device. `do nothing` guards a client that
-    // repeats a device in the bundle (the PK is (message_id, recipient_device_id)).
-    const deviceIds: string[] = [];
+    // One opaque ciphertext per target device, inserted in ONE statement.
+    //
+    // This was a loop doing one round trip per device. A 1000-member group where everyone
+    // has two devices is 2000 sequential inserts for a single message — the send latency
+    // becomes 2000 × RTT, and it is the dominant cost of the whole path at that size.
+    // unnest sends the same rows as three arrays and lets Postgres do the expansion.
+    //
+    // `do nothing` still guards a client that repeats a device in its bundle (the PK is
+    // (message_id, recipient_device_id)).
+    const seen = new Set<string>();
+    const targetIds: string[] = [];
+    const blobs: Buffer[] = [];
     for (const entry of messages) {
+      // A Set rather than array.includes(): the old membership test was O(n) per entry, so
+      // building the list was itself quadratic — 2 million comparisons at the size above,
+      // before a single row was written.
+      if (seen.has(entry.recipient_device_id)) continue;
+      seen.add(entry.recipient_device_id);
+      // b64 returns null for a null input. The per-entry validation above already rejects
+      // a missing ciphertext, so this cannot be null in practice — but skipping rather than
+      // pushing null keeps a future validation change from silently writing an empty row.
+      const blob = b64(entry.ciphertext);
+      if (!blob) continue;
+      targetIds.push(entry.recipient_device_id);
+      blobs.push(blob);
+    }
+    const deviceIds = targetIds;
+
+    if (targetIds.length) {
       await query(
         `insert into message_ciphertexts (message_id, recipient_device_id, ciphertext)
-           values ($1, $2, $3)
-           on conflict (message_id, recipient_device_id) do nothing`,
-        [message.id, entry.recipient_device_id, b64(entry.ciphertext)]
+         select $1, t.device_id, t.ciphertext
+           from unnest($2::uuid[], $3::bytea[]) as t(device_id, ciphertext)
+         on conflict (message_id, recipient_device_id) do nothing`,
+        [message.id, targetIds, blobs]
       );
-      if (!deviceIds.includes(entry.recipient_device_id)) deviceIds.push(entry.recipient_device_id);
     }
 
     // Relay: signal-and-fetch on the EXISTING per-user channel (see note below). Resolve each
