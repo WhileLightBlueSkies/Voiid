@@ -344,6 +344,30 @@ final class GroupEngine {
             body: GroupEventsBody(conversation_id: conversationId, events: events))
     }
 
+    // MARK: - Server conversation roster
+    //
+    // The server roster is what decides who message fan-out reaches and who may mint a group
+    // call token. It is SEPARATE from MLS membership, and keeping the two in step is this
+    // engine's job — MLS decides who can decrypt, the roster decides who is delivered to.
+    // Neither is sufficient alone: MLS without the roster is a member who receives nothing,
+    // and the roster without MLS is a member who receives bytes they cannot read.
+    //
+    // Both endpoints are idempotent server-side, so a retry after a partial failure is safe
+    // and neither of these needs its own bookkeeping.
+
+    private struct AddMembersBody: Encodable { let user_ids: [String] }
+
+    private func addToServerRoster(conversationId: String, userId: String) async throws {
+        _ = try await api.request("POST", "conversations/\(conversationId)/members",
+                                  body: AddMembersBody(user_ids: [userId]),
+                                  as: EmptyResponse.self)
+    }
+
+    private func removeFromServerRoster(conversationId: String, userId: String) async throws {
+        _ = try await api.request("DELETE", "conversations/\(conversationId)/members/\(userId)",
+                                  as: EmptyResponse.self)
+    }
+
     // MARK: - Send app message
 
     private struct DeviceCiphertext: Encodable { let recipient_device_id: String; let ciphertext: String }
@@ -600,6 +624,22 @@ final class GroupEngine {
                                  existingMemberUserIds: [String]) async {
         guard let m = ensureMember() else { return }
         do {
+            // ── SERVER ROSTER FIRST, BEFORE THE WELCOME ──────────────────────────────
+            // The MLS group and the server's conversation roster are two different lists,
+            // and this engine used to update only the first. A member added after group
+            // creation was therefore absent from the roster the server fans messages out
+            // to — so they held a working MLS group and received nothing through it, and
+            // `POST /calls/group/token` 403'd them out of their own group's calls.
+            //
+            // It runs BEFORE the Welcome deliberately: if the roster write fails we stop
+            // here and no Welcome goes out, leaving the person simply not-yet-added. The
+            // reverse order would hand them group keys and then leave them unreachable —
+            // a silently broken member rather than an obviously absent one.
+            //
+            // Idempotent server-side (`on conflict (conversation_id, user_id)`), so a
+            // retry after a partial failure is safe.
+            try await addToServerRoster(conversationId: conversationId, userId: userId)
+
             let session = try loadSession(conversationId)
             let keyBefore = callKeyPassphraseIfAvailable(conversationId)
             let kps = try await fetchKeyPackages(userId: userId)
@@ -657,6 +697,18 @@ final class GroupEngine {
             // Removing a member merged a commit locally → advance our own live call's key.
             emitEpochChangeIfKeyRotated(conversationId, previous: keyBefore)
             try await distribute(conversationId: conversationId, events: events)
+
+            // ── SERVER ROSTER LAST, AFTER THE REMOVAL COMMIT ─────────────────────────
+            // Mirror image of the add, and the ordering is just as deliberate. The MLS
+            // rekey stops the removed member decrypting anything AFTER this commit, but
+            // the server was still fanning ciphertext to them and still minting them call
+            // tokens, because nothing ever took them off the roster.
+            //
+            // It runs AFTER the commit is broadcast so that the remaining members are
+            // guaranteed to have received it. Dropping the roster first would mean the
+            // server stops delivering to the very people who still need this commit.
+            try await removeFromServerRoster(conversationId: conversationId, userId: userId)
+
             NSLog("[VOIID] MLS removed user=\(userId) conv=\(conversationId)")
         } catch {
             NSLog("[VOIID] MLS removeMember FAILED conv=\(conversationId): \(error)")

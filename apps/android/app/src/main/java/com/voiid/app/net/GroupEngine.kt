@@ -268,7 +268,30 @@ class GroupEngine private constructor(context: Context) {
                 Log.w("VOIID", "MLS: addMember — no local group for conv=$conversationId"); return@withLock
             }
             val session = m.loadGroup(gid)
+            // Snapshot the roster BEFORE adding, so the Commit fan-out targets the members
+            // who were already there and not the new joiner (who gets a Welcome instead).
             val existing = currentMemberUserIds(conversationId).toMutableSet()
+
+            // ── SERVER ROSTER FIRST, BEFORE THE WELCOME ──────────────────────────────
+            // The MLS group and the server's conversation roster are two different lists and
+            // this engine used to update only the first. A member added after group creation
+            // was absent from the roster the server fans messages out to — so they held a
+            // working MLS group and received nothing through it, and `POST /calls/group/token`
+            // 403'd them out of their own group's calls.
+            //
+            // It runs BEFORE the Welcome deliberately: if the roster write fails we stop and
+            // no Welcome goes out, leaving the person simply not-yet-added. The reverse order
+            // would hand them group keys and then leave them unreachable — a silently broken
+            // member rather than an obviously absent one.
+            //
+            // Idempotent server-side, so retrying after a partial failure is safe.
+            val rostered = runCatching { addToServerRoster(conversationId, userId) }
+            if (rostered.isFailure) {
+                Log.e("VOIID", "MLS: addMember $userId — server roster write failed, not "
+                    + "distributing a Welcome", rostered.exceptionOrNull())
+                return@withLock
+            }
+
             runCatching { addUserToGroupLocked(conversationId, session, m, userId, existing) }
                 .onFailure { Log.e("VOIID", "MLS: addMember $userId failed", it) }
         }
@@ -335,8 +358,44 @@ class GroupEngine private constructor(context: Context) {
             }
             // Removal rekeys the group → epoch advanced. Re-key any live call.
             signalEpochAdvancedLocked(conversationId, session, m)
+
+            // ── SERVER ROSTER LAST, AFTER THE REMOVAL COMMIT ─────────────────────────
+            // Mirror image of the add, and the ordering is just as deliberate. The MLS rekey
+            // stops the removed member decrypting anything AFTER this commit, but the server
+            // was still fanning ciphertext to them and still minting them call tokens,
+            // because nothing ever took them off the roster.
+            //
+            // It runs AFTER the commit is broadcast so the remaining members are guaranteed
+            // to have received it: dropping the roster first would stop the server delivering
+            // to the very people who still need this commit.
+            runCatching { removeFromServerRoster(conversationId, userId) }
+                .onFailure { Log.e("VOIID", "MLS: removed $userId from the group but the "
+                    + "server roster write failed — they may still receive ciphertext", it) }
+
             Log.i("VOIID", "MLS: removed user=$userId from conv=$conversationId")
         }
+    }
+
+    // ── Server conversation roster ──────────────────────────────────────────────────
+    //
+    // The server roster decides who message fan-out reaches and who may mint a group call
+    // token. It is SEPARATE from MLS membership, and keeping the two in step is this engine's
+    // job — MLS decides who can DECRYPT, the roster decides who is DELIVERED TO. Neither is
+    // sufficient alone: MLS without the roster is a member who receives nothing, and the
+    // roster without MLS is a member who receives bytes they cannot read.
+
+    @Serializable private data class AddMembersBody(val user_ids: List<String>)
+
+    private suspend fun addToServerRoster(conversationId: String, userId: String) {
+        api.request(
+            "POST", "conversations/$conversationId/members",
+            jsonBody = ApiClient.json.encodeToString(
+                AddMembersBody.serializer(), AddMembersBody(listOf(userId))),
+        )
+    }
+
+    private suspend fun removeFromServerRoster(conversationId: String, userId: String) {
+        api.request("DELETE", "conversations/$conversationId/members/$userId")
     }
 
     /** Best-effort current member user ids of the conversation (server truth). */
