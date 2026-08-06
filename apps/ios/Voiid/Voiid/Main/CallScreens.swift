@@ -108,6 +108,14 @@ struct CallScreen: View {
     let request: CallRequest
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var call = CallService.shared
+    /// The conference engine. Its backend has shipped with 32 guard tests; until now
+    /// nothing in the UI referenced it, so escalation was unreachable.
+    @ObservedObject private var conference = CallConferenceService.shared
+    /// Forwarded explicitly into the sheet below. A sheet presented from inside a
+    /// fullScreenCover does NOT reliably inherit the root's environment objects, and the
+    /// failure is a runtime crash rather than a compile error — so it is passed by hand.
+    @EnvironmentObject private var chat: ChatStore
+    @State private var showAddPerson = false
 
     // Group calls are still simulated (a later increment); 1:1 uses CallService.
     @State private var connected = false
@@ -275,6 +283,7 @@ struct CallScreen: View {
                 dismiss()
             }
         }
+        .sheet(isPresented: $showAddPerson) { addPersonSheet }
     }
 
     private func onAppearStart() {
@@ -478,6 +487,19 @@ struct CallScreen: View {
                     .frame(maxWidth: .infinity)
                 }
 
+                // ADD SOMEONE — turns this 1:1 into a conference.
+                //
+                // `canEscalate` is the engine's own gate: a connected 1:1 that is not itself
+                // a conference invite. Hidden rather than disabled, because the row is width
+                // constrained (see the overflow note above) and a permanently dead control
+                // would cost space every other button needs.
+                if conference.canEscalate {
+                    ctrl("person.badge.plus", false) {
+                        Haptics.tap(); showAddPerson = true
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+
                 // End
                 Button { Haptics.rigid(); endTapped() } label: {
                     Image(systemName: "phone.down.fill").font(.system(size: 24)).foregroundColor(.white)
@@ -487,6 +509,18 @@ struct CallScreen: View {
             }
             .padding(.horizontal, VoiidSpacing.sm)
         }
+    }
+
+    /// Present the picker. A conference is keyed on the CALL, so this asks for a person,
+    /// never a conversation — inviting someone must not create or imply one.
+    @ViewBuilder private var addPersonSheet: some View {
+        ConferenceInviteSheet { userId in
+            showAddPerson = false
+            Task { await conference.escalate(inviteeUserId: userId) }
+        } onCancel: {
+            showAddPerson = false
+        }
+        .environmentObject(chat)
     }
 
     private func endTapped() {
