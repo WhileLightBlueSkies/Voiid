@@ -35,13 +35,21 @@ struct GroupCallScreen: View {
         ZStack {
             background
 
-            VStack(spacing: 0) {
-                Spacer().frame(height: 60)
+            // The grid is the CONTENT and takes every point that is not chrome. The old
+            // layout put `Spacer().frame(height: 60)` above the header — a guess at the
+            // status bar that is wrong on every device with a Dynamic Island (too small) and
+            // wrong on an SE (too large), and it fought the two flexible Spacers below it for
+            // the same vertical space. Safe area insets are the real number, and `.safeAreaInset`
+            // reserves room for the controls so the grid can size itself against what is left.
+            VStack(spacing: VoiidSpacing.sm) {
                 header
-                Spacer(minLength: VoiidSpacing.md)
                 content
-                Spacer(minLength: VoiidSpacing.md)
-                controls.padding(.bottom, VoiidSpacing.xxl)
+            }
+            .padding(.top, VoiidSpacing.sm)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                controls
+                    .padding(.top, VoiidSpacing.md)
+                    .padding(.bottom, VoiidSpacing.sm)
             }
         }
         .onAppear {
@@ -63,44 +71,48 @@ struct GroupCallScreen: View {
 
     // MARK: - Header
 
+    /// ONE LINE OF CHROME, NOT FOUR.
+    ///
+    /// The header used to stack a pill ("Group video call" + "5 participants"), then the
+    /// group name at 24pt bold, then a status line — roughly 120pt of vertical space, all of
+    /// it taken from the grid, and most of it redundant. "Group video call" restates the
+    /// video tiles; the participant count restates the tiles you can see; the group name and
+    /// the duration are the only two facts the grid does not already show.
+    ///
+    /// So: name and status on one line, with the encryption badge beside them. The tiles get
+    /// the ~90pt back, which at four rows is a meaningful amount of face.
     private var header: some View {
-        VStack(spacing: VoiidSpacing.sm) {
-            HStack(spacing: VoiidSpacing.sm) {
-                Image(systemName: isVideo ? "video.fill" : "phone.fill")
-                    .font(.system(size: 14))
-                    .foregroundColor(VoiidColor.textOnPrimary)
-                    .frame(width: 30, height: 30)
-                    .background(VoiidColor.primary)
-                    .clipShape(Circle())
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(isVideo ? "Group video call" : "Group voice call")
-                        .font(VoiidFont.rounded(13, .semibold))
-                        .foregroundColor(fg)
-                    Text(participantSummary)
-                        .font(VoiidFont.rounded(11, .regular))
-                        .foregroundColor(fgSecondary)
-                }
-                // End-to-end encrypted badge — the whole point of routing through
-                // an SFU we can't trust with plaintext.
-                if call.state == .connected {
-                    Image(systemName: "lock.fill")
-                        .font(.system(size: 11))
-                        .foregroundColor(fgSecondary)
-                        .accessibilityLabel("End-to-end encrypted")
-                }
+        HStack(spacing: VoiidSpacing.sm) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(VoiidFont.rounded(17, .semibold))
+                    .foregroundColor(fg)
+                    .lineLimit(1)
+                Text(statusText)
+                    .font(VoiidFont.rounded(12, .regular))
+                    .foregroundColor(fgSecondary)
+                    .lineLimit(1)
+                    // A duration ticking up must not shuffle the layout every second.
+                    .monospacedDigit()
             }
-            .padding(.horizontal, VoiidSpacing.md)
-            .padding(.vertical, VoiidSpacing.sm)
-            .background(isVideo ? Color.white.opacity(0.15) : VoiidColor.surfaceCard)
-            .clipShape(Capsule())
 
-            Text(title)
-                .font(VoiidFont.rounded(24, .bold))
-                .foregroundColor(fg)
-            Text(statusText)
-                .font(VoiidFont.rounded(14, .regular))
-                .foregroundColor(fgSecondary)
+            Spacer(minLength: 0)
+
+            // End-to-end encrypted badge — the whole point of routing through an SFU we
+            // cannot trust with plaintext. Kept because it is the one claim on this screen
+            // the user cannot verify for themselves.
+            if call.state == .connected {
+                Label("\(call.participants.count)", systemImage: "lock.fill")
+                    .font(VoiidFont.rounded(12, .medium))
+                    .foregroundColor(fgSecondary)
+                    .padding(.horizontal, VoiidSpacing.sm)
+                    .padding(.vertical, 5)
+                    .background(isVideo ? Color.white.opacity(0.15) : VoiidColor.surfaceCard)
+                    .clipShape(Capsule())
+                    .accessibilityLabel("\(participantSummary), end-to-end encrypted")
+            }
         }
+        .padding(.horizontal, VoiidSpacing.md)
     }
 
     private var participantSummary: String {
@@ -151,110 +163,151 @@ struct GroupCallScreen: View {
     }
 
     // MARK: - Adaptive participant grid
-    //
-    // 1 → single full tile; 2 → stacked halves; 3–4 → 2×2; 5+ → 3-wide, scrolling.
 
-    private var columnCount: Int {
-        switch call.participants.count {
-        case 0, 1: return 1
-        case 2:    return 1     // stacked, each gets full width
-        case 3, 4: return 2
-        default:   return 3
+    /// Columns chosen from the ACTUAL SPACE, not from a lookup table.
+    ///
+    /// The old table was fixed — 3 columns for any count of 5 or more — so the row count fell
+    /// out of it and tile aspect ratios went wherever they landed. On a phone that put 5
+    /// people in a 3x2 grid of 122x277 slivers: a portrait video cropped to a letterbox, and
+    /// an avatar marooned in a tall empty box. A 12-person call was 3x4 stamps.
+    ///
+    /// Choosing the column count by measuring instead: for each candidate, score how far the
+    /// resulting tile is from a portrait-ish 3:4 and penalise empty slots in the last row.
+    /// The same 5 people now get a 2x3 grid of 185x183 — half again as wide, and square
+    /// enough for a face. It also adapts to landscape and to iPad for free, where any fixed
+    /// table is wrong by construction.
+    private func columnCount(for count: Int, in size: CGSize, spacing: CGFloat) -> Int {
+        guard count > 1, size.width > 0, size.height > 0 else { return 1 }
+        var best = 1
+        var bestScore = Double.greatestFiniteMagnitude
+        for cols in 1...count {
+            let rows = Int(ceil(Double(count) / Double(cols)))
+            let tw = (size.width - CGFloat(cols - 1) * spacing) / CGFloat(cols)
+            let th = (size.height - CGFloat(rows - 1) * spacing) / CGFloat(rows)
+            guard tw > 0, th > 0 else { continue }
+            // log-ratio so 2x too wide and 2x too tall are penalised equally.
+            let aspectPenalty = abs(log(Double(tw / th) / 0.75))
+            let emptySlots = Double(cols * rows - count)
+            let score = aspectPenalty + 0.12 * emptySlots
+            if score < bestScore { bestScore = score; best = cols }
         }
+        return best
     }
 
-    /// The grid FILLS the space it is given, rather than scrolling a fixed-aspect list.
-    ///
-    /// THE OLD LAYOUT COULD NOT FIT. Each tile had a hard `aspectRatio` inside a ScrollView,
-    /// so the grid's height was whatever the tiles summed to — never the height available.
-    /// With three people that left a band of dead space under the tiles; with six it
-    /// overflowed into a scroll, so half the call was off-screen and you had to drag to see
-    /// who was talking. A call grid should never scroll: everyone on the call is the content.
-    ///
-    /// Now the tile size is DERIVED from the container. Rows are computed from the column
-    /// count, and each tile takes an equal share of the height minus the gaps — so any
-    /// participant count fills the frame exactly, and nobody is below the fold.
     private var grid: some View {
         GeometryReader { geo in
             let count = max(call.participants.count, 1)
-            let cols = columnCount
+            let spacing: CGFloat = 6
+            let cols = columnCount(for: count, in: geo.size, spacing: spacing)
             let rows = Int(ceil(Double(count) / Double(cols)))
-            let spacing: CGFloat = 8
             let tileW = (geo.size.width - CGFloat(cols - 1) * spacing) / CGFloat(cols)
             let tileH = (geo.size.height - CGFloat(rows - 1) * spacing) / CGFloat(rows)
 
-            LazyVGrid(
-                columns: Array(repeating: GridItem(.fixed(tileW), spacing: spacing), count: cols),
-                spacing: spacing
-            ) {
-                ForEach(call.participants) { p in
-                    GroupCallTile(participant: p, isVideoCall: isVideo)
-                        .frame(width: tileW, height: tileH)
+            // The LAST ROW IS CENTRED when it is not full. With 5 people in a 3-wide grid the
+            // old LazyVGrid left the final two hugging the left edge with a tile-sized hole on
+            // the right, which reads as a rendering bug rather than a layout. Laying the rows
+            // out by hand is the only way to centre a partial row — LazyVGrid always aligns
+            // its last row to the leading edge.
+            VStack(spacing: spacing) {
+                ForEach(0..<rows, id: \.self) { row in
+                    let start = row * cols
+                    let end = min(start + cols, count)
+                    HStack(spacing: spacing) {
+                        ForEach(start..<end, id: \.self) { i in
+                            GroupCallTile(participant: call.participants[i],
+                                          isVideoCall: isVideo,
+                                          compact: tileW < 130)
+                                .frame(width: tileW, height: tileH)
+                        }
+                    }
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .center)
+            // A join or a leave re-flows every tile; without this they teleport.
+            .animation(.easeInOut(duration: 0.2), value: call.participants.count)
         }
-        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.horizontal, VoiidSpacing.sm)
     }
 
     // MARK: - Controls
 
+    /// THE OLD ROW DID NOT FIT ON A PHONE.
+    ///
+    /// Six controls at 58pt with `VoiidSpacing.xl` (32pt) between them is
+    /// 6*58 + 5*32 = 508pt of content. An iPhone SE is 375pt wide and a Pro is 393pt, so on
+    /// every device in the line-up the row overflowed its own screen: the end-call button was
+    /// pushed off the right edge on a video call, which is the one control that must always be
+    /// reachable.
+    ///
+    /// Now the secondary controls share the available width evenly and the end button is a
+    /// fixed anchor, so the row fits at any size and the hang-up never moves.
     private var controls: some View {
-        HStack(spacing: VoiidSpacing.xl) {
-            ctrl(call.muted ? "mic.slash.fill" : "mic.fill", call.muted) {
+        HStack(spacing: 0) {
+            ctrl(call.muted ? "mic.slash.fill" : "mic.fill", call.muted,
+                 label: call.muted ? "Unmute" : "Mute") {
                 call.toggleMute()
             }
+            .frame(maxWidth: .infinity)
 
             if isVideo {
-                ctrl(call.videoEnabled ? "video.fill" : "video.slash.fill", !call.videoEnabled) {
+                ctrl(call.videoEnabled ? "video.fill" : "video.slash.fill", !call.videoEnabled,
+                     label: call.videoEnabled ? "Turn camera off" : "Turn camera on") {
                     call.toggleVideo()
                 }
-                ctrl("arrow.triangle.2.circlepath.camera.fill", false) {
+                .frame(maxWidth: .infinity)
+
+                ctrl("arrow.triangle.2.circlepath.camera.fill", false, label: "Flip camera") {
                     call.switchCamera()
                 }
+                .frame(maxWidth: .infinity)
             }
 
-            // SPEAKER ON EVERY GROUP CALL, voice AND video.
-            //
-            // It was voice-only, so a group VIDEO call had no audio control at all — you
-            // could not move it to the earpiece, and on a phone that had just been on speaker
-            // there was no way back. A video call needs to reach a headset exactly as much as
-            // a voice call does; this was simply missing.
-            ctrl(call.speakerOn ? "speaker.wave.2.fill" : "speaker.fill", call.speakerOn) {
+            // SPEAKER ON EVERY GROUP CALL, voice AND video. A group video call had no audio
+            // control at all — it could not be moved to the earpiece or a headset.
+            ctrl(call.speakerOn ? "speaker.wave.2.fill" : "speaker.fill", call.speakerOn,
+                 label: call.speakerOn ? "Speaker on" : "Speaker off") {
                 call.toggleSpeaker()
             }
+            .frame(maxWidth: .infinity)
 
-            // Who is actually on the call. Past a handful of people the grid tiles get too
-            // small to read a name off, and mute state is a corner badge — the roster is where
-            // you go to answer "is Priya here, and can she hear us?"
-            ctrl("person.2.fill", false) { showRoster = true }
+            // Who is actually on the call. Past a handful of people the tiles are too small to
+            // read a name off and mute state is a corner badge — the roster answers "is Priya
+            // here, and can she hear us?"
+            ctrl("person.2.fill", false, label: "Participants") { showRoster = true }
+                .frame(maxWidth: .infinity)
 
+            // The end button is NOT in the flexible run: it keeps a fixed size and sits at the
+            // trailing edge so it lands in the same place on every call, voice or video.
             Button {
                 Haptics.rigid()
                 Task { await call.leave(); dismiss() }
             } label: {
                 Image(systemName: "phone.down.fill")
-                    .font(.system(size: 26))
+                    .font(.system(size: 24))
                     .foregroundColor(.white)
-                    .frame(width: 64, height: 64)
+                    .frame(width: 60, height: 60)
                     .background(VoiidColor.error)
                     .clipShape(Circle())
             }
             .accessibilityLabel("Leave call")
+            .padding(.leading, VoiidSpacing.sm)
         }
+        .padding(.horizontal, VoiidSpacing.md)
     }
 
-    private func ctrl(_ icon: String, _ active: Bool, _ tap: @escaping () -> Void) -> some View {
+    private func ctrl(_ icon: String, _ active: Bool, label: String,
+                      _ tap: @escaping () -> Void) -> some View {
         Button(action: { Haptics.tap(); tap() }) {
             Image(systemName: icon)
-                .font(.system(size: 22))
+                .font(.system(size: 21))
                 .foregroundColor(active ? VoiidColor.primary : fg)
-                .frame(width: 58, height: 58)
+                .frame(width: 52, height: 52)
                 .background(active ? VoiidColor.textOnPrimary
                                    : (isVideo ? Color.white.opacity(0.2) : VoiidColor.surfaceCard))
                 .clipShape(Circle())
         }
         .disabled(call.state == .connecting || !call.state.isActive)
+        .accessibilityLabel(label)
     }
 
     // MARK: - Styling helpers
@@ -279,6 +332,20 @@ struct GroupCallScreen: View {
 private struct GroupCallTile: View {
     let participant: GroupCallParticipant
     let isVideoCall: Bool
+    /// True once the tile is too narrow to carry full-size chrome (a 4-wide grid on a phone).
+    /// Drives the avatar size and hides the name, rather than letting both clip.
+    var compact: Bool = false
+
+    /// The participant's REAL avatar, looked up by the user half of the LiveKit identity.
+    ///
+    /// Every tile used to draw `VoiidAvatar()`, which takes no participant and renders the
+    /// literal word "voiid" — so a voice call was a grid of identical placeholder boxes with
+    /// no way to tell who was who. `ProfileAvatarButton` is the same component the 1:1 call
+    /// screen uses: it presigns an R2 key, falls back to initials, and finally to a person
+    /// glyph.
+    private var photoURL: String? { UserDirectory.shared.photoURL(participant.userId) }
+
+    private var avatarSize: CGFloat { compact ? 40 : 56 }
 
     var body: some View {
         ZStack {
@@ -286,38 +353,60 @@ private struct GroupCallTile: View {
                 .fill(VoiidColor.primary.opacity(0.5))
 
             if let track = participant.videoTrack, participant.hasVideo {
-                // LiveKit's own renderer — it draws LiveKitWebRTC tracks, which are
-                // a different type from the RTCVideoTrack that `RTCVideoView` renders.
+                // LiveKit's own renderer — it draws LiveKitWebRTC tracks, which are a
+                // different type from the RTCVideoTrack that `RTCVideoView` renders.
                 SwiftUIVideoView(track,
                                  layoutMode: .fill,
                                  mirrorMode: participant.isLocal ? .mirror : .auto)
                     .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
             } else {
-                VStack(spacing: 6) {
-                    VoiidAvatar(size: 56).clipShape(Circle())
-                    if !isVideoCall {
-                        Text(participant.displayName)
-                            .font(VoiidFont.rounded(12, .regular))
-                            .foregroundColor(.white)
-                            .lineLimit(1)
-                    }
-                }
+                ProfileAvatarButton(photoURL: photoURL,
+                                    name: participant.displayName,
+                                    size: avatarSize)
+                    .allowsHitTesting(false)   // decoration here, not a button
             }
         }
-        // Speaking indicator: an accent ring, matching the 1:1 avatar treatment.
+        // Speaking indicator: an accent ring, matching the 1:1 avatar treatment. Inset so the
+        // stroke is drawn INSIDE the tile — a centred 3pt stroke put half its width outside
+        // the shape, where the neighbouring tile's clip cut it off, so the ring appeared as
+        // three sides and a gap in every grid position but the last column.
         .overlay(
             RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
+                .inset(by: 1.5)
                 .stroke(VoiidColor.accent, lineWidth: participant.isSpeaking ? 3 : 0)
         )
         .animation(.easeOut(duration: 0.15), value: participant.isSpeaking)
-        .overlay(alignment: .bottomLeading) {
+        .overlay(alignment: .bottomLeading) { nameplate }
+        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityText)
+    }
+
+    /// Name + mute badge.
+    ///
+    /// On a VOICE call the name used to be drawn twice — once under the avatar and again in
+    /// this nameplate — which on a small tile stacked two copies of the same string on top of
+    /// each other. There is one nameplate now, and on a tile too narrow to hold a name it
+    /// degrades to the mute badge alone rather than clipping mid-word.
+    @ViewBuilder private var nameplate: some View {
+        if compact {
+            if participant.isMuted {
+                Image(systemName: "mic.slash.fill")
+                    .font(.system(size: 9))
+                    .foregroundColor(.white)
+                    .padding(4)
+                    .background(.black.opacity(0.5), in: Circle())
+                    .padding(5)
+            }
+        } else {
             HStack(spacing: 4) {
                 if participant.isMuted {
                     Image(systemName: "mic.slash.fill").font(.system(size: 9))
                 }
-                Text(participant.displayName)
+                Text(participant.isLocal ? "You" : participant.displayName)
                     .font(VoiidFont.rounded(10, .medium))
                     .lineLimit(1)
+                    .truncationMode(.tail)
             }
             .foregroundColor(.white)
             .padding(.horizontal, 6)
@@ -326,13 +415,10 @@ private struct GroupCallTile: View {
             .clipShape(Capsule())
             .padding(6)
         }
-        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityText)
     }
 
     private var accessibilityText: String {
-        var parts = [participant.displayName]
+        var parts = [participant.isLocal ? "You" : participant.displayName]
         if participant.isMuted { parts.append("muted") }
         if participant.isSpeaking { parts.append("speaking") }
         return parts.joined(separator: ", ")
