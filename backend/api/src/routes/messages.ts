@@ -50,6 +50,39 @@ function scheduleWakePush(whereSql: string, params: unknown[], meta?: PushMeta):
 //   fan-out: { conversation_id, sender_device_id?, content_type?, media_url?, media_mime?,
 //              messages: [{ recipient_device_id, ciphertext(b64) }, ...] }
 //   legacy:  { conversation_id, ciphertext(b64), device_id?, content_type?, media_url?, media_mime? }
+// ─────────────────────────────────────────────────────────────────────────────────
+// WRITE AUTHORIZATION
+//
+// Being authenticated is not permission to write into a conversation. Until now
+// POST /messages/send went straight from requireAuth + assertOpaque to
+// `insert into messages`, so any authenticated user who learned or guessed a
+// conversation_id could insert a row into it — and conversation ids travel: they appear
+// in group rosters, in shared links, in any client's local state.
+//
+// That made the whole reachability model (020_reachability.sql) a gate on CREATING a
+// conversation and not on writing to one, which is the half that matters. The PIN, the
+// mutual-contact rule and the request flow all decide who may open a thread with you;
+// none of them were being consulted when someone wrote to a thread.
+//
+// The check is membership, for the same reason the call path uses it: every path 020
+// defines for reaching a person resolves to a conversation both parties belong to, so
+// membership inherits the PIN gate rather than reimplementing it. Note to Self is
+// unaffected — a self conversation has exactly one member, and it is you.
+//
+// Applied to BOTH send paths. The fan-out path and the legacy single-ciphertext path
+// each reach `insert into messages` by their own route, and guarding only one leaves
+// the other as a way in.
+// ─────────────────────────────────────────────────────────────────────────────────
+async function isConversationMember(conversationId: string, userId: string): Promise<boolean> {
+  const rows = await query<{ one: number }>(
+    `select 1 as one from conversation_members
+      where conversation_id = $1 and user_id = $2 and left_at is null
+      limit 1`,
+    [conversationId, userId]
+  );
+  return rows.length > 0;
+}
+
 router.post('/send', requireAuth, asyncHandler(async (req, res) => {
   const { user_id, device_id: authDeviceId } = (req as any).auth;
   const {
@@ -78,6 +111,12 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
   if (Array.isArray(messages)) {
     if (!conversation_id) {
       return res.status(400).json({ error: 'conversation_id required' });
+    }
+    // See isConversationMember above. 403 without saying whether the conversation exists —
+    // distinguishing "no such conversation" from "not your conversation" turns this endpoint
+    // into an oracle for probing which conversation ids are real.
+    if (!(await isConversationMember(conversation_id, user_id))) {
+      return res.status(403).json({ error: 'not a member of this conversation' });
     }
     for (const entry of messages) {
       if (!entry?.recipient_device_id || !entry?.ciphertext) {
@@ -153,6 +192,9 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
   // ── Legacy path: single ciphertext stored on the message row, relayed per-user ──
   if (!conversation_id || !ciphertext) {
     return res.status(400).json({ error: 'conversation_id and ciphertext required' });
+  }
+  if (!(await isConversationMember(conversation_id, user_id))) {
+    return res.status(403).json({ error: 'not a member of this conversation' });
   }
   // Which of OUR devices encrypted this — so a multi-device recipient resolves the
   // correct sender identity key on acceptSession (else decrypt fails). The JWT may
