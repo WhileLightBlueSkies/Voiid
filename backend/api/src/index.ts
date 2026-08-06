@@ -28,6 +28,7 @@ import gifRoutes from './routes/gifs';
 import adminRoutes from './routes/admin';
 import clipsRoutes from './routes/clips';
 import creatorRoutes from './routes/creators';
+import reportRoutes from './routes/reports';
 import communityRoutes from './routes/communities';
 import communityHostThreadRoutes from './routes/communityHostThreads';
 import gamesRoutes from './routes/games';
@@ -163,6 +164,10 @@ api.use('/communities', rateLimit({ max: 120, windowSeconds: 60, bucket: 'commun
 // three reachability paths in 020 are untouched, and nothing here may ever be used to
 // authorise opening a conversation.
 api.use('/creators', rateLimit({ max: 180, windowSeconds: 60, bucket: 'creators' }), creatorRoutes);
+// Content reports. A LOW ceiling deliberately: a report is a considered act, and a client
+// firing them in bulk is either broken or report-bombing. The per-(reporter,target)
+// uniqueness in 035 stops duplicates; this stops volume.
+api.use('/reports', rateLimit({ max: 20, windowSeconds: 60, bucket: 'reports' }), reportRoutes);
 // Games: match lifecycle only — the catalog, creating/joining a match, history. MOVES DO
 // NOT COME THROUGH HERE; they ride the WebSocket relay to backend/games, which referees
 // them (see the header of routes/games.ts for why the move path is deliberately absent).

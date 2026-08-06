@@ -53,6 +53,7 @@ export default function Dashboard() {
         {/* The DPDP queue is ordered by DEADLINE, not recency — an overdue request is the
             one failure this panel exists to prevent, so it gets its own entry rather than
             living behind the users list. */}
+        <Link href="/reports"><button className="ghost">Reports</button></Link>
         <Link href="/dpdp"><button className="ghost">Data requests</button></Link>
         <Link href="/users"><button className="ghost">Users &amp; devices</button></Link>
       </nav>

@@ -1,8 +1,7 @@
 {
   "version": 4,
   "routes": {
-    "/_not-found": {
-      "initialStatus": 404,
+    "/dpdp": {
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -15,8 +14,32 @@
         }
       ],
       "initialRevalidateSeconds": false,
-      "srcRoute": "/_not-found",
-      "dataRoute": "/_not-found.rsc",
+      "srcRoute": "/dpdp",
+      "dataRoute": "/dpdp.rsc",
+      "allowHeader": [
+        "host",
+        "x-matched-path",
+        "x-prerender-revalidate",
+        "x-prerender-revalidate-if-generated",
+        "x-next-revalidated-tags",
+        "x-next-revalidate-tag-token"
+      ]
+    },
+    "/reports": {
+      "experimentalBypassFor": [
+        {
+          "type": "header",
+          "key": "next-action"
+        },
+        {
+          "type": "header",
+          "key": "content-type",
+          "value": "multipart/form-data;.*"
+        }
+      ],
+      "initialRevalidateSeconds": false,
+      "srcRoute": "/reports",
+      "dataRoute": "/reports.rsc",
       "allowHeader": [
         "host",
         "x-matched-path",
@@ -74,7 +97,7 @@
         "x-next-revalidate-tag-token"
       ]
     },
-    "/dpdp": {
+    "/login": {
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -87,8 +110,8 @@
         }
       ],
       "initialRevalidateSeconds": false,
-      "srcRoute": "/dpdp",
-      "dataRoute": "/dpdp.rsc",
+      "srcRoute": "/login",
+      "dataRoute": "/login.rsc",
       "allowHeader": [
         "host",
         "x-matched-path",
@@ -122,7 +145,8 @@
         "x-next-revalidate-tag-token"
       ]
     },
-    "/login": {
+    "/_not-found": {
+      "initialStatus": 404,
       "experimentalBypassFor": [
         {
           "type": "header",
@@ -135,8 +159,8 @@
         }
       ],
       "initialRevalidateSeconds": false,
-      "srcRoute": "/login",
-      "dataRoute": "/login.rsc",
+      "srcRoute": "/_not-found",
+      "dataRoute": "/_not-found.rsc",
       "allowHeader": [
         "host",
         "x-matched-path",
@@ -150,8 +174,8 @@
   "dynamicRoutes": {},
   "notFoundRoutes": [],
   "preview": {
-    "previewModeId": "3f078d857d56fb70459079ca964134b8",
-    "previewModeSigningKey": "a8e6c12fedbf24dec130d692d619589ca13f001effb0c3e962bd408443583e2c",
-    "previewModeEncryptionKey": "b53d4a07bf896381f9976c7f218aa6960ff29cd1224a590554b46e01781548b6"
+    "previewModeId": "441154b1ec4c09634bfa33c37a7703d3",
+    "previewModeSigningKey": "aa066ef6e2bbb5e3525538669f3baaeb083c8bb945619c3a22619883f4039de1",
+    "previewModeEncryptionKey": "53c12a35173644b796078df85e6e2b5171e9539697811b634f913ba8ecb48db1"
   }
 }

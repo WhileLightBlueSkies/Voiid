@@ -356,6 +356,84 @@ router.delete('/clips/:id', requireAdmin, requireRole('admin'), async (req, res)
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────
+// GET /admin/reports?status=open|resolved&cursor=&limit=
+//
+// The moderation queue for user reports (plan item 3.29). Newest-first and keyset
+// paginated, never OFFSET: rows are being resolved underneath the reader, and offset
+// pagination on a queue that shrinks SKIPS rows — on a moderation queue that means
+// silently never seeing a report.
+//
+// The target is LEFT JOINed and may be null. 035_reports.sql deliberately puts no foreign
+// key on target_id (every FK action destroys the record of why something was removed), so
+// a dangling target renders as "deleted" rather than dropping the report.
+// ─────────────────────────────────────────────────────────────────────────────────
+router.get('/reports', requireAdmin, async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 30, 100);
+  const cursor = typeof req.query.cursor === 'string' && req.query.cursor ? req.query.cursor : null;
+  const resolved = req.query.status === 'resolved';
+
+  const rows = await query<any>(
+    `select r.id, r.target_type, r.target_id, r.reason, r.note, r.disclosure,
+            r.evidence is not null as has_evidence,
+            r.status, r.created_at, r.resolved_at, r.resolution, r.resolution_note,
+            reporter.username as reporter_username,
+            tu.username        as target_username,
+            tu.deleted_at      as target_deleted_at,
+            c.caption          as clip_caption,
+            c.removed_at       as clip_removed_at,
+            a.email            as resolved_by_email,
+            (select count(*)::int from content_reports o
+              where o.target_type = r.target_type and o.target_id = r.target_id
+                and o.status = 'open') as open_against_target
+       from content_reports r
+       left join users reporter on reporter.id = r.reporter_user_id
+       left join users tu       on tu.id = r.target_id and r.target_type <> 'clip'
+       left join clips c        on c.id  = r.target_id and r.target_type = 'clip'
+       left join admin_users a  on a.id  = r.resolved_by
+      where r.status = ${resolved ? "'resolved'" : "'open'"}
+        ${cursor ? 'and r.created_at < $2::timestamptz' : ''}
+      order by r.created_at desc
+      limit $1`,
+    cursor ? [limit, cursor] : [limit]
+  );
+
+  res.json({
+    reports: rows,
+    next_cursor: rows.length === limit ? rows[rows.length - 1].created_at : null,
+  });
+});
+
+// POST /admin/reports/:id/resolve  { resolution, note? }
+//
+// ONE conditional UPDATE, not select-then-update: two moderators working the queue at once
+// would otherwise both "resolve" the same row and the second would overwrite the first's
+// verdict. `where status = 'open'` makes the loser's update affect zero rows and say so.
+router.post('/reports/:id/resolve', requireAdmin, async (req, res) => {
+  const a = (req as any).admin as AdminAuth;
+  const resolution = String(req.body?.resolution ?? '');
+  const note = String(req.body?.note ?? '').trim() || null;
+
+  if (!['removed', 'no_action', 'duplicate', 'escalated'].includes(resolution)) {
+    return res.status(400).json({ error: 'unknown resolution' });
+  }
+
+  const rows = await query<{ id: string; target_type: string; target_id: string }>(
+    `update content_reports
+        set status = 'resolved', resolved_at = now(), resolved_by = $2,
+            resolution = $3, resolution_note = $4
+      where id = $1 and status = 'open'
+      returning id, target_type, target_id`,
+    [req.params.id, a.adminId, resolution, note]
+  );
+  if (!rows[0]) return res.status(409).json({ error: 'already resolved by someone else' });
+
+  await audit(a.adminId, 'report.resolve', 'report', req.params.id, {
+    resolution, target_type: rows[0].target_type, target_id: rows[0].target_id,
+  });
+  res.json({ resolved: true });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────
 // GET /admin/audit?action=&target_type=&target_id=&admin_id=&cursor=&limit=
 //
 // Who did what. The endpoint existed and worked; until now nothing rendered it, so the
