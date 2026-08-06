@@ -17,6 +17,8 @@ struct NewGroupView: View {
     var onCreate: (VConversation) -> Void
 
     @State private var loading = true
+    /// Raised when the picker hits the member ceiling.
+    @State private var atCapacity = false
     @State private var error: String?
     @State private var contacts: [VContact] = []
     @State private var selected: Set<String> = []        // selected contact userIds
@@ -45,7 +47,12 @@ struct NewGroupView: View {
                 }
             }
             .background(VoiidColor.background.ignoresSafeArea())
-            .navigationTitle("New group")
+            .alert("That's the limit", isPresented: $atCapacity) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("A group can have up to \(Self.maxOthers + 1) people, including you.")
+        }
+        .navigationTitle("New group")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -133,9 +140,23 @@ struct NewGroupView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// One short of the server's 1000-member cap: the creator occupies the last seat.
+    private static let maxOthers = 999
+
     private func toggle(_ c: VContact) {
         Haptics.selection()
-        if selected.contains(c.userId) { selected.remove(c.userId) } else { selected.insert(c.userId) }
+        if selected.contains(c.userId) {
+            selected.remove(c.userId)
+        } else {
+            // 999 OTHERS, because you are the thousandth. The server enforces 1000 members
+            // (036_group_roles.sql); refusing here means the user finds out while choosing
+            // rather than after tapping Create and losing the selection to a 400.
+            guard selected.count < Self.maxOthers else {
+                atCapacity = true
+                return
+            }
+            selected.insert(c.userId)
+        }
     }
 
     private func load(force: Bool = false) async {

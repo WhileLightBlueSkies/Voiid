@@ -60,6 +60,9 @@ import kotlinx.coroutines.launch
  * members, then creates a REAL end-to-end encrypted MLS group via [ChatStore.createGroup]
  * (server container + MLS group build + Welcome/Commit distribution).
  */
+/** One short of the server's 1000-member cap: the creator takes the last seat. */
+private const val MAX_GROUP_OTHERS = 999
+
 @Composable
 fun NewGroupScreen(
     chat: ChatStore,
@@ -74,6 +77,7 @@ fun NewGroupScreen(
     var creating by remember { mutableStateOf(false) }
     var name by remember { mutableStateOf("") }
     val selected = remember { mutableStateListOf<String>() }   // selected user ids
+    var atCapacity by remember { mutableStateOf(false) }
 
     fun runDiscovery(force: Boolean = false) {
         scope.launch {
@@ -159,7 +163,17 @@ fun NewGroupScreen(
                     val isSel = selected.contains(c.userId)
                     Row(
                         Modifier.fillMaxWidth().clickable {
-                            if (isSel) selected.remove(c.userId) else selected.add(c.userId)
+                            if (isSel) {
+                                selected.remove(c.userId)
+                            } else if (selected.size >= MAX_GROUP_OTHERS) {
+                                // 999 OTHERS, because the creator is the thousandth. The
+                                // server enforces 1000 (036_group_roles.sql); refusing here
+                                // means the user learns while choosing rather than after
+                                // tapping Create and losing the whole selection to a 400.
+                                atCapacity = true
+                            } else {
+                                selected.add(c.userId)
+                            }
                         }.padding(horizontal = 20.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -186,4 +200,23 @@ fun NewGroupScreen(
             }
         }
     }
+    if (atCapacity) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { atCapacity = false },
+            containerColor = VoiidColor.surfaceCard,
+            title = { Text("That's the limit", color = VoiidColor.textPrimary) },
+            text = {
+                Text(
+                    "A group can have up to ${MAX_GROUP_OTHERS + 1} people, including you.",
+                    color = VoiidColor.textSecondary,
+                )
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = { atCapacity = false }) {
+                    Text("OK", color = VoiidColor.primary)
+                }
+            },
+        )
+    }
+
 }

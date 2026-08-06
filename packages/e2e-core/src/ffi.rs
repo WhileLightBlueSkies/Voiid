@@ -431,6 +431,39 @@ impl GroupSession {
             .remove_member(&member.inner, &identity)?)
     }
 
+    /// The current epoch number.
+    ///
+    /// Two commits built against the SAME epoch are concurrent: the server accepts one and
+    /// the losers must discard their pending commit and process the winner instead. Without
+    /// this on the FFI surface an app cannot even detect that it lost — it has no way to
+    /// compare the epoch it committed against with the one a arriving commit belongs to.
+    ///
+    /// This matters now rather than theoretically: a group may have up to 50 admins
+    /// (036_group_roles.sql), so concurrent adds and removes are expected, not exotic.
+    pub fn epoch(&self) -> u64 {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .epoch()
+    }
+
+    /// Discard a pending commit that LOST a concurrency race, so the winning commit can be
+    /// processed instead.
+    ///
+    /// The other half of lost-race reconciliation, and useless without `epoch()` — which is
+    /// why both were missing together and neither could be used alone. The sequence an app
+    /// implements with these two is: commit, see a foreign commit for the epoch you built
+    /// against, call this, then `decrypt` the winner and retry your own change.
+    ///
+    /// Idempotent in effect: clearing when nothing is pending is not an error.
+    pub fn clear_pending(&self, member: &GroupMember) -> FfiResult<()> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear_pending(&member.inner)?;
+        Ok(())
+    }
+
     /// Current member count from our view of the group state.
     pub fn member_count(&self) -> u32 {
         self.inner
