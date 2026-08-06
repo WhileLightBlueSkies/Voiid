@@ -363,7 +363,24 @@ object Notifier {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(pi)
             .build()
-        runCatching { NotificationManagerCompat.from(ctx).notify(("gc_$conversationId").hashCode(), notification) }
+        runCatching { NotificationManagerCompat.from(ctx).notify(groupCallNotificationId(conversationId), notification) }
             .onFailure { android.util.Log.e("VOIID", "group-call notify failed", it) }
+    }
+
+    /** One stable id per conversation, so a re-post updates in place and a cancel finds it. */
+    fun groupCallNotificationId(conversationId: String): Int = ("gc_$conversationId").hashCode()
+
+    /**
+     * Clear the "join group call" notification for a conversation.
+     *
+     * `setAutoCancel(true)` only covers the case where the user TAPS the notification. Joining
+     * the same call any other way — the in-chat "ongoing call" banner, the call button, or
+     * another device — left it sitting in the shade inviting you to join a call you were
+     * already on, and it stayed there after the call ended because nothing ever removed it.
+     */
+    fun cancelGroupCallNotification(ctx: Context, conversationId: String) {
+        runCatching {
+            NotificationManagerCompat.from(ctx).cancel(groupCallNotificationId(conversationId))
+        }.onFailure { android.util.Log.e("VOIID", "group-call notify cancel failed", it) }
     }
 }

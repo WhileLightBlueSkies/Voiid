@@ -138,6 +138,11 @@ object GroupCallManager {
             )
         }
         val ctx = appContext ?: return
+        // We are joining this call, so the "tap to join" notification has done its job.
+        // setAutoCancel only fires when the user TAPS it — joining from the in-chat banner,
+        // the call button, or another device left it stuck in the shade inviting you into a
+        // call you were already on.
+        Notifier.cancelGroupCallNotification(ctx, conversationId)
         CallForegroundService.startGroup(ctx, title, video = kind == CallKind.VIDEO)
         scope.launch { connect(ctx, conversationId, kind) }
     }
@@ -553,6 +558,12 @@ object GroupCallManager {
     private var presenceConversationId: String? = null
 
     private fun teardown() {
+        // Belt and braces: the call is over, so the invitation must not survive it. A push
+        // that raced the hang-up would otherwise leave a permanent "join" notification for a
+        // call nobody is on.
+        appContext?.let { ctx ->
+            presenceConversationId?.let { Notifier.cancelGroupCallNotification(ctx, it) }
+        }
         stopPresenceHeartbeat(presenceConversationId)
         presenceConversationId = null
         eventJob?.cancel()

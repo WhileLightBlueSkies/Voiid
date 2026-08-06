@@ -582,17 +582,55 @@ final class CallService: NSObject, ObservableObject {
             CallManager.shared.startOutgoingCall(uuid: uuid, handle: peerUserId, displayName: title,
                                                  hasVideo: isVideo, phoneNumber: peerPhone(peerUserId))
             CallManager.shared.reportOutgoingConnecting(uuid: uuid)
-            await createAndSendOffer(callId: callId, peerUserId: peerUserId, isVideo: isVideo)
-            // Wake an offline/backgrounded callee via push.
-            guard let convId else {
-                NSLog("[VOIID] no conversation for \(peerUserId) — skipping calls/ring (WS offer only)")
+            // ── RING BEFORE OFFER. THIS ORDER IS THE WHOLE CALL. ─────────────────────
+            //
+            // `POST /calls/ring` does two things, and only one of them is the push:
+            //   1. it wakes an offline callee, and
+            //   2. it writes the Redis RING GRANT that authorizes this call_id's frames.
+            //
+            // The WS relay gates EVERY call frame — offer, answer, ICE, hangup — on that
+            // grant, and when it is missing it drops the frame and *says nothing*
+            // (deliberately: an error would tell a caller which user ids are reachable).
+            //
+            // This used to send the offer FIRST and ring afterwards. The offer is one WS
+            // hop; the ring is an HTTPS round trip plus two Postgres queries. The offer
+            // won the race, arrived with no grant written, and was silently discarded —
+            // so the callee's phone rang from the push, they tapped accept, and there was
+            // no offer to answer. That is the "accepts nothing / stuck on Connecting" bug.
+            //
+            // Awaited, not fire-and-forget, for the same reason.
+            if let convId {
+                struct RingBody: Encodable {
+                    let to_user_id: String; let call_id: String
+                    let call_kind: String; let conversation_id: String
+                }
+                do {
+                    _ = try await api.request(
+                        "POST", "calls/ring",
+                        body: RingBody(to_user_id: peerUserId, call_id: callId,
+                                       call_kind: isVideo ? "video" : "voice",
+                                       conversation_id: convId),
+                        as: EmptyResponse.self)
+                } catch {
+                    // The ring failed, so no grant exists and every frame we are about to
+                    // send would be dropped in silence. Failing loudly here is the honest
+                    // outcome: a call that cannot possibly connect must not present as
+                    // ringing forever.
+                    NSLog("[VOIID] calls/ring failed — no grant, aborting call: \(error)")
+                    hangUp()
+                    return
+                }
+            } else {
+                // No conversation means /ring would 400 (it requires conversation_id and
+                // checks shared membership), so no grant can exist and the relay will drop
+                // everything. Previously this logged "WS offer only" and carried on, which
+                // could never work — the offer had nowhere to go.
+                NSLog("[VOIID] no conversation for \(peerUserId) — cannot ring, aborting call")
+                hangUp()
                 return
             }
-            struct RingBody: Encodable { let to_user_id: String; let call_id: String; let call_kind: String; let conversation_id: String }
-            _ = try? await api.request("POST", "calls/ring",
-                                       body: RingBody(to_user_id: peerUserId, call_id: callId,
-                                                      call_kind: isVideo ? "video" : "voice", conversation_id: convId),
-                                       as: EmptyResponse.self)
+
+            await createAndSendOffer(callId: callId, peerUserId: peerUserId, isVideo: isVideo)
         }
     }
 

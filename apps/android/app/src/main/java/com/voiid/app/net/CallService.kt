@@ -328,23 +328,48 @@ object CallManager {
         }
         startForegroundService()
         beginCallSession()
-        // Wake an offline callee via push (best effort) in parallel with WS offer.
+
+        // ── RING BEFORE OFFER. THIS ORDER IS THE WHOLE CALL. ─────────────────────────
+        //
+        // `POST /calls/ring` does two things, and only one of them is the push:
+        //   1. it wakes an offline callee, and
+        //   2. it writes the Redis RING GRANT that authorizes this call_id's frames.
+        //
+        // The WS relay gates EVERY call frame — offer, answer, ICE, hangup — on that grant,
+        // and when it is missing it drops the frame and *says nothing* (deliberately: an
+        // error would tell a caller which user ids are reachable).
+        //
+        // This used to run the ring in a parallel coroutine "best effort, in parallel with
+        // WS offer". The offer is one WS hop; the ring is an HTTPS round trip plus two
+        // Postgres queries, so the offer won the race, arrived with no grant written, and
+        // was silently discarded. The callee's phone rang from the push, they tapped accept,
+        // and there was no offer to answer — the "accepts nothing / stuck on Connecting"
+        // bug. The ring is not best-effort; it is the precondition.
         scope.launch(Dispatchers.IO) {
-            runCatching { CallApi(appContext).ring(peerUserId, callId, kind, conversationId) }
-        }
-        exec.execute {
-            val servers = iceServers()
-            createPeerConnection(servers) ?: return@execute
-            addLocalMedia(kind)
-            applyAudioRoute(kind == CallKind.VIDEO)
-            val p = pc ?: return@execute
-            p.createOffer(object : SdpObserverAdapter() {
-                override fun onCreateSuccess(sdp: SessionDescription) {
-                    val tuned = tune(sdp)
-                    p.setLocalDescription(SdpObserverAdapter(), tuned)
-                    WebSocketClient.get(appContext).sendCallOffer(peerUserId, callId, kind, tuned.description)
-                }
-            }, offerAnswerConstraints(kind))
+            val rang = runCatching { CallApi(appContext).ring(peerUserId, callId, kind, conversationId) }
+            if (rang.isFailure) {
+                // No grant means every frame we are about to send dies in silence. Ending
+                // loudly is the honest outcome: a call that cannot possibly connect must not
+                // present as ringing forever.
+                android.util.Log.e("VOIID", "calls/ring failed — no grant, aborting call", rang.exceptionOrNull())
+                endInternal(notifyPeer = false, reason = "ring-failed")
+                return@launch
+            }
+            // Only now is it safe to put an offer on the wire.
+            exec.execute {
+                val servers = iceServers()
+                createPeerConnection(servers) ?: return@execute
+                addLocalMedia(kind)
+                applyAudioRoute(kind == CallKind.VIDEO)
+                val p = pc ?: return@execute
+                p.createOffer(object : SdpObserverAdapter() {
+                    override fun onCreateSuccess(sdp: SessionDescription) {
+                        val tuned = tune(sdp)
+                        p.setLocalDescription(SdpObserverAdapter(), tuned)
+                        WebSocketClient.get(appContext).sendCallOffer(peerUserId, callId, kind, tuned.description)
+                    }
+                }, offerAnswerConstraints(kind))
+            }
         }
     }
 
