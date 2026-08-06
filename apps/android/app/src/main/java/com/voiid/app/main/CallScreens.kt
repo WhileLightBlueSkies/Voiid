@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.VideocamOff
@@ -76,6 +77,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.voiid.app.net.CallManager
+import com.voiid.app.net.ConferenceManager
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.VoiidAvatar
 import com.voiid.app.ui.components.softClickable
@@ -392,6 +394,11 @@ private fun IncomingCallUi(state: CallManager.CallState) {
 private fun InCallUi(state: CallManager.CallState) {
     val haptics = LocalVoiidHaptics.current
     val isVideo = state.kind == CallKind.VIDEO
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var showAddPerson by remember { mutableStateOf(false) }
+    // The conference roster is drawn over the call surface when there is more than one other
+    // participant — see ConferenceViews.kt for why it is deliberately spare.
+    val conference by ConferenceManager.state.collectAsState()
 
     // Live timer derived from the real connection time.
     var seconds by remember { mutableIntStateOf(0) }
@@ -508,8 +515,40 @@ private fun InCallUi(state: CallManager.CallState) {
                 onFlip = { haptics.tap(); CallManager.switchCamera() },
                 onToggleHold = { haptics.tap(); CallManager.toggleHold() },
                 onEnd = { haptics.rigid(); CallManager.hangup() },
+                // Offered only on a CONNECTED 1:1 that is not already a conference. Escalating
+                // a call that has not connected has nothing to escalate.
+                onAddPerson = if (state.phase == CallManager.Phase.CONNECTED && !ConferenceManager.isActive) {
+                    { haptics.tap(); showAddPerson = true }
+                } else null,
             )
             Spacer(Modifier.height(48.dp))
+        }
+
+        // Who is on the call, once it is more than two people.
+        if ((conference?.roster?.size ?: 0) > 1) {
+            ConferenceRoster(
+                Modifier.align(Alignment.TopStart).statusBarsPadding().padding(16.dp),
+            )
+        }
+
+        if (showAddPerson) {
+            androidx.compose.ui.window.Dialog(onDismissRequest = { showAddPerson = false }) {
+                ConferenceInviteSheet(
+                    chat = androidx.lifecycle.viewmodel.compose.viewModel(),
+                    excludeUserId = state.peerUserId,
+                    onPick = { invitee ->
+                        showAddPerson = false
+                        ConferenceManager.addPerson(
+                            context = context,
+                            callId = state.callId,
+                            kind = state.kind,
+                            peerUserId = state.peerUserId,
+                            inviteeUserId = invitee,
+                        )
+                    },
+                    onDismiss = { showAddPerson = false },
+                )
+            }
         }
     }
 }
@@ -705,6 +744,12 @@ private fun CallControls(
     onFlip: () -> Unit,
     onToggleHold: () -> Unit,
     onEnd: () -> Unit,
+    /**
+     * Non-null only when this call can become a conference. HIDDEN rather than disabled when
+     * it cannot: the row is width-constrained (see the overflow note below), so a permanently
+     * dead control would cost space the other buttons need.
+     */
+    onAddPerson: (() -> Unit)? = null,
 ) {
     // EVENLY DISTRIBUTED, not fixed-spacing.
     //
@@ -738,6 +783,9 @@ private fun CallControls(
         // earpiece + speaker it stays the plain speaker toggle it always was. Mirrors iOS
         // `audioRouteControl`.
         AudioRouteControl(speaker = speaker, isVideo = isVideo, onToggleSpeaker = onSpeaker)
+        // ADD SOMEONE — turns this 1:1 into a conference. Present only when the engine says
+        // escalation is possible; see the parameter's note for why it is hidden, not disabled.
+        onAddPerson?.let { Ctrl(Icons.Default.PersonAdd, false, isVideo, it) }
         Box(
             Modifier.size(64.dp).clip(CircleShape).background(VoiidColor.error).softClickable(onClick = onEnd),
             contentAlignment = Alignment.Center,
