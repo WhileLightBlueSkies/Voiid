@@ -271,18 +271,23 @@ The socket directory must be short — a path over 103 bytes fails with
 1:1 and group calls, the friends map and live location, clips with creator profiles and
 follows, four games, moments, the admin moderation panel, the marketing site.
 
-**Backend only — no client UI yet:**
+**Now complete end to end** (was backend-only when this runbook was first written):
 
 | Feature | State |
 |---|---|
-| Conference calls (1:1 → group) | Five endpoints, 32 guard tests. **No UI to trigger it.** |
-| Communities | Full routes + schema, mounted. Both apps route the tab to a placeholder. |
-| Group roles at scale | Owner/admin/member with caps and transfer endpoints, this commit. **Clients do not render roles or system messages yet.** |
-| DPDP console, reports | Schema + workers. No admin UI. |
+| Conference calls (1:1 → group) | Five endpoints, 32 guard tests, and UI on both platforms. |
+| Communities | 20 routes, schema, and a real tab on both platforms — browse, search, create, join. |
+| Group roles at scale | One owner / 50 admins / 1000 members, role + transfer endpoints, and both clients render roles and act on them. |
+| DPDP console | Request queue (ordered by deadline) and a users/devices console in `apps/admin-web`. |
 
-The marketing site deliberately does not advertise any of these. If you build a client for
-one, update `apps/web` in the same change — its README explains the rule.
+**The marketing site has NOT been updated for these.** `apps/web` deliberately advertises
+only what shipped when it was written, and its README carries the rule: if you build a
+client for a feature, update the site in the same change. Communities in particular is
+still described there as not shipping — that is now stale and should be corrected before
+the site goes live.
 
 **Not started:** MLS multi-device event delivery (`3.13`), the 1000-member scale test
-(`3.14`), the group-call UI overhaul (`3.15`), tournaments and ticketing (`3.22`/`3.23`).
+(`3.14`), the group-call UI overhaul (`3.15`), tournaments and ticketing (`3.22`/`3.23`),
+and the user-facing report flow (`3.29` — the admin side of reports has a schema but no
+queue screen yet).
 All are specified in `docs/research/00_REPAIR_PLAN.md` with file lists and conflict notes.
