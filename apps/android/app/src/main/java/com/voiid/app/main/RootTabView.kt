@@ -263,11 +263,7 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
         Column(Modifier.fillMaxSize().imePadding()) {
             Box(Modifier.fillMaxWidth().weight(1f)) {
                 when (tab) {
-                    Tab.COMMUNITIES -> ComingSoonView(
-                        icon = Icons.Outlined.Groups,
-                        title = "Communities",
-                        blurb = "Group spaces for the people, teams and interests you care about — announcements, sub-groups and shared media in one place.",
-                    )
+                    Tab.COMMUNITIES -> CommunitiesHomeView()
                     Tab.GAMES -> com.voiid.app.main.games.GamesHomeScreen(
                         onPickGame = { setupGame = it },
                         onLeaderboard = { showLeaderboard = true },

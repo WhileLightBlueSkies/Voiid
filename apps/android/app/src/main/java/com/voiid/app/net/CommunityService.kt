@@ -175,6 +175,45 @@ class CommunityService(context: Context) {
      * select-then-update loses the race on the last use of a max_uses link and lets two people
      * spend it.
      */
+    @Serializable
+    data class CommunityListEnvelope(val communities: List<CommunityCard> = emptyList())
+
+    /** Communities this account belongs to — the tab's own list. */
+    suspend fun mine(): List<CommunityCard> =
+        api.requestAs<CommunityListEnvelope>("GET", "communities/mine").communities
+
+    /**
+     * Discovery. The server refuses a query under two characters rather than returning the
+     * whole directory, so a short term short-circuits here instead of round-tripping.
+     */
+    suspend fun search(term: String): List<CommunityCard> {
+        val q = term.trim()
+        if (q.length < 2) return emptyList()
+        return api.requestAs<CommunityListEnvelope>(
+            "GET", "communities/search?q=" + java.net.URLEncoder.encode(q, "UTF-8")
+        ).communities
+    }
+
+    /**
+     * Create one. The handle shares a single namespace with usernames and creator handles
+     * (029/030), so the server may refuse it as taken — surfaced rather than pre-checked,
+     * because only the database can settle that race.
+     */
+    suspend fun create(handle: String, name: String, description: String?): CommunityCard {
+        // Client-supplied id makes a retry idempotent, the same reasoning as clips.
+        @Serializable
+        data class Body(
+            val id: String, val handle: String, val name: String, val description: String?,
+        )
+        // encodeDefaults is irrelevant here — every field is explicitly supplied, so the
+        // repo's omitted-default hazard cannot apply.
+        val body = ApiClient.json.encodeToString(
+            Body.serializer(),
+            Body(java.util.UUID.randomUUID().toString(), handle, name, description),
+        )
+        return api.requestAs<CommunityEnvelope>("POST", "communities", jsonBody = body).community
+    }
+
     suspend fun join(communityId: String, inviteToken: String?): JoinResult {
         val body = ApiClient.json.encodeToString(JoinBody.serializer(), JoinBody(inviteToken))
         return api.requestAs("POST", "communities/$communityId/join", body)

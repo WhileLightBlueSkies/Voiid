@@ -170,6 +170,40 @@ final class CommunityService {
     /// Redemption itself is one conditional UPDATE server-side (030_communities.sql): a
     /// select-then-update loses the race on the last use of a max_uses link and lets two people
     /// spend it.
+    /// Communities this account belongs to. The tab's own list.
+    func mine() async throws -> [CommunityCard] {
+        struct Envelope: Decodable { let communities: [CommunityCard] }
+        let env: Envelope = try await api.request("GET", "communities/mine")
+        return env.communities
+    }
+
+    /// Discovery. The server refuses a query under two characters rather than returning the
+    /// whole directory, so this returns empty for a short term instead of round-tripping.
+    func search(_ term: String) async throws -> [CommunityCard] {
+        let q = term.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard q.count >= 2 else { return [] }
+        struct Envelope: Decodable { let communities: [CommunityCard] }
+        let env: Envelope = try await api.request(
+            "GET", "communities/search?q=\(q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")")
+        return env.communities
+    }
+
+    /// Create one. `handle` shares the single namespace with usernames and creator handles
+    /// (029/030), so the server may refuse it as taken — surfaced rather than pre-checked,
+    /// because only the database can settle that race.
+    func create(handle: String, name: String, description: String?) async throws -> CommunityCard {
+        struct Body: Encodable {
+            let id: String; let handle: String; let name: String; let description: String?
+        }
+        struct Envelope: Decodable { let community: CommunityCard }
+        // Client-supplied id makes a retry idempotent — the same reasoning as clips.
+        let env: Envelope = try await api.request(
+            "POST", "communities",
+            body: Body(id: UUID().uuidString.lowercased(), handle: handle,
+                       name: name, description: description))
+        return env.community
+    }
+
     func join(communityId: String, inviteToken: String?) async throws -> (state: String, existed: Bool) {
         let res: JoinResult = try await api.request(
             "POST", "communities/\(communityId)/join",

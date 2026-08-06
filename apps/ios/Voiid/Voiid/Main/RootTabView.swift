@@ -106,11 +106,7 @@ struct RootTabView: View {
                 case .stories: StoriesHomeView()
                 case .map:     MapTabView()
                 case .clips:   ClipsFeedView()
-                case .communities:
-                    ComingSoonView(
-                        icon: "person.3.fill",
-                        title: "Communities",
-                        blurb: "Group spaces for the people, teams and interests you care about — announcements, sub-groups and shared media in one place.")
+                case .communities: CommunitiesHomeView()
                 case .games:   GamesHomeView()
                 }
             }
