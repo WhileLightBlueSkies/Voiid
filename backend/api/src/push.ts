@@ -121,13 +121,59 @@ async function clearDeadVoipToken(token: string): Promise<void> {
   }
 }
 
-/** Null out a device's push token so we stop pushing to a dead endpoint. */
+/**
+ * Strikes against a push token, in memory, keyed by the token itself.
+ *
+ * A wrongly-cleared token leaves the device RING-DEAF until something happens to
+ * re-register it — the user may not find out until they notice they stopped getting calls.
+ * That asymmetry is why one "not registered" response is not enough: the providers do
+ * occasionally return it transiently, and the cost of believing a false one is far higher
+ * than the cost of one extra wasted send to a token that really is dead.
+ *
+ * In memory on purpose. Strikes are a debounce, not a record: a restart losing them means
+ * at worst a genuinely dead token survives one more send before being cleared, and putting
+ * them in Postgres or Redis would add a write to every failed push to buy nothing.
+ */
+const deadTokenStrikes = new Map<string, { count: number; first: number }>();
+
+/** A strike older than this is stale evidence about a token that has since been fine. */
+const STRIKE_WINDOW_MS = 60 * 60 * 1000;
+/** Consecutive rejections required before a token is actually cleared. */
+const STRIKES_TO_CLEAR = 2;
+
+/**
+ * Record a provider rejection, and clear the token only once it has been rejected
+ * [STRIKES_TO_CLEAR] times inside [STRIKE_WINDOW_MS].
+ */
 async function clearDeadToken(token: string): Promise<void> {
+  const now = Date.now();
+  const prior = deadTokenStrikes.get(token);
+  const strike = prior && now - prior.first < STRIKE_WINDOW_MS
+    ? { count: prior.count + 1, first: prior.first }
+    : { count: 1, first: now };
+
+  if (strike.count < STRIKES_TO_CLEAR) {
+    deadTokenStrikes.set(token, strike);
+    console.warn(`[push] dead-token strike ${strike.count}/${STRIKES_TO_CLEAR}; not clearing yet`);
+    return;
+  }
+
+  deadTokenStrikes.delete(token);
   try {
     await query(`update devices set push_token = null where push_token = $1`, [token]);
+    console.warn('[push] token cleared after repeated provider rejection');
   } catch (e) {
     console.warn('[push] clearDeadToken failed:', (e as Error).message);
   }
+}
+
+/**
+ * Forget a token's strikes after a successful send — the strikes must be CONSECUTIVE, or a
+ * token that fails once a month would eventually accumulate two and be cleared while working
+ * perfectly well.
+ */
+function noteTokenAlive(token: string): void {
+  if (deadTokenStrikes.size) deadTokenStrikes.delete(token);
 }
 
 // --- FCM (Android) — data-only, high-priority, wake + routing -----------------------
@@ -155,7 +201,8 @@ async function sendFcmWake(tokens: string[], meta?: PushMeta): Promise<void> {
       android: { priority: 'high', ttl: wakeTtlSeconds(meta) * 1000 },
     });
     resp.responses.forEach((r, i) => {
-      if (r.success) return;
+      // A success ends any strike streak — see noteTokenAlive.
+      if (r.success) return noteTokenAlive(tokens[i]);
       const code = r.error?.code ?? '';
       if (
         code === 'messaging/registration-token-not-registered' ||
@@ -262,7 +309,10 @@ function apnsSendOne(token: string, auth: string, meta?: PushMeta): Promise<void
       resolve();
     });
     req.on('end', () => {
-      if (status === 200) return resolve();
+      if (status === 200) {
+        noteTokenAlive(token);   // a success ends any strike streak
+        return resolve();
+      }
       let reason = '';
       try {
         reason = JSON.parse(body)?.reason ?? '';

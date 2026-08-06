@@ -87,12 +87,30 @@ class E2EManager private constructor(context: Context) {
      */
     suspend fun registerPushToken(token: String) {
         val prev = prefs.getString("fcm_token", null)
-        prefs.edit().putString("fcm_token", token).apply()
-        val id = identity ?: return   // not bootstrapped yet — register() will attach it
-        // Re-register only when the token actually changed OR we've never pushed one, so
-        // onNewToken re-fires don't spam the endpoint. Same registration_id → pure update.
-        if (prev == token) return
+        // Whether the token CURRENTLY CACHED was ever successfully accepted by the server.
+        //
+        // THE BUG THIS FIXES: the cache used to be written before the upload was attempted,
+        // and the early-return compared against it. So a register that failed — offline,
+        // 500, token expired mid-flight — cached the new token anyway, and every subsequent
+        // call took `prev == token` and returned without ever retrying. The device was
+        // ring-deaf until the token happened to change again, which for FCM can be months.
+        //
+        // So the skip now requires BOTH: same token AND a confirmed upload.
+        val uploaded = prefs.getBoolean("fcm_token_uploaded", false)
+        if (prev == token && uploaded) return
+
+        val id = identity ?: run {
+            // Not bootstrapped yet — register() will attach it. Cache the token so that
+            // register() has it, but do NOT claim it was uploaded.
+            prefs.edit().putString("fcm_token", token).putBoolean("fcm_token_uploaded", false).apply()
+            return
+        }
+
+        // Cache the token BEFORE the call so register() reads the new value, and record the
+        // upload result AFTER — the flag is what makes a failure retryable.
+        prefs.edit().putString("fcm_token", token).putBoolean("fcm_token_uploaded", false).apply()
         runCatching { register(id) }
+            .onSuccess { prefs.edit().putBoolean("fcm_token_uploaded", true).apply() }
             .onFailure { android.util.Log.e("VOIID", "registerPushToken failed", it) }
     }
 

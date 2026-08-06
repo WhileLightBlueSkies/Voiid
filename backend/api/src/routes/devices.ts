@@ -18,7 +18,12 @@ router.post('/register', requireAuth, asyncHandler(async (req, res) => {
        values ($1, $2, $3, $4, $5, $6, $7)
        on conflict (user_id, registration_id)
        do update set identity_public_key = excluded.identity_public_key,
-                     push_token = excluded.push_token,
+                     -- Coalesced for the SAME reason as the provider below, which was
+                     -- already guarded while this line was not. A register sent before
+                     -- FCM/APNs has issued a token carries push_token = null, and
+                     -- assigning that over a live token makes the device ring-deaf until
+                     -- something happens to re-register it with a real one.
+                     push_token = coalesce(excluded.push_token, devices.push_token),
                      -- Every push query requires BOTH token and provider to be non-null.
                      -- A row first registered before its push token existed has a null
                      -- provider forever if this only ever runs on insert, so the device
