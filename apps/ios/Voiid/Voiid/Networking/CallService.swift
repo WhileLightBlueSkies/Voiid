@@ -63,6 +63,16 @@ struct ActiveCall: Identifiable, Equatable {
     /// a conference is keyed on the CALL and belongs to no conversation, which is what keeps
     /// an invited stranger outside the contact-PIN gate in 020_reachability.sql.
     var isConferenceInvite: Bool = false
+
+    /// THE CALLEE'S DEVICE IS GENUINELY ALERTING — set when their `call_ringing` arrives,
+    /// never when we merely sent the offer.
+    ///
+    /// The outgoing screen said "Ringing…" from the instant you tapped call, which claims
+    /// something we do not know: the callee may be offline, out of coverage, or their push
+    /// may never have landed. Until this flips, the honest word is "Calling…". It flips at
+    /// exactly the moment their phone starts making noise — the same moment our own ringback
+    /// starts — so the word and the sound agree, and so do the two devices.
+    var peerRinging: Bool = false
 }
 
 @MainActor
@@ -301,6 +311,7 @@ final class CallService: NSObject, ObservableObject {
     private func handleRemoteRinging(callId: String) {
         guard let call = active, call.id == callId, call.isOutgoing,
               call.state == .outgoingRinging else { return }
+        active?.peerRinging = true
         CallToneService.shared.startRingback()
     }
 

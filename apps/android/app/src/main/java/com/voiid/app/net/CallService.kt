@@ -91,6 +91,17 @@ object CallManager {
          * any moment, so this must never be confused with ENDED. Cleared on ICE recovery.
          */
         val reconnecting: Boolean = false,
+        /**
+         * The CALLEE'S DEVICE IS GENUINELY ALERTING — set when their `call_ringing` frame
+         * arrives, never when we merely sent the offer.
+         *
+         * The outgoing screen said "Ringing…" from the instant you tapped call, which is a
+         * claim we cannot make: the callee may be offline, out of coverage, or their push may
+         * never have landed. Until this flips, the honest word is "Calling…" — we are trying
+         * to reach them. It flips at exactly the moment their phone starts making noise,
+         * which is also when the caller's own ringback starts, so the two devices agree.
+         */
+        val peerRinging: Boolean = false,
     )
 
     /**
@@ -397,6 +408,9 @@ object CallManager {
         if (s.callId != sig.callId) return
         if (s.incoming) return                      // we're the callee; nothing to ring back at
         if (s.phase != Phase.RINGING_OUT) return    // already connecting/connected/ended
+        // Their phone is audibly ringing NOW, so ours starts its ringback at the same moment
+        // and the status line may finally say "Ringing…" truthfully.
+        update { it.copy(peerRinging = true) }
         CallTones.startRingback()
     }
 
@@ -777,6 +791,9 @@ object CallManager {
     }
 
     private fun onRemoteAnswer(sig: WebSocketClient.CallSignal) {
+        // The caller's half of the same rule: an answer means media is being negotiated, so
+        // arm the cap that turns "connecting forever" into an honest failure.
+        _state.value?.let { st -> mainHandler.post { armConnectTimeout(st.callId) } }
         val sdp = sig.sdp ?: return
         // Answered: kill ringback now, not when media arrives, so it can never overlap voice.
         CallTones.stopRingback()
@@ -976,6 +993,9 @@ object CallManager {
                 // We've now completed offer/answer: any further offer on this call_id is a
                 // renegotiation to apply silently, not a new call to ring.
                 hasNegotiated = true
+                // Media negotiation has begun: from here ICE must reach CONNECTED or we must
+                // say so. See armConnectTimeout — the un-handled third outcome.
+                mainHandler.post { armConnectTimeout(s.callId) }
                 WebSocketClient.get(appContext).sendCallAnswer(s.peerUserId, s.callId, tuned.description)
             }
         }, offerAnswerConstraints(s.kind))
@@ -1505,6 +1525,7 @@ object CallManager {
 
     private fun markConnected() {
         val s = _state.value ?: return
+        cancelConnectTimeout()
         metrics?.onConnected()
         CallTones.stopRingback()
         // ICE is up: whatever we were reconnecting from is over. Routed through the same main
@@ -1526,6 +1547,7 @@ object CallManager {
 
     private fun endInternal(notifyPeer: Boolean, reason: String) {
         val s = _state.value ?: return
+        cancelConnectTimeout()
         endReason = endReason ?: reason
         cancelOfferTimeout()
         // Ringback must die here no matter which path ended the call — timeout, local hangup,
@@ -1793,6 +1815,44 @@ object CallManager {
     }
 
     /** Start the DISCONNECTED grace timer — see [DISCONNECT_GRACE_MS]. */
+    /**
+     * How long ICE gets to actually connect before we admit it will not.
+     *
+     * THE "STUCK ON CONNECTING FOREVER" BUG. ICE handles two of its three outcomes:
+     * CONNECTED calls [markConnected], FAILED triggers a restart. The third — CHECKING that
+     * simply never resolves — had no handler at all, so the call sat on "Connecting…"
+     * indefinitely with no error, no tone and no way out but force-quitting.
+     *
+     * That is not a rare edge. It is what happens on symmetric NAT (most mobile carriers)
+     * when no TURN server is configured: `resolveIceServers` degrades to STUN-only and
+     * returns `turn_configured: false`, both peers gather only host and server-reflexive
+     * candidates, none of the pairs work, and ICE keeps checking rather than declaring
+     * failure. Android-to-Android on mobile data is the exact shape of that.
+     *
+     * 35s is chosen to sit outside the normal worst case — a cold TURN allocation on a bad
+     * network can legitimately take 10-15s — while still being far short of "forever".
+     */
+    private val connectTimeoutMs = 35_000L
+    private var connectTimeoutRunnable: Runnable? = null
+
+    private fun armConnectTimeout(callId: String) {
+        cancelConnectTimeout()
+        val r = Runnable {
+            val s = _state.value ?: return@Runnable
+            if (s.callId != callId) return@Runnable
+            if (s.connectedAtMs != null) return@Runnable   // media arrived after all
+            android.util.Log.e("VOIID", "call $callId never connected within ${connectTimeoutMs}ms")
+            endInternal(notifyPeer = true, reason = "ice-failed")
+        }
+        connectTimeoutRunnable = r
+        mainHandler.postDelayed(r, connectTimeoutMs)
+    }
+
+    private fun cancelConnectTimeout() {
+        connectTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        connectTimeoutRunnable = null
+    }
+
     private fun armDisconnectGrace() {
         // Show "Reconnecting…" as soon as the path is lost, not only once we escalate to a
         // restart: the freeze the user is hearing starts *now*, and a call that looks dead for
