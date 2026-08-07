@@ -579,11 +579,23 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
 
         trails.update(state: state, heads: heads)
 
-        let focus = stepCamera(target: heads[me ?? ""])
         let mine = state.snakes.first { $0.id == me }
         let mass = mine?.mass ?? 10
+        // Zoom out as mass grows so a big snake stays framed, log-damped so growth reads as
+        // "the world got a little smaller" rather than a nauseating continuous zoom-out.
+        // Already an eased function of mass (not a snapped tier), so this alone satisfies
+        // GAMES_ANIMATION.md §5.2's "mass zoom" — look-ahead and shake below are what it adds.
         let zoom = 1.0 / (1.0 + log10(1 + mass / 30) * 0.42)
         let scale = Float(min(viewSize.width, viewSize.height) / 900.0 * zoom)
+
+        // LOOK-AHEAD: "offset toward the heading, scaled by speed — the player sees where they
+        // are going instead of where they are" (§5.2). Only for the local player: an
+        // opponent's heading is not something the camera should react to.
+        let lookAhead = Self.computeLookAhead(mine: mine, headingsById: headings, me: me)
+        let target = heads[me ?? ""].map {
+            CGPoint(x: $0.x + lookAhead.x, y: $0.y + lookAhead.y)
+        }
+        let focus = stepCamera(target: target)
 
         buildArena(radius: state.arenaRadius)
         buildFood(state: state)
@@ -612,6 +624,13 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
                 let colour = state.snakes.first { $0.id == event.snakeId }
                     .map { Self.palette($0.colorIndex) } ?? SIMD4(1, 1, 1, 1)
                 particles.spawn(kind: event.kind, at: event.position, colour: colour)
+
+                // Screen shake on YOUR kills only. `event.snakeId` on a `kill` event is the
+                // KILLER (backend/games/src/engine/snake/index.ts kill() pushes `id: killerId`),
+                // so this fires for the player who just won a fight, not their victim.
+                if event.kind == "kill", event.snakeId == me {
+                    triggerShake(magnitude: 6)
+                }
             }
             lastEventTime = state.time
         }
@@ -624,7 +643,10 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
 
         publishHud(state: state, ranked: ranked, mine: mine)
 
-        let cameraSIMD = SIMD2(Float(focus.x), Float(focus.y))
+        // Shake is added HERE, after the follow spring, never fed back into `cameraCentre` —
+        // see the property's doc comment for why.
+        let shake = currentShake(scale: scale)
+        let cameraSIMD = SIMD2(Float(focus.x + shake.x), Float(focus.y + shake.y))
         // Cached for `compositeBloom`, which runs later in the SAME draw call from inside the
         // main-pass encoder and has no other way to know this frame's camera/scale.
         lastCameraCentreSIMD = cameraSIMD
@@ -670,6 +692,70 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
                            y: current.y + (goal.y - current.y) * a)
         cameraCentre = next
         return next
+    }
+
+    /// Offset the camera toward where the local player is HEADED, scaled by speed — "the
+    /// player sees where they are going instead of where they are" (GAMES_ANIMATION.md §5.2).
+    /// Returns .zero (no offset) for a dead/absent/boosting-unknown player rather than
+    /// optionals, since every caller immediately adds this to a point.
+    private static func computeLookAhead(
+        mine: SnakeState.Snake?, headingsById: [String: Double], me: String?
+    ) -> CGPoint {
+        guard let mine, mine.alive, let heading = headingsById[me ?? ""] else { return .zero }
+        // BASE_SPEED/BOOST_SPEED from the server's TUNING (snake/index.ts) — duplicated here
+        // as a presentation constant rather than threaded through the wire, because look-ahead
+        // distance affects nothing about the simulation and a slightly-wrong guess at boost
+        // speed only makes the offset a little short or long, never incorrect gameplay.
+        let speed = mine.boosting ? 420.0 : 240.0
+        // Distance scales with speed but caps out — otherwise a long boost would push the
+        // camera so far ahead the player's own snake nears the screen edge.
+        let distance = min(speed * Self.lookAheadSeconds, Self.lookAheadMax)
+        return CGPoint(x: cos(heading) * distance, y: sin(heading) * distance)
+    }
+
+    /// How far ahead to look, in seconds of travel at current speed.
+    private static let lookAheadSeconds: Double = 0.35
+    private static let lookAheadMax: Double = 140
+
+    // MARK: Screen shake
+    //
+    // "3-6 px, 200 ms, decaying" (§5.2/§3.1). A camera-space effect, deliberately never
+    // written into `cameraCentre` itself — shake must never feed back into the follow spring
+    // (stepCamera's teleport check would otherwise occasionally misfire on a big shake) or
+    // persist across a screen-size change, so it is tracked separately and added to the
+    // camera's output only at the point `buildFrame` returns its Uniforms.
+    private var shakeStartedAt: TimeInterval = 0
+    private var shakeMagnitude: Double = 0
+    private var shakeSeed: Double = 0
+
+    /// Trigger a shake. Called once per `kill` event where the LOCAL player is the killer —
+    /// see the call site in buildFrame. A later call while one is already decaying simply
+    /// restarts it at the new (typically larger) magnitude rather than summing, which is what
+    /// keeps a rapid double-kill feeling like one strong hit instead of an accelerating wobble.
+    private func triggerShake(magnitude: Double) {
+        shakeStartedAt = CACurrentMediaTime()
+        shakeMagnitude = magnitude
+        shakeSeed = Double.random(in: 0..<1000)
+    }
+
+    private static let shakeDuration: Double = 0.2
+
+    /// Current shake offset in WORLD units (divided by scale so it reads as a constant number
+    /// of on-screen points regardless of zoom, matching "3-6 px" being a screen measurement).
+    private func currentShake(scale: Float) -> CGPoint {
+        guard shakeMagnitude > 0 else { return .zero }
+        let elapsed = CACurrentMediaTime() - shakeStartedAt
+        guard elapsed < Self.shakeDuration else { shakeMagnitude = 0; return .zero }
+
+        // Decaying sine, per §3.1's "decaying sine" rather than random jitter — a sine reads
+        // as an impact recoiling, where per-frame random noise reads as the RENDERER being
+        // unstable, which is exactly the wrong association for a kill (a good thing) to carry.
+        let decay = 1 - elapsed / Self.shakeDuration
+        let phase = (elapsed + shakeSeed) * 40
+        let px = Double(sin(phase)) * shakeMagnitude * decay
+        let py = Double(cos(phase * 1.3)) * shakeMagnitude * decay
+        let worldScale = Double(max(scale, 0.0001))
+        return CGPoint(x: px / worldScale, y: py / worldScale)
     }
 
     private static func lerpAngle(_ a: Double, _ b: Double, _ t: Double) -> Double {
