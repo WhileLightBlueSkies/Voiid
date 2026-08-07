@@ -1,9 +1,12 @@
 package com.voiid.app.net
 
 import android.content.Context
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -705,6 +708,19 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
     }
 
     fun leave() {
+        // Tell the server BEFORE clearing local state, not after — matchId is null the moment
+        // this function returns. Fire-and-forget on its own IO scope: local state clears
+        // unconditionally below regardless of whether this network call lands, matching
+        // GroupCallService's identical fire-and-forget pattern elsewhere in this package. See
+        // GamesService.leave's doc comment for what this fixes (an abandoned Snake match
+        // ticking, and flooding this socket with game_state, for up to its full duration with
+        // nobody watching).
+        matchId?.let { id ->
+            CoroutineScope(Dispatchers.IO).launch {
+                runCatching { service.leave(id) }
+            }
+        }
+
         matchId = null
         desiredHeading = null
         desiredBoost = false

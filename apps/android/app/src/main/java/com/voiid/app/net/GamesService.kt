@@ -129,4 +129,16 @@ class GamesService(private val api: ApiClient) {
     suspend fun decline(matchId: String) {
         api.request("POST", "games/matches/$matchId/decline", "{}")
     }
+
+    /** Tell the server a player is deliberately backing out of a LIVE match screen — as
+     * opposed to [decline], which is for a match that never started. Without this a
+     * continuous game's tick loop had nothing telling it a player left, so backing out of
+     * Snake left the match ticking (and broadcasting `game_state` at full rate) for up to its
+     * full duration. See docs/GAMES_SNAKE_BUGS.md.
+     *
+     * Fire-and-forget from the caller's perspective — [GamesEngine.leave] clears local state
+     * unconditionally regardless of whether this network call lands. */
+    suspend fun leave(matchId: String) {
+        api.request("POST", "games/matches/$matchId/leave", "{}")
+    }
 }
