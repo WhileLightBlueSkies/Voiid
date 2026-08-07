@@ -160,11 +160,43 @@ class WebSocketClient private constructor(context: Context) {
         if (open && s != null && s.send(frame)) return
         if (!queueIfDown) return
         synchronized(outboxLock) {
-            if (outbox.size >= MAX_OUTBOX) outbox.removeFirst()
-            outbox.addLast(frame)
+            // GAME INPUT IS COALESCED, NOT APPENDED. Every other queued frame here is a
+            // discrete event with its own identity — a message, an ICE candidate, a call
+            // signal — and losing one loses something real. A steering frame is a POSITION:
+            // the newest one fully supersedes every older one for the same match, so queuing
+            // them as a growing backlog is queuing garbage.
+            //
+            // Treating it like the others caused two failures. First, the outbox is shared and
+            // bounded, dropping from the front — a ~9 second blip at Snake's 10-15 frames/sec
+            // fills it completely, so stale headings were evicting queued messages, call offers
+            // and ICE candidates to make room for themselves. Second, on reconnect the whole
+            // backlog flushed as one burst, instantly spending an entire rate-limit window
+            // (docs/GAMES_SNAKE_BUGS.md Part A) and blacking out controls again right as the
+            // player regained connectivity — a brief blip alone was enough to retrigger the
+            // freeze.
+            //
+            // Replacing the prior queued input for the SAME match fixes both: steering can
+            // never grow the outbox, and reconnect replays exactly one heading, not a burst.
+            val matchId = gameInputMatchId(frame)
+            val replaced = matchId != null && run {
+                val idx = outbox.indexOfFirst { gameInputMatchId(it) == matchId }
+                if (idx >= 0) { outbox[idx] = frame; true } else false
+            }
+            if (!replaced) {
+                if (outbox.size >= MAX_OUTBOX) outbox.removeFirst()
+                outbox.addLast(frame)
+            }
         }
         // A queued frame means we believe we're live but aren't; make sure a retry is pending.
         if (!closedByUs && !connected) scheduleReconnect()
+    }
+
+    /** match_id if [frame] is a `game_input` frame, else null. Cheap prefix check before parse. */
+    private fun gameInputMatchId(frame: String): String? {
+        if (!frame.startsWith("""{"type":"game_input"""")) return null
+        return runCatching {
+            json.parseToJsonElement(frame).jsonObject["match_id"]?.jsonPrimitive?.contentOrNull
+        }.getOrNull()
     }
 
     /** Drain the outbox in FIFO order. Anything that fails to write goes back at the front. */

@@ -158,7 +158,28 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         val duration: Double,
         val finished: Boolean,
         val winnerUserId: String?,
+        /**
+         * Deaths/kills/eats/spawns THIS frame, for one-shot VFX. Cleared server-side every
+         * tick (backend/games/src/engine/snake/index.ts), so this is never a running log —
+         * only what just happened.
+         *
+         * Was previously dropped by [parseSnake] entirely: the server has always sent this,
+         * iOS has always parsed it into `SnakeState.events`, and Android discarded the field
+         * on arrival — no particle/haptic system on this platform could exist without it.
+         * See docs/GAMES_ANIMATION.md §5.3.
+         */
+        val events: List<SnakeEvent> = emptyList(),
     ) {
+        /** One `{k, x, y, id, c?}` entry. `kind` is "death" | "kill" | "eat" | "spawn". */
+        data class SnakeEvent(
+            val kind: String,
+            val x: Double,
+            val y: Double,
+            val snakeId: String,
+            /** Death cause ("border" | "body" | "head"), present only on `death` events. */
+            val cause: String?,
+        )
+
         data class Snake(
             val id: String,
             val isBot: Boolean,
@@ -354,6 +375,19 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
             }
         }
 
+        val events = payload.arr("events")?.mapNotNull { entry ->
+            val o = entry as? JsonObject ?: return@mapNotNull null
+            val kind = o.str("k") ?: return@mapNotNull null
+            val id = o.str("id") ?: return@mapNotNull null
+            SnakeState.SnakeEvent(
+                kind = kind,
+                x = o.dbl("x") ?: 0.0,
+                y = o.dbl("y") ?: 0.0,
+                snakeId = id,
+                cause = o.str("c"),
+            )
+        } ?: emptyList()
+
         return SnakeState(
             players = players,
             snakes = snakes,
@@ -363,6 +397,7 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
             duration = payload.dbl("duration") ?: 180.0,
             finished = payload.bool("finished") ?: false,
             winnerUserId = payload.str("winnerUserId"),
+            events = events,
         )
     }
 
@@ -600,6 +635,14 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         val id = matchId ?: return
         val s = snake ?: return
         if (s.finished) return
+
+        // A DEAD SNAKE IS NOT STEERABLE, and pretending otherwise starved the one frame that
+        // mattered. Nothing paused this pacer on death, so the client kept sending headings at
+        // 10-15/s at a snake that was not in the arena — straight into the same per-match input
+        // budget the respawn frame has to come out of. By the time the 2.5 s delay elapsed and
+        // the button became tappable, the budget was reliably gone and Respawn did nothing.
+        val mine = s.snakes.firstOrNull { it.id == myUserId }
+        if (mine != null && !mine.alive) return
 
         val h = desiredHeading ?: return
         val now = android.os.SystemClock.elapsedRealtime()
