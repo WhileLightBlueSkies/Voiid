@@ -71,7 +71,10 @@ struct SnakeArenaView: View {
         // The tab bar is app chrome and this is a full-screen game — every other game view
         // hides it the same way. Without this it sat over the arena and ate touches along
         // the bottom edge.
-        .onAppear { session.hideTabBar = true }
+        .onAppear {
+            session.hideTabBar = true
+            GameAudio.shared.preload(for: "snake")
+        }
         .task { await engine.open(matchId: matchId) }
         // Flush pending steering on its own clock. A send is a side effect and must not ride
         // inside a draw pass.
@@ -84,6 +87,7 @@ struct SnakeArenaView: View {
         .onDisappear {
             session.hideTabBar = false
             engine.leave()
+            GameAudio.shared.release(for: "snake")
         }
     }
 

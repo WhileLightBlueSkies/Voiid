@@ -247,6 +247,11 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     private var lastEventTime: Double = -1
     /// Wall-clock throttle for the `eat` haptic — see its call site for why.
     private var lastEatHapticAt: TimeInterval = 0
+    /// Local player's boost state as of the last frame, so start/end sounds fire once on the
+    /// TRANSITION rather than every frame boost happens to be held/released — there is no
+    /// server event for this (boost is continuous per-tick state, not a discrete event like
+    /// eat/kill/death/spawn), so the edge has to be detected client-side.
+    private var wasBoosting = false
 
     private var viewSize: CGSize = .zero
     /// When the HUD was last pushed to SwiftUI; see `publishHud` for why it is throttled.
@@ -636,15 +641,34 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
                 if event.kind == "kill", event.snakeId == me {
                     impact.triggerKill()
                     GameHaptics.kill()
+                    GameAudio.shared.play("kill", gain: 0.75)
                 }
                 if event.kind == "death", event.snakeId == me {
                     impact.triggerDeath()
                     GameHaptics.death()
+                    GameAudio.shared.play("death", gain: 0.85)
+                }
+                if event.kind == "spawn", event.snakeId == me {
+                    GameAudio.shared.play("spawn", gain: 0.6)
                 }
             }
         }
 
         let mine = state.snakes.first { $0.id == me }
+
+        // boost_start/boost_loop/boost_end: no server EVENT for these (boost is per-tick
+        // continuous state, not a discrete occurrence like eat/kill), so the transition is
+        // detected here from consecutive frames.
+        let isBoosting = mine?.alive == true && mine?.boosting == true
+        if isBoosting, !wasBoosting {
+            GameAudio.shared.play("boost_start", gain: 0.6)
+            GameAudio.shared.startLoop("boost_loop", gain: 0.35)
+        } else if !isBoosting, wasBoosting {
+            GameAudio.shared.stopLoop("boost_loop")
+            GameAudio.shared.play("boost_end", gain: 0.55)
+        }
+        wasBoosting = isBoosting
+
         let mass = mine?.mass ?? 10
         // Zoom out as mass grows so a big snake stays framed, log-damped so growth reads as
         // "the world got a little smaller" rather than a nauseating continuous zoom-out.
@@ -698,6 +722,11 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
                    CACurrentMediaTime() - lastEatHapticAt > 0.06 {
                     GameHaptics.eat()
                     lastEatHapticAt = CACurrentMediaTime()
+                    // §7.4 "bake variants": 4 pitch-spaced eat files, picked at random rather
+                    // than by mass bucket (the event carries no food value to bucket by — see
+                    // GameHaptics.eat()'s identical note) — cheap variety against the sound
+                    // that fires most often in the whole game.
+                    GameAudio.shared.play("eat_\(Int.random(in: 1...4))", gain: 0.6)
                 }
 
                 // Screen shake on YOUR kills only. `event.snakeId` on a `kill` event is the
