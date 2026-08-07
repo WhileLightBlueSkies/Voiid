@@ -384,9 +384,28 @@ final class GamesEngine: ObservableObject {
     ///
     /// The renderer runs on the display link, not on the main actor's render pass, and must
     /// not participate in SwiftUI invalidation — reading the @Published array from there is
-    /// what tangled the previous Canvas version into a freeze. This is a value-type copy of
-    /// an array of structs, so the read is safe and cheap.
-    nonisolated(unsafe) private(set) var snakeFramesSnapshot: [SnakeFrame] = []
+    /// what tangled the previous Canvas version into a freeze.
+    ///
+    /// LOCK-PROTECTED, not the bare `nonisolated(unsafe)` var this used to be. That comment
+    /// claimed "this is a value-type copy of an array of structs, so the read is safe and
+    /// cheap" — value semantics do NOT make the assignment atomic. `Array` is a struct
+    /// wrapping a reference to a heap buffer; writing it from the main actor (`ingest`, below)
+    /// while the display-link thread reads it concurrently is a genuine data race — undefined
+    /// behaviour, not a performance nit. On device this reproduced as the Metal renderer
+    /// silently drawing NOTHING: `buildFrame()` read an empty (or torn) array forever even
+    /// though `game_state` frames were provably arriving (the SwiftUI leaderboard, driven by
+    /// the separate `@Published snakeFrames` above, updated correctly the whole time). No
+    /// crash, no log — exactly the shape a torn read produces.
+    // `nonisolated` (not `nonisolated(unsafe)`) is correct and safe here specifically BECAUSE
+    // the lock makes every access thread-safe regardless of which actor calls in — that is
+    // the whole contract `nonisolated` is asking the compiler to trust, and unlike the old
+    // `(unsafe)` variant, this one actually earns it.
+    private nonisolated let snakeFramesLock = NSLock()
+    private nonisolated(unsafe) var _snakeFramesSnapshot: [SnakeFrame] = []
+    nonisolated var snakeFramesSnapshot: [SnakeFrame] {
+        get { snakeFramesLock.withLock { _snakeFramesSnapshot } }
+        set { snakeFramesLock.withLock { _snakeFramesSnapshot = newValue } }
+    }
 
     private static let SNAKE_BUFFER = 8
     /// Set when the join REST call fails, so the screen can show something truthful
@@ -636,6 +655,16 @@ final class GamesEngine: ObservableObject {
     private var desiredBoost = false
 
     func leave() {
+        // Tell the server BEFORE clearing local state, not after — matchId is nil the moment
+        // this function returns, and the API call needs it. Fire-and-forget: local state
+        // clears unconditionally below regardless of whether this lands, matching every other
+        // "tell the server, don't block the UI on it" call in this file. See GamesAPI.leave's
+        // doc comment for what this fixes (an abandoned Snake match ticking, and flooding this
+        // socket with game_state, for up to its full duration with nobody watching).
+        if let matchId {
+            Task { try? await self.api.leave(matchId: matchId) }
+        }
+
         matchId = nil
         state = nil
         rps = nil
