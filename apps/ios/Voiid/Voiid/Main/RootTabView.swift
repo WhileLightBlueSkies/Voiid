@@ -47,6 +47,9 @@ struct RootTabView: View {
     /// How far the indicator stretches on the current move — proportional to the number of
     /// tabs crossed, so a neighbouring hop and a jump across the bar do not look identical.
     @State private var slideStretch: CGFloat = 1.9
+    /// Index of the leftmost tab currently on screen, so `scrollAnchor(for:)` can tell
+    /// "already visible" from "off the edge" without measuring the scroll view.
+    @State private var firstVisibleTab = 0
 
     // The asset/label ternaries were hardcoded for exactly three cases; with a 4th tab they
     // become switches so a future 5th tab is a compile error to omit, not a silent wrong icon.
@@ -198,12 +201,31 @@ struct RootTabView: View {
                         }
                     }
                 }
-                // Keep the selected tab on screen — a tab chosen by a deep link (a
-                // notification opening Chats, say) must not sit silently off the edge.
+                // SCROLL ONLY WHEN THE TAB IS ACTUALLY OFF-SCREEN, and only to the nearer
+                // edge.
+                //
+                // THE BUG: this re-CENTRED the selection on every change, so tapping a tab
+                // that was already plainly visible yanked the whole bar sideways — the item
+                // you just hit slid out from under your thumb, and its four neighbours moved
+                // with it. With seven tabs in a five-wide window that fired on most taps.
+                //
+                // "Keep the selected tab on screen" (the original goal, and the right one)
+                // does not require centring. A tab already visible needs NO scroll; one off
+                // the edge should travel just far enough to appear. `anchor` picks WHICH edge
+                // it lands against, so scrolling to `.leading` or `.trailing` moves the
+                // minimum distance instead of hauling it to the middle.
                 .onChange(of: tab) { _, t in
-                    withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(t, anchor: .center) }
+                    guard let target = scrollAnchor(for: t) else { return }
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        proxy.scrollTo(t, anchor: target)
+                    }
                 }
-                .onAppear { proxy.scrollTo(tab, anchor: .center) }
+                // On first appearance there is no "already visible" to preserve — the bar has
+                // not been scrolled yet — so a deep-linked tab beyond the fifth slot still
+                // needs bringing into view. Only then, and without animation.
+                .onAppear {
+                    if let target = scrollAnchor(for: tab) { proxy.scrollTo(tab, anchor: target) }
+                }
             }
         }
         // 48pt minimum touch target + label + the indicator's track. The old bar gave the
@@ -214,6 +236,28 @@ struct RootTabView: View {
         // it, which is what makes an iOS tab bar feel native instead of pasted on.
         .background(.bar)
         .overlay(VoiidColor.divider.opacity(0.6).frame(height: 0.5), alignment: .top)
+    }
+
+    /// Where a tab must be scrolled to, or nil when it is already on screen and should not
+    /// move at all.
+    ///
+    /// Index-based rather than measured: the slots are a fixed fraction of the width and the
+    /// row is not independently scrollable by the user in practice, so the visible window is
+    /// derivable from the selection history. `firstVisibleTab` tracks the left edge.
+    private func scrollAnchor(for t: Tab) -> UnitPoint? {
+        let order = Tab.allCases
+        guard let index = order.firstIndex(of: t) else { return nil }
+        let first = firstVisibleTab
+        let last = first + Self.visibleTabs - 1
+        if index < first {
+            firstVisibleTab = index
+            return .leading
+        }
+        if index > last {
+            firstVisibleTab = index - Self.visibleTabs + 1
+            return .trailing
+        }
+        return nil   // already visible — the case that used to scroll anyway
     }
 
     /// How many tabs are visible at once; the rest scroll.

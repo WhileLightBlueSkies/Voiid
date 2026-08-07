@@ -697,12 +697,36 @@ private fun TabBar(
             // Exactly five slots visible; everything past that is reachable by scrolling.
             val slotW = maxWidth / VISIBLE_TABS
 
-            // Keep the selected tab on screen — a tab chosen by a deep link (a notification
-            // opening Chats, say) must not sit silently off the edge.
+            // SCROLL ONLY WHEN THE TAB IS ACTUALLY OFF-SCREEN, and only far enough.
+            //
+            // THE BUG: this re-CENTRED the selection on every change, so tapping a tab that
+            // was already plainly visible yanked the whole bar sideways — the item you just
+            // hit slid out from under your thumb, and its four neighbours moved too. With
+            // seven tabs in a five-wide window that fired on most taps, and it made the bar
+            // feel like it was fighting you.
+            //
+            // "Keep the selected tab on screen" (the original comment, and the right goal)
+            // does not require centring. A tab already fully visible needs NO scroll at all;
+            // one that is off the edge needs to travel exactly far enough to come into view,
+            // which is what a scroll should do — reveal, not rearrange.
             LaunchedEffect(selected) {
-                val target = with(density) { (slotW * selected.ordinal).toPx() }
-                val centred = target - with(density) { (slotW * (VISIBLE_TABS - 1) / 2).toPx() }
-                scroll.animateScrollTo(centred.toInt().coerceAtLeast(0))
+                val slotPx = with(density) { slotW.toPx() }
+                val leading = slotPx * selected.ordinal
+                val trailing = leading + slotPx
+                val viewportPx = with(density) { maxWidth.toPx() }
+                val visibleStart = scroll.value.toFloat()
+                val visibleEnd = visibleStart + viewportPx
+
+                val target = when {
+                    // Off the left edge: bring its leading edge to the viewport's left.
+                    leading < visibleStart -> leading
+                    // Off the right edge: bring its trailing edge to the viewport's right.
+                    trailing > visibleEnd -> trailing - viewportPx
+                    // Already fully visible — do nothing. This is the case that used to
+                    // scroll anyway, and it is the common one.
+                    else -> null
+                }
+                target?.let { scroll.animateScrollTo(it.toInt().coerceAtLeast(0)) }
             }
 
             Box(Modifier.horizontalScroll(scroll)) {
