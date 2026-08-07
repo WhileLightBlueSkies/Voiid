@@ -28,6 +28,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -477,10 +478,49 @@ private fun DrawScope.drawBoundary(radius: Float) {
     // Drawn EXACTLY at the lethal line, not inside or outside it. A wall whose visible edge
     // disagrees with the killing surface makes every border death feel unfair, and players
     // cannot learn a boundary they cannot see precisely.
+    //
+    // GAMES_ANIMATION.md §4 tier C ("no shader access, three layered strokes at decreasing
+    // width and increasing alpha with BlendMode.Plus"): this arena edge is exactly the shape
+    // the doc calls out as the clearest place to prove the effect is doing something, since it
+    // is both lethal and constantly on screen. iOS gets a real Gaussian-blurred bloom target
+    // for the same ring (SnakeMetalView.buildArena); this is the minSdk-24 approximation of
+    // the same intent — a rim of light, not a flat stroke — reachable on every device this app
+    // supports, not just API 33+.
+    drawGlowRing(radius = radius, center = Offset.Zero, color = Color(0xFF5AD8FF))
+
     drawCircle(
         Color(0xFF5AD8FF).copy(alpha = 0.16f), radius = radius - 20f,
         center = Offset.Zero, style = Stroke(width = 40f))
     drawCircle(Color(0xFF5AD8FF), radius = radius, center = Offset.Zero, style = Stroke(width = 6f))
+}
+
+/**
+ * Additive layered-stroke glow: three strokes at decreasing width and increasing alpha,
+ * `BlendMode.Plus` so overlapping glow brightens rather than occludes — the same behaviour
+ * iOS gets from a real Gaussian blur in an offscreen bloom texture, approximated here with
+ * geometry instead of a blur kernel. See GAMES_ANIMATION.md §4/§5.1.
+ *
+ * `BlendMode.Plus` is API 24+ (it is a Skia blend mode exposed since Compose's first release
+ * on this minSdk), so this works everywhere the app runs — unlike RenderEffect blur (31+) or
+ * a RuntimeShader (33+), which is why bloom is layered strokes here and a real blur on iOS.
+ */
+private fun DrawScope.drawGlowRing(radius: Float, center: Offset, color: Color) {
+    drawCircle(color.copy(alpha = 0.10f), radius = radius + 26f, center = center,
+        style = Stroke(width = 52f), blendMode = BlendMode.Plus)
+    drawCircle(color.copy(alpha = 0.18f), radius = radius + 12f, center = center,
+        style = Stroke(width = 24f), blendMode = BlendMode.Plus)
+    drawCircle(color.copy(alpha = 0.30f), radius = radius + 3f, center = center,
+        style = Stroke(width = 8f), blendMode = BlendMode.Plus)
+}
+
+/** Same three-layer additive approach as [drawGlowRing], for a point light instead of a ring. */
+private fun DrawScope.drawGlowDot(radius: Float, center: Offset, color: Color) {
+    drawCircle(color.copy(alpha = 0.10f), radius = radius * 3.2f, center = center,
+        blendMode = BlendMode.Plus)
+    drawCircle(color.copy(alpha = 0.18f), radius = radius * 2.2f, center = center,
+        blendMode = BlendMode.Plus)
+    drawCircle(color.copy(alpha = 0.30f), radius = radius * 1.4f, center = center,
+        blendMode = BlendMode.Plus)
 }
 
 private fun DrawScope.drawFood(state: GamesEngine.SnakeState) {
@@ -489,6 +529,7 @@ private fun DrawScope.drawFood(state: GamesEngine.SnakeState) {
         val r = if (item.value >= 2) 7f else if (item.value < 1) 4.5f else 5.5f
         val color = if (item.value >= 2) Color(0xFFFFB873) else Color(0xFFFFEE9E)
         val centre = Offset(item.x.toFloat(), item.y.toFloat())
+        drawGlowDot(radius = r, center = centre, color = color)
         drawCircle(color.copy(alpha = 0.18f), radius = r * 2f, center = centre)
         drawCircle(color, radius = r, center = centre)
     }
@@ -561,6 +602,11 @@ private fun DrawScope.drawHead(
     stick: Offset,
 ) {
     val r = width * 0.62f
+    // The head halo is the single most-looked-at glow in the game — this is what makes
+    // "every bright thing emits" (GAMES_ANIMATION.md §3.3) actually true of the thing the
+    // player is steering. Additive so a boosting snake's own trail glow and the head halo
+    // brighten together instead of the head simply occluding the trail.
+    drawGlowDot(radius = r, center = head, color = color)
     drawCircle(color.copy(alpha = 0.28f * alpha), radius = r * 2.4f, center = head)
     drawCircle(color.copy(alpha = alpha), radius = r, center = head)
 
