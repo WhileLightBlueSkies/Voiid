@@ -2,6 +2,7 @@ package com.voiid.app.main
 
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -91,11 +92,24 @@ fun SharedMediaSheet(conversationId: String, onDismiss: () -> Unit) {
                 modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 16.dp, bottom = 8.dp),
             )
             Tabs(tab) { haptics.selection(); tab = it }
-            when (tab) {
-                MediaTab.PHOTOS -> MediaGrid(photos, "No photos yet")
-                MediaTab.VIDEOS -> MediaGrid(videos, "No videos yet")
-                MediaTab.VOICE -> RefList(voice, Icons.Default.Mic, "Voice message")
-                MediaTab.DOCS -> RefList(docs, Icons.Default.Description, "Document")
+            // THE UNDERLINE SPRINGS ACROSS AND THE CONTENT TELEPORTED. Switching tabs
+            // animated the indicator while the thing it indicates changed in a single frame,
+            // so the one moving element pointed at a swap the eye never saw happen.
+            //
+            // A crossfade, not a slide: these four tabs are PEERS with no spatial order
+            // (photos are not "left of" documents), so sliding would invent a geography that
+            // does not exist. Opacity only, so no Reduce Motion gate is needed. Matches iOS.
+            androidx.compose.animation.Crossfade(
+                targetState = tab,
+                animationSpec = tween(180),
+                label = "mediaTab",
+            ) { shown ->
+                when (shown) {
+                    MediaTab.PHOTOS -> MediaGrid(photos, "No photos yet")
+                    MediaTab.VIDEOS -> MediaGrid(videos, "No videos yet")
+                    MediaTab.VOICE -> RefList(voice, Icons.Default.Mic, "Voice message")
+                    MediaTab.DOCS -> RefList(docs, Icons.Default.Description, "Document")
+                }
             }
         }
     }

@@ -29,6 +29,7 @@
 //
 
 import SwiftUI
+import CoreImage.CIFilterBuiltins
 
 struct SafetyNumberView: View {
     let peerUserId: String
@@ -37,6 +38,14 @@ struct SafetyNumberView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var entries: [Entry] = []
     @State private var state: LoadState = .loading
+    /// Which representation of the number is on screen. Defaults to the DIGITS, not the code:
+    /// the read-aloud path works everywhere, a scan needs two devices in one room.
+    @State private var showQR = false
+
+    /// The card swap and the state crossfade are both opacity-and-scale on a small surface,
+    /// so they stay under Reduce Motion — but the spring is dropped, because a settling
+    /// overshoot is still motion the setting asks to avoid.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private enum LoadState { case loading, loaded, failed, noKeys }
 
@@ -50,12 +59,19 @@ struct SafetyNumberView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: VoiidSpacing.lg) {
-                    switch state {
-                    case .loading:  loadingBody
-                    case .failed:   failedBody
-                    case .noKeys:   noKeysBody
-                    case .loaded:   loadedBody
+                    // FOUR STATES THAT USED TO HARD-CUT. Reading keys is fast on a warm
+                    // cache and slow on a cold one, so this screen frequently flashes from
+                    // spinner to content in a frame — which reads as a glitch, on the one
+                    // screen in the app where a glitch undermines the thing being asserted.
+                    Group {
+                        switch state {
+                        case .loading:  loadingBody
+                        case .failed:   failedBody
+                        case .noKeys:   noKeysBody
+                        case .loaded:   loadedBody
+                        }
                     }
+                    .animation(.easeInOut(duration: 0.22), value: state)
                 }
                 .padding(.horizontal, 20)
                 .padding(.vertical, VoiidSpacing.lg)
@@ -145,12 +161,67 @@ struct SafetyNumberView: View {
                             .foregroundStyle(VoiidColor.textSecondary)
                             .padding(.horizontal, VoiidSpacing.xs)
                     }
-                    numberCard(entry.number)
+                    // The code and the digits are the SAME fact in two forms, so they
+                    // occupy the same place and swap — rather than stacking, which would
+                    // push the instructions off-screen and imply two separate things to
+                    // check. Tapping either flips to the other.
+                    Button {
+                        Haptics.tap()
+                        showQR.toggle()
+                    } label: {
+                        if showQR, let qr = qrImage(for: entry.number) {
+                            qrCard(qr)
+                        } else {
+                            numberCard(entry.number)
+                        }
+                    }
+                    .buttonStyle(SoftPressStyle(scale: 0.98))
+                    // The two forms swap in place, so the transition should read as ONE card
+                    // turning over rather than two cards trading places. Opacity plus a small
+                    // scale does that without a literal 3D flip, which at this size reads as
+                    // a gimmick and costs legibility mid-rotation.
+                    //
+                    // Critically damped: nothing was thrown, and a verification screen is the
+                    // last place that should feel playful.
+                    .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 1.0),
+                               value: showQR)
+                    .accessibilityHint(showQR ? "Shows the digits instead"
+                                              : "Shows a scannable code instead")
                 }
             }
 
             instructions
         }
+    }
+
+    /// The number as a scannable code.
+    ///
+    /// WHY A QR AT ALL. Reading 60 digits aloud, in sync, without losing your place is a
+    /// genuinely unpleasant ritual, and the failure mode is that people skim it — they check
+    /// the first group, the last group, and declare a match. That is not verification; it is
+    /// a ceremony that manufactures confidence, which the header of this file warns against.
+    /// Scanning compares all 60 digits or none.
+    ///
+    /// THE DIGITS STAY, and they are not secondary. A QR needs a working camera, adequate
+    /// light and two devices in the same room; the read-aloud path works on a phone call
+    /// where you recognise the voice, which is the other out-of-band channel people actually
+    /// have. Both are offered because they fail in different situations.
+    ///
+    /// Nothing secret is encoded. A safety number is derived from two PUBLIC identity keys —
+    /// it is safe to photograph, and an attacker learning it gains nothing they could not
+    /// compute themselves.
+    private func qrImage(for number: String) -> Image? {
+        let context = CIContext()
+        let filter = CIFilter.qrCodeGenerator()
+        filter.message = Data(number.filter(\.isNumber).utf8)
+        // Highest error correction: this gets pointed at from an angle, in bad light, on a
+        // screen with glare. A code that fails to scan sends people back to reading digits.
+        filter.correctionLevel = "H"
+        guard let output = filter.outputImage else { return nil }
+        // Nearest-neighbour upscale keeps the modules crisp; a smoothed QR scans worse.
+        let scaled = output.transformed(by: CGAffineTransform(scaleX: 10, y: 10))
+        guard let cg = context.createCGImage(scaled, from: scaled.extent) else { return nil }
+        return Image(decorative: cg, scale: 1)
     }
 
     /// The digits.
@@ -174,6 +245,33 @@ struct SafetyNumberView: View {
             .background(VoiidColor.surfaceCard)
             .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
             .accessibilityLabel("Safety number: " + number.map(String.init).joined(separator: " "))
+    }
+
+    private func qrCard(_ qr: Image) -> some View {
+        VStack(spacing: VoiidSpacing.sm) {
+            qr
+                .interpolation(.none)     // keep the modules hard-edged; smoothing hurts scans
+                .resizable()
+                .scaledToFit()
+                .frame(width: 190, height: 190)
+                .padding(VoiidSpacing.md)
+                // Always LIGHT, in both themes. A QR is read as dark-on-light by every
+                // scanner; inverting it in dark mode is the single most common way to ship a
+                // code that will not scan.
+                .background(Color.white)
+                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+
+            Text("Have \(peerName) scan this, or tap to read the digits instead")
+                .font(VoiidFont.rounded(12, .regular))
+                .foregroundStyle(VoiidColor.textSecondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, VoiidSpacing.lg)
+        .padding(.horizontal, VoiidSpacing.md)
+        .background(VoiidColor.surfaceCard)
+        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
+        .accessibilityLabel("Scannable safety code")
     }
 
     private var instructions: some View {

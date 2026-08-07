@@ -38,12 +38,26 @@ struct SharedMediaSheet: View {
             VStack(spacing: 0) {
                 tabs
                 ScrollView {
-                    switch tab {
-                    case .photos: mediaGrid(photos, isVideo: false)
-                    case .videos: mediaGrid(videos, isVideo: true)
-                    case .voice:  refList(voice, icon: "mic.fill", label: "Voice message")
-                    case .docs:   refList(docs, icon: "doc.fill", label: "Document")
+                    // THE UNDERLINE SPRINGS ACROSS AND THE CONTENT TELEPORTED. Switching tabs
+                    // animated the indicator beautifully while the thing it indicates changed
+                    // in a single frame — so the one moving element pointed at a swap the eye
+                    // never saw happen.
+                    //
+                    // A crossfade, not a slide: these four tabs are PEERS with no spatial
+                    // order (photos are not "left of" documents), so sliding would invent a
+                    // geography that does not exist and the direction would be arbitrary.
+                    //
+                    // Opacity only, so it needs no Reduce Motion gate.
+                    Group {
+                        switch tab {
+                        case .photos: mediaGrid(photos, isVideo: false)
+                        case .videos: mediaGrid(videos, isVideo: true)
+                        case .voice:  refList(voice, icon: "mic.fill", label: "Voice message")
+                        case .docs:   refList(docs, icon: "doc.fill", label: "Document")
+                        }
                     }
+                    .transition(.opacity)
+                    .animation(.easeInOut(duration: 0.18), value: tab)
                 }
             }
             .background(VoiidColor.background.ignoresSafeArea())

@@ -1,5 +1,6 @@
 package com.voiid.app.main
 
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -157,6 +158,23 @@ fun SafetyNumberScreen(
                 .padding(horizontal = 20.dp, vertical = VoiidSpacing.lg),
             verticalArrangement = Arrangement.spacedBy(VoiidSpacing.lg),
         ) {
+            // FOUR STATES THAT USED TO HARD-CUT. Reading keys is fast on a warm cache and
+            // slow on a cold one, so this screen frequently flashes from spinner to content
+            // in a single frame — which reads as a glitch, on the one screen in the app where
+            // a glitch undermines the very thing being asserted.
+            //
+            // Opacity only, so it is safe under Reduce Motion with no gate.
+            //
+            // NOTE: iOS also offers a scannable QR here (CIQRCodeGenerator, a system
+            // framework). Android has no QR encoder available without adding ZXing (~500KB),
+            // and a hand-rolled encoder was rejected: a QR that looks right but scans wrong
+            // is worse than none on the anti-MITM screen. Digits-only until that dependency
+            // is a decision someone has actually made.
+            androidx.compose.animation.Crossfade(
+                targetState = state,
+                animationSpec = tween(220),
+                label = "safetyNumberState",
+            ) { state ->
             when (state) {
                 "loading" -> Column(
                     Modifier.fillMaxWidth().padding(top = VoiidSpacing.xxl),
@@ -204,6 +222,7 @@ fun SafetyNumberScreen(
                     }
                     Instructions(peerName)
                 }
+            }
             }
         }
     }
