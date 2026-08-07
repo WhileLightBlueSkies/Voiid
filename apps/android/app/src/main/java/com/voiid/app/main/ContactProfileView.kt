@@ -28,6 +28,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Message
 import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallMade
 import androidx.compose.material.icons.filled.CallReceived
@@ -98,6 +99,12 @@ fun ContactProfileView(
      * paths drift. These buttons used to be empty `haptics.tap()` closures — decoration.
      */
     onStartCall: (CallKind) -> Unit = {},
+    /**
+     * Clear this conversation. A CALLBACK rather than a ChatStore reference, for the same
+     * reason [onStartCall] is one: the chat already owns the store and the dismissal that has
+     * to follow, and duplicating either here would let the two paths drift.
+     */
+    onClearChat: () -> Unit = {},
 ) {
     BackHandler { onBack() }
     val context = LocalContext.current
@@ -160,28 +167,46 @@ fun ContactProfileView(
     }
 
     confirm?.let { which ->
-        val isBlock = which == "block"
+        // THREE cases now, not a boolean. `clear` is the one that actually does something —
+        // block and report still have no backend, and say so rather than appearing to work.
+        val title = when (which) {
+            "clear" -> "Clear this chat?"
+            "block" -> "Block ${conversation.title}?"
+            else -> "Report ${conversation.title}?"
+        }
+        val body = when (which) {
+            "clear" -> "Every message in this conversation is deleted from this device. " +
+                "This cannot be undone."
+            "block" -> "They won’t be able to message or call you."
+            else -> "The last few messages from this chat are sent to Voiid for review."
+        }
+        val action = when (which) {
+            "clear" -> "Clear chat"
+            "block" -> "Block"
+            else -> "Report"
+        }
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { confirm = null },
             containerColor = VoiidColor.surfaceCard,
             title = {
-                Text(
-                    if (isBlock) "Block ${conversation.title}?" else "Report ${conversation.title}?",
-                    style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary,
-                )
+                Text(title, style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
             },
             text = {
-                Text(
-                    if (isBlock) "They won’t be able to message or call you."
-                    else "The last few messages from this chat are sent to Voiid for review.",
-                    style = VoiidFont.rounded(14), color = VoiidColor.textSecondary,
-                )
+                Text(body, style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
             },
             confirmButton = {
                 androidx.compose.material3.TextButton(onClick = {
+                    val chosen = which
                     confirm = null
-                    notImplemented = if (isBlock) "Blocking isn’t available yet." else "Reporting isn’t available yet."
-                }) { Text(if (isBlock) "Block" else "Report", color = VoiidColor.error) }
+                    when (chosen) {
+                        // The only one wired to anything. Clearing dismisses the profile too:
+                        // the chat behind it is now empty, and staying here would leave the
+                        // user two screens deep in a conversation that no longer has content.
+                        "clear" -> { onClearChat(); onBack() }
+                        "block" -> notImplemented = "Blocking isn’t available yet."
+                        else -> notImplemented = "Reporting isn’t available yet."
+                    }
+                }) { Text(action, color = VoiidColor.error) }
             },
             dismissButton = {
                 androidx.compose.material3.TextButton(onClick = { confirm = null }) {
@@ -543,6 +568,12 @@ fun ContactProfileView(
 
             // Danger
             ProfileCard {
+                // CLEAR CHAT LIVES HERE NOW, not in the chat's overflow menu. It is a
+                // destructive action on the CONVERSATION, and this card is already where the
+                // conversation's destructive actions live — one place to look rather than
+                // two, and the chat toolbar loses its last reason to carry an ellipsis.
+                ProfileRow(Icons.Default.Delete, "Clear chat", tint = VoiidColor.error) { haptics.rigid(); confirm = "clear" }
+                HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.4f))
                 ProfileRow(Icons.Default.Block, "Block ${conversation.title}", tint = VoiidColor.error) { haptics.rigid(); confirm = "block" }
                 HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.4f))
                 ProfileRow(Icons.Default.Report, "Report ${conversation.title}", tint = VoiidColor.error) { haptics.rigid(); confirm = "report" }

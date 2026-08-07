@@ -286,6 +286,8 @@ fun SettingsScreen(
                         photoUrl = session.profile.photoURL,
                         name = session.profile.fullName,
                         size = 96.dp,
+                        // ONE TONE, NOT TWO — this sits on a surfaceCard header.
+                        placeholderFill = VoiidColor.surfaceCard,
                         modifier = Modifier.softClickable(scale = 0.95f) {
                             if (!uploading) { haptics.tap(); showPhotoSource = true }
                         },
@@ -693,6 +695,16 @@ fun ProfileAvatar(
      * `ProfileAvatarButton.fillsFrame`.
      */
     fillsFrame: Boolean = false,
+    /**
+     * The disc drawn behind the initials when there is no photo.
+     *
+     * DEFAULTS TO `fieldFill`, which is right on a plain ground — but wrong ON A CARD. In
+     * dark mode `fieldFill` (#171320) is 28% darker than `surfaceCard` (#1C1826), so an
+     * avatar placed on a card punched a visibly darker circle into it, with the hairline
+     * border on top making it a third edge. That is the "dual tone" on the profile selector.
+     * Callers sitting on a card pass that card's colour and the avatar reads as one surface.
+     */
+    placeholderFill: Color? = null,
 ) {
     val context = LocalContext.current
     var bitmap by remember(photoUrl) { mutableStateOf(photoUrl?.let { MediaCache.image(it) }) }
@@ -720,13 +732,19 @@ fun ProfileAvatar(
         // When filling, the PARENT decides the frame and there is no circular clip or ring —
         // a hairline border around a full-bleed banner would read as a box drawn on the page.
         if (fillsFrame) {
-            modifier.fillMaxSize().background(VoiidColor.fieldFill)
+            modifier.fillMaxSize().background(placeholderFill ?: VoiidColor.fieldFill)
         } else {
             modifier
                 .size(size)
                 .clip(CircleShape)
-                .background(VoiidColor.fieldFill)
-                .border(1.dp, VoiidColor.divider.copy(alpha = 0.4f), CircleShape)
+                .background(placeholderFill ?: VoiidColor.fieldFill)
+                // The ring exists to separate the disc from what is behind it. When the
+                // caller has matched the disc to its surface there is nothing to separate,
+                // and the ring would be drawing a circle around nothing.
+                .then(
+                    if (placeholderFill != null) Modifier
+                    else Modifier.border(1.dp, VoiidColor.divider.copy(alpha = 0.4f), CircleShape),
+                )
         },
         contentAlignment = Alignment.Center,
     ) {
