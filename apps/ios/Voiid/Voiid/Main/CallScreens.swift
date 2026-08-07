@@ -181,10 +181,17 @@ struct CallScreen: View {
             case .some(.incomingRinging): return request.kind == .video ? "Incoming video call" : "Incoming call"
             case .some(.connecting): return call.isReconnecting ? "Reconnecting…" : "Connecting…"
             case .some(.ended), .none: return "Call ended"
-            default: return request.kind == .video ? "Ringing — Video" : "Ringing…"
+            default:
+                // "CALLING…" UNTIL THEIR PHONE ACTUALLY RINGS. This said "Ringing…" from the
+                // instant you tapped call, claiming something we do not know — the callee may
+                // be offline or their push may not have landed. `peerRinging` flips only on
+                // their `call_ringing` frame, the same moment our ringback tone starts, so
+                // the word and the sound arrive together and both are true.
+                guard call.active?.peerRinging == true else { return "Calling…" }
+                return request.kind == .video ? "Ringing — Video" : "Ringing…"
             }
         }
-        if !connected { return request.kind == .video ? "Ringing — Video" : "Ringing…" }
+        if !connected { return request.kind == .video ? "Ringing — Video" : "Ringing…" }   // simulated path
         return String(format: "%02d:%02d", seconds / 60, seconds % 60)
     }
 

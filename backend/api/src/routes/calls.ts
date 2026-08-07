@@ -1136,8 +1136,16 @@ router.post('/:id/join', requireAuth, asyncHandler(async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────────
 // POST /calls/:id/leave   { reason? }  ->  state = 'left'
 //
-// Also the DECLINE path: an invitee who never joined declines by leaving. One transition,
-// one place that rewrites the grant, no second state machine to keep consistent.
+// Also the DECLINE path — and the two are now DISTINGUISHED rather than conflated.
+//
+// This used to write 'left' for everyone, so the roster could not tell the inviter the
+// difference between "they said no" and "they joined, talked, and hung up". A refused invite
+// looked exactly like a completed one, which is why a declined participant either sat on
+// "Ringing…" forever or claimed to have "Left" a call they never entered.
+//
+// The transition is derived, not passed in: an invitee who never reached 'joined' is
+// DECLINING; anyone else is LEAVING. Deriving it server-side means a client cannot
+// mislabel it, and there is still exactly one endpoint and one state machine.
 //
 // Leaving is a STATE, not a row deletion (031): the participant keeps their row so a
 // rejoin reuses it and `on conflict (call_id, user_id)` stays a valid upsert target.
@@ -1150,10 +1158,16 @@ router.post('/:id/leave', requireAuth, asyncHandler(async (req, res) => {
   const call = await loadCall(callId);
   if (!call) return res.status(404).json({ error: 'call not found' });
 
+  // `returning state` gives the NEW value, which is exactly what the caller needs to know:
+  // 'declined' if they were still only invited, 'left' if they had actually joined. There is
+  // no need to report the prior state, and reading it back with a subquery would read the
+  // ALREADY-UPDATED row anyway.
   const updated = await query<{ state: string }>(
     `update call_participants
-        set state = 'left', left_at = now(), state_changed_at = now()
-      where call_id = $1 and user_id = $2 and state <> 'left'
+        set state = case when call_participants.state = 'invited' then 'declined' else 'left' end,
+            left_at = now(),
+            state_changed_at = now()
+      where call_id = $1 and user_id = $2 and state not in ('left', 'declined')
       returning state`,
     [callId, user_id]
   );
@@ -1180,6 +1194,10 @@ router.post('/:id/leave', requireAuth, asyncHandler(async (req, res) => {
     call_id: callId,
     left: true,
     was_participant: !!updated[0],
+    // WHICH transition happened, so the client can say the true thing. 'declined' means they
+    // never joined; 'left' means they did. Without this the caller has to guess, and the two
+    // are not interchangeable in any UI that reports them.
+    outcome: updated[0]?.state ?? null,
     participant_count: remaining.length,
   });
 }));

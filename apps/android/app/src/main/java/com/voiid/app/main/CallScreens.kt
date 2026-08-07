@@ -428,7 +428,14 @@ private fun InCallUi(state: CallManager.CallState) {
         state.reconnecting -> "Reconnecting…"
         state.onHold -> "On hold"
         state.peerOnHold -> "${state.peerName} put you on hold"
-        state.phase == CallManager.Phase.RINGING_OUT -> if (isVideo) "Ringing — Video" else "Ringing…"
+        // "CALLING…" UNTIL THEIR PHONE ACTUALLY RINGS. This said "Ringing…" from the instant
+        // you tapped call, which claims something we do not know: the callee may be offline,
+        // out of coverage, or their push may not have landed. `peerRinging` flips only when
+        // their device sends `call_ringing` — the same moment our ringback tone starts — so
+        // the word and the sound arrive together and both are true.
+        state.phase == CallManager.Phase.RINGING_OUT ->
+            if (!state.peerRinging) "Calling…"
+            else if (isVideo) "Ringing — Video" else "Ringing…"
         state.phase == CallManager.Phase.RINGING_IN -> "Incoming…"
         state.phase == CallManager.Phase.CONNECTING -> "Connecting…"
         else -> "%02d:%02d".format(seconds / 60, seconds % 60)

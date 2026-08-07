@@ -555,7 +555,26 @@ wss.on('connection', (ws, req) => {
           msg.type === 'call_decline' ||
           msg.type === 'call_ringing' ||
           msg.type === 'call_hold' ||
-          msg.type === 'call_unhold') &&
+          msg.type === 'call_unhold' ||
+          // ── THE CONFERENCE FOUR ──────────────────────────────────────────────
+          // Both clients send these and both LISTEN for them (iOS
+          // WebSocketClient.swift:461-476, Android WebSocketClient.kt:350-353), and
+          // none of them was on this list — so every one was dropped in silence,
+          // because the relay forwards only types it recognises and ignores the rest.
+          //
+          // That single omission is why conference calling did not work:
+          //   * ACCEPT never reached the inviter, so their roster never updated;
+          //   * DECLINE never reached them either, so a refused invite looked exactly
+          //     like one still ringing, forever;
+          //   * MIGRATE never arrived, so the original peer never moved to the SFU and
+          //     the engine timed out and abandoned the upgrade;
+          //   * INVITE only worked when it happened to arrive over the push path,
+          //     which is why this appeared to work with the app backgrounded and not
+          //     in the foreground.
+          msg.type === 'call_invite' ||
+          msg.type === 'call_invite_accept' ||
+          msg.type === 'call_invite_decline' ||
+          msg.type === 'call_migrate') &&
         typeof msg.to_user_id === 'string' &&
         typeof msg.call_id === 'string'
       ) {
@@ -571,6 +590,11 @@ wss.on('connection', (ws, req) => {
           sdp: msg.sdp, // opaque; call_offer / call_answer
           candidate: msg.candidate, // opaque; call_ice (trickle)
           reason: msg.reason, // optional; call_hangup
+          // The SFU room for call_invite / call_migrate. Rebuilding the frame from a
+          // fixed field list is deliberate (never echo client extras) — but `room` was
+          // missing from that list, so even once the types above are allowed the
+          // invitee would be told a conference exists and given no way to enter it.
+          room: msg.room,
         });
         // Deliver to the callee's devices (never echo back to the sender).
         if (msg.to_user_id !== userId) {
