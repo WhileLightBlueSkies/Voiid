@@ -23,10 +23,14 @@ import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberSwipeToDismissBoxState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.togetherWith
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -197,7 +201,25 @@ private fun ChatListRowContent(
                     modifier = Modifier.weight(1f, fill = false),
                 )
                 Spacer(Modifier.weight(1f))
-                if (isUnread) {
+                // Appearing is the moment that matters — it is the whole point of the badge.
+                // AnimatedVisibility (not a bare `if`) is what gives the REMOVAL an exit at
+                // all: a plain conditional drops the composable instantly, so marking a chat
+                // read made the badge vanish with no acknowledgement.
+                //
+                // It scales from the trailing edge it is anchored to, so it reads as arriving
+                // from its own position rather than being pasted in. Matches iOS exactly.
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = isUnread,
+                    enter = androidx.compose.animation.scaleIn(
+                        animationSpec = spring(dampingRatio = 0.72f, stiffness = Spring.StiffnessMedium),
+                        initialScale = 0.5f,
+                        transformOrigin = TransformOrigin(1f, 0.5f),
+                    ) + androidx.compose.animation.fadeIn(),
+                    exit = androidx.compose.animation.scaleOut(
+                        targetScale = 0.5f,
+                        transformOrigin = TransformOrigin(1f, 0.5f),
+                    ) + androidx.compose.animation.fadeOut(),
+                ) {
                     Box(
                         Modifier
                             .defaultMinSize(minWidth = 22.dp, minHeight = 22.dp)
@@ -213,11 +235,30 @@ private fun ChatListRowContent(
                             .padding(horizontal = 7.dp, vertical = 3.dp),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text(
-                            if (conversation.unreadCount > 99) "99+" else "${conversation.unreadCount}",
-                            style = VoiidFont.rounded(12, FontWeight.SemiBold),
-                            color = VoiidColor.textOnAccent,
-                        )
+                        // The NUMBER rolls when the count changes rather than being swapped
+                        // out. A badge going 2 -> 3 with a hard substitution is easy to miss
+                        // entirely; the digit moving is what says "this just changed" with no
+                        // extra chrome. `AnimatedContent` is Compose's equivalent of iOS's
+                        // .contentTransition(.numericText()).
+                        androidx.compose.animation.AnimatedContent(
+                            targetState = conversation.unreadCount,
+                            transitionSpec = {
+                                // A rising count enters from BELOW and the old digit leaves
+                                // upward, so the direction of travel encodes the direction of
+                                // the change (skill §8: hint where things are going).
+                                (androidx.compose.animation.slideInVertically { h -> h } +
+                                    androidx.compose.animation.fadeIn()) togetherWith
+                                    (androidx.compose.animation.slideOutVertically { h -> -h } +
+                                        androidx.compose.animation.fadeOut())
+                            },
+                            label = "unreadCount",
+                        ) { count ->
+                            Text(
+                                if (count > 99) "99+" else "$count",
+                                style = VoiidFont.rounded(12, FontWeight.SemiBold),
+                                color = VoiidColor.textOnAccent,
+                            )
+                        }
                     }
                 }
             }

@@ -30,6 +30,12 @@ struct ChatsHomeView: View {
     @State private var allContacts: [VContact] = []   // discovered VOIID contacts (for search)
     @Namespace private var underline
 
+    /// Reduce Motion is honoured where LARGE objects travel — the list reflow below moves
+    /// every row on screen, which is exactly the vestibular motion the setting exists to
+    /// suppress. Small-element feedback (press states, the badge) is kept: removing it would
+    /// cost information and calm nobody.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     enum Tab: String { case chats = "Chats", groups = "Groups" }
 
     private let columns = [GridItem(.flexible(), spacing: VoiidSpacing.md),
@@ -105,8 +111,12 @@ struct ChatsHomeView: View {
                             sectionLabel("Start new chat")
                             VStack(spacing: 0) {
                                 ForEach(contactResults) { c in
+                                    // SoftPressStyle, not .plain: a search result had no press
+                                    // feedback at all, so it felt dead beside the chat rows
+                                    // above it that respond on press-down. Same fix as the
+                                    // matching Android row.
                                     Button { startChat(with: c) } label: { contactRow(c) }
-                                        .buttonStyle(.plain)
+                                        .buttonStyle(SoftPressStyle())
                                 }
                             }
                             .padding(.horizontal, VoiidSpacing.lg)
@@ -576,6 +586,23 @@ struct ChatsHomeView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(VoiidColor.background)
+        // ROWS REORDER, THEY DO NOT TELEPORT.
+        //
+        // A chat jumps to the top the moment a message lands, and every row below it shifts
+        // down by one — the most frequent state change on this screen, and it happened in a
+        // single frame with nothing connecting the before and after. You could not tell
+        // whether a row moved, or the whole list changed, or you had misread it.
+        //
+        // A spring, not an ease: messages arrive in bursts, and a second arrival landing
+        // mid-reflow retargets from where the rows currently are instead of restarting from a
+        // stale position. `items` is Hashable with a stable id, so SwiftUI animates the row
+        // that MOVED rather than crossfading the list.
+        //
+        // Critically damped. Nothing here was thrown by the user, so nothing has earned
+        // overshoot — an unread chat bouncing into place would draw the eye to the motion
+        // rather than to the message.
+        .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.9),
+                   value: items)
     }
 
     // MARK: - Empty / loading states
@@ -718,12 +745,21 @@ struct ChatsHomeView: View {
                         // themes, and textOnPrimary flips to near-white in light mode, where
                         // it measured 3.31:1 here — the least legible text on this screen.
                         .font(VoiidFont.rounded(11, .bold)).foregroundColor(VoiidColor.textOnAccent)
+                        // Same rolling digit and same arrival as the list row's badge — the
+                        // two layouts must teach one vocabulary, so the badge behaves
+                        // identically whichever you have chosen.
+                        .contentTransition(.numericText())
                         .frame(minWidth: 20, minHeight: 20)
                         .background(VoiidColor.accent).clipShape(Circle())
                         .overlay(Circle().stroke(VoiidColor.background, lineWidth: 1.5))
                         .padding(5)
+                        .transition(.scale(scale: 0.5, anchor: .topTrailing)
+                            .combined(with: .opacity))
                 }
             }
+            // On the ZStack, which outlives the badge — a modifier on the badge itself has
+            // nothing left to drive its exit when it is removed.
+            .animation(.spring(response: 0.3, dampingFraction: 0.72), value: conv.unreadCount)
             Text(conv.title)
                 .font(VoiidFont.rounded(13, .regular)).foregroundColor(VoiidColor.textPrimary)
                 .lineLimit(1)

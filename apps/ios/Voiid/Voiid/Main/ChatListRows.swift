@@ -50,6 +50,10 @@ struct ChatListRow: View {
                         }
                     }
 
+                    // The badge's animation lives HERE, on the row that outlives it — not on
+                    // the badge, which is the thing being inserted and removed. A modifier on
+                    // a departing view has nothing left to drive its exit, so the insert
+                    // animates and the removal snaps.
                     HStack(alignment: .center, spacing: VoiidSpacing.sm) {
                         Text(conversation.lastMessagePreview ?? "Tap to start the conversation")
                             .font(VoiidFont.rounded(14, isUnread ? .medium : .regular))
@@ -73,12 +77,25 @@ struct ChatListRow: View {
                             Text(conversation.unreadCount > 99 ? "99+" : "\(conversation.unreadCount)")
                                 .font(VoiidFont.rounded(12, .semibold))
                                 .foregroundStyle(VoiidColor.textOnAccent)
+                                // The NUMBER rolls when the count changes, rather than being
+                                // swapped out. A badge going 2 -> 3 with a hard substitution
+                                // is easy to miss entirely; the digit moving is what says
+                                // "this just changed" without any extra chrome.
+                                .contentTransition(.numericText())
                                 .padding(.horizontal, 7)
                                 .frame(minWidth: 22, minHeight: 22)
                                 .background(VoiidColor.accent)
                                 .clipShape(Capsule())
+                                // Appearing is the moment that matters — it is the whole
+                                // point of the badge. It scales up from the trailing edge it
+                                // is anchored to (skill §7: originate from your source), so
+                                // it reads as arriving rather than being pasted in.
+                                .transition(.scale(scale: 0.5, anchor: .trailing)
+                                    .combined(with: .opacity))
                         }
                     }
+                    .animation(.spring(response: 0.3, dampingFraction: 0.72),
+                               value: conversation.unreadCount)
                 }
             }
             .padding(.vertical, 9)

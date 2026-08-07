@@ -3,6 +3,8 @@ package com.voiid.app.main
 import kotlinx.coroutines.tasks.await
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.togetherWith
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -114,6 +116,7 @@ import com.voiid.app.model.VConversation
 import com.voiid.app.store.UserDirectory
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.VoiidWordmark
+import com.voiid.app.ui.components.reduceMotionEnabled
 import com.voiid.app.ui.components.softClickable
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
@@ -129,6 +132,7 @@ fun ChatsHomeView(
     onOpenConversation: (VConversation) -> Unit,
     onStartCall: (CallRequest) -> Unit,
 ) {
+    val reduceMotion = reduceMotionEnabled()
     val haptics = LocalVoiidHaptics.current
     val context = androidx.compose.ui.platform.LocalContext.current
     // Same activity-scoped AppSession as VoiidRoot — signOut() flips route to onboarding.
@@ -272,14 +276,46 @@ fun ChatsHomeView(
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 8.dp),
                 ) {
                     items(list, key = { "l_" + it.id }) { conv ->
+                        // ROWS REORDER, THEY DO NOT TELEPORT.
+                        //
+                        // A chat jumps to the top the moment a message lands, and every row
+                        // below shifts down by one — the most frequent state change on this
+                        // screen, and it happened in a single frame with nothing connecting
+                        // before and after. `animateItem` needs the stable `key` above to
+                        // know which row MOVED rather than crossfading the whole list.
+                        //
+                        // A spring, matching iOS: messages arrive in bursts, so a second
+                        // arrival mid-reflow retargets from where rows currently are instead
+                        // of restarting from a stale position. Critically damped — nothing
+                        // was thrown by the user, so nothing has earned overshoot.
+                        Column(
+                            Modifier.animateItem(
+                                // null = no placement animation, which is what Reduce Motion
+                                // asks for: every row on screen shifting at once is exactly
+                                // the vestibular motion that setting exists to suppress. The
+                                // badge and press states stay — small elements, and removing
+                                // them would cost information.
+                                placementSpec = if (reduceMotion) null else spring(
+                                    dampingRatio = 0.9f,
+                                    stiffness = Spring.StiffnessMediumLow,
+                                ),
+                            ),
+                        ) {
                         ChatListRow(
                             conversation = conv,
                             // Same two actions the grid exposes via drag-to-zone, and the
                             // same two iOS puts on a swipe. Without these the list layout had
                             // no way to delete a chat at all.
+                            // The swipe actions keep their haptics — they are revealed
+                            // controls, not the row, so nothing has fired for them yet.
+                            // Delete gets the heavier one: it opens a destructive dialog.
                             onCall = { haptics.tap(); callTarget = conv },
                             onDelete = { haptics.rigid(); deleteTarget = conv },
-                            onTap = { haptics.tap(); onOpenConversation(conv) },
+                            // No haptic on TAP: softClickable inside the row already fires one
+                            // on press-DOWN, which is earlier and is the causal moment. Firing
+                            // again on release buzzed twice for a single tap — over-feedback,
+                            // which trains people to ignore all of it. iOS fires once here.
+                            onTap = { onOpenConversation(conv) },
                         )
                         // Inset to start at the TEXT, not the screen edge — the avatar column
                         // reads as a gutter and a full-width rule cuts through it.
@@ -287,6 +323,7 @@ fun ChatsHomeView(
                             color = VoiidColor.divider.copy(alpha = 0.5f),
                             modifier = Modifier.padding(start = 86.dp),
                         )
+                        }
                     }
                 }
             }
@@ -299,14 +336,15 @@ fun ChatsHomeView(
                 if (filtered.isNotEmpty()) {
                     item { SearchSectionLabel("Chats") }
                     items(filtered, key = { "c_" + it.id }) { conv ->
-                        SearchChatRow(conv) { haptics.tap(); onOpenConversation(conv) }
+                        // No haptic: softClickable inside the row fires one on press-DOWN.
+                        SearchChatRow(conv) { onOpenConversation(conv) }
                     }
                 }
                 if (contactResults.isNotEmpty()) {
                     item { SearchSectionLabel("Start new chat") }
                     items(contactResults, key = { "u_" + it.userId }) { c ->
                         SearchContactRow(c) {
-                            haptics.tap()
+                            // No haptic: softClickable fires one on press-DOWN.
                             scope.launch {
                                 val conv = chat.startDirectChat(c)
                                 if (conv != null) { search = ""; onOpenConversation(conv) }
@@ -732,7 +770,10 @@ private fun SearchSectionLabel(text: String) {
 @Composable
 private fun SearchChatRow(conv: VConversation, onClick: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().clickable { onClick() }.padding(vertical = 10.dp),
+        // softClickable, not clickable: these rows had NO press feedback at all, so a search
+        // result felt dead next to a chat row that responds on press-down. It also carries the
+        // haptic, which is why the call sites no longer fire their own.
+        Modifier.fillMaxWidth().softClickable(onClick = onClick).padding(vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.size(44.dp).clip(CircleShape).background(VoiidColor.fieldFill), Alignment.Center) {
@@ -746,7 +787,8 @@ private fun SearchChatRow(conv: VConversation, onClick: () -> Unit) {
 @Composable
 private fun SearchContactRow(c: VContact, onClick: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().clickable { onClick() }.padding(vertical = 10.dp),
+        // See SearchChatRow — same missing press feedback, same fix.
+        Modifier.fillMaxWidth().softClickable(onClick = onClick).padding(vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.size(44.dp).clip(CircleShape).background(VoiidColor.fieldFill), Alignment.Center) {
@@ -1022,24 +1064,50 @@ private fun GridCard(conv: VConversation, modifier: Modifier) {
                         .background(VoiidColor.success),
                 )
             }
-            if (conv.unreadCount > 0) {
+            // Same arrival and same rolling digit as the list row's badge — the two layouts
+            // must teach ONE vocabulary, so the badge behaves identically whichever you have
+            // chosen. AnimatedVisibility rather than a bare `if` so the removal has an exit.
+            androidx.compose.animation.AnimatedVisibility(
+                visible = conv.unreadCount > 0,
+                modifier = Modifier.align(Alignment.TopEnd),
+                enter = androidx.compose.animation.scaleIn(
+                    animationSpec = spring(dampingRatio = 0.72f, stiffness = Spring.StiffnessMedium),
+                    initialScale = 0.5f,
+                    transformOrigin = TransformOrigin(1f, 0f),
+                ) + androidx.compose.animation.fadeIn(),
+                exit = androidx.compose.animation.scaleOut(
+                    targetScale = 0.5f,
+                    transformOrigin = TransformOrigin(1f, 0f),
+                ) + androidx.compose.animation.fadeOut(),
+            ) {
                 Box(
                     Modifier
-                        .align(Alignment.TopEnd)
                         .padding(5.dp)
                         .size(20.dp)
                         .clip(CircleShape)
                         .background(VoiidColor.accent),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text(
-                        "${conv.unreadCount}",
-                        style = VoiidFont.rounded(11, FontWeight.Bold),
-                        // textOnAccent, NOT textOnPrimary: amber is a light fill in both
-                        // themes, and textOnPrimary flips to near-white in light mode, where
-                        // it measured 3.31:1 here — the least legible text on this screen.
-                        color = VoiidColor.textOnAccent,
-                    )
+                    androidx.compose.animation.AnimatedContent(
+                        targetState = conv.unreadCount,
+                        transitionSpec = {
+                            (androidx.compose.animation.slideInVertically { h -> h } +
+                                androidx.compose.animation.fadeIn()) togetherWith
+                                (androidx.compose.animation.slideOutVertically { h -> -h } +
+                                    androidx.compose.animation.fadeOut())
+                        },
+                        label = "gridUnread",
+                    ) { count ->
+                        Text(
+                            "$count",
+                            style = VoiidFont.rounded(11, FontWeight.Bold),
+                            // textOnAccent, NOT textOnPrimary: amber is a light fill in both
+                            // themes, and textOnPrimary flips to near-white in light mode,
+                            // where it measured 3.31:1 here — the least legible text on this
+                            // screen.
+                            color = VoiidColor.textOnAccent,
+                        )
+                    }
                 }
             }
         }
