@@ -63,12 +63,19 @@ struct ChatListRow: View {
                         Spacer(minLength: 0)
 
                         if isUnread {
+                            // AMBER, matching the grid card. The same signal was drawn in
+                            // two different colours depending on which layout you had
+                            // chosen — aubergine here, amber there — and the palette
+                            // reserves amber for exactly this: "the one thing that must be
+                            // seen". Aubergine is also the app's most-used colour, so an
+                            // unread badge in it competed with every other primary surface
+                            // on screen instead of standing out from them.
                             Text(conversation.unreadCount > 99 ? "99+" : "\(conversation.unreadCount)")
                                 .font(VoiidFont.rounded(12, .semibold))
-                                .foregroundStyle(VoiidColor.textOnPrimary)
+                                .foregroundStyle(VoiidColor.textOnAccent)
                                 .padding(.horizontal, 7)
                                 .frame(minWidth: 22, minHeight: 22)
-                                .background(VoiidColor.primary)
+                                .background(VoiidColor.accent)
                                 .clipShape(Capsule())
                         }
                     }

@@ -193,7 +193,10 @@ struct DraggableChatGrid: View {
                     // Spark, not error-red: a count is not a failure state.
                     Text("\(conv.unreadCount)")
                         .font(VoiidFont.rounded(11, .bold))
-                        .foregroundColor(VoiidColor.textOnPrimary)
+                        // textOnAccent, NOT textOnPrimary — the latter flips to near-white in
+                        // light mode, where it measured 3.31:1 on amber. Same fix as the
+                        // static grid card and the list row; this is the drag layer's copy.
+                        .foregroundColor(VoiidColor.textOnAccent)
                         .frame(minWidth: 20, minHeight: 20)
                         .background(VoiidColor.accent)
                         .clipShape(Circle())

@@ -90,6 +90,18 @@ enum VoiidColor {
     /// on it). Dark keeps the bright value at 9.06:1.
     static let accent = dyn(0xB57210, 0xE8A33D)
 
+    /// Text or a glyph ON the amber accent — an unread badge label, most often.
+    ///
+    /// FIXED IN BOTH THEMES, for the same reason [textOnBubble] is: amber is a LIGHT fill in
+    /// light AND dark, so its label has to be dark in both. The theme-resolving
+    /// [textOnPrimary] is wrong here by construction — it flips to near-white in light mode,
+    /// where it measured **3.31:1** on the light amber, under the 4.5:1 a label needs. The
+    /// unread count on the grid card was drawn in exactly that pairing and was the least
+    /// legible text on the busiest screen in the app.
+    ///
+    /// #14101F measures 4.79:1 on light amber and 8.67:1 on dark amber.
+    static let textOnAccent = Color(hex: 0x14101F)
+
     // MARK: Domain hues (section identity only — never bubbles or body text)
 
     static let domainChat     = dyn(0x2E2440, 0xB59BE0)

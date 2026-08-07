@@ -272,7 +272,15 @@ fun ChatsHomeView(
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 8.dp),
                 ) {
                     items(list, key = { "l_" + it.id }) { conv ->
-                        ChatListRow(conv) { haptics.tap(); onOpenConversation(conv) }
+                        ChatListRow(
+                            conversation = conv,
+                            // Same two actions the grid exposes via drag-to-zone, and the
+                            // same two iOS puts on a swipe. Without these the list layout had
+                            // no way to delete a chat at all.
+                            onCall = { haptics.tap(); callTarget = conv },
+                            onDelete = { haptics.rigid(); deleteTarget = conv },
+                            onTap = { haptics.tap(); onOpenConversation(conv) },
+                        )
                         // Inset to start at the TEXT, not the screen edge — the avatar column
                         // reads as a gutter and a full-width rule cuts through it.
                         HorizontalDivider(
@@ -1027,7 +1035,10 @@ private fun GridCard(conv: VConversation, modifier: Modifier) {
                     Text(
                         "${conv.unreadCount}",
                         style = VoiidFont.rounded(11, FontWeight.Bold),
-                        color = VoiidColor.textOnPrimary,
+                        // textOnAccent, NOT textOnPrimary: amber is a light fill in both
+                        // themes, and textOnPrimary flips to near-white in light mode, where
+                        // it measured 3.31:1 here — the least legible text on this screen.
+                        color = VoiidColor.textOnAccent,
                     )
                 }
             }

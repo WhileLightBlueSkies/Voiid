@@ -95,6 +95,20 @@ object VoiidColor {
      */
     val accent: Color @Composable @ReadOnlyComposable get() = pick(VoiidPalette.SparkLight, VoiidPalette.SparkDark)
 
+    /**
+     * Text or a glyph ON the amber accent — an unread badge label, most often.
+     *
+     * FIXED IN BOTH THEMES, for the same reason [textOnBubble] is: amber is a LIGHT fill in
+     * light AND dark, so its label has to be dark in both. The theme-resolving
+     * [textOnPrimary] is wrong here by construction — it flips to near-white in light mode,
+     * where it measured **3.31:1** on the light amber, under the 4.5:1 a label needs. The
+     * unread count on the grid card was drawn in exactly that pairing and was the least
+     * legible text on the busiest screen in the app.
+     *
+     * #14101F measures 4.79:1 on light amber and 8.67:1 on dark amber.
+     */
+    val textOnAccent: Color @Composable @ReadOnlyComposable get() = VoiidPalette.TextOnAccent
+
     // ---- Domain hues (section identity only — never bubbles or body text) ---------------
 
     val domainChat: Color @Composable @ReadOnlyComposable get() = pick(VoiidPalette.PrimaryLight, VoiidPalette.PrimaryDark)
@@ -147,6 +161,9 @@ object VoiidPalette {
     // just under AA — because lifting the bubble to #7862A6 also lifted what the text must
     // beat. 4.75:1 now, 13.49:1 on light.
     val TextOnBubble = Color(0xFFF8F5FC)
+
+    /** Label on the amber accent. Fixed in both themes — see [VoiidColor.textOnAccent]. */
+    val TextOnAccent = Color(0xFF14101F)
     val BubbleRecvLight = Color(0xFFFFFFFF)
     val BubbleRecvDark = Color(0xFF1C1826)
 

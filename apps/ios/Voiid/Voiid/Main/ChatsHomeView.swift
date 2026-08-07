@@ -714,7 +714,10 @@ struct ChatsHomeView: View {
                 }
                 if conv.unreadCount > 0 {
                     Text("\(conv.unreadCount)")
-                        .font(VoiidFont.rounded(11, .bold)).foregroundColor(VoiidColor.textOnPrimary)
+                        // textOnAccent, NOT textOnPrimary: amber is a light fill in both
+                        // themes, and textOnPrimary flips to near-white in light mode, where
+                        // it measured 3.31:1 here — the least legible text on this screen.
+                        .font(VoiidFont.rounded(11, .bold)).foregroundColor(VoiidColor.textOnAccent)
                         .frame(minWidth: 20, minHeight: 20)
                         .background(VoiidColor.accent).clipShape(Circle())
                         .overlay(Circle().stroke(VoiidColor.background, lineWidth: 1.5))

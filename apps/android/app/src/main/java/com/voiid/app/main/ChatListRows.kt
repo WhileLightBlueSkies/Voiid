@@ -16,9 +16,18 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.Icon
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,6 +51,95 @@ import com.voiid.app.ui.theme.VoiidFont
 @Composable
 fun ChatListRow(
     conversation: VConversation,
+    onCall: (() -> Unit)? = null,
+    onDelete: (() -> Unit)? = null,
+    onTap: () -> Unit,
+) {
+    // SWIPE ACTIONS, and on Android they were not optional-but-missing — they were the ONLY
+    // way to delete a chat from this layout, and there wasn't one. `onDelete` was wired
+    // solely to the grid's drag-to-zone, so a user who preferred the list could not remove a
+    // conversation at all. iOS has had swipe here from the start; this closes that.
+    //
+    // Swipe RIGHT-to-left for the destructive action, matching iOS's trailing edge, so the
+    // gesture means the same thing on both platforms.
+    if (onDelete == null && onCall == null) {
+        ChatListRowContent(conversation, onTap)
+        return
+    }
+
+    val canCall = onCall != null && conversation.type == ConversationType.DIRECT
+    val state = rememberSwipeToDismissBoxState(
+        // A full swipe must NOT delete outright. Deleting a conversation is irreversible and
+        // there is no undo here, so the gesture reveals the action and the user still has to
+        // choose it — the same reason iOS sets allowsFullSwipe: false.
+        confirmValueChange = { false },
+    )
+
+    SwipeToDismissBox(
+        state = state,
+        enableDismissFromStartToEnd = false,
+        enableDismissFromEndToStart = true,
+        backgroundContent = {
+            SwipeActions(
+                revealed = state.targetValue == SwipeToDismissBoxValue.EndToStart,
+                canCall = canCall,
+                onCall = { onCall?.invoke() },
+                onDelete = { onDelete?.invoke() },
+            )
+        },
+    ) {
+        ChatListRowContent(conversation, onTap)
+    }
+}
+
+/**
+ * The revealed actions behind a swiped row. Mirrors the iOS swipe actions exactly: Delete in
+ * [VoiidColor.error], Call in [VoiidColor.success], destructive one outermost.
+ *
+ * State is carried by ICON AND COLOUR together, never colour alone — a red and a green block
+ * with no glyphs is the pairing that fails for the ~1 in 12 men with a colour-vision
+ * deficiency, which is the same rule the palette states for status colours.
+ */
+@Composable
+private fun SwipeActions(
+    revealed: Boolean,
+    canCall: Boolean,
+    onCall: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().height(72.dp),
+        horizontalArrangement = Arrangement.End,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (canCall) {
+            SwipeAction(Icons.Default.Call, "Call", VoiidColor.success, onCall)
+        }
+        SwipeAction(Icons.Default.Delete, "Delete", VoiidColor.error, onDelete)
+    }
+}
+
+@Composable
+private fun SwipeAction(icon: ImageVector, label: String, tint: Color, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .width(72.dp)
+            .height(72.dp)
+            .background(tint)
+            .softClickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        // textOnPrimary, which FLIPS with the theme — and it has to. The status fills are
+        // dark in light mode and LIGHT in dark mode, so a fixed near-white glyph measured
+        // 2.54:1 on dark error and 1.93:1 on dark success. Flipping gives 5.03/4.91 in light
+        // and 6.82/8.97 in dark.
+        Icon(icon, contentDescription = label, tint = VoiidColor.textOnPrimary)
+    }
+}
+
+@Composable
+private fun ChatListRowContent(
+    conversation: VConversation,
     onTap: () -> Unit,
 ) {
     val isUnread = conversation.unreadCount > 0
@@ -49,6 +147,9 @@ fun ChatListRow(
     Row(
         Modifier
             .fillMaxWidth()
+            // Opaque: the swipe actions sit BEHIND this row, and a transparent foreground
+            // would let them bleed through the content at rest.
+            .background(VoiidColor.background)
             .softClickable(onClick = onTap)
             .padding(horizontal = 16.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -101,14 +202,21 @@ fun ChatListRow(
                         Modifier
                             .defaultMinSize(minWidth = 22.dp, minHeight = 22.dp)
                             .clip(RoundedCornerShape(999.dp))
-                            .background(VoiidColor.primary)
+                            // AMBER, matching the grid card. The same signal was drawn in two
+                            // different colours depending on which layout you had chosen —
+                            // aubergine here, amber there — and the palette reserves amber for
+                            // exactly this: "the one thing that must be seen". Aubergine is
+                            // also the app's most-used colour, so an unread badge in it
+                            // competed with every other primary surface instead of standing
+                            // out from them.
+                            .background(VoiidColor.accent)
                             .padding(horizontal = 7.dp, vertical = 3.dp),
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
                             if (conversation.unreadCount > 99) "99+" else "${conversation.unreadCount}",
                             style = VoiidFont.rounded(12, FontWeight.SemiBold),
-                            color = VoiidColor.textOnPrimary,
+                            color = VoiidColor.textOnAccent,
                         )
                     }
                 }
