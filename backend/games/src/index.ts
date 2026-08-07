@@ -378,6 +378,42 @@ async function handleJoin(msg: Record<string, any>): Promise<void> {
 }
 
 /**
+ * `game_leave` — published by the API when a player deliberately backs out of the match
+ * screen (POST /games/matches/:id/leave). See that route's doc comment for the incident this
+ * closes: a continuous game's tick loop had NOTHING telling it a player left, so a solo Snake
+ * practice run abandoned early kept ticking — and broadcasting `game_state` at its full 10Hz
+ * to a socket showing a completely different screen — for up to its full 60-600s duration.
+ *
+ * SCOPED TO SOLO MATCHES ONLY. `m.players.length > 1` is left running: ending a multiplayer
+ * match the instant one player backs out would penalize whoever is still playing, which is a
+ * real feature (forfeit/abandonment handling, GAMES.md §7) this does not attempt. A solo match
+ * has no second player to protect, so ending it immediately is unambiguously correct.
+ *
+ * Only matches with a live tick loop are affected — a turn-based game has no loop to leak in
+ * the first place, so this silently no-ops for them rather than special-casing "does this slug
+ * even have a clock".
+ */
+async function handleLeave(msg: Record<string, any>): Promise<void> {
+  const matchId = msg.match_id;
+  if (typeof matchId !== 'string') return;
+
+  const m = await loadMatch(matchId);
+  if (!m) return; // already gone — nothing to stop
+
+  if (m.players.length > 1) return; // multiplayer: leave the match running for the others
+
+  const engine = liveEngines.get(matchId) ?? factoryFor(m.slug)?.restore(m.state, m.secret);
+  if (!engine || !engine.tick) return; // turn-based games have nothing ticking to stop
+
+  // No winner: a match that was walked away from early was not won by anyone. Scores are
+  // whatever they were at the moment of leaving — the honest record of a match that did not
+  // finish, not a fabricated result.
+  const outcome: GameOutcome = { winnerId: null, scores: {} };
+  await endMatch(m, engine, outcome);
+  console.log(`[games] ${matchId} ended early: solo player left`);
+}
+
+/**
  * `tournament_forfeit` — published by the API when a player withdraws from a LIVE bracket.
  *
  * The API could mark the walkover rows itself; it deliberately does not. "A walkover awards
@@ -423,9 +459,11 @@ sub.on('message', (_channel, raw) => {
       ? handleInput(msg)
       : msg.type === 'game_join'
         ? handleJoin(msg)
-        : msg.type === 'tournament_forfeit'
-          ? handleTournamentForfeit(msg)
-          : null;
+        : msg.type === 'game_leave'
+          ? handleLeave(msg)
+          : msg.type === 'tournament_forfeit'
+            ? handleTournamentForfeit(msg)
+            : null;
   if (run) run.catch((e) => console.error('[games] handler error', e));
 });
 
