@@ -717,16 +717,21 @@ private fun TabBar(
                 val visibleStart = scroll.value.toFloat()
                 val visibleEnd = visibleStart + viewportPx
 
-                val target = when {
-                    // Off the left edge: bring its leading edge to the viewport's left.
-                    leading < visibleStart -> leading
-                    // Off the right edge: bring its trailing edge to the viewport's right.
-                    trailing > visibleEnd -> trailing - viewportPx
-                    // Already fully visible — do nothing. This is the case that used to
-                    // scroll anyway, and it is the common one.
-                    else -> null
+                // A small tolerance: a tab flush against the edge is technically visible and
+                // practically not — half of it sits under the neighbouring slot's padding —
+                // and leaving it there reads as "the bar refused to move".
+                val tolerance = with(density) { 8.dp.toPx() }
+                val offScreen = leading < visibleStart + tolerance ||
+                    trailing > visibleEnd - tolerance
+
+                if (offScreen) {
+                    // CENTRE it, rather than nudging it flush to the edge it came from. The
+                    // user has not seen this tab yet, and the middle is the gentlest place to
+                    // put something arriving — an item pinned hard against the frame reads as
+                    // clipped even when it is fully drawn.
+                    val centred = leading - (viewportPx - slotPx) / 2f
+                    scroll.animateScrollTo(centred.toInt().coerceAtLeast(0))
                 }
-                target?.let { scroll.animateScrollTo(it.toInt().coerceAtLeast(0)) }
             }
 
             Box(Modifier.horizontalScroll(scroll)) {

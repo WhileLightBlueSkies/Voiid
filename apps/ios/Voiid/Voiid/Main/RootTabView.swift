@@ -25,6 +25,12 @@ import SwiftUI
 /// Carries the custom tab bar's measured height up to RootTabView, which republishes it on
 /// `AppSession` for pages that place their own bottom chrome. Defaults to 0 so a tree with
 /// no tab bar (a full-screen child) reports no reserved space.
+/// Carries the tab row's live horizontal scroll offset out of the scroll view.
+struct TabScrollOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
 struct TabBarHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
@@ -47,9 +53,8 @@ struct RootTabView: View {
     /// How far the indicator stretches on the current move — proportional to the number of
     /// tabs crossed, so a neighbouring hop and a jump across the bar do not look identical.
     @State private var slideStretch: CGFloat = 1.9
-    /// Index of the leftmost tab currently on screen, so `scrollAnchor(for:)` can tell
-    /// "already visible" from "off the edge" without measuring the scroll view.
-    @State private var firstVisibleTab = 0
+    /// How far the tab row is scrolled, in points, measured from the scroll view itself.
+    @State private var scrollX: CGFloat = 0
 
     // The asset/label ternaries were hardcoded for exactly three cases; with a 4th tab they
     // become switches so a future 5th tab is a compile error to omit, not a silent wrong icon.
@@ -200,7 +205,25 @@ struct RootTabView: View {
                                 .id(t)
                         }
                     }
+                    // The REAL scroll offset, not a model of it.
+                    //
+                    // An earlier attempt tracked the leftmost visible tab in an @State index
+                    // that only its own scroll function ever wrote — so the moment the user
+                    // dragged the bar by hand, that index was stale and the bar stopped
+                    // auto-scrolling to reveal off-screen tabs at all. Measuring the content's
+                    // position in the scroll view's own coordinate space cannot drift,
+                    // because it IS the scroll position.
+                    .background(
+                        GeometryReader { inner in
+                            Color.clear.preference(
+                                key: TabScrollOffsetKey.self,
+                                value: -inner.frame(in: .named("tabScroll")).minX
+                            )
+                        }
+                    )
                 }
+                .coordinateSpace(name: "tabScroll")
+                .onPreferenceChange(TabScrollOffsetKey.self) { scrollX = $0 }
                 // SCROLL ONLY WHEN THE TAB IS ACTUALLY OFF-SCREEN, and only to the nearer
                 // edge.
                 //
@@ -214,18 +237,28 @@ struct RootTabView: View {
                 // the edge should travel just far enough to appear. `anchor` picks WHICH edge
                 // it lands against, so scrolling to `.leading` or `.trailing` moves the
                 // minimum distance instead of hauling it to the middle.
+                // SCROLL ONLY WHEN THE TAB IS GENUINELY OFF-SCREEN.
+                //
+                // This used to re-CENTRE on every selection, so tapping a tab that was
+                // already plainly visible yanked the whole row sideways — the item you just
+                // hit slid out from under your thumb and its neighbours moved with it. With
+                // seven tabs in a five-wide window that fired on most taps.
+                //
+                // But "never scroll" is equally wrong: a tab beyond the visible five, or one
+                // opened by a deep link, must still be brought into view. So the test is
+                // against the LIVE scroll offset — visible tabs do not move the bar, and one
+                // off the edge is centred, which is the gentlest place to put something the
+                // user has not seen yet.
                 .onChange(of: tab) { _, t in
-                    guard let target = scrollAnchor(for: t) else { return }
+                    guard tabIsOffScreen(t, slotW: slotW, viewport: geo.size.width) else { return }
                     withAnimation(.easeOut(duration: 0.25)) {
-                        proxy.scrollTo(t, anchor: target)
+                        proxy.scrollTo(t, anchor: .center)
                     }
                 }
-                // On first appearance there is no "already visible" to preserve — the bar has
-                // not been scrolled yet — so a deep-linked tab beyond the fifth slot still
-                // needs bringing into view. Only then, and without animation.
-                .onAppear {
-                    if let target = scrollAnchor(for: tab) { proxy.scrollTo(tab, anchor: target) }
-                }
+                // First appearance has no scroll history to preserve, and a deep-linked tab
+                // past the fifth slot still has to be reachable. Unanimated: there is nothing
+                // to show a transition FROM.
+                .onAppear { proxy.scrollTo(tab, anchor: .center) }
             }
         }
         // 48pt minimum touch target + label + the indicator's track. The old bar gave the
@@ -238,26 +271,17 @@ struct RootTabView: View {
         .overlay(VoiidColor.divider.opacity(0.6).frame(height: 0.5), alignment: .top)
     }
 
-    /// Where a tab must be scrolled to, or nil when it is already on screen and should not
-    /// move at all.
+    /// Whether `t` sits outside the visible window right now.
     ///
-    /// Index-based rather than measured: the slots are a fixed fraction of the width and the
-    /// row is not independently scrollable by the user in practice, so the visible window is
-    /// derivable from the selection history. `firstVisibleTab` tracks the left edge.
-    private func scrollAnchor(for t: Tab) -> UnitPoint? {
-        let order = Tab.allCases
-        guard let index = order.firstIndex(of: t) else { return nil }
-        let first = firstVisibleTab
-        let last = first + Self.visibleTabs - 1
-        if index < first {
-            firstVisibleTab = index
-            return .leading
-        }
-        if index > last {
-            firstVisibleTab = index - Self.visibleTabs + 1
-            return .trailing
-        }
-        return nil   // already visible — the case that used to scroll anyway
+    /// A small tolerance, because a tab flush against the edge is technically visible and
+    /// practically not — half of it is under the curve of the screen or the neighbouring
+    /// slot's padding, and leaving it there reads as "the bar refused to move".
+    private func tabIsOffScreen(_ t: Tab, slotW: CGFloat, viewport: CGFloat) -> Bool {
+        guard let index = Tab.allCases.firstIndex(of: t) else { return false }
+        let leading = CGFloat(index) * slotW
+        let trailing = leading + slotW
+        let tolerance: CGFloat = 8
+        return leading < scrollX + tolerance || trailing > scrollX + viewport - tolerance
     }
 
     /// How many tabs are visible at once; the rest scroll.

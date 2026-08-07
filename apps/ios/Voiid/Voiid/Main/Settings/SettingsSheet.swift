@@ -350,10 +350,16 @@ struct SettingsSheet: View {
                 // The system's is the one to keep — it stays aligned with every other row
                 // on the screen and follows the platform's own metrics.
             }
-            .padding(VoiidSpacing.md)
+            // A CARD INSIDE A CARD. This is a row in an `.insetGrouped` List, and
+            // `voiidSettingsList()` already paints every row with `surfaceCard` — so filling
+            // it again here drew a second surface on top of the first, inset from it, with a
+            // 16pt corner radius fighting the platform's 10pt group corner. That is the
+            // mismatch: two nested rounded rectangles in the same colour, their edges a few
+            // points apart.
+            //
+            // The row's own background is the card. All this needs is padding.
+            .padding(.vertical, VoiidSpacing.sm)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(VoiidColor.surfaceCard)
-            .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
             .accessibilityElement(children: .combine)
             .accessibilityLabel(profileAccessibilityLabel)
             .accessibilityHint("Opens your profile")
