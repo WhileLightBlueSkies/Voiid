@@ -21,6 +21,7 @@
 
 import Combine
 import MetalKit
+import MetalPerformanceShaders
 import SwiftUI
 import simd
 
@@ -157,7 +158,38 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     private var circlePipeline: MTLRenderPipelineState!
     private var ribbonPipeline: MTLRenderPipelineState!
     private var spritePipeline: MTLRenderPipelineState!
+    /// Same geometry as the main pipelines but writing ADDITIVE rather than straight-alpha,
+    /// into the half-res bloom target. See `renderBloomSource` for why additive here and
+    /// straight-alpha on the main pass are both correct at the same time.
+    private var circleBloomPipeline: MTLRenderPipelineState!
+    private var ribbonBloomPipeline: MTLRenderPipelineState!
+    /// Draws the blurred bloom texture back over the final frame, additively.
+    private var compositePipeline: MTLRenderPipelineState!
     private var sampler: MTLSamplerState!
+
+    // MARK: Bloom
+    //
+    // GAMES_ANIMATION.md §5.1: "Render bright elements to an offscreen half-res texture,
+    // two-pass Gaussian blur, composite additively. This one change does more for 'out of
+    // this world' than any other single item on the list."
+    //
+    // HALF RESOLUTION, DELIBERATELY. Bloom is a low-frequency effect — nobody can tell a glow
+    // was blurred at half the screen's detail, and rendering + blurring a SECOND full arena
+    // every frame would roughly double the fill-rate cost of the whole draw for an effect
+    // that is meant to be soft in the first place.
+    //
+    // MPSImageGaussianBlur RATHER THAN A HAND-WRITTEN SEPARABLE BLUR. Apple's kernel is tuned
+    // per-GPU-family and already does the two-pass horizontal/vertical split internally; a
+    // hand-rolled version would be more MSL to maintain for a worse result on some devices.
+    /// What actually got fed into the bloom source this frame — only the head glow halos and
+    /// the arena edge ring, i.e. the things in `buildFrame` that are ALREADY additive-looking
+    /// (soft, saturated, meant to feel like light). Body ribbons and food are excluded: bloom
+    /// on flat opaque fills reads as blur, not glow, and would soften the very shapes the
+    /// player needs to judge collisions against.
+    private var bloomCircles: [CircleInstance] = []
+    private var bloomTexture: MTLTexture?
+    private var bloomBlurred: MTLTexture?
+    private var bloomSize: CGSize = .zero
 
     /// Name-plate glyphs, rasterised on demand and packed into one texture.
     private var labelAtlas: LabelAtlas?
@@ -220,13 +252,29 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
 
         circlePipeline = Self.pipeline(device: device, library: library,
                                        vertex: "circleVertex", fragment: "circleFragment",
-                                       pixelFormat: view.colorPixelFormat)
+                                       pixelFormat: view.colorPixelFormat, blend: .straightAlpha)
         ribbonPipeline = Self.pipeline(device: device, library: library,
                                        vertex: "ribbonVertex", fragment: "ribbonFragment",
-                                       pixelFormat: view.colorPixelFormat)
+                                       pixelFormat: view.colorPixelFormat, blend: .straightAlpha)
         spritePipeline = Self.pipeline(device: device, library: library,
                                        vertex: "spriteVertex", fragment: "spriteFragment",
-                                       pixelFormat: view.colorPixelFormat)
+                                       pixelFormat: view.colorPixelFormat, blend: .straightAlpha)
+
+        // Bloom source pipelines render the SAME two shaders into the half-res bloom texture,
+        // but ADDITIVE: two overlapping glows should brighten each other (that is what light
+        // does), where the main pass's straight alpha would just occlude one with the other.
+        // The bloom texture always starts cleared to black, so additive-onto-black behaves
+        // exactly like "just draw the glow" for a single instance and correctly accumulates
+        // for overlapping ones.
+        circleBloomPipeline = Self.pipeline(device: device, library: library,
+                                            vertex: "circleVertex", fragment: "circleFragment",
+                                            pixelFormat: Self.bloomPixelFormat, blend: .additive)
+        ribbonBloomPipeline = Self.pipeline(device: device, library: library,
+                                            vertex: "ribbonVertex", fragment: "ribbonFragment",
+                                            pixelFormat: Self.bloomPixelFormat, blend: .additive)
+        compositePipeline = Self.pipeline(device: device, library: library,
+                                          vertex: "spriteVertex", fragment: "spriteFragment",
+                                          pixelFormat: view.colorPixelFormat, blend: .additive)
 
         let sd = MTLSamplerDescriptor()
         sd.minFilter = .linear
@@ -236,26 +284,64 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         labelAtlas = LabelAtlas(device: device)
     }
 
+    private enum BlendMode { case straightAlpha, additive }
+
     private static func pipeline(
         device: MTLDevice, library: MTLLibrary,
-        vertex: String, fragment: String, pixelFormat: MTLPixelFormat
+        vertex: String, fragment: String, pixelFormat: MTLPixelFormat, blend: BlendMode
     ) -> MTLRenderPipelineState? {
         let d = MTLRenderPipelineDescriptor()
         d.vertexFunction = library.makeFunction(name: vertex)
         d.fragmentFunction = library.makeFunction(name: fragment)
         d.colorAttachments[0].pixelFormat = pixelFormat
-        // Straight alpha blending: the arena is layered glows over a dark floor, and additive
-        // blending would blow out to white wherever two glows overlap.
         d.colorAttachments[0].isBlendingEnabled = true
-        d.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
-        d.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
-        d.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
-        d.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        switch blend {
+        case .straightAlpha:
+            // The arena is layered glows over a dark floor; additive here would blow out to
+            // white wherever two glows overlap on the MAIN pass, which is not what a body or a
+            // food pellet should do to what is behind it.
+            d.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+            d.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+            d.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
+            d.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        case .additive:
+            // dst + src, uncapped. Correct for light: two glows overlapping should be brighter
+            // than either alone, and this is also what the FINAL composite needs — the blurred
+            // bloom texture is added ON TOP of the already-complete main-pass frame, never
+            // replacing it.
+            d.colorAttachments[0].sourceRGBBlendFactor = .one
+            d.colorAttachments[0].destinationRGBBlendFactor = .one
+            d.colorAttachments[0].sourceAlphaBlendFactor = .one
+            d.colorAttachments[0].destinationAlphaBlendFactor = .one
+        }
         return try? device.makeRenderPipelineState(descriptor: d)
     }
 
+    /// A format MPSImageGaussianBlur can both read and write. .bgra8Unorm (the drawable's own
+    /// format) works but rgba16Float gives the blur headroom above 1.0 so a bright cluster of
+    /// overlapping glows blurs into a wider, still-bright halo instead of clipping to white at
+    /// the source before the blur even runs.
+    private static let bloomPixelFormat: MTLPixelFormat = .rgba16Float
+
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
         viewSize = size
+        allocateBloomTargets(for: size)
+    }
+
+    /// Half the drawable's resolution, per §5.1's "half resolution, always". Reallocated only
+    /// when the drawable size actually changes (rotation, split view), never per frame.
+    private func allocateBloomTargets(for size: CGSize) {
+        guard size.width > 0, size.height > 0, let device else { return }
+        let w = max(1, Int(size.width / 2))
+        let h = max(1, Int(size.height / 2))
+        bloomSize = CGSize(width: w, height: h)
+
+        let desc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: Self.bloomPixelFormat, width: w, height: h, mipmapped: false)
+        desc.usage = [.renderTarget, .shaderRead]
+        desc.storageMode = .private
+        bloomTexture = device.makeTexture(descriptor: desc)
+        bloomBlurred = device.makeTexture(descriptor: desc)
     }
 
     // MARK: Frame
@@ -264,47 +350,168 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         guard let drawable = view.currentDrawable,
               let descriptor = view.currentRenderPassDescriptor,
               let commands = queue.makeCommandBuffer(),
-              let encoder = commands.makeRenderCommandEncoder(descriptor: descriptor),
               circlePipeline != nil else { return }
 
         viewSize = view.drawableSize
         circles.removeAll(keepingCapacity: true)
         ribbon.removeAll(keepingCapacity: true)
         sprites.removeAll(keepingCapacity: true)
+        bloomCircles.removeAll(keepingCapacity: true)
 
-        if let frame = buildFrame() {
-            var uniforms = frame
-            encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
-
-            // Bodies first, then circles over them (heads, food), then labels on top.
-            if let buf = upload(ribbon, into: &ribbonBuffer), ribbonPipeline != nil {
-                encoder.setRenderPipelineState(ribbonPipeline)
-                encoder.setVertexBuffer(buf, offset: 0, index: 1)
-                encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: ribbon.count)
+        guard let frame = buildFrame() else {
+            // Nothing to draw yet (no frame has arrived): still present a cleared drawable
+            // rather than skipping the frame entirely, or the view briefly shows garbage.
+            if let encoder = commands.makeRenderCommandEncoder(descriptor: descriptor) {
+                encoder.endEncoding()
             }
+            commands.present(drawable)
+            commands.commit()
+            return
+        }
+        var uniforms = frame
 
-            if let buf = upload(circles, into: &circleBuffer) {
-                encoder.setRenderPipelineState(circlePipeline)
-                encoder.setVertexBuffer(buf, offset: 0, index: 1)
-                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
-                                       instanceCount: circles.count)
-            }
+        // PASS 1 — bloom source, half-res, additive, into an offscreen texture. Only the
+        // circles buildFrame classified as glow (bloomCircles) go here; see the property's
+        // doc comment for why bodies and food halos are excluded.
+        renderBloomSource(commands: commands, uniforms: &uniforms)
 
-            if let buf = upload(sprites, into: &spriteBuffer),
-               let texture = labelAtlas?.texture, spritePipeline != nil {
-                encoder.setRenderPipelineState(spritePipeline)
-                encoder.setVertexBuffer(buf, offset: 0, index: 1)
-                encoder.setFragmentTexture(texture, index: 0)
-                encoder.setFragmentSamplerState(sampler, index: 0)
-                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
-                                       instanceCount: sprites.count)
-            }
+        // PASS 2 — blur pass 1's output in place. Two-pass separable Gaussian, entirely
+        // Apple's kernel; this call does both directions internally.
+        blurBloom(commands: commands)
+
+        // PASS 3 — the main, full-resolution frame exactly as before bloom existed.
+        guard let encoder = commands.makeRenderCommandEncoder(descriptor: descriptor) else {
+            commands.present(drawable)
+            commands.commit()
+            return
+        }
+        encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
+
+        // Bodies first, then circles over them (heads, food), then labels on top.
+        if let buf = upload(ribbon, into: &ribbonBuffer), ribbonPipeline != nil {
+            encoder.setRenderPipelineState(ribbonPipeline)
+            encoder.setVertexBuffer(buf, offset: 0, index: 1)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: ribbon.count)
+        }
+
+        if let buf = upload(circles, into: &circleBuffer) {
+            encoder.setRenderPipelineState(circlePipeline)
+            encoder.setVertexBuffer(buf, offset: 0, index: 1)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
+                                   instanceCount: circles.count)
+        }
+
+        // PASS 4 — composite the blurred bloom texture additively ON TOP of the main pass,
+        // as one full-screen quad. Additive: this brightens what is already drawn, it never
+        // replaces it, which is what makes bloom read as light spilling off the glowing
+        // shapes rather than a soft double-exposure of the whole scene.
+        compositeBloom(encoder: encoder)
+
+        if let buf = upload(sprites, into: &spriteBuffer),
+           let texture = labelAtlas?.texture, spritePipeline != nil {
+            encoder.setRenderPipelineState(spritePipeline)
+            encoder.setVertexBuffer(buf, offset: 0, index: 1)
+            encoder.setFragmentTexture(texture, index: 0)
+            encoder.setFragmentSamplerState(sampler, index: 0)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
+                                   instanceCount: sprites.count)
         }
 
         encoder.endEncoding()
         commands.present(drawable)
         commands.commit()
     }
+
+    /// PASS 1: render `bloomCircles` into the half-res offscreen texture, additive, cleared
+    /// to black first. Uniforms are scaled to the bloom texture's own (half) resolution so
+    /// world-to-clip math still lands correctly at the smaller size.
+    private func renderBloomSource(commands: MTLCommandBuffer, uniforms: inout Uniforms) {
+        guard let bloomTexture, bloomSize.width > 0 else { return }
+
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = bloomTexture
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+        pass.colorAttachments[0].storeAction = .store
+
+        guard let encoder = commands.makeRenderCommandEncoder(descriptor: pass) else { return }
+
+        var bloomUniforms = uniforms
+        bloomUniforms.viewportSize = SIMD2(Float(bloomSize.width * 2), Float(bloomSize.height * 2))
+        // scale is world-units -> POINTS, unaffected by the render target's pixel resolution —
+        // the viewport halving above is what maps the same world extent onto the smaller
+        // texture, exactly as it would if the whole app were running at half point-scale.
+        encoder.setVertexBytes(&bloomUniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
+
+        if !ribbon.isEmpty, let buf = upload(ribbon, into: &ribbonBloomBuffer),
+           ribbonBloomPipeline != nil {
+            encoder.setRenderPipelineState(ribbonBloomPipeline)
+            encoder.setVertexBuffer(buf, offset: 0, index: 1)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: ribbon.count)
+        }
+
+        if !bloomCircles.isEmpty, let buf = upload(bloomCircles, into: &bloomCircleBuffer),
+           circleBloomPipeline != nil {
+            encoder.setRenderPipelineState(circleBloomPipeline)
+            encoder.setVertexBuffer(buf, offset: 0, index: 1)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
+                                   instanceCount: bloomCircles.count)
+        }
+
+        encoder.endEncoding()
+    }
+
+    /// PASS 2: MPSImageGaussianBlur, bloomTexture -> bloomBlurred. Sigma is in TEXTURE pixels
+    /// (i.e. already half-res), so this is a wider blur relative to on-screen size than the
+    /// number alone suggests — intentional, that is what makes bloom read as soft light
+    /// rather than a sharpened edge glow.
+    private func blurBloom(commands: MTLCommandBuffer) {
+        guard let bloomTexture, let bloomBlurred else { return }
+        let blur = MPSImageGaussianBlur(device: device, sigma: 6.0)
+        blur.encode(commandBuffer: commands, sourceTexture: bloomTexture,
+                    destinationTexture: bloomBlurred)
+    }
+
+    /// PASS 4: draw the blurred bloom texture as one full-screen quad, additive, into the
+    /// already-open main-pass encoder. Reuses the sprite pipeline's vertex stage (a textured
+    /// quad is a textured quad) but through `compositePipeline`, which blends additively
+    /// instead of the sprite pass's straight alpha.
+    private func compositeBloom(encoder: MTLRenderCommandEncoder) {
+        guard let bloomBlurred, compositePipeline != nil, viewSize.width > 0 else { return }
+
+        // One instance, sized and centred to cover the whole viewport in WORLD space at the
+        // current camera scale — i.e. exactly what is on screen right now, since the source
+        // texture was rendered with the same camera uniforms.
+        let scale = uniformsScaleForComposite
+        guard scale > 0 else { return }
+        let worldW = Float(viewSize.width) / scale
+        let worldH = Float(viewSize.height) / scale
+        let quad = SpriteInstance(
+            centre: lastCameraCentreSIMD,
+            size: SIMD2(worldW, worldH),
+            uvOrigin: .zero, uvSize: SIMD2(1, 1),
+            tint: SIMD4(1, 1, 1, Self.bloomIntensity))
+
+        guard let buf = upload([quad], into: &compositeBuffer) else { return }
+        encoder.setRenderPipelineState(compositePipeline)
+        encoder.setVertexBuffer(buf, offset: 0, index: 1)
+        encoder.setFragmentTexture(bloomBlurred, index: 0)
+        encoder.setFragmentSamplerState(sampler, index: 0)
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: 1)
+    }
+
+    /// How strongly the blurred glow is added back over the main pass. Low: this is meant to
+    /// be felt as "these things emit light", not to wash the arena out. Tuned by eye against
+    /// the existing palette rather than derived from anything.
+    private static let bloomIntensity: Float = 0.55
+
+    private var ribbonBloomBuffer: MTLBuffer?
+    private var bloomCircleBuffer: MTLBuffer?
+    private var compositeBuffer: MTLBuffer?
+    /// Cached from the last `buildFrame` uniforms so `compositeBloom` (called from inside the
+    /// main encoder, after `buildFrame` already ran) can size its full-screen quad correctly.
+    private var lastCameraCentreSIMD: SIMD2<Float> = .zero
+    private var uniformsScaleForComposite: Float = 0
 
     /// How far behind the newest frame to render.
     ///
@@ -383,7 +590,13 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
 
         publishHud(state: state, ranked: ranked, mine: mine)
 
-        return Uniforms(cameraCentre: SIMD2(Float(focus.x), Float(focus.y)),
+        let cameraSIMD = SIMD2(Float(focus.x), Float(focus.y))
+        // Cached for `compositeBloom`, which runs later in the SAME draw call from inside the
+        // main-pass encoder and has no other way to know this frame's camera/scale.
+        lastCameraCentreSIMD = cameraSIMD
+        uniformsScaleForComposite = scale
+
+        return Uniforms(cameraCentre: cameraSIMD,
                         viewportSize: SIMD2(Float(viewSize.width), Float(viewSize.height)),
                         scale: scale)
     }
@@ -446,9 +659,14 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
             colour: SIMD4(0.35, 0.85, 1.0, 0.10)))
 
         // The edge as a thin ring: an outer disc with a slightly smaller floor disc on top.
-        circles.append(CircleInstance(
+        let edge = CircleInstance(
             centre: .zero, radius: Float(radius + 8), softness: 0.02,
-            colour: SIMD4(0.35, 0.85, 1.0, 0.85)))
+            colour: SIMD4(0.35, 0.85, 1.0, 0.85))
+        circles.append(edge)
+        // This ring is the one thing in the whole arena that is BOTH lethal and constantly
+        // on screen, so it is the clearest place to prove bloom is doing something: it should
+        // now read as a rim of light around the play field rather than a flat cyan stroke.
+        bloomCircles.append(edge)
         circles.append(CircleInstance(
             centre: .zero, radius: Float(radius - 2), softness: 0,
             colour: SIMD4(0.055, 0.05, 0.13, 1)))
@@ -462,10 +680,14 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
                 : SIMD4(1.0, 0.93, 0.62, 1)
             let centre = SIMD2(Float(item.position.x), Float(item.position.y))
             // Halo then core: cheap, and it is what makes the field read as lit rather than
-            // as flat dots.
-            circles.append(CircleInstance(centre: centre, radius: r * 2.4,
-                                          softness: 0.75,
-                                          colour: SIMD4(colour.x, colour.y, colour.z, 0.22)))
+            // as flat dots. The halo (not the core) also feeds bloom — the core stays a crisp
+            // dot so eating still reads as picking up something precise, while the halo
+            // becomes the soft light spilling off it.
+            let halo = CircleInstance(centre: centre, radius: r * 2.4,
+                                      softness: 0.75,
+                                      colour: SIMD4(colour.x, colour.y, colour.z, 0.22))
+            circles.append(halo)
+            bloomCircles.append(halo)
             circles.append(CircleInstance(centre: centre, radius: r, softness: 0, colour: colour))
         }
     }
@@ -500,8 +722,15 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         // responds on the same frame the thumb moves.
         let hc = SIMD2(Float(head.x), Float(head.y))
         let r = Float(snake.headRadius)
-        circles.append(CircleInstance(centre: hc, radius: r * 2.6, softness: 0.8,
-                                      colour: SIMD4(c.x, c.y, c.z, 0.30 * alpha)))
+        // The head halo is the single most-looked-at glow in the game — it is what makes
+        // "every bright thing emits" (GAMES_ANIMATION.md §3.3) actually true of the thing the
+        // player is steering. The opaque head disc below stays out of bloom for the same
+        // reason food's core does: the shape that kills must read as crisp and precisely
+        // sized, never softened.
+        let headHalo = CircleInstance(centre: hc, radius: r * 2.6, softness: 0.8,
+                                      colour: SIMD4(c.x, c.y, c.z, 0.30 * alpha))
+        circles.append(headHalo)
+        bloomCircles.append(headHalo)
         circles.append(CircleInstance(centre: hc, radius: r, softness: 0,
                                       colour: SIMD4(c.x, c.y, c.z, alpha)))
 
