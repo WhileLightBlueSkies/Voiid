@@ -132,6 +132,7 @@ fun SnakeArenaScreen(
     val camera = remember { CameraMemory() }
     val particles = remember { ParticleSystem() }
     val impact = remember { ImpactTimeline() }
+    val haptics = remember { GameHaptics(context) }
 
     val me = engine.myUserId
 
@@ -152,7 +153,7 @@ fun SnakeArenaScreen(
         Canvas(Modifier.fillMaxSize()) {
             // Reading the clock inside the DRAW scope subscribes only this draw to it.
             @Suppress("UNUSED_EXPRESSION") frameClock.doubleValue
-            drawArena(framesRef.value, me, trails, stick, camera, particles, impact)
+            drawArena(framesRef.value, me, trails, stick, camera, particles, impact, haptics)
         }
 
         // Death / game-over panel.
@@ -715,6 +716,7 @@ private fun DrawScope.drawArena(
     camera: CameraMemory,
     particles: ParticleSystem,
     impact: ImpactTimeline,
+    haptics: GameHaptics,
 ) {
     val s = pickSample(frames) ?: return
     val state = s.to
@@ -730,17 +732,26 @@ private fun DrawScope.drawArena(
                 ?.let { paletteColor(it.colorIndex) } ?: Color.White
             particles.spawn(e.kind, e.x.toFloat(), e.y.toFloat(), color)
 
-            // Screen shake AND hitstop on YOUR kills only. `e.snakeId` on a "kill" event is the
-            // KILLER (backend/games/src/engine/snake/index.ts kill() pushes `id: killerId`), so
-            // this fires for the player who just won a fight, not their victim.
+            // `eat`'s id is the EATING snake (snake/index.ts `k: 'eat'` push). GameHaptics.eat()
+            // throttles internally, so no rate-limiting needed at this call site.
+            if (e.kind == "eat" && e.snakeId == me) haptics.eat()
+
+            // Screen shake, hitstop AND haptic on YOUR kills only. `e.snakeId` on a "kill"
+            // event is the KILLER (backend/games/src/engine/snake/index.ts kill() pushes
+            // `id: killerId`), so this fires for the player who just won a fight, not their
+            // victim.
             if (e.kind == "kill" && e.snakeId == me) {
                 camera.triggerShake(6f)
                 impact.triggerKill()
+                haptics.kill()
             }
             // "death" events push `id: sn.id` — the snake that died — so this is unambiguously
             // "did I just die", not a kill I made. Opposite field semantics from "kill" above,
             // confirmed against the backend before wiring either.
-            if (e.kind == "death" && e.snakeId == me) impact.triggerDeath()
+            if (e.kind == "death" && e.snakeId == me) {
+                impact.triggerDeath()
+                haptics.death()
+            }
         }
         particles.markSpawned(state.time)
     }
