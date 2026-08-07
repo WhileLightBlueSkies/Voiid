@@ -19,6 +19,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -63,6 +64,11 @@ fun CricketMatchScreen(matchId: String, onClose: () -> Unit) {
     val joinError by engine.joinError.collectAsState()
     val me = engine.myUserId
 
+    DisposableEffect(Unit) {
+        GameAudio.preload(context, "cricket")
+        onDispose { GameAudio.release("cricket") }
+    }
+
     LaunchedEffect(matchId) { engine.open(matchId) }
 
     // Replays the pitch animation when a NEW ball resolves. Derived from history length rather
@@ -72,8 +78,18 @@ fun CricketMatchScreen(matchId: String, onClose: () -> Unit) {
     val s = state
     LaunchedEffect(s?.history?.size ?: 0) {
         val n = s?.history?.size ?: 0
-        if (n > lastCount) ballToken++
+        if (n > lastCount && s != null) {
+            ballToken++
+            playBallSound(s.history.last())
+        }
         lastCount = n
+    }
+
+    var lastInnings by remember { mutableIntStateOf(1) }
+    LaunchedEffect(s?.innings) {
+        val innings = s?.innings ?: 1
+        if (innings > lastInnings) GameAudio.play("innings", gain = 0.55f)
+        lastInnings = innings
     }
 
     Column(
@@ -212,6 +228,7 @@ fun CricketMatchScreen(matchId: String, onClose: () -> Unit) {
                         Row(horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.sm)) {
                             (0..3).forEach { n ->
                                 MatchPickButton(n, enabled = !iPicked, Modifier.weight(1f)) {
+                                    GameAudio.play("pick", gain = 0.45f)
                                     engine.pickCricket(context, n)
                                 }
                             }
@@ -219,6 +236,7 @@ fun CricketMatchScreen(matchId: String, onClose: () -> Unit) {
                         Row(horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.sm)) {
                             (4..6).forEach { n ->
                                 MatchPickButton(n, enabled = !iPicked, Modifier.weight(1f)) {
+                                    GameAudio.play("pick", gain = 0.45f)
                                     engine.pickCricket(context, n)
                                 }
                             }
@@ -249,6 +267,20 @@ fun CricketMatchScreen(matchId: String, onClose: () -> Unit) {
                 )
             }
         }
+    }
+}
+
+/** One resolved ball -> its sound, matching CricketPitch.kt's own BallEvent classification so
+ * the two never disagree about what just happened. Mirrors iOS CricketMatchView's identical
+ * helper. */
+private fun playBallSound(ball: GamesEngine.CricketState.Ball) {
+    when {
+        ball.wicket -> GameAudio.play("wicket", gain = 0.75f)
+        ball.runs == 6 -> GameAudio.play("six", gain = 0.8f)
+        ball.runs == 4 -> GameAudio.play("four", gain = 0.7f)
+        ball.runs > 0 -> GameAudio.play("runs_${ball.runs}", gain = 0.55f)
+        // A dot ball (runs == 0, not a wicket) has no dedicated sound in the catalogue
+        // (docs/GAMES_AUDIO.md §9) — silence is correct there, not a missing case.
     }
 }
 

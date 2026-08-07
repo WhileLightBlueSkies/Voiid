@@ -21,9 +21,13 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -58,7 +62,40 @@ fun TicTacToeScreen(matchId: String, onClose: () -> Unit) {
     val joinError by engine.joinError.collectAsState()
     val me = engine.myUserId
 
+    DisposableEffect(Unit) {
+        GameAudio.preload(context, "tictactoe")
+        onDispose { GameAudio.release("tictactoe") }
+    }
+
     LaunchedEffect(matchId) { engine.open(matchId) }
+
+    // Mark placed. The board only ever GAINS marks mid-match (a cell, once filled, never
+    // empties), so diffing against the previously-seen board finds exactly the cell that just
+    // changed and its seat (0 = X, 1 = O) picks the pitch. Mirrors iOS TicTacToeView's
+    // identical board-diff approach.
+    var lastBoard by remember { mutableStateOf<List<Int?>?>(null) }
+    LaunchedEffect(state?.board) {
+        val newBoard = state?.board
+        val oldBoard = lastBoard
+        if (oldBoard != null && newBoard != null && oldBoard.size == newBoard.size) {
+            for (i in newBoard.indices) {
+                if (oldBoard[i] == null && newBoard[i] != null) {
+                    GameAudio.play(if (newBoard[i] == 0) "mark_x" else "mark_o", gain = 0.55f)
+                    break   // exactly one cell changes per move; server enforces this
+                }
+            }
+        }
+        lastBoard = newBoard
+    }
+
+    var lastFinished by remember { mutableStateOf(false) }
+    LaunchedEffect(state?.finished) {
+        val finished = state?.finished == true
+        if (finished && !lastFinished) {
+            GameAudio.play(if (state?.winnerUserId == null) "draw" else "win_line", gain = 0.6f)
+        }
+        lastFinished = finished
+    }
 
     Column(
         Modifier

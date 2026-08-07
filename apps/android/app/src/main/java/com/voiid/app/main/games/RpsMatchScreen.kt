@@ -24,9 +24,12 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -67,6 +70,33 @@ fun RpsMatchScreen(matchId: String, onClose: () -> Unit) {
     val state by engine.rps.collectAsState()
     val joinError by engine.joinError.collectAsState()
     val me = engine.myUserId
+
+    DisposableEffect(Unit) {
+        GameAudio.preload(context, "rps")
+        onDispose { GameAudio.release("rps") }
+    }
+
+    // A new resolved round appeared: the reveal just happened. History only grows, so a count
+    // increase is unambiguous — a round is atomic (both throws resolve together), unlike Tic
+    // Tac Toe where individual cells need diffing. Mirrors iOS RpsMatchView's identical hook.
+    var lastHistoryCount by remember { mutableIntStateOf(0) }
+    LaunchedEffect(state?.history?.size) {
+        val s = state
+        val newCount = s?.history?.size ?: 0
+        if (newCount > lastHistoryCount && s != null) {
+            GameAudio.play("reveal", gain = 0.65f)
+            val mySeat = s.players.indexOf(me).let { if (it < 0) 0 else it }
+            val round = s.history.last()
+            when (round.winner) {
+                null -> GameAudio.play("round_tie", gain = 0.5f)
+                mySeat -> GameAudio.play("round_win", gain = 0.65f)
+                else -> GameAudio.play("round_lose", gain = 0.65f)
+            }
+        }
+        lastHistoryCount = newCount
+    }
+    // No dedicated RPS match-end sound in the catalogue (docs/GAMES_AUDIO.md §9) — the final
+    // round's own round_win/round_lose/round_tie above already carries the outcome.
 
     LaunchedEffect(matchId) { engine.open(matchId) }
 
