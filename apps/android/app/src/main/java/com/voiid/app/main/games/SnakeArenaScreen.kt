@@ -130,6 +130,7 @@ fun SnakeArenaScreen(
     val frameClock = remember { mutableDoubleStateOf(0.0) }
     val trails = remember { TrailStore() }
     val camera = remember { CameraMemory() }
+    val particles = remember { ParticleSystem() }
 
     val me = engine.myUserId
 
@@ -150,7 +151,7 @@ fun SnakeArenaScreen(
         Canvas(Modifier.fillMaxSize()) {
             // Reading the clock inside the DRAW scope subscribes only this draw to it.
             @Suppress("UNUSED_EXPRESSION") frameClock.doubleValue
-            drawArena(framesRef.value, me, trails, stick, camera)
+            drawArena(framesRef.value, me, trails, stick, camera, particles)
         }
 
         // Death / game-over panel.
@@ -409,15 +410,146 @@ private fun lerpAngle(a: Double, b: Double, t: Double): Double {
 /** Mutable camera memory, so a respawn does not snap the view to the arena origin. */
 private class CameraMemory { var last: Offset? = null }
 
+/**
+ * Presentation-only VFX driven by the server's `death`/`kill`/`eat`/`spawn` events
+ * (GAMES_ANIMATION.md §5.3, mirrors iOS `ParticleSystem` in SnakeMetalView.swift).
+ *
+ * FIXED POOL, NOT A GROWING LIST — a death converts a whole body into food and can fire a
+ * burst at the same instant several other snakes eat; without a cap a chaotic scrum could
+ * allocate thousands of particles in one frame. A full pool just stops accepting new spawns
+ * until old ones expire, which reads as "the newest burst is a little sparser" rather than a
+ * frame-rate cliff.
+ *
+ * EVERYTHING HERE IS CLIENT-ONLY. `step`/`spawn` only read events the server already
+ * committed to; nothing here can desync a match, only under- or over-decorate one — same
+ * guarantee the renderer as a whole makes (SnakeArenaScreen.kt's own top-of-file doc comment).
+ */
+private class ParticleSystem {
+    private data class Particle(
+        var x: Float, var y: Float,
+        var vx: Float, var vy: Float,
+        var life: Float, val maxLife: Float,
+        val size: Float, val color: Color,
+    )
+
+    companion object { private const val CAPACITY = 512 }
+
+    private val particles = ArrayList<Particle>(CAPACITY)
+    /** De-dupe key: only spawn for a server tick this instance hasn't seen. `t` only
+     * increases within a match, so "newer than last seen" is sufficient — matches the
+     * de-dupe strategy in the iOS ParticleSystem's caller. */
+    private var lastEventTime = -1.0
+
+    fun spawn(kind: String, x: Float, y: Float, color: Color) {
+        when (kind) {
+            // "6-10 sparks converging into the head" (doc) — approximated as an outward burst
+            // from the food's position, the simplest readable equivalent at this scale.
+            "eat" -> emit((6..10).random(), x, y, speed = 40f..90f, life = 0.28f..0.4f,
+                size = 2.5f..4f, color = color)
+            "kill" -> emit(22, x, y, speed = 90f..220f, life = 0.4f..0.65f, size = 3f..6f,
+                color = color)
+            "spawn" -> emit(16, x, y, speed = 60f..140f, life = 0.35f..0.5f, size = 2f..4f,
+                color = color)
+            // Your own death is handled as a screen-space effect elsewhere (hitstop/slow-mo/
+            // desaturate, §5.4, not yet built) — a world-space burst there too would double up.
+            // Other snakes' deaths still burst so a scrum reads as violent from every
+            // perspective but your own.
+            "death" -> emit(18, x, y, speed = 70f..160f, life = 0.4f..0.6f, size = 3f..5f,
+                color = color)
+        }
+    }
+
+    private fun emit(
+        count: Int, x: Float, y: Float,
+        speed: ClosedFloatingPointRange<Float>, life: ClosedFloatingPointRange<Float>,
+        size: ClosedFloatingPointRange<Float>, color: Color,
+    ) {
+        val budget = minOf(count, CAPACITY - particles.size)
+        repeat(budget) {
+            val angle = Math.random().toFloat() * (2f * Math.PI.toFloat())
+            val s = speed.start + Math.random().toFloat() * (speed.endInclusive - speed.start)
+            val l = life.start + Math.random().toFloat() * (life.endInclusive - life.start)
+            val sz = size.start + Math.random().toFloat() * (size.endInclusive - size.start)
+            particles.add(Particle(
+                x = x, y = y,
+                vx = cos(angle) * s, vy = sin(angle) * s,
+                life = l, maxLife = l, size = sz, color = color,
+            ))
+        }
+    }
+
+    /** Called with events already de-duped against [lastEventTime] by the caller. Exposed
+     * separately from [spawn] so the caller can look up each event's snake colour itself. */
+    fun shouldSpawnFor(serverTime: Double): Boolean = serverTime > lastEventTime
+    fun markSpawned(serverTime: Double) { lastEventTime = serverTime }
+
+    /** nanoTime of the previous [stepWallClock] call; 0 means "not yet called". Owned here
+     * rather than threaded through as a caller-managed parameter, since this system already
+     * IS the one `remember`ed object the screen holds for this purpose — see the class doc. */
+    private var lastStepAtNanos = 0L
+
+    /** Advances on WALL-CLOCK time, not the render/interpolation clock's — a spark's decay is
+     * not gameplay and must keep animating through a network stall rather than freeze
+     * alongside it. Safe to call once per draw; a no-op on the very first call, which only
+     * establishes the baseline. */
+    fun stepWallClock() {
+        val now = System.nanoTime()
+        if (lastStepAtNanos > 0L) step((now - lastStepAtNanos) / 1_000_000_000f)
+        lastStepAtNanos = now
+    }
+
+    private fun step(dtSeconds: Float) {
+        if (dtSeconds <= 0f || particles.isEmpty()) return
+        val drag = 1f - minOf(dtSeconds * 2.2f, 1f)
+        var i = particles.size - 1
+        while (i >= 0) {
+            val p = particles[i]
+            p.life -= dtSeconds
+            if (p.life <= 0f) {
+                particles.removeAt(i)
+            } else {
+                p.x += p.vx * dtSeconds
+                p.y += p.vy * dtSeconds
+                p.vx *= drag
+                p.vy *= drag
+            }
+            i--
+        }
+    }
+
+    /** Draw every live particle additively — a spark IS the light, unlike food/heads there is
+     * no opaque core underneath to protect from softening, so this uses the same
+     * [DrawScope.drawGlowDot] primitive as the rest of the bloom approximation. */
+    fun DrawScope.draw() {
+        particles.forEach { p ->
+            val fade = (p.life / p.maxLife).coerceIn(0f, 1f)
+            drawCircle(p.color.copy(alpha = 0.5f * fade), radius = p.size * 1.6f,
+                center = Offset(p.x, p.y), blendMode = BlendMode.Plus)
+        }
+    }
+}
+
 private fun DrawScope.drawArena(
     frames: List<GamesEngine.SnakeFrame>,
     me: String?,
     trails: TrailStore,
     stick: Offset,
     camera: CameraMemory,
+    particles: ParticleSystem,
 ) {
     val s = pickSample(frames) ?: return
     val state = s.to
+
+    // NEW events only, de-duped by the server's own clock (see ParticleSystem's doc comment).
+    if (particles.shouldSpawnFor(state.time)) {
+        state.events.forEach { e ->
+            val color = state.snakes.firstOrNull { it.id == e.snakeId }
+                ?.let { paletteColor(it.colorIndex) } ?: Color.White
+            particles.spawn(e.kind, e.x.toFloat(), e.y.toFloat(), color)
+        }
+        particles.markSpawned(state.time)
+    }
+    particles.stepWallClock()
 
     // Interpolated head positions and headings for every snake this frame.
     val heads = HashMap<String, Offset>(state.snakes.size)
@@ -469,6 +601,11 @@ private fun DrawScope.drawArena(
                 headings[it.id] ?: 0.0, true, state.time, stick,
                 rankOf[it.id] ?: 0, me, scale)
         }
+
+        // On top of every snake, same as a spark being the brightest thing on screen for its
+        // short life. Drawn inside the SAME withTransform as everything else so particle world
+        // coordinates need no separate camera math of their own.
+        with(particles) { draw() }
     }
 }
 
