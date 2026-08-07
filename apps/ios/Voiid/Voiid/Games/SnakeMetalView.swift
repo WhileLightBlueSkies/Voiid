@@ -245,6 +245,8 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     /// duplicate broadcast) cannot double-spawn. Keyed by (kind, snakeId, tick) rather than
     /// object identity since events are plain structs with no id of their own.
     private var lastEventTime: Double = -1
+    /// Wall-clock throttle for the `eat` haptic — see its call site for why.
+    private var lastEatHapticAt: TimeInterval = 0
 
     private var viewSize: CGSize = .zero
     /// When the HUD was last pushed to SwiftUI; see `publishHud` for why it is throttled.
@@ -631,8 +633,14 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         // sliding for 16ms while everything else had already stopped.
         if state.time > lastEventTime {
             for event in state.events {
-                if event.kind == "kill", event.snakeId == me { impact.triggerKill() }
-                if event.kind == "death", event.snakeId == me { impact.triggerDeath() }
+                if event.kind == "kill", event.snakeId == me {
+                    impact.triggerKill()
+                    GameHaptics.kill()
+                }
+                if event.kind == "death", event.snakeId == me {
+                    impact.triggerDeath()
+                    GameHaptics.death()
+                }
             }
         }
 
@@ -681,6 +689,16 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
                 let colour = state.snakes.first { $0.id == event.snakeId }
                     .map { Self.palette($0.colorIndex) } ?? SIMD4(1, 1, 1, 1)
                 particles.spawn(kind: event.kind, at: event.position, colour: colour)
+
+                // Rate-limited: `eat` can fire several times a second in a food-dense patch,
+                // and a Taptic Engine retriggered that fast reads as a buzz rather than a
+                // series of distinct ticks. 60ms floor keeps individual eats distinguishable
+                // without saturating the hardware queue.
+                if event.kind == "eat", event.snakeId == me,
+                   CACurrentMediaTime() - lastEatHapticAt > 0.06 {
+                    GameHaptics.eat()
+                    lastEatHapticAt = CACurrentMediaTime()
+                }
 
                 // Screen shake on YOUR kills only. `event.snakeId` on a `kill` event is the
                 // KILLER (snake/index.ts kill() pushes `id: killerId`), so this fires for the
