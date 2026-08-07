@@ -84,11 +84,34 @@ struct RpsMatchView: View {
             }
         }
         .task { await engine.open(matchId: matchId) }
-        .onAppear { session.hideTabBar = true }
+        .onAppear {
+            session.hideTabBar = true
+            GameAudio.shared.preload(for: "rps")
+        }
         // Restore the bar on the way OUT. Hiding without restoring left the app with no
         // footer after quitting a game — the bar is opt-out, so every screen that hides
         // it owns putting it back.
-        .onDisappear { session.hideTabBar = false }
+        .onDisappear {
+            session.hideTabBar = false
+            GameAudio.shared.release(for: "rps")
+        }
+        // A new resolved round appeared: the reveal just happened. History only grows, so a
+        // count increase is unambiguous — unlike Tic Tac Toe there is nothing to diff, a round
+        // is atomic (both throws resolve together, never one cell at a time).
+        .onChange(of: engine.rps?.history.count) { oldCount, newCount in
+            guard let oldCount, let newCount, newCount > oldCount,
+                  let s = engine.rps, let round = s.history.last else { return }
+            GameAudio.shared.play("reveal", gain: 0.65)
+            let mySeat = max(0, s.players.firstIndex(of: me ?? "") ?? 0)
+            if let winner = round.winner {
+                GameAudio.shared.play(winner == mySeat ? "round_win" : "round_lose", gain: 0.65)
+            } else {
+                GameAudio.shared.play("round_tie", gain: 0.5)
+            }
+        }
+        // No dedicated RPS match-end sound in the catalogue (docs/GAMES_AUDIO.md §9) — the
+        // final round's own round_win/round_lose/round_tie above already carries the outcome,
+        // so nothing else fires here on `finished`.
     }
 
     @ViewBuilder

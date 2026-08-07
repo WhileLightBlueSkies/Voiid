@@ -75,8 +75,34 @@ struct TicTacToeView: View {
             }
         }
         .task { await engine.open(matchId: matchId) }
-        .onAppear { session.hideTabBar = true }
-        .onDisappear { session.hideTabBar = false; engine.leave() }
+        .onAppear {
+            session.hideTabBar = true
+            GameAudio.shared.preload(for: "tictactoe")
+        }
+        .onDisappear {
+            session.hideTabBar = false
+            engine.leave()
+            GameAudio.shared.release(for: "tictactoe")
+        }
+        // Mark placed. The board only ever GAINS marks mid-match (a cell, once filled, never
+        // empties), so diffing against the previously-seen board finds exactly the cell that
+        // just changed and its seat (0 = X, 1 = O) picks the pitch — a plain count comparison
+        // could not tell WHICH mark landed, and that is what a listener needs to pick a sound.
+        .onChange(of: engine.state?.board) { oldBoard, newBoard in
+            guard let oldBoard, let newBoard, oldBoard.count == newBoard.count else { return }
+            for i in newBoard.indices where oldBoard[i] == nil && newBoard[i] != nil {
+                GameAudio.shared.play(newBoard[i] == 0 ? "mark_x" : "mark_o", gain: 0.55)
+                break   // exactly one cell changes per move; server enforces this
+            }
+        }
+        .onChange(of: engine.state?.finished) { _, finished in
+            guard finished == true, let state = engine.state else { return }
+            if state.winnerUserId == nil {
+                GameAudio.shared.play("draw", gain: 0.5)
+            } else {
+                GameAudio.shared.play("win_line", gain: 0.7)
+            }
+        }
     }
 
     // MARK: - Pieces

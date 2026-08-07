@@ -33,6 +33,7 @@ struct CricketMatchView: View {
     /// than from the ball itself, so two identical balls in a row still animate twice.
     @State private var ballToken = 0
     @State private var lastCount = 0
+    @State private var lastInnings = 1
 
     var body: some View {
         VStack(spacing: 0) {
@@ -71,15 +72,45 @@ struct CricketMatchView: View {
             }
         }
         .task { await engine.open(matchId: matchId) }
-        .onAppear { session.hideTabBar = true }
+        .onAppear {
+            session.hideTabBar = true
+            GameAudio.shared.preload(for: "cricket")
+        }
         // Restore the bar on the way OUT. Hiding without restoring left the app with no
         // footer after quitting a game — the bar is opt-out, so every screen that hides
         // it owns putting it back.
-        .onDisappear { session.hideTabBar = false }
+        .onDisappear {
+            session.hideTabBar = false
+            GameAudio.shared.release(for: "cricket")
+        }
         .onChange(of: engine.cricket?.history.count ?? 0) { _, n in
-            if n > lastCount { ballToken += 1 }
+            if n > lastCount, let ball = engine.cricket?.history.last {
+                ballToken += 1
+                playBallSound(ball)
+            }
             lastCount = n
         }
+        .onChange(of: engine.cricket?.innings ?? 1) { _, innings in
+            if innings > lastInnings { GameAudio.shared.play("innings", gain: 0.55) }
+            lastInnings = innings
+        }
+    }
+
+    /// One resolved ball -> its sound, matching CricketPitch's own BallEvent classification so
+    /// the two never disagree about what just happened (a six that visually arcs over the rope
+    /// but sonically plays a dot ball would be a worse bug than either alone).
+    private func playBallSound(_ ball: CricketState.Ball) {
+        if ball.wicket {
+            GameAudio.shared.play("wicket", gain: 0.75)
+        } else if ball.runs == 6 {
+            GameAudio.shared.play("six", gain: 0.8)
+        } else if ball.runs == 4 {
+            GameAudio.shared.play("four", gain: 0.7)
+        } else if ball.runs > 0 {
+            GameAudio.shared.play("runs_\(ball.runs)", gain: 0.55)
+        }
+        // A dot ball (runs == 0, not a wicket) has no dedicated sound in the catalogue
+        // (docs/GAMES_AUDIO.md §9) — silence is correct there, not a missing case.
     }
 
     @ViewBuilder
@@ -210,7 +241,10 @@ struct CricketMatchView: View {
     }
 
     private func pickButton(_ n: Int, disabled: Bool) -> some View {
-        Button { engine.pickCricket(n) } label: {
+        Button {
+            GameAudio.shared.play("pick", gain: 0.45)
+            engine.pickCricket(n)
+        } label: {
             Text("\(n)")
                 .font(VoiidFont.rounded(22, .bold))
                 .foregroundStyle(VoiidColor.textPrimary)
