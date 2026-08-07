@@ -45,7 +45,6 @@ struct ChatDetailView: View {
     @State private var infoMessage: VMessage? // Message Info sheet
     @State private var forwardMessage: VMessage? // forward chat-picker
     @State private var deleteMessage: VMessage?   // single delete confirm
-    @State private var showClearChat = false
     // Multi-select
     @State private var selectionMode = false
     @State private var selectedIDs = Set<String>()
@@ -205,11 +204,6 @@ struct ChatDetailView: View {
                 Button("Cancel", role: .cancel) {}
             }
         }
-        // Clear chat — alert modal
-        .alert("Clear this chat?", isPresented: $showClearChat) {
-            Button("Clear chat", role: .destructive) { chat.clearChat(conversation.id) }
-            Button("Cancel", role: .cancel) {}
-        } message: { Text("All messages will be removed from this chat.") }
         // Bulk delete — alert modal
         .alert("Delete \(selectedIDs.count) message\(selectedIDs.count == 1 ? "" : "s")?", isPresented: $showBulkDelete) {
             Button("Delete", role: .destructive) {
@@ -400,20 +394,15 @@ struct ChatDetailView: View {
                 Image(systemName: "video.fill")
             }
             .accessibilityLabel("Video call")
-            Menu {
-                Button { showInfo = true } label: {
-                    Label(conversation.type == .group ? "Group info" : "View profile", systemImage: "info.circle")
-                }
-                Button { withAnimation { selectionMode = true } } label: {
-                    Label("Select messages", systemImage: "checkmark.circle")
-                }
-                Button(role: .destructive) { showClearChat = true } label: {
-                    Label("Clear chat", systemImage: "trash")
-                }
-            } label: {
-                Image(systemName: "ellipsis")
-            }
-            .accessibilityLabel("More")
+            // NO OVERFLOW MENU. Every item it held now has a better home:
+            //   * "View profile" duplicated the title, which already opens the profile;
+            //   * "Select messages" moved onto the message long-press pill, because
+            //     selecting messages begins with a message — and it now starts with the one
+            //     you pressed, rather than dropping you into an empty selection;
+            //   * "Clear chat" moved to the profile's danger card, beside Block and Report,
+            //     which is where this conversation's other destructive actions already live.
+            // An ellipsis whose contents all belong elsewhere is a drawer for things nobody
+            // decided where to put.
         }
     }
 
@@ -616,6 +605,13 @@ struct ChatDetailView: View {
                           onCopy: { UIPasteboard.general.string = msg.text },
                           onInfo: { infoMessage = msg },
                           onDelete: { deleteMessage = msg },
+                          onSelect: {
+                              // Enter selection ALREADY holding this message. Entering empty
+                              // (which the old toolbar menu did) made the first tap after
+                              // "Select messages" mean something different from every tap
+                              // after it.
+                              withAnimation { selectionMode = true; selectedIDs = [msg.id] }
+                          },
                           selectionMode: selectionMode,
                           onSelectTap: { toggleSelect(msg.id) },
                           // Tap a call bubble to call back with the SAME kind.
@@ -1048,6 +1044,10 @@ struct MessageBubble: View {
     var onCopy: () -> Void = {}
     var onInfo: () -> Void = {}
     var onDelete: () -> Void = {}
+    /// Enter multi-select, starting with THIS message chosen. Lives on the long-press pill
+    /// rather than in a toolbar menu: selecting messages begins with a message, so the
+    /// affordance belongs on one.
+    var onSelect: () -> Void = {}
     var selectionMode: Bool = false
     var onSelectTap: () -> Void = {}
     /// Tap a call bubble to call back, with that call's kind (true = video).
@@ -1208,6 +1208,7 @@ struct MessageBubble: View {
                         actionBtn("Forward", "arrowshape.turn.up.right") { showReactions = false; onForward() }
                         actionBtn("Copy", "doc.on.doc") { showReactions = false; onCopy() }
                         if message.isMine { actionBtn("Info", "info.circle") { showReactions = false; onInfo() } }
+                        actionBtn("Select", "checkmark.circle") { showReactions = false; onSelect() }
                         actionBtn("Delete", "trash", tint: VoiidColor.error) { showReactions = false; onDelete() }
                     }
                 }

@@ -75,6 +75,15 @@ struct ProfileAvatarButton: View {
     /// which is what a banner needs.
     var fillsFrame: Bool = false
 
+    /// The disc drawn behind the initials when there is no photo.
+    ///
+    /// DEFAULTS TO `fieldFill`, which is right on a plain ground — but wrong ON A CARD. In
+    /// dark mode `fieldFill` (#171320) is 28% darker than `surfaceCard` (#1C1826), so an
+    /// avatar placed on a card punched a visibly darker circle into it: a second tone where
+    /// there should be one surface, which is the "dual tone" on the settings profile row.
+    /// Callers sitting on a card pass that card's colour and the avatar reads as part of it.
+    var placeholderFill: Color = VoiidColor.fieldFill
+
     private var initials: String {
         let parts = (name ?? "").split(separator: " ").prefix(2)
         let letters = parts.compactMap { $0.first }.map(String.init).joined()
@@ -87,7 +96,7 @@ struct ProfileAvatarButton: View {
 
     var body: some View {
         ZStack {
-            Circle().fill(VoiidColor.fieldFill)
+            Circle().fill(placeholderFill)
             if let resolved {
                 Image(uiImage: resolved).resizable().scaledToFill()
             } else if let photoURL, photoURL.hasPrefix("http"),
@@ -282,10 +291,18 @@ struct SettingsSheet: View {
     private var identity: some View {
         NavigationLink(value: SettingsRoute.editProfile) {
             HStack(spacing: VoiidSpacing.md) {
+                // ONE TONE, NOT TWO. This avatar sits on a `surfaceCard` row, and the
+                // default `fieldFill` disc is 28% darker than that card in dark mode — so a
+                // photoless profile showed a distinctly darker circle cut into the card, and
+                // the hairline border on top made it a third edge. Matching the card means
+                // the initials float on the surface rather than in a well.
+                //
+                // The border goes with it: it existed to separate the disc from the card, and
+                // with the disc gone it was drawing a ring around nothing.
                 ProfileAvatarButton(photoURL: session.profile.photoURL,
                                     name: session.profile.fullName,
-                                    size: 72)
-                    .overlay(Circle().strokeBorder(VoiidColor.textPrimary.opacity(0.08), lineWidth: 1))
+                                    size: 72,
+                                    placeholderFill: VoiidColor.surfaceCard)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(session.profile.fullName.isEmpty ? "Add your name" : session.profile.fullName)

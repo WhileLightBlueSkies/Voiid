@@ -308,36 +308,17 @@ fun ChatDetailView(
                     Row(horizontalArrangement = Arrangement.spacedBy(24.dp), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Call, "Voice call", tint = VoiidColor.textPrimary, modifier = Modifier.size(18.dp).clickable { haptics.tap(); startCall(CallKind.VOICE) })
                         Icon(Icons.Default.Videocam, "Video call", tint = VoiidColor.textPrimary, modifier = Modifier.size(20.dp).clickable { haptics.tap(); startCall(CallKind.VIDEO) })
-                        Box {
-                            Icon(Icons.Default.MoreHoriz, "More", tint = VoiidColor.textPrimary, modifier = Modifier.size(20.dp).clickable { showOverflow = true })
-                            DropdownMenu(expanded = showOverflow, onDismissRequest = { showOverflow = false }) {
-                                DropdownMenuItem(
-                                    text = { Text(if (isGroup) "Group info" else "View profile") },
-                                    onClick = { showOverflow = false; showDetails = true },
-                                    leadingIcon = { Icon(Icons.Default.Info, null) },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Select messages") },
-                                    onClick = { showOverflow = false; selectionMode = true },
-                                    leadingIcon = { Icon(Icons.Default.CheckCircle, null) },
-                                )
-                                // 1:1 only. A safety number is a comparison between two identity
-                                // keys; a group has no single pair to compare, and offering it
-                                // there would imply a guarantee the screen cannot make.
-                                if (!isGroup) {
-                                    DropdownMenuItem(
-                                        text = { Text("Verify encryption") },
-                                        onClick = { showOverflow = false; showSafetyNumber = true },
-                                        leadingIcon = { Icon(Icons.Default.Lock, null) },
-                                    )
-                                }
-                                DropdownMenuItem(
-                                    text = { Text("Clear chat", color = VoiidColor.error) },
-                                    onClick = { showOverflow = false; showClearChat = true },
-                                    leadingIcon = { Icon(Icons.Default.Delete, null, tint = VoiidColor.error) },
-                                )
-                            }
-                        }
+                        // NO OVERFLOW MENU. Every item it held now has a better home:
+                        //   * "View profile" duplicated the title, which already opens it;
+                        //   * "Select messages" moved onto the message long-press pill —
+                        //     selecting messages begins with a message, so the affordance
+                        //     belongs on one, and it now starts with the message you pressed;
+                        //   * "Verify encryption" is already on the profile's encryption card;
+                        //   * "Clear chat" moved to the profile's danger card, beside Block
+                        //     and Report, where this conversation's other destructive actions
+                        //     already live.
+                        // An ellipsis whose contents all belong elsewhere is a drawer for
+                        // things nobody decided where to put. Mirrors iOS.
                     }
                 }
             }
@@ -386,6 +367,14 @@ fun ChatDetailView(
                             onSelectTap = {
                                 haptics.selection()
                                 if (selectedIds.contains(msg.id)) selectedIds.remove(msg.id) else selectedIds.add(msg.id)
+                            },
+                            onSelect = {
+                                // Enter selection ALREADY holding this message. The old
+                                // overflow item entered empty, which made the first tap
+                                // afterwards mean something different from every tap after it.
+                                haptics.selection()
+                                selectionMode = true
+                                selectedIds.clear(); selectedIds.add(msg.id)
                             },
                             onReply = { replyingTo = msg },
                             onForward = { forwardMessage = msg },
@@ -625,6 +614,9 @@ fun ChatDetailView(
                     // The profile asks the CHAT to place the call — ChatDetailView already owns
                     // peer resolution and the group-call lock, so this stays one code path.
                     onStartCall = { kind -> showDetails = false; startCall(kind) },
+                    // Same delegation as the call above: the chat owns the store, so the
+                    // profile asks rather than reaching for it.
+                    onClearChat = { showDetails = false; chat.clearChat(conversation.id) },
                 )
             }
         }

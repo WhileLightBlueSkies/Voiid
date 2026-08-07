@@ -130,6 +130,12 @@ fun MessageBubble(
     selected: Boolean = false,
     onSelectTap: () -> Unit = {},
     onReply: () -> Unit = {},
+    /**
+     * Enter multi-select, starting with this message chosen. Lives on the long-press pill
+     * rather than a toolbar menu: selecting messages begins with a message, so the affordance
+     * belongs on one. Mirrors iOS.
+     */
+    onSelect: () -> Unit = {},
     onForward: () -> Unit = {},
     onReact: (String) -> Unit = {},
     onCopy: () -> Unit = {},
@@ -264,6 +270,7 @@ fun MessageBubble(
                                     onCopy = { showMenu = false; onCopy() },
                                     onInfo = { showMenu = false; onInfo() },
                                     onDelete = { showMenu = false; onDelete() },
+                                    onSelect = { showMenu = false; onSelect() },
                                 )
                             }
                         }
@@ -550,6 +557,8 @@ private fun ReactionActionMenu(
     onCopy: () -> Unit,
     onInfo: () -> Unit,
     onDelete: () -> Unit,
+    /** Enter multi-select starting with THIS message. See the note at the call site. */
+    onSelect: () -> Unit,
 ) {
     val scale by animateFloatAsState(1f, spring(dampingRatio = Spring.DampingRatioMediumBouncy), label = "menuPop")
     Column(
@@ -578,6 +587,7 @@ private fun ReactionActionMenu(
             ActionBtn("Forward", Icons.AutoMirrored.Filled.Forward, VoiidColor.primary, onForward)
             ActionBtn("Copy", Icons.Default.ContentCopy, VoiidColor.primary, onCopy)
             if (isMine) ActionBtn("Info", Icons.Default.Info, VoiidColor.primary, onInfo)
+            ActionBtn("Select", Icons.Default.CheckCircle, VoiidColor.primary, onSelect)
             ActionBtn("Delete", Icons.Default.Delete, VoiidColor.error, onDelete)
         }
     }

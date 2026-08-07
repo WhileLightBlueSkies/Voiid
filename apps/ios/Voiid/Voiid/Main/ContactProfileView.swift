@@ -21,6 +21,8 @@ struct ContactProfileView: View {
     /// single call-setup path; duplicating it here would let the two drift.
     @Binding var pendingCall: CallKind?
     @EnvironmentObject var session: AppSession
+    /// Needed for Clear chat, which now lives in the danger card below.
+    @EnvironmentObject var chat: ChatStore
     @Environment(\.dismiss) private var dismiss
     @State private var muted = false
     @State private var viewPhoto = false
@@ -33,6 +35,7 @@ struct ContactProfileView: View {
     @State private var loadState: LoadState = .loading
     @State private var showSafetyNumber = false
     @State private var showBlockConfirm = false
+    @State private var showClearChatConfirm = false
     @State private var showReportConfirm = false
     @State private var notImplemented: String?
 
@@ -137,6 +140,16 @@ struct ContactProfileView: View {
             SafetyNumberView(peerUserId: conversation.peerUserId ?? "", peerName: displayName)
         }
         .sheet(isPresented: $showAllMedia) { SharedMediaSheet(title: conversation.title, conversationId: conversation.id) }
+        .confirmationDialog("Clear this chat?", isPresented: $showClearChatConfirm,
+                            titleVisibility: .visible) {
+            Button("Clear chat", role: .destructive) {
+                chat.clearChat(conversation.id)
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Every message in this conversation is deleted from this device. This cannot be undone.")
+        }
         .confirmationDialog("Block \(displayName)?", isPresented: $showBlockConfirm, titleVisibility: .visible) {
             Button("Block", role: .destructive) { notImplemented = "Blocking isn’t available yet." }
             Button("Cancel", role: .cancel) {}
@@ -629,6 +642,13 @@ struct ContactProfileView: View {
     /// the mistake.
     private var dangerCard: some View {
         card {
+            // CLEAR CHAT LIVES HERE NOW, not in a toolbar overflow menu. It is a destructive
+            // action on the CONVERSATION, and this card is already where the conversation's
+            // destructive actions live — putting it beside Block and Report means one place
+            // to look rather than two, and the chat toolbar loses its last reason to carry an
+            // ellipsis.
+            actionRow("trash.fill", "Clear chat") { showClearChatConfirm = true }
+            Divider().background(VoiidColor.divider.opacity(0.4))
             actionRow("hand.raised.fill", "Block \(displayName)") { showBlockConfirm = true }
             Divider().background(VoiidColor.divider.opacity(0.4))
             actionRow("exclamationmark.bubble.fill", "Report \(displayName)") { showReportConfirm = true }
@@ -751,7 +771,20 @@ extension View {
     func glassCard(cornerRadius: CGFloat = 20) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         return self
+            // MATERIAL, THEN A TINT OF THE GROUND'S OWN HUE.
+            //
+            // THE MISMATCH: the page sits on an aubergine wash (`primary` at 0.16 fading
+            // down), but `.regularMaterial` blurs toward a NEUTRAL grey — it samples what is
+            // behind it and then desaturates hard. So the cards read as grey slabs floating
+            // on a purple page: two different colour families, which is exactly the "card
+            // doesn't match the background" symptom.
+            //
+            // A whisper of `primary` over the material pulls the card back into the page's
+            // family without making it opaque. 0.06 is deliberately below the threshold where
+            // it reads as a coloured fill — at 0.12 it stops looking like glass and starts
+            // looking like a lilac box.
             .background(.regularMaterial, in: shape)
+            .background(VoiidColor.primary.opacity(0.06), in: shape)
             .overlay(
                 shape.strokeBorder(
                     LinearGradient(
