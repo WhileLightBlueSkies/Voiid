@@ -197,6 +197,54 @@ router.post(
 );
 
 /**
+ * POST /games/matches/:id/leave — a player is deliberately backing out of the game screen.
+ *
+ * WHY THIS EXISTS: `game_join` starts a match. Nothing ever told the server the reverse — a
+ * player closing Snake's arena screen only cleared CLIENT-side state (GamesEngine.leave() on
+ * both platforms), so a continuous game's tick loop kept running and broadcasting `game_state`
+ * at its full rate to a socket showing a completely different screen. Every solo Snake
+ * practice run left one of these ticking for up to its full 60-600s duration — and because
+ * the tick loop refreshes its own Redis TTL on every persist, an abandoned match was never
+ * actually "stale" from the server's point of view until its own clock ran out. See
+ * docs/GAMES_SNAKE_BUGS.md for the incident this closes.
+ *
+ * SCOPED TO SOLO MATCHES ONLY (backend/games' handleLeave rejects anything else). Ending a
+ * multiplayer match the instant one player backs out would penalize whoever is still playing;
+ * that is a real feature (forfeit/abandonment handling, GAMES.md §7) this endpoint
+ * deliberately does not attempt — it only stops the specific flood a solo player leaving
+ * causes, since a solo match has no second player to protect.
+ */
+router.post(
+  '/matches/:id/leave',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id: userId } = (req as any).auth as { user_id: string };
+    const matchId = req.params.id;
+    if (!UUID_RE.test(matchId)) return res.status(400).json({ error: 'bad match id' });
+
+    const rows = await query<{ player_ids: string[] }>(
+      `select player_ids from game_matches where id = $1`,
+      [matchId]
+    );
+    const match = rows[0];
+    // A leave for a match that is already gone (finished, or never existed) is not an error —
+    // the client's goal (this match should stop mattering to me) is already true.
+    if (!match) return res.json({ ok: true, match_id: matchId });
+
+    if (!match.player_ids.includes(userId)) {
+      return res.status(403).json({ error: 'not a player in this match' });
+    }
+
+    await publisher.publish(
+      GAMES_INPUT_CHANNEL,
+      JSON.stringify({ type: 'game_leave', match_id: matchId, from_user_id: userId })
+    );
+
+    res.json({ ok: true, match_id: matchId });
+  })
+);
+
+/**
  * GET /games/invites — matches the caller has been invited to but hasn't joined.
  *
  * Drives the banners on the games home screen. Two buckets, split by age rather than by a
