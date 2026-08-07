@@ -29,6 +29,18 @@ struct GroupCallScreen: View {
     /// read a name off, so the roster — not the grid — is what answers "who is here".
     @State private var showRoster = false
 
+    /// Reduce Motion does not mean NO feedback — it means non-vestibular feedback. The grid
+    /// is the one place here that moves large objects across the screen (every tile re-lays
+    /// out when somebody joins), which is exactly the motion this setting exists to suppress.
+    /// The speaking ring and the control press states are opacity/scale on small elements and
+    /// stay as they are: removing them would cost information and calm nobody.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// The reflow animation, or none at all when the user has asked for less movement.
+    private var reflowAnimation: Animation? {
+        reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.9)
+    }
+
     private var isVideo: Bool { kind == .video }
 
     var body: some View {
@@ -224,7 +236,13 @@ struct GroupCallScreen: View {
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .center)
             // A join or a leave re-flows every tile; without this they teleport.
-            .animation(.easeInOut(duration: 0.2), value: call.participants.count)
+            //
+            // A SPRING, not a fixed ease. Tiles are physical objects being repositioned, and
+            // people join and leave in bursts — a second join landing mid-reflow retargets a
+            // spring from wherever the tiles currently are, whereas an ease restarts from a
+            // stale value and visibly jumps. Critically damped (0.9): nothing was thrown, so
+            // no overshoot is earned; the app's house style for chrome (see RootTabView).
+            .animation(reflowAnimation, value: call.participants.count)
         }
         .padding(.horizontal, VoiidSpacing.sm)
     }
@@ -279,6 +297,10 @@ struct GroupCallScreen: View {
             // The end button is NOT in the flexible run: it keeps a fixed size and sits at the
             // trailing edge so it lands in the same place on every call, voice or video.
             Button {
+                // Kept despite the press haptic from SoftPressStyle, and deliberately: this
+                // is a COMMIT, not a press. Leaving a call is irreversible from here, so the
+                // heavier confirmation on the action is doing different work from the light
+                // press acknowledgement — the one case where two are justified.
                 Haptics.rigid()
                 Task { await call.leave(); dismiss() }
             } label: {
@@ -289,6 +311,10 @@ struct GroupCallScreen: View {
                     .background(VoiidColor.error)
                     .clipShape(Circle())
             }
+            // Feedback on press-DOWN, not on release. A 60pt button that only reacts when
+            // the finger lifts reads as dead for the whole duration of the press — the one
+            // latency users feel most on the control they care most about.
+            .buttonStyle(SoftPressStyle(scale: 0.92))
             .accessibilityLabel("Leave call")
             .padding(.leading, VoiidSpacing.sm)
         }
@@ -297,7 +323,10 @@ struct GroupCallScreen: View {
 
     private func ctrl(_ icon: String, _ active: Bool, label: String,
                       _ tap: @escaping () -> Void) -> some View {
-        Button(action: { Haptics.tap(); tap() }) {
+        // NO haptic here: SoftPressStyle already fires one on press-DOWN, which is both
+        // earlier and the actual causal moment. Firing another on action buzzed twice for a
+        // single press — over-feedback, which trains people to ignore all of it (skill §13).
+        Button(action: tap) {
             Image(systemName: icon)
                 .font(.system(size: 21))
                 .foregroundColor(active ? VoiidColor.primary : fg)
@@ -306,6 +335,10 @@ struct GroupCallScreen: View {
                                    : (isVideo ? Color.white.opacity(0.2) : VoiidColor.surfaceCard))
                 .clipShape(Circle())
         }
+        .buttonStyle(SoftPressStyle())
+        // A toggled control (mute, speaker, camera) inverts its colours. Springing that
+        // means double-tapping mute retargets from the current blend rather than snapping.
+        .animation(.spring(response: 0.25, dampingFraction: 1.0), value: active)
         .disabled(call.state == .connecting || !call.state.isActive)
         .accessibilityLabel(label)
     }
@@ -375,7 +408,10 @@ private struct GroupCallTile: View {
                 .inset(by: 1.5)
                 .stroke(VoiidColor.accent, lineWidth: participant.isSpeaking ? 3 : 0)
         )
-        .animation(.easeOut(duration: 0.15), value: participant.isSpeaking)
+        // Critically damped and quick. This retriggers on every syllable-level change in
+        // speech, so ANY overshoot would read as a pulsing ring rather than an indicator —
+        // this is the one place where bounce is actively wrong.
+        .animation(.spring(response: 0.22, dampingFraction: 1.0), value: participant.isSpeaking)
         .overlay(alignment: .bottomLeading) { nameplate }
         .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
         .accessibilityElement(children: .ignore)

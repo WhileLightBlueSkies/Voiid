@@ -87,7 +87,9 @@ struct CallTypeSheet: View {
     }
 
     private func card(_ label: String, _ icon: String, _ tap: @escaping () -> Void) -> some View {
-        Button(action: { Haptics.tap(); tap() }) {
+        // No haptic here: SoftPressStyle below already fires one on press-DOWN, which is
+        // earlier and is the causal moment. Two per press is over-feedback.
+        Button(action: tap) {
             VStack(spacing: VoiidSpacing.sm) {
                 Image(systemName: icon).font(.system(size: 30)).foregroundColor(VoiidColor.textOnPrimary)
                     .frame(width: 64, height: 64).background(VoiidColor.primary).clipShape(Circle())
@@ -573,13 +575,20 @@ struct CallScreen: View {
     }
 
     private func ctrl(_ icon: String, _ active: Bool, _ tap: @escaping () -> Void) -> some View {
-        Button(action: { Haptics.tap(); tap() }) {
+        // Feedback on press-DOWN (SoftPressStyle), not on release. These reacted only when
+        // the finger lifted, so a press registered as nothing at all until it ended — the
+        // same treatment the group call controls now get, on the sibling screen.
+        Button(action: tap) {
             Image(systemName: icon).font(.system(size: 22))
                 .foregroundColor(active ? VoiidColor.primary : (request.kind == .video ? .white : VoiidColor.textPrimary))
                 .frame(width: 58, height: 58)
                 .background(active ? VoiidColor.textOnPrimary : (request.kind == .video ? .white.opacity(0.2) : VoiidColor.surfaceCard))
                 .clipShape(Circle())
         }
+        .buttonStyle(SoftPressStyle())
+        // A toggled control (mute, speaker, camera) inverts its colours; springing that means
+        // a rapid double-tap retargets from the current blend rather than snapping.
+        .animation(.spring(response: 0.25, dampingFraction: 1.0), value: active)
     }
 
     private func startCall() {
@@ -682,14 +691,25 @@ struct SelfPreview<Content: View>: View {
                             drag = v.translation
                         }
                         .onEnded { v in
-                            // Snap to the nearest corner from where the tile ACTUALLY is —
-                            // its current corner plus the drag — rather than from the finger,
-                            // so a small nudge does not fling it across the screen.
+                            // SNAP TO WHERE THE THROW WAS GOING, not to where the finger
+                            // stopped. Using `translation` alone ignored velocity entirely,
+                            // so a fast flick toward the far corner landed in the near one —
+                            // the tile stopped dead at the fingertip instead of carrying the
+                            // momentum the gesture had. `predictedEndTranslation` is UIKit's
+                            // own deceleration projection (the same curve scroll views use),
+                            // so the corner is chosen from the projected resting point.
+                            //
+                            // Still measured from the tile's CURRENT corner rather than from
+                            // the touch, so a slow nudge with no momentum behaves as before
+                            // and does not fling across the screen.
                             let origin = anchorPoint(for: corner, in: geo.size)
-                            let landed = CGPoint(x: origin.x + v.translation.width,
-                                                 y: origin.y + v.translation.height)
-                            let target = PreviewCorner.nearest(to: landed, in: geo.size)
+                            let projected = CGPoint(
+                                x: origin.x + v.predictedEndTranslation.width,
+                                y: origin.y + v.predictedEndTranslation.height)
+                            let target = PreviewCorner.nearest(to: projected, in: geo.size)
                             if target != corner { Haptics.selection() }
+                            // Bounce only because a THROW preceded it: momentum-carrying
+                            // gestures earn overshoot, a tap-driven move does not.
                             withAnimation(.spring(response: 0.32, dampingFraction: 0.8)) {
                                 corner = target
                                 drag = .zero

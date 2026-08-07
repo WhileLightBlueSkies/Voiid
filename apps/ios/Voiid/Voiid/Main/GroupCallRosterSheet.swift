@@ -81,7 +81,10 @@ struct GroupCallRosterSheet: View {
             .overlay(
                 Circle().stroke(VoiidColor.accent, lineWidth: p.isSpeaking ? 2.5 : 0)
             )
-            .animation(.easeOut(duration: 0.15), value: p.isSpeaking)
+            // Matches the grid tile's ring exactly — the same state must not animate
+            // differently in two places on the same screen. Critically damped: it retriggers
+            // on every syllable, and overshoot would read as a pulsing ring.
+            .animation(.spring(response: 0.22, dampingFraction: 1.0), value: p.isSpeaking)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(p.isLocal ? "\(p.displayName) (you)" : p.displayName)
