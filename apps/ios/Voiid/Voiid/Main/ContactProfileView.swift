@@ -79,6 +79,22 @@ struct ContactProfileView: View {
                 .padding(.horizontal, 20)
                 .padding(.top, 20)
                 .padding(.bottom, VoiidSpacing.xl)
+                // SKELETON TO CONTENT IS A CROSSFADE, NOT A CUT.
+                //
+                // The skeletons are deliberately the same GEOMETRY as the real text, so the
+                // layout does not move when the profile lands — but the swap itself was one
+                // frame, which made that carefully-matched geometry read as a glitch rather
+                // than as content arriving. Fading turns "the screen flickered" into "it
+                // loaded".
+                //
+                // On the SECTION STACK, not on each card: every card swaps on the same
+                // `loadState`, so one modifier covers all of them and they resolve together
+                // instead of popping in a ragged sequence.
+                //
+                // Opacity only — nothing travels, so this is safe under Reduce Motion and
+                // needs no gate. Keyed on `loadState` rather than `profile` so a silent
+                // refresh that changes nothing visible does not flash the page.
+                .animation(.easeInOut(duration: 0.22), value: loadState)
             }
         }
         // The photo extends past the top safe area; everything else respects it.
@@ -587,7 +603,10 @@ struct ContactProfileView: View {
                 }
                 .padding(.vertical, 2)
             }
-            .buttonStyle(.plain)
+            // SoftPressStyle, not .plain. This row opens the safety-number screen — the
+            // anti-MITM verification, the most consequential control on this page — and it
+            // reacted to a press with nothing at all until the finger lifted.
+            .buttonStyle(SoftPressStyle(scale: 0.98))
         }
     }
 
@@ -694,7 +713,11 @@ struct ContactProfileView: View {
                 Text(text).font(VoiidFont.rounded(16, .regular)).foregroundColor(VoiidColor.error)
                 Spacer()
             }.padding(.vertical, 4)
-        }.buttonStyle(.plain)
+        }
+        // A 44pt destructive row that does not move under the finger reads as disabled. The
+        // rigid haptic on the ACTION stays alongside the press haptic: one says "I felt
+        // that", the other says "this is serious". Same deliberate exception as end-call.
+        .buttonStyle(SoftPressStyle(scale: 0.98))
     }
 }
 

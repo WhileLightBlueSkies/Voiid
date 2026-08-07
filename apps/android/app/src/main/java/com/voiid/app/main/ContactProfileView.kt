@@ -2,6 +2,11 @@ package com.voiid.app.main
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -128,11 +133,22 @@ fun ContactProfileView(
     /** The one-line status — a field DISTINCT from `bio` that the server has always returned
      *  and this screen never read, which is why a contact's status never appeared. */
     var statusText by remember { mutableStateOf<String?>(null) }
+    /**
+     * Whether the profile fetch is still in flight.
+     *
+     * iOS has had a three-state model here (loading / loaded / failed) with a skeleton;
+     * Android had NOTHING, so while the request was in flight it rendered the empty-state
+     * fallback — "Hey there! I am using Voiid." — words this person never wrote, which were
+     * then replaced by their real status a moment later. A placeholder that lies and then
+     * corrects itself is worse than one that admits it is still loading.
+     */
+    var profileLoading by remember(conversation.peerUserId) { mutableStateOf(true) }
     val savedNumber = remember(conversation.peerUserId) {
         conversation.peerUserId?.let { ContactDirectory.get(context, it).number }
     }
     LaunchedEffect(conversation.peerUserId) {
-        val peer = conversation.peerUserId ?: return@LaunchedEffect
+        val peer = conversation.peerUserId
+        if (peer == null) { profileLoading = false; return@LaunchedEffect }
         runCatching { ProfileService(context).fetchUser(peer) }.getOrNull()?.let { u ->
             fullName = u.full_name?.takeIf { it.isNotBlank() }
             username = u.username?.takeIf { it.isNotBlank() }
@@ -140,6 +156,7 @@ fun ContactProfileView(
             photoUrl = u.photo_url?.takeIf { it.isNotBlank() }
             statusText = u.status_text?.takeIf { it.isNotBlank() }
         }
+        profileLoading = false
     }
 
     confirm?.let { which ->
@@ -221,7 +238,10 @@ fun ContactProfileView(
                 Modifier
                     .fillMaxWidth()
                     .height(360.dp)
-                    .clickable { haptics.tap(); viewPhoto = true },
+                    // The portrait is a 320dp tap target that gave no sign it was tappable.
+                    // A gentler scale than a row: a full-bleed image shrinking 4% reads as a
+                    // shove, so it presses to 0.99.
+                    .softClickable(scale = 0.99f) { viewPhoto = true },
             ) {
                 val resolvedPhoto = photoUrl
                     ?: UserDirectory.photoUrl(conversation.peerUserId ?: "")
@@ -332,6 +352,17 @@ fun ContactProfileView(
 
             // About AND status — two distinct fields. This screen only ever read `bio`, so a
             // contact who set a status showed nothing at all here.
+            // SKELETON TO CONTENT IS A CROSSFADE, NOT A CUT. The skeleton is deliberately
+            // the same geometry as the real text, so the layout does not move when the
+            // profile lands — but the swap itself was one frame, which made that carefully
+            // matched geometry read as a glitch rather than as content arriving.
+            //
+            // Opacity only: nothing travels, so it is safe under Reduce Motion with no gate.
+            androidx.compose.animation.Crossfade(
+                targetState = profileLoading,
+                animationSpec = tween(220),
+                label = "aboutLoad",
+            ) { loading ->
             ProfileCard("About") {
                 // DE-DUPLICATE. `status_text` and `bio` are separate server fields, but the
                 // profile editor writes the same string to both — so a user who set "Testing
@@ -357,9 +388,15 @@ fun ContactProfileView(
                 }
                 // Only when BOTH are absent — otherwise a peer with a real status was shown
                 // "Hey there! I am using Voiid.", a message they never wrote.
-                if (statusShown == null && bioShown == null) {
+                if (statusShown == null && bioShown == null && !loading) {
                     Text("Hey there! I am using Voiid.", style = VoiidFont.rounded(16), color = VoiidColor.textSecondary)
                 }
+                // A SKELETON, not a spinner, and the same shape the real lines will take —
+                // so the card does not resize when text lands. Mirrors iOS.
+                if (loading && statusShown == null && bioShown == null) {
+                    ProfileAboutSkeleton()
+                }
+            }
             }
 
             // Shared media — REAL recent photos from the message store (never DummyData).
@@ -387,7 +424,7 @@ fun ContactProfileView(
                     Text(
                         "See all", style = VoiidFont.rounded(13, FontWeight.Medium),
                         color = VoiidColor.primary,
-                        modifier = Modifier.clickable { haptics.tap(); showAllMedia = true },
+                        modifier = Modifier.softClickable { showAllMedia = true },
                     )
                 }),
             ) {
@@ -458,7 +495,12 @@ fun ContactProfileView(
                     Row(
                         Modifier
                             .fillMaxWidth()
-                            .clickable { haptics.tap(); showSafetyNumber = true }
+                            // softClickable, not clickable. This row opens the safety-number
+                            // screen — the anti-MITM verification, the most consequential
+                            // control on this page — and it reacted to a press with nothing
+                            // at all. It also carries the haptic on press-DOWN, which is why
+                            // the call no longer fires its own.
+                            .softClickable { showSafetyNumber = true }
                             .padding(vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.md),
@@ -521,7 +563,8 @@ fun ContactProfileView(
             .size(38.dp)
             .clip(CircleShape)
             .background(Color.Black.copy(alpha = 0.32f))
-            .clickable { haptics.tap(); onBack() },
+            // The one control that must always work, and it had no press state.
+            .softClickable { onBack() },
         contentAlignment = Alignment.Center,
     ) {
         Icon(
@@ -641,10 +684,18 @@ fun ProfileCard(
     }
 }
 
+/**
+ * A tappable row inside a profile card — Block, Report, and friends.
+ *
+ * Destructive rows especially: a 44dp row that does not move under the finger reads as
+ * disabled. The caller keeps its own heavier haptic on the ACTION alongside the press haptic
+ * softClickable fires — one says "I felt that", the other says "this is serious", and they
+ * are doing different work. Everywhere else a single press haptic is correct.
+ */
 @Composable
 fun ProfileRow(icon: ImageVector, text: String, tint: Color, onClick: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().clickable { onClick() }.padding(vertical = 4.dp),
+        Modifier.fillMaxWidth().softClickable(onClick = onClick).padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(16.dp),
     ) {
@@ -787,4 +838,42 @@ private fun Modifier.glassCard(cornerRadius: androidx.compose.ui.unit.Dp = 20.dp
             ),
             shape,
         )
+}
+
+/**
+ * Two dimmed bars the height of the real About lines.
+ *
+ * A SKELETON, NOT A SPINNER. The card already occupies this space, so a centred spinner would
+ * make the layout jump when text replaces it; bars matched to the real geometry keep it
+ * identical. The pulse is what separates "loading" from "broken" — a static grey bar reads as
+ * content that failed to render.
+ *
+ * Mirrors the iOS `PulsePlaceholder` timing exactly (1100ms, reversing) so the two platforms
+ * breathe at the same rate.
+ */
+@Composable
+private fun ProfileAboutSkeleton() {
+    val pulse = rememberInfiniteTransition(label = "aboutSkeleton")
+    val alpha by pulse.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 0.8f,
+        animationSpec = infiniteRepeatable(tween(1100), RepeatMode.Reverse),
+        label = "skeletonAlpha",
+    )
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(14.dp)
+                .clip(RoundedCornerShape(999.dp))
+                .background(VoiidColor.textPrimary.copy(alpha = 0.08f * alpha * 2f)),
+        )
+        Box(
+            Modifier
+                .width(180.dp)
+                .height(14.dp)
+                .clip(RoundedCornerShape(999.dp))
+                .background(VoiidColor.textPrimary.copy(alpha = 0.08f * alpha * 2f)),
+        )
+    }
 }
