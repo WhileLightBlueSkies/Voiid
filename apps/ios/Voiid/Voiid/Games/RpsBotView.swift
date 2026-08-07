@@ -55,8 +55,14 @@ struct RpsBotView: View {
             if paused { pauseOverlay }
         }
         .animation(.easeInOut(duration: 0.18), value: paused)
-        .onAppear { session.hideTabBar = true }
-        .onDisappear { session.hideTabBar = false }
+        .onAppear {
+            session.hideTabBar = true
+            GameAudio.shared.preload(for: "rps")
+        }
+        .onDisappear {
+            session.hideTabBar = false
+            GameAudio.shared.release(for: "rps")
+        }
     }
 
     // MARK: - Pieces
@@ -289,12 +295,13 @@ struct RpsBotView: View {
 
             let theirs = RpsBot.chooseThrow(history: history, skill: skill)
             botThrow = theirs
+            GameAudio.shared.play("reveal", gain: 0.65)
             // Graded by outcome, so a win and a loss don't feel identical: a won round gets the
             // rising thump, a lost one a blunt knock, a tie a light tick.
             switch RpsBot.compare(choice, theirs) {
-            case 1:  myWins += 1; Haptics.boundary()
-            case -1: botWins += 1; Haptics.rigid()
-            default: Haptics.tap()
+            case 1:  myWins += 1; Haptics.boundary(); GameAudio.shared.play("round_win", gain: 0.65)
+            case -1: botWins += 1; Haptics.rigid(); GameAudio.shared.play("round_lose", gain: 0.65)
+            default: Haptics.tap(); GameAudio.shared.play("round_tie", gain: 0.5)
             }
             // Recorded AFTER resolving, so the model never sees the throw it is predicting.
             history.append(choice)

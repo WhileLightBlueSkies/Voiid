@@ -34,8 +34,25 @@ struct TicTacToeBotView: View {
             session.hideTabBar = true
             // Difficulty is fixed for this screen's lifetime; configure once.
             match.configure(level: level, skill: skill)
+            GameAudio.shared.preload(for: "tictactoe")
         }
-        .onDisappear { session.hideTabBar = false }
+        .onDisappear {
+            session.hideTabBar = false
+            GameAudio.shared.release(for: "tictactoe")
+        }
+        // Mark placed — same board-diff approach as the online TicTacToeView, so a bot
+        // move and a human move sound identical (the player should not be able to tell
+        // which one just played from the sound alone).
+        .onChange(of: match.board) { oldBoard, newBoard in
+            for i in newBoard.indices where oldBoard[i] == nil && newBoard[i] != nil {
+                GameAudio.shared.play(newBoard[i] == 0 ? "mark_x" : "mark_o", gain: 0.55)
+                break
+            }
+        }
+        .onChange(of: match.finished) { _, finished in
+            guard finished else { return }
+            GameAudio.shared.play(match.winnerSeat == nil ? "draw" : "win_line", gain: 0.7)
+        }
     }
 
     // MARK: - Board

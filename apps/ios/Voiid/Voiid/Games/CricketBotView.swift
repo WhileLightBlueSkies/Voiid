@@ -80,11 +80,17 @@ struct CricketBotView: View {
             if paused { pauseOverlay }
         }
         .navigationBarBackButtonHidden(true)
-        .onAppear { session.hideTabBar = true }
+        .onAppear {
+            session.hideTabBar = true
+            GameAudio.shared.preload(for: "cricket")
+        }
         // Restore the bar on the way OUT. Hiding without restoring left the app with no
         // footer after quitting a game — the bar is opt-out, so every screen that hides
         // it owns putting it back.
-        .onDisappear { session.hideTabBar = false }
+        .onDisappear {
+            session.hideTabBar = false
+            GameAudio.shared.release(for: "cricket")
+        }
     }
 
     // MARK: - Pieces
@@ -286,6 +292,7 @@ struct CricketBotView: View {
 
     private func pick(_ n: Int) {
         guard !resolving, !finished, !paused, overs != nil else { return }
+        GameAudio.shared.play("pick", gain: 0.45)
         humanPick = n
         botPick = nil
         resolving = true
@@ -317,6 +324,7 @@ struct CricketBotView: View {
         ballsBowled += 1
         lastEvent = BallEvent.of(runs: runs, wicket: wicket, matchedPick: mine)
         ballToken += 1
+        playBallSound(runs: runs, wicket: wicket)
 
         // Record the human's pick AFTER resolving, so the model never sees the pick it was
         // predicting on this very ball.
@@ -340,16 +348,33 @@ struct CricketBotView: View {
             humanBatting.toggle()
             ballsBowled = 0
             target = battingScore + 1
+            GameAudio.shared.play("innings", gain: 0.55)
         } else {
             // Second innings ended short. Equal totals = tie.
             finish(humanScore == botScore ? nil : humanScore > botScore)
         }
     }
 
+    /// One resolved ball -> its sound, matching CricketPitch's own BallEvent classification
+    /// (the same wicket/six/four/runs branching CricketMatchView uses for the online game) so
+    /// bot and online cricket never disagree about what a ball sounds like.
+    private func playBallSound(runs: Int, wicket: Bool) {
+        if wicket {
+            GameAudio.shared.play("wicket", gain: 0.75)
+        } else if runs == 6 {
+            GameAudio.shared.play("six", gain: 0.8)
+        } else if runs == 4 {
+            GameAudio.shared.play("four", gain: 0.7)
+        } else if runs > 0 {
+            GameAudio.shared.play("runs_\(runs)", gain: 0.55)
+        }
+    }
+
     private func finish(_ won: Bool?) {
         finished = true
         humanWon = won
-        if won == true { Haptics.boundary() } else { Haptics.rigid() }
+        if won == true { Haptics.boundary(); GameAudio.shared.play("match_end", gain: 0.7) }
+        else { Haptics.rigid() }
         if !recorded {
             BotScoreStore.add(level, outcome: won == true ? 1 : (won == false ? -1 : 0))
             recorded = true
