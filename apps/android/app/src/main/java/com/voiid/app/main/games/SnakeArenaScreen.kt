@@ -407,8 +407,117 @@ private fun lerpAngle(a: Double, b: Double, t: Double): Double {
     return a + delta * t
 }
 
-/** Mutable camera memory, so a respawn does not snap the view to the arena origin. */
-private class CameraMemory { var last: Offset? = null }
+/**
+ * Camera state: follow spring + look-ahead + shake (GAMES_ANIMATION.md §5.2, mirrors iOS
+ * `stepCamera`/`computeLookAhead`/`currentShake` in SnakeMetalView.swift).
+ *
+ * THE SPRING IS THE PART THAT WAS MISSING HERE. Before this, [focus] in `drawArena` was the
+ * raw interpolated head position with no smoothing at all — every bit of positional error
+ * (and there is always some: the render clock derives from network arrival time) became a
+ * full-screen camera movement at 1:1, which is the arena-wide flicker documented in
+ * docs/GAMES_SNAKE_BUGS.md Part B. iOS got a follow spring in 22b8680; this class is the
+ * Android port that commit never received, folded into the same change as look-ahead and
+ * shake since all three live in the same "where does the camera actually point" concern.
+ */
+private class CameraMemory {
+    /** Last known head position, so a frame missing one (mid-respawn) cannot pin the camera
+     * to the arena origin — the bug this class already guarded against. */
+    var last: Offset? = null
+
+    private var centre: Offset? = null
+    private var lastStepAtNanos = 0L
+
+    /** ~80ms settle, matching iOS's cameraTau exactly — divergent constants between platforms
+     * is how two ports of the same fix end up feeling like different games. */
+    private val tau = 0.08f
+    /** A respawn puts you anywhere in the arena; springing across that gap sends the camera
+     * flying over the whole map, so a jump this large cuts instead. Matches iOS's
+     * cameraTeleport. */
+    private val teleportDistance = 300f
+
+    /** Advance the spring toward [target] (nil = hold last known) and return where the camera
+     * now is, BEFORE shake is added — see [shakeOffset]. */
+    fun step(target: Offset?): Offset {
+        target?.let { last = it }
+        val goal = target ?: last ?: return centre ?: Offset.Zero
+
+        val now = System.nanoTime()
+        val dt = if (lastStepAtNanos > 0L) {
+            minOf((now - lastStepAtNanos) / 1_000_000_000f, 0.1f)
+        } else 0f
+        lastStepAtNanos = now
+
+        val current = centre
+        if (current == null) {
+            centre = goal      // first frame: start on the player, do not spring in
+            return goal
+        }
+
+        if (hypot((goal.x - current.x).toDouble(), (goal.y - current.y).toDouble()) > teleportDistance) {
+            centre = goal
+            return goal
+        }
+
+        val a = if (dt > 0f) 1f - kotlin.math.exp(-dt / tau) else 1f
+        val next = Offset(current.x + (goal.x - current.x) * a, current.y + (goal.y - current.y) * a)
+        centre = next
+        return next
+    }
+
+    // --- Screen shake: "3-6 px, 200 ms, decaying" (§5.2/§3.1) --------------------------------
+    //
+    // Kept separate from `centre` for the same reason as iOS: shake must never feed back into
+    // the spring's own state (a big shake could otherwise trip the teleport-cut check above).
+
+    private var shakeStartedAtNanos = 0L
+    private var shakeMagnitude = 0f
+    private var shakeSeed = 0f
+    private val shakeDurationSeconds = 0.2f
+
+    /** Trigger a shake. A later call while one is decaying restarts at the new magnitude
+     * rather than summing — a rapid double-kill should feel like one strong hit, not an
+     * accelerating wobble. */
+    fun triggerShake(magnitude: Float) {
+        shakeStartedAtNanos = System.nanoTime()
+        shakeMagnitude = magnitude
+        shakeSeed = (Math.random() * 1000).toFloat()
+    }
+
+    /** Shake offset in WORLD units (divided by scale so it reads as a constant number of
+     * on-screen pixels regardless of zoom). Call once per frame AFTER [step]. */
+    fun shakeOffset(scale: Float): Offset {
+        if (shakeMagnitude <= 0f) return Offset.Zero
+        val elapsed = (System.nanoTime() - shakeStartedAtNanos) / 1_000_000_000f
+        if (elapsed >= shakeDurationSeconds) { shakeMagnitude = 0f; return Offset.Zero }
+
+        // Decaying sine, not per-frame random noise — a sine reads as an impact recoiling,
+        // where random jitter reads as the RENDERER being unstable, the wrong association for
+        // a kill (a good thing) to carry.
+        val decay = 1f - elapsed / shakeDurationSeconds
+        val phase = (elapsed + shakeSeed) * 40f
+        val px = kotlin.math.sin(phase) * shakeMagnitude * decay
+        val py = kotlin.math.cos(phase * 1.3f) * shakeMagnitude * decay
+        val worldScale = scale.coerceAtLeast(0.0001f)
+        return Offset(px / worldScale, py / worldScale)
+    }
+}
+
+/**
+ * Offset the camera toward where the local player is HEADED, scaled by speed — "the player
+ * sees where they are going instead of where they are" (GAMES_ANIMATION.md §5.2). Returns
+ * Offset.Zero for a dead/absent player.
+ *
+ * Speed constants (240/420) are the server's BASE_SPEED/BOOST_SPEED from
+ * backend/games/src/engine/snake/index.ts TUNING, duplicated here as a presentation-only
+ * value — look-ahead distance affects nothing about the simulation, so a guess that is
+ * slightly stale after a tuning change only makes the offset a little short or long.
+ */
+private fun computeLookAhead(mine: GamesEngine.SnakeState.Snake?, heading: Double?): Offset {
+    if (mine == null || !mine.alive || heading == null) return Offset.Zero
+    val speed = if (mine.boosting) 420.0 else 240.0
+    val distance = minOf(speed * 0.35, 140.0)   // 0.35s of travel, capped at 140 world units
+    return Offset((cos(heading) * distance).toFloat(), (sin(heading) * distance).toFloat())
+}
 
 /**
  * Presentation-only VFX driven by the server's `death`/`kill`/`eat`/`spawn` events
@@ -546,6 +655,11 @@ private fun DrawScope.drawArena(
             val color = state.snakes.firstOrNull { it.id == e.snakeId }
                 ?.let { paletteColor(it.colorIndex) } ?: Color.White
             particles.spawn(e.kind, e.x.toFloat(), e.y.toFloat(), color)
+
+            // Screen shake on YOUR kills only. `e.snakeId` on a "kill" event is the KILLER
+            // (backend/games/src/engine/snake/index.ts kill() pushes `id: killerId`), so this
+            // fires for the player who just won a fight, not their victim.
+            if (e.kind == "kill" && e.snakeId == me) camera.triggerShake(6f)
         }
         particles.markSpawned(state.time)
     }
@@ -565,17 +679,27 @@ private fun DrawScope.drawArena(
 
     trails.update(state, heads)
 
-    // Falling back to Offset.Zero teleported the camera to the arena ORIGIN whenever the
-    // player was mid-respawn — the view jumped away from the action and the player's own
-    // snake wandered off screen. Hold the last known focus instead. Owned by the caller so
-    // it resets with the screen rather than leaking between matches.
-    val focus = heads[me] ?: camera.last ?: Offset.Zero
-    heads[me]?.let { camera.last = it }
-    val mass = state.snakes.firstOrNull { it.id == me }?.mass ?: 10.0
+    val mine = state.snakes.firstOrNull { it.id == me }
+    val mass = mine?.mass ?: 10.0
 
     // Zoom out as the snake grows so it stays framed, easing off so growth is not nauseating.
+    // Already a smooth function of mass (never a snapped tier), which is what satisfies
+    // GAMES_ANIMATION.md §5.2's "mass zoom" on its own — look-ahead and shake below are what
+    // the doc adds on top.
     val zoom = 1.0 / (1.0 + log10(1 + mass / 30) * 0.42)
     val scale = (min(size.width, size.height) / 900f) * zoom.toFloat()
+
+    // LOOK-AHEAD, then the FOLLOW SPRING (camera.step), then SHAKE applied last and never fed
+    // back into the spring's own state — see CameraMemory's class doc for why each of those
+    // three is ordered the way it is. This replaces the raw `heads[me]` this screen used to
+    // pass straight to the transform below, which was the arena-wide flicker bug
+    // (docs/GAMES_SNAKE_BUGS.md Part B) — iOS already has this spring (22b8680); this is the
+    // Android port.
+    val lookAhead = computeLookAhead(mine, headings[me])
+    val target = heads[me]?.let { Offset(it.x + lookAhead.x, it.y + lookAhead.y) }
+    val sprung = camera.step(target)
+    val shake = camera.shakeOffset(scale)
+    val focus = Offset(sprung.x + shake.x, sprung.y + shake.y)
 
     withTransform({
         translate(size.width / 2f, size.height / 2f)
