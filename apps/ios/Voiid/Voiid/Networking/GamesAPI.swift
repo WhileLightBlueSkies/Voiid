@@ -157,5 +157,19 @@ struct GamesAPI {
         try await api.request("POST", "games/matches/\(matchId)/decline", body: EmptyBody())
     }
 
+    /// Tell the server a player is deliberately backing out of a LIVE match screen — as
+    /// opposed to `decline`, which is for a match that never started. Without this a
+    /// continuous game's tick loop had nothing telling it a player left, so backing out of
+    /// Snake left the match ticking (and broadcasting `game_state` at full rate) for up to its
+    /// full duration. See docs/GAMES_SNAKE_BUGS.md.
+    ///
+    /// Fire-and-forget from the caller's perspective — `GamesEngine.leave()` clears local
+    /// state unconditionally regardless of whether this network call lands, exactly like
+    /// every other "tell the server, but don't block the UI on it" pattern in this app.
+    @discardableResult
+    func leave(matchId: String) async throws -> JoinResponse {
+        try await api.request("POST", "games/matches/\(matchId)/leave", body: EmptyBody())
+    }
+
     private struct EmptyBody: Encodable {}
 }
