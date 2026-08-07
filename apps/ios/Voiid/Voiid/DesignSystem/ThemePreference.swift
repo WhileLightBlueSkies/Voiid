@@ -88,10 +88,34 @@ final class ThemePreference: ObservableObject {
             case .dark:   return .dark
             }
         }()
+        // EVERY window, and applied on the NEXT RUNLOOP TURN as well as this one.
+        //
+        // THE REMAINING HALF OF THE BUG. A `.sheet` — which is how Settings itself is
+        // presented — lives in its OWN UIWindow, and the Appearance picker sits inside that
+        // sheet. Two things follow, and both were wrong:
+        //
+        //   1. `ws.windows` is a snapshot. A window presented after this loop runs never gets
+        //      the override, so it resolves against the OS. That is a sheet opened later.
+        //   2. UIKit may not have finished attaching the presentation window at the instant
+        //      the picker fires, so the very window the user is looking at can be missing
+        //      from the list at exactly the moment they change the setting.
+        //
+        // So the current screen kept the old palette while everything behind it changed —
+        // which is precisely "it changes the background but not the screen I am on".
+        //
+        // Re-running on the next turn costs nothing (setting the same style twice is a no-op)
+        // and catches the window once it is attached.
+        applyNow(style)
+        DispatchQueue.main.async { [weak self, style] in self?.applyNow(style) }
+    }
+
+    private func applyNow(_ style: UIUserInterfaceStyle) {
         for scene in UIApplication.shared.connectedScenes {
             guard let ws = scene as? UIWindowScene else { continue }
-            for window in ws.windows {
+            for window in ws.windows where window.overrideUserInterfaceStyle != style {
                 // Animated so the swap reads as a deliberate transition rather than a flash.
+                // Guarded on an actual change, or the second pass would cross-dissolve every
+                // window again for no reason.
                 UIView.transition(with: window, duration: 0.25, options: .transitionCrossDissolve) {
                     window.overrideUserInterfaceStyle = style
                 }

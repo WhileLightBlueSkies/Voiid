@@ -10,6 +10,10 @@ import SwiftUI
 
 struct ChatsHomeView: View {
     @EnvironmentObject var chat: ChatStore
+    /// OBSERVED, not read once. `ThemePreference.shared.mode` inside the sheet body would be
+    /// a snapshot — the sheet is where the theme is CHANGED, so it has to re-render when it
+    /// does.
+    @ObservedObject private var theme = ThemePreference.shared
     @EnvironmentObject var session: AppSession
     @State private var search = ""
     @State private var tab: Tab = .chats
@@ -206,7 +210,13 @@ struct ChatsHomeView: View {
                 CallLogView()
             }
             .sheet(isPresented: $showSettings) {
+                // The theme preference is applied at ContentView, and a SHEET is presented in
+                // its own window — so SwiftUI's environment does not carry the override
+                // across, and Settings (the screen that CHANGES the theme) was the one screen
+                // that would not repaint when you changed it. Re-stating it here means the
+                // sheet's own hierarchy agrees with the UIKit window override.
                 SettingsSheet()
+                    .preferredColorScheme(theme.mode.colorScheme)
             }
             .sheet(isPresented: $showFindByUsername) {
                 FindByUsernameView { conversationId, pending in
