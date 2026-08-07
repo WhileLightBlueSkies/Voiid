@@ -127,6 +127,31 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
 
     var stick: CGVector = .zero
 
+    /// Where the camera actually is, as opposed to where the head is.
+    ///
+    /// The camera used to BE the head — `focus` was the raw interpolated head position, so
+    /// every bit of positional error became a full-screen movement at 1:1. Server frames do
+    /// not arrive evenly, and the render clock is derived from arrival time, so that error is
+    /// constant and visible: the whole arena jerked along the axis of travel several times a
+    /// second. Following with a spring absorbs it.
+    ///
+    /// Nil until the first frame, so the camera starts ON the player rather than springing in
+    /// from the arena origin.
+    private var cameraCentre: CGPoint?
+    /// Last known head position, held so a frame without one cannot pin the camera to (0,0).
+    private var lastFocus: CGPoint?
+    /// Timestamp of the previous draw, for frame-rate-independent smoothing.
+    private var lastCameraStep: TimeInterval = 0
+
+    /// Follow time constant. ~80 ms reads as "attached but not welded"; larger feels laggy,
+    /// smaller stops absorbing the jitter it exists to absorb.
+    private static let cameraTau: Double = 0.08
+    /// Beyond this the head did not move, it TELEPORTED (a respawn puts you anywhere in the
+    /// arena). Springing across that gap sends the camera flying over the whole map, so a
+    /// jump this large cuts instead. A snake covers ~24 units in a tick at boost speed, so
+    /// 300 is far outside anything legitimate motion can produce.
+    private static let cameraTeleport: Double = 300
+
     private var device: MTLDevice!
     private var queue: MTLCommandQueue!
     private var circlePipeline: MTLRenderPipelineState!
@@ -332,7 +357,7 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
 
         trails.update(state: state, heads: heads)
 
-        let focus = heads[me ?? ""] ?? .zero
+        let focus = stepCamera(target: heads[me ?? ""])
         let mine = state.snakes.first { $0.id == me }
         let mass = mine?.mass ?? 10
         let zoom = 1.0 / (1.0 + log10(1 + mass / 30) * 0.42)
@@ -361,6 +386,43 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         return Uniforms(cameraCentre: SIMD2(Float(focus.x), Float(focus.y)),
                         viewportSize: SIMD2(Float(viewSize.width), Float(viewSize.height)),
                         scale: scale)
+    }
+
+    /// Advance the camera toward the local player's head and return where it now is.
+    ///
+    /// `target` is nil when this frame carries no head for us — the local player is not in the
+    /// snake list yet, or `me` itself is nil because the token store had not loaded when the
+    /// arena opened. The old code fell through to `.zero` in that case, which is not "no
+    /// change", it is the middle of the arena: the view teleported away from the player and
+    /// their snake wandered off screen. Android already guards this (`CameraMemory`); iOS
+    /// never got the fix.
+    private func stepCamera(target: CGPoint?) -> CGPoint {
+        if let target { lastFocus = target }
+        guard let goal = target ?? lastFocus else { return cameraCentre ?? .zero }
+
+        let now = CACurrentMediaTime()
+        let dt = lastCameraStep > 0 ? min(now - lastCameraStep, 0.1) : 0
+        lastCameraStep = now
+
+        guard let current = cameraCentre else {
+            cameraCentre = goal          // first frame: start on the player, do not spring in
+            return goal
+        }
+
+        // A respawn is a teleport, not motion. Cut.
+        if hypot(goal.x - current.x, goal.y - current.y) > Self.cameraTeleport {
+            cameraCentre = goal
+            return goal
+        }
+
+        // Exponential smoothing, framed in seconds so it behaves identically at 60 and 120 Hz.
+        // `1 - exp(-dt/tau)` is the frame-rate-independent form; a bare `k * dt` lerp would
+        // make the camera stiffer on a ProMotion display than on a 60 Hz one.
+        let a = dt > 0 ? 1 - exp(-dt / Self.cameraTau) : 1
+        let next = CGPoint(x: current.x + (goal.x - current.x) * a,
+                           y: current.y + (goal.y - current.y) * a)
+        cameraCentre = next
+        return next
     }
 
     private static func lerpAngle(_ a: Double, _ b: Double, _ t: Double) -> Double {
