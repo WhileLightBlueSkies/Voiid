@@ -302,8 +302,13 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         ribbonBloomPipeline = Self.pipeline(device: device, library: library,
                                             vertex: "ribbonVertex", fragment: "ribbonFragment",
                                             pixelFormat: Self.bloomPixelFormat, blend: .additive)
+        // bloomCompositeFragment, NOT spriteFragment — see that shader's doc comment in
+        // Snake.metal. Using the label shader here was the bug that washed the whole arena to
+        // white the instant bloom had any coverage: it hardcodes output RGB to the tint colour
+        // (correct for name-plate text, wrong for compositing a colour bloom texture) and this
+        // pass always passed a pure-white tint, so every additive-blended pixel painted white.
         compositePipeline = Self.pipeline(device: device, library: library,
-                                          vertex: "spriteVertex", fragment: "spriteFragment",
+                                          vertex: "spriteVertex", fragment: "bloomCompositeFragment",
                                           pixelFormat: view.colorPixelFormat, blend: .additive)
 
         let sd = MTLSamplerDescriptor()
@@ -344,7 +349,18 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
             d.colorAttachments[0].sourceAlphaBlendFactor = .one
             d.colorAttachments[0].destinationAlphaBlendFactor = .one
         }
-        return try? device.makeRenderPipelineState(descriptor: d)
+        do {
+            return try device.makeRenderPipelineState(descriptor: d)
+        } catch {
+            // `try?` here previously swallowed the actual Metal validation error, which is
+            // exactly the "arena renders nothing, no log line, no crash" failure mode this is
+            // guarding against — a bad pipeline (e.g. an unsupported pixelFormat/blend
+            // combination on some GPU families) left `circlePipeline` (etc.) nil, and
+            // draw(in:) silently no-ops on that. Logging the real reason turns a silent white
+            // screen into a diagnosable one.
+            print("[snake] pipeline '\(vertex)+\(fragment)' failed: \(error)")
+            return nil
+        }
     }
 
     /// A format MPSImageGaussianBlur can both read and write. .bgra8Unorm (the drawable's own
@@ -501,12 +517,21 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     }
 
     /// PASS 2: MPSImageGaussianBlur, bloomTexture -> bloomBlurred. Sigma is in TEXTURE pixels
-    /// (i.e. already half-res), so this is a wider blur relative to on-screen size than the
-    /// number alone suggests — intentional, that is what makes bloom read as soft light
-    /// rather than a sharpened edge glow.
+    /// (i.e. already half-res, so this reads roughly 2x as wide on screen as the number alone
+    /// suggests) — intentional, that is what makes bloom read as soft light rather than a
+    /// sharpened edge glow.
+    ///
+    /// WAS 6.0. At half-res that is a genuinely huge kernel — wide enough that on a real
+    /// device the blur was smearing across most of the visible arena rather than staying
+    /// local to the glowing shapes, which is what "the whole game looks blurry, not like
+    /// Android" was: this is the ONLY thing that differs between the two renderers (Android's
+    /// tier-C approximation is layered sharp strokes, not a real blur — see
+    /// GAMES_ANIMATION.md §4), so an oversized blur radius here is exactly what would produce
+    /// that gap. 2.5 keeps the "these things emit light" read from §3.3 without smearing body/
+    /// food edges the player needs to judge collisions against.
     private func blurBloom(commands: MTLCommandBuffer) {
         guard let bloomTexture, let bloomBlurred else { return }
-        let blur = MPSImageGaussianBlur(device: device, sigma: 6.0)
+        let blur = MPSImageGaussianBlur(device: device, sigma: 2.5)
         blur.encode(commandBuffer: commands, sourceTexture: bloomTexture,
                     destinationTexture: bloomBlurred)
     }
@@ -525,6 +550,10 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         guard scale > 0 else { return }
         let worldW = Float(viewSize.width) / scale
         let worldH = Float(viewSize.height) / scale
+        // tint.rgb is UNUSED by bloomCompositeFragment (it samples the real texel colour
+        // instead) — only tint.a reaches the shader, as the intensity scale. Left as
+        // SIMD4(1,1,1,_) rather than a 2-component type only because SpriteInstance's layout
+        // is shared with the label sprite pass, where rgb does matter.
         let quad = SpriteInstance(
             centre: lastCameraCentreSIMD,
             size: SIMD2(worldW, worldH),

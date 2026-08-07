@@ -149,9 +149,28 @@ vertex SpriteOut spriteVertex(uint vid [[vertex_id]],
     return out;
 }
 
+// This fragment function assumes the SOURCE is a single-channel-meaningful glyph atlas: the
+// text is always solid white in the atlas, so only its ALPHA carries shape, and `tint.rgb` is
+// what actually colours the label on screen. That is correct for name plates and WRONG for
+// anything where the source texture's own colour matters.
 fragment float4 spriteFragment(SpriteOut in [[stage_in]],
                                texture2d<float> atlas [[texture(0)]],
                                sampler s [[sampler(0)]]) {
     float4 texel = atlas.sample(s, in.uv);
     return float4(in.tint.rgb, texel.a * in.tint.a);
+}
+
+// Bloom composite (SnakeMetalView.compositeBloom) reuses spriteVertex for the geometry — a
+// textured quad is a textured quad — but MUST NOT reuse spriteFragment above: that function
+// hardcodes RGB to `tint.rgb`, so compositing the blurred bloom texture through it discarded
+// every bit of the bloom's actual colour and painted flat white (only alpha-shaped by
+// `texel.a`) additively over the whole frame — which is what made the ENTIRE arena wash out
+// to white the instant bloom had any coverage at all, rather than the bloom being invisible.
+// This is the actual fix: sample the real texel colour and only use `tint.a` (bloomIntensity)
+// to scale it, exactly like a normal additive light composite is supposed to work.
+fragment float4 bloomCompositeFragment(SpriteOut in [[stage_in]],
+                                       texture2d<float> bloom [[texture(0)]],
+                                       sampler s [[sampler(0)]]) {
+    float4 texel = bloom.sample(s, in.uv);
+    return float4(texel.rgb * in.tint.a, texel.a * in.tint.a);
 }
