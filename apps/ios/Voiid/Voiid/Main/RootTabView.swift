@@ -44,6 +44,9 @@ struct RootTabView: View {
     @Namespace private var indicator
     /// True for the moment the indicator is travelling between tabs — drives its stretch.
     @State private var isSliding = false
+    /// How far the indicator stretches on the current move — proportional to the number of
+    /// tabs crossed, so a neighbouring hop and a jump across the bar do not look identical.
+    @State private var slideStretch: CGFloat = 1.9
 
     // The asset/label ternaries were hardcoded for exactly three cases; with a 4th tab they
     // become switches so a future 5th tab is a compile error to omit, not a silent wrong icon.
@@ -111,6 +114,25 @@ struct RootTabView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // THE BAR ANIMATED AND THE PAGE TELEPORTED.
+            //
+            // The indicator slides, stretches and settles; the glyph swaps its symbol variant
+            // — and then the thing all of that points AT changed in a single frame. The one
+            // element the user is actually looking at was the only one that did not move, so
+            // the polish on the bar was pointing at nothing.
+            //
+            // A CROSSFADE, NOT A SLIDE, and that is a real decision rather than the easy one.
+            // These tabs are scrollable and reorderable, so there is no stable left-of/
+            // right-of between them: a slide would have to invent a direction, and it would
+            // be wrong the moment the order changed or a deep link jumped two tabs. A
+            // crossfade makes no spatial claim it cannot keep.
+            //
+            // 0.18s, which is deliberately short. This runs on every tab tap — the most
+            // frequent transition in the app — and anything slower turns navigation into
+            // waiting. Under Reduce Motion it stays: an opacity fade is not vestibular, and
+            // removing it would put the hard cut back.
+            .transition(.opacity)
+            .animation(.easeInOut(duration: 0.18), value: tab)
 
             if !session.hideTabBar {
                 tabBar
@@ -211,9 +233,29 @@ struct RootTabView: View {
             // the indicator's scale, not to its damping, so it reads as elastic without
             // oscillating to a stop.
             guard tab != t else { return }
+            // THE STRETCH SCALES WITH THE DISTANCE TRAVELLED.
+            //
+            // It was a flat 1.9x for every move, so hopping to the adjacent tab stretched the
+            // indicator exactly as far as jumping across the whole bar — the elasticity was
+            // decoration rather than a consequence of the motion. Android derives its stretch
+            // from the travel direction; this derives it from the travel DISTANCE, which is
+            // the same idea applied to the axis SwiftUI gives us.
+            //
+            // Clamped at 2.2 so a seven-tab jump does not smear into a line.
+            let order = Tab.allCases
+            let from = order.firstIndex(of: tab) ?? 0
+            let to = order.firstIndex(of: t) ?? 0
+            let distance = abs(to - from)
+            slideStretch = min(1.25 + CGFloat(distance) * 0.28, 2.2)
             isSliding = true
             withAnimation(.spring(response: 0.32, dampingFraction: 0.9)) { tab = t }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) { isSliding = false }
+            // Release the stretch when the indicator has actually arrived, not on a fixed
+            // timer: the spring's settle time depends on the distance, so a hardcoded 160ms
+            // snapped the stretch back mid-flight on a long jump and left it hanging after a
+            // short one.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.10 + Double(distance) * 0.02) {
+                isSliding = false
+            }
         } label: {
             VStack(spacing: 5) {
                 ZStack {
@@ -230,7 +272,7 @@ struct RootTabView: View {
                             // 1 — the squash-and-stretch that made the old pill feel alive,
                             // without the wobble that came from under-damping it.
                             .frame(width: 22, height: 3)
-                            .scaleEffect(x: isSliding ? 1.9 : 1, y: 1, anchor: .center)
+                            .scaleEffect(x: isSliding ? slideStretch : 1, y: 1, anchor: .center)
                             .animation(.spring(response: 0.3, dampingFraction: 0.75), value: isSliding)
                             .offset(y: 17)
                     }

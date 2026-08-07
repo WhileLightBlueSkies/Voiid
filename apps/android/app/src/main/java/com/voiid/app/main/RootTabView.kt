@@ -262,7 +262,31 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
 
         Column(Modifier.fillMaxSize().imePadding()) {
             Box(Modifier.fillMaxWidth().weight(1f)) {
-                when (tab) {
+                // THE BAR ANIMATED AND THE PAGE TELEPORTED.
+                //
+                // The indicator stretches in its direction of travel, the glyph crossfades
+                // from outline to filled — and then the thing all of that points AT changed
+                // in a single frame. The one element the user is actually looking at was the
+                // only one that did not move.
+                //
+                // A CROSSFADE, NOT A SLIDE, and that is a real decision rather than the easy
+                // one. These tabs scroll and can be reordered, so there is no stable
+                // left-of/right-of between them: a slide would have to invent a direction,
+                // and it would be wrong the moment the order changed or a deep link jumped
+                // two tabs. A crossfade makes no spatial claim it cannot keep.
+                //
+                // 180ms, deliberately short: this is the most frequent transition in the app
+                // and anything slower turns navigation into waiting. Kept under Reduce Motion
+                // — an opacity fade is not vestibular, and removing it restores the hard cut.
+                androidx.compose.animation.Crossfade(
+                    targetState = tab,
+                    animationSpec = tween(180),
+                    label = "tabContent",
+                    // NOT named `tab`: a callback inside (the map card's "open chat") assigns
+                    // the outer `tab` to navigate, and shadowing it here made that a
+                    // reassignment of the immutable lambda parameter.
+                ) { shownTab ->
+                when (shownTab) {
                     Tab.COMMUNITIES -> CommunitiesHomeView()
                     Tab.GAMES -> com.voiid.app.main.games.GamesHomeScreen(
                         onPickGame = { setupGame = it },
@@ -302,6 +326,7 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                                 ?.let { tab = Tab.CHAT; openConversation = it }
                         },
                     )
+                }
                 }
             }
             TabBar(
@@ -787,14 +812,28 @@ private fun TabItem(
         Box(Modifier.height(28.dp), contentAlignment = Alignment.Center) {
             // Outline → filled on selection, so the state reads without depending on colour
             // alone. The scale is the tamed version described above, not the old 1.12 wobble.
-            Icon(
-                imageVector = if (active) t.iconFilled else t.icon,
-                contentDescription = t.label,
-                modifier = Modifier
-                    .size(24.dp)
-                    .graphicsLayer { scaleX = activeScale; scaleY = activeScale },
-                tint = if (active) VoiidColor.primary else VoiidColor.textSecondary,
-            )
+            // The outline→filled swap CROSSFADES rather than cutting. iOS gets this from
+            // `.contentTransition(.symbolEffect(.replace))`, where the fill grows out of the
+            // outline; Compose has no symbol interpolation, so a short crossfade is the
+            // closest honest equivalent — and it is the difference between the glyph
+            // "becoming" selected and being replaced by a different glyph.
+            //
+            // Short (120ms): this rides on top of the scale and the indicator, and a slow
+            // fade here would leave a visible double-image of two icons at once.
+            androidx.compose.animation.Crossfade(
+                targetState = active,
+                animationSpec = tween(120),
+                label = "tabIcon",
+            ) { isActive ->
+                Icon(
+                    imageVector = if (isActive) t.iconFilled else t.icon,
+                    contentDescription = t.label,
+                    modifier = Modifier
+                        .size(24.dp)
+                        .graphicsLayer { scaleX = activeScale; scaleY = activeScale },
+                    tint = if (isActive) VoiidColor.primary else VoiidColor.textSecondary,
+                )
+            }
             // Persistent indicator: you are visible on the Map, or an unviewed story exists.
             // SPARK, not the brand teal — teal is the "selected tab" colour, and using it here
             // read as a second, contradictory selection state.
