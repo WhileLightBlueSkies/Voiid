@@ -33,6 +33,7 @@ import androidx.compose.material.icons.outlined.Flag
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -84,6 +85,11 @@ fun RpsBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
     val haptics = com.voiid.app.ui.components.LocalVoiidHaptics.current
     var recorded by remember { mutableStateOf(false) }
 
+    DisposableEffect(Unit) {
+        GameAudio.preload(context, "rps")
+        onDispose { GameAudio.release("rps") }
+    }
+
     val matchOver = myWins >= TARGET || botWins >= TARGET
 
     // Resolve the round after the shake. Kept in an effect (not the click) so the shake has
@@ -94,12 +100,13 @@ fun RpsBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
         val mine = myThrow ?: return@LaunchedEffect
         val theirs = RpsBot.chooseThrow(history.toList(), skill)
         botThrow = theirs
+        GameAudio.play("reveal", gain = 0.65f)
         // Graded by outcome, so a win and a loss don't feel identical: a won round gets the
         // rising thump, a lost one a blunt knock, a tie a light tick.
         when (RpsBot.compare(mine, theirs)) {
-            1 -> { myWins++; haptics.boundary() }
-            -1 -> { botWins++; haptics.rigid() }
-            else -> haptics.tap()
+            1 -> { myWins++; haptics.boundary(); GameAudio.play("round_win", gain = 0.65f) }
+            -1 -> { botWins++; haptics.rigid(); GameAudio.play("round_lose", gain = 0.65f) }
+            else -> { haptics.tap(); GameAudio.play("round_tie", gain = 0.5f) }
         }
         // Record AFTER resolving so the model never sees the throw it is predicting.
         history.add(mine)

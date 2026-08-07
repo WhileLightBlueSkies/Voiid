@@ -30,6 +30,7 @@ import androidx.compose.material.icons.outlined.Flag
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -76,6 +77,11 @@ fun CricketBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
     val context = LocalContext.current
     val store = remember { BotScoreStore(context) }
 
+    DisposableEffect(Unit) {
+        GameAudio.preload(context, "cricket")
+        onDispose { GameAudio.release("cricket") }
+    }
+
     // Null until the player picks a length — the match cannot start without one.
     var overs by remember { mutableStateOf<Int?>(null) }
 
@@ -106,6 +112,7 @@ fun CricketBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
     fun finish(won: Boolean?) {
         finished = true
         humanWon = won
+        if (won == true) GameAudio.play("match_end", gain = 0.7f)
         if (!recorded) {
             store.add(level, if (won == true) 1 else if (won == false) -1 else 0)
             recorded = true
@@ -139,6 +146,12 @@ fun CricketBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
         ballsBowled++
         lastEvent = BallEvent.of(runs = runs, wicket = wicket, matchedPick = mine)
         ballToken++
+        when {
+            wicket -> GameAudio.play("wicket", gain = 0.75f)
+            runs == 6 -> GameAudio.play("six", gain = 0.8f)
+            runs == 4 -> GameAudio.play("four", gain = 0.7f)
+            runs > 0 -> GameAudio.play("runs_$runs", gain = 0.55f)
+        }
 
         // Record the human's pick AFTER resolving, so the model never sees the pick it was
         // predicting on this very ball.
@@ -162,6 +175,7 @@ fun CricketBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
             humanBatting = !humanBatting
             ballsBowled = 0
             target = battingScore + 1
+            GameAudio.play("innings", gain = 0.55f)
         } else {
             // Second innings ended short. Equal totals = tie.
             when {
@@ -195,6 +209,7 @@ fun CricketBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
 
     fun pick(n: Int) {
         if (resolving || finished || paused || overs == null) return
+        GameAudio.play("pick", gain = 0.45f)
         humanPick = n
         botPick = null
         resolving = true

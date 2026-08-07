@@ -37,6 +37,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -86,6 +87,11 @@ fun TicTacToeBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) 
     val context = LocalContext.current
     val scores = remember { BotScoreStore(context) }
 
+    DisposableEffect(Unit) {
+        GameAudio.preload(context, "tictactoe")
+        onDispose { GameAudio.release("tictactoe") }
+    }
+
     val board = remember { mutableStateListOf<Int?>(null, null, null, null, null, null, null, null, null) }
     var finished by remember { mutableStateOf(false) }
     var winnerSeat by remember { mutableStateOf<Int?>(null) }
@@ -116,12 +122,14 @@ fun TicTacToeBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) 
                 board[l[0]] == w && board[l[1]] == w && board[l[2]] == w
             }
             if (!recorded) { scores.add(level, if (w == HUMAN_SEAT) 1 else -1); recorded = true }
+            GameAudio.play("win_line", gain = 0.7f)
             return true
         }
         if (board.none { it == null }) {
             finished = true
             winnerSeat = null
             if (!recorded) { scores.add(level, 0); recorded = true }
+            GameAudio.play("draw", gain = 0.5f)
             return true
         }
         return false
@@ -135,6 +143,7 @@ fun TicTacToeBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) 
         if (!finished && !paused) {
             TicTacToeBot.chooseMove(board.toList(), BOT_SEAT, skill)?.let { move ->
                 board[move] = BOT_SEAT
+                GameAudio.play("mark_o", gain = 0.55f)
                 settleIfOver()
             }
         }
@@ -144,6 +153,7 @@ fun TicTacToeBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) 
     fun play(cell: Int) {
         if (finished || botThinking || paused || board[cell] != null) return
         board[cell] = HUMAN_SEAT
+        GameAudio.play("mark_x", gain = 0.55f)
         if (settleIfOver()) return
         botThinking = true
         botTurnToken++
