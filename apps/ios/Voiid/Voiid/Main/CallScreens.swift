@@ -119,6 +119,13 @@ struct CallScreen: View {
     @EnvironmentObject private var chat: ChatStore
     @State private var showAddPerson = false
 
+    /// Reduce Motion gates the rolling digits: a number that animates every second is a
+    /// small, repeating movement, which is exactly the kind this setting exists to stop.
+    /// The tabular width stays either way — that is layout, not motion.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Drives the breathing ring behind Accept while a call is ringing in.
+    @State private var acceptPulse = false
+
     // Group calls are still simulated (a later increment); 1:1 uses CallService.
     @State private var connected = false
     @State private var seconds = 0
@@ -257,6 +264,20 @@ struct CallScreen: View {
                     Text(statusText)
                         .font(VoiidFont.rounded(14, .regular))
                         .foregroundColor(request.kind == .video ? .white.opacity(0.85) : VoiidColor.textSecondary)
+                        // TABULAR DIGITS ON THE ONE THING THAT TICKS.
+                        //
+                        // The call duration re-renders every second, and in a proportional
+                        // face a 1 is narrower than a 0 — so "01:11" and "01:00" are
+                        // different widths and the whole centred line shifts sideways once a
+                        // second, for the entire call. It is the most-looked-at element on
+                        // the screen and it was the only one that jittered.
+                        .monospacedDigit()
+                        // The digits ROLL rather than being substituted. A timer that
+                        // hard-swaps reads as a number being replaced; one that rolls reads
+                        // as time passing, which is what it actually is.
+                        .contentTransition(.numericText())
+                        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2),
+                                   value: statusText)
                     if isReconnecting { reconnectingBadge }
                     else if isRealOneToOne, call.isOnHold || call.peerOnHold { holdBadge }
                 }
@@ -438,13 +459,55 @@ struct CallScreen: View {
         if isRealOneToOne, liveState == .incomingRinging {
             HStack(spacing: VoiidSpacing.xxl) {
                 Button { Haptics.rigid(); call.decline() } label: {
-                    Image(systemName: "phone.down.fill").font(.system(size: 26)).foregroundColor(.white)
-                        .frame(width: 64, height: 64).background(VoiidColor.error).clipShape(Circle())
+                    Image(systemName: "phone.down.fill")
+                        .font(.system(size: 26))
+                        // textOnPrimary, which FLIPS with the theme, not a fixed white. The
+                        // status fills invert — dark in light mode, LIGHT in dark mode — so
+                        // white measured 2.74:1 on the dark error fill, under the 3:1 a
+                        // glyph needs. Flipped it is 4.60 and 6.82.
+                        .foregroundColor(VoiidColor.textOnPrimary)
+                        .frame(width: 64, height: 64)
+                        .background(VoiidColor.error)
+                        .clipShape(Circle())
                 }
+                // Press feedback on the two most consequential buttons in the app, which had
+                // none: they reacted only on release, so the moment you commit to answering
+                // or refusing a call was the moment nothing happened.
+                .buttonStyle(SoftPressStyle(scale: 0.92))
+                .accessibilityLabel("Decline")
+
                 Button { Haptics.tap(); call.accept() } label: {
                     Image(systemName: request.kind == .video ? "video.fill" : "phone.fill")
-                        .font(.system(size: 26)).foregroundColor(.white)
-                        .frame(width: 64, height: 64).background(Color.green).clipShape(Circle())
+                        .font(.system(size: 26))
+                        .foregroundColor(VoiidColor.textOnPrimary)
+                        .frame(width: 64, height: 64)
+                        // VoiidColor.success, not a raw SwiftUI Color.green. The palette is
+                        // contrast-audited and theme-resolving; #34C759 is neither, and white
+                        // on it measured 2.22:1 — the worst pairing on the screen, on the
+                        // button people are trying to hit in a hurry.
+                        .background(VoiidColor.success)
+                        .clipShape(Circle())
+                        // THE ONE PLACE A PULSE EARNS ITS KEEP. An incoming call is the app
+                        // asking a question, and the answer button should read as the live
+                        // one. A slow breathing ring — not the button itself, which would
+                        // move the tap target under a finger already reaching for it.
+                        .overlay(
+                            Circle()
+                                .stroke(VoiidColor.success.opacity(0.5), lineWidth: 3)
+                                .scaleEffect(acceptPulse ? 1.28 : 1)
+                                .opacity(acceptPulse ? 0 : 0.9)
+                        )
+                }
+                .buttonStyle(SoftPressStyle(scale: 0.92))
+                .accessibilityLabel(request.kind == .video ? "Accept video call" : "Accept call")
+                .onAppear {
+                    // Reduce Motion: a repeating oscillation is precisely what that setting
+                    // exists to suppress, and it is decoration here — the button is already
+                    // green, round and labelled.
+                    guard !reduceMotion else { return }
+                    withAnimation(.easeOut(duration: 1.4).repeatForever(autoreverses: false)) {
+                        acceptPulse = true
+                    }
                 }
             }
         } else {
@@ -504,9 +567,19 @@ struct CallScreen: View {
 
                 // End
                 Button { Haptics.rigid(); endTapped() } label: {
-                    Image(systemName: "phone.down.fill").font(.system(size: 24)).foregroundColor(.white)
-                        .frame(width: 60, height: 60).background(VoiidColor.error).clipShape(Circle())
+                    Image(systemName: "phone.down.fill")
+                        .font(.system(size: 24))
+                        // Flips with the theme: white measured 2.74:1 on the dark error fill,
+                        // under the 3:1 a glyph needs. Same fix as accept/decline above.
+                        .foregroundColor(VoiidColor.textOnPrimary)
+                        .frame(width: 60, height: 60)
+                        .background(VoiidColor.error)
+                        .clipShape(Circle())
                 }
+                // The end button reacted only on release, like the rest of this row did
+                // before the group call screen was fixed. Same treatment here.
+                .buttonStyle(SoftPressStyle(scale: 0.92))
+                .accessibilityLabel("End call")
                 .frame(maxWidth: .infinity)
             }
             .padding(.horizontal, VoiidSpacing.sm)

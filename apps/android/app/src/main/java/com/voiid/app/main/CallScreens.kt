@@ -80,6 +80,7 @@ import com.voiid.app.net.CallManager
 import com.voiid.app.net.ConferenceManager
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.VoiidAvatar
+import com.voiid.app.ui.components.reduceMotionEnabled
 import com.voiid.app.ui.components.softClickable
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
@@ -368,7 +369,11 @@ private fun IncomingCallUi(state: CallManager.CallState) {
                         Modifier.size(72.dp).clip(CircleShape).background(VoiidColor.error)
                             .softClickable { haptics.rigid(); CallManager.decline() },
                         contentAlignment = Alignment.Center,
-                    ) { Icon(Icons.Default.CallEnd, "Decline", tint = Color.White, modifier = Modifier.size(30.dp)) }
+                        // textOnPrimary, which FLIPS with the theme, not a fixed white. The
+                        // status fills invert — dark in light mode, LIGHT in dark mode — so
+                        // white measured 2.74:1 on the dark error fill, under the 3:1 a glyph
+                        // needs. Flipped it is 4.60 and 6.82. Same fix as the swipe actions.
+                    ) { Icon(Icons.Default.CallEnd, "Decline", tint = VoiidColor.textOnPrimary, modifier = Modifier.size(30.dp)) }
                     Text("Decline", style = VoiidFont.rounded(13), color = Color.White)
                 }
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -379,7 +384,10 @@ private fun IncomingCallUi(state: CallManager.CallState) {
                     ) {
                         Icon(
                             if (isVideo) Icons.Default.Videocam else Icons.Default.Call,
-                            "Accept", tint = Color.White, modifier = Modifier.size(30.dp),
+                            // Flips with the theme — white was 2.08:1 on the dark success
+                            // fill, the worst pairing on the screen, on the button people are
+                            // trying to hit in a hurry.
+                            "Accept", tint = VoiidColor.textOnPrimary, modifier = Modifier.size(30.dp),
                         )
                     }
                     Text("Accept", style = VoiidFont.rounded(13), color = Color.White)
@@ -400,6 +408,7 @@ private fun InCallUi(state: CallManager.CallState) {
     // participant — see ConferenceViews.kt for why it is deliberately spare.
     val conference by ConferenceManager.state.collectAsState()
 
+    val reduceMotion = reduceMotionEnabled()
     // Live timer derived from the real connection time.
     var seconds by remember { mutableIntStateOf(0) }
     LaunchedEffect(state.connectedAtMs) {
@@ -495,14 +504,25 @@ private fun InCallUi(state: CallManager.CallState) {
             Spacer(Modifier.height(6.dp))
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (state.reconnecting) PulsingDot()
-                Text(statusText, style = VoiidFont.rounded(14), color = statusColor)
+                // TABULAR DIGITS ON THE ONE THING THAT TICKS. The duration re-renders every
+                // second, and in a proportional face a 1 is narrower than a 0 — so "01:11"
+                // and "01:00" are different widths and the whole centred line shifts sideways
+                // once a second, for the entire call. It is the most-looked-at element on the
+                // screen and it was the only one that jittered. Mirrors iOS.
+                Text(
+                    statusText,
+                    style = VoiidFont.rounded(14).copy(
+                        fontFeatureSettings = "tnum",
+                    ),
+                    color = statusColor,
+                )
             }
 
             val waiting by CallManager.waiting.collectAsState()
             waiting?.let { CallWaitingBanner(it, haptics) }
 
             Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-                if (isVideo) VideoCenter(state) else VoiceCenter()
+                if (isVideo) VideoCenter(state) else VoiceCenter(state, reduceMotion)
             }
 
             CallControls(
@@ -603,13 +623,51 @@ private object RemoteFrameEvents : RendererCommon.RendererEvents {
     }
 }
 
+/**
+ * The voice-call centre: the person you are talking to.
+ *
+ * THE PEER'S REAL FACE, not the wordmark. This took no parameters and rendered
+ * [VoiidAvatar] — a bundled placeholder that draws the literal word "voiid" — so the one
+ * screen where knowing who you are talking to matters most showed a logo for every real
+ * contact. The INCOMING screen was fixed to use [ProfileAvatar]; this one, which is on screen
+ * for the entire duration of every outgoing and connected voice call, was missed.
+ *
+ * The pulse runs only while the call is NOT yet connected: ringing is a live event and a
+ * static screen reads as a screenshot, but once someone answers the movement has nothing left
+ * to say and becomes decoration on a screen people leave open for minutes. Mirrors iOS.
+ */
 @Composable
-private fun VoiceCenter() {
-    Box(
-        Modifier.size(160.dp).clip(CircleShape).background(VoiidColor.fieldFill)
-            .border(3.dp, VoiidColor.accent, CircleShape),
-        contentAlignment = Alignment.Center,
-    ) { VoiidAvatar(size = 160.dp, modifier = Modifier.clip(CircleShape)) }
+private fun VoiceCenter(state: CallManager.CallState, reduceMotion: Boolean) {
+    val ringing = state.phase != CallManager.Phase.CONNECTED
+    val pulse = rememberInfiniteTransition(label = "voiceRing")
+    val scale by pulse.animateFloat(
+        0.94f, 1.06f,
+        infiniteRepeatable(tween(1200, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+        label = "voiceRingScale",
+    )
+    Box(contentAlignment = Alignment.Center) {
+        if (ringing && !reduceMotion) {
+            Box(
+                Modifier
+                    .size(190.dp)
+                    .graphicsLayer { scaleX = scale; scaleY = scale }
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.10f)),
+            )
+        }
+        Box(
+            Modifier.size(160.dp).clip(CircleShape).background(VoiidColor.fieldFill)
+                .border(3.dp, VoiidColor.accent, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            ProfileAvatar(
+                photoUrl = UserDirectory.photoUrl(state.peerUserId),
+                name = state.peerName,
+                size = 160.dp,
+                modifier = Modifier.clip(CircleShape),
+            )
+        }
+    }
 }
 
 @Composable
@@ -789,7 +847,9 @@ private fun CallControls(
         Box(
             Modifier.size(64.dp).clip(CircleShape).background(VoiidColor.error).softClickable(onClick = onEnd),
             contentAlignment = Alignment.Center,
-        ) { Icon(Icons.Default.CallEnd, "End call", tint = Color.White, modifier = Modifier.size(26.dp)) }
+            // Flips with the theme: white measured 2.74:1 on the dark error fill, under the
+            // 3:1 a glyph needs. Same fix as decline above, and as the group call screen.
+        ) { Icon(Icons.Default.CallEnd, "End call", tint = VoiidColor.textOnPrimary, modifier = Modifier.size(26.dp)) }
     }
 }
 
