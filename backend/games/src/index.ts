@@ -264,16 +264,40 @@ async function handleInput(msg: Record<string, any>): Promise<void> {
     return;
   }
 
-  m.state = engine.serialize();
-  // Keep the hidden picks alive across the next restore. Not part of `state`, so broadcast() can
-  // never leak them — which is the whole point of the separate channel.
-  m.secret = engine.serializeSecret?.();
-  m.seq += 1;
-  await saveMatch(m);
-
   // A continuous game's input only records intent; the next tick is what makes it visible.
   // Broadcasting here as well would double the fan-out for a player holding a joystick.
-  if (!result.silent) await broadcast(m);
+  // A NON-silent input on a ticking game (Snake's respawn) still gets one, because it
+  // changes the world immediately and the player should not wait a tick to see it.
+  const mustBroadcast = !result.silent;
+
+  // Refresh the outgoing payload from the engine whenever it is about to be read — either
+  // because we are persisting it or because we are broadcasting it. Skipping this on the
+  // broadcast path would send whatever loadMatch happened to return, which for a ticking
+  // match is up to PERSIST_EVERY ticks stale.
+  if (!live || mustBroadcast) {
+    m.state = engine.serialize();
+    // Keep the hidden picks alive across the next restore. Not part of `state`, so broadcast()
+    // can never leak them — which is the whole point of the separate channel.
+    m.secret = engine.serializeSecret?.();
+  }
+
+  // PERSIST ONLY WHEN THIS PATH OWNS THE STATE.
+  //
+  // A live engine means a tick loop is running and already persisting on its own cadence
+  // (PERSIST_EVERY), so writing here as well is duplication — and for Snake, expensive
+  // duplication: serialize() captures the whole world (~260 food items plus every snake's
+  // full-precision body polyline) and a steering player sends 10-15 frames a second. That put
+  // 10-15 full-world Redis writes per second per player on the hot path, right next to a tick
+  // loop deliberately throttling itself to every 5th tick to avoid exactly that cost.
+  //
+  // It is unnecessary on its own terms too: a continuous game's input records INTENT, and the
+  // next tick — at most 100 ms away — overwrites anything written here.
+  if (!live) {
+    m.seq += 1;
+    await saveMatch(m);
+  }
+
+  if (mustBroadcast) await broadcast(m);
 }
 
 /**

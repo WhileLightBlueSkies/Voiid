@@ -28,6 +28,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -129,6 +130,9 @@ fun SnakeArenaScreen(
     val frameClock = remember { mutableDoubleStateOf(0.0) }
     val trails = remember { TrailStore() }
     val camera = remember { CameraMemory() }
+    val particles = remember { ParticleSystem() }
+    val impact = remember { ImpactTimeline() }
+    val haptics = remember { GameHaptics(context) }
 
     val me = engine.myUserId
 
@@ -149,7 +153,7 @@ fun SnakeArenaScreen(
         Canvas(Modifier.fillMaxSize()) {
             // Reading the clock inside the DRAW scope subscribes only this draw to it.
             @Suppress("UNUSED_EXPRESSION") frameClock.doubleValue
-            drawArena(framesRef.value, me, trails, stick, camera)
+            drawArena(framesRef.value, me, trails, stick, camera, particles, impact, haptics)
         }
 
         // Death / game-over panel.
@@ -405,8 +409,304 @@ private fun lerpAngle(a: Double, b: Double, t: Double): Double {
     return a + delta * t
 }
 
-/** Mutable camera memory, so a respawn does not snap the view to the arena origin. */
-private class CameraMemory { var last: Offset? = null }
+/**
+ * Turns a `kill`/`death` event into a brief FREEZE followed by a SLOW recovery
+ * (GAMES_ANIMATION.md §5.4, mirrors iOS `ImpactTimeline` in SnakeMetalView.swift).
+ *
+ * PRESENTATION-CLOCK ONLY. [dilate] is applied to the wall-clock dt fed to the camera spring
+ * and the particle system, never to the interpolation math that reads the server's own
+ * clock — that boundary is what keeps this a renderer and not a referee (see this file's own
+ * top-of-file doc comment). A bug here can make the game feel wrong for a fraction of a
+ * second; it cannot make a match wrong.
+ *
+ * Kept as a separate class from [CameraMemory] even though they are always used together,
+ * because [ParticleSystem] needs it too and a shared dependency belongs in its own object
+ * rather than reached through the camera.
+ */
+private class ImpactTimeline {
+    private enum class Kind { KILL, DEATH }
+    private var kind: Kind? = null
+    private var startedAtNanos = 0L
+
+    companion object {
+        private const val KILL_FREEZE = 0.12          // "120ms hitstop" — doc's exact number
+        private const val DEATH_FREEZE = 0.10
+        private const val DEATH_SLOW_DURATION = 0.5    // matches GAMES_AUDIO §8.7's death envelope
+        private const val DEATH_SLOW_FACTOR = 0.3       // "slow-mo to 0.3x" — doc's exact number
+        private const val DEATH_DESATURATE_DURATION = 0.4
+    }
+
+    fun triggerKill() { kind = Kind.KILL; startedAtNanos = System.nanoTime() }
+    fun triggerDeath() { kind = Kind.DEATH; startedAtNanos = System.nanoTime() }
+
+    /** How much of [rawDt] should actually reach the presentation clock this frame. 0 during a
+     * freeze, `DEATH_SLOW_FACTOR * rawDt` during the slow-mo tail, [rawDt] otherwise. */
+    fun dilate(rawDt: Float): Float {
+        val k = kind ?: return rawDt
+        if (rawDt <= 0f) return rawDt
+        val elapsed = (System.nanoTime() - startedAtNanos) / 1_000_000_000f
+
+        return when (k) {
+            Kind.KILL -> {
+                if (elapsed < KILL_FREEZE) return 0f
+                kind = null
+                rawDt
+            }
+            Kind.DEATH -> {
+                if (elapsed < DEATH_FREEZE) return 0f
+                val sinceSlowStart = elapsed - DEATH_FREEZE
+                if (sinceSlowStart < DEATH_SLOW_DURATION) return rawDt * DEATH_SLOW_FACTOR
+                kind = null
+                rawDt
+            }
+        }
+    }
+
+    /** 0 (no effect) to 1 (fully tinted), for the death flash only — a kill is too brief and
+     * too frequent to carry a screen-space tint without a busy match feeling like it strobes. */
+    fun desaturation(): Float {
+        if (kind != Kind.DEATH) return 0f
+        val elapsed = (System.nanoTime() - startedAtNanos) / 1_000_000_000f
+        if (elapsed >= DEATH_DESATURATE_DURATION) return 0f
+        // Snaps up, eases out — an impact arrives instantly and fades, it does not fade in.
+        return 1f - elapsed / DEATH_DESATURATE_DURATION
+    }
+}
+
+/**
+ * Camera state: follow spring + look-ahead + shake (GAMES_ANIMATION.md §5.2, mirrors iOS
+ * `stepCamera`/`computeLookAhead`/`currentShake` in SnakeMetalView.swift).
+ *
+ * THE SPRING IS THE PART THAT WAS MISSING HERE. Before this, [focus] in `drawArena` was the
+ * raw interpolated head position with no smoothing at all — every bit of positional error
+ * (and there is always some: the render clock derives from network arrival time) became a
+ * full-screen camera movement at 1:1, which is the arena-wide flicker documented in
+ * docs/GAMES_SNAKE_BUGS.md Part B. iOS got a follow spring in 22b8680; this class is the
+ * Android port that commit never received, folded into the same change as look-ahead and
+ * shake since all three live in the same "where does the camera actually point" concern.
+ */
+private class CameraMemory {
+    /** Last known head position, so a frame missing one (mid-respawn) cannot pin the camera
+     * to the arena origin — the bug this class already guarded against. */
+    var last: Offset? = null
+
+    private var centre: Offset? = null
+    private var lastStepAtNanos = 0L
+
+    /** ~80ms settle, matching iOS's cameraTau exactly — divergent constants between platforms
+     * is how two ports of the same fix end up feeling like different games. */
+    private val tau = 0.08f
+    /** A respawn puts you anywhere in the arena; springing across that gap sends the camera
+     * flying over the whole map, so a jump this large cuts instead. Matches iOS's
+     * cameraTeleport. */
+    private val teleportDistance = 300f
+
+    /** Advance the spring toward [target] (nil = hold last known) and return where the camera
+     * now is, BEFORE shake is added — see [shakeOffset]. [impact] dilates this step's dt so a
+     * hitstop freeze correctly HOLDS the camera instead of continuing to chase a moving target
+     * while the rest of the world is frozen (see ImpactTimeline's class doc). */
+    fun step(target: Offset?, impact: ImpactTimeline): Offset {
+        target?.let { last = it }
+        val goal = target ?: last ?: return centre ?: Offset.Zero
+
+        val now = System.nanoTime()
+        val rawDt = if (lastStepAtNanos > 0L) {
+            minOf((now - lastStepAtNanos) / 1_000_000_000f, 0.1f)
+        } else 0f
+        lastStepAtNanos = now
+        val dt = impact.dilate(rawDt)
+
+        val current = centre
+        if (current == null) {
+            centre = goal      // first frame: start on the player, do not spring in
+            return goal
+        }
+
+        if (hypot((goal.x - current.x).toDouble(), (goal.y - current.y).toDouble()) > teleportDistance) {
+            centre = goal
+            return goal
+        }
+
+        val a = if (dt > 0f) 1f - kotlin.math.exp(-dt / tau) else 1f
+        val next = Offset(current.x + (goal.x - current.x) * a, current.y + (goal.y - current.y) * a)
+        centre = next
+        return next
+    }
+
+    // --- Screen shake: "3-6 px, 200 ms, decaying" (§5.2/§3.1) --------------------------------
+    //
+    // Kept separate from `centre` for the same reason as iOS: shake must never feed back into
+    // the spring's own state (a big shake could otherwise trip the teleport-cut check above).
+
+    private var shakeStartedAtNanos = 0L
+    private var shakeMagnitude = 0f
+    private var shakeSeed = 0f
+    private val shakeDurationSeconds = 0.2f
+
+    /** Trigger a shake. A later call while one is decaying restarts at the new magnitude
+     * rather than summing — a rapid double-kill should feel like one strong hit, not an
+     * accelerating wobble. */
+    fun triggerShake(magnitude: Float) {
+        shakeStartedAtNanos = System.nanoTime()
+        shakeMagnitude = magnitude
+        shakeSeed = (Math.random() * 1000).toFloat()
+    }
+
+    /** Shake offset in WORLD units (divided by scale so it reads as a constant number of
+     * on-screen pixels regardless of zoom). Call once per frame AFTER [step]. */
+    fun shakeOffset(scale: Float): Offset {
+        if (shakeMagnitude <= 0f) return Offset.Zero
+        val elapsed = (System.nanoTime() - shakeStartedAtNanos) / 1_000_000_000f
+        if (elapsed >= shakeDurationSeconds) { shakeMagnitude = 0f; return Offset.Zero }
+
+        // Decaying sine, not per-frame random noise — a sine reads as an impact recoiling,
+        // where random jitter reads as the RENDERER being unstable, the wrong association for
+        // a kill (a good thing) to carry.
+        val decay = 1f - elapsed / shakeDurationSeconds
+        val phase = (elapsed + shakeSeed) * 40f
+        val px = kotlin.math.sin(phase) * shakeMagnitude * decay
+        val py = kotlin.math.cos(phase * 1.3f) * shakeMagnitude * decay
+        val worldScale = scale.coerceAtLeast(0.0001f)
+        return Offset(px / worldScale, py / worldScale)
+    }
+}
+
+/**
+ * Offset the camera toward where the local player is HEADED, scaled by speed — "the player
+ * sees where they are going instead of where they are" (GAMES_ANIMATION.md §5.2). Returns
+ * Offset.Zero for a dead/absent player.
+ *
+ * Speed constants (240/420) are the server's BASE_SPEED/BOOST_SPEED from
+ * backend/games/src/engine/snake/index.ts TUNING, duplicated here as a presentation-only
+ * value — look-ahead distance affects nothing about the simulation, so a guess that is
+ * slightly stale after a tuning change only makes the offset a little short or long.
+ */
+private fun computeLookAhead(mine: GamesEngine.SnakeState.Snake?, heading: Double?): Offset {
+    if (mine == null || !mine.alive || heading == null) return Offset.Zero
+    val speed = if (mine.boosting) 420.0 else 240.0
+    val distance = minOf(speed * 0.35, 140.0)   // 0.35s of travel, capped at 140 world units
+    return Offset((cos(heading) * distance).toFloat(), (sin(heading) * distance).toFloat())
+}
+
+/**
+ * Presentation-only VFX driven by the server's `death`/`kill`/`eat`/`spawn` events
+ * (GAMES_ANIMATION.md §5.3, mirrors iOS `ParticleSystem` in SnakeMetalView.swift).
+ *
+ * FIXED POOL, NOT A GROWING LIST — a death converts a whole body into food and can fire a
+ * burst at the same instant several other snakes eat; without a cap a chaotic scrum could
+ * allocate thousands of particles in one frame. A full pool just stops accepting new spawns
+ * until old ones expire, which reads as "the newest burst is a little sparser" rather than a
+ * frame-rate cliff.
+ *
+ * EVERYTHING HERE IS CLIENT-ONLY. `step`/`spawn` only read events the server already
+ * committed to; nothing here can desync a match, only under- or over-decorate one — same
+ * guarantee the renderer as a whole makes (SnakeArenaScreen.kt's own top-of-file doc comment).
+ */
+private class ParticleSystem {
+    private data class Particle(
+        var x: Float, var y: Float,
+        var vx: Float, var vy: Float,
+        var life: Float, val maxLife: Float,
+        val size: Float, val color: Color,
+    )
+
+    companion object { private const val CAPACITY = 512 }
+
+    private val particles = ArrayList<Particle>(CAPACITY)
+    /** De-dupe key: only spawn for a server tick this instance hasn't seen. `t` only
+     * increases within a match, so "newer than last seen" is sufficient — matches the
+     * de-dupe strategy in the iOS ParticleSystem's caller. */
+    private var lastEventTime = -1.0
+
+    fun spawn(kind: String, x: Float, y: Float, color: Color) {
+        when (kind) {
+            // "6-10 sparks converging into the head" (doc) — approximated as an outward burst
+            // from the food's position, the simplest readable equivalent at this scale.
+            "eat" -> emit((6..10).random(), x, y, speed = 40f..90f, life = 0.28f..0.4f,
+                size = 2.5f..4f, color = color)
+            "kill" -> emit(22, x, y, speed = 90f..220f, life = 0.4f..0.65f, size = 3f..6f,
+                color = color)
+            "spawn" -> emit(16, x, y, speed = 60f..140f, life = 0.35f..0.5f, size = 2f..4f,
+                color = color)
+            // Your own death is handled as a screen-space effect elsewhere (hitstop/slow-mo/
+            // desaturate, §5.4, not yet built) — a world-space burst there too would double up.
+            // Other snakes' deaths still burst so a scrum reads as violent from every
+            // perspective but your own.
+            "death" -> emit(18, x, y, speed = 70f..160f, life = 0.4f..0.6f, size = 3f..5f,
+                color = color)
+        }
+    }
+
+    private fun emit(
+        count: Int, x: Float, y: Float,
+        speed: ClosedFloatingPointRange<Float>, life: ClosedFloatingPointRange<Float>,
+        size: ClosedFloatingPointRange<Float>, color: Color,
+    ) {
+        val budget = minOf(count, CAPACITY - particles.size)
+        repeat(budget) {
+            val angle = Math.random().toFloat() * (2f * Math.PI.toFloat())
+            val s = speed.start + Math.random().toFloat() * (speed.endInclusive - speed.start)
+            val l = life.start + Math.random().toFloat() * (life.endInclusive - life.start)
+            val sz = size.start + Math.random().toFloat() * (size.endInclusive - size.start)
+            particles.add(Particle(
+                x = x, y = y,
+                vx = cos(angle) * s, vy = sin(angle) * s,
+                life = l, maxLife = l, size = sz, color = color,
+            ))
+        }
+    }
+
+    /** Called with events already de-duped against [lastEventTime] by the caller. Exposed
+     * separately from [spawn] so the caller can look up each event's snake colour itself. */
+    fun shouldSpawnFor(serverTime: Double): Boolean = serverTime > lastEventTime
+    fun markSpawned(serverTime: Double) { lastEventTime = serverTime }
+
+    /** nanoTime of the previous [stepWallClock] call; 0 means "not yet called". Owned here
+     * rather than threaded through as a caller-managed parameter, since this system already
+     * IS the one `remember`ed object the screen holds for this purpose — see the class doc. */
+    private var lastStepAtNanos = 0L
+
+    /** Advances on WALL-CLOCK time, not the render/interpolation clock's — a spark's decay is
+     * not gameplay and must keep animating through a network stall rather than freeze
+     * alongside it. [impact] dilates this call's dt so particles correctly hitstop/slow-mo
+     * alongside the camera (ImpactTimeline's class doc). Safe to call once per draw; a no-op
+     * on the very first call, which only establishes the baseline. */
+    fun stepWallClock(impact: ImpactTimeline) {
+        val now = System.nanoTime()
+        if (lastStepAtNanos > 0L) step(impact.dilate((now - lastStepAtNanos) / 1_000_000_000f))
+        lastStepAtNanos = now
+    }
+
+    private fun step(dtSeconds: Float) {
+        if (dtSeconds <= 0f || particles.isEmpty()) return
+        val drag = 1f - minOf(dtSeconds * 2.2f, 1f)
+        var i = particles.size - 1
+        while (i >= 0) {
+            val p = particles[i]
+            p.life -= dtSeconds
+            if (p.life <= 0f) {
+                particles.removeAt(i)
+            } else {
+                p.x += p.vx * dtSeconds
+                p.y += p.vy * dtSeconds
+                p.vx *= drag
+                p.vy *= drag
+            }
+            i--
+        }
+    }
+
+    /** Draw every live particle additively — a spark IS the light, unlike food/heads there is
+     * no opaque core underneath to protect from softening, so this uses the same
+     * [DrawScope.drawGlowDot] primitive as the rest of the bloom approximation. */
+    fun DrawScope.draw() {
+        particles.forEach { p ->
+            val fade = (p.life / p.maxLife).coerceIn(0f, 1f)
+            drawCircle(p.color.copy(alpha = 0.5f * fade), radius = p.size * 1.6f,
+                center = Offset(p.x, p.y), blendMode = BlendMode.Plus)
+        }
+    }
+}
 
 private fun DrawScope.drawArena(
     frames: List<GamesEngine.SnakeFrame>,
@@ -414,9 +714,48 @@ private fun DrawScope.drawArena(
     trails: TrailStore,
     stick: Offset,
     camera: CameraMemory,
+    particles: ParticleSystem,
+    impact: ImpactTimeline,
+    haptics: GameHaptics,
 ) {
     val s = pickSample(frames) ?: return
     val state = s.to
+
+    // NEW events only, de-duped by the server's own clock (see ParticleSystem's doc comment).
+    // Trigger detection runs BEFORE camera.step()/particles.stepWallClock() below, in the
+    // same pass as spawning — unlike iOS, which has to split trigger-detection out earlier
+    // because its camera step runs before its particle spawn. Here both already run after
+    // this block, so a fresh trigger is live for both in the same frame with no extra split.
+    if (particles.shouldSpawnFor(state.time)) {
+        state.events.forEach { e ->
+            val color = state.snakes.firstOrNull { it.id == e.snakeId }
+                ?.let { paletteColor(it.colorIndex) } ?: Color.White
+            particles.spawn(e.kind, e.x.toFloat(), e.y.toFloat(), color)
+
+            // `eat`'s id is the EATING snake (snake/index.ts `k: 'eat'` push). GameHaptics.eat()
+            // throttles internally, so no rate-limiting needed at this call site.
+            if (e.kind == "eat" && e.snakeId == me) haptics.eat()
+
+            // Screen shake, hitstop AND haptic on YOUR kills only. `e.snakeId` on a "kill"
+            // event is the KILLER (backend/games/src/engine/snake/index.ts kill() pushes
+            // `id: killerId`), so this fires for the player who just won a fight, not their
+            // victim.
+            if (e.kind == "kill" && e.snakeId == me) {
+                camera.triggerShake(6f)
+                impact.triggerKill()
+                haptics.kill()
+            }
+            // "death" events push `id: sn.id` — the snake that died — so this is unambiguously
+            // "did I just die", not a kill I made. Opposite field semantics from "kill" above,
+            // confirmed against the backend before wiring either.
+            if (e.kind == "death" && e.snakeId == me) {
+                impact.triggerDeath()
+                haptics.death()
+            }
+        }
+        particles.markSpawned(state.time)
+    }
+    particles.stepWallClock(impact)
 
     // Interpolated head positions and headings for every snake this frame.
     val heads = HashMap<String, Offset>(state.snakes.size)
@@ -432,17 +771,27 @@ private fun DrawScope.drawArena(
 
     trails.update(state, heads)
 
-    // Falling back to Offset.Zero teleported the camera to the arena ORIGIN whenever the
-    // player was mid-respawn — the view jumped away from the action and the player's own
-    // snake wandered off screen. Hold the last known focus instead. Owned by the caller so
-    // it resets with the screen rather than leaking between matches.
-    val focus = heads[me] ?: camera.last ?: Offset.Zero
-    heads[me]?.let { camera.last = it }
-    val mass = state.snakes.firstOrNull { it.id == me }?.mass ?: 10.0
+    val mine = state.snakes.firstOrNull { it.id == me }
+    val mass = mine?.mass ?: 10.0
 
     // Zoom out as the snake grows so it stays framed, easing off so growth is not nauseating.
+    // Already a smooth function of mass (never a snapped tier), which is what satisfies
+    // GAMES_ANIMATION.md §5.2's "mass zoom" on its own — look-ahead and shake below are what
+    // the doc adds on top.
     val zoom = 1.0 / (1.0 + log10(1 + mass / 30) * 0.42)
     val scale = (min(size.width, size.height) / 900f) * zoom.toFloat()
+
+    // LOOK-AHEAD, then the FOLLOW SPRING (camera.step), then SHAKE applied last and never fed
+    // back into the spring's own state — see CameraMemory's class doc for why each of those
+    // three is ordered the way it is. This replaces the raw `heads[me]` this screen used to
+    // pass straight to the transform below, which was the arena-wide flicker bug
+    // (docs/GAMES_SNAKE_BUGS.md Part B) — iOS already has this spring (22b8680); this is the
+    // Android port.
+    val lookAhead = computeLookAhead(mine, headings[me])
+    val target = heads[me]?.let { Offset(it.x + lookAhead.x, it.y + lookAhead.y) }
+    val sprung = camera.step(target, impact)
+    val shake = camera.shakeOffset(scale)
+    val focus = Offset(sprung.x + shake.x, sprung.y + shake.y)
 
     withTransform({
         translate(size.width / 2f, size.height / 2f)
@@ -468,6 +817,25 @@ private fun DrawScope.drawArena(
                 headings[it.id] ?: 0.0, true, state.time, stick,
                 rankOf[it.id] ?: 0, me, scale)
         }
+
+        // On top of every snake, same as a spark being the brightest thing on screen for its
+        // short life. Drawn inside the SAME withTransform as everything else so particle world
+        // coordinates need no separate camera math of their own.
+        with(particles) { draw() }
+    }
+
+    // Death tint (GAMES_ANIMATION.md §5.4's "desaturate over 400ms"), drawn AFTER the
+    // withTransform block closes rather than inside it — a screen-space rect needs no camera
+    // math at all, unlike iOS's Metal version which draws a giant world-space circle because
+    // that pipeline has no concept of "outside the current transform". Simpler here, same
+    // result. A TRUE desaturate would need RenderEffect (API 31+) or a RuntimeShader (33+)
+    // sampling the already-drawn frame; this darkens and cools instead, same tradeoff iOS
+    // made and noted for the same reason — real cost for an effect one player sees for 400ms.
+    val tint = impact.desaturation()
+    if (tint > 0f) {
+        // Capped at 0.6 alpha, not 1.0 — the point is a punch, not a blackout, and the death
+        // panel that appears a beat later must stay legible against it.
+        drawRect(Color(0xFF050810).copy(alpha = tint * 0.6f), size = size)
     }
 }
 
@@ -477,10 +845,49 @@ private fun DrawScope.drawBoundary(radius: Float) {
     // Drawn EXACTLY at the lethal line, not inside or outside it. A wall whose visible edge
     // disagrees with the killing surface makes every border death feel unfair, and players
     // cannot learn a boundary they cannot see precisely.
+    //
+    // GAMES_ANIMATION.md §4 tier C ("no shader access, three layered strokes at decreasing
+    // width and increasing alpha with BlendMode.Plus"): this arena edge is exactly the shape
+    // the doc calls out as the clearest place to prove the effect is doing something, since it
+    // is both lethal and constantly on screen. iOS gets a real Gaussian-blurred bloom target
+    // for the same ring (SnakeMetalView.buildArena); this is the minSdk-24 approximation of
+    // the same intent — a rim of light, not a flat stroke — reachable on every device this app
+    // supports, not just API 33+.
+    drawGlowRing(radius = radius, center = Offset.Zero, color = Color(0xFF5AD8FF))
+
     drawCircle(
         Color(0xFF5AD8FF).copy(alpha = 0.16f), radius = radius - 20f,
         center = Offset.Zero, style = Stroke(width = 40f))
     drawCircle(Color(0xFF5AD8FF), radius = radius, center = Offset.Zero, style = Stroke(width = 6f))
+}
+
+/**
+ * Additive layered-stroke glow: three strokes at decreasing width and increasing alpha,
+ * `BlendMode.Plus` so overlapping glow brightens rather than occludes — the same behaviour
+ * iOS gets from a real Gaussian blur in an offscreen bloom texture, approximated here with
+ * geometry instead of a blur kernel. See GAMES_ANIMATION.md §4/§5.1.
+ *
+ * `BlendMode.Plus` is API 24+ (it is a Skia blend mode exposed since Compose's first release
+ * on this minSdk), so this works everywhere the app runs — unlike RenderEffect blur (31+) or
+ * a RuntimeShader (33+), which is why bloom is layered strokes here and a real blur on iOS.
+ */
+private fun DrawScope.drawGlowRing(radius: Float, center: Offset, color: Color) {
+    drawCircle(color.copy(alpha = 0.10f), radius = radius + 26f, center = center,
+        style = Stroke(width = 52f), blendMode = BlendMode.Plus)
+    drawCircle(color.copy(alpha = 0.18f), radius = radius + 12f, center = center,
+        style = Stroke(width = 24f), blendMode = BlendMode.Plus)
+    drawCircle(color.copy(alpha = 0.30f), radius = radius + 3f, center = center,
+        style = Stroke(width = 8f), blendMode = BlendMode.Plus)
+}
+
+/** Same three-layer additive approach as [drawGlowRing], for a point light instead of a ring. */
+private fun DrawScope.drawGlowDot(radius: Float, center: Offset, color: Color) {
+    drawCircle(color.copy(alpha = 0.10f), radius = radius * 3.2f, center = center,
+        blendMode = BlendMode.Plus)
+    drawCircle(color.copy(alpha = 0.18f), radius = radius * 2.2f, center = center,
+        blendMode = BlendMode.Plus)
+    drawCircle(color.copy(alpha = 0.30f), radius = radius * 1.4f, center = center,
+        blendMode = BlendMode.Plus)
 }
 
 private fun DrawScope.drawFood(state: GamesEngine.SnakeState) {
@@ -489,6 +896,7 @@ private fun DrawScope.drawFood(state: GamesEngine.SnakeState) {
         val r = if (item.value >= 2) 7f else if (item.value < 1) 4.5f else 5.5f
         val color = if (item.value >= 2) Color(0xFFFFB873) else Color(0xFFFFEE9E)
         val centre = Offset(item.x.toFloat(), item.y.toFloat())
+        drawGlowDot(radius = r, center = centre, color = color)
         drawCircle(color.copy(alpha = 0.18f), radius = r * 2f, center = centre)
         drawCircle(color, radius = r, center = centre)
     }
@@ -561,6 +969,11 @@ private fun DrawScope.drawHead(
     stick: Offset,
 ) {
     val r = width * 0.62f
+    // The head halo is the single most-looked-at glow in the game — this is what makes
+    // "every bright thing emits" (GAMES_ANIMATION.md §3.3) actually true of the thing the
+    // player is steering. Additive so a boosting snake's own trail glow and the head halo
+    // brighten together instead of the head simply occluding the trail.
+    drawGlowDot(radius = r, center = head, color = color)
     drawCircle(color.copy(alpha = 0.28f * alpha), radius = r * 2.4f, center = head)
     drawCircle(color.copy(alpha = alpha), radius = r, center = head)
 

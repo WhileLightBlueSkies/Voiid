@@ -21,6 +21,7 @@
 
 import Combine
 import MetalKit
+import MetalPerformanceShaders
 import SwiftUI
 import simd
 
@@ -127,12 +128,76 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
 
     var stick: CGVector = .zero
 
+    /// Where the camera actually is, as opposed to where the head is.
+    ///
+    /// The camera used to BE the head — `focus` was the raw interpolated head position, so
+    /// every bit of positional error became a full-screen movement at 1:1. Server frames do
+    /// not arrive evenly, and the render clock is derived from arrival time, so that error is
+    /// constant and visible: the whole arena jerked along the axis of travel several times a
+    /// second. Following with a spring absorbs it.
+    ///
+    /// Nil until the first frame, so the camera starts ON the player rather than springing in
+    /// from the arena origin.
+    private var cameraCentre: CGPoint?
+    /// Last known head position, held so a frame without one cannot pin the camera to (0,0).
+    private var lastFocus: CGPoint?
+    /// Timestamp of the previous draw, for frame-rate-independent smoothing.
+    private var lastCameraStep: TimeInterval = 0
+
+    /// Follow time constant. ~80 ms reads as "attached but not welded"; larger feels laggy,
+    /// smaller stops absorbing the jitter it exists to absorb.
+    private static let cameraTau: Double = 0.08
+    /// Beyond this the head did not move, it TELEPORTED (a respawn puts you anywhere in the
+    /// arena). Springing across that gap sends the camera flying over the whole map, so a
+    /// jump this large cuts instead. A snake covers ~24 units in a tick at boost speed, so
+    /// 300 is far outside anything legitimate motion can produce.
+    private static let cameraTeleport: Double = 300
+
+    /// Hitstop + slow-mo on kill/death (GAMES_ANIMATION.md §5.4). PRESENTATION-CLOCK ONLY —
+    /// this dilates the WALL-CLOCK dt fed to the camera spring, particles and shake, and
+    /// never touches `buildFrame`'s interpolation math above, which reads the server's own
+    /// clock and IS the "renderer, not referee" boundary this file's header comment describes.
+    /// A bug in this timeline can make the game feel wrong for a fraction of a second; it
+    /// cannot make it wrong.
+    private let impact = ImpactTimeline()
+
     private var device: MTLDevice!
     private var queue: MTLCommandQueue!
     private var circlePipeline: MTLRenderPipelineState!
     private var ribbonPipeline: MTLRenderPipelineState!
     private var spritePipeline: MTLRenderPipelineState!
+    /// Same geometry as the main pipelines but writing ADDITIVE rather than straight-alpha,
+    /// into the half-res bloom target. See `renderBloomSource` for why additive here and
+    /// straight-alpha on the main pass are both correct at the same time.
+    private var circleBloomPipeline: MTLRenderPipelineState!
+    private var ribbonBloomPipeline: MTLRenderPipelineState!
+    /// Draws the blurred bloom texture back over the final frame, additively.
+    private var compositePipeline: MTLRenderPipelineState!
     private var sampler: MTLSamplerState!
+
+    // MARK: Bloom
+    //
+    // GAMES_ANIMATION.md §5.1: "Render bright elements to an offscreen half-res texture,
+    // two-pass Gaussian blur, composite additively. This one change does more for 'out of
+    // this world' than any other single item on the list."
+    //
+    // HALF RESOLUTION, DELIBERATELY. Bloom is a low-frequency effect — nobody can tell a glow
+    // was blurred at half the screen's detail, and rendering + blurring a SECOND full arena
+    // every frame would roughly double the fill-rate cost of the whole draw for an effect
+    // that is meant to be soft in the first place.
+    //
+    // MPSImageGaussianBlur RATHER THAN A HAND-WRITTEN SEPARABLE BLUR. Apple's kernel is tuned
+    // per-GPU-family and already does the two-pass horizontal/vertical split internally; a
+    // hand-rolled version would be more MSL to maintain for a worse result on some devices.
+    /// What actually got fed into the bloom source this frame — only the head glow halos and
+    /// the arena edge ring, i.e. the things in `buildFrame` that are ALREADY additive-looking
+    /// (soft, saturated, meant to feel like light). Body ribbons and food are excluded: bloom
+    /// on flat opaque fills reads as blur, not glow, and would soften the very shapes the
+    /// player needs to judge collisions against.
+    private var bloomCircles: [CircleInstance] = []
+    private var bloomTexture: MTLTexture?
+    private var bloomBlurred: MTLTexture?
+    private var bloomSize: CGSize = .zero
 
     /// Name-plate glyphs, rasterised on demand and packed into one texture.
     private var labelAtlas: LabelAtlas?
@@ -170,9 +235,26 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     /// Body trails, owned HERE rather than in SwiftUI state — this is the fix for the freeze.
     private let trails = TrailStore()
 
+    /// Presentation-only VFX driven by the server's per-tick events (GAMES_ANIMATION.md §5.3).
+    /// A death/kill/eat/spawn a client never learns about from `events` is invisible motion —
+    /// this is what turns those four strings into sparks, bursts and rings. Nothing here is
+    /// authoritative: it reads events, it never produces them, so a bug here cannot desync a
+    /// match, only under- or over-decorate one.
+    private let particles = ParticleSystem()
+    /// Ids of events already spawned-for, so a frame that repeats an event (a resync, a
+    /// duplicate broadcast) cannot double-spawn. Keyed by (kind, snakeId, tick) rather than
+    /// object identity since events are plain structs with no id of their own.
+    private var lastEventTime: Double = -1
+    /// Wall-clock throttle for the `eat` haptic — see its call site for why.
+    private var lastEatHapticAt: TimeInterval = 0
+
     private var viewSize: CGSize = .zero
     /// When the HUD was last pushed to SwiftUI; see `publishHud` for why it is throttled.
     private var lastHudPublish: TimeInterval = 0
+    /// Wall-clock time of the previous draw, for the particle system's own dt — independent of
+    /// the camera's dt and the render clock, because particles must keep animating even during
+    /// a network stall (nothing about a spark's decay is server truth).
+    private var lastParticleStep: TimeInterval = 0
 
     init(engine: GamesEngine, me: String?, hud: SnakeHudModel) {
         self.engine = engine
@@ -195,13 +277,29 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
 
         circlePipeline = Self.pipeline(device: device, library: library,
                                        vertex: "circleVertex", fragment: "circleFragment",
-                                       pixelFormat: view.colorPixelFormat)
+                                       pixelFormat: view.colorPixelFormat, blend: .straightAlpha)
         ribbonPipeline = Self.pipeline(device: device, library: library,
                                        vertex: "ribbonVertex", fragment: "ribbonFragment",
-                                       pixelFormat: view.colorPixelFormat)
+                                       pixelFormat: view.colorPixelFormat, blend: .straightAlpha)
         spritePipeline = Self.pipeline(device: device, library: library,
                                        vertex: "spriteVertex", fragment: "spriteFragment",
-                                       pixelFormat: view.colorPixelFormat)
+                                       pixelFormat: view.colorPixelFormat, blend: .straightAlpha)
+
+        // Bloom source pipelines render the SAME two shaders into the half-res bloom texture,
+        // but ADDITIVE: two overlapping glows should brighten each other (that is what light
+        // does), where the main pass's straight alpha would just occlude one with the other.
+        // The bloom texture always starts cleared to black, so additive-onto-black behaves
+        // exactly like "just draw the glow" for a single instance and correctly accumulates
+        // for overlapping ones.
+        circleBloomPipeline = Self.pipeline(device: device, library: library,
+                                            vertex: "circleVertex", fragment: "circleFragment",
+                                            pixelFormat: Self.bloomPixelFormat, blend: .additive)
+        ribbonBloomPipeline = Self.pipeline(device: device, library: library,
+                                            vertex: "ribbonVertex", fragment: "ribbonFragment",
+                                            pixelFormat: Self.bloomPixelFormat, blend: .additive)
+        compositePipeline = Self.pipeline(device: device, library: library,
+                                          vertex: "spriteVertex", fragment: "spriteFragment",
+                                          pixelFormat: view.colorPixelFormat, blend: .additive)
 
         let sd = MTLSamplerDescriptor()
         sd.minFilter = .linear
@@ -211,26 +309,64 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         labelAtlas = LabelAtlas(device: device)
     }
 
+    private enum BlendMode { case straightAlpha, additive }
+
     private static func pipeline(
         device: MTLDevice, library: MTLLibrary,
-        vertex: String, fragment: String, pixelFormat: MTLPixelFormat
+        vertex: String, fragment: String, pixelFormat: MTLPixelFormat, blend: BlendMode
     ) -> MTLRenderPipelineState? {
         let d = MTLRenderPipelineDescriptor()
         d.vertexFunction = library.makeFunction(name: vertex)
         d.fragmentFunction = library.makeFunction(name: fragment)
         d.colorAttachments[0].pixelFormat = pixelFormat
-        // Straight alpha blending: the arena is layered glows over a dark floor, and additive
-        // blending would blow out to white wherever two glows overlap.
         d.colorAttachments[0].isBlendingEnabled = true
-        d.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
-        d.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
-        d.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
-        d.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        switch blend {
+        case .straightAlpha:
+            // The arena is layered glows over a dark floor; additive here would blow out to
+            // white wherever two glows overlap on the MAIN pass, which is not what a body or a
+            // food pellet should do to what is behind it.
+            d.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+            d.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+            d.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
+            d.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+        case .additive:
+            // dst + src, uncapped. Correct for light: two glows overlapping should be brighter
+            // than either alone, and this is also what the FINAL composite needs — the blurred
+            // bloom texture is added ON TOP of the already-complete main-pass frame, never
+            // replacing it.
+            d.colorAttachments[0].sourceRGBBlendFactor = .one
+            d.colorAttachments[0].destinationRGBBlendFactor = .one
+            d.colorAttachments[0].sourceAlphaBlendFactor = .one
+            d.colorAttachments[0].destinationAlphaBlendFactor = .one
+        }
         return try? device.makeRenderPipelineState(descriptor: d)
     }
 
+    /// A format MPSImageGaussianBlur can both read and write. .bgra8Unorm (the drawable's own
+    /// format) works but rgba16Float gives the blur headroom above 1.0 so a bright cluster of
+    /// overlapping glows blurs into a wider, still-bright halo instead of clipping to white at
+    /// the source before the blur even runs.
+    private static let bloomPixelFormat: MTLPixelFormat = .rgba16Float
+
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
         viewSize = size
+        allocateBloomTargets(for: size)
+    }
+
+    /// Half the drawable's resolution, per §5.1's "half resolution, always". Reallocated only
+    /// when the drawable size actually changes (rotation, split view), never per frame.
+    private func allocateBloomTargets(for size: CGSize) {
+        guard size.width > 0, size.height > 0, let device else { return }
+        let w = max(1, Int(size.width / 2))
+        let h = max(1, Int(size.height / 2))
+        bloomSize = CGSize(width: w, height: h)
+
+        let desc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: Self.bloomPixelFormat, width: w, height: h, mipmapped: false)
+        desc.usage = [.renderTarget, .shaderRead]
+        desc.storageMode = .private
+        bloomTexture = device.makeTexture(descriptor: desc)
+        bloomBlurred = device.makeTexture(descriptor: desc)
     }
 
     // MARK: Frame
@@ -239,47 +375,204 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         guard let drawable = view.currentDrawable,
               let descriptor = view.currentRenderPassDescriptor,
               let commands = queue.makeCommandBuffer(),
-              let encoder = commands.makeRenderCommandEncoder(descriptor: descriptor),
               circlePipeline != nil else { return }
 
         viewSize = view.drawableSize
         circles.removeAll(keepingCapacity: true)
         ribbon.removeAll(keepingCapacity: true)
         sprites.removeAll(keepingCapacity: true)
+        bloomCircles.removeAll(keepingCapacity: true)
 
-        if let frame = buildFrame() {
-            var uniforms = frame
-            encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
-
-            // Bodies first, then circles over them (heads, food), then labels on top.
-            if let buf = upload(ribbon, into: &ribbonBuffer), ribbonPipeline != nil {
-                encoder.setRenderPipelineState(ribbonPipeline)
-                encoder.setVertexBuffer(buf, offset: 0, index: 1)
-                encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: ribbon.count)
+        guard let frame = buildFrame() else {
+            // Nothing to draw yet (no frame has arrived): still present a cleared drawable
+            // rather than skipping the frame entirely, or the view briefly shows garbage.
+            if let encoder = commands.makeRenderCommandEncoder(descriptor: descriptor) {
+                encoder.endEncoding()
             }
+            commands.present(drawable)
+            commands.commit()
+            return
+        }
+        var uniforms = frame
 
-            if let buf = upload(circles, into: &circleBuffer) {
-                encoder.setRenderPipelineState(circlePipeline)
-                encoder.setVertexBuffer(buf, offset: 0, index: 1)
-                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
-                                       instanceCount: circles.count)
-            }
+        // PASS 1 — bloom source, half-res, additive, into an offscreen texture. Only the
+        // circles buildFrame classified as glow (bloomCircles) go here; see the property's
+        // doc comment for why bodies and food halos are excluded.
+        renderBloomSource(commands: commands, uniforms: &uniforms)
 
-            if let buf = upload(sprites, into: &spriteBuffer),
-               let texture = labelAtlas?.texture, spritePipeline != nil {
-                encoder.setRenderPipelineState(spritePipeline)
-                encoder.setVertexBuffer(buf, offset: 0, index: 1)
-                encoder.setFragmentTexture(texture, index: 0)
-                encoder.setFragmentSamplerState(sampler, index: 0)
-                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
-                                       instanceCount: sprites.count)
-            }
+        // PASS 2 — blur pass 1's output in place. Two-pass separable Gaussian, entirely
+        // Apple's kernel; this call does both directions internally.
+        blurBloom(commands: commands)
+
+        // PASS 3 — the main, full-resolution frame exactly as before bloom existed.
+        guard let encoder = commands.makeRenderCommandEncoder(descriptor: descriptor) else {
+            commands.present(drawable)
+            commands.commit()
+            return
+        }
+        encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
+
+        // Bodies first, then circles over them (heads, food), then labels on top.
+        if let buf = upload(ribbon, into: &ribbonBuffer), ribbonPipeline != nil {
+            encoder.setRenderPipelineState(ribbonPipeline)
+            encoder.setVertexBuffer(buf, offset: 0, index: 1)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: ribbon.count)
+        }
+
+        if let buf = upload(circles, into: &circleBuffer) {
+            encoder.setRenderPipelineState(circlePipeline)
+            encoder.setVertexBuffer(buf, offset: 0, index: 1)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
+                                   instanceCount: circles.count)
+        }
+
+        // PASS 4 — composite the blurred bloom texture additively ON TOP of the main pass,
+        // as one full-screen quad. Additive: this brightens what is already drawn, it never
+        // replaces it, which is what makes bloom read as light spilling off the glowing
+        // shapes rather than a soft double-exposure of the whole scene.
+        compositeBloom(encoder: encoder)
+
+        // PASS 5 — the death impact tint (GAMES_ANIMATION.md §5.4's "desaturate over 400ms").
+        // A TRUE desaturation would need to sample the drawable itself, which this pipeline
+        // cannot do without a second full-resolution offscreen pass and a grayscale shader —
+        // real cost for an effect that lasts 400ms and is seen by exactly one player, the one
+        // who just died. This darkens and cools the frame instead: straight-alpha near-black
+        // over everything, same read (the arena visually recoiling) at a fraction of the GPU
+        // cost. Revisit with a real desaturate if bloom's fill-rate headroom allows it later.
+        deathTint(encoder: encoder)
+
+        if let buf = upload(sprites, into: &spriteBuffer),
+           let texture = labelAtlas?.texture, spritePipeline != nil {
+            encoder.setRenderPipelineState(spritePipeline)
+            encoder.setVertexBuffer(buf, offset: 0, index: 1)
+            encoder.setFragmentTexture(texture, index: 0)
+            encoder.setFragmentSamplerState(sampler, index: 0)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
+                                   instanceCount: sprites.count)
         }
 
         encoder.endEncoding()
         commands.present(drawable)
         commands.commit()
     }
+
+    /// PASS 1: render `bloomCircles` into the half-res offscreen texture, additive, cleared
+    /// to black first. Uniforms are scaled to the bloom texture's own (half) resolution so
+    /// world-to-clip math still lands correctly at the smaller size.
+    private func renderBloomSource(commands: MTLCommandBuffer, uniforms: inout Uniforms) {
+        guard let bloomTexture, bloomSize.width > 0 else { return }
+
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = bloomTexture
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+        pass.colorAttachments[0].storeAction = .store
+
+        guard let encoder = commands.makeRenderCommandEncoder(descriptor: pass) else { return }
+
+        var bloomUniforms = uniforms
+        bloomUniforms.viewportSize = SIMD2(Float(bloomSize.width * 2), Float(bloomSize.height * 2))
+        // scale is world-units -> POINTS, unaffected by the render target's pixel resolution —
+        // the viewport halving above is what maps the same world extent onto the smaller
+        // texture, exactly as it would if the whole app were running at half point-scale.
+        encoder.setVertexBytes(&bloomUniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
+
+        if !ribbon.isEmpty, let buf = upload(ribbon, into: &ribbonBloomBuffer),
+           ribbonBloomPipeline != nil {
+            encoder.setRenderPipelineState(ribbonBloomPipeline)
+            encoder.setVertexBuffer(buf, offset: 0, index: 1)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: ribbon.count)
+        }
+
+        if !bloomCircles.isEmpty, let buf = upload(bloomCircles, into: &bloomCircleBuffer),
+           circleBloomPipeline != nil {
+            encoder.setRenderPipelineState(circleBloomPipeline)
+            encoder.setVertexBuffer(buf, offset: 0, index: 1)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
+                                   instanceCount: bloomCircles.count)
+        }
+
+        encoder.endEncoding()
+    }
+
+    /// PASS 2: MPSImageGaussianBlur, bloomTexture -> bloomBlurred. Sigma is in TEXTURE pixels
+    /// (i.e. already half-res), so this is a wider blur relative to on-screen size than the
+    /// number alone suggests — intentional, that is what makes bloom read as soft light
+    /// rather than a sharpened edge glow.
+    private func blurBloom(commands: MTLCommandBuffer) {
+        guard let bloomTexture, let bloomBlurred else { return }
+        let blur = MPSImageGaussianBlur(device: device, sigma: 6.0)
+        blur.encode(commandBuffer: commands, sourceTexture: bloomTexture,
+                    destinationTexture: bloomBlurred)
+    }
+
+    /// PASS 4: draw the blurred bloom texture as one full-screen quad, additive, into the
+    /// already-open main-pass encoder. Reuses the sprite pipeline's vertex stage (a textured
+    /// quad is a textured quad) but through `compositePipeline`, which blends additively
+    /// instead of the sprite pass's straight alpha.
+    private func compositeBloom(encoder: MTLRenderCommandEncoder) {
+        guard let bloomBlurred, compositePipeline != nil, viewSize.width > 0 else { return }
+
+        // One instance, sized and centred to cover the whole viewport in WORLD space at the
+        // current camera scale — i.e. exactly what is on screen right now, since the source
+        // texture was rendered with the same camera uniforms.
+        let scale = uniformsScaleForComposite
+        guard scale > 0 else { return }
+        let worldW = Float(viewSize.width) / scale
+        let worldH = Float(viewSize.height) / scale
+        let quad = SpriteInstance(
+            centre: lastCameraCentreSIMD,
+            size: SIMD2(worldW, worldH),
+            uvOrigin: .zero, uvSize: SIMD2(1, 1),
+            tint: SIMD4(1, 1, 1, Self.bloomIntensity))
+
+        guard let buf = upload([quad], into: &compositeBuffer) else { return }
+        encoder.setRenderPipelineState(compositePipeline)
+        encoder.setVertexBuffer(buf, offset: 0, index: 1)
+        encoder.setFragmentTexture(bloomBlurred, index: 0)
+        encoder.setFragmentSamplerState(sampler, index: 0)
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: 1)
+    }
+
+    /// How strongly the blurred glow is added back over the main pass. Low: this is meant to
+    /// be felt as "these things emit light", not to wash the arena out. Tuned by eye against
+    /// the existing palette rather than derived from anything.
+    private static let bloomIntensity: Float = 0.55
+
+    /// PASS 5: darken the frame by `impact.desaturation`, straight-alpha, near-black with a
+    /// faint cool tint. See the call site's comment for why this stands in for a true
+    /// desaturate. A full-viewport circle through the EXISTING circle pipeline — no new
+    /// pipeline object, no new shader — sized past the diagonal so its edge is always off
+    /// screen regardless of aspect ratio or camera scale.
+    private func deathTint(encoder: MTLRenderCommandEncoder) {
+        let amount = impact.desaturation
+        guard amount > 0, circlePipeline != nil, viewSize.width > 0 else { return }
+
+        let scale = uniformsScaleForComposite
+        guard scale > 0 else { return }
+        let coverWorld = Float(hypot(viewSize.width, viewSize.height)) / scale
+
+        // Peak alpha capped at 0.6, not 1.0: the point is a punch, not a blackout — the death
+        // panel appears over this a beat later and must still be legible against it.
+        let tint = CircleInstance(
+            centre: lastCameraCentreSIMD, radius: coverWorld, softness: 0,
+            colour: SIMD4(0.02, 0.03, 0.06, amount * 0.6))
+
+        guard let buf = upload([tint], into: &deathTintBuffer) else { return }
+        encoder.setRenderPipelineState(circlePipeline)
+        encoder.setVertexBuffer(buf, offset: 0, index: 1)
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: 1)
+    }
+
+    private var deathTintBuffer: MTLBuffer?
+
+    private var ribbonBloomBuffer: MTLBuffer?
+    private var bloomCircleBuffer: MTLBuffer?
+    private var compositeBuffer: MTLBuffer?
+    /// Cached from the last `buildFrame` uniforms so `compositeBloom` (called from inside the
+    /// main encoder, after `buildFrame` already ran) can size its full-screen quad correctly.
+    private var lastCameraCentreSIMD: SIMD2<Float> = .zero
+    private var uniformsScaleForComposite: Float = 0
 
     /// How far behind the newest frame to render.
     ///
@@ -332,11 +625,42 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
 
         trails.update(state: state, heads: heads)
 
-        let focus = heads[me ?? ""] ?? .zero
+        // TRIGGER DETECTION RUNS BEFORE stepCamera, deliberately separate from the spawn loop
+        // below. `impact.dilate` is read INSIDE stepCamera on the very next line, so the
+        // trigger must already be live by the time we get there — spawning particles can
+        // safely wait until after buildSnake since ParticleSystem.step runs later in this
+        // function, but a freeze that started one frame late would show the camera still
+        // sliding for 16ms while everything else had already stopped.
+        if state.time > lastEventTime {
+            for event in state.events {
+                if event.kind == "kill", event.snakeId == me {
+                    impact.triggerKill()
+                    GameHaptics.kill()
+                }
+                if event.kind == "death", event.snakeId == me {
+                    impact.triggerDeath()
+                    GameHaptics.death()
+                }
+            }
+        }
+
         let mine = state.snakes.first { $0.id == me }
         let mass = mine?.mass ?? 10
+        // Zoom out as mass grows so a big snake stays framed, log-damped so growth reads as
+        // "the world got a little smaller" rather than a nauseating continuous zoom-out.
+        // Already an eased function of mass (not a snapped tier), so this alone satisfies
+        // GAMES_ANIMATION.md §5.2's "mass zoom" — look-ahead and shake below are what it adds.
         let zoom = 1.0 / (1.0 + log10(1 + mass / 30) * 0.42)
         let scale = Float(min(viewSize.width, viewSize.height) / 900.0 * zoom)
+
+        // LOOK-AHEAD: "offset toward the heading, scaled by speed — the player sees where they
+        // are going instead of where they are" (§5.2). Only for the local player: an
+        // opponent's heading is not something the camera should react to.
+        let lookAhead = Self.computeLookAhead(mine: mine, headingsById: headings, me: me)
+        let target = heads[me ?? ""].map {
+            CGPoint(x: $0.x + lookAhead.x, y: $0.y + lookAhead.y)
+        }
+        let focus = stepCamera(target: target)
 
         buildArena(radius: state.arenaRadius)
         buildFood(state: state)
@@ -356,11 +680,168 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
                        scale: scale)
         }
 
+        // NEW events only. `t` only ever increases within a match (the runtime's tick loop is
+        // the sole writer), so "this frame's t is newer than the last frame we spawned for" is
+        // sufficient de-duplication without tracking individual event identity — a resync or a
+        // repeated broadcast of the SAME tick carries the same `t` and is correctly skipped.
+        if state.time > lastEventTime {
+            for event in state.events {
+                let colour = state.snakes.first { $0.id == event.snakeId }
+                    .map { Self.palette($0.colorIndex) } ?? SIMD4(1, 1, 1, 1)
+                particles.spawn(kind: event.kind, at: event.position, colour: colour)
+
+                // Rate-limited: `eat` can fire several times a second in a food-dense patch,
+                // and a Taptic Engine retriggered that fast reads as a buzz rather than a
+                // series of distinct ticks. 60ms floor keeps individual eats distinguishable
+                // without saturating the hardware queue.
+                if event.kind == "eat", event.snakeId == me,
+                   CACurrentMediaTime() - lastEatHapticAt > 0.06 {
+                    GameHaptics.eat()
+                    lastEatHapticAt = CACurrentMediaTime()
+                }
+
+                // Screen shake on YOUR kills only. `event.snakeId` on a `kill` event is the
+                // KILLER (snake/index.ts kill() pushes `id: killerId`), so this fires for the
+                // player who just won a fight, not their victim. Hitstop for the same event was
+                // already triggered above, before stepCamera ran — see that block's comment.
+                if event.kind == "kill", event.snakeId == me {
+                    triggerShake(magnitude: 6)
+                }
+            }
+            lastEventTime = state.time
+        }
+        // Presentation clocks (particles, and the camera spring inside stepCamera above) run
+        // on this DILATED dt, not raw wall-clock — this is the entire mechanism by which
+        // hitstop/slow-mo happens. The interpolation math above `state = to` is untouched: the
+        // server's own clock, never dilated, is what keeps this a renderer and not a referee.
+        let particleNow = CACurrentMediaTime()
+        let rawDt = lastParticleStep > 0 ? particleNow - lastParticleStep : 0
+        particles.step(dt: impact.dilate(rawDt))
+        lastParticleStep = particleNow
+        // Particles ARE light in this renderer (see ParticleSystem.appendInstances), so they
+        // feed the bloom source the same way the head/food/edge glows do.
+        particles.appendInstances(into: &bloomCircles)
+
         publishHud(state: state, ranked: ranked, mine: mine)
 
-        return Uniforms(cameraCentre: SIMD2(Float(focus.x), Float(focus.y)),
+        // Shake is added HERE, after the follow spring, never fed back into `cameraCentre` —
+        // see the property's doc comment for why.
+        let shake = currentShake(scale: scale)
+        let cameraSIMD = SIMD2(Float(focus.x + shake.x), Float(focus.y + shake.y))
+        // Cached for `compositeBloom`, which runs later in the SAME draw call from inside the
+        // main-pass encoder and has no other way to know this frame's camera/scale.
+        lastCameraCentreSIMD = cameraSIMD
+        uniformsScaleForComposite = scale
+
+        return Uniforms(cameraCentre: cameraSIMD,
                         viewportSize: SIMD2(Float(viewSize.width), Float(viewSize.height)),
                         scale: scale)
+    }
+
+    /// Advance the camera toward the local player's head and return where it now is.
+    ///
+    /// `target` is nil when this frame carries no head for us — the local player is not in the
+    /// snake list yet, or `me` itself is nil because the token store had not loaded when the
+    /// arena opened. The old code fell through to `.zero` in that case, which is not "no
+    /// change", it is the middle of the arena: the view teleported away from the player and
+    /// their snake wandered off screen. Android already guards this (`CameraMemory`); iOS
+    /// never got the fix.
+    private func stepCamera(target: CGPoint?) -> CGPoint {
+        if let target { lastFocus = target }
+        guard let goal = target ?? lastFocus else { return cameraCentre ?? .zero }
+
+        let now = CACurrentMediaTime()
+        let rawDt = lastCameraStep > 0 ? min(now - lastCameraStep, 0.1) : 0
+        lastCameraStep = now
+        // Dilated by the impact timeline: during a hitstop freeze this is 0, so the camera
+        // correctly HOLDS rather than continuing to chase a moving target while the world is
+        // frozen — a camera that kept sliding during a freeze would read as the freeze not
+        // having worked.
+        let dt = impact.dilate(rawDt)
+
+        guard let current = cameraCentre else {
+            cameraCentre = goal          // first frame: start on the player, do not spring in
+            return goal
+        }
+
+        // A respawn is a teleport, not motion. Cut.
+        if hypot(goal.x - current.x, goal.y - current.y) > Self.cameraTeleport {
+            cameraCentre = goal
+            return goal
+        }
+
+        // Exponential smoothing, framed in seconds so it behaves identically at 60 and 120 Hz.
+        // `1 - exp(-dt/tau)` is the frame-rate-independent form; a bare `k * dt` lerp would
+        // make the camera stiffer on a ProMotion display than on a 60 Hz one.
+        let a = dt > 0 ? 1 - exp(-dt / Self.cameraTau) : 1
+        let next = CGPoint(x: current.x + (goal.x - current.x) * a,
+                           y: current.y + (goal.y - current.y) * a)
+        cameraCentre = next
+        return next
+    }
+
+    /// Offset the camera toward where the local player is HEADED, scaled by speed — "the
+    /// player sees where they are going instead of where they are" (GAMES_ANIMATION.md §5.2).
+    /// Returns .zero (no offset) for a dead/absent/boosting-unknown player rather than
+    /// optionals, since every caller immediately adds this to a point.
+    private static func computeLookAhead(
+        mine: SnakeState.Snake?, headingsById: [String: Double], me: String?
+    ) -> CGPoint {
+        guard let mine, mine.alive, let heading = headingsById[me ?? ""] else { return .zero }
+        // BASE_SPEED/BOOST_SPEED from the server's TUNING (snake/index.ts) — duplicated here
+        // as a presentation constant rather than threaded through the wire, because look-ahead
+        // distance affects nothing about the simulation and a slightly-wrong guess at boost
+        // speed only makes the offset a little short or long, never incorrect gameplay.
+        let speed = mine.boosting ? 420.0 : 240.0
+        // Distance scales with speed but caps out — otherwise a long boost would push the
+        // camera so far ahead the player's own snake nears the screen edge.
+        let distance = min(speed * Self.lookAheadSeconds, Self.lookAheadMax)
+        return CGPoint(x: cos(heading) * distance, y: sin(heading) * distance)
+    }
+
+    /// How far ahead to look, in seconds of travel at current speed.
+    private static let lookAheadSeconds: Double = 0.35
+    private static let lookAheadMax: Double = 140
+
+    // MARK: Screen shake
+    //
+    // "3-6 px, 200 ms, decaying" (§5.2/§3.1). A camera-space effect, deliberately never
+    // written into `cameraCentre` itself — shake must never feed back into the follow spring
+    // (stepCamera's teleport check would otherwise occasionally misfire on a big shake) or
+    // persist across a screen-size change, so it is tracked separately and added to the
+    // camera's output only at the point `buildFrame` returns its Uniforms.
+    private var shakeStartedAt: TimeInterval = 0
+    private var shakeMagnitude: Double = 0
+    private var shakeSeed: Double = 0
+
+    /// Trigger a shake. Called once per `kill` event where the LOCAL player is the killer —
+    /// see the call site in buildFrame. A later call while one is already decaying simply
+    /// restarts it at the new (typically larger) magnitude rather than summing, which is what
+    /// keeps a rapid double-kill feeling like one strong hit instead of an accelerating wobble.
+    private func triggerShake(magnitude: Double) {
+        shakeStartedAt = CACurrentMediaTime()
+        shakeMagnitude = magnitude
+        shakeSeed = Double.random(in: 0..<1000)
+    }
+
+    private static let shakeDuration: Double = 0.2
+
+    /// Current shake offset in WORLD units (divided by scale so it reads as a constant number
+    /// of on-screen points regardless of zoom, matching "3-6 px" being a screen measurement).
+    private func currentShake(scale: Float) -> CGPoint {
+        guard shakeMagnitude > 0 else { return .zero }
+        let elapsed = CACurrentMediaTime() - shakeStartedAt
+        guard elapsed < Self.shakeDuration else { shakeMagnitude = 0; return .zero }
+
+        // Decaying sine, per §3.1's "decaying sine" rather than random jitter — a sine reads
+        // as an impact recoiling, where per-frame random noise reads as the RENDERER being
+        // unstable, which is exactly the wrong association for a kill (a good thing) to carry.
+        let decay = 1 - elapsed / Self.shakeDuration
+        let phase = (elapsed + shakeSeed) * 40
+        let px = Double(sin(phase)) * shakeMagnitude * decay
+        let py = Double(cos(phase * 1.3)) * shakeMagnitude * decay
+        let worldScale = Double(max(scale, 0.0001))
+        return CGPoint(x: px / worldScale, y: py / worldScale)
     }
 
     private static func lerpAngle(_ a: Double, _ b: Double, _ t: Double) -> Double {
@@ -384,9 +865,14 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
             colour: SIMD4(0.35, 0.85, 1.0, 0.10)))
 
         // The edge as a thin ring: an outer disc with a slightly smaller floor disc on top.
-        circles.append(CircleInstance(
+        let edge = CircleInstance(
             centre: .zero, radius: Float(radius + 8), softness: 0.02,
-            colour: SIMD4(0.35, 0.85, 1.0, 0.85)))
+            colour: SIMD4(0.35, 0.85, 1.0, 0.85))
+        circles.append(edge)
+        // This ring is the one thing in the whole arena that is BOTH lethal and constantly
+        // on screen, so it is the clearest place to prove bloom is doing something: it should
+        // now read as a rim of light around the play field rather than a flat cyan stroke.
+        bloomCircles.append(edge)
         circles.append(CircleInstance(
             centre: .zero, radius: Float(radius - 2), softness: 0,
             colour: SIMD4(0.055, 0.05, 0.13, 1)))
@@ -400,10 +886,14 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
                 : SIMD4(1.0, 0.93, 0.62, 1)
             let centre = SIMD2(Float(item.position.x), Float(item.position.y))
             // Halo then core: cheap, and it is what makes the field read as lit rather than
-            // as flat dots.
-            circles.append(CircleInstance(centre: centre, radius: r * 2.4,
-                                          softness: 0.75,
-                                          colour: SIMD4(colour.x, colour.y, colour.z, 0.22)))
+            // as flat dots. The halo (not the core) also feeds bloom — the core stays a crisp
+            // dot so eating still reads as picking up something precise, while the halo
+            // becomes the soft light spilling off it.
+            let halo = CircleInstance(centre: centre, radius: r * 2.4,
+                                      softness: 0.75,
+                                      colour: SIMD4(colour.x, colour.y, colour.z, 0.22))
+            circles.append(halo)
+            bloomCircles.append(halo)
             circles.append(CircleInstance(centre: centre, radius: r, softness: 0, colour: colour))
         }
     }
@@ -438,8 +928,15 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         // responds on the same frame the thumb moves.
         let hc = SIMD2(Float(head.x), Float(head.y))
         let r = Float(snake.headRadius)
-        circles.append(CircleInstance(centre: hc, radius: r * 2.6, softness: 0.8,
-                                      colour: SIMD4(c.x, c.y, c.z, 0.30 * alpha)))
+        // The head halo is the single most-looked-at glow in the game — it is what makes
+        // "every bright thing emits" (GAMES_ANIMATION.md §3.3) actually true of the thing the
+        // player is steering. The opaque head disc below stays out of bloom for the same
+        // reason food's core does: the shape that kills must read as crisp and precisely
+        // sized, never softened.
+        let headHalo = CircleInstance(centre: hc, radius: r * 2.6, softness: 0.8,
+                                      colour: SIMD4(c.x, c.y, c.z, 0.30 * alpha))
+        circles.append(headHalo)
+        bloomCircles.append(headHalo)
         circles.append(CircleInstance(centre: hc, radius: r, softness: 0,
                                       colour: SIMD4(c.x, c.y, c.z, alpha)))
 
@@ -572,6 +1069,183 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
             SIMD4(1.00, 0.69, 0.13, 1), SIMD4(0.55, 0.97, 0.78, 1),
         ]
         return p[((index % p.count) + p.count) % p.count]
+    }
+}
+
+// MARK: - Impact timeline (hitstop + slow-mo)
+
+/// Turns a `kill`/`death` event into a brief FREEZE followed by a SLOW recovery, applied to
+/// the presentation clock only (GAMES_ANIMATION.md §5.4: "a 120ms hitstop freeze on a kill,
+/// and a subtle speed-ramp when boost engages... nothing communicates impact more cheaply").
+///
+/// Death additionally drives a screen-space desaturate/flash — see `desaturation` — matching
+/// the 400ms desaturate / 500ms 0.3x slow-mo the doc specifies and that GAMES_AUDIO.md §8.7's
+/// `death` sound recipe was ALREADY BUILT to line up with (its envelope comment cites these
+/// exact numbers), so this is the piece that makes the two land together rather than the
+/// sound anticipating an effect that did not exist yet.
+///
+/// A later trigger while one is active REPLACES it rather than stacking — the same "restart,
+/// don't sum" rule `triggerShake` uses, and for the same reason: a rapid double-kill should
+/// read as one strong beat, not an escalating stutter.
+private final class ImpactTimeline {
+    private enum Kind { case kill, death }
+    private var kind: Kind?
+    private var startedAt: TimeInterval = 0
+
+    private static let killFreeze: Double = 0.12       // "120ms hitstop" — exact per the doc
+    private static let killRecover: Double = 0          // a kill has no slow-mo tail, just the stop
+    private static let deathFreeze: Double = 0.10
+    private static let deathSlowDuration: Double = 0.5  // matches GAMES_AUDIO §8.7's death envelope
+    private static let deathSlowFactor: Double = 0.3    // "slow-mo to 0.3x" — doc's exact number
+    private static let deathDesaturateDuration: Double = 0.4
+
+    func triggerKill() { kind = .kill; startedAt = CACurrentMediaTime() }
+    func triggerDeath() { kind = .death; startedAt = CACurrentMediaTime() }
+
+    /// How much of `rawDt` should actually be applied to the presentation clock this frame.
+    /// 0 during a freeze, `deathSlowFactor * rawDt` during the slow-mo tail, `rawDt` otherwise.
+    func dilate(_ rawDt: Double) -> Double {
+        guard let kind, rawDt > 0 else { return rawDt }
+        let elapsed = CACurrentMediaTime() - startedAt
+
+        switch kind {
+        case .kill:
+            if elapsed < Self.killFreeze { return 0 }
+            self.kind = nil
+            return rawDt
+        case .death:
+            if elapsed < Self.deathFreeze { return 0 }
+            let sinceSlowStart = elapsed - Self.deathFreeze
+            if sinceSlowStart < Self.deathSlowDuration { return rawDt * Self.deathSlowFactor }
+            self.kind = nil
+            return rawDt
+        }
+    }
+
+    /// 0 (no effect) to 1 (fully desaturated), for the death flash only — a kill is too brief
+    /// and too frequent to carry a screen-space tint without the arena feeling like it strobes
+    /// every few seconds in a busy match.
+    var desaturation: Float {
+        guard kind == .death else { return 0 }
+        let elapsed = CACurrentMediaTime() - startedAt
+        guard elapsed < Self.deathDesaturateDuration else { return 0 }
+        // Snaps up, eases out — an impact arrives instantly and fades, it does not fade in.
+        return Float(1 - elapsed / Self.deathDesaturateDuration)
+    }
+}
+
+// MARK: - Particles
+
+/// A fixed pool of presentation-only sparks/bursts, driven by the server's `death`/`kill`/
+/// `eat`/`spawn` events (GAMES_ANIMATION.md §5.3).
+///
+/// FIXED POOL, NOT A GROWING ARRAY. A death converts a whole body into food and fires a burst
+/// at the same instant several other snakes might eat — without a cap, a chaotic scrum could
+/// allocate thousands of particles in one frame. `capacity` bounds the absolute worst case; a
+/// full pool simply stops accepting new spawns until old ones expire, which reads as "the
+/// newest burst is a little sparser" rather than as a frame-rate cliff.
+///
+/// EVERYTHING HERE IS CLIENT-ONLY. `step` and `spawn` never touch `SnakeState` or send
+/// anything — this class only reads events the server already committed to. A bug here can
+/// make an effect look wrong; it cannot make a match wrong, which is the same guarantee the
+/// renderer as a whole makes (see the note at the top of this file).
+private final class ParticleSystem {
+    private struct Particle {
+        var position: SIMD2<Float>
+        var velocity: SIMD2<Float>
+        var life: Float          // seconds remaining
+        var maxLife: Float       // for fading by REMAINING fraction, not absolute time
+        var size: Float
+        var colour: SIMD4<Float>
+    }
+
+    private static let capacity = 512
+    private var particles: [Particle] = []
+    private var rng = SystemRandomNumberGenerator()
+
+    /// Turn one server event into particles. Called once per NEW event (the caller de-dupes by
+    /// server tick), so spawn counts here are "per occurrence", not "per frame".
+    func spawn(kind: String, at position: CGPoint, colour: SIMD4<Float>) {
+        switch kind {
+        case "eat":
+            // "6-10 sparks converging into the head" — GAMES_ANIMATION.md §5.3. Converging
+            // reads as inward vectors from a ring around the food's last position, which is
+            // simpler and just as readable as animating toward a moving head.
+            emit(count: Int.random(in: 6...10, using: &rng), at: position,
+                speed: 40...90, life: 0.28...0.4, size: 2.5...4, colour: colour)
+        case "kill":
+            // "radial burst in the victim's colour" — bigger, faster, longer-lived than eat,
+            // because a kill is the rarest and most important event in the game.
+            emit(count: 22, at: position, speed: 90...220, life: 0.4...0.65, size: 3...6,
+                colour: colour)
+        case "spawn":
+            // "expanding ring" — a burst is close enough at this scale and reuses the same
+            // primitive rather than adding a second particle shape to the pipeline.
+            emit(count: 16, at: position, speed: 60...140, life: 0.35...0.5, size: 2...4,
+                colour: colour)
+        case "death":
+            // The dying snake's OWN death is handled as a screen-space effect elsewhere
+            // (hitstop/slow-mo/desaturate, §5.4) — a world-space burst here would double up
+            // with that and read as noisy rather than dramatic. Other snakes' deaths still get
+            // a burst so a scrum reads as violent from every point of view but your own.
+            emit(count: 18, at: position, speed: 70...160, life: 0.4...0.6, size: 3...5,
+                colour: colour)
+        default:
+            break
+        }
+    }
+
+    private func emit(
+        count: Int, at position: CGPoint, speed: ClosedRange<Float>,
+        life: ClosedRange<Float>, size: ClosedRange<Float>, colour: SIMD4<Float>
+    ) {
+        guard particles.count < Self.capacity else { return }
+        let budget = min(count, Self.capacity - particles.count)
+        let p = SIMD2(Float(position.x), Float(position.y))
+        for _ in 0..<budget {
+            let angle = Float.random(in: 0..<(2 * .pi), using: &rng)
+            let s = Float.random(in: speed, using: &rng)
+            let l = Float.random(in: life, using: &rng)
+            particles.append(Particle(
+                position: p,
+                velocity: SIMD2(cos(angle) * s, sin(angle) * s),
+                life: l, maxLife: l,
+                size: Float.random(in: size, using: &rng),
+                colour: colour))
+        }
+    }
+
+    /// Advance every particle and drop the dead ones. `dt` is WALL-CLOCK time, deliberately
+    /// not the server's simulation clock — a spark's decay is not gameplay, and freezing it
+    /// during a network stall (while the render clock legitimately holds) would look broken
+    /// rather than paused.
+    func step(dt: Double) {
+        guard dt > 0, !particles.isEmpty else { return }
+        let d = Float(dt)
+        for i in particles.indices.reversed() {
+            particles[i].life -= d
+            if particles[i].life <= 0 {
+                particles.remove(at: i)
+                continue
+            }
+            particles[i].position += particles[i].velocity * d
+            // Light drag so bursts settle rather than sailing off in straight lines forever —
+            // most of the visual read happens in the first ~150ms regardless.
+            particles[i].velocity *= (1 - min(d * 2.2, 1))
+        }
+    }
+
+    /// Emit every live particle as a circle instance, additive glow only (no opaque core —
+    /// unlike food/heads, a spark IS the light, there is nothing solid under it to protect
+    /// from softening). Appended to `into`, the renderer's bloomCircles list, so particles get
+    /// the same Gaussian bloom as everything else that is meant to read as light.
+    func appendInstances(into out: inout [CircleInstance]) {
+        for p in particles {
+            let fade = max(0, p.life / p.maxLife)
+            out.append(CircleInstance(
+                centre: p.position, radius: p.size, softness: 0.6,
+                colour: SIMD4(p.colour.x, p.colour.y, p.colour.z, p.colour.w * fade)))
+        }
     }
 }
 

@@ -226,6 +226,21 @@ struct SnakeState {
         let value: Double
     }
 
+    /// One `{k, x, y, id, c?}` entry from the server's per-tick event list.
+    ///
+    /// TYPED, where the raw `[[String: Any]]` this replaced was not — this was the untyped
+    /// dictionary array before the particle/haptic work in GAMES_ANIMATION.md §5.3 needed to
+    /// actually consume it. Kept as a nested type here rather than promoted to a top-level
+    /// struct because it has no meaning outside a SnakeState frame.
+    struct Event {
+        /// "death" | "kill" | "eat" | "spawn".
+        let kind: String
+        let position: CGPoint
+        let snakeId: String
+        /// Death cause ("border" | "body" | "head"), present only on `death` events.
+        let cause: String?
+    }
+
     let players: [String]
     let snakes: [Snake]
     let food: [Food]
@@ -234,8 +249,10 @@ struct SnakeState {
     let duration: Double
     let finished: Bool
     let winnerUserId: String?
-    /// Deaths/kills/eats this frame, for one-shot effects.
-    let events: [[String: Any]]
+    /// Deaths/kills/eats/spawns THIS frame, for one-shot effects. Cleared server-side every
+    /// tick (backend/games/src/engine/snake/index.ts), so this is never a running log — only
+    /// what just happened between the previous frame and this one.
+    let events: [Event]
 
     /// Decode one snake's body.
     ///
@@ -308,6 +325,13 @@ struct SnakeState {
             for id in (payload["foodDel"] as? [Int] ?? []) { food.removeValue(forKey: id) }
         }
 
+        let events: [Event] = ((payload["events"] as? [[String: Any]]) ?? []).compactMap { e in
+            guard let kind = e["k"] as? String, let id = e["id"] as? String else { return nil }
+            return Event(kind: kind,
+                        position: CGPoint(x: e["x"] as? Double ?? 0, y: e["y"] as? Double ?? 0),
+                        snakeId: id, cause: e["c"] as? String)
+        }
+
         return SnakeState(
             players: players,
             snakes: snakes,
@@ -317,7 +341,7 @@ struct SnakeState {
             duration: (payload["duration"] as? Double) ?? 180,
             finished: (payload["finished"] as? Bool) ?? false,
             winnerUserId: payload["winnerUserId"] as? String,
-            events: (payload["events"] as? [[String: Any]]) ?? [])
+            events: events)
     }
 }
 
@@ -571,6 +595,17 @@ final class GamesEngine: ObservableObject {
     func flushSteering() {
         guard let matchId, let snake, !snake.finished else { return }
         guard let h = desiredHeading else { return }
+
+        // A DEAD SNAKE IS NOT STEERABLE, and pretending otherwise starved the one frame that
+        // mattered. Nothing paused this pacer on death, so the client kept sending headings at
+        // 10-15/s at a snake that was not in the arena — straight into the same per-match input
+        // budget the respawn frame has to come out of. By the time the 2.5 s delay elapsed and
+        // the button became tappable, the budget was reliably gone and Respawn did nothing.
+        if let me = TokenStore.shared.userId,
+           let mine = snake.snakes.first(where: { $0.id == me }),
+           !mine.alive {
+            return
+        }
 
         let now = CACurrentMediaTime()
         let boostChanged = desiredBoost != lastSentBoost
