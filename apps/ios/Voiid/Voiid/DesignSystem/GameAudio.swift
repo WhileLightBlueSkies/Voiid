@@ -68,17 +68,29 @@ final class GameAudio {
 
     private var configuredSession = false
 
+    /// The format every generated sound actually is (tools/gamesounds/synth.py: 16-bit mono
+    /// WAV, 44.1kHz — docs/GAMES_AUDIO.md §6). Connecting the graph with `format: nil` wires
+    /// each node using the ENGINE's format at connect time — which, before any file has been
+    /// loaded, defaults to the hardware output format and is virtually always STEREO. A mono
+    /// buffer later scheduled onto a bus wired for stereo is a hard AVAudioEngine crash: an
+    /// Objective-C NSException, not a throwing Swift call, so `try?` around `scheduleBuffer`
+    /// cannot catch it and the process dies. THIS WAS THE SNAKE-SCREEN CRASH. Connecting every
+    /// node explicitly with the real format, up front, is what makes every later
+    /// `scheduleBuffer` call format-compatible with the bus it lands on.
+    private static let pcmFormat = AVAudioFormat(
+        standardFormatWithSampleRate: 44100, channels: 1)!
+
     private init() {
         engine.attach(mixer)
-        engine.connect(mixer, to: engine.mainMixerNode, format: nil)
+        engine.connect(mixer, to: engine.mainMixerNode, format: Self.pcmFormat)
 
         for _ in 0..<Self.voiceCount {
             let player = AVAudioPlayerNode()
             let speed = AVAudioUnitVarispeed()
             engine.attach(player)
             engine.attach(speed)
-            engine.connect(player, to: speed, format: nil)
-            engine.connect(speed, to: mixer, format: nil)
+            engine.connect(player, to: speed, format: Self.pcmFormat)
+            engine.connect(speed, to: mixer, format: Self.pcmFormat)
             voices.append(Voice(player: player, speed: speed))
         }
 
@@ -86,8 +98,8 @@ final class GameAudio {
         let loopSpeed = AVAudioUnitVarispeed()
         engine.attach(loopPlayer)
         engine.attach(loopSpeed)
-        engine.connect(loopPlayer, to: loopSpeed, format: nil)
-        engine.connect(loopSpeed, to: mixer, format: nil)
+        engine.connect(loopPlayer, to: loopSpeed, format: Self.pcmFormat)
+        engine.connect(loopSpeed, to: mixer, format: Self.pcmFormat)
         loopVoice = Voice(player: loopPlayer, speed: loopSpeed)
 
         NotificationCenter.default.addObserver(
@@ -240,8 +252,23 @@ final class GameAudio {
     private static func loadBuffer(named name: String) -> AVAudioPCMBuffer? {
         guard let url = Bundle.main.url(forResource: name, withExtension: "wav") else { return nil }
         guard let file = try? AVAudioFile(forReading: url) else { return nil }
+
+        // MUST match the graph's wired format exactly (pcmFormat above) or scheduling this
+        // buffer onto a voice is the crash this whole property exists to prevent — see
+        // pcmFormat's doc comment. Every file synth.py generates is mono/44.1kHz by
+        // construction, so this should never fire; it exists so a future sound generated at
+        // the wrong rate fails LOUDLY as "silent, sound missing" instead of taking the whole
+        // app down the next time GameAudio.play() is called.
+        guard file.processingFormat.channelCount == pcmFormat.channelCount,
+              file.processingFormat.sampleRate == pcmFormat.sampleRate else {
+            assertionFailure(
+                "GameAudio: \(name).wav is \(file.processingFormat) — expected \(pcmFormat). " +
+                "Regenerate with tools/gamesounds/synth.py.")
+            return nil
+        }
+
         guard let buffer = AVAudioPCMBuffer(
-            pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)
+            pcmFormat: pcmFormat, frameCapacity: AVAudioFrameCount(file.length)
         ) else { return nil }
         do {
             try file.read(into: buffer)
