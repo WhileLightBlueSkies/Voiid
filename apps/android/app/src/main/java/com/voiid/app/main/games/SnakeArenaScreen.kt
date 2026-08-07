@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
@@ -133,8 +134,14 @@ fun SnakeArenaScreen(
     val particles = remember { ParticleSystem() }
     val impact = remember { ImpactTimeline() }
     val haptics = remember { GameHaptics(context) }
+    val boostAudio = remember { BoostAudioState() }
 
     val me = engine.myUserId
+
+    DisposableEffect(Unit) {
+        GameAudio.preload(context, "snake")
+        onDispose { GameAudio.release("snake") }
+    }
 
     LaunchedEffect(matchId) { engine.open(matchId) }
 
@@ -153,7 +160,7 @@ fun SnakeArenaScreen(
         Canvas(Modifier.fillMaxSize()) {
             // Reading the clock inside the DRAW scope subscribes only this draw to it.
             @Suppress("UNUSED_EXPRESSION") frameClock.doubleValue
-            drawArena(framesRef.value, me, trails, stick, camera, particles, impact, haptics)
+            drawArena(framesRef.value, me, trails, stick, camera, particles, impact, haptics, boostAudio)
         }
 
         // Death / game-over panel.
@@ -409,6 +416,13 @@ private fun lerpAngle(a: Double, b: Double, t: Double): Double {
     return a + delta * t
 }
 
+/** Tracks the local player's boost state frame-to-frame so boost_start/boost_loop/boost_end
+ * fire once on the TRANSITION rather than every frame boost happens to be held/released.
+ * There is no server EVENT for this — boost is continuous per-tick state, not a discrete
+ * occurrence like eat/kill/death/spawn — so the edge has to be detected client-side. Mirrors
+ * iOS SnakeMetalView's `wasBoosting` property. */
+private class BoostAudioState { var wasBoosting = false }
+
 /**
  * Turns a `kill`/`death` event into a brief FREEZE followed by a SLOW recovery
  * (GAMES_ANIMATION.md §5.4, mirrors iOS `ImpactTimeline` in SnakeMetalView.swift).
@@ -429,11 +443,14 @@ private class ImpactTimeline {
     private var startedAtNanos = 0L
 
     companion object {
-        private const val KILL_FREEZE = 0.12          // "120ms hitstop" — doc's exact number
-        private const val DEATH_FREEZE = 0.10
-        private const val DEATH_SLOW_DURATION = 0.5    // matches GAMES_AUDIO §8.7's death envelope
-        private const val DEATH_SLOW_FACTOR = 0.3       // "slow-mo to 0.3x" — doc's exact number
-        private const val DEATH_DESATURATE_DURATION = 0.4
+        // All Float: `elapsed` below is computed as Float, and Kotlin does not implicitly
+        // widen/narrow between Float and Double in a comparison — an un-suffixed literal here
+        // infers as Double and fails to compile against it.
+        private const val KILL_FREEZE = 0.12f          // "120ms hitstop" — doc's exact number
+        private const val DEATH_FREEZE = 0.10f
+        private const val DEATH_SLOW_DURATION = 0.5f    // matches GAMES_AUDIO §8.7's death envelope
+        private const val DEATH_SLOW_FACTOR = 0.3f       // "slow-mo to 0.3x" — doc's exact number
+        private const val DEATH_DESATURATE_DURATION = 0.4f
     }
 
     fun triggerKill() { kind = Kind.KILL; startedAtNanos = System.nanoTime() }
@@ -717,6 +734,7 @@ private fun DrawScope.drawArena(
     particles: ParticleSystem,
     impact: ImpactTimeline,
     haptics: GameHaptics,
+    boostAudio: BoostAudioState,
 ) {
     val s = pickSample(frames) ?: return
     val state = s.to
@@ -733,8 +751,15 @@ private fun DrawScope.drawArena(
             particles.spawn(e.kind, e.x.toFloat(), e.y.toFloat(), color)
 
             // `eat`'s id is the EATING snake (snake/index.ts `k: 'eat'` push). GameHaptics.eat()
-            // throttles internally, so no rate-limiting needed at this call site.
-            if (e.kind == "eat" && e.snakeId == me) haptics.eat()
+            // throttles internally, so no rate-limiting needed at this call site;
+            // GameAudio.play()'s own min-gap table (matching iOS) does the same for sound.
+            if (e.kind == "eat" && e.snakeId == me) {
+                haptics.eat()
+                // §7.4 "bake variants": 4 pitch-spaced eat files, picked at random rather than
+                // by mass bucket — the event carries no food value to bucket by (see
+                // GameHaptics.eat()'s identical note).
+                GameAudio.play("eat_${(1..4).random()}", gain = 0.6f)
+            }
 
             // Screen shake, hitstop AND haptic on YOUR kills only. `e.snakeId` on a "kill"
             // event is the KILLER (backend/games/src/engine/snake/index.ts kill() pushes
@@ -744,6 +769,7 @@ private fun DrawScope.drawArena(
                 camera.triggerShake(6f)
                 impact.triggerKill()
                 haptics.kill()
+                GameAudio.play("kill", gain = 0.75f)
             }
             // "death" events push `id: sn.id` — the snake that died — so this is unambiguously
             // "did I just die", not a kill I made. Opposite field semantics from "kill" above,
@@ -751,6 +777,10 @@ private fun DrawScope.drawArena(
             if (e.kind == "death" && e.snakeId == me) {
                 impact.triggerDeath()
                 haptics.death()
+                GameAudio.play("death", gain = 0.85f)
+            }
+            if (e.kind == "spawn" && e.snakeId == me) {
+                GameAudio.play("spawn", gain = 0.6f)
             }
         }
         particles.markSpawned(state.time)
@@ -772,6 +802,19 @@ private fun DrawScope.drawArena(
     trails.update(state, heads)
 
     val mine = state.snakes.firstOrNull { it.id == me }
+
+    // boost_start/boost_loop/boost_end: no server EVENT for these (boost is per-tick
+    // continuous state, not a discrete occurrence like eat/kill) — see BoostAudioState's doc.
+    val isBoosting = mine?.alive == true && mine.boosting
+    if (isBoosting && !boostAudio.wasBoosting) {
+        GameAudio.play("boost_start", gain = 0.6f)
+        GameAudio.startLoop("boost_loop", gain = 0.35f)
+    } else if (!isBoosting && boostAudio.wasBoosting) {
+        GameAudio.stopLoop("boost_loop")
+        GameAudio.play("boost_end", gain = 0.55f)
+    }
+    boostAudio.wasBoosting = isBoosting
+
     val mass = mine?.mass ?: 10.0
 
     // Zoom out as the snake grows so it stays framed, easing off so growth is not nauseating.
