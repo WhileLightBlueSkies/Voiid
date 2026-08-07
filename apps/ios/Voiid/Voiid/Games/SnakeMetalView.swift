@@ -227,9 +227,24 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     /// Body trails, owned HERE rather than in SwiftUI state — this is the fix for the freeze.
     private let trails = TrailStore()
 
+    /// Presentation-only VFX driven by the server's per-tick events (GAMES_ANIMATION.md §5.3).
+    /// A death/kill/eat/spawn a client never learns about from `events` is invisible motion —
+    /// this is what turns those four strings into sparks, bursts and rings. Nothing here is
+    /// authoritative: it reads events, it never produces them, so a bug here cannot desync a
+    /// match, only under- or over-decorate one.
+    private let particles = ParticleSystem()
+    /// Ids of events already spawned-for, so a frame that repeats an event (a resync, a
+    /// duplicate broadcast) cannot double-spawn. Keyed by (kind, snakeId, tick) rather than
+    /// object identity since events are plain structs with no id of their own.
+    private var lastEventTime: Double = -1
+
     private var viewSize: CGSize = .zero
     /// When the HUD was last pushed to SwiftUI; see `publishHud` for why it is throttled.
     private var lastHudPublish: TimeInterval = 0
+    /// Wall-clock time of the previous draw, for the particle system's own dt — independent of
+    /// the camera's dt and the render clock, because particles must keep animating even during
+    /// a network stall (nothing about a spark's decay is server truth).
+    private var lastParticleStep: TimeInterval = 0
 
     init(engine: GamesEngine, me: String?, hud: SnakeHudModel) {
         self.engine = engine
@@ -588,6 +603,25 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
                        scale: scale)
         }
 
+        // NEW events only. `t` only ever increases within a match (the runtime's tick loop is
+        // the sole writer), so "this frame's t is newer than the last frame we spawned for" is
+        // sufficient de-duplication without tracking individual event identity — a resync or a
+        // repeated broadcast of the SAME tick carries the same `t` and is correctly skipped.
+        if state.time > lastEventTime {
+            for event in state.events {
+                let colour = state.snakes.first { $0.id == event.snakeId }
+                    .map { Self.palette($0.colorIndex) } ?? SIMD4(1, 1, 1, 1)
+                particles.spawn(kind: event.kind, at: event.position, colour: colour)
+            }
+            lastEventTime = state.time
+        }
+        let particleNow = CACurrentMediaTime()
+        particles.step(dt: lastParticleStep > 0 ? particleNow - lastParticleStep : 0)
+        lastParticleStep = particleNow
+        // Particles ARE light in this renderer (see ParticleSystem.appendInstances), so they
+        // feed the bloom source the same way the head/food/edge glows do.
+        particles.appendInstances(into: &bloomCircles)
+
         publishHud(state: state, ranked: ranked, mine: mine)
 
         let cameraSIMD = SIMD2(Float(focus.x), Float(focus.y))
@@ -863,6 +897,121 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
             SIMD4(1.00, 0.69, 0.13, 1), SIMD4(0.55, 0.97, 0.78, 1),
         ]
         return p[((index % p.count) + p.count) % p.count]
+    }
+}
+
+// MARK: - Particles
+
+/// A fixed pool of presentation-only sparks/bursts, driven by the server's `death`/`kill`/
+/// `eat`/`spawn` events (GAMES_ANIMATION.md §5.3).
+///
+/// FIXED POOL, NOT A GROWING ARRAY. A death converts a whole body into food and fires a burst
+/// at the same instant several other snakes might eat — without a cap, a chaotic scrum could
+/// allocate thousands of particles in one frame. `capacity` bounds the absolute worst case; a
+/// full pool simply stops accepting new spawns until old ones expire, which reads as "the
+/// newest burst is a little sparser" rather than as a frame-rate cliff.
+///
+/// EVERYTHING HERE IS CLIENT-ONLY. `step` and `spawn` never touch `SnakeState` or send
+/// anything — this class only reads events the server already committed to. A bug here can
+/// make an effect look wrong; it cannot make a match wrong, which is the same guarantee the
+/// renderer as a whole makes (see the note at the top of this file).
+private final class ParticleSystem {
+    private struct Particle {
+        var position: SIMD2<Float>
+        var velocity: SIMD2<Float>
+        var life: Float          // seconds remaining
+        var maxLife: Float       // for fading by REMAINING fraction, not absolute time
+        var size: Float
+        var colour: SIMD4<Float>
+    }
+
+    private static let capacity = 512
+    private var particles: [Particle] = []
+    private var rng = SystemRandomNumberGenerator()
+
+    /// Turn one server event into particles. Called once per NEW event (the caller de-dupes by
+    /// server tick), so spawn counts here are "per occurrence", not "per frame".
+    func spawn(kind: String, at position: CGPoint, colour: SIMD4<Float>) {
+        switch kind {
+        case "eat":
+            // "6-10 sparks converging into the head" — GAMES_ANIMATION.md §5.3. Converging
+            // reads as inward vectors from a ring around the food's last position, which is
+            // simpler and just as readable as animating toward a moving head.
+            emit(count: Int.random(in: 6...10, using: &rng), at: position,
+                speed: 40...90, life: 0.28...0.4, size: 2.5...4, colour: colour)
+        case "kill":
+            // "radial burst in the victim's colour" — bigger, faster, longer-lived than eat,
+            // because a kill is the rarest and most important event in the game.
+            emit(count: 22, at: position, speed: 90...220, life: 0.4...0.65, size: 3...6,
+                colour: colour)
+        case "spawn":
+            // "expanding ring" — a burst is close enough at this scale and reuses the same
+            // primitive rather than adding a second particle shape to the pipeline.
+            emit(count: 16, at: position, speed: 60...140, life: 0.35...0.5, size: 2...4,
+                colour: colour)
+        case "death":
+            // The dying snake's OWN death is handled as a screen-space effect elsewhere
+            // (hitstop/slow-mo/desaturate, §5.4) — a world-space burst here would double up
+            // with that and read as noisy rather than dramatic. Other snakes' deaths still get
+            // a burst so a scrum reads as violent from every point of view but your own.
+            emit(count: 18, at: position, speed: 70...160, life: 0.4...0.6, size: 3...5,
+                colour: colour)
+        default:
+            break
+        }
+    }
+
+    private func emit(
+        count: Int, at position: CGPoint, speed: ClosedRange<Float>,
+        life: ClosedRange<Float>, size: ClosedRange<Float>, colour: SIMD4<Float>
+    ) {
+        guard particles.count < Self.capacity else { return }
+        let budget = min(count, Self.capacity - particles.count)
+        let p = SIMD2(Float(position.x), Float(position.y))
+        for _ in 0..<budget {
+            let angle = Float.random(in: 0..<(2 * .pi), using: &rng)
+            let s = Float.random(in: speed, using: &rng)
+            let l = Float.random(in: life, using: &rng)
+            particles.append(Particle(
+                position: p,
+                velocity: SIMD2(cos(angle) * s, sin(angle) * s),
+                life: l, maxLife: l,
+                size: Float.random(in: size, using: &rng),
+                colour: colour))
+        }
+    }
+
+    /// Advance every particle and drop the dead ones. `dt` is WALL-CLOCK time, deliberately
+    /// not the server's simulation clock — a spark's decay is not gameplay, and freezing it
+    /// during a network stall (while the render clock legitimately holds) would look broken
+    /// rather than paused.
+    func step(dt: Double) {
+        guard dt > 0, !particles.isEmpty else { return }
+        let d = Float(dt)
+        for i in particles.indices.reversed() {
+            particles[i].life -= d
+            if particles[i].life <= 0 {
+                particles.remove(at: i)
+                continue
+            }
+            particles[i].position += particles[i].velocity * d
+            // Light drag so bursts settle rather than sailing off in straight lines forever —
+            // most of the visual read happens in the first ~150ms regardless.
+            particles[i].velocity *= (1 - min(d * 2.2, 1))
+        }
+    }
+
+    /// Emit every live particle as a circle instance, additive glow only (no opaque core —
+    /// unlike food/heads, a spark IS the light, there is nothing solid under it to protect
+    /// from softening). Appended to `into`, the renderer's bloomCircles list, so particles get
+    /// the same Gaussian bloom as everything else that is meant to read as light.
+    func appendInstances(into out: inout [CircleInstance]) {
+        for p in particles {
+            let fade = max(0, p.life / p.maxLife)
+            out.append(CircleInstance(
+                centre: p.position, radius: p.size, softness: 0.6,
+                colour: SIMD4(p.colour.x, p.colour.y, p.colour.z, p.colour.w * fade)))
+        }
     }
 }
 
