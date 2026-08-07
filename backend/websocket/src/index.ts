@@ -135,10 +135,23 @@ const LOC_MAX_RECIPIENTS = 512;
 // the rules and answers on the players' own channels. See the handler for why this
 // process stays ignorant of game rules.
 const GAMES_INPUT_CHANNEL = 'channel:games:input';
-// Turn-based games send a handful of moves a minute; the arcade games planned later tick
-// far faster, so this is set for the fastest credible client rather than for Tic Tac Toe,
-// and the games service applies its own per-game limit on top.
-const GAME_MAX_FRAMES_PER_WINDOW = Number(process.env.VOIID_GAME_WS_RATE) || 120;
+// A COARSE FLOOD GUARD, NOT A PER-GAME LIMIT — and the difference is what broke Snake.
+//
+// This process cannot know which game a match is (no database, by design), so it cannot
+// compute a per-game rate. backend/games can and does: see limitFor() there, which derives
+// the real limit from the game's own tickHz. This number therefore only has to clear the
+// FASTEST credible client with headroom, or it silently throttles a game it knows nothing
+// about — which is exactly what it did.
+//
+// It was 120/min = 2/s, set when every game was turn-based and a handful of moves a minute
+// was the whole story. Snake steers at 10-15/s. The budget was exhausted 8-12 seconds into
+// every match, and because the window is fixed rather than sliding, the player then had
+// ~50 seconds with NO steering and no respawn (that frame is a game_input too). The clients
+// were tuned against the games service's 20/s limit and never saw this one in front of it.
+//
+// 1800/min = 30/s clears Snake with 2x headroom and leaves room for the 20-30 Hz games in
+// GAMES.md §4 (Air Hockey, Ping Pong, Pool). See docs/GAMES_SNAKE_BUGS.md Part A.
+const GAME_MAX_FRAMES_PER_WINDOW = Number(process.env.VOIID_GAME_WS_RATE) || 1800;
 const GAME_RATE_WINDOW_MS = 60_000;
 // A move is tiny (a cell index, an angle/power pair). Generous, but bounded.
 const GAME_MAX_PAYLOAD_CHARS = 2048;
@@ -318,7 +331,10 @@ wss.on('connection', (ws, req) => {
   // game_input rate state for THIS socket, keyed by match_id. Socket-local for the same
   // reason as locRate — it dies with the connection, so there is no cross-socket map to
   // leak or to clean up.
-  const gameRate = new Map<string, { count: number; windowStart: number }>();
+  const gameRate = new Map<
+    string,
+    { count: number; windowStart: number; warned: boolean }
+  >();
 
   ws.on('message', (raw) => {
     // Realtime control frames: heartbeat (presence) and typing (Section 10 Redis keys).
@@ -463,11 +479,25 @@ wss.on('connection', (ws, req) => {
         // Token bucket per match per socket — identical posture to loc_update above:
         // silent drop, no error frame, because answering a flood with traffic is how one
         // bad client becomes an amplifier.
+        //
+        // Silent to the CLIENT, but no longer silent to us. When this limit throttled Snake
+        // it was invisible from both ends: the phone saw its frames vanish and the games
+        // service simply never heard from the player. One line per match on the first drop
+        // is what turns that into a nameable failure, and it cannot become a log flood
+        // because it fires once per bucket.
         const now = Date.now();
         const bucket = gameRate.get(msg.match_id);
         if (!bucket || now - bucket.windowStart >= GAME_RATE_WINDOW_MS) {
-          gameRate.set(msg.match_id, { count: 1, windowStart: now });
+          gameRate.set(msg.match_id, { count: 1, windowStart: now, warned: false });
         } else if (bucket.count >= GAME_MAX_FRAMES_PER_WINDOW) {
+          if (!bucket.warned) {
+            bucket.warned = true;
+            console.warn(
+              `[ws] game_input rate limit hit: match=${msg.match_id} user=${userId} ` +
+                `limit=${GAME_MAX_FRAMES_PER_WINDOW}/${GAME_RATE_WINDOW_MS}ms — ` +
+                `dropping until the window rolls`
+            );
+          }
           return;
         } else {
           bucket.count += 1;
