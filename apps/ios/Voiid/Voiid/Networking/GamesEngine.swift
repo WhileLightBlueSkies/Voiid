@@ -572,6 +572,17 @@ final class GamesEngine: ObservableObject {
         guard let matchId, let snake, !snake.finished else { return }
         guard let h = desiredHeading else { return }
 
+        // A DEAD SNAKE IS NOT STEERABLE, and pretending otherwise starved the one frame that
+        // mattered. Nothing paused this pacer on death, so the client kept sending headings at
+        // 10-15/s at a snake that was not in the arena — straight into the same per-match input
+        // budget the respawn frame has to come out of. By the time the 2.5 s delay elapsed and
+        // the button became tappable, the budget was reliably gone and Respawn did nothing.
+        if let me = TokenStore.shared.userId,
+           let mine = snake.snakes.first(where: { $0.id == me }),
+           !mine.alive {
+            return
+        }
+
         let now = CACurrentMediaTime()
         let boostChanged = desiredBoost != lastSentBoost
         guard boostChanged || now - lastSteerSentAt >= Self.steerInterval else { return }

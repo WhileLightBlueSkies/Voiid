@@ -530,6 +530,33 @@ final class WebSocketClient {
     }
 
     private func enqueue(_ frame: [String: Any]) {
+        // GAME INPUT IS COALESCED, NOT APPENDED. Every other queued frame here is a discrete
+        // event with its own identity (a message, an ICE candidate, a call signal) and losing
+        // one is losing something real. A steering frame is a POSITION: the newest one fully
+        // supersedes every older one for the same match, so queuing them as a growing backlog
+        // is queuing garbage.
+        //
+        // Two failures came from treating it like the others. First, the queue is shared and
+        // bounded at 128 slots, dropping from the FRONT — a ~9 second network blip at Snake's
+        // 10-15 frames/sec fills it completely, which means stale headings were evicting
+        // queued messages, call offers and ICE candidates to make room for themselves. Second,
+        // on reconnect the whole backlog flushed as one burst, instantly spending an entire
+        // rate-limit window (docs/GAMES_SNAKE_BUGS.md Part A) and blacking out controls again
+        // right as the player regained connectivity — a brief blip was enough to retrigger the
+        // freeze on its own.
+        //
+        // Replacing the prior queued input for the SAME match fixes both: the queue can never
+        // grow from steering, so it never evicts anything else, and reconnect replays exactly
+        // one heading instead of a burst of stale ones.
+        if frame["type"] as? String == "game_input",
+           let matchId = frame["match_id"] as? String,
+           let idx = outboundQueue.firstIndex(where: {
+               $0["type"] as? String == "game_input" && $0["match_id"] as? String == matchId
+           }) {
+            outboundQueue[idx] = frame
+            return
+        }
+
         outboundQueue.append(frame)
         if outboundQueue.count > Self.maxQueuedFrames {
             outboundQueue.removeFirst(outboundQueue.count - Self.maxQueuedFrames)
