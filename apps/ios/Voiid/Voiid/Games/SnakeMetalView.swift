@@ -153,6 +153,14 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     /// 300 is far outside anything legitimate motion can produce.
     private static let cameraTeleport: Double = 300
 
+    /// Hitstop + slow-mo on kill/death (GAMES_ANIMATION.md §5.4). PRESENTATION-CLOCK ONLY —
+    /// this dilates the WALL-CLOCK dt fed to the camera spring, particles and shake, and
+    /// never touches `buildFrame`'s interpolation math above, which reads the server's own
+    /// clock and IS the "renderer, not referee" boundary this file's header comment describes.
+    /// A bug in this timeline can make the game feel wrong for a fraction of a second; it
+    /// cannot make it wrong.
+    private let impact = ImpactTimeline()
+
     private var device: MTLDevice!
     private var queue: MTLCommandQueue!
     private var circlePipeline: MTLRenderPipelineState!
@@ -422,6 +430,15 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         // shapes rather than a soft double-exposure of the whole scene.
         compositeBloom(encoder: encoder)
 
+        // PASS 5 — the death impact tint (GAMES_ANIMATION.md §5.4's "desaturate over 400ms").
+        // A TRUE desaturation would need to sample the drawable itself, which this pipeline
+        // cannot do without a second full-resolution offscreen pass and a grayscale shader —
+        // real cost for an effect that lasts 400ms and is seen by exactly one player, the one
+        // who just died. This darkens and cools the frame instead: straight-alpha near-black
+        // over everything, same read (the arena visually recoiling) at a fraction of the GPU
+        // cost. Revisit with a real desaturate if bloom's fill-rate headroom allows it later.
+        deathTint(encoder: encoder)
+
         if let buf = upload(sprites, into: &spriteBuffer),
            let texture = labelAtlas?.texture, spritePipeline != nil {
             encoder.setRenderPipelineState(spritePipeline)
@@ -520,6 +537,33 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     /// the existing palette rather than derived from anything.
     private static let bloomIntensity: Float = 0.55
 
+    /// PASS 5: darken the frame by `impact.desaturation`, straight-alpha, near-black with a
+    /// faint cool tint. See the call site's comment for why this stands in for a true
+    /// desaturate. A full-viewport circle through the EXISTING circle pipeline — no new
+    /// pipeline object, no new shader — sized past the diagonal so its edge is always off
+    /// screen regardless of aspect ratio or camera scale.
+    private func deathTint(encoder: MTLRenderCommandEncoder) {
+        let amount = impact.desaturation
+        guard amount > 0, circlePipeline != nil, viewSize.width > 0 else { return }
+
+        let scale = uniformsScaleForComposite
+        guard scale > 0 else { return }
+        let coverWorld = Float(hypot(viewSize.width, viewSize.height)) / scale
+
+        // Peak alpha capped at 0.6, not 1.0: the point is a punch, not a blackout — the death
+        // panel appears over this a beat later and must still be legible against it.
+        let tint = CircleInstance(
+            centre: lastCameraCentreSIMD, radius: coverWorld, softness: 0,
+            colour: SIMD4(0.02, 0.03, 0.06, amount * 0.6))
+
+        guard let buf = upload([tint], into: &deathTintBuffer) else { return }
+        encoder.setRenderPipelineState(circlePipeline)
+        encoder.setVertexBuffer(buf, offset: 0, index: 1)
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: 1)
+    }
+
+    private var deathTintBuffer: MTLBuffer?
+
     private var ribbonBloomBuffer: MTLBuffer?
     private var bloomCircleBuffer: MTLBuffer?
     private var compositeBuffer: MTLBuffer?
@@ -579,6 +623,19 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
 
         trails.update(state: state, heads: heads)
 
+        // TRIGGER DETECTION RUNS BEFORE stepCamera, deliberately separate from the spawn loop
+        // below. `impact.dilate` is read INSIDE stepCamera on the very next line, so the
+        // trigger must already be live by the time we get there — spawning particles can
+        // safely wait until after buildSnake since ParticleSystem.step runs later in this
+        // function, but a freeze that started one frame late would show the camera still
+        // sliding for 16ms while everything else had already stopped.
+        if state.time > lastEventTime {
+            for event in state.events {
+                if event.kind == "kill", event.snakeId == me { impact.triggerKill() }
+                if event.kind == "death", event.snakeId == me { impact.triggerDeath() }
+            }
+        }
+
         let mine = state.snakes.first { $0.id == me }
         let mass = mine?.mass ?? 10
         // Zoom out as mass grows so a big snake stays framed, log-damped so growth reads as
@@ -626,16 +683,22 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
                 particles.spawn(kind: event.kind, at: event.position, colour: colour)
 
                 // Screen shake on YOUR kills only. `event.snakeId` on a `kill` event is the
-                // KILLER (backend/games/src/engine/snake/index.ts kill() pushes `id: killerId`),
-                // so this fires for the player who just won a fight, not their victim.
+                // KILLER (snake/index.ts kill() pushes `id: killerId`), so this fires for the
+                // player who just won a fight, not their victim. Hitstop for the same event was
+                // already triggered above, before stepCamera ran — see that block's comment.
                 if event.kind == "kill", event.snakeId == me {
                     triggerShake(magnitude: 6)
                 }
             }
             lastEventTime = state.time
         }
+        // Presentation clocks (particles, and the camera spring inside stepCamera above) run
+        // on this DILATED dt, not raw wall-clock — this is the entire mechanism by which
+        // hitstop/slow-mo happens. The interpolation math above `state = to` is untouched: the
+        // server's own clock, never dilated, is what keeps this a renderer and not a referee.
         let particleNow = CACurrentMediaTime()
-        particles.step(dt: lastParticleStep > 0 ? particleNow - lastParticleStep : 0)
+        let rawDt = lastParticleStep > 0 ? particleNow - lastParticleStep : 0
+        particles.step(dt: impact.dilate(rawDt))
         lastParticleStep = particleNow
         // Particles ARE light in this renderer (see ParticleSystem.appendInstances), so they
         // feed the bloom source the same way the head/food/edge glows do.
@@ -670,8 +733,13 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         guard let goal = target ?? lastFocus else { return cameraCentre ?? .zero }
 
         let now = CACurrentMediaTime()
-        let dt = lastCameraStep > 0 ? min(now - lastCameraStep, 0.1) : 0
+        let rawDt = lastCameraStep > 0 ? min(now - lastCameraStep, 0.1) : 0
         lastCameraStep = now
+        // Dilated by the impact timeline: during a hitstop freeze this is 0, so the camera
+        // correctly HOLDS rather than continuing to chase a moving target while the world is
+        // frozen — a camera that kept sliding during a freeze would read as the freeze not
+        // having worked.
+        let dt = impact.dilate(rawDt)
 
         guard let current = cameraCentre else {
             cameraCentre = goal          // first frame: start on the player, do not spring in
@@ -983,6 +1051,68 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
             SIMD4(1.00, 0.69, 0.13, 1), SIMD4(0.55, 0.97, 0.78, 1),
         ]
         return p[((index % p.count) + p.count) % p.count]
+    }
+}
+
+// MARK: - Impact timeline (hitstop + slow-mo)
+
+/// Turns a `kill`/`death` event into a brief FREEZE followed by a SLOW recovery, applied to
+/// the presentation clock only (GAMES_ANIMATION.md §5.4: "a 120ms hitstop freeze on a kill,
+/// and a subtle speed-ramp when boost engages... nothing communicates impact more cheaply").
+///
+/// Death additionally drives a screen-space desaturate/flash — see `desaturation` — matching
+/// the 400ms desaturate / 500ms 0.3x slow-mo the doc specifies and that GAMES_AUDIO.md §8.7's
+/// `death` sound recipe was ALREADY BUILT to line up with (its envelope comment cites these
+/// exact numbers), so this is the piece that makes the two land together rather than the
+/// sound anticipating an effect that did not exist yet.
+///
+/// A later trigger while one is active REPLACES it rather than stacking — the same "restart,
+/// don't sum" rule `triggerShake` uses, and for the same reason: a rapid double-kill should
+/// read as one strong beat, not an escalating stutter.
+private final class ImpactTimeline {
+    private enum Kind { case kill, death }
+    private var kind: Kind?
+    private var startedAt: TimeInterval = 0
+
+    private static let killFreeze: Double = 0.12       // "120ms hitstop" — exact per the doc
+    private static let killRecover: Double = 0          // a kill has no slow-mo tail, just the stop
+    private static let deathFreeze: Double = 0.10
+    private static let deathSlowDuration: Double = 0.5  // matches GAMES_AUDIO §8.7's death envelope
+    private static let deathSlowFactor: Double = 0.3    // "slow-mo to 0.3x" — doc's exact number
+    private static let deathDesaturateDuration: Double = 0.4
+
+    func triggerKill() { kind = .kill; startedAt = CACurrentMediaTime() }
+    func triggerDeath() { kind = .death; startedAt = CACurrentMediaTime() }
+
+    /// How much of `rawDt` should actually be applied to the presentation clock this frame.
+    /// 0 during a freeze, `deathSlowFactor * rawDt` during the slow-mo tail, `rawDt` otherwise.
+    func dilate(_ rawDt: Double) -> Double {
+        guard let kind, rawDt > 0 else { return rawDt }
+        let elapsed = CACurrentMediaTime() - startedAt
+
+        switch kind {
+        case .kill:
+            if elapsed < Self.killFreeze { return 0 }
+            self.kind = nil
+            return rawDt
+        case .death:
+            if elapsed < Self.deathFreeze { return 0 }
+            let sinceSlowStart = elapsed - Self.deathFreeze
+            if sinceSlowStart < Self.deathSlowDuration { return rawDt * Self.deathSlowFactor }
+            self.kind = nil
+            return rawDt
+        }
+    }
+
+    /// 0 (no effect) to 1 (fully desaturated), for the death flash only — a kill is too brief
+    /// and too frequent to carry a screen-space tint without the arena feeling like it strobes
+    /// every few seconds in a busy match.
+    var desaturation: Float {
+        guard kind == .death else { return 0 }
+        let elapsed = CACurrentMediaTime() - startedAt
+        guard elapsed < Self.deathDesaturateDuration else { return 0 }
+        // Snaps up, eases out — an impact arrives instantly and fades, it does not fade in.
+        return Float(1 - elapsed / Self.deathDesaturateDuration)
     }
 }
 
