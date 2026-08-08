@@ -983,9 +983,14 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     private func buildFood(state: SnakeState) {
         for item in state.food {
             let r = Float(item.value >= 2 ? 7 : item.value < 1 ? 4.5 : 5.5)
+            // Colour from the pellet's SERVER-ASSIGNED id — free on the wire, stable for the
+            // pellet's life, and identical on every device. Corpse pellets keep their warm
+            // tint: "someone died here" is gameplay information, not decoration.
             let colour: SIMD4<Float> = item.value >= 2
                 ? SIMD4(1.0, 0.72, 0.45, 1)
-                : SIMD4(1.0, 0.93, 0.62, 1)
+                : Self.foodPalette[
+                    ((item.id % Self.foodPalette.count) + Self.foodPalette.count)
+                        % Self.foodPalette.count]
             let centre = SIMD2(Float(item.position.x), Float(item.position.y))
             // Halo then core: cheap, and it is what makes the field read as lit rather than
             // as flat dots. The halo (not the core) also feeds bloom — the core stays a crisp
@@ -1229,6 +1234,17 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
             hud.myMass = myMass
         }
     }
+
+    /// Food colours — saturated and distinct, so a field of pellets reads as scattered
+    /// treasure rather than as uniform dots. Indexed by the pellet's server-assigned id.
+    static let foodPalette: [SIMD4<Float>] = [
+        SIMD4(0.91, 0.30, 0.24, 1), SIMD4(0.61, 0.35, 0.71, 1),
+        SIMD4(0.20, 0.60, 0.86, 1), SIMD4(0.09, 0.65, 0.54, 1),
+        SIMD4(0.16, 0.71, 0.39, 1), SIMD4(0.83, 0.67, 0.05, 1),
+        SIMD4(0.84, 0.54, 0.06, 1), SIMD4(0.79, 0.44, 0.12, 1),
+        SIMD4(1.00, 0.44, 0.66, 1), SIMD4(0.36, 0.90, 0.36, 1),
+        SIMD4(0.13, 0.88, 0.94, 1), SIMD4(1.00, 0.85, 0.24, 1),
+    ]
 
     static func palette(_ index: Int) -> SIMD4<Float> {
         let p: [SIMD4<Float>] = [

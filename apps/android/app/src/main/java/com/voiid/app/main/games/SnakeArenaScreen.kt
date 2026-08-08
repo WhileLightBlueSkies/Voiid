@@ -346,6 +346,16 @@ private val PALETTE = listOf(
     Color(0xFF4DA8FF), Color(0xFFC6F53D), Color(0xFFFFB020), Color(0xFF8DF7C8),
 )
 
+/**
+ * Food colours — saturated and distinct, so a field of pellets reads as scattered treasure
+ * rather than as uniform dots.
+ */
+private val FOOD_PALETTE = listOf(
+    Color(0xFFE74C3C), Color(0xFF9B59B6), Color(0xFF3498DB), Color(0xFF17A589),
+    Color(0xFF28B463), Color(0xFFD4AC0D), Color(0xFFD68910), Color(0xFFCA6F1E),
+    Color(0xFFFF6FA8), Color(0xFF5CE65C), Color(0xFF22E0F0), Color(0xFFFFD93D),
+)
+
 private fun paletteColor(index: Int): Color =
     PALETTE[((index % PALETTE.size) + PALETTE.size) % PALETTE.size]
 
@@ -964,8 +974,15 @@ private fun DrawScope.drawGlowDot(radius: Float, center: Offset, color: Color) {
 private fun DrawScope.drawFood(state: GamesEngine.SnakeState) {
     // Food never moves, so it is drawn from the newest frame with no interpolation.
     state.food.forEach { item ->
+        // Colour comes from the pellet's SERVER-ASSIGNED id, not from a local random: it
+        // costs nothing on the wire, it is stable for the pellet's life (so a pellet cannot
+        // change colour as you approach it), and every device agrees on what it sees.
+        //
+        // Corpse pellets keep a distinct warm tint rather than joining the palette — "someone
+        // died here" is gameplay information, not decoration, and must stay readable.
         val r = if (item.value >= 2) 7f else if (item.value < 1) 4.5f else 5.5f
-        val color = if (item.value >= 2) Color(0xFFFFB873) else Color(0xFFFFEE9E)
+        val color = if (item.value >= 2) Color(0xFFFFB873) else FOOD_PALETTE[
+            ((item.id % FOOD_PALETTE.size) + FOOD_PALETTE.size) % FOOD_PALETTE.size]
         val centre = Offset(item.x.toFloat(), item.y.toFloat())
         drawGlowDot(radius = r, center = centre, color = color)
         drawCircle(color.copy(alpha = 0.18f), radius = r * 2f, center = centre)
