@@ -287,6 +287,41 @@ console.log('\nSnake engine\n');
     JSON.stringify(snakes.map((s) => s.n)));
 }
 
+// --- 10b-2. Skins ------------------------------------------------------------------------
+{
+  const state = snake.create(['u1'], { bots: 6, seed: 31337, skin: 'frost' }).serialize();
+  const snakes = state.snakes as any[];
+  const bots = snakes.filter((s) => s.bot);
+
+  check('the human wears the skin it asked for',
+    snakes.find((s) => !s.bot).sk === 'frost');
+  check('every bot has a skin', bots.every((b) => typeof b.sk === 'string'));
+  check('bot skins vary', new Set(bots.map((b) => b.sk)).size > 1);
+
+  // An unknown id must not be trusted through to clients that would not understand it.
+  const bogus = snake.create(['u1'], { bots: 1, seed: 1, skin: 'not-a-skin' }).serialize();
+  check('an unknown requested skin falls back rather than being echoed',
+    (bogus.snakes as any[]).find((s) => !s.bot).sk === 'rainbow');
+
+  // Skin rides full frames only; a delta frame omits it and the client carries it forward.
+  let st: GameStatePayload = snake.create(['u1'], { bots: 3, seed: 7 }).serialize();
+  let sawDelta = false;
+  for (let i = 0; i < 30; i++) {
+    const e = snake.restore(st);
+    e.tick!();
+    st = e.serialize();
+    const wire = e.serializeForWire!() as any;
+    if (!wire.foodFull) {
+      sawDelta = true;
+      check('a delta frame omits the skin', wire.snakes[0].sk === undefined);
+      break;
+    }
+  }
+  check('delta frames actually occur', sawDelta);
+  check('skin survives the restore round-trip',
+    (st.snakes as any[])[0].sk !== undefined);
+}
+
 // --- 10c. Mass-scaled radius --------------------------------------------------------------
 // The drawn width comes from `hr`, so if this stops scaling the client silently goes back to
 // a fixed-width snake whose hitbox no longer matches what is on screen.

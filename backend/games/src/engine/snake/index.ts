@@ -89,6 +89,22 @@ const BOT_NAMES: readonly string[] = [
 ];
 
 /**
+ * Skin ids, assigned to bots the same way names are (docs/GAMES_SNAKE_VISUALS.md §2).
+ *
+ * The SERVER assigns them so every device in a match shows the same snake wearing the same
+ * skin — a client picking its own would mean two players describing different arenas.
+ *
+ * The id is all that travels. What a skin looks like is client data, so adding a colourway is
+ * a client release and never a server one.
+ */
+const BOT_SKINS: readonly string[] = [
+  'rainbow', 'candy', 'lava', 'frost', 'shadow', 'bunny', 'corgi', 'lion', 'unicorn',
+];
+
+/** Ids a client may ask for. Anything else falls back to the plain palette colour. */
+const VALID_SKINS: ReadonlySet<string> = new Set(BOT_SKINS);
+
+/**
  * Collision radius for a given mass.
  *
  * A snake now THICKENS as it eats, not just lengthens, so the radius can no longer be a
@@ -118,6 +134,11 @@ interface SnakeState {
    * worse than no names at all.
    */
   name: string | null;
+  /**
+   * Skin id. Null means "no skin" and the client draws the plain palette colour — which is
+   * also what an older client does with a skin it has never heard of.
+   */
+  skin: string | null;
   x: number;
   y: number;
   /** Radians. */
@@ -687,7 +708,10 @@ class SnakeEngine implements GameEngine {
         // Name is sent only on FULL frames. It never changes for the life of a match, so
         // resending it 10x/sec was pure overhead — and a full frame is exactly the frame a
         // client that missed everything needs, so it is also where a late joiner learns it.
-        ...(wire && !full ? {} : { n: sn.name }),
+        // Name and skin both ride FULL frames only: neither ever changes for the life of a
+        // match, so resending them 10x/sec was pure overhead, and a full frame is exactly the
+        // frame a client that missed everything needs.
+        ...(wire && !full ? {} : { n: sn.name, sk: sn.skin }),
         // Head radius, so the client draws EXACTLY the circle that kills. Deriving it
         // client-side would mean two formulas that could drift apart on any tuning change.
         hr: round(radiusFor(sn.mass, TUNING.HEAD_RADIUS), 1),
@@ -782,6 +806,7 @@ function restoreState(state: GameStatePayload): State {
     id: sn.id as string,
     bot: sn.bot === true,
     name: (sn.n as string | null) ?? null,
+    skin: (sn.sk as string | null) ?? null,
     x: sn.x as number,
     y: sn.y as number,
     h: sn.h as number,
@@ -878,12 +903,29 @@ export const snake: GameFactory = {
       { length: bots },
       (_, i) => pool[i % pool.length] + (i >= pool.length ? String(Math.floor(i / pool.length) + 1) : ''));
 
+    // The human's chosen skin. UNTRUSTED like every other option, so an unknown id becomes
+    // null and the client falls back to a plain colour rather than the server trusting a
+    // string it has never seen.
+    const rawSkin = options?.skin;
+    const humanSkin =
+      typeof rawSkin === 'string' && VALID_SKINS.has(rawSkin) ? rawSkin : 'rainbow';
+
+    // Bot skins are drawn without replacement where possible, so a small arena does not end
+    // up with four identical snakes — the whole point of skins is telling players apart.
+    const skinPool = BOT_SKINS.slice();
+    for (let i = skinPool.length - 1; i > 0; i--) {
+      const j = Math.floor(nameRng.next() * (i + 1));
+      [skinPool[i], skinPool[j]] = [skinPool[j], skinPool[i]];
+    }
+    const botSkins = Array.from({ length: bots }, (_, i) => skinPool[i % skinPool.length]);
+
     let colorIdx = 0;
     for (const id of playerIds) {
-      state.snakes.push(blankSnake(id, false, colorIdx++, null));
+      state.snakes.push(blankSnake(id, false, colorIdx++, null, humanSkin));
     }
     for (let i = 0; i < bots; i++) {
-      state.snakes.push(blankSnake(`bot:${i}`, true, colorIdx++, botNames[i]));
+      state.snakes.push(
+        blankSnake(`bot:${i}`, true, colorIdx++, botNames[i], botSkins[i]));
     }
 
     const engine = new SnakeEngine(state);
@@ -898,10 +940,10 @@ export const snake: GameFactory = {
 };
 
 function blankSnake(
-  id: string, bot: boolean, color: number, name: string | null
+  id: string, bot: boolean, color: number, name: string | null, skin: string | null
 ): SnakeState {
   return {
-    id, bot, name, x: 0, y: 0, h: 0, th: 0,
+    id, bot, name, skin, x: 0, y: 0, h: 0, th: 0,
     mass: TUNING.START_MASS,
     alive: false,
     boost: false,

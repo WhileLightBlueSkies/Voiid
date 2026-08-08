@@ -189,6 +189,8 @@ struct SnakeState {
         let isBot: Bool
         /// Server-assigned handle for a bot; nil for humans (resolved from the directory).
         let name: String?
+        /// Skin id; nil draws the plain palette colour. See `SnakeSkins`.
+        let skin: String?
         /// Head radius in world units, straight from the server — the body is drawn at this
         /// width so the visible snake is exactly the shape that kills.
         let headRadius: Double
@@ -292,6 +294,9 @@ struct SnakeState {
                 id: id,
                 isBot: (s["bot"] as? Bool) ?? false,
                 name: (s["n"] as? String) ?? carried,
+                // Skin rides full frames only, like the name, so a delta inherits it.
+                skin: (s["sk"] as? String)
+                    ?? previous?.snakes.first { $0.id == id }?.skin,
                 headRadius: (s["hr"] as? Double) ?? 11,
                 x: (s["x"] as? Double) ?? 0,
                 y: (s["y"] as? Double) ?? 0,

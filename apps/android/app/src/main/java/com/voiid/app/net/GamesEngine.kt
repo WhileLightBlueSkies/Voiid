@@ -188,6 +188,8 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
             val isBot: Boolean,
             /** Server-assigned handle for a bot; null for humans (resolved from the directory). */
             val name: String?,
+            /** Skin id; null draws the plain palette colour. See `SnakeSkins`. */
+            val skin: String?,
             /**
              * Head radius in world units, straight from the server — the body is drawn at this
              * width so the visible snake is exactly the shape that kills.
@@ -336,6 +338,8 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
                 id = id,
                 isBot = o.bool("bot") ?: false,
                 name = o.str("n") ?: carried,
+                // Skin rides full frames only, like the name, so a delta frame inherits it.
+                skin = o.str("sk") ?: previous?.snakes?.firstOrNull { it.id == id }?.skin,
                 headRadius = o.dbl("hr") ?: 11.0,
                 x = o.dbl("x") ?: 0.0,
                 y = o.dbl("y") ?: 0.0,

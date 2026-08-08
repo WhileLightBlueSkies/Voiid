@@ -36,6 +36,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
@@ -131,6 +132,11 @@ fun SnakeArenaScreen(
     val frameClock = remember { mutableDoubleStateOf(0.0) }
     val trails = remember { TrailStore() }
     val camera = remember { CameraMemory() }
+
+    // Hex floor tile, built ONCE (docs/GAMES_SNAKE_VISUALS.md §3.1). A repeated shader rather
+    // than per-hex geometry: the arena holds several hundred hexes and drawing them
+    // individually would cost more than every snake on screen combined.
+    val hexShader = remember { buildHexBrush() }
     val particles = remember { ParticleSystem() }
     val impact = remember { ImpactTimeline() }
     val haptics = remember { GameHaptics(context) }
@@ -160,7 +166,8 @@ fun SnakeArenaScreen(
         Canvas(Modifier.fillMaxSize()) {
             // Reading the clock inside the DRAW scope subscribes only this draw to it.
             @Suppress("UNUSED_EXPRESSION") frameClock.doubleValue
-            drawArena(framesRef.value, me, trails, stick, camera, particles, impact, haptics, boostAudio)
+            drawArena(framesRef.value, me, trails, stick, camera, particles, impact,
+                haptics, boostAudio, hexShader)
         }
 
         // Death / game-over panel.
@@ -735,6 +742,7 @@ private fun DrawScope.drawArena(
     impact: ImpactTimeline,
     haptics: GameHaptics,
     boostAudio: BoostAudioState,
+    hexShader: androidx.compose.ui.graphics.Brush?,
 ) {
     val s = pickSample(frames) ?: return
     val state = s.to
@@ -841,7 +849,7 @@ private fun DrawScope.drawArena(
         scale(scale, scale, pivot = Offset.Zero)
         translate(-focus.x, -focus.y)
     }) {
-        drawBoundary(state.arenaRadius.toFloat())
+        drawBoundary(state.arenaRadius.toFloat(), hexShader)
         drawFood(state)
 
         // Rank by mass, so a label over a head and the HUD row can never disagree.
@@ -882,8 +890,28 @@ private fun DrawScope.drawArena(
     }
 }
 
-private fun DrawScope.drawBoundary(radius: Float) {
+private fun DrawScope.drawBoundary(radius: Float, hexShader: androidx.compose.ui.graphics.Brush?) {
     drawCircle(Color(0xFF120E28), radius = radius, center = Offset.Zero)
+
+    // Hex lattice floor (docs/GAMES_SNAKE_VISUALS.md §3.1).
+    //
+    // A REPEATED TILE, never per-hex geometry: at 120-unit hexes the arena holds several
+    // hundred, and instancing them individually would cost more than every snake on screen.
+    //
+    // Deliberately dark and low contrast — the floor is a texture, not a subject. If the
+    // hexes read as brightly as the food, the food stops reading as food.
+    if (hexShader != null) {
+        clipPath(Path().apply {
+            addOval(androidx.compose.ui.geometry.Rect(
+                Offset(-radius, -radius), androidx.compose.ui.geometry.Size(radius * 2, radius * 2)))
+        }) {
+            drawRect(
+                brush = hexShader,
+                topLeft = Offset(-radius, -radius),
+                size = androidx.compose.ui.geometry.Size(radius * 2, radius * 2),
+            )
+        }
+    }
 
     // Drawn EXACTLY at the lethal line, not inside or outside it. A wall whose visible edge
     // disagrees with the killing surface makes every border death feel unfair, and players
@@ -983,10 +1011,16 @@ private fun DrawScope.drawSnake(
     // and knows why they were not killed.
     val alpha = if (time < snake.invulnUntil) 0.55f else 1f
 
-    drawPath(path, color.copy(alpha = 0.22f * alpha),
+    // Glow stays a SINGLE colour under the bands. A banded glow just muddies — the halo is
+    // there to separate the snake from the floor, not to repeat the pattern.
+    val skin = SnakeSkins.resolve(snake.skin, color)
+    val haloColor = skin.glow ?: color
+    drawPath(path, haloColor.copy(alpha = 0.22f * alpha),
         style = Stroke(width = width * 2.1f, cap = StrokeCap.Round, join = StrokeJoin.Round))
-    drawPath(path, color.copy(alpha = alpha),
-        style = Stroke(width = width, cap = StrokeCap.Round, join = StrokeJoin.Round))
+
+    // Banded body (docs/GAMES_SNAKE_VISUALS.md §2.3): walk the trail by arc length and stroke
+    // one span per band, rather than one stroke for the whole snake.
+    drawBands(points, skin, width, alpha)
 
     if (isMe) {
         // A rim no one else has. In a crowded arena hue alone is not enough to find yourself.
@@ -1038,6 +1072,156 @@ private fun DrawScope.drawHead(
         val py = ey + (sin(look) * eyeR * 0.4).toFloat()
         drawCircle(Color.Black.copy(alpha = alpha), radius = pr, center = Offset(px, py))
     }
+}
+
+/**
+ * Stroke a trail as repeating colour bands.
+ *
+ * Two details decide whether this looks like a skin or like stripes:
+ *
+ *  - Spans OVERLAP by a unit at each end. Butt-jointed spans leave hairline gaps on curves,
+ *    which is exactly where the eye goes.
+ *  - Bands are anchored to the HEAD (index 0), not the tail. Anchoring at the tail makes the
+ *    whole pattern crawl backwards as the snake eats, which reads as a rendering fault rather
+ *    than as movement.
+ */
+private fun DrawScope.drawBands(
+    points: List<Offset>,
+    skin: SnakeSkin,
+    width: Float,
+    alpha: Float,
+) {
+    if (points.size < 2 || skin.bands.isEmpty()) return
+
+    // A single-band skin is the fallback path, and one plain stroke is both cheaper and
+    // smoother than a one-colour band walk.
+    if (skin.bands.size == 1) {
+        drawPath(smoothPath(points), skin.bands[0].copy(alpha = alpha),
+            style = Stroke(width = width, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        return
+    }
+
+    val stroke = Stroke(width = width, cap = StrokeCap.Round, join = StrokeJoin.Round)
+
+    // Resample the trail into fixed-length spans by walking arc length. One pass, no nesting:
+    // carry a cursor along the polyline and cut a new span every `bandLength` units.
+    var span = ArrayList<Offset>(8).apply { add(points[0]) }
+    var bandIndex = 0
+    var used = 0f                  // arc consumed of the current band
+    var cursor = points[0]
+    var i = 1
+
+    while (i < points.size) {
+        val target = points[i]
+        val segLen = hypot(target.x - cursor.x, target.y - cursor.y)
+
+        if (segLen < 1e-4f) { i++; continue }
+
+        val remaining = skin.bandLength - used
+        if (segLen <= remaining) {
+            // The whole segment fits inside the current band.
+            span.add(target)
+            used += segLen
+            cursor = target
+            i++
+            continue
+        }
+
+        // The band ends inside this segment: cut it there, emit, and resume from the cut.
+        val t = remaining / segLen
+        val cut = Offset(
+            cursor.x + (target.x - cursor.x) * t,
+            cursor.y + (target.y - cursor.y) * t,
+        )
+        span.add(cut)
+        drawPath(smoothPath(span), skin.bands[bandIndex % skin.bands.size].copy(alpha = alpha),
+            style = stroke)
+
+        bandIndex++
+        used = 0f
+        cursor = cut
+        // The next span STARTS at the cut, so consecutive bands share an endpoint and the
+        // round caps cover the join. Butt-jointed spans leave hairline gaps on curves, which
+        // is exactly where the eye goes.
+        span = ArrayList<Offset>(8).apply { add(cut) }
+    }
+
+    if (span.size >= 2) {
+        drawPath(smoothPath(span), skin.bands[bandIndex % skin.bands.size].copy(alpha = alpha),
+            style = stroke)
+    }
+}
+
+/**
+ * Build the repeating hex-lattice brush for the arena floor.
+ *
+ * Drawn once into a small bitmap and tiled, because a lattice is by definition the same shape
+ * over and over — there is nothing per-frame about it, and nothing worth re-deriving.
+ *
+ * The tile is a POINTY-TOP hex grid, whose repeat unit is width `w` by height `1.5 * h`. Those
+ * exact proportions matter: get them wrong and the seams show as visible banding across the
+ * floor, which is far more distracting than no texture at all.
+ */
+private fun buildHexBrush(): androidx.compose.ui.graphics.Brush {
+    val r = 34f                                  // hex circumradius, world units
+    val w = (kotlin.math.sqrt(3.0) * r).toFloat()
+    val h = 2f * r
+    val tileW = w.toInt()
+    val tileH = (h * 0.75f).toInt()
+
+    val bmp = android.graphics.Bitmap.createBitmap(tileW, tileH, android.graphics.Bitmap.Config.ARGB_8888)
+    val canvas = android.graphics.Canvas(bmp)
+    val paint = android.graphics.Paint().apply {
+        isAntiAlias = true
+        style = android.graphics.Paint.Style.STROKE
+        strokeWidth = 1.4f
+        // Low contrast on purpose: the floor is a texture, not a subject. If the hexes read
+        // as brightly as the food, the food stops reading as food.
+        color = android.graphics.Color.argb(30, 150, 190, 255)
+    }
+
+    fun hexAt(cx: Float, cy: Float) {
+        val path = android.graphics.Path()
+        for (i in 0 until 6) {
+            val a = Math.toRadians((60.0 * i) - 30.0)
+            val x = cx + (r * kotlin.math.cos(a)).toFloat()
+            val y = cy + (r * kotlin.math.sin(a)).toFloat()
+            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+        }
+        path.close()
+        canvas.drawPath(path, paint)
+    }
+
+    // Draw the repeat unit plus its wrapped neighbours, so the tile is seamless on all edges.
+    for (dx in -1..1) for (dy in -1..1) {
+        hexAt(dx * tileW.toFloat(), dy * tileH.toFloat())
+        hexAt(dx * tileW.toFloat() + tileW / 2f, dy * tileH.toFloat() + tileH / 2f)
+    }
+
+    // android.graphics.Shader IS Compose's Shader typealias on Android, so the platform
+    // BitmapShader can be handed to ShaderBrush directly.
+    return androidx.compose.ui.graphics.ShaderBrush(
+        android.graphics.BitmapShader(
+            bmp,
+            android.graphics.Shader.TileMode.REPEAT,
+            android.graphics.Shader.TileMode.REPEAT,
+        )
+    )
+}
+
+/** Quadratic smoothing through midpoints — the same curve the whole body used to use. */
+private fun smoothPath(points: List<Offset>): Path = Path().apply {
+    moveTo(points[0].x, points[0].y)
+    if (points.size == 2) {
+        lineTo(points[1].x, points[1].y)
+        return@apply
+    }
+    for (i in 1 until points.size - 1) {
+        val mx = (points[i].x + points[i + 1].x) / 2f
+        val my = (points[i].y + points[i + 1].y) / 2f
+        quadraticTo(points[i].x, points[i].y, mx, my)
+    }
+    lineTo(points.last().x, points.last().y)
 }
 
 /**

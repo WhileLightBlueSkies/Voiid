@@ -201,11 +201,16 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
 
     /// Name-plate glyphs, rasterised on demand and packed into one texture.
     private var labelAtlas: LabelAtlas?
+    /// The hex-lattice floor tile, repeated across the arena (GAMES_SNAKE_VISUALS §3.1).
+    private var hexTexture: MTLTexture?
+    private var repeatSampler: MTLSamplerState?
 
     // Per-frame CPU-side buffers, reused so a frame allocates nothing.
     private var circles: [CircleInstance] = []
     private var ribbon: [RibbonVertex] = []
     private var sprites: [SpriteInstance] = []
+    /// Floor quads, drawn before everything else and with their own texture.
+    private var floorSprites: [SpriteInstance] = []
 
     // GPU-side mirrors of the above.
     //
@@ -216,6 +221,7 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     private var circleBuffer: MTLBuffer?
     private var ribbonBuffer: MTLBuffer?
     private var spriteBuffer: MTLBuffer?
+    private var floorBuffer: MTLBuffer?
 
     /// Grow `buffer` if needed and copy `array` into it. Returns nil when empty.
     private func upload<T>(_ array: [T], into buffer: inout MTLBuffer?) -> MTLBuffer? {
@@ -317,6 +323,17 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         sampler = device.makeSamplerState(descriptor: sd)
 
         labelAtlas = LabelAtlas(device: device)
+        hexTexture = Self.makeHexTile(device: device)
+
+        // REPEAT addressing is the whole point: one quad covers the arena and the sampler
+        // tiles the lattice across it, so a few hundred hexes cost one draw rather than a few
+        // hundred.
+        let rd = MTLSamplerDescriptor()
+        rd.minFilter = .linear
+        rd.magFilter = .linear
+        rd.sAddressMode = .repeat
+        rd.tAddressMode = .repeat
+        repeatSampler = device.makeSamplerState(descriptor: rd)
     }
 
     private enum BlendMode { case straightAlpha, additive }
@@ -402,6 +419,7 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         circles.removeAll(keepingCapacity: true)
         ribbon.removeAll(keepingCapacity: true)
         sprites.removeAll(keepingCapacity: true)
+        floorSprites.removeAll(keepingCapacity: true)
         bloomCircles.removeAll(keepingCapacity: true)
 
         guard let frame = buildFrame() else {
@@ -433,7 +451,19 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         }
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
 
-        // Bodies first, then circles over them (heads, food), then labels on top.
+        // Floor FIRST, under everything — it is a texture the arena sits on, and drawing it
+        // after the bodies would paint the lattice over the snakes.
+        if let buf = upload(floorSprites, into: &floorBuffer),
+           let tex = hexTexture, let smp = repeatSampler, spritePipeline != nil {
+            encoder.setRenderPipelineState(spritePipeline)
+            encoder.setVertexBuffer(buf, offset: 0, index: 1)
+            encoder.setFragmentTexture(tex, index: 0)
+            encoder.setFragmentSamplerState(smp, index: 0)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
+                                   instanceCount: floorSprites.count)
+        }
+
+        // Bodies next, then circles over them (heads, food), then labels on top.
         if let buf = upload(ribbon, into: &ribbonBuffer), ribbonPipeline != nil {
             encoder.setRenderPipelineState(ribbonPipeline)
             encoder.setVertexBuffer(buf, offset: 0, index: 1)
@@ -918,6 +948,20 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         circles.append(CircleInstance(
             centre: .zero, radius: Float(radius), softness: 0,
             colour: SIMD4(0.07, 0.06, 0.16, 1)))
+
+        // Hex lattice floor. UVs are scaled by arena size / tile size, so the sampler's
+        // .repeat addressing lays the lattice out across one quad instead of us emitting a
+        // few hundred hexes as geometry.
+        if let hexTexture {
+            let side = Float(radius) * 2
+            let tiles = side / Float(hexTexture.width)
+            floorSprites.append(SpriteInstance(
+                centre: .zero,
+                size: SIMD2(side, side),
+                uvOrigin: SIMD2(0, 0),
+                uvSize: SIMD2(tiles, tiles * Float(hexTexture.width) / Float(hexTexture.height)),
+                tint: SIMD4(1, 1, 1, 1)))
+        }
         circles.append(CircleInstance(
             centre: .zero, radius: Float(radius), softness: 0.35,
             colour: SIMD4(0.35, 0.85, 1.0, 0.10)))
@@ -969,10 +1013,16 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         // that kills. A local formula could drift from the hitbox on any tuning change.
         let width = Float(snake.headRadius) * 1.9
 
+        // Glow stays a SINGLE colour under the bands. A banded glow just muddies — the halo
+        // separates the snake from the floor, it does not repeat the pattern.
+        let skin = SnakeSkins.resolve(snake.skin, fallback: c)
+        let halo = skin.glow ?? c
         appendRibbon(points: points, width: width * 1.7,
-                     colour: SIMD4(c.x, c.y, c.z, 0.20 * alpha))
-        appendRibbon(points: points, width: width,
-                     colour: SIMD4(c.x, c.y, c.z, alpha))
+                     colour: SIMD4(halo.x, halo.y, halo.z, 0.20 * alpha))
+
+        // Banded body (docs/GAMES_SNAKE_VISUALS.md §2.3): one span per band along the arc,
+        // rather than one stroke for the whole snake.
+        appendBands(points: points, skin: skin, width: width, alpha: alpha)
         if isMe {
             appendRibbon(points: points, width: width * 0.28,
                          colour: SIMD4(1, 1, 1, 0.85 * alpha))
@@ -1039,6 +1089,69 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
             uvOrigin: SIMD2(Float(entry.uvOrigin.x), Float(entry.uvOrigin.y)),
             uvSize: SIMD2(Float(entry.uvSize.width), Float(entry.uvSize.height)),
             tint: isMe ? SIMD4(1, 1, 1, 1) : SIMD4(0.85, 0.88, 1.0, 0.92)))
+    }
+
+    /// Stroke a trail as repeating colour bands.
+    ///
+    /// Two details decide whether this reads as a skin or as stripes:
+    ///
+    ///  - Consecutive spans SHARE an endpoint, so the round caps cover the join. Butt-jointed
+    ///    spans leave hairline gaps on curves, which is exactly where the eye goes.
+    ///  - Bands are anchored to the HEAD (index 0), not the tail. Anchoring at the tail makes
+    ///    the pattern crawl backwards as the snake eats, which reads as a rendering fault
+    ///    rather than as movement.
+    private func appendBands(
+        points: [CGPoint], skin: SnakeSkin, width: Float, alpha: Float
+    ) {
+        guard points.count >= 2, !skin.bands.isEmpty else { return }
+
+        // A single-band skin is the fallback path, and one ribbon is cheaper and smoother
+        // than a one-colour band walk.
+        if skin.bands.count == 1 {
+            let b = skin.bands[0]
+            appendRibbon(points: points, width: width, colour: SIMD4(b.x, b.y, b.z, alpha))
+            return
+        }
+
+        var span: [CGPoint] = [points[0]]
+        var bandIndex = 0
+        var used: Float = 0
+        var cursor = points[0]
+        var i = 1
+
+        while i < points.count {
+            let target = points[i]
+            let segLen = Float(hypot(target.x - cursor.x, target.y - cursor.y))
+            if segLen < 1e-4 { i += 1; continue }
+
+            let remaining = skin.bandLength - used
+            if segLen <= remaining {
+                span.append(target)
+                used += segLen
+                cursor = target
+                i += 1
+                continue
+            }
+
+            // The band ends inside this segment: cut there, emit, resume from the cut.
+            let t = CGFloat(remaining / segLen)
+            let cut = CGPoint(x: cursor.x + (target.x - cursor.x) * t,
+                              y: cursor.y + (target.y - cursor.y) * t)
+            span.append(cut)
+
+            let b = skin.bands[bandIndex % skin.bands.count]
+            appendRibbon(points: span, width: width, colour: SIMD4(b.x, b.y, b.z, alpha))
+
+            bandIndex += 1
+            used = 0
+            cursor = cut
+            span = [cut]
+        }
+
+        if span.count >= 2 {
+            let b = skin.bands[bandIndex % skin.bands.count]
+            appendRibbon(points: span, width: width, colour: SIMD4(b.x, b.y, b.z, alpha))
+        }
     }
 
     /// Triangulate a polyline into a thick ribbon.
@@ -1304,6 +1417,60 @@ private final class ParticleSystem {
                 centre: p.position, radius: p.size, softness: 0.6,
                 colour: SIMD4(p.colour.x, p.colour.y, p.colour.z, p.colour.w * fade)))
         }
+    }
+}
+
+extension SnakeRenderer {
+    /// Draw one seamless hexagon-lattice tile.
+    ///
+    /// A repeat unit of a pointy-top hex grid is `w` by `1.5 * r`; those proportions are not
+    /// approximate, and getting them wrong shows up as visible banding across the floor —
+    /// which is far more distracting than having no texture at all.
+    ///
+    /// Deliberately dark and low contrast: the floor is a texture, not a subject. If the
+    /// hexes read as brightly as the food, the food stops reading as food.
+    static func makeHexTile(device: MTLDevice) -> MTLTexture? {
+        let r: CGFloat = 34
+        let w = sqrt(3.0) * r
+        let tileW = Int(w.rounded())
+        let tileH = Int((r * 1.5).rounded())
+
+        guard tileW > 0, tileH > 0,
+              let ctx = CGContext(
+                data: nil, width: tileW, height: tileH, bitsPerComponent: 8,
+                bytesPerRow: tileW * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+
+        ctx.setStrokeColor(red: 0.59, green: 0.75, blue: 1.0, alpha: 0.12)
+        ctx.setLineWidth(1.4)
+
+        func hex(_ cx: CGFloat, _ cy: CGFloat) {
+            for i in 0..<6 {
+                let a = CGFloat(i) * .pi / 3 - .pi / 6
+                let p = CGPoint(x: cx + r * cos(a), y: cy + r * sin(a))
+                if i == 0 { ctx.move(to: p) } else { ctx.addLine(to: p) }
+            }
+            ctx.closePath()
+            ctx.strokePath()
+        }
+
+        // The unit plus its wrapped neighbours, so the tile is seamless on every edge.
+        for dx in -1...1 {
+            for dy in -1...1 {
+                hex(CGFloat(dx) * w, CGFloat(dy) * r * 1.5)
+                hex(CGFloat(dx) * w + w / 2, CGFloat(dy) * r * 1.5 + r * 0.75)
+            }
+        }
+
+        let desc = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba8Unorm, width: tileW, height: tileH, mipmapped: false)
+        desc.usage = [.shaderRead]
+        guard let tex = device.makeTexture(descriptor: desc), let data = ctx.data
+        else { return nil }
+        tex.replace(region: MTLRegionMake2D(0, 0, tileW, tileH),
+                    mipmapLevel: 0, withBytes: data, bytesPerRow: tileW * 4)
+        return tex
     }
 }
 
