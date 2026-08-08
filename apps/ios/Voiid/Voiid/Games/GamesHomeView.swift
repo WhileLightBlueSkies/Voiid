@@ -205,6 +205,14 @@ struct GamesHomeView: View {
                             let slug = game.slug
                             setupGame = nil
                             Task {
+                                // WAIT FOR THE SHEET TO FINISH DISMISSING before pushing.
+                                //
+                                // SwiftUI silently DROPS a navigation push that lands while a
+                                // sheet is still animating away, and the REST round-trip below
+                                // usually finishes inside that window — so the first taps did
+                                // nothing at all and only the fourth or fifth appeared to
+                                // work. Half a beat is enough to clear the transition.
+                                try? await Task.sleep(nanoseconds: 350_000_000)
                                 // Difficulty maps to how many bots share the arena. Bots all
                                 // use identical physics to the player — no speed or turning
                                 // advantage — so a busier arena IS the difficulty: less open

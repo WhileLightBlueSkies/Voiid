@@ -127,6 +127,8 @@ struct SpriteOut {
     float4 position [[position]];
     float2 uv;
     float4 tint;
+    /// -1..1 across the quad, so a fragment can tell where it sits within the sprite.
+    float2 local;
 };
 
 vertex SpriteOut spriteVertex(uint vid [[vertex_id]],
@@ -146,6 +148,7 @@ vertex SpriteOut spriteVertex(uint vid [[vertex_id]],
     float2 unit = float2((corner.x + 1.0) * 0.5, (1.0 - corner.y) * 0.5);
     out.uv = inst.uvOrigin + unit * inst.uvSize;
     out.tint = inst.tint;
+    out.local = corner;
     return out;
 }
 
@@ -153,6 +156,25 @@ vertex SpriteOut spriteVertex(uint vid [[vertex_id]],
 // text is always solid white in the atlas, so only its ALPHA carries shape, and `tint.rgb` is
 // what actually colours the label on screen. That is correct for name plates and WRONG for
 // anything where the source texture's own colour matters.
+/// The arena floor: a tiled lattice, clipped to the arena disc.
+///
+/// The floor quad is a SQUARE covering the arena's bounding box, so without this clip it
+/// spills past the circular boundary — which drew as a huge tinted rectangle swamping the
+/// screen and left the lattice visibly ending in mid-air. `local` is the -1..1 quad
+/// coordinate, so a length test against it is exactly the inscribed circle.
+fragment float4 floorFragment(SpriteOut in [[stage_in]],
+                              texture2d<float> tile [[texture(0)]],
+                              sampler s [[sampler(0)]]) {
+    float d = length(in.local);
+    if (d > 1.0) discard_fragment();
+
+    float4 texel = tile.sample(s, in.uv);
+    // Fade the last sliver so the lattice meets the boundary softly instead of with a hard
+    // cut, which reads as a rendering seam rather than as the edge of a floor.
+    float edge = 1.0 - smoothstep(0.97, 1.0, d);
+    return float4(texel.rgb, texel.a * in.tint.a * edge);
+}
+
 fragment float4 spriteFragment(SpriteOut in [[stage_in]],
                                texture2d<float> atlas [[texture(0)]],
                                sampler s [[sampler(0)]]) {

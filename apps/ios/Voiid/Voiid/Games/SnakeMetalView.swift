@@ -166,6 +166,7 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     private var circlePipeline: MTLRenderPipelineState!
     private var ribbonPipeline: MTLRenderPipelineState!
     private var spritePipeline: MTLRenderPipelineState!
+    private var floorPipeline: MTLRenderPipelineState!
     /// Same geometry as the main pipelines but writing ADDITIVE rather than straight-alpha,
     /// into the half-res bloom target. See `renderBloomSource` for why additive here and
     /// straight-alpha on the main pass are both correct at the same time.
@@ -218,20 +219,42 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     // immediately (300 pellets alone is ~9 KB of circle instances), and exceeding it is a
     // hard Metal validation failure, not a silent truncation. That was the startup crash.
     // Buffers are grown on demand and then reused, so a steady-state frame allocates nothing.
-    private var circleBuffer: MTLBuffer?
-    private var ribbonBuffer: MTLBuffer?
-    private var spriteBuffer: MTLBuffer?
-    private var floorBuffer: MTLBuffer?
+    private var circleBuffer: [MTLBuffer?] = []
+    private var ribbonBuffer: [MTLBuffer?] = []
+    private var spriteBuffer: [MTLBuffer?] = []
+    private var floorBuffer: [MTLBuffer?] = []
 
     /// Grow `buffer` if needed and copy `array` into it. Returns nil when empty.
-    private func upload<T>(_ array: [T], into buffer: inout MTLBuffer?) -> MTLBuffer? {
+    /// Frames the GPU may have in flight at once. Three is the standard depth: enough that
+    /// the CPU never waits, small enough that latency stays imperceptible.
+    private static let maxFramesInFlight = 3
+    /// Which slot of each ring the CURRENT frame writes into.
+    private var frameSlot = 0
+    /// Blocks the CPU if it ever gets three frames ahead of the GPU.
+    private let frameSemaphore = DispatchSemaphore(value: SnakeRenderer.maxFramesInFlight)
+
+    /**
+     * Copy `array` into this frame's slot of a triple-buffered ring.
+     *
+     * WRITING A SINGLE SHARED BUFFER EVERY FRAME IS A RACE, and it was a real one: the GPU
+     * may still be reading last frame's contents when the CPU overwrites them, which corrupts
+     * geometry and can wedge the drawable — rendering fine and then going blank mid-match.
+     * A ring plus the semaphore below means the buffer being written is never the buffer
+     * being read.
+     */
+    private func upload<T>(_ array: [T], into ring: inout [MTLBuffer?]) -> MTLBuffer? {
         guard !array.isEmpty else { return nil }
-        let bytes = MemoryLayout<T>.stride * array.count
-        if buffer == nil || buffer!.length < bytes {
-            // Over-allocate so a slowly growing arena does not reallocate every frame.
-            buffer = device.makeBuffer(length: max(bytes * 2, 4096), options: .storageModeShared)
+        if ring.count < Self.maxFramesInFlight {
+            ring = Array(repeating: nil, count: Self.maxFramesInFlight)
         }
-        guard let buffer else { return nil }
+
+        let bytes = MemoryLayout<T>.stride * array.count
+        if ring[frameSlot] == nil || ring[frameSlot]!.length < bytes {
+            // Over-allocate so a slowly growing arena does not reallocate every frame.
+            ring[frameSlot] = device.makeBuffer(
+                length: max(bytes * 2, 4096), options: .storageModeShared)
+        }
+        guard let buffer = ring[frameSlot] else { return nil }
         array.withUnsafeBytes { raw in
             buffer.contents().copyMemory(from: raw.baseAddress!, byteCount: bytes)
         }
@@ -410,10 +433,23 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     // MARK: Frame
 
     func draw(in view: MTKView) {
+        // Wait if the GPU is three frames behind, and advance to this frame's ring slot.
+        // Without this the CPU can lap the GPU and overwrite buffers mid-read.
+        frameSemaphore.wait()
+        frameSlot = (frameSlot + 1) % Self.maxFramesInFlight
+
         guard let drawable = view.currentDrawable,
               let descriptor = view.currentRenderPassDescriptor,
               let commands = queue.makeCommandBuffer(),
-              circlePipeline != nil else { return }
+              circlePipeline != nil
+        else {
+            // MUST signal on EVERY path out past the wait. Miss one and the semaphore drains
+            // to zero, after which every later frame blocks forever — a permanent freeze
+            // rather than a dropped frame. `currentDrawable` returning nil is routine (it
+            // happens whenever the view is off-screen), so this path is taken in normal use.
+            frameSemaphore.signal()
+            return
+        }
 
         viewSize = view.drawableSize
         circles.removeAll(keepingCapacity: true)
@@ -429,6 +465,10 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
                 encoder.endEncoding()
             }
             commands.present(drawable)
+            // This path commits real GPU work, so it releases its slot the same way the main
+            // path does. Committing without a handler would leak a slot per frame until the
+            // semaphore hit zero and the view locked up.
+            commands.addCompletedHandler { [frameSemaphore] _ in frameSemaphore.signal() }
             commands.commit()
             return
         }
@@ -454,8 +494,8 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         // Floor FIRST, under everything — it is a texture the arena sits on, and drawing it
         // after the bodies would paint the lattice over the snakes.
         if let buf = upload(floorSprites, into: &floorBuffer),
-           let tex = hexTexture, let smp = repeatSampler, spritePipeline != nil {
-            encoder.setRenderPipelineState(spritePipeline)
+           let tex = hexTexture, let smp = repeatSampler, floorPipeline != nil {
+            encoder.setRenderPipelineState(floorPipeline)
             encoder.setVertexBuffer(buf, offset: 0, index: 1)
             encoder.setFragmentTexture(tex, index: 0)
             encoder.setFragmentSamplerState(smp, index: 0)
@@ -504,6 +544,8 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
 
         encoder.endEncoding()
         commands.present(drawable)
+        // Release this frame's slot only once the GPU has actually finished with it.
+        commands.addCompletedHandler { [frameSemaphore] _ in frameSemaphore.signal() }
         commands.commit()
     }
 
@@ -628,11 +670,13 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: 1)
     }
 
-    private var deathTintBuffer: MTLBuffer?
+    private var deathTintBuffer: [MTLBuffer?] = []
 
-    private var ribbonBloomBuffer: MTLBuffer?
-    private var bloomCircleBuffer: MTLBuffer?
-    private var compositeBuffer: MTLBuffer?
+    // Rings, like every other per-frame buffer: these are written each frame while the GPU
+    // may still be reading the previous one, which is the race that blanked the view.
+    private var ribbonBloomBuffer: [MTLBuffer?] = []
+    private var bloomCircleBuffer: [MTLBuffer?] = []
+    private var compositeBuffer: [MTLBuffer?] = []
     /// Cached from the last `buildFrame` uniforms so `compositeBloom` (called from inside the
     /// main encoder, after `buildFrame` already ran) can size its full-screen quad correctly.
     private var lastCameraCentreSIMD: SIMD2<Float> = .zero
