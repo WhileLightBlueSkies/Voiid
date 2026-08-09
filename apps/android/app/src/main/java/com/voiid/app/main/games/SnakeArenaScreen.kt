@@ -939,7 +939,8 @@ private fun DrawScope.drawBoundary(radius: Float, hexShader: androidx.compose.ui
     drawCircle(
         Color(0xFF5AD8FF).copy(alpha = 0.16f), radius = radius - 20f,
         center = Offset.Zero, style = Stroke(width = 40f))
-    drawCircle(Color(0xFF5AD8FF), radius = radius, center = Offset.Zero, style = Stroke(width = 6f))
+    drawCircle(Color(0xFF5AD8FF), radius = radius, center = Offset.Zero,
+        style = Stroke(width = BORDER_WIDTH))
 }
 
 /**
@@ -963,6 +964,15 @@ private fun DrawScope.drawGlowRing(radius: Float, center: Offset, color: Color) 
 
 /** Same three-layer additive approach as [drawGlowRing], for a point light instead of a ring. */
 private fun DrawScope.drawGlowDot(radius: Float, center: Offset, color: Color) {
+    // NEON REMOVED after user testing: the additive wash made the arena hard to read, and
+    // overlapping glows blew out to white exactly where the action was densest.
+    //
+    // One soft, NON-additive halo is kept so a pellet still reads as lit rather than as a
+    // flat sticker — the complaint was the neon bloom, not the existence of light.
+    if (!NEON_ENABLED) {
+        drawCircle(color.copy(alpha = 0.16f), radius = radius * 1.8f, center = center)
+        return
+    }
     drawCircle(color.copy(alpha = 0.10f), radius = radius * 3.2f, center = center,
         blendMode = BlendMode.Plus)
     drawCircle(color.copy(alpha = 0.18f), radius = radius * 2.2f, center = center,
@@ -970,6 +980,21 @@ private fun DrawScope.drawGlowDot(radius: Float, center: Offset, color: Color) {
     drawCircle(color.copy(alpha = 0.30f), radius = radius * 1.4f, center = center,
         blendMode = BlendMode.Plus)
 }
+
+/** Neon/additive bloom, off after user testing. Kept as a flag so it is one line to restore. */
+private const val NEON_ENABLED = false
+
+/** Body outline thickness, per user testing ("make the outline more thick"). */
+private const val OUTLINE_WIDTH = 3.5f
+
+/**
+ * Arena boundary thickness, per user testing ("make the border more thick").
+ *
+ * Still drawn EXACTLY on the lethal radius — a thicker wall must not become a wall whose
+ * visible edge disagrees with the killing surface, which would make every border death feel
+ * unfair. The stroke grows inward and outward equally around that line.
+ */
+private const val BORDER_WIDTH = 14f
 
 private fun DrawScope.drawFood(state: GamesEngine.SnakeState) {
     // Food never moves, so it is drawn from the newest frame with no interpolation.
@@ -1032,8 +1057,16 @@ private fun DrawScope.drawSnake(
     // there to separate the snake from the floor, not to repeat the pattern.
     val skin = SnakeSkins.resolve(snake.skin, color)
     val haloColor = skin.glow ?: color
-    drawPath(path, haloColor.copy(alpha = 0.22f * alpha),
-        style = Stroke(width = width * 2.1f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+    // A TIGHT, thick outline rather than a wide glow. User testing asked for heavier
+    // outlines and no neon; a dark rim separates a snake from the floor and from other
+    // snakes far more legibly than a coloured haze, especially where bodies overlap.
+    drawPath(path, Color(0xFF0A0A14).copy(alpha = 0.85f * alpha),
+        style = Stroke(width = width + OUTLINE_WIDTH * 2f,
+            cap = StrokeCap.Round, join = StrokeJoin.Round))
+    if (NEON_ENABLED) {
+        drawPath(path, haloColor.copy(alpha = 0.22f * alpha),
+            style = Stroke(width = width * 2.1f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+    }
 
     // Banded body (docs/GAMES_SNAKE_VISUALS.md §2.3): walk the trail by arc length and stroke
     // one span per band, rather than one stroke for the whole snake.

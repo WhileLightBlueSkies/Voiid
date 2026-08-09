@@ -50,6 +50,9 @@ interface Food {
 
 const DEG = Math.PI / 180;
 
+/** How close a smaller snake must be before a bot commits to cutting it off. */
+const HUNT_RADIUS = 420;
+
 /**
  * One bot decision. Priority order is survival, then food — deliberately simple.
  *
@@ -141,6 +144,45 @@ export function stepBot(
     sn.th = bestH;
     mem.targetFood = -1;
     return;
+  }
+
+  // --- Hunt ------------------------------------------------------------------------------
+  //
+  // Bots previously only survived and ate, which is why testing read them as passive. A bot
+  // that never threatens you makes the arena feel empty however many are in it.
+  //
+  // The rule is deliberately narrow: cut ahead of a SMALLER snake that is already close.
+  // Intercepting where the target WILL be (rather than where it is) is what makes a cut-off
+  // work at all — steering at a moving target just follows it forever.
+  //
+  // Only smaller targets, because head-to-head kills the shorter snake: a bot that charged
+  // something bigger would be suiciding, which reads as broken rather than as aggressive.
+  var huntTarget: BotSnake | null = null;
+  var huntDist = Infinity;
+  for (const other of all) {
+    if (!other.alive || other.id === sn.id) continue;
+    // A clear size advantage, so the bot wins the exchange it is starting.
+    if (other.mass > sn.mass * 0.85) continue;
+    const d = Math.hypot(other.x - sn.x, other.y - sn.y);
+    if (d < huntDist && d < HUNT_RADIUS) { huntDist = d; huntTarget = other; }
+  }
+
+  if (huntTarget) {
+    // Lead the target by roughly the time it takes to reach it.
+    const lead = Math.min(huntDist / speed, 1.2);
+    const px = huntTarget.x + Math.cos(huntTarget.h) * speed * lead;
+    const py = huntTarget.y + Math.sin(huntTarget.h) * speed * lead;
+
+    // Never chase into the wall, and never chase while ALREADY short of room. A bot that
+    // trades a kill for its own death reads as broken, not as aggressive — and at the higher
+    // speed it now runs at, the wall arrives sooner than it used to.
+    const ownRoom = -arenaSdf(arena, arenaRadius, sn.x, sn.y);
+    if (-arenaSdf(arena, arenaRadius, px, py) > 160 && ownRoom > 220) {
+      sn.th = Math.atan2(py - sn.y, px - sn.x);
+      mem.jitter += dt * 2.6;
+      sn.th += Math.sin(mem.jitter) * 2 * DEG;
+      return;
+    }
   }
 
   // --- Feed -----------------------------------------------------------------------------

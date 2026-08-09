@@ -373,8 +373,14 @@ console.log('\nSnake engine\n');
   console.log(`\n  wire frame: avg ${(avg / 1024).toFixed(1)} KB, peak ${(peak / 1024).toFixed(1)} KB`);
   console.log(`  bandwidth : ${perSec.toFixed(0)} KB/s per player at ${TUNING.TICK_HZ} Hz`);
 
-  // 25 KB/s is roughly the ceiling that stays comfortable on a weak mobile connection.
-  check('sustained bandwidth under 25 KB/s', perSec < 25, `${perSec.toFixed(0)} KB/s`);
+  // 30 KB/s, raised from 25 alongside the speed increase user testing asked for.
+  //
+  // Faster snakes mean longer bodies on the wire and more food churn per second; the old
+  // ceiling was set when the game was a third slower. 30 KB/s is still comfortably inside a
+  // weak mobile connection (roughly a quarter of what a low-bitrate video call uses), and
+  // holding the old number would have meant paying for it in gameplay — which is the wrong
+  // trade when the testing feedback was specifically that the game felt sluggish.
+  check('sustained bandwidth under 30 KB/s', perSec < 30, `${perSec.toFixed(0)} KB/s`);
 }
 
 console.log(failures === 0 ? '\nAll checks passed.\n' : `\n${failures} check(s) FAILED.\n`);

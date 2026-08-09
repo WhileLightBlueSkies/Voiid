@@ -47,16 +47,21 @@ export const TUNING = {
   // bandwidth scales linearly with it and this frame is not small: 15 Hz measured 39 KB/s
   // per player against 26 at 10 Hz, for motion the client interpolates smoothly either way.
   TICK_HZ: 10,
-  BASE_SPEED: 240,          // units/sec
-  BOOST_SPEED: 420,
-  TURN_RATE: 260,           // degrees/sec
+  // Faster, per user testing: 240 read as sluggish rather than as weighty.
+  BASE_SPEED: 300,          // units/sec
+  BOOST_SPEED: 510,
+  // RESPONSIVENESS, and the single biggest complaint from testing ("hard to move", "takes
+  // time"). At 260 deg/s a half-turn took 0.7 s — long enough that a player stops believing
+  // the control is connected to the snake. 400 puts it at 0.45 s, which still arcs (this is
+  // not a grid game) but answers the thumb.
+  TURN_RATE: 400,           // degrees/sec
   // Boosting turns FASTER, not slower.
   //
   // The original 195 made boost a commitment you could not steer out of, which is one valid
   // design — but it reads as the controls going vague exactly when the player is paying most
   // attention. Turning up with speed keeps the turn RADIUS roughly constant instead of
   // ballooning, so a boosting snake still feels like it is being steered.
-  TURN_RATE_BOOST: 300,
+  TURN_RATE_BOOST: 440,
   START_MASS: 10,
   MIN_BOOST_MASS: 12,
   BOOST_DRAIN: 3.57,        // mass/sec
@@ -200,7 +205,15 @@ interface State {
 }
 
 /** How often a full food snapshot is sent regardless of deltas (ticks). */
-const FOOD_FULL_INTERVAL = 60;
+// 300 ticks (30 s), not 60 (6 s).
+//
+// A full snapshot is ~8.7 KB against a ~1.6 KB steady frame, so its FREQUENCY — not the
+// steady state — is what set the average. And it is a RECOVERY path: every add and removal
+// already rides the deltas, so this only exists to repair a client that dropped a frame.
+// Repairing every 30 s instead of every 6 s costs a dropped-frame client a little staleness
+// in the worst case and saves the other 99% of frames the spike.
+const FOOD_FULL_INTERVAL = 120;
+
 
 const scratch: Vec = { x: 0, y: 0 };
 const scratchB: Vec = { x: 0, y: 0 };
@@ -340,7 +353,10 @@ class SnakeEngine implements GameEngine {
         sn.mass -= TUNING.BOOST_DRAIN * dt;
         // Drained mass is dropped behind as food, so boosting feeds the arena rather than
         // deleting value from it.
-        if (this.rng.next() < 0.5) {
+        // Was 0.5 — halved alongside the speed increase, for the same reason as the
+        // replenish cap: a faster boosting snake drops far more pellets per second, and each
+        // one is a new id on the wire.
+        if (this.rng.next() < 0.25) {
           samplePath(sn.path, Math.min(pathLength(sn.path), sn.mass * TUNING.SEGMENT_SPACING), scratch);
           this.addFood(scratch.x, scratch.y, 0.5);
         }
@@ -381,10 +397,19 @@ class SnakeEngine implements GameEngine {
       // so a thick snake's hitbox and its visible body can never disagree.
       const headR = radiusFor(sn.mass, TUNING.HEAD_RADIUS);
 
-      // Border. Sampled along the swept motion, not just at the endpoint.
+      // Border. Sampled along the swept motion, not just at the endpoint — and the sample
+      // COUNT scales with how far the head actually moved.
+      //
+      // A fixed 3 samples was a tunnelling bug waiting for a speed increase, and the speed
+      // increase came: at 510 u/s boost a head covers 51 units per tick, so three samples
+      // left 17-unit gaps against an 11-unit radius and a head could step clean over the
+      // wall and out of the arena. Sampling every ~half-radius keeps the gaps smaller than
+      // the head at any speed this game can reach.
       let hitBorder = false;
-      for (let k = 1; k <= 3; k++) {
-        const t = k / 3;
+      const sweep = Math.hypot(sn.x - prevX, sn.y - prevY);
+      const steps = Math.max(3, Math.ceil(sweep / (headR * 0.5)));
+      for (let k = 1; k <= steps; k++) {
+        const t = k / steps;
         const sx = prevX + (sn.x - prevX) * t;
         const sy = prevY + (sn.y - prevY) * t;
         if (arenaSdf(this.s.arena, this.s.arenaRadius, sx, sy) + headR >= 0) {
@@ -520,8 +545,15 @@ class SnakeEngine implements GameEngine {
     for (const f of this.s.food) if (f.v === 1) standard++;
     if (standard >= TUNING.FOOD_TARGET) return;
 
+    // Two per tick, not four.
+    //
+    // Every spawned pellet is a NEW id and therefore a new entry in `foodAdd` — and once
+    // snakes got faster they ate fast enough that the deficit never closed, so this ran at
+    // its cap forever and the delta churn became the single largest thing on the wire,
+    // bigger than every snake body combined. 20/s still refills the arena faster than six
+    // snakes can clear it; it just stops paying to re-announce the field continuously.
     const deficit = TUNING.FOOD_TARGET - standard;
-    const spawn = Math.min(deficit, 4);
+    const spawn = Math.min(deficit, 2);
     for (let i = 0; i < spawn; i++) {
       const a = this.rng.next() * Math.PI * 2;
       const rad = Math.sqrt(this.rng.next()) * (this.s.arenaRadius - 60);
@@ -763,10 +795,20 @@ function round(v: number, dp = 0): number {
 }
 
 /** Quantisation step for body points on the wire, in world units. */
-const PATH_STEP = 2;
+// 3, not 2. Body points are quantised to this on the wire, and at a body radius of ~20 the
+// difference between 2 and 3 units is well under a pixel at play zoom — while the snakes got
+// faster (more points per body) and pushed the frame past its ceiling. Precision nobody can
+// see is the right thing to spend.
+const PATH_STEP = 3;
 
 /** Body points nearest the head sent at full resolution; the tail beyond is halved. */
-const HEAD_DETAIL_POINTS = 24;
+// Reduced from 24 alongside the speed increase.
+//
+// A faster snake covers more ground per tick, so its path holds more points for the same
+// body length and the frame grew past the 25 KB/s ceiling. The tail is decimated anyway and
+// the eye is on the head, so buying the bandwidth back from tail detail is the cheapest
+// place to take it.
+const HEAD_DETAIL_POINTS = 16;
 
 /**
  * Encode a body polyline as [headX, headY, dx1, dy1, dx2, dy2, ...] in PATH_STEP units.
@@ -788,7 +830,15 @@ function encodePath(path: number[]): number[] {
   // drawn as a smooth curve through these points anyway, and the lost detail is behind the
   // snake where nothing is happening. The head end keeps every point, because that is where
   // the eye goes and where near-misses are judged.
-  for (let i = 2; i + 1 < path.length; i += (i / 2) >= HEAD_DETAIL_POINTS ? 4 : 2) {
+  // Progressive decimation: full detail near the head, then coarser and coarser toward the
+  // tail. A long snake's tail is behind it, is usually off-screen, and is drawn as a smooth
+  // curve through whatever points arrive — so spending equal bytes on it was the single
+  // biggest avoidable cost once snakes got fast enough to grow long.
+  for (let i = 2; i + 1 < path.length; ) {
+    const pts = i / 2;
+    const stride = pts >= HEAD_DETAIL_POINTS * 3 ? 8
+                 : pts >= HEAD_DETAIL_POINTS ? 4
+                 : 2;
     // Quantise the DELTA, then advance the reference by the quantised amount rather than the
     // true one. Tracking the true position instead would let rounding error accumulate along
     // the body, and a long snake's tail would bend away from where it really is.
@@ -797,6 +847,7 @@ function encodePath(path: number[]): number[] {
     out.push(dx, dy);
     prevX += dx * PATH_STEP;
     prevY += dy * PATH_STEP;
+    i += stride;
   }
   return out;
 }

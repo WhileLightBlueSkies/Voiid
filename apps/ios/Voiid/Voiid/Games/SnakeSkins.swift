@@ -82,12 +82,26 @@ enum SnakeSkins {
         SnakeSkin.rgb(r, g, b)
     }
 
-    /// Resolve a skin id, falling back to a single-band skin in the snake's palette colour.
+    /// Resolve a skin id, falling back to a CHECKERED skin in the snake's palette colour.
     ///
-    /// The fallback is what lets an old client meet a new skin without breaking: it still
-    /// draws a snake, just a plain one.
+    /// The fallback is what lets an old client meet a new skin without breaking — and it is
+    /// checkered rather than solid so an unknown skin still reads as a snake with segments
+    /// rather than as a featureless tube.
     static func resolve(_ id: String?, fallback: SIMD4<Float>) -> SnakeSkin {
         if let id, let skin = catalogue[id] { return skin }
-        return SnakeSkin(bands: [fallback], bandLength: 14, glow: nil, face: nil)
+        return checkered(fallback)
+    }
+
+    /// A single colour turned into a box-box pattern.
+    ///
+    /// User testing asked for the checker "all ways through" even on a plain snake — a solid
+    /// body reads as a featureless tube and gives the eye nothing to judge length or speed
+    /// against. Alternating the colour with a darker shade of ITSELF keeps it recognisably
+    /// one colour (which is the point of picking it) while still segmenting, and it is what
+    /// lets a custom picked colour work without its own catalogue entry.
+    static func checkered(_ base: SIMD4<Float>) -> SnakeSkin {
+        SnakeSkin(
+            bands: [base, SIMD4(base.x * 0.72, base.y * 0.72, base.z * 0.72, base.w)],
+            bandLength: 13, glow: nil, face: nil)
     }
 }

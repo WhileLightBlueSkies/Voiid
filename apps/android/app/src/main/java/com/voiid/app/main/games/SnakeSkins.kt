@@ -72,11 +72,31 @@ object SnakeSkins {
     )
 
     /**
-     * Resolve a skin id, falling back to a single-band skin in the snake's palette colour.
+     * Resolve a skin id, falling back to a CHECKERED skin in the snake's palette colour.
      *
-     * The fallback is what lets an old client meet a new skin without breaking: it still draws
-     * a snake, just a plain one.
+     * The fallback is what lets an old client meet a new skin without breaking — and it is
+     * checkered rather than solid so an unknown skin still reads as a snake with segments
+     * rather than as a featureless tube.
      */
     fun resolve(id: String?, fallback: Color): SnakeSkin =
-        catalogue[id] ?: SnakeSkin(bands = listOf(fallback), bandLength = 14f)
+        catalogue[id] ?: checkered(fallback)
+
+    /**
+     * A single colour turned into a box-box pattern.
+     *
+     * User testing asked for the checker "all ways through" even on a plain snake — a solid
+     * body reads as a featureless tube and gives the eye nothing to judge length or speed
+     * against. Alternating the colour with a darker shade of ITSELF keeps it recognisably one
+     * colour (which is the point of picking it) while still segmenting.
+     *
+     * This is also what makes a custom picked colour work without needing its own catalogue
+     * entry: any colour becomes a two-band skin.
+     */
+    fun checkered(base: Color): SnakeSkin = SnakeSkin(
+        bands = listOf(base, shade(base, 0.72f)),
+        bandLength = 13f,
+    )
+
+    private fun shade(c: Color, f: Float): Color =
+        Color(red = c.red * f, green = c.green * f, blue = c.blue * f, alpha = c.alpha)
 }

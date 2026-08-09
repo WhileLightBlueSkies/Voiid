@@ -553,6 +553,10 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     /// to black first. Uniforms are scaled to the bloom texture's own (half) resolution so
     /// world-to-clip math still lands correctly at the smaller size.
     private func renderBloomSource(commands: MTLCommandBuffer, uniforms: inout Uniforms) {
+        // Off after user testing: the neon wash made the arena hard to read. Bailing here
+        // skips the blur passes entirely rather than rendering into a texture that is then
+        // composited at zero strength.
+        guard Self.bloomEnabled else { return }
         guard let bloomTexture, bloomSize.width > 0 else { return }
 
         let pass = MTLRenderPassDescriptor()
@@ -613,6 +617,7 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     /// quad is a textured quad) but through `compositePipeline`, which blends additively
     /// instead of the sprite pass's straight alpha.
     private func compositeBloom(encoder: MTLRenderCommandEncoder) {
+        guard Self.bloomEnabled else { return }
         guard let bloomBlurred, compositePipeline != nil, viewSize.width > 0 else { return }
 
         // One instance, sized and centred to cover the whole viewport in WORLD space at the
@@ -643,7 +648,19 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     /// How strongly the blurred glow is added back over the main pass. Low: this is meant to
     /// be felt as "these things emit light", not to wash the arena out. Tuned by eye against
     /// the existing palette rather than derived from anything.
-    private static let bloomIntensity: Float = 0.55
+    /// Bloom strength. ZERO — the neon look was removed after user testing.
+    ///
+    /// The pipeline is left intact rather than deleted: the effect is a real one and turning
+    /// it back on is a one-line change, whereas re-deriving the blur passes would not be.
+    /// `bloomEnabled` short-circuits the passes entirely so a disabled effect costs nothing
+    /// per frame rather than rendering into a texture nobody composites.
+    private static let bloomIntensity: Float = 0
+    private static let bloomEnabled = false
+
+    /// Arena boundary half-thickness, per user testing ("make the border more thick").
+    private static let borderWidth: Float = 7
+    /// Body outline thickness, per user testing ("make the outline more thick").
+    private static let outlineWidth: Float = 3.5
 
     /// PASS 5: darken the frame by `impact.desaturation`, straight-alpha, near-black with a
     /// faint cool tint. See the call site's comment for why this stands in for a true
@@ -1011,8 +1028,10 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
             colour: SIMD4(0.35, 0.85, 1.0, 0.10)))
 
         // The edge as a thin ring: an outer disc with a slightly smaller floor disc on top.
+        // Thicker per user testing. Still centred on the lethal radius: a heavier wall must
+        // not become one whose visible edge disagrees with the killing surface.
         let edge = CircleInstance(
-            centre: .zero, radius: Float(radius + 8), softness: 0.02,
+            centre: .zero, radius: Float(radius) + Self.borderWidth, softness: 0.02,
             colour: SIMD4(0.35, 0.85, 1.0, 0.85))
         circles.append(edge)
         // This ring is the one thing in the whole arena that is BOTH lethal and constantly
@@ -1020,7 +1039,7 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         // now read as a rim of light around the play field rather than a flat cyan stroke.
         bloomCircles.append(edge)
         circles.append(CircleInstance(
-            centre: .zero, radius: Float(radius - 2), softness: 0,
+            centre: .zero, radius: Float(radius) - Self.borderWidth, softness: 0,
             colour: SIMD4(0.055, 0.05, 0.13, 1)))
     }
 
@@ -1066,8 +1085,15 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         // separates the snake from the floor, it does not repeat the pattern.
         let skin = SnakeSkins.resolve(snake.skin, fallback: c)
         let halo = skin.glow ?? c
-        appendRibbon(points: points, width: width * 1.7,
-                     colour: SIMD4(halo.x, halo.y, halo.z, 0.20 * alpha))
+        // A TIGHT, thick outline rather than a wide glow. User testing asked for heavier
+        // outlines and no neon; a dark rim separates a snake from the floor and from other
+        // snakes far more legibly than a coloured haze, especially where bodies overlap.
+        appendRibbon(points: points, width: width + Self.outlineWidth * 2,
+                     colour: SIMD4(0.04, 0.04, 0.08, 0.85 * alpha))
+        if Self.bloomEnabled {
+            appendRibbon(points: points, width: width * 1.7,
+                         colour: SIMD4(halo.x, halo.y, halo.z, 0.20 * alpha))
+        }
 
         // Banded body (docs/GAMES_SNAKE_VISUALS.md §2.3): one span per band along the arc,
         // rather than one stroke for the whole snake.
