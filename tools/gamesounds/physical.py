@@ -5,12 +5,18 @@ Voiid game sound generator — the PHYSICAL half (docs/games/SOUND_DESIGN.md).
 `synth.py` renders the abstract palette: UI ticks, and all of Snake, which is a neon arcade
 game with no real-world referent and is deliberately left retro. THIS file renders the
 sounds that model real objects — a leather slap, chalk on slate, a ball into stumps, willow
-on leather, and a stadium — because those are noise processes and resonating bodies, and an
-oscillator vocabulary cannot make one.
+on leather — because those are noise processes and resonating bodies, and an oscillator
+vocabulary cannot make one.
 
-Everything here is SYNTHESISED FROM PHYSICAL MODELS, not sampled. No third-party audio is
-downloaded, sourced or shipped, which is the whole reason `LICENSES.md` next to this file is
-short. See that file before adding anything from outside.
+THE CROWD IS NO LONGER RENDERED HERE. It is the one thing this approach lost: an impact is a
+body ringing and models convincingly, a stadium is thousands of real voices in a real room and
+filtered noise reads as fake however carefully the bands are shaped. `crowd_import.py` converts
+real recordings instead. The `render_crowd_*` functions below are kept as a fallback, and
+deliberately left OUT of CATALOGUE so running this file cannot overwrite the recorded assets.
+
+Everything this file still emits is SYNTHESISED FROM PHYSICAL MODELS, not sampled. See
+`LICENSES.md` before adding anything from outside — the crowd is the only sourced audio in the
+repo and it is not yet cleared for release.
 
 THE ONE HARD RULE: every asset is MONO. GameAudio.swift wires its entire graph mono, and a
 stereo buffer scheduled onto a mono bus is an ObjC NSException that `try?` cannot catch — the
@@ -612,14 +618,17 @@ CATALOGUE: list[Physical] = [
     Physical("bat_block", "cricket", render_bat_block, highpass_80=False,
              note="Dot ball. Deliberately anticlimactic."),
 
-    Physical("crowd_base", "cricket", render_crowd_base, lufs=LUFS_BED,
-             max_s=CROWD_BED_S, aac_only=True,
-             note="22 s seamless bed. Gain-ramped by the client, never retriggered."),
-    Physical("crowd_cheer", "cricket", render_crowd_cheer, max_s=1.8),
-    Physical("crowd_roar", "cricket", render_crowd_roar, max_s=2.3),
-    Physical("crowd_gasp", "cricket", render_crowd_gasp, max_s=1.2),
-    Physical("crowd_groan", "cricket", render_crowd_groan, max_s=1.9),
-    Physical("crowd_applause", "cricket", render_crowd_applause, max_s=2.2),
+    # THE CROWD IS NOT RENDERED HERE ANY MORE — see crowd_import.py.
+    #
+    # The synthesised bed was the one place this approach genuinely lost. Impacts and
+    # resonating bodies model convincingly; a stadium is thousands of real voices in a real
+    # room, and filtered noise reads as fake however carefully the bands are shaped. It was
+    # judged too fake to ship (2026-08-10) and replaced with real recordings.
+    #
+    # The render functions below are KEPT, not deleted: they are the fallback if the recordings
+    # ever have to be pulled for licensing (see LICENSES.md — the current sources are not
+    # cleared for release), and re-adding them here is a three-line change. They are simply not
+    # in the catalogue, so running this file cannot overwrite the recorded assets.
 
     Physical("hand_pump", "rps", render_hand_pump),
     Physical("hand_reveal", "rps", render_hand_reveal),
