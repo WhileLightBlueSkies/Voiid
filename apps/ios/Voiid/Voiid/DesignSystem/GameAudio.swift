@@ -23,6 +23,40 @@ import AVFoundation
 final class GameAudio {
     static let shared = GameAudio()
 
+    // MARK: - Shared vocabulary (docs/games/SOUND_DESIGN.md §3)
+
+    /// THE ONE SHARED SOUND. Played unmodified at the moment a player's attempt is
+    /// intercepted or ended by the opponent, in all four games:
+    ///
+    ///   Hand Cricket    a wicket falls — the pick was matched
+    ///   Tic Tac Toe     your winning threat gets blocked
+    ///   RPS             your throw is countered
+    ///   Snake           you are killed by another snake (NOT by the border)
+    ///
+    /// A shared sound across four games builds a vocabulary: the player learns in one game
+    /// what it means and it carries. Four unrelated "you lost that one" sounds teach nothing
+    /// and make the games feel like four apps stapled to a tab.
+    ///
+    /// PLAY IT UNMODIFIED — no per-game pitch offset. The varispeed exists for Snake's `eat`;
+    /// using it here would fork the identity, which is the one thing that destroys the point.
+    /// Gain may vary per game so it sits correctly in each mix; that is mastering, not
+    /// identity.
+    ///
+    /// The file is `catch_shared`, not `catch`: Android turns resource names into Java fields
+    /// and `R.raw.catch` does not compile — aapt2 rejects the name outright. One file, one
+    /// name, spelled around a language keyword.
+    static let catchShared = "catch_shared"
+
+    /// The three X variants — TWO STROKES each, with an audible gap.
+    /// Picked at random per placement by `playAny`.
+    static let chalkX = ["chalk_x_1", "chalk_x_2", "chalk_x_3"]
+    /// The three O variants — ONE CONTINUOUS SWEEP each.
+    ///
+    /// That X and O sound structurally different is the point of the chalk set, not a detail:
+    /// a player learns to hear whose turn resolved without looking, which is an accessibility
+    /// win as much as a texture one.
+    static let chalkO = ["chalk_o_1", "chalk_o_2", "chalk_o_3"]
+
     /// Persisted mute toggle (docs/GAMES_AUDIO.md §12). Default on — sound is part of the
     /// product, not an opt-in.
     static var isMuted: Bool {
@@ -67,6 +101,10 @@ final class GameAudio {
     ]
 
     private var configuredSession = false
+
+    /// Bumped by `stopAll`, so a delayed one-shot scheduled before a match exit does not fire
+    /// after it. See `play(_:after:)`.
+    private var generation: UInt64 = 0
 
     /// The format every generated sound actually is (tools/gamesounds/synth.py: 16-bit mono
     /// WAV, 44.1kHz — docs/GAMES_AUDIO.md §6). Connecting the graph with `format: nil` wires
@@ -156,6 +194,35 @@ final class GameAudio {
         voice.player.play()
     }
 
+    /// Play `name` after `delay` seconds.
+    ///
+    /// Exists for ONE reason worth stating: a real crowd reacts *after* the event. The wicket
+    /// stack is `catch` + `wicket_timber` at 0 ms and `crowd_roar` at 120 ms
+    /// (docs/games/SOUND_DESIGN.md §4.1), and that delay is what sells it — fired together
+    /// the three read as one mushy noise and the impact is lost entirely.
+    ///
+    /// The mute/call checks deliberately run when the sound FIRES, not when it is scheduled:
+    /// a call that starts inside the delay window must silence the reaction, and `play`
+    /// already makes exactly that check.
+    func play(_ name: String, after delay: TimeInterval, pitch: Float = 1.0, gain: Float = 1.0) {
+        let scheduled = generation
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.generation == scheduled else { return }
+            self.play(name, pitch: pitch, gain: gain)
+        }
+    }
+
+    /// Pick one of `names` at random and play it.
+    ///
+    /// For sounds that fire repeatedly in quick succession — chalk marks land up to nine
+    /// times in thirty seconds, the most repetition-exposed sound in the app. Chalk is never
+    /// identical twice, and a single file plus pitch jitter still reads as one file; three
+    /// genuinely different scrapes do not. `play`'s own ±3% jitter applies on top.
+    func playAny(_ names: [String], gain: Float = 1.0) {
+        guard let name = names.randomElement() else { return }
+        play(name, gain: gain)
+    }
+
     /// Start (or update the gain of) a looping sound. Idempotent for the SAME name — calling
     /// this every frame while a state is true (e.g. boost held) does not restart the loop,
     /// only adjusts gain, so a caller can call it unconditionally rather than tracking its
@@ -186,7 +253,12 @@ final class GameAudio {
 
     /// Stop everything immediately — used on match exit so a lingering loop doesn't keep
     /// playing into the next screen.
+    ///
+    /// `generation` also invalidates any pending delayed one-shot: a wicket's crowd reaction
+    /// landing 120 ms after the player left the match is exactly what this call exists to
+    /// make impossible.
     func stopAll() {
+        generation &+= 1
         for voice in voices { voice.player.stop() }
         loopVoice?.player.stop()
         currentLoopName = nil
@@ -250,15 +322,23 @@ final class GameAudio {
     // MARK: - Loading
 
     private static func loadBuffer(named name: String) -> AVAudioPCMBuffer? {
-        guard let url = Bundle.main.url(forResource: name, withExtension: "wav") else { return nil }
+        // WAV FIRST, THEN .m4a. docs/GAMES_AUDIO.md §6's format table has always said
+        // one-shots over 500 ms ship as AAC, and this only ever looked for .wav — so the
+        // long sounds' .m4a copies sat in the bundle unread, and the crowd bed (22 s, AAC
+        // only, because as a WAV it is 1.9 MB against a 4 MB budget) could not load at all.
+        // Order matters: .wav wins where both exist, which keeps every previously-loading
+        // sound loading from exactly the same file it did before.
+        guard let url = Bundle.main.url(forResource: name, withExtension: "wav")
+                ?? Bundle.main.url(forResource: name, withExtension: "m4a") else { return nil }
         guard let file = try? AVAudioFile(forReading: url) else { return nil }
 
         // MUST match the graph's wired format exactly (pcmFormat above) or scheduling this
         // buffer onto a voice is the crash this whole property exists to prevent — see
-        // pcmFormat's doc comment. Every file synth.py generates is mono/44.1kHz by
-        // construction, so this should never fire; it exists so a future sound generated at
-        // the wrong rate fails LOUDLY as "silent, sound missing" instead of taking the whole
-        // app down the next time GameAudio.play() is called.
+        // pcmFormat's doc comment. Every file synth.py and physical.py generate is
+        // mono/44.1kHz by construction and tools/gamesounds/verify.py asserts it across both
+        // platforms' asset folders, so this should never fire; it exists so a future sound
+        // generated at the wrong rate fails LOUDLY as "silent, sound missing" instead of
+        // taking the whole app down the next time GameAudio.play() is called.
         guard file.processingFormat.channelCount == pcmFormat.channelCount,
               file.processingFormat.sampleRate == pcmFormat.sampleRate else {
             assertionFailure(
@@ -278,21 +358,36 @@ final class GameAudio {
         }
     }
 
-    /// File-name groups per game, matching tools/gamesounds/synth.py's catalogue.
+    /// File-name groups per game, matching the catalogues in tools/gamesounds/synth.py
+    /// (abstract) and tools/gamesounds/physical.py (physical). Android's identical table is
+    /// in GameAudio.kt — the two must not drift, or a sound plays on one platform only.
+    ///
+    /// `catch` is in EVERY game's list on purpose: it is the one shared sound
+    /// (docs/games/SOUND_DESIGN.md §3), played unmodified at the moment a player's attempt is
+    /// intercepted, and a vocabulary that only exists in three of the four games teaches
+    /// nothing.
     private static func soundNames(for game: String) -> [String] {
         switch game {
         case "snake":
             return ["eat_1", "eat_2", "eat_3", "eat_4", "eat_big",
                     "boost_start", "boost_loop", "boost_end",
-                    "kill", "death", "spawn", "border_warn", "rank_up", "match_end"]
+                    "kill", "death", "spawn", "border_warn", "rank_up", "match_end",
+                    Self.catchShared]
         case "tictactoe":
-            return ["mark_x", "mark_o", "mark_invalid", "win_line", "draw"]
+            return ["chalk_x_1", "chalk_x_2", "chalk_x_3",
+                    "chalk_o_1", "chalk_o_2", "chalk_o_3",
+                    "chalk_line", "chalk_stub", "chalk_erase",
+                    "mark_invalid", "win_line", "draw", Self.catchShared]
         case "rps":
-            return ["countdown_1", "countdown_2", "countdown_3", "reveal",
-                    "round_win", "round_lose", "round_tie"]
+            return ["countdown_1", "countdown_2", "countdown_3",
+                    "hand_pump", "hand_reveal", "reveal",
+                    "round_win", "round_lose", "round_tie", Self.catchShared]
         case "cricket":
-            return ["pick", "runs_1", "runs_2", "runs_3", "runs_4", "runs_5", "runs_6",
-                    "four", "six", "wicket", "innings"]
+            return ["pick", "reveal", "innings",
+                    "bat_soft", "bat_crack", "bat_block",
+                    "wicket_timber", Self.catchShared,
+                    "crowd_base", "crowd_cheer", "crowd_roar", "crowd_gasp",
+                    "crowd_groan", "crowd_applause"]
         case "ui":
             return ["tap", "sheet_open", "sheet_close", "match_found", "invite_arrive", "error"]
         default:

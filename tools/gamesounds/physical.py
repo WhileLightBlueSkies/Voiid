@@ -575,8 +575,21 @@ def render_hand_reveal(rng: random.Random) -> list[float]:
 # Catalogue
 # =======================================================================================
 
+#: THE SHARED SOUND IS FILED AS `catch_shared`, NOT `catch`.
+#:
+#: SOUND_DESIGN.md §3 asks for one file called `catch.wav` and is right about everything that
+#: matters — one file, one name, played unmodified — but `catch` cannot BE the name: Android
+#: resource identifiers become Java fields, and `R.raw.catch` is a syntax error. aapt2 rejects
+#: it outright ("catch is not a valid resource name (reserved Java keyword)"), so the build
+#: fails rather than degrading.
+#:
+#: The rule the doc is actually protecting is "the moment it forks, the vocabulary is gone" —
+#: no `catch_cricket` / `catch_snake`. One file under one name, used identically everywhere,
+#: satisfies that completely. The name is just spelled around a language keyword.
+CATCH = "catch_shared"
+
 CATALOGUE: list[Physical] = [
-    Physical("catch", "shared", render_catch,
+    Physical(CATCH, "shared", render_catch,
              note="The shared sound. Played unmodified in all four games (SOUND_DESIGN §3)."),
 
     *[Physical(f"chalk_x_{i+1}", "tictactoe", render_chalk_x(i),
