@@ -610,14 +610,14 @@ private class CameraMemory {
  * sees where they are going instead of where they are" (GAMES_ANIMATION.md §5.2). Returns
  * Offset.Zero for a dead/absent player.
  *
- * Speed constants (240/420) are the server's BASE_SPEED/BOOST_SPEED from
+ * Speed constants (300/510) are the server's BASE_SPEED/BOOST_SPEED from
  * backend/games/src/engine/snake/index.ts TUNING, duplicated here as a presentation-only
  * value — look-ahead distance affects nothing about the simulation, so a guess that is
  * slightly stale after a tuning change only makes the offset a little short or long.
  */
 private fun computeLookAhead(mine: GamesEngine.SnakeState.Snake?, heading: Double?): Offset {
     if (mine == null || !mine.alive || heading == null) return Offset.Zero
-    val speed = if (mine.boosting) 420.0 else 240.0
+    val speed = if (mine.boosting) 510.0 else 300.0
     val distance = minOf(speed * 0.35, 140.0)   // 0.35s of travel, capped at 140 world units
     return Offset((cos(heading) * distance).toFloat(), (sin(heading) * distance).toFloat())
 }
@@ -1374,12 +1374,51 @@ private class TrailStore {
         wasAlive.keys.retainAll(seen)
     }
 
+    /**
+     * Build a trail from a server path, RESAMPLED to a fixed fine spacing.
+     *
+     * The server decimates long tails — points near the tail arrive 24+ units apart, far
+     * wider than a colour band. Seeding directly from that made long snakes render as a solid
+     * tube while short ones banded correctly, because the band walk cut several bands inside
+     * one straight segment and their round caps merged together. Two snakes wearing the same
+     * skin looked like two different skins.
+     *
+     * Resampling first means band geometry no longer depends on how aggressively the server
+     * compressed that particular snake.
+     */
     private fun seedFrom(
         sn: GamesEngine.SnakeState.Snake,
         head: Offset,
-    ): MutableList<Offset> =
-        if (sn.path.isEmpty()) mutableListOf(head)
-        else sn.path.mapTo(ArrayList(sn.path.size)) { Offset(it.x.toFloat(), it.y.toFloat()) }
+    ): MutableList<Offset> {
+        val path = sn.path
+        if (path.size < 2) return mutableListOf(head)
+
+        val out = ArrayList<Offset>(path.size * 2)
+        var cursor = Offset(path[0].x.toFloat(), path[0].y.toFloat())
+        out.add(cursor)
+        var i = 1
+
+        while (i < path.size) {
+            val target = Offset(path[i].x.toFloat(), path[i].y.toFloat())
+            val segLen = hypot(target.x - cursor.x, target.y - cursor.y)
+            if (segLen < 1e-6f) { i++; continue }
+
+            if (segLen <= RESAMPLE_STEP) {
+                out.add(target)
+                cursor = target
+                i++
+            } else {
+                // Walk along this segment in fixed steps rather than jumping to its end.
+                val t = RESAMPLE_STEP / segLen
+                cursor = Offset(
+                    cursor.x + (target.x - cursor.x) * t,
+                    cursor.y + (target.y - cursor.y) * t,
+                )
+                out.add(cursor)
+            }
+        }
+        return out
+    }
 
     /**
      * Trim to an exact arc length, cutting THROUGH the final segment.
@@ -1414,6 +1453,12 @@ private class TrailStore {
         const val MIN_STEP = 1.5f
         /** Head-vs-trail divergence beyond which the local trail is wrong and gets re-seeded. */
         const val RESYNC_DISTANCE = 60f
+
+        /**
+         * Trail resolution. Must be comfortably FINER than the narrowest band (10 units on
+         * the candy skin), or a band can span an entire segment and the pattern collapses.
+         */
+        const val RESAMPLE_STEP = 4f
     }
 }
 

@@ -941,7 +941,7 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         // as a presentation constant rather than threaded through the wire, because look-ahead
         // distance affects nothing about the simulation and a slightly-wrong guess at boost
         // speed only makes the offset a little short or long, never incorrect gameplay.
-        let speed = mine.boosting ? 420.0 : 240.0
+        let speed = mine.boosting ? 510.0 : 300.0
         // Distance scales with speed but caps out — otherwise a long boost would push the
         // camera so far ahead the player's own snake nears the screen edge.
         let distance = min(speed * Self.lookAheadSeconds, Self.lookAheadMax)
@@ -1023,9 +1023,10 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
                 uvSize: SIMD2(tiles, tiles * Float(hexTexture.width) / Float(hexTexture.height)),
                 tint: SIMD4(1, 1, 1, 1)))
         }
-        circles.append(CircleInstance(
-            centre: .zero, radius: Float(radius), softness: 0.35,
-            colour: SIMD4(0.35, 0.85, 1.0, 0.10)))
+        // NO full-arena wash. This used to be a soft cyan disc at the FULL arena radius,
+        // which tinted the entire play field blue and washed out the floor, the hex lattice
+        // and every snake colour — it is why iOS looked nothing like Android, which never had
+        // an equivalent layer. The boundary glow belongs at the boundary, not over the arena.
 
         // The edge as a thin ring: an outer disc with a slightly smaller floor disc on top.
         // Thicker per user testing. Still centred on the lethal radius: a heavier wall must
@@ -1034,10 +1035,9 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
             centre: .zero, radius: Float(radius) + Self.borderWidth, softness: 0.02,
             colour: SIMD4(0.35, 0.85, 1.0, 0.85))
         circles.append(edge)
-        // This ring is the one thing in the whole arena that is BOTH lethal and constantly
-        // on screen, so it is the clearest place to prove bloom is doing something: it should
-        // now read as a rim of light around the play field rather than a flat cyan stroke.
-        bloomCircles.append(edge)
+        // Bloom is off (see `bloomEnabled`), so the edge no longer feeds it. Leaving this
+        // unconditional would have queued work for a pass that never composites.
+        if Self.bloomEnabled { bloomCircles.append(edge) }
         circles.append(CircleInstance(
             centre: .zero, radius: Float(radius) - Self.borderWidth, softness: 0,
             colour: SIMD4(0.055, 0.05, 0.13, 1)))
@@ -1059,8 +1059,11 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
             // as flat dots. The halo (not the core) also feeds bloom — the core stays a crisp
             // dot so eating still reads as picking up something precise, while the halo
             // becomes the soft light spilling off it.
-            let halo = CircleInstance(centre: centre, radius: r * 2.4,
-                                      softness: 0.75,
+            // 1.8x, matching Android. At 2.4 with a soft edge the halos overlapped across a
+            // 260-pellet field and the whole floor read as hazy — the two platforms have to
+            // agree here or the same arena looks like two different games.
+            let halo = CircleInstance(centre: centre, radius: r * 1.8,
+                                      softness: 0.6,
                                       colour: SIMD4(colour.x, colour.y, colour.z, 0.22))
             circles.append(halo)
             bloomCircles.append(halo)

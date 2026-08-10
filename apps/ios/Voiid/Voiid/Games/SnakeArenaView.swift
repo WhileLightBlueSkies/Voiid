@@ -319,11 +319,22 @@ struct SnakeArenaView: View {
 /// FIXED RATHER THAN FLOATING, deliberately: a fixed ring gives the thumb a constant physical
 /// reference it can find without looking, which is exactly what was missing when steering was
 /// "toward my finger relative to screen centre".
+/// Carries the joystick hit area's measured size out of its own layout.
+private struct JoystickSizeKey: PreferenceKey {
+    static var defaultValue: CGSize = .zero
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        let next = nextValue()
+        if next != .zero { value = next }
+    }
+}
+
 struct VirtualJoystick: View {
     @Binding var vector: CGVector
     let onChange: (CGVector) -> Void
 
     @State private var knob: CGSize = .zero
+    /// The gesture area's real size, measured rather than assumed.
+    @State private var hitSize: CGSize = .zero
 
     private static let radius: CGFloat = 62
     private static let knobRadius: CGFloat = 27
@@ -352,14 +363,26 @@ struct VirtualJoystick: View {
         // unresponsive.
         .frame(width: Self.radius * 2.8, height: Self.radius * 2.8)
         .contentShape(Circle())
+        // MEASURE the hit area rather than assuming it. `location` is reported in the
+        // coordinate space of the view the gesture is attached to, and hardcoding the centre
+        // as `radius * 1.4` silently assumed that space matched the frame above it. When it
+        // did not, every touch was measured from the wrong origin — which is what made the
+        // stick feel reversed on iOS while Android (which measures `size.width`) was correct.
+        .background(
+            GeometryReader { geo in
+                Color.clear.preference(key: JoystickSizeKey.self, value: geo.size)
+            }
+        )
+        .onPreferenceChange(JoystickSizeKey.self) { hitSize = $0 }
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { value in
-                    // Measured from the ring's own centre, because the view is centred on it
-                    // and `translation` alone would ignore where inside the hit area the
-                    // touch began.
-                    let dx = value.location.x - Self.radius * 1.4
-                    let dy = value.location.y - Self.radius * 1.4
+                    // Measured from the MEASURED centre of the hit area.
+                    let cx = hitSize.width / 2
+                    let cy = hitSize.height / 2
+                    guard cx > 0, cy > 0 else { return }
+                    let dx = value.location.x - cx
+                    let dy = value.location.y - cy
                     let dist = hypot(dx, dy)
 
                     // Clamp to the rim: normalize and scale by R past the edge.
@@ -431,14 +454,14 @@ final class TrailStore {
             // Seed from the server path on first sight or after a respawn — a trail has to
             // start as a whole body, not grow from a dot over the first second.
             if trail.isEmpty || respawned {
-                trails[snake.id] = snake.path.isEmpty ? [head] : snake.path
+                trails[snake.id] = Self.seed(from: snake.path, head: head)
                 continue
             }
 
             // Re-sync if the local trail has drifted from where the server says the head is.
             if let first = trail.first,
                hypot(head.x - first.x, head.y - first.y) > Self.resyncDistance {
-                trails[snake.id] = snake.path.isEmpty ? [head] : snake.path
+                trails[snake.id] = Self.seed(from: snake.path, head: head)
                 continue
             }
 
@@ -460,6 +483,48 @@ final class TrailStore {
             wasAlive.removeValue(forKey: id)
         }
     }
+
+    /// Build a trail from a server path, RESAMPLED to a fixed fine spacing.
+    ///
+    /// The server decimates long tails — points near the tail arrive 24+ units apart, far
+    /// wider than a colour band. Seeding a trail directly from that made long snakes render
+    /// as a solid tube while short ones banded correctly, because the band walk was cutting
+    /// several bands inside one straight segment and their round caps merged into each other.
+    /// Two snakes with the same skin looked like two different skins.
+    ///
+    /// Resampling first means band geometry no longer depends on how aggressively the server
+    /// compressed that particular snake.
+    private static func seed(from path: [CGPoint], head: CGPoint) -> [CGPoint] {
+        guard path.count >= 2 else { return [head] }
+
+        var out: [CGPoint] = [path[0]]
+        var cursor = path[0]
+        var i = 1
+
+        while i < path.count {
+            let target = path[i]
+            let segLen = hypot(target.x - cursor.x, target.y - cursor.y)
+            if segLen < 1e-6 { i += 1; continue }
+
+            if segLen <= resampleStep {
+                out.append(target)
+                cursor = target
+                i += 1
+            } else {
+                // Walk along this segment in fixed steps rather than jumping to its end.
+                let t = resampleStep / segLen
+                let next = CGPoint(x: cursor.x + (target.x - cursor.x) * t,
+                                   y: cursor.y + (target.y - cursor.y) * t)
+                out.append(next)
+                cursor = next
+            }
+        }
+        return out
+    }
+
+    /// Trail resolution. Must be comfortably FINER than the narrowest band (10 units on the
+    /// candy skin), or a band can span an entire segment and the pattern collapses.
+    private static let resampleStep: Double = 4
 
     /// Trim to an exact arc length, cutting THROUGH the final segment.
     ///
