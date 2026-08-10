@@ -460,22 +460,24 @@ private fun labelFor(snake: GamesEngine.SnakeState.Snake, me: String?): String =
 /**
  * How far behind the newest frame to render, in seconds.
  *
- * Lowered from 250 ms now that the LOCAL snake is predicted rather than interpolated.
- *
- * That delay existed to stop the jitter from a dry buffer, and it worked — but it applied to
- * everything, including the one snake the player is actually steering, which is why the
- * controls felt remote. With prediction, this number only affects OTHER snakes and the food
- * field, where a little staleness is invisible and a stall is not.
- *
  * TWO AND A HALF ticks, not one and a half.
  *
  * At 1.5 ticks the buffer ran dry on any frame that arrived even slightly late — and on a
  * mobile network that is most of them — so the render clock repeatedly caught up with the
- * newest frame, held, and jumped. That hold-jump cycle IS the jitter. Buying an extra tick of
- * delay costs 100 ms of visual lag and removes the stall almost entirely, which is a trade
- * strongly worth making for a game steered by a stick rather than aimed.
+ * newest frame, held, and jumped. That hold-jump cycle IS the jitter. 2.5 ticks means a frame
+ * can be 150 ms late before the buffer runs dry instead of 50 ms.
+ *
+ * THIS WAS CUT TO 0.15 ONCE, AND THE ARGUMENT FOR CUTTING IT WAS BACKWARDS. The reasoning was
+ * that the delay made the controls feel remote — true when it was written, because back then it
+ * applied to every snake including the one the player is steering. But the LOCAL snake is
+ * predicted now, not interpolated (see [SnakePredictor]): this constant no longer touches it at
+ * all. Prediction did not make a smaller delay affordable, it made a LARGER one free. What is
+ * left behind the clock is other snakes and the food field, where 100 ms of extra staleness is
+ * invisible and a stall is not.
+ *
+ * Identical to iOS `SnakeMetalView.interpDelay`.
  */
-private const val INTERP_DELAY = 0.15
+private const val INTERP_DELAY = 0.25   // 2.5 ticks at tickHz 10
 
 /** A gap longer than this ends an eating streak — grazing stays flat, real runs climb. */
 private const val EAT_STREAK_GAP_MS = 600L
