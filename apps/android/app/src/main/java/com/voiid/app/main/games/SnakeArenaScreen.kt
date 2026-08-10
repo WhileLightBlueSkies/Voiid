@@ -152,6 +152,12 @@ fun SnakeArenaScreen(
 
     DisposableEffect(Unit) {
         GameAudio.preload(context, "snake")
+        // Read once per match rather than per frame — it is a Settings lookup, and a player
+        // does not toggle reduce-motion mid-arena. Both consumers are set from the one read so
+        // the shake and the hitstop can never disagree about it.
+        val reduce = ReduceMotion.isEnabled(context)
+        camera.reduceMotion = reduce
+        impact.reduceMotion = reduce
         onDispose { GameAudio.release("snake") }
     }
 
@@ -640,7 +646,21 @@ private class ImpactTimeline {
         private const val DEATH_SLOW_DURATION = 0.5f    // matches GAMES_AUDIO §8.7's death envelope
         private const val DEATH_SLOW_FACTOR = 0.3f       // "slow-mo to 0.3x" — doc's exact number
         private const val DEATH_DESATURATE_DURATION = 0.4f
+        private const val FLASH_DURATION = 0.20f
     }
+
+    /**
+     * REDUCE MOTION (docs/games/CROSS_CUTTING.md §13).
+     *
+     * Hitstop and screen shake shipped without an opt-out, and for a motion-sensitive player
+     * that is not a rough edge — it is a game they cannot play at all. Under this flag the
+     * slow-mo and the shake are replaced by a FLASH: the information survives (you can still
+     * tell instantly that you killed something or died), the vestibular load does not.
+     *
+     * Set by the screen when a match opens, and refreshed on each trigger by the caller, so
+     * turning the setting on mid-match takes effect on the next event rather than on relaunch.
+     */
+    var reduceMotion = false
 
     fun triggerKill() { kind = Kind.KILL; startedAtNanos = System.nanoTime() }
     fun triggerDeath() { kind = Kind.DEATH; startedAtNanos = System.nanoTime() }
@@ -651,6 +671,14 @@ private class ImpactTimeline {
         val k = kind ?: return rawDt
         if (rawDt <= 0f) return rawDt
         val elapsed = (System.nanoTime() - startedAtNanos) / 1_000_000_000f
+
+        // NO TIME DILATION AT ALL under reduce motion — neither the freeze nor the slow-mo
+        // tail. A world that stops and restarts is exactly the kind of motion this setting
+        // exists to remove. The flash below carries the event instead.
+        if (reduceMotion) {
+            if (elapsed >= FLASH_DURATION) kind = null
+            return rawDt
+        }
 
         return when (k) {
             Kind.KILL -> {
@@ -668,11 +696,25 @@ private class ImpactTimeline {
         }
     }
 
-    /** 0 (no effect) to 1 (fully tinted), for the death flash only — a kill is too brief and
-     * too frequent to carry a screen-space tint without a busy match feeling like it strobes. */
+    /**
+     * 0 (no effect) to 1 (fully tinted), for the death flash only — a kill is too brief and too
+     * frequent to carry a screen-space tint without a busy match feeling like it strobes.
+     *
+     * Under reduce motion a kill DOES get one, because the shake that used to announce it is
+     * gone and something has to. Kept short and well under the death tint's weight, so the two
+     * stay distinguishable and a busy match still does not strobe.
+     */
     fun desaturation(): Float {
-        if (kind != Kind.DEATH) return 0f
+        val k = kind ?: return 0f
         val elapsed = (System.nanoTime() - startedAtNanos) / 1_000_000_000f
+
+        if (reduceMotion) {
+            if (elapsed >= FLASH_DURATION) return 0f
+            val fade = 1f - elapsed / FLASH_DURATION
+            return if (k == Kind.DEATH) fade else fade * 0.5f
+        }
+
+        if (k != Kind.DEATH) return 0f
         if (elapsed >= DEATH_DESATURATE_DURATION) return 0f
         // Snaps up, eases out — an impact arrives instantly and fades, it does not fade in.
         return 1f - elapsed / DEATH_DESATURATE_DURATION
@@ -752,7 +794,15 @@ private class CameraMemory {
     /** Trigger a shake. A later call while one is decaying restarts at the new magnitude
      * rather than summing — a rapid double-kill should feel like one strong hit, not an
      * accelerating wobble. */
+    /**
+     * REDUCE MOTION: when true, [triggerShake] is a no-op. A camera that moves when the world
+     * did not is the clearest possible case of motion for its own sake, and ImpactTimeline's
+     * flash already announces the kill (docs/games/CROSS_CUTTING.md §13).
+     */
+    var reduceMotion = false
+
     fun triggerShake(magnitude: Float) {
+        if (reduceMotion) return
         shakeStartedAtNanos = System.nanoTime()
         shakeMagnitude = magnitude
         shakeSeed = (Math.random() * 1000).toFloat()

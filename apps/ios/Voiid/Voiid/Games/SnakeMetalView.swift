@@ -1102,6 +1102,10 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     /// restarts it at the new (typically larger) magnitude rather than summing, which is what
     /// keeps a rapid double-kill feeling like one strong hit instead of an accelerating wobble.
     private func triggerShake(magnitude: Double) {
+        // REDUCE MOTION: no shake at all. A camera that moves when the world did not is the
+        // clearest possible case of motion for its own sake, and ImpactTimeline's flash
+        // already announces the kill (docs/games/CROSS_CUTTING.md §13).
+        guard !UIAccessibility.isReduceMotionEnabled else { return }
         shakeStartedAt = CACurrentMediaTime()
         shakeMagnitude = magnitude
         shakeSeed = Double.random(in: 0..<1000)
@@ -1493,14 +1497,43 @@ private final class ImpactTimeline {
     private static let deathSlowFactor: Double = 0.3    // "slow-mo to 0.3x" — doc's exact number
     private static let deathDesaturateDuration: Double = 0.4
 
-    func triggerKill() { kind = .kill; startedAt = CACurrentMediaTime() }
-    func triggerDeath() { kind = .death; startedAt = CACurrentMediaTime() }
+    /// REDUCE MOTION (docs/games/CROSS_CUTTING.md §13).
+    ///
+    /// Hitstop and screen shake shipped without an opt-out, and for a motion-sensitive player
+    /// that is not a rough edge — it is a game they cannot play at all. Under this flag the
+    /// slow-mo and the shake are replaced by a FLASH: the information survives (you can still
+    /// tell instantly that you killed something or died), the vestibular load does not.
+    ///
+    /// Read per trigger rather than cached at init, so turning the setting on mid-match takes
+    /// effect on the next event instead of after a relaunch. It is a cheap UIKit property.
+    private(set) var reduceMotion = UIAccessibility.isReduceMotionEnabled
+    private static let flashDuration: Double = 0.20
+
+    func triggerKill() {
+        reduceMotion = UIAccessibility.isReduceMotionEnabled
+        kind = .kill
+        startedAt = CACurrentMediaTime()
+    }
+
+    func triggerDeath() {
+        reduceMotion = UIAccessibility.isReduceMotionEnabled
+        kind = .death
+        startedAt = CACurrentMediaTime()
+    }
 
     /// How much of `rawDt` should actually be applied to the presentation clock this frame.
     /// 0 during a freeze, `deathSlowFactor * rawDt` during the slow-mo tail, `rawDt` otherwise.
     func dilate(_ rawDt: Double) -> Double {
         guard let kind, rawDt > 0 else { return rawDt }
         let elapsed = CACurrentMediaTime() - startedAt
+
+        // NO TIME DILATION AT ALL under reduce motion — neither the freeze nor the slow-mo
+        // tail. A world that stops and restarts is exactly the kind of motion this setting
+        // exists to remove. The flash below carries the event instead.
+        guard !reduceMotion else {
+            if elapsed >= Self.flashDuration { self.kind = nil }
+            return rawDt
+        }
 
         switch kind {
         case .kill:
@@ -1519,10 +1552,21 @@ private final class ImpactTimeline {
     /// 0 (no effect) to 1 (fully desaturated), for the death flash only — a kill is too brief
     /// and too frequent to carry a screen-space tint without the arena feeling like it strobes
     /// every few seconds in a busy match.
+    ///
+    /// Under reduce motion a kill DOES get one, because the shake that used to announce it is
+    /// gone and something has to. It is kept short and well under the death tint's weight, so
+    /// the two remain distinguishable and a busy match does not strobe.
     var desaturation: Float {
-        guard kind == .death else { return 0 }
+        guard let kind else { return 0 }
         let elapsed = CACurrentMediaTime() - startedAt
-        guard elapsed < Self.deathDesaturateDuration else { return 0 }
+
+        if reduceMotion {
+            guard elapsed < Self.flashDuration else { return 0 }
+            let fade = Float(1 - elapsed / Self.flashDuration)
+            return kind == .death ? fade : fade * 0.5
+        }
+
+        guard kind == .death, elapsed < Self.deathDesaturateDuration else { return 0 }
         // Snaps up, eases out — an impact arrives instantly and fades, it does not fade in.
         return Float(1 - elapsed / Self.deathDesaturateDuration)
     }
