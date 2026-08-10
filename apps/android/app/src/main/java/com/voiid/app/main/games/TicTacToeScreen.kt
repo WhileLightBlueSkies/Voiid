@@ -6,17 +6,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.outlined.Clear
-import androidx.compose.material.icons.outlined.RadioButtonUnchecked
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -30,16 +26,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.voiid.app.net.GamesEngine
 import com.voiid.app.ui.theme.VoiidColor
-import com.voiid.app.ui.theme.VoiidRadius
 import com.voiid.app.ui.theme.VoiidSpacing
 
 /**
@@ -88,11 +80,20 @@ fun TicTacToeScreen(matchId: String, onClose: () -> Unit) {
         lastBoard = newBoard
     }
 
+    // The result line waits for the win stroke to finish drawing (TICTACTOE_WIN_LINE.md §2.2:
+    // the banner is the last beat, not the first). A draw has no stroke to wait for, so it
+    // reveals immediately.
+    var resultRevealed by remember { mutableStateOf(false) }
+
+    // A WIN'S SOUND IS NOT PLAYED HERE. `win_line` belongs to the stroke that draws it and
+    // fires from TicTacToeBoard on the same beat the stroke starts — 120 ms after the mark
+    // lands, not on this state change. A draw has no stroke, so it keeps its sound here.
     var lastFinished by remember { mutableStateOf(false) }
     LaunchedEffect(state?.finished) {
         val finished = state?.finished == true
-        if (finished && !lastFinished) {
-            GameAudio.play(if (state?.winnerUserId == null) "draw" else "win_line", gain = 0.6f)
+        if (finished && !lastFinished && state?.winnerUserId == null) {
+            GameAudio.play("draw", gain = 0.5f)
+            resultRevealed = true
         }
         lastFinished = finished
     }
@@ -134,61 +135,33 @@ fun TicTacToeScreen(matchId: String, onClose: () -> Unit) {
             s != null -> {
                 val isMyTurn = !s.finished && s.turnUserId == me
 
-                Column(
-                    Modifier.fillMaxWidth().padding(top = VoiidSpacing.md),
-                    verticalArrangement = Arrangement.spacedBy(VoiidSpacing.sm),
-                ) {
-                    for (row in 0 until 3) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.sm)) {
-                            for (col in 0 until 3) {
-                                val index = row * 3 + col
-                                val mark = s.board.getOrNull(index)
-                                val isWinning = s.line?.contains(index) == true
-                                // Disabled unless it is genuinely my turn and the cell is
-                                // free. The server would reject the tap anyway — this only
-                                // avoids sending a frame we know is pointless.
-                                val tappable = isMyTurn && mark == null
+                // Shared with the bot game so the two modes cannot drift visually. Taps are
+                // disabled unless it is genuinely my turn — the server would reject them
+                // anyway, so this only avoids sending frames we know are pointless.
+                TicTacToeBoard(
+                    board = s.board,
+                    line = s.line,
+                    enabled = isMyTurn,
+                    onTap = { engine.play(context, it) },
+                    modifier = Modifier.fillMaxWidth().padding(top = VoiidSpacing.md),
+                    isDraw = s.finished && s.winnerUserId == null,
+                    onLineComplete = { resultRevealed = true },
+                )
 
-                                Box(
-                                    Modifier
-                                        .weight(1f)
-                                        .aspectRatio(1f)
-                                        .clip(RoundedCornerShape(VoiidRadius.md))
-                                        .background(
-                                            if (isWinning) VoiidColor.primary.copy(alpha = 0.18f)
-                                            else VoiidColor.surfaceCard
-                                        )
-                                        .clickable(enabled = tappable) { engine.play(context, index) }
-                                        .semantics {
-                                            contentDescription = cellLabel(mark, index)
-                                        },
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    if (mark != null) {
-                                        Icon(
-                                            if (mark == 0) Icons.Outlined.Clear
-                                            else Icons.Outlined.RadioButtonUnchecked,
-                                            contentDescription = null,
-                                            tint = if (mark == 0) VoiidColor.primary else VoiidColor.accent,
-                                            modifier = Modifier.size(34.dp),
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
+                // `settled` rather than `s.finished`: the result is announced once the win
+                // stroke has been drawn, so the player reads the line and then the verdict
+                // instead of both at once. Until then the last in-play status holds.
+                val settled = s.finished && resultRevealed
                 val status = when {
-                    s.finished && s.winnerUserId == null -> "Draw"
-                    s.finished && s.winnerUserId == me -> "You win"
-                    s.finished -> "You lose"
+                    settled && s.winnerUserId == null -> "Draw"
+                    settled && s.winnerUserId == me -> "You win"
+                    settled -> "You lose"
                     isMyTurn -> "Your turn"
                     else -> "Their turn"
                 }
                 Text(
                     status,
-                    color = if (s.finished) VoiidColor.primary else VoiidColor.textSecondary,
+                    color = if (settled) VoiidColor.primary else VoiidColor.textSecondary,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier
@@ -227,9 +200,4 @@ fun TicTacToeScreen(matchId: String, onClose: () -> Unit) {
             }
         }
     }
-}
-
-private fun cellLabel(mark: Int?, index: Int): String {
-    val position = "row ${index / 3 + 1}, column ${index % 3 + 1}"
-    return if (mark == null) "Empty, $position" else "${if (mark == 0) "X" else "O"}, $position"
 }

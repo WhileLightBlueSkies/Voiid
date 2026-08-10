@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -49,12 +48,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -102,6 +96,10 @@ fun TicTacToeBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) 
     // Guards against double-counting a result if the composable recomposes after the game
     // ends — a score store that inflates on rotation is worse than no score store.
     var recorded by remember { mutableStateOf(false) }
+    // The result line and record panel wait for the win stroke to finish drawing
+    // (TICTACTOE_WIN_LINE.md §2.2: the banner is the last beat, not the first). A draw has no
+    // stroke to wait for, so it settles immediately.
+    var settled by remember { mutableStateOf(false) }
 
     fun reset() {
         for (i in board.indices) board[i] = null
@@ -111,6 +109,7 @@ fun TicTacToeBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) 
         botThinking = false
         paused = false
         recorded = false
+        settled = false
     }
 
     fun settleIfOver(): Boolean {
@@ -122,14 +121,18 @@ fun TicTacToeBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) 
                 board[l[0]] == w && board[l[1]] == w && board[l[2]] == w
             }
             if (!recorded) { scores.add(level, if (w == HUMAN_SEAT) 1 else -1); recorded = true }
-            GameAudio.play("win_line", gain = 0.7f)
+            // A WIN'S SOUND IS NOT PLAYED HERE. `win_line` belongs to the stroke that draws it
+            // and fires from TicTacToeBoard on the same beat the stroke starts — 120 ms after
+            // the mark lands, not the instant the win is detected.
             return true
         }
         if (board.none { it == null }) {
             finished = true
             winnerSeat = null
             if (!recorded) { scores.add(level, 0); recorded = true }
+            // A draw has no stroke, so it keeps its sound and settles here.
             GameAudio.play("draw", gain = 0.5f)
+            settled = true
             return true
         }
         return false
@@ -169,6 +172,8 @@ fun TicTacToeBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) 
             board = board,
             line = line,
             finished = finished,
+            settled = settled,
+            onLineComplete = { settled = true },
             winnerSeat = winnerSeat,
             botThinking = botThinking,
             paused = paused,
@@ -202,12 +207,16 @@ private fun PlayBoard(
     board: List<Int?>,
     line: List<Int>?,
     finished: Boolean,
+    /// True once the win stroke has finished drawing (or immediately on a draw) — what the
+    /// result line and record panel key off, rather than [finished] itself.
+    settled: Boolean,
     winnerSeat: Int?,
     botThinking: Boolean,
     paused: Boolean,
     level: BotDifficulty,
     record: BotScoreStore.Record,
     onTap: (Int) -> Unit,
+    onLineComplete: () -> Unit,
     onPause: () -> Unit,
     onResume: () -> Unit,
     onRestart: () -> Unit,
@@ -247,40 +256,35 @@ private fun PlayBoard(
                 )
             }
 
-            Column(verticalArrangement = Arrangement.spacedBy(VoiidSpacing.sm)) {
-                for (row in 0 until 3) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.sm)) {
-                        for (col in 0 until 3) {
-                            val index = row * 3 + col
-                            Cell(
-                                mark = board[index],
-                                isWinning = line?.contains(index) == true,
-                                enabled = !finished && !botThinking && !paused && board[index] == null,
-                                index = index,
-                                onTap = { onTap(index) },
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
-                    }
-                }
-            }
+            // Shared with the online game so the two modes cannot drift visually.
+            TicTacToeBoard(
+                board = board,
+                line = line,
+                enabled = !finished && !botThinking && !paused,
+                onTap = onTap,
+                isDraw = finished && winnerSeat == null,
+                onLineComplete = onLineComplete,
+            )
 
+            // `settled` rather than `finished`: the result is announced once the win stroke has
+            // been drawn, so the player reads the line and then the verdict instead of both at
+            // once. Until then the last in-play status holds.
             val status = when {
-                finished && winnerSeat == null -> "Draw"
-                finished && winnerSeat == HUMAN_SEAT -> "You win"
-                finished -> "Bot wins"
+                settled && winnerSeat == null -> "Draw"
+                settled && winnerSeat == HUMAN_SEAT -> "You win"
+                settled -> "Bot wins"
                 botThinking -> "Bot is thinking…"
                 else -> "Your turn"
             }
             // The result line pops in rather than appearing, so a win feels like an event.
             val statusScale by animateFloatAsState(
-                targetValue = if (finished) 1.15f else 1f,
+                targetValue = if (settled) 1.15f else 1f,
                 animationSpec = spring(dampingRatio = 0.4f, stiffness = Spring.StiffnessLow),
                 label = "status",
             )
             Text(
                 status,
-                color = if (finished) VoiidColor.primary else VoiidColor.textSecondary,
+                color = if (settled) VoiidColor.primary else VoiidColor.textSecondary,
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.Center,
@@ -291,7 +295,7 @@ private fun PlayBoard(
             )
 
             AnimatedVisibility(
-                visible = finished,
+                visible = settled,
                 enter = fadeIn() + scaleIn(initialScale = 0.85f,
                     animationSpec = spring(dampingRatio = 0.5f)),
                 exit = fadeOut(),
@@ -363,61 +367,6 @@ private fun PlayBoard(
 }
 
 @Composable
-private fun Cell(
-    mark: Int?,
-    isWinning: Boolean,
-    enabled: Boolean,
-    index: Int,
-    onTap: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    // Marks land with an overshoot — the "bouncy" feel. Keyed on the mark so it replays
-    // per placement rather than once per screen.
-    val pop by animateFloatAsState(
-        targetValue = if (mark != null) 1f else 0.4f,
-        animationSpec = spring(dampingRatio = 0.42f, stiffness = Spring.StiffnessMediumLow),
-        label = "pop",
-    )
-    // The winning triple pulses up so the win reads instantly.
-    val winScale by animateFloatAsState(
-        targetValue = if (isWinning) 1.08f else 1f,
-        animationSpec = spring(dampingRatio = 0.35f, stiffness = Spring.StiffnessLow),
-        label = "win",
-    )
-
-    Box(
-        modifier
-            .aspectRatio(1f)
-            .scale(winScale)
-            .clip(RoundedCornerShape(VoiidRadius.lg))
-            .background(if (isWinning) VoiidColor.primary.copy(alpha = 0.20f) else VoiidColor.surfaceCard)
-            .clickable(enabled = enabled) { onTap() }
-            .semantics { contentDescription = cellLabel(mark, index) },
-        contentAlignment = Alignment.Center,
-    ) {
-        if (mark != null) {
-            val tint = if (mark == HUMAN_SEAT) VoiidColor.primary else VoiidColor.accent
-            // Drawn rather than icon glyphs: a stroked X and O scale cleanly with the cell
-            // and give the crossing-style look that a font glyph cannot.
-            androidx.compose.foundation.Canvas(
-                Modifier.fillMaxSize().padding(VoiidSpacing.lg).scale(pop)
-            ) {
-                val w = size.minDimension
-                val stroke = Stroke(width = w * 0.14f, cap = StrokeCap.Round)
-                if (mark == HUMAN_SEAT) {
-                    drawLine(tint, Offset(0f, 0f), Offset(w, w),
-                        strokeWidth = stroke.width, cap = StrokeCap.Round)
-                    drawLine(tint, Offset(w, 0f), Offset(0f, w),
-                        strokeWidth = stroke.width, cap = StrokeCap.Round)
-                } else {
-                    drawCircle(tint, radius = w / 2f, style = stroke)
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun PillButton(
     text: String,
     filled: Boolean,
@@ -470,7 +419,3 @@ private fun MenuButton(
     }
 }
 
-private fun cellLabel(mark: Int?, index: Int): String {
-    val position = "row ${index / 3 + 1}, column ${index % 3 + 1}"
-    return if (mark == null) "Empty, $position" else "${if (mark == 0) "X" else "O"}, $position"
-}

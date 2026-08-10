@@ -21,6 +21,11 @@ struct TicTacToeBotView: View {
     @StateObject private var match = TicTacToeBotMatch()
     @EnvironmentObject var session: AppSession
 
+    /// The result line and the record panel wait for the win stroke to finish drawing
+    /// (TICTACTOE_WIN_LINE.md §2.2: the banner is the last beat, not the first). A draw has no
+    /// stroke to wait for, so it reveals immediately.
+    @State private var resultRevealed = false
+
     var body: some View {
         ZStack {
             VoiidColor.background.ignoresSafeArea()
@@ -49,9 +54,15 @@ struct TicTacToeBotView: View {
                 break
             }
         }
+        // A WIN'S SOUND IS NOT PLAYED HERE. `win_line` belongs to the stroke that draws it and
+        // fires from TicTacToeBoard on the same beat the stroke starts — 120 ms after the mark
+        // lands, not on this state change. A draw has no stroke, so it keeps its sound here.
         .onChange(of: match.finished) { _, finished in
-            guard finished else { return }
-            GameAudio.shared.play(match.winnerSeat == nil ? "draw" : "win_line", gain: 0.7)
+            guard finished else { resultRevealed = false; return }
+            if match.winnerSeat == nil {
+                GameAudio.shared.play("draw", gain: 0.5)
+                withAnimation { resultRevealed = true }
+            }
         }
     }
 
@@ -85,14 +96,16 @@ struct TicTacToeBotView: View {
             TicTacToeBoard(
                 board: match.board,
                 line: match.line,
+                isDraw: match.finished && match.winnerSeat == nil,
                 enabled: match.canPlay,
-                onTap: { match.play(cell: $0) }
+                onTap: { match.play(cell: $0) },
+                onLineComplete: { withAnimation { resultRevealed = true } }
             )
             .animation(.spring(response: 0.35, dampingFraction: 0.55), value: match.board)
 
             statusLine
 
-            if match.finished {
+            if match.finished && resultRevealed {
                 let record = BotScoreStore.record(level)
                 VStack(spacing: VoiidSpacing.sm) {
                     // Running record at this difficulty, shown after a result — the moment
@@ -124,12 +137,16 @@ struct TicTacToeBotView: View {
         }
         .padding(.horizontal, VoiidSpacing.lg)
         .padding(.top, VoiidSpacing.md)
-        .animation(.spring(response: 0.4, dampingFraction: 0.6), value: match.finished)
+        .animation(.spring(response: 0.4, dampingFraction: 0.6), value: resultRevealed)
     }
 
     private var statusLine: some View {
+        // `settled` rather than `match.finished`: the result is announced once the win stroke
+        // has been drawn, so the player reads the line and then the verdict instead of both at
+        // once. Until then the last in-play status holds.
+        let settled = match.finished && resultRevealed
         let text: String = {
-            if match.finished {
+            if settled {
                 guard let w = match.winnerSeat else { return "Draw" }
                 return w == TicTacToeBotMatch.humanSeat ? "You win" : "Bot wins"
             }
@@ -138,11 +155,11 @@ struct TicTacToeBotView: View {
 
         return Text(text)
             .font(VoiidFont.rounded(18, .bold))
-            .foregroundStyle(match.finished ? VoiidColor.primary : VoiidColor.textSecondary)
+            .foregroundStyle(settled ? VoiidColor.primary : VoiidColor.textSecondary)
             .padding(.top, VoiidSpacing.lg)
             // The result pops rather than appearing, so a win feels like an event.
-            .scaleEffect(match.finished ? 1.15 : 1)
-            .animation(.spring(response: 0.4, dampingFraction: 0.4), value: match.finished)
+            .scaleEffect(settled ? 1.15 : 1)
+            .animation(.spring(response: 0.4, dampingFraction: 0.4), value: settled)
             .accessibilityAddTraits(.updatesFrequently)
     }
 

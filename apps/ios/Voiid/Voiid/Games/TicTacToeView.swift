@@ -37,6 +37,11 @@ struct TicTacToeView: View {
         return !s.finished && s.turnUserId == me
     }
 
+    /// The result line waits for the win stroke to finish drawing (TICTACTOE_WIN_LINE.md §2.2:
+    /// the banner is the last beat, not the first). A draw has no stroke to wait for, so it
+    /// reveals immediately.
+    @State private var resultRevealed = false
+
     var body: some View {
         VStack(spacing: VoiidSpacing.lg) {
             if let state = engine.state {
@@ -95,12 +100,14 @@ struct TicTacToeView: View {
                 break   // exactly one cell changes per move; server enforces this
             }
         }
+        // A WIN'S SOUND IS NOT PLAYED HERE. `win_line` belongs to the stroke that draws it and
+        // fires from TicTacToeBoard on the same beat the stroke starts — 120 ms after the mark
+        // lands, not on this state change. A draw has no stroke, so it keeps its sound here.
         .onChange(of: engine.state?.finished) { _, finished in
             guard finished == true, let state = engine.state else { return }
             if state.winnerUserId == nil {
                 GameAudio.shared.play("draw", gain: 0.5)
-            } else {
-                GameAudio.shared.play("win_line", gain: 0.7)
+                withAnimation { resultRevealed = true }
             }
         }
     }
@@ -115,16 +122,22 @@ struct TicTacToeView: View {
         TicTacToeBoard(
             board: state.board,
             line: state.line,
+            isDraw: state.finished && state.winnerUserId == nil,
             enabled: isMyTurn,
-            onTap: { engine.play(cell: $0) }
+            onTap: { engine.play(cell: $0) },
+            onLineComplete: { withAnimation { resultRevealed = true } }
         )
         .padding(.top, VoiidSpacing.md)
     }
 
     @ViewBuilder
     private func status(_ state: TicTacToeState) -> some View {
+        // `settled` rather than `state.finished`: the result is announced once the win stroke
+        // has been drawn, so the player reads the line and then the verdict instead of both at
+        // once. Until then the last in-play status holds.
+        let settled = state.finished && resultRevealed
         let text: String = {
-            if state.finished {
+            if settled {
                 guard let winner = state.winnerUserId else { return "Draw" }
                 return winner == me ? "You win" : "You lose"
             }
@@ -133,7 +146,7 @@ struct TicTacToeView: View {
 
         Text(text)
             .font(VoiidFont.rounded(16, .semibold))
-            .foregroundStyle(state.finished ? VoiidColor.primary : VoiidColor.textSecondary)
+            .foregroundStyle(settled ? VoiidColor.primary : VoiidColor.textSecondary)
             .padding(.top, VoiidSpacing.md)
             .accessibilityAddTraits(.updatesFrequently)
     }
