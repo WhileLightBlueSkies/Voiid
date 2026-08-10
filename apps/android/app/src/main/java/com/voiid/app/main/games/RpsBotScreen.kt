@@ -96,16 +96,29 @@ fun RpsBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
     // real elapsed time rather than resolving in the same frame as the tap.
     LaunchedEffect(roundToken) {
         if (roundToken == 0 || !revealing) return@LaunchedEffect
-        delay(750)
+        // The wind-up is SILENT no longer. Three fist-pump whooshes across the wait, rising in
+        // pitch, so it reads as a hand actually moving rather than as latency
+        // (SOUND_DESIGN.md §4.4). Pitches identical to iOS RpsBotView.pumpPitches.
+        for (pitch in floatArrayOf(0.94f, 1.0f, 1.08f)) {
+            GameAudio.play("hand_pump", pitch = pitch, gain = 0.5f)
+            delay(220)
+        }
+        delay(90)
         val mine = myThrow ?: return@LaunchedEffect
         val theirs = RpsBot.chooseThrow(history.toList(), skill)
         botThrow = theirs
-        GameAudio.play("reveal", gain = 0.65f)
+        GameAudio.play("hand_reveal", gain = 0.7f)
         // Graded by outcome, so a win and a loss don't feel identical: a won round gets the
         // rising thump, a lost one a blunt knock, a tie a light tick.
         when (RpsBot.compare(mine, theirs)) {
             1 -> { myWins++; haptics.boundary(); GameAudio.play("round_win", gain = 0.65f) }
-            -1 -> { botWins++; haptics.rigid(); GameAudio.play("round_lose", gain = 0.65f) }
+            -1 -> {
+                botWins++
+                haptics.rigid()
+                GameAudio.play("round_lose", gain = 0.65f)
+                // THE SHARED SOUND (§3): your throw was COUNTERED.
+                GameAudio.play(GameAudio.CATCH, gain = 0.5f)
+            }
             else -> { haptics.tap(); GameAudio.play("round_tie", gain = 0.5f) }
         }
         // Record AFTER resolving so the model never sees the throw it is predicting.

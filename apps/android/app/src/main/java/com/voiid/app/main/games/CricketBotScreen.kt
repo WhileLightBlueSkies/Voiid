@@ -79,7 +79,12 @@ fun CricketBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
 
     DisposableEffect(Unit) {
         GameAudio.preload(context, "cricket")
-        onDispose { GameAudio.release("cricket") }
+        // The stadium comes up with the screen and stays up for the whole match.
+        CricketSound.startBed(context)
+        onDispose {
+            CricketSound.stopBed()
+            GameAudio.release("cricket")
+        }
     }
 
     // Null until the player picks a length — the match cannot start without one.
@@ -112,7 +117,9 @@ fun CricketBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
     fun finish(won: Boolean?) {
         finished = true
         humanWon = won
-        if (won == true) GameAudio.play("match_end", gain = 0.7f)
+        CricketSound.stopBed()
+        // A tie (won == null) gets the losing treatment: nobody chased it down.
+        CricketSound.matchEnd(won = won == true)
         if (!recorded) {
             store.add(level, if (won == true) 1 else if (won == false) -1 else 0)
             recorded = true
@@ -146,11 +153,18 @@ fun CricketBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
         ballsBowled++
         lastEvent = BallEvent.of(runs = runs, wicket = wicket, matchedPick = mine)
         ballToken++
-        when {
-            wicket -> GameAudio.play("wicket", gain = 0.75f)
-            runs == 6 -> GameAudio.play("six", gain = 0.8f)
-            runs == 4 -> GameAudio.play("four", gain = 0.7f)
-            runs > 0 -> GameAudio.play("runs_$runs", gain = 0.55f)
+        // `humanBatting` decides which way the crowd reacts: the same wicket is a roar when
+        // the bot loses one and a groan when you do.
+        CricketSound.ball(runs, wicket, mine = humanBatting)
+        if (!finished) {
+            GameAudio.setBedGain(
+                CricketSound.bedGain(
+                    target = target,
+                    scored = if (humanBatting) humanScore else botScore,
+                    ballsBowled = ballsBowled,
+                    ballsTotal = o * BALLS_PER_OVER,
+                )
+            )
         }
 
         // Record the human's pick AFTER resolving, so the model never sees the pick it was
@@ -175,7 +189,7 @@ fun CricketBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
             humanBatting = !humanBatting
             ballsBowled = 0
             target = battingScore + 1
-            GameAudio.play("innings", gain = 0.55f)
+            CricketSound.inningsBreak()
         } else {
             // Second innings ended short. Equal totals = tie.
             when {

@@ -29,6 +29,13 @@ struct CricketMatchView: View {
 
     private var me: String? { TokenStore.shared.userId }
 
+    /// My seat, defaulting to 0 when the match state has not arrived yet — the same fallback
+    /// the board rendering below uses, kept as a property so the sound path and the layout
+    /// cannot disagree about which side of the match the player is on.
+    private var mySeat: Int {
+        max(0, engine.cricket?.players.firstIndex(of: me ?? "") ?? 0)
+    }
+
     /// Replays the pitch animation when a NEW ball resolves. Derived from history length rather
     /// than from the ball itself, so two identical balls in a row still animate twice.
     @State private var ballToken = 0
@@ -75,49 +82,45 @@ struct CricketMatchView: View {
         .onAppear {
             session.hideTabBar = true
             GameAudio.shared.preload(for: "cricket")
+            // The stadium comes up with the screen and stays up for the whole match. It is
+            // ambience, not an event — nothing else in the game starts or stops it.
+            CricketSound.startBed()
         }
         // Restore the bar on the way OUT. Hiding without restoring left the app with no
         // footer after quitting a game — the bar is opt-out, so every screen that hides
         // it owns putting it back.
         .onDisappear {
             session.hideTabBar = false
+            CricketSound.stopBed()
             GameAudio.shared.release(for: "cricket")
         }
         .onChange(of: engine.cricket?.history.count ?? 0) { _, n in
-            if n > lastCount, let ball = engine.cricket?.history.last {
+            if n > lastCount, let ball = engine.cricket?.history.last, let s = engine.cricket {
                 ballToken += 1
-                playBallSound(ball)
+                // `mine` decides which way the crowd reacts: the same wicket is a roar for the
+                // bowling side and a groan for the batting one.
+                CricketSound.ball(runs: ball.runs, wicket: ball.wicket,
+                                  mine: ball.battingSeat == mySeat)
+                // The chase tightened (or did not) — push the bed's gain either way.
+                CricketSound.updateIntensity(s)
             }
             lastCount = n
         }
         .onChange(of: engine.cricket?.innings ?? 1) { _, innings in
-            if innings > lastInnings { GameAudio.shared.play("innings", gain: 0.55) }
+            if innings > lastInnings { CricketSound.inningsBreak() }
             lastInnings = innings
         }
-    }
-
-    /// One resolved ball -> its sound, matching CricketPitch's own BallEvent classification so
-    /// the two never disagree about what just happened (a six that visually arcs over the rope
-    /// but sonically plays a dot ball would be a worse bug than either alone).
-    private func playBallSound(_ ball: CricketState.Ball) {
-        if ball.wicket {
-            GameAudio.shared.play("wicket", gain: 0.75)
-        } else if ball.runs == 6 {
-            GameAudio.shared.play("six", gain: 0.8)
-        } else if ball.runs == 4 {
-            GameAudio.shared.play("four", gain: 0.7)
-        } else if ball.runs > 0 {
-            GameAudio.shared.play("runs_\(ball.runs)", gain: 0.55)
+        .onChange(of: engine.cricket?.finished ?? false) { _, finished in
+            guard finished, let s = engine.cricket else { return }
+            CricketSound.stopBed()
+            CricketSound.matchEnd(won: s.winnerUserId == me)
         }
-        // A dot ball (runs == 0, not a wicket) has no dedicated sound in the catalogue
-        // (docs/GAMES_AUDIO.md §9) — silence is correct there, not a missing case.
     }
 
     @ViewBuilder
     private func content(_ s: CricketState) -> some View {
         // My seat decides which half of every by-seat array is mine. A wrong seat would silently
         // swap the whole scoreboard.
-        let mySeat = max(0, s.players.firstIndex(of: me ?? "") ?? 0)
         let theirSeat = mySeat == 0 ? 1 : 0
         let iAmBatting = s.battingSeat == mySeat
         let iPicked = s.hasPicked.indices.contains(mySeat) ? s.hasPicked[mySeat] : false

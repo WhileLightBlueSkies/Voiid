@@ -85,13 +85,18 @@ fun RpsMatchScreen(matchId: String, onClose: () -> Unit) {
         val s = state
         val newCount = s?.history?.size ?: 0
         if (newCount > lastHistoryCount && s != null) {
-            GameAudio.play("reveal", gain = 0.65f)
+            GameAudio.play("hand_reveal", gain = 0.7f)
             val mySeat = s.players.indexOf(me).let { if (it < 0) 0 else it }
             val round = s.history.last()
             when (round.winner) {
                 null -> GameAudio.play("round_tie", gain = 0.5f)
                 mySeat -> GameAudio.play("round_win", gain = 0.65f)
-                else -> GameAudio.play("round_lose", gain = 0.65f)
+                else -> {
+                    GameAudio.play("round_lose", gain = 0.65f)
+                    // THE SHARED SOUND (§3): your throw was COUNTERED. Layered under the round
+                    // stinger, never instead of it.
+                    GameAudio.play(GameAudio.CATCH, gain = 0.5f)
+                }
             }
         }
         lastHistoryCount = newCount

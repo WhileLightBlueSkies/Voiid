@@ -66,7 +66,13 @@ fun CricketMatchScreen(matchId: String, onClose: () -> Unit) {
 
     DisposableEffect(Unit) {
         GameAudio.preload(context, "cricket")
-        onDispose { GameAudio.release("cricket") }
+        // The stadium comes up with the screen and stays up for the whole match. It is
+        // ambience, not an event — nothing else in the game starts or stops it.
+        CricketSound.startBed(context)
+        onDispose {
+            CricketSound.stopBed()
+            GameAudio.release("cricket")
+        }
     }
 
     LaunchedEffect(matchId) { engine.open(matchId) }
@@ -76,11 +82,17 @@ fun CricketMatchScreen(matchId: String, onClose: () -> Unit) {
     var ballToken by remember { mutableIntStateOf(0) }
     var lastCount by remember { mutableIntStateOf(0) }
     val s = state
+    val mySeat = s?.players?.indexOf(me)?.coerceAtLeast(0) ?: 0
     LaunchedEffect(s?.history?.size ?: 0) {
         val n = s?.history?.size ?: 0
         if (n > lastCount && s != null) {
             ballToken++
-            playBallSound(s.history.last())
+            val ball = s.history.last()
+            // `mine` decides which way the crowd reacts: the same wicket is a roar for the
+            // bowling side and a groan for the batting one.
+            CricketSound.ball(ball.runs, ball.wicket, mine = ball.battingSeat == mySeat)
+            // The chase tightened (or did not) — push the bed's gain either way.
+            CricketSound.updateIntensity(s)
         }
         lastCount = n
     }
@@ -88,8 +100,18 @@ fun CricketMatchScreen(matchId: String, onClose: () -> Unit) {
     var lastInnings by remember { mutableIntStateOf(1) }
     LaunchedEffect(s?.innings) {
         val innings = s?.innings ?: 1
-        if (innings > lastInnings) GameAudio.play("innings", gain = 0.55f)
+        if (innings > lastInnings) CricketSound.inningsBreak()
         lastInnings = innings
+    }
+
+    var lastFinished by remember { mutableStateOf(false) }
+    LaunchedEffect(s?.finished) {
+        val finished = s?.finished == true
+        if (finished && !lastFinished) {
+            CricketSound.stopBed()
+            CricketSound.matchEnd(won = s?.winnerUserId == me)
+        }
+        lastFinished = finished
     }
 
     Column(
@@ -267,20 +289,6 @@ fun CricketMatchScreen(matchId: String, onClose: () -> Unit) {
                 )
             }
         }
-    }
-}
-
-/** One resolved ball -> its sound, matching CricketPitch.kt's own BallEvent classification so
- * the two never disagree about what just happened. Mirrors iOS CricketMatchView's identical
- * helper. */
-private fun playBallSound(ball: GamesEngine.CricketState.Ball) {
-    when {
-        ball.wicket -> GameAudio.play("wicket", gain = 0.75f)
-        ball.runs == 6 -> GameAudio.play("six", gain = 0.8f)
-        ball.runs == 4 -> GameAudio.play("four", gain = 0.7f)
-        ball.runs > 0 -> GameAudio.play("runs_${ball.runs}", gain = 0.55f)
-        // A dot ball (runs == 0, not a wicket) has no dedicated sound in the catalogue
-        // (docs/GAMES_AUDIO.md §9) — silence is correct there, not a missing case.
     }
 }
 

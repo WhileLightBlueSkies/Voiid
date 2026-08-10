@@ -83,12 +83,15 @@ struct CricketBotView: View {
         .onAppear {
             session.hideTabBar = true
             GameAudio.shared.preload(for: "cricket")
+            // The stadium comes up with the screen and stays up for the whole match.
+            CricketSound.startBed()
         }
         // Restore the bar on the way OUT. Hiding without restoring left the app with no
         // footer after quitting a game — the bar is opt-out, so every screen that hides
         // it owns putting it back.
         .onDisappear {
             session.hideTabBar = false
+            CricketSound.stopBed()
             GameAudio.shared.release(for: "cricket")
         }
     }
@@ -348,33 +351,44 @@ struct CricketBotView: View {
             humanBatting.toggle()
             ballsBowled = 0
             target = battingScore + 1
-            GameAudio.shared.play("innings", gain: 0.55)
+            CricketSound.inningsBreak()
         } else {
             // Second innings ended short. Equal totals = tie.
             finish(humanScore == botScore ? nil : humanScore > botScore)
         }
     }
 
-    /// One resolved ball -> its sound, matching CricketPitch's own BallEvent classification
-    /// (the same wicket/six/four/runs branching CricketMatchView uses for the online game) so
-    /// bot and online cricket never disagree about what a ball sounds like.
+    /// One resolved ball -> its sound. Delegates to CricketSound, shared with the online game,
+    /// so bot and online cricket cannot disagree about what a ball sounds like.
     private func playBallSound(runs: Int, wicket: Bool) {
-        if wicket {
-            GameAudio.shared.play("wicket", gain: 0.75)
-        } else if runs == 6 {
-            GameAudio.shared.play("six", gain: 0.8)
-        } else if runs == 4 {
-            GameAudio.shared.play("four", gain: 0.7)
-        } else if runs > 0 {
-            GameAudio.shared.play("runs_\(runs)", gain: 0.55)
-        }
+        // `humanBatting` is what decides which way the crowd reacts: the same wicket is a roar
+        // when the bot loses one and a groan when you do.
+        CricketSound.ball(runs: runs, wicket: wicket, mine: humanBatting)
+        updateCrowd()
+    }
+
+    /// Push the crowd bed's gain from the bot match's own state.
+    ///
+    /// The online path can hand CricketSound a whole CricketState; a bot match has no such
+    /// object, so the same curve is fed from the local vars. Keeping ONE curve and two callers
+    /// is the point — two curves would drift.
+    private func updateCrowd() {
+        guard !finished, let overs else { return }
+        let gain = CricketSound.bedGain(
+            target: target,
+            scored: humanBatting ? humanScore : botScore,
+            ballsBowled: ballsBowled,
+            ballsTotal: overs * ballsPerOver)
+        GameAudio.shared.startLoop("crowd_base", gain: gain)
     }
 
     private func finish(_ won: Bool?) {
         finished = true
         humanWon = won
-        if won == true { Haptics.boundary(); GameAudio.shared.play("match_end", gain: 0.7) }
-        else { Haptics.rigid() }
+        CricketSound.stopBed()
+        // A tie (won == nil) gets the losing treatment: nobody chased it down.
+        CricketSound.matchEnd(won: won == true)
+        if won == true { Haptics.boundary() } else { Haptics.rigid() }
         if !recorded {
             BotScoreStore.add(level, outcome: won == true ? 1 : (won == false ? -1 : 0))
             recorded = true

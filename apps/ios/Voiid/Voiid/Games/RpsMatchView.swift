@@ -101,10 +101,13 @@ struct RpsMatchView: View {
         .onChange(of: engine.rps?.history.count) { oldCount, newCount in
             guard let oldCount, let newCount, newCount > oldCount,
                   let s = engine.rps, let round = s.history.last else { return }
-            GameAudio.shared.play("reveal", gain: 0.65)
+            GameAudio.shared.play("hand_reveal", gain: 0.7)
             let mySeat = max(0, s.players.firstIndex(of: me ?? "") ?? 0)
             if let winner = round.winner {
                 GameAudio.shared.play(winner == mySeat ? "round_win" : "round_lose", gain: 0.65)
+                // THE SHARED SOUND (§3): your throw was COUNTERED. Layered under the round
+                // stinger, never instead of it.
+                if winner != mySeat { GameAudio.shared.play(GameAudio.catchShared, gain: 0.5) }
             } else {
                 GameAudio.shared.play("round_tie", gain: 0.5)
             }

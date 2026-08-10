@@ -33,6 +33,10 @@ struct RpsBotView: View {
     /// Drives the shake oscillation; flipped repeatedly while a round resolves.
     @State private var shakeUp = false
 
+    /// The three fist-pump beats rise slightly in pitch, so the wind-up climbs toward the
+    /// reveal instead of repeating. Identical on Android.
+    static let pumpPitches: [Float] = [0.94, 1.0, 1.08]
+
     @EnvironmentObject var session: AppSession
 
     private var matchOver: Bool { myWins >= Self.target || botWins >= Self.target }
@@ -287,20 +291,32 @@ struct RpsBotView: View {
         Task {
             // Shake for a beat, oscillating, then reveal. The elapsed time is the point —
             // resolving in the same frame as the tap would look like the bot answered you.
-            for _ in 0..<6 {
+            // The shake is SILENT no longer. Every other beat is a fist-pump whoosh, rising in
+            // pitch across the three — the sound of the hand actually moving, which is what
+            // makes the wait read as a wind-up rather than as latency (SOUND_DESIGN.md §4.4).
+            for i in 0..<6 {
                 try? await Task.sleep(nanoseconds: 110_000_000)
                 shakeUp.toggle()
+                if i % 2 == 0 {
+                    GameAudio.shared.play("hand_pump",
+                                          pitch: Self.pumpPitches[i / 2], gain: 0.5)
+                }
             }
             guard !paused else { revealing = false; return }
 
             let theirs = RpsBot.chooseThrow(history: history, skill: skill)
             botThrow = theirs
-            GameAudio.shared.play("reveal", gain: 0.65)
+            GameAudio.shared.play("hand_reveal", gain: 0.7)
             // Graded by outcome, so a win and a loss don't feel identical: a won round gets the
             // rising thump, a lost one a blunt knock, a tie a light tick.
             switch RpsBot.compare(choice, theirs) {
             case 1:  myWins += 1; Haptics.boundary(); GameAudio.shared.play("round_win", gain: 0.65)
-            case -1: botWins += 1; Haptics.rigid(); GameAudio.shared.play("round_lose", gain: 0.65)
+            case -1:
+                botWins += 1
+                Haptics.rigid()
+                GameAudio.shared.play("round_lose", gain: 0.65)
+                // THE SHARED SOUND (§3): your throw was COUNTERED.
+                GameAudio.shared.play(GameAudio.catchShared, gain: 0.5)
             default: Haptics.tap(); GameAudio.shared.play("round_tie", gain: 0.5)
             }
             // Recorded AFTER resolving, so the model never sees the throw it is predicting.

@@ -989,6 +989,17 @@ private fun DrawScope.drawArena(
                 impact.triggerDeath()
                 haptics.death()
                 GameAudio.play("death", gain = 0.85f)
+                // THE SHARED SOUND (docs/games/SOUND_DESIGN.md §3/§4.2). Snake's `catch` moment
+                // is being killed BY ANOTHER SNAKE — your run was ended by an opponent, which
+                // is the same event Tic Tac Toe, RPS and cricket all mark with this file. Snake
+                // is not exempt from the vocabulary.
+                //
+                // The BORDER is deliberately excluded: you were not caught, you crashed.
+                // `death` carries the server's own cause ("border" | "body" | "head"), so this
+                // asks rather than guesses.
+                if (e.cause != "border") {
+                    GameAudio.play(GameAudio.CATCH, gain = 0.55f)
+                }
             }
             if (e.kind == "spawn" && e.snakeId == me) {
                 GameAudio.play("spawn", gain = 0.6f)
