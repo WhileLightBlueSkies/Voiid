@@ -132,6 +132,7 @@ fun SnakeArenaScreen(
     val frameClock = remember { mutableDoubleStateOf(0.0) }
     val trails = remember { TrailStore() }
     val camera = remember { CameraMemory() }
+    val predictor = remember { SnakePredictor() }
 
     // Hex floor tile, built ONCE (docs/GAMES_SNAKE_VISUALS.md §3.1). A repeated shader rather
     // than per-hex geometry: the arena holds several hundred hexes and drawing them
@@ -166,7 +167,7 @@ fun SnakeArenaScreen(
         Canvas(Modifier.fillMaxSize()) {
             // Reading the clock inside the DRAW scope subscribes only this draw to it.
             @Suppress("UNUSED_EXPRESSION") frameClock.doubleValue
-            drawArena(framesRef.value, me, trails, stick, camera, particles, impact,
+            drawArena(framesRef.value, me, trails, stick, camera, predictor, particles, impact,
                 haptics, boostAudio, hexShader)
         }
 
@@ -194,11 +195,15 @@ fun SnakeArenaScreen(
                 if (hypot(v.x, v.y) >= 0.15f) {
                     val heading = atan2(v.y.toDouble(), v.x.toDouble())
                     lastHeading = heading
+                    // Straight into the predictor so the local head begins turning on the
+                    // frame the thumb moves, not when the server confirms it.
+                    predictor.desiredHeading = heading
                     engine.steer(context, heading, boosting)
                 }
             },
             onBoostChange = { held ->
                 boosting = held
+                predictor.boosting = held
                 engine.steer(context, lastHeading, held)
             },
         )
@@ -374,6 +379,13 @@ private fun labelFor(snake: GamesEngine.SnakeState.Snake, me: String?): String =
 /**
  * How far behind the newest frame to render, in seconds.
  *
+ * Lowered from 250 ms now that the LOCAL snake is predicted rather than interpolated.
+ *
+ * That delay existed to stop the jitter from a dry buffer, and it worked — but it applied to
+ * everything, including the one snake the player is actually steering, which is why the
+ * controls felt remote. With prediction, this number only affects OTHER snakes and the food
+ * field, where a little staleness is invisible and a stall is not.
+ *
  * TWO AND A HALF ticks, not one and a half.
  *
  * At 1.5 ticks the buffer ran dry on any frame that arrived even slightly late — and on a
@@ -382,7 +394,7 @@ private fun labelFor(snake: GamesEngine.SnakeState.Snake, me: String?): String =
  * delay costs 100 ms of visual lag and removes the stall almost entirely, which is a trade
  * strongly worth making for a game steered by a stick rather than aimed.
  */
-private const val INTERP_DELAY = 0.25
+private const val INTERP_DELAY = 0.15
 
 private const val JOY_RADIUS_DP = 60f
 private const val JOY_KNOB_DP = 26f
@@ -748,6 +760,7 @@ private fun DrawScope.drawArena(
     trails: TrailStore,
     stick: Offset,
     camera: CameraMemory,
+    predictor: SnakePredictor,
     particles: ParticleSystem,
     impact: ImpactTimeline,
     haptics: GameHaptics,
@@ -815,6 +828,30 @@ private fun DrawScope.drawArena(
             lerp(prev?.y ?: sn.y, sn.y, s.t).toFloat(),
         )
         headings[sn.id] = lerpAngle(prev?.heading ?: sn.heading, sn.heading, s.t)
+    }
+
+    // THE LOCAL SNAKE IS PREDICTED, not interpolated.
+    //
+    // Every other snake is drawn ~150 ms in the past because we cannot know where someone
+    // else is going. Doing that to your OWN snake means your thumb moves and the head answers
+    // a fifth of a second later — smoothing a laggy control only makes it a smooth laggy
+    // control. So the local head runs the server's own movement maths locally and folds
+    // server corrections in over 150 ms instead of snapping to them.
+    if (me != null) {
+        // Reconcile against the NEWEST frame, not the interpolated one: the point of
+        // prediction is to be AHEAD of the render clock, so correcting toward a
+        // deliberately-stale position would drag it back into the past.
+        frames.lastOrNull()?.state?.snakes?.firstOrNull { it.id == me }?.let { newest ->
+            predictor.reconcile(
+                Offset(newest.x.toFloat(), newest.y.toFloat()), newest.heading, newest.alive)
+        }
+        val mine = state.snakes.firstOrNull { it.id == me }
+        if (mine != null && mine.alive) {
+            predictor.step()?.let { p ->
+                heads[me] = p
+                headings[me] = predictor.heading
+            }
+        }
     }
 
     trails.update(state, heads)

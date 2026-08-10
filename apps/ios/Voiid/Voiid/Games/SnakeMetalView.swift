@@ -88,6 +88,8 @@ struct SnakeMetalView: UIViewRepresentable {
     let hud: SnakeHudModel
     /// Live joystick vector, so the head can face the thumb without waiting for the server.
     @Binding var stick: CGVector
+    /// Whether boost is held, so prediction uses the right speed.
+    let boosting: Bool
 
     func makeCoordinator() -> SnakeRenderer {
         SnakeRenderer(engine: engine, me: me, hud: hud)
@@ -110,6 +112,12 @@ struct SnakeMetalView: UIViewRepresentable {
 
     func updateUIView(_ view: MTKView, context: Context) {
         context.coordinator.stick = stick
+        // Feed the stick straight into the predictor so the local head begins turning on the
+        // frame the thumb moves, rather than waiting for the server to confirm the heading.
+        if stick != .zero {
+            context.coordinator.predictor.desiredHeading = atan2(stick.dy, stick.dx)
+        }
+        context.coordinator.predictor.boosting = boosting
     }
 
     static func dismantleUIView(_ view: MTKView, coordinator: SnakeRenderer) {
@@ -263,6 +271,8 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
 
     /// Body trails, owned HERE rather than in SwiftUI state — this is the fix for the freeze.
     private let trails = TrailStore()
+    /// Local-snake prediction. See SnakePredictor for why only the local snake gets this.
+    let predictor = SnakePredictor()
 
     /// Presentation-only VFX driven by the server's per-tick events (GAMES_ANIMATION.md §5.3).
     /// A death/kill/eat/spawn a client never learns about from `events` is invisible motion —
@@ -701,12 +711,18 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
 
     /// How far behind the newest frame to render.
     ///
+    /// Lowered from 250 ms now that the LOCAL snake is predicted rather than interpolated.
+    /// That delay existed to stop jitter from a dry buffer and it worked — but it applied to
+    /// everything, including the one snake the player is steering, which is why the controls
+    /// felt remote. With prediction this only affects OTHER snakes and the food field, where
+    /// a little staleness is invisible and a stall is not.
+    ///
     /// TWO AND A HALF ticks, not one and a half.
     ///
     /// At 1.5 ticks the buffer ran dry on any frame that arrived even slightly late — and on
     /// a mobile network that is most of them — so the render clock repeatedly caught up with
     /// the newest frame, held, and jumped. That hold-jump cycle IS the jitter.
-    private static let interpDelay: Double = 0.25
+    private static let interpDelay: Double = 0.15
 
     private func buildFrame() -> Uniforms? {
         let frames = engine.snakeFramesSnapshot
@@ -746,6 +762,31 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
             let px = prev?.x ?? snake.x, py = prev?.y ?? snake.y
             heads[snake.id] = CGPoint(x: px + (snake.x - px) * t, y: py + (snake.y - py) * t)
             headings[snake.id] = Self.lerpAngle(prev?.heading ?? snake.heading, snake.heading, t)
+        }
+
+        // THE LOCAL SNAKE IS PREDICTED, not interpolated.
+        //
+        // Every other snake is drawn ~150 ms in the past because we cannot know where someone
+        // else is going. Doing that to your OWN snake means your thumb moves and the head
+        // answers a fifth of a second later — smoothing a laggy control only makes it a
+        // smooth laggy control. So the local head runs the server's own movement maths
+        // locally and folds server corrections in over 150 ms instead of snapping to them.
+        if let me, let mine = state.snakes.first(where: { $0.id == me }) {
+            // Reconcile against the NEWEST frame, not the interpolated one: the point of
+            // prediction is to be ahead of the render clock, so correcting toward a
+            // deliberately-stale position would drag it back into the past.
+            let newestMine = frames.last?.state.snakes.first { $0.id == me }
+            if let newestMine {
+                predictor.reconcile(
+                    serverPosition: CGPoint(x: newestMine.x, y: newestMine.y),
+                    serverHeading: newestMine.heading,
+                    alive: newestMine.alive)
+            }
+
+            if mine.alive, let predicted = predictor.step(now: CACurrentMediaTime()) {
+                heads[me] = predicted
+                headings[me] = predictor.heading
+            }
         }
 
         trails.update(state: state, heads: heads)

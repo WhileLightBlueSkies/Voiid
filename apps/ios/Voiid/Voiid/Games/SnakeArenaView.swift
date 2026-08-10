@@ -44,7 +44,7 @@ struct SnakeArenaView: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            SnakeMetalView(engine: engine, me: me, hud: hud, stick: $stick)
+            SnakeMetalView(engine: engine, me: me, hud: hud, stick: $stick, boosting: boosting)
                 .ignoresSafeArea()
 
             // The chrome deliberately does NOT ignore the safe area, unlike the arena behind
