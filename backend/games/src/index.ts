@@ -337,12 +337,19 @@ async function handleJoin(msg: Record<string, any>): Promise<void> {
 
   const joiner = typeof msg.from_user_id === 'string' ? msg.from_user_id : null;
 
-  const existing = await loadMatch(matchId);
+  // Prefer the CACHED record when a loop is running, exactly as handleInput does.
+  //
+  // Reading Redis here while the tick loop holds its own copy meant a late joiner wrote their
+  // join onto a record the loop had never seen — and the loop's next persist overwrote it. A
+  // second player joining a match already in progress would be silently dropped.
+  const existing = liveMatches.get(matchId) ?? await loadMatch(matchId);
   if (existing) {
     // Record this join, then decide whether the match is playable yet.
     const joined = new Set(existing.joined ?? []);
     if (joiner) joined.add(joiner);
     existing.joined = [...joined];
+    // Keep the cache authoritative too, so the loop picks this up rather than clobbering it.
+    if (liveMatches.has(matchId)) liveMatches.set(matchId, existing);
     await saveMatch(existing);
 
     // A state frame means "the game is on". Sending one before every seat is filled is what made

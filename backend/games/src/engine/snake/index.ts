@@ -965,8 +965,21 @@ export const snake: GameFactory = {
     // null and the client falls back to a plain colour rather than the server trusting a
     // string it has never seen.
     const rawSkin = options?.skin;
-    const humanSkin =
+    let humanSkin =
       typeof rawSkin === 'string' && VALID_SKINS.has(rawSkin) ? rawSkin : 'rainbow';
+
+    // A CUSTOM COLOUR, sent as a packed 0xRRGGBB integer.
+    //
+    // The options bag is typed [String: Int] across every game (see GamesAPI), and widening
+    // that for one game's colour picker would touch four unrelated games. An integer carries
+    // a colour perfectly well, and the client renders any colour as a checkered two-band skin
+    // anyway — so "custom" needs no catalogue entry, just the value.
+    const rawColor = Number(options?.color);
+    if (Number.isFinite(rawColor) && rawColor >= 0 && rawColor <= 0xffffff) {
+      // `custom:RRGGBB` — the client parses the suffix; an older client sees an unknown skin
+      // id and falls back to a plain palette colour, which is exactly the right degradation.
+      humanSkin = `custom:${Math.floor(rawColor).toString(16).padStart(6, '0')}`;
+    }
 
     // Bot skins are drawn without replacement where possible, so a small arena does not end
     // up with four identical snakes — the whole point of skins is telling players apart.

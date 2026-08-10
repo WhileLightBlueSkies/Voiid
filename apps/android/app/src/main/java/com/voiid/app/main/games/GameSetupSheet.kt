@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -69,6 +70,11 @@ fun GameSetupSheet(
     gameName: String,
     onPlayFriend: () -> Unit,
     onPlayBot: (BotDifficulty, Float) -> Unit,
+    /**
+     * Snake only: open the appearance picker. Null hides the row, so no other game shows an
+     * option it does not have.
+     */
+    onCustomise: (() -> Unit)? = null,
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -100,6 +106,16 @@ fun GameSetupSheet(
                 fontSize = 14.sp,
                 modifier = Modifier.padding(bottom = VoiidSpacing.sm),
             )
+
+            if (onCustomise != null) {
+                OpponentOption(
+                    icon = Icons.Outlined.Palette,
+                    title = "Your snake",
+                    subtitle = "Pick a skin or a colour",
+                    selected = false,
+                    onClick = onCustomise,
+                )
+            }
 
             // Neither row is pre-selected: this is a fork, not a default. Marking "A friend"
             // as selected whenever the bot panel was closed implied a choice the user hadn't

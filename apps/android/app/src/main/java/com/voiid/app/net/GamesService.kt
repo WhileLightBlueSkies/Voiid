@@ -78,12 +78,18 @@ class GamesService(private val api: ApiClient) {
          * match row and validated by the ENGINE — this client sends, it does not police.
          */
         options: Map<String, Int> = emptyMap(),
+        /**
+         * Snake's chosen skin id. A separate field because [options] is string->int across
+         * every game, and widening that for one game's cosmetic would touch four others.
+         */
+        skin: String? = null,
     ): String {
         val ids = opponentIds.joinToString(",") { "\"" + it + "\"" }
         val opts = options.entries.joinToString(",") { "\"${it.key}\":${it.value}" }
+        val skinField = if (skin != null) ",\"skin\":\"$skin\"" else ""
         val body = api.request(
             "POST", "games/matches",
-            """{"slug":"$slug","opponent_ids":[$ids],"options":{$opts}}""",
+            """{"slug":"$slug","opponent_ids":[$ids],"options":{$opts}$skinField}""",
         )
         return json.decodeFromString<CreateResponse>(body).match_id
     }

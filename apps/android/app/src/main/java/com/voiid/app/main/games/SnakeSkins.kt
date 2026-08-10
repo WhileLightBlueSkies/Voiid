@@ -78,8 +78,24 @@ object SnakeSkins {
      * checkered rather than solid so an unknown skin still reads as a snake with segments
      * rather than as a featureless tube.
      */
-    fun resolve(id: String?, fallback: Color): SnakeSkin =
-        catalogue[id] ?: checkered(fallback)
+    fun resolve(id: String?, fallback: Color): SnakeSkin {
+        catalogue[id]?.let { return it }
+        // `custom:RRGGBB` from the colour picker. Rendered as a checkered two-band skin like
+        // any other, which is why a custom colour needs no catalogue entry at all.
+        if (id != null && id.startsWith("custom:")) {
+            val rgb = id.removePrefix("custom:").toLongOrNull(16)
+            if (rgb != null) {
+                return checkered(
+                    Color(
+                        red = ((rgb shr 16) and 0xFF) / 255f,
+                        green = ((rgb shr 8) and 0xFF) / 255f,
+                        blue = (rgb and 0xFF) / 255f,
+                    )
+                )
+            }
+        }
+        return checkered(fallback)
+    }
 
     /**
      * A single colour turned into a box-box pattern.

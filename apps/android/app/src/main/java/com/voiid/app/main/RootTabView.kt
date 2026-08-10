@@ -142,6 +142,8 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
     // driven by nullable state exactly like the clip overlay above.
     var openStoryContext by remember { mutableStateOf<Int?>(null) }
     var showStoryComposer by remember { mutableStateOf(false) }
+    /** Snake's appearance picker. Snake-only, so it is not part of the shared setup sheet. */
+    var showSkinPicker by remember { mutableStateOf(false) }
     // The open game match, as (matchId, slug). Full-screen overlay sibling of the clip/story
     // viewers — a board must cover the tab bar, or a mis-tap during a game switches tabs.
     //
@@ -510,8 +512,27 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                         botGame = Triple(game.slug, level, skill)
                     }
                 },
+                onCustomise =
+                    if (game.slug == "snake") {
+                        { setupGame = null; showSkinPicker = true }
+                    } else null,
                 onDismiss = { setupGame = null },
             )
+        }
+
+        AnimatedVisibility(
+            visible = showSkinPicker,
+            enter = slideInVertically { it } + fadeIn(),
+            exit = slideOutVertically { it } + fadeOut(),
+        ) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(VoiidColor.background)
+                    .navigationBarsPadding(),
+            ) {
+                com.voiid.app.main.games.SnakeSkinPicker { showSkinPicker = false }
+            }
         }
 
         // Practice board — full-screen cover, same treatment as the online board. Which
@@ -581,8 +602,13 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                             // drops a match's state when it ends, so there is nothing to
                             // rejoin.
                             gamesScope.launch {
+                                val choice = com.voiid.app.main.games
+                                    .SnakeChoiceStore(context)
                                 com.voiid.app.net.GamesEngine.get(context)
-                                    .createSolo("snake", mapOf("bots" to 5))
+                                    .createSolo(
+                                        "snake",
+                                        mapOf("bots" to 5) + choice.matchOptions(),
+                                        choice.skinId)
                                     ?.let { openGameMatch = it to "snake" }
                             }
                         },

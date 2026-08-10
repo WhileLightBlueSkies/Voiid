@@ -573,9 +573,12 @@ final class GamesEngine: ObservableObject {
     /// rather than two implementations drifting apart. That is the difference between this
     /// and the `*Bot.swift` views, which simulate turn-based opponents locally because those
     /// games have no continuous state to keep in sync.
-    func createSolo(slug: String, options: [String: Int] = [:]) async -> String? {
+    func createSolo(
+        slug: String, options: [String: Int] = [:], skin: String? = nil
+    ) async -> String? {
         do {
-            let id = try await api.create(slug: slug, opponentIds: [], options: options)
+            let id = try await api.create(
+                slug: slug, opponentIds: [], options: options, skin: skin)
             await open(matchId: id)
             return id
         } catch {

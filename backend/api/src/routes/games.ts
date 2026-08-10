@@ -93,7 +93,7 @@ router.post(
   requireAuth,
   asyncHandler(async (req, res) => {
     const { user_id: userId } = (req as any).auth as { user_id: string };
-    const { slug, opponent_ids, options } = req.body ?? {};
+    const { slug, opponent_ids, options, skin } = req.body ?? {};
 
     if (typeof slug !== 'string' || !Array.isArray(opponent_ids)) {
       return res.status(400).json({ error: 'slug and opponent_ids required' });
@@ -103,8 +103,14 @@ router.post(
     // a whitelist of every game's settings would be rules knowledge in a second place.
     // A non-object is dropped rather than 400'd — it is optional, and an old client that
     // omits it must keep working.
-    const matchOptions =
-      options !== null && typeof options === 'object' && !Array.isArray(options) ? options : {};
+    const matchOptions: Record<string, unknown> =
+      options !== null && typeof options === 'object' && !Array.isArray(options)
+        ? { ...options }
+        : {};
+    // Snake's skin rides alongside the numeric options rather than inside them, because the
+    // clients type `options` as a string->int map. Stored opaquely and validated by the
+    // ENGINE, exactly like every other per-game setting — this router still knows no rules.
+    if (typeof skin === 'string' && skin.length <= 32) matchOptions.skin = skin;
     const opponents = opponent_ids.filter(
       (id: unknown): id is string => typeof id === 'string' && UUID_RE.test(id) && id !== userId
     );

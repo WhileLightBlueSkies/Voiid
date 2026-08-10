@@ -44,6 +44,9 @@ struct GamesHomeView: View {
     /// The open online match, as id + slug. The SLUG chooses the renderer.
     @State private var openMatch: OpenMatch?
     @State private var showLeaderboard = false
+    /// The snake appearance picker. Snake-only, so it lives here rather than in the shared
+    /// setup sheet every game uses.
+    @State private var showSkinPicker = false
 
     private struct OpenMatch: Identifiable, Hashable {
         let id: String
@@ -171,7 +174,10 @@ struct GamesHomeView: View {
                             onRestart: {
                                 Task {
                                     if let id = await GamesEngine.shared.createSolo(
-                                        slug: "snake", options: ["bots": 5]) {
+                                        slug: "snake",
+                                        options: ["bots": 5].merging(
+                                            SnakeChoiceStore.matchOptions) { a, _ in a },
+                                        skin: SnakeChoiceStore.skinId) {
                                         openMatch = OpenMatch(id: id, slug: "snake")
                                     }
                                 }
@@ -192,6 +198,10 @@ struct GamesHomeView: View {
                     }
                 }
                 .environmentObject(session)
+            }
+            .sheet(isPresented: $showSkinPicker) {
+                SnakeSkinPicker { showSkinPicker = false }
+                    .presentationDetents([.medium, .large])
             }
             .sheet(item: $setupGame) { game in
                 GameSetupSheet(
@@ -224,14 +234,18 @@ struct GamesHomeView: View {
                                 case .hard:     bots = 8
                                 }
                                 if let id = await GamesEngine.shared.createSolo(
-                                    slug: slug, options: ["bots": bots]) {
+                                    slug: slug,
+                                    options: ["bots": bots].merging(
+                                        SnakeChoiceStore.matchOptions) { a, _ in a },
+                                    skin: SnakeChoiceStore.skinId) {
                                     openMatch = OpenMatch(id: id, slug: slug)
                                 }
                             }
                         } else {
                             botGame = BotSession(slug: game.slug, level: level, skill: skill)
                         }
-                    })
+                    },
+                    onCustomise: game.slug == "snake" ? { showSkinPicker = true } : nil)
             }
             .sheet(item: $pendingGame) { game in
                 OpponentPickerSheet(conversations: chat.directConversations) { convo in

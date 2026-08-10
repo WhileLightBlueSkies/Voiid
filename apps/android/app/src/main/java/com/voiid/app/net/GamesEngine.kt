@@ -700,9 +700,13 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
      * screens, which simulate turn-based opponents locally because those games have no
      * continuous state to keep in sync.
      */
-    suspend fun createSolo(slug: String, options: Map<String, Int> = emptyMap()): String? {
+    suspend fun createSolo(
+        slug: String,
+        options: Map<String, Int> = emptyMap(),
+        skin: String? = null,
+    ): String? {
         return runCatching {
-            val id = service.create(slug, emptyList(), options)
+            val id = service.create(slug, emptyList(), options, skin)
             open(id)
             id
         }.getOrElse {

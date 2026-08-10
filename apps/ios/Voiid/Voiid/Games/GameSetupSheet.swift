@@ -22,6 +22,9 @@ struct GameSetupSheet: View {
     let gameName: String
     let onPlayFriend: () -> Void
     let onPlayBot: (BotDifficulty, Double) -> Void
+    /// Snake only: open the appearance picker. Nil hides the row, so no other game shows an
+    /// option it does not have.
+    var onCustomise: (() -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
     @State private var botExpanded = false
@@ -37,6 +40,14 @@ struct GameSetupSheet: View {
                 .font(VoiidFont.rounded(14, .regular))
                 .foregroundStyle(VoiidColor.textSecondary)
                 .padding(.bottom, VoiidSpacing.sm)
+
+            if let onCustomise {
+                option(icon: "paintpalette", title: "Your snake",
+                       subtitle: "Pick a skin or a colour") {
+                    dismiss()
+                    onCustomise()
+                }
+            }
 
             option(icon: "person", title: "A friend",
                    subtitle: "Online — counts on the leaderboard") {

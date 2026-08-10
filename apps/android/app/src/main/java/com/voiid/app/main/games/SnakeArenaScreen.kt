@@ -233,6 +233,25 @@ fun SnakeArenaScreen(
                 noteHighlighted = beatBest,
                 onRestart = onRestart,
                 onQuit = onClose,
+                // BRAG. The whole reason this game sits inside a messaging app: the people you
+                // want to beat are already one tap away, and a score with nobody to show it to
+                // is a score you forget. Rides the ordinary share sheet rather than a bespoke
+                // flow, so it works with any conversation the user already has.
+                onChallenge = mine?.let { m ->
+                    {
+                        val text =
+                            if (beatBest) "New best in Snake: ${m.mass.toInt()}. Beat that."
+                            else "I got ${m.mass.toInt()} in Snake. Beat that."
+                        context.startActivity(
+                            android.content.Intent.createChooser(
+                                android.content.Intent(android.content.Intent.ACTION_SEND)
+                                    .setType("text/plain")
+                                    .putExtra(android.content.Intent.EXTRA_TEXT, text),
+                                "Challenge a friend",
+                            )
+                        )
+                    }
+                },
             )
         } else if (mine != null && !mine.alive) {
             DeathPanel(
@@ -318,6 +337,7 @@ private fun BoxScope.GameOverPanel(
     noteHighlighted: Boolean = false,
     onRestart: (() -> Unit)?,
     onQuit: () -> Unit,
+    onChallenge: (() -> Unit)? = null,
 ) {
     Box(
         Modifier
@@ -355,6 +375,32 @@ private fun BoxScope.GameOverPanel(
                 ) {
                     Text("Restart", color = Color(0xFF07060F),
                         fontSize = 15.sp, fontWeight = FontWeight.Black)
+                }
+            }
+
+            if (onChallenge != null) {
+                Box(
+                    Modifier
+                        .padding(top = 18.dp)
+                        .background(Color.White.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
+                        .pointerInput(Unit) { detectTapGestures { onChallenge() } }
+                        .padding(horizontal = 22.dp, vertical = 11.dp),
+                ) {
+                    Text("Challenge a friend", color = Color.White.copy(alpha = 0.85f),
+                        fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+
+            if (onChallenge != null) {
+                Box(
+                    Modifier
+                        .padding(top = 18.dp)
+                        .background(Color.White.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
+                        .pointerInput(Unit) { detectTapGestures { onChallenge() } }
+                        .padding(horizontal = 22.dp, vertical = 11.dp),
+                ) {
+                    Text("Challenge a friend", color = Color.White.copy(alpha = 0.85f),
+                        fontSize = 14.sp, fontWeight = FontWeight.Bold)
                 }
             }
 

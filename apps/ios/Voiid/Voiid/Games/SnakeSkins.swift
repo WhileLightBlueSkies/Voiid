@@ -89,6 +89,15 @@ enum SnakeSkins {
     /// rather than as a featureless tube.
     static func resolve(_ id: String?, fallback: SIMD4<Float>) -> SnakeSkin {
         if let id, let skin = catalogue[id] { return skin }
+        // `custom:RRGGBB` from the colour picker. Rendered as a checkered two-band skin like
+        // any other, which is why a custom colour needs no catalogue entry at all.
+        if let id, id.hasPrefix("custom:"), let rgb = UInt32(id.dropFirst(7), radix: 16) {
+            return checkered(SIMD4(
+                Float((rgb >> 16) & 0xFF) / 255,
+                Float((rgb >> 8) & 0xFF) / 255,
+                Float(rgb & 0xFF) / 255,
+                1))
+        }
         return checkered(fallback)
     }
 

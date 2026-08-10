@@ -39,6 +39,8 @@ struct SnakeArenaView: View {
     @State private var lastHeading: Double = 0
     /// Whether the finished match set a new personal best.
     @State private var beatBest = false
+    /// Set to open the share sheet with a challenge message.
+    @State private var shareText: String?
 
     private var me: String? { TokenStore.shared.userId }
 
@@ -90,6 +92,14 @@ struct SnakeArenaView: View {
             while !Task.isCancelled {
                 engine.flushSteering()
                 try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { shareText != nil },
+            set: { if !$0 { shareText = nil } }
+        )) {
+            if let shareText {
+                ShareSheet(items: [shareText])
             }
         }
         .onDisappear {
@@ -179,6 +189,28 @@ struct SnakeArenaView: View {
                             .foregroundStyle(.white.opacity(0.5))
                             .padding(.top, 4)
                     }
+                }
+
+                // BRAG. The whole reason this game sits inside a messaging app: the people
+                // you want to beat are already one tap away, and a score with nobody to show
+                // it to is a score you forget. Rides the ordinary share sheet rather than a
+                // bespoke flow, so it works with any conversation the user already has.
+                if let mass {
+                    Button {
+                        let text = SnakeRecordStore.best == mass
+                            ? "New best in Snake: \(mass). Beat that."
+                            : "I got \(mass) in Snake. Beat that."
+                        shareText = text
+                    } label: {
+                        Label("Challenge a friend", systemImage: "square.and.arrow.up")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.85))
+                            .padding(.horizontal, 22)
+                            .padding(.vertical, 11)
+                            .background(.white.opacity(0.12),
+                                        in: RoundedRectangle(cornerRadius: 12))
+                    }
+                    .padding(.top, 18)
                 }
 
                 if let onRestart {
@@ -571,3 +603,5 @@ final class TrailStore {
         }
     }
 }
+
+

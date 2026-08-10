@@ -35,6 +35,9 @@ struct GamesAPI {
         /// Per-game settings chosen at creation (hand cricket's over count). Stored on the
         /// match row and validated by the engine — this client sends, it does not police.
         let options: [String: Int]
+        /// Snake's chosen skin id. A separate field because `options` is [String: Int] across
+        /// every game, and widening that for one game's cosmetic would touch four others.
+        let skin: String?
     }
     struct CreateResponse: Decodable {
         let match_id: String
@@ -80,11 +83,12 @@ struct GamesAPI {
     func create(
         slug: String,
         opponentIds: [String],
-        options: [String: Int] = [:]
+        options: [String: Int] = [:],
+        skin: String? = nil
     ) async throws -> String {
         let res: CreateResponse = try await api.request(
             "POST", "games/matches",
-            body: CreateBody(slug: slug, opponent_ids: opponentIds, options: options))
+            body: CreateBody(slug: slug, opponent_ids: opponentIds, options: options, skin: skin))
         return res.match_id
     }
 
