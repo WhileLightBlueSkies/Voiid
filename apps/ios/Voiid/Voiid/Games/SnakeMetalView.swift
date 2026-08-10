@@ -307,6 +307,12 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     /// a network stall (nothing about a spark's decay is server truth).
     private var lastParticleStep: TimeInterval = 0
 
+    /// The render clock, in SERVER time. Persistent renderer state — NOT recomputed per frame.
+    /// See `advanceClock`.
+    private var renderClock: Double = 0
+    /// Host-clock timestamp of the previous `advanceClock` call, for the clock's own dt.
+    private var lastDrawAt: TimeInterval = 0
+
     init(engine: GamesEngine, me: String?, hud: SnakeHudModel) {
         self.engine = engine
         self.me = me
@@ -731,6 +737,34 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     /// the newest frame, held, and jumped. That hold-jump cycle IS the jitter.
     private static let interpDelay: Double = 0.15
 
+    /// The instant to draw the world at, in SERVER time.
+    ///
+    /// NEVER anchored to a frame's ARRIVAL time. Arrival jitter is precisely what the frame
+    /// buffer exists to absorb; rebuilding the clock from it on every frame feeds that jitter
+    /// straight back into the picture — the world snaps by (0.1 - interArrivalGap) seconds of
+    /// travel, ten times a second, which at BASE_SPEED 240 u/s is most of a head radius per
+    /// snap. Instead the clock free-runs on the local display clock and closes any drift by
+    /// running slightly fast or slow. A ±10% rate error is imperceptible; a position snap is
+    /// the bug.
+    private func advanceClock(newest: GamesEngine.SnakeFrame) -> Double {
+        let now = CACurrentMediaTime()
+        let dt = lastDrawAt > 0 ? min(now - lastDrawAt, 0.25) : 0
+        lastDrawAt = now
+
+        let target = newest.state.time - Self.interpDelay
+
+        // First frame, or a real stall (app backgrounded, socket reconnected): hard resync.
+        // Springing across a gap this large would sweep the world instead of cutting.
+        if renderClock == 0 || abs(target - renderClock) > 0.5 {
+            renderClock = target
+        } else {
+            let drift = target - renderClock
+            let rate = 1.0 + max(-0.10, min(0.10, drift * 0.5))
+            renderClock += dt * rate
+        }
+        return renderClock
+    }
+
     private func buildFrame() -> Uniforms? {
         let frames = engine.snakeFramesSnapshot
         guard let newest = frames.last else { return nil }
@@ -741,9 +775,12 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         var to = newest.state
         var t = 1.0
 
+        // Advanced EVERY frame, including when only one server frame is buffered: the clock is
+        // persistent state, and skipping the call would let its `dt` accumulate across the gap
+        // and lurch on the next draw.
+        let renderT = advanceClock(newest: newest)
+
         if frames.count >= 2 {
-            let elapsed = CACurrentMediaTime() - newest.arrivedAt
-            let renderT = newest.state.time + elapsed - Self.interpDelay
             var picked = false
             for i in stride(from: frames.count - 2, through: 0, by: -1) {
                 let a = frames[i].state, b = frames[i + 1].state
