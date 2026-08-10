@@ -40,13 +40,22 @@ struct CricketAnnouncement: Equatable, Identifiable {
     /// One line of consequence. What it MEANS for the player, not a restatement of the title.
     let detail: String
 
-    /// Seconds the card stays up before dismissing itself.
+    /// Seconds the message stays on the pitch before dismissing itself.
+    ///
+    /// DOUBLED FROM THE FIRST PASS (2.0-2.8s). Those were timed against how long the text takes
+    /// to READ, which is the wrong measure — an announcement also has to be noticed, parsed,
+    /// and turned into a decision. "You need 14 to win" is four words and several seconds of
+    /// thought, and the innings break is the one moment in the match where the player is
+    /// re-planning rather than reacting.
+    ///
+    /// A message that outstays its welcome costs a beat; one that leaves early costs the
+    /// information entirely, and there is no way to ask for it back.
     var duration: Double {
         switch kind {
-        case .toss:         return 2.6
-        case .inningsBreak: return 2.8
-        case .roleChange:   return 2.0
-        case .target:       return 2.6
+        case .toss:         return 5.2
+        case .inningsBreak: return 5.6     // carries the target — the most thinking per word
+        case .roleChange:   return 4.0
+        case .target:       return 5.2
         }
     }
 
