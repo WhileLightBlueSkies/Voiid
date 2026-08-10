@@ -91,14 +91,15 @@ struct TicTacToeView: View {
         }
         // Mark placed. The board only ever GAINS marks mid-match (a cell, once filled, never
         // empties), so diffing against the previously-seen board finds exactly the cell that
-        // just changed and its seat (0 = X, 1 = O) picks the pitch — a plain count comparison
-        // could not tell WHICH mark landed, and that is what a listener needs to pick a sound.
+        // just changed and its seat (0 = X, 1 = O) picks the sound — a plain count comparison
+        // could not tell WHICH mark landed, and that is what a listener needs.
+        //
+        // The rule itself lives in TicTacToeSound, shared with the bot screen, so a bot move
+        // and a human move cannot drift apart: the player must not be able to tell which one
+        // just played from the sound alone.
         .onChange(of: engine.state?.board) { oldBoard, newBoard in
-            guard let oldBoard, let newBoard, oldBoard.count == newBoard.count else { return }
-            for i in newBoard.indices where oldBoard[i] == nil && newBoard[i] != nil {
-                GameAudio.shared.play(newBoard[i] == 0 ? "mark_x" : "mark_o", gain: 0.55)
-                break   // exactly one cell changes per move; server enforces this
-            }
+            guard let oldBoard, let newBoard else { return }
+            TicTacToeSound.boardChanged(from: oldBoard, to: newBoard, mySeat: mySeat)
         }
         // A WIN'S SOUND IS NOT PLAYED HERE. `win_line` belongs to the stroke that draws it and
         // fires from TicTacToeBoard on the same beat the stroke starts — 120 ms after the mark
@@ -106,7 +107,7 @@ struct TicTacToeView: View {
         .onChange(of: engine.state?.finished) { _, finished in
             guard finished == true, let state = engine.state else { return }
             if state.winnerUserId == nil {
-                GameAudio.shared.play("draw", gain: 0.5)
+                GameAudio.shared.play("chalk_erase", gain: 0.55)
                 withAnimation { resultRevealed = true }
             }
         }
@@ -138,7 +139,7 @@ struct TicTacToeView: View {
         let settled = state.finished && resultRevealed
         let text: String = {
             if settled {
-                guard let winner = state.winnerUserId else { return "Draw" }
+                guard let winner = state.winnerUserId else { return "Dead heat — nobody could force it" }
                 return winner == me ? "You win" : "You lose"
             }
             return isMyTurn ? "Your turn" : "Their turn"

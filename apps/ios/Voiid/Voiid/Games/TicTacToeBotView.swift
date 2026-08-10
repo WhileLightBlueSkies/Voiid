@@ -49,10 +49,8 @@ struct TicTacToeBotView: View {
         // move and a human move sound identical (the player should not be able to tell
         // which one just played from the sound alone).
         .onChange(of: match.board) { oldBoard, newBoard in
-            for i in newBoard.indices where oldBoard[i] == nil && newBoard[i] != nil {
-                GameAudio.shared.play(newBoard[i] == 0 ? "mark_x" : "mark_o", gain: 0.55)
-                break
-            }
+            TicTacToeSound.boardChanged(
+                from: oldBoard, to: newBoard, mySeat: TicTacToeBotMatch.humanSeat)
         }
         // A WIN'S SOUND IS NOT PLAYED HERE. `win_line` belongs to the stroke that draws it and
         // fires from TicTacToeBoard on the same beat the stroke starts — 120 ms after the mark
@@ -60,7 +58,7 @@ struct TicTacToeBotView: View {
         .onChange(of: match.finished) { _, finished in
             guard finished else { resultRevealed = false; return }
             if match.winnerSeat == nil {
-                GameAudio.shared.play("draw", gain: 0.5)
+                GameAudio.shared.play("chalk_erase", gain: 0.55)
                 withAnimation { resultRevealed = true }
             }
         }
@@ -147,7 +145,7 @@ struct TicTacToeBotView: View {
         let settled = match.finished && resultRevealed
         let text: String = {
             if settled {
-                guard let w = match.winnerSeat else { return "Draw" }
+                guard let w = match.winnerSeat else { return "Dead heat — nobody could force it" }
                 return w == TicTacToeBotMatch.humanSeat ? "You win" : "Bot wins"
             }
             return match.botThinking ? "Bot is thinking…" : "Your turn"

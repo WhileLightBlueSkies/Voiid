@@ -131,7 +131,7 @@ fun TicTacToeBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) 
             winnerSeat = null
             if (!recorded) { scores.add(level, 0); recorded = true }
             // A draw has no stroke, so it keeps its sound and settles here.
-            GameAudio.play("draw", gain = 0.5f)
+            GameAudio.play("chalk_erase", gain = 0.55f)
             settled = true
             return true
         }
@@ -145,8 +145,9 @@ fun TicTacToeBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) 
         delay(Random.nextLong(320, 620))
         if (!finished && !paused) {
             TicTacToeBot.chooseMove(board.toList(), BOT_SEAT, skill)?.let { move ->
+                val before = board.toList()
                 board[move] = BOT_SEAT
-                GameAudio.play("mark_o", gain = 0.55f)
+                TicTacToeSound.boardChanged(before, board.toList(), HUMAN_SEAT)
                 settleIfOver()
             }
         }
@@ -155,8 +156,9 @@ fun TicTacToeBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) 
 
     fun play(cell: Int) {
         if (finished || botThinking || paused || board[cell] != null) return
+        val before = board.toList()
         board[cell] = HUMAN_SEAT
-        GameAudio.play("mark_x", gain = 0.55f)
+        TicTacToeSound.boardChanged(before, board.toList(), HUMAN_SEAT)
         if (settleIfOver()) return
         botThinking = true
         botTurnToken++
@@ -270,7 +272,7 @@ private fun PlayBoard(
             // been drawn, so the player reads the line and then the verdict instead of both at
             // once. Until then the last in-play status holds.
             val status = when {
-                settled && winnerSeat == null -> "Draw"
+                settled && winnerSeat == null -> "Dead heat — nobody could force it"
                 settled && winnerSeat == HUMAN_SEAT -> "You win"
                 settled -> "Bot wins"
                 botThinking -> "Bot is thinking…"

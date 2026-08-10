@@ -63,20 +63,13 @@ fun TicTacToeScreen(matchId: String, onClose: () -> Unit) {
 
     // Mark placed. The board only ever GAINS marks mid-match (a cell, once filled, never
     // empties), so diffing against the previously-seen board finds exactly the cell that just
-    // changed and its seat (0 = X, 1 = O) picks the pitch. Mirrors iOS TicTacToeView's
-    // identical board-diff approach.
+    // changed and its seat (0 = X, 1 = O) picks the sound. The rule lives in TicTacToeSound,
+    // shared with the bot screen and mirroring iOS, so a bot move and a human move cannot
+    // drift apart.
     var lastBoard by remember { mutableStateOf<List<Int?>?>(null) }
     LaunchedEffect(state?.board) {
         val newBoard = state?.board
-        val oldBoard = lastBoard
-        if (oldBoard != null && newBoard != null && oldBoard.size == newBoard.size) {
-            for (i in newBoard.indices) {
-                if (oldBoard[i] == null && newBoard[i] != null) {
-                    GameAudio.play(if (newBoard[i] == 0) "mark_x" else "mark_o", gain = 0.55f)
-                    break   // exactly one cell changes per move; server enforces this
-                }
-            }
-        }
+        TicTacToeSound.boardChanged(lastBoard, newBoard, state?.players?.indexOf(me)?.takeIf { it >= 0 })
         lastBoard = newBoard
     }
 
@@ -92,7 +85,7 @@ fun TicTacToeScreen(matchId: String, onClose: () -> Unit) {
     LaunchedEffect(state?.finished) {
         val finished = state?.finished == true
         if (finished && !lastFinished && state?.winnerUserId == null) {
-            GameAudio.play("draw", gain = 0.5f)
+            GameAudio.play("chalk_erase", gain = 0.55f)
             resultRevealed = true
         }
         lastFinished = finished
@@ -153,7 +146,7 @@ fun TicTacToeScreen(matchId: String, onClose: () -> Unit) {
                 // instead of both at once. Until then the last in-play status holds.
                 val settled = s.finished && resultRevealed
                 val status = when {
-                    settled && s.winnerUserId == null -> "Draw"
+                    settled && s.winnerUserId == null -> "Dead heat — nobody could force it"
                     settled && s.winnerUserId == me -> "You win"
                     settled -> "You lose"
                     isMyTurn -> "Your turn"

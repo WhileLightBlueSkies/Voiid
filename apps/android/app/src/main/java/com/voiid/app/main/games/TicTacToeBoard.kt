@@ -114,7 +114,7 @@ fun TicTacToeBoard(
         if (reduceMotion) {
             strokeProgress.snapTo(1f)
             swelled = true
-            GameAudio.play("win_line", gain = 0.7f)
+            GameAudio.play("chalk_line", gain = 0.75f)
             haptics.success()
             onComplete?.invoke()
             return@LaunchedEffect
@@ -125,7 +125,7 @@ fun TicTacToeBoard(
         delay(WIN_LINE_HOLD_MS)
         // Sound and stroke start on the SAME beat: the scrape is the stroke, and a scrape that
         // outlasts the line reads as broken without the player knowing why.
-        GameAudio.play("win_line", gain = 0.7f)
+        GameAudio.play("chalk_line", gain = 0.75f)
         strokeProgress.animateTo(
             1f,
             animationSpec = tween(WIN_LINE_DURATION_MS, easing = EaseOutCubic),
@@ -291,7 +291,11 @@ private fun Cell(
             .scale(winScale)
             .clip(RoundedCornerShape(VoiidRadius.lg))
             .background(if (isWinning) VoiidColor.primary.copy(alpha = 0.20f) else VoiidColor.surfaceCard)
-            .clickable(enabled = enabled) { onTap() }
+            // ALWAYS CLICKABLE, refused in the handler. A REJECTED TAP IS STILL A TAP:
+            // `enabled = false` meant an occupied cell or a mistimed touch produced nothing at
+            // all, which is indistinguishable from the app having missed the finger. The board
+            // still refuses the move — it just says so.
+            .clickable { if (enabled) onTap() else TicTacToeSound.rejected() }
             .semantics { contentDescription = ticTacToeCellLabel(mark, index) },
         contentAlignment = Alignment.Center,
     ) {
@@ -319,4 +323,57 @@ private fun Cell(
 internal fun ticTacToeCellLabel(mark: Int?, index: Int): String {
     val position = "row ${index / 3 + 1}, column ${index % 3 + 1}"
     return if (mark == null) "Empty, $position" else "${if (mark == 0) "X" else "O"}, $position"
+}
+
+/**
+ * The sounds a board change makes, derived from the board alone.
+ *
+ * SHARED BY BOTH SCREENS, and mirrors iOS `TicTacToeSound`. The online and bot screens each
+ * used to diff the board themselves and call `mark_x`/`mark_o`; two copies of one rule is two
+ * chances for a bot move and a human move to stop sounding identical, which is precisely what
+ * a player must not be able to hear.
+ */
+object TicTacToeSound {
+    /**
+     * Play the chalk for whichever mark just landed, plus `catch` if it blocked a threat.
+     *
+     * [mySeat] is the local player's seat, or null where that is unknown.
+     */
+    fun boardChanged(old: List<Int?>?, new: List<Int?>?, mySeat: Int?) {
+        if (old == null || new == null || old.size != new.size) return
+        val i = new.indices.firstOrNull { old[it] == null && new[it] != null } ?: return
+        val seat = new[i] ?: return
+
+        // A RANDOM VARIANT PER PLACEMENT, not one file with pitch jitter. Chalk is never
+        // identical twice and this fires up to nine times in thirty seconds — one file plus
+        // jitter still reads as one file by move four.
+        GameAudio.playAny(if (seat == 0) GameAudio.CHALK_X else GameAudio.CHALK_O, gain = 0.55f)
+
+        // §3: "your winning threat gets blocked" is Tic Tac Toe's `catch` moment. Layered UNDER
+        // the chalk, never instead of it — the opponent still drew a mark, and the shared sound
+        // is the context around it.
+        if (mySeat != null && seat != mySeat && blockedThreat(mySeat, i, old)) {
+            GameAudio.play(GameAudio.CATCH, gain = 0.5f)
+        }
+    }
+
+    /**
+     * Did [cell] complete a line [seat] was one move from taking?
+     *
+     * Pure presentation — it decides which sound to play and nothing else. The server stays the
+     * only referee; this cannot make a match wrong, only under- or over-annotate one.
+     */
+    private fun blockedThreat(seat: Int, cell: Int, board: List<Int?>): Boolean =
+        TicTacToeBot.lines.any { line ->
+            cell in line && line.filter { it != cell }.all { board[it] == seat }
+        }
+
+    /**
+     * An illegal tap: a cell that is taken, or a tap when it is not your turn.
+     *
+     * This had NO feedback at all — the cell was simply not clickable, so a mistimed tap was
+     * indistinguishable from the app not registering the touch. `chalk_stub` is chalk touching
+     * down and never travelling: physically "that didn't take".
+     */
+    fun rejected() = GameAudio.play("chalk_stub", gain = 0.45f)
 }
