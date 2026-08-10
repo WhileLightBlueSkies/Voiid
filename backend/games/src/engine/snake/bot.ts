@@ -14,6 +14,7 @@
 // speed bonus, no wider turn arc, no wall immunity and no knowledge it should not have. If a
 // bot beats you, it beat you with your own controls.
 
+import { TUNING } from './index';
 import {
   arenaSdf,
   shortestAngle,
@@ -73,18 +74,32 @@ export function stepBot(
 ): void {
   sn.boost = false;
 
-  const speed = 240;
+  // Read from TUNING rather than hardcoded.
+  //
+  // These were literals (240 and 260 deg/s) calibrated for the old, slower game, and after
+  // the speed/turn-rate increase the bots' wall avoidance was tuned for a game that no longer
+  // existed: they began braking far too late and drove into the boundary. A bot that dies to
+  // a wall it "saw" reads as broken, and the numbers must not be able to drift from the
+  // simulation's again.
+  const speed = TUNING.BASE_SPEED;
 
   // --- Survival: border ---------------------------------------------------------------
   // The awareness distance is derived from the turn radius, not picked by feel. A bot must
   // start turning while it still has room to complete the turn; below speed/turnRate no
   // amount of reaction time saves it, and every wall becomes lethal.
-  const turnRadius = speed / (260 * DEG);
-  const awareness = turnRadius * 1.7;
+  const turnRadius = speed / (TUNING.TURN_RATE * DEG);
+  // 2.6x the turn radius, widened from 1.7 after the speed increase.
+  //
+  // A turn radius is the space needed for a PERFECT turn started at exactly the right
+  // instant. A bot decides at 10 Hz, so it can be up to a tick late, and it may already be
+  // turning the wrong way when it notices — 1.7x left no room for either and bots drove into
+  // the wall in numbers. The margin has to cover the reaction, not just the geometry.
+  const awareness = turnRadius * 2.6;
 
   const borderDist = -arenaSdf(arena, arenaRadius, sn.x, sn.y);
-  const lookX = sn.x + Math.cos(sn.h) * speed * 0.9;
-  const lookY = sn.y + Math.sin(sn.h) * speed * 0.9;
+  // Look a full second ahead, not 0.9 — at 300 u/s that is 300 units of warning.
+  const lookX = sn.x + Math.cos(sn.h) * speed * 1.0;
+  const lookY = sn.y + Math.sin(sn.h) * speed * 1.0;
   const wallAhead = arenaSdf(arena, arenaRadius, lookX, lookY) + 11 >= 0;
 
   if (borderDist < awareness || wallAhead) {
@@ -177,7 +192,9 @@ export function stepBot(
     // trades a kill for its own death reads as broken, not as aggressive — and at the higher
     // speed it now runs at, the wall arrives sooner than it used to.
     const ownRoom = -arenaSdf(arena, arenaRadius, sn.x, sn.y);
-    if (-arenaSdf(arena, arenaRadius, px, py) > 160 && ownRoom > 220) {
+    // Require more room than the wall-avoidance threshold, so hunting can never pull a bot
+    // into the band where it should already be turning away.
+    if (-arenaSdf(arena, arenaRadius, px, py) > awareness && ownRoom > awareness * 1.4) {
       sn.th = Math.atan2(py - sn.y, px - sn.x);
       mem.jitter += dt * 2.6;
       sn.th += Math.sin(mem.jitter) * 2 * DEG;

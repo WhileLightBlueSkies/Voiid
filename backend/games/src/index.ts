@@ -123,6 +123,7 @@ function stopLoop(matchId: string): void {
   // Drop the live engine with the loop. Leaving it would leak a whole world per finished
   // match, and a rejoin must rebuild from Redis rather than resume a stale in-memory copy.
   liveEngines.delete(matchId);
+  liveMatches.delete(matchId);
   tickCounts.delete(matchId);
 }
 
@@ -142,16 +143,38 @@ function stopLoop(matchId: string): void {
  */
 const liveEngines = new Map<string, GameEngine>();
 
+/**
+ * The live match record, cached beside its engine.
+ *
+ * Kept for the same reason the engine is: re-reading it from Redis every tick put a network
+ * round-trip inside the tick budget, and a slow one cost a whole dropped frame.
+ */
+const liveMatches = new Map<string, LiveMatch>();
+
 /** Persist every Nth tick. A crash loses at most this many ticks of an arcade match. */
 const PERSIST_EVERY = 5;
 const tickCounts = new Map<string, number>();
 
 async function runTick(matchId: string): Promise<void> {
-  const m = await loadMatch(matchId);
+  // NO REDIS READ ON THE HOT PATH.
+  //
+  // This used to `loadMatch` every single tick — a network round-trip inside a 100 ms budget,
+  // purely to fetch metadata the live record already holds. Whenever that read ran slow the
+  // `running` guard below dropped the NEXT tick entirely, so the game stalled for a beat on a
+  // regular cadence. That was the periodic freeze.
+  //
+  // The live record is cached alongside the live engine and only re-read from Redis when we
+  // do not have one (a process restart, or the first tick of a match).
+  let m = liveMatches.get(matchId);
   if (!m) {
-    // Match expired or was finished by another path. Nothing left to drive.
-    stopLoop(matchId);
-    return;
+    const loaded = await loadMatch(matchId);
+    if (!loaded) {
+      // Match expired or was finished by another path. Nothing left to drive.
+      stopLoop(matchId);
+      return;
+    }
+    m = loaded;
+    liveMatches.set(matchId, m);
   }
 
   const factory = factoryFor(m.slug);
@@ -160,8 +183,6 @@ async function runTick(matchId: string): Promise<void> {
     return;
   }
 
-  // Reuse the live engine; fall back to rebuilding from Redis after a restart, or the very
-  // first tick of a match.
   let engine = liveEngines.get(matchId);
   if (!engine) {
     engine = factory.restore(m.state, m.secret);
@@ -231,7 +252,10 @@ async function handleInput(msg: Record<string, any>): Promise<void> {
   const userId = msg.from_user_id;
   if (typeof matchId !== 'string' || typeof userId !== 'string') return;
 
-  const m = await loadMatch(matchId);
+  // Prefer the CACHED record when a loop is running. Reading Redis here would hand back a
+  // copy that is up to PERSIST_EVERY ticks stale, and mutating that copy would then fight
+  // the loop's own — two records for one match, each overwriting the other.
+  const m = liveMatches.get(matchId) ?? await loadMatch(matchId);
   if (!m) return; // unknown/expired match — silent, same as the relay's posture
 
   // Membership is enforced HERE, unlike the relay's location path which cannot check it

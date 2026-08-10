@@ -43,9 +43,16 @@ import { stepBot, type BotMemory } from './bot';
 // Exported so the headless test can reason about them, and so a future dev overlay has one
 // place to write to.
 export const TUNING = {
-  // docs/GAMES.md §80 allows ~10-15/sec. 10 is chosen at the bottom of that band because
-  // bandwidth scales linearly with it and this frame is not small: 15 Hz measured 39 KB/s
-  // per player against 26 at 10 Hz, for motion the client interpolates smoothly either way.
+  // STAYS AT 10, and this is a measured decision rather than a default.
+  //
+  // Raising it was the obvious move and it does not pay. Measured per player: 10 Hz = 26 KB/s,
+  // 12 Hz = 37, 15 Hz = 41 — worse than linear, because a faster tick also keeps bots alive
+  // longer, so they grow longer, so every body costs more on every frame.
+  //
+  // And the thing it would buy is no longer worth buying. Before prediction, tick rate bought
+  // SMOOTHNESS. Now that the local snake is predicted, it only decides how often prediction
+  // is corrected — and those corrections were already invisible at 10. Paying 40% more mobile
+  // data for accuracy nobody is looking at is the wrong trade.
   TICK_HZ: 10,
   // Faster, per user testing: 240 read as sluggish rather than as weighty.
   BASE_SPEED: 300,          // units/sec
