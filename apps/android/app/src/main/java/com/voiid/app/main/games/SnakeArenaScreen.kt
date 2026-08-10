@@ -531,20 +531,41 @@ private fun advanceClock(clock: RenderClock, newest: GamesEngine.SnakeFrame, now
 private const val JOY_RADIUS_DP = 60f
 private const val JOY_KNOB_DP = 26f
 
-/** The pair of frames bracketing the render instant, plus the blend between them. */
+/**
+ * The pair of frames bracketing the render instant, plus the blend between them.
+ *
+ * [overshoot] is how far the render clock has run PAST the newest buffered frame, bounded to
+ * [MAX_EXTRAPOLATION] — non-zero only when the buffer has run dry.
+ */
 private class Sample(
     val from: GamesEngine.SnakeState,
     val to: GamesEngine.SnakeState,
     val t: Double,
+    val overshoot: Double = 0.0,
 )
+
+/**
+ * How far past the newest buffered frame a head may be carried on its last heading before the
+ * world simply holds.
+ *
+ * A frozen world reads as a hang, which is the worst available response to a stall: the player
+ * cannot tell it from the app dying. 100 ms of a straight line is very likely correct — a
+ * snake's turn rate is capped ([SnakeMotion.TURN_RATE]), so it cannot have gone far off this
+ * path — and the bound means the client can never invent a position the server would not
+ * confirm. It also stays under TrailStore's 60-unit resync distance at boost speed
+ * (510 * 0.10 = 51), so extrapolating never triggers a trail re-seed and the body follows the
+ * head instead of detaching from it.
+ *
+ * Identical to iOS `SnakeMetalView.maxExtrapolation`.
+ */
+private const val MAX_EXTRAPOLATION = 0.10
 
 /**
  * Pick the two frames to draw between.
  *
  * The render instant comes from the free-running [advanceClock] above, in the SERVER's own time
- * base, so arrival jitter moves nothing. When the buffer runs dry the newest frame is HELD,
- * never extrapolated — extrapolation looks smoother right up until the real frame lands
- * elsewhere and everything snaps, which reads far worse.
+ * base, so arrival jitter moves nothing. When the buffer runs dry, [Sample.overshoot] carries
+ * heads forward on their last heading for up to [MAX_EXTRAPOLATION] rather than freezing.
  */
 private fun pickSample(
     frames: List<GamesEngine.SnakeFrame>,
@@ -557,7 +578,8 @@ private fun pickSample(
     // persistent state, and skipping the call would let its `dt` accumulate across the gap and
     // lurch on the next draw.
     val renderT = advanceClock(clock, newest, now)
-    if (frames.size < 2) return Sample(newest.state, newest.state, 1.0)
+    val overshoot = (renderT - newest.state.time).coerceIn(0.0, MAX_EXTRAPOLATION)
+    if (frames.size < 2) return Sample(newest.state, newest.state, 1.0, overshoot)
 
     for (i in frames.size - 2 downTo 0) {
         val a = frames[i].state
@@ -981,11 +1003,19 @@ private fun DrawScope.drawArena(
     val headings = HashMap<String, Double>(state.snakes.size)
     state.snakes.forEach { sn ->
         val prev = s.from.snakes.firstOrNull { it.id == sn.id }
-        heads[sn.id] = Offset(
-            lerp(prev?.x ?: sn.x, sn.x, s.t).toFloat(),
-            lerp(prev?.y ?: sn.y, sn.y, s.t).toFloat(),
-        )
-        headings[sn.id] = lerpAngle(prev?.heading ?: sn.heading, sn.heading, s.t)
+        var x = lerp(prev?.x ?: sn.x, sn.x, s.t)
+        var y = lerp(prev?.y ?: sn.y, sn.y, s.t)
+        val heading = lerpAngle(prev?.heading ?: sn.heading, sn.heading, s.t)
+        // BUFFER DRY — carry the head forward on its last heading rather than freezing. See
+        // Sample.overshoot. Dead snakes are excluded: they are not moving, and sliding a corpse
+        // forward is inventing motion rather than covering for a missing frame.
+        if (s.overshoot > 0.0 && sn.alive) {
+            val speed = if (sn.boosting) SnakeMotion.BOOST_SPEED else SnakeMotion.BASE_SPEED
+            x += cos(heading) * speed * s.overshoot
+            y += sin(heading) * speed * s.overshoot
+        }
+        heads[sn.id] = Offset(x.toFloat(), y.toFloat())
+        headings[sn.id] = heading
     }
 
     // THE LOCAL SNAKE IS PREDICTED, not interpolated.

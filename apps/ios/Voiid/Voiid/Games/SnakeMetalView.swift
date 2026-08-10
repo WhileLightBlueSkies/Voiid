@@ -740,6 +740,11 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     /// field, where 100 ms of extra staleness is invisible and a stall is not.
     private static let interpDelay: Double = 0.25   // 2.5 ticks at tickHz 10
 
+    /// How far past the newest buffered frame a head may be carried on its last heading before
+    /// the world simply holds. See the `overshoot` call site in `buildFrame`. Identical on
+    /// Android (`MAX_EXTRAPOLATION`).
+    private static let maxExtrapolation: Double = 0.10
+
     /// The instant to draw the world at, in SERVER time.
     ///
     /// NEVER anchored to a frame's ARRIVAL time. Arrival jitter is precisely what the frame
@@ -802,13 +807,33 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
 
         let state = to
 
+        // BUFFER DRY — carry each head forward along its last heading rather than freezing.
+        //
+        // A frozen world reads as a hang, which is the worst available response to a stall:
+        // the player cannot tell it from the app dying. 100 ms of a straight line is very
+        // likely correct — a snake's turn rate is capped (SnakeMotion.turnRate), so it cannot
+        // have gone far off this path — and the bound means the client can never invent a
+        // position the server would not confirm. It also stays under TrailStore's 60-unit
+        // resync distance at boost speed (510 * 0.10 = 51), so extrapolating never triggers a
+        // trail re-seed and the body follows the head instead of detaching from it.
+        let overshoot = min(max(renderT - newest.state.time, 0), Self.maxExtrapolation)
+
         var heads: [String: CGPoint] = [:]
         var headings: [String: Double] = [:]
         for snake in state.snakes {
             let prev = from.snakes.first { $0.id == snake.id }
             let px = prev?.x ?? snake.x, py = prev?.y ?? snake.y
-            heads[snake.id] = CGPoint(x: px + (snake.x - px) * t, y: py + (snake.y - py) * t)
-            headings[snake.id] = Self.lerpAngle(prev?.heading ?? snake.heading, snake.heading, t)
+            var head = CGPoint(x: px + (snake.x - px) * t, y: py + (snake.y - py) * t)
+            let heading = Self.lerpAngle(prev?.heading ?? snake.heading, snake.heading, t)
+            // Dead snakes are not extrapolated: they are not moving, and sliding a corpse
+            // forward is inventing motion rather than covering for a missing frame.
+            if overshoot > 0, snake.alive {
+                let speed = snake.boosting ? SnakeMotion.boostSpeed : SnakeMotion.baseSpeed
+                head.x += cos(heading) * speed * overshoot
+                head.y += sin(heading) * speed * overshoot
+            }
+            heads[snake.id] = head
+            headings[snake.id] = heading
         }
 
         // THE LOCAL SNAKE IS PREDICTED, not interpolated.
