@@ -40,6 +40,20 @@ struct CricketBotView: View {
     @State private var ballsBowled = 0
     @State private var target: Int?
 
+    // MARK: Toss
+    //
+    // Mirrors the server engine's phases exactly, so the two flows cannot drift: the coin is
+    // decided when the match length is chosen (BEFORE anyone can call, same as the server —
+    // deciding it on the call would make the outcome depend on the input), then the human
+    // calls, then whoever won elects.
+    @State private var tossPhase = "toss-call"
+    @State private var tossCoin = ""
+    @State private var tossCalled: String?
+    @State private var tossWonByHuman = false
+    /// Withheld until the call, matching what the server sends — the UI must not be able to
+    /// show a face nobody has called yet.
+    private var tossCoinRevealed: String? { tossCalled == nil ? nil : tossCoin }
+
     @State private var lastEvent: BallEvent?
     @State private var ballToken = 0
     @State private var humanPick: Int?
@@ -65,6 +79,19 @@ struct CricketBotView: View {
 
                 if overs == nil {
                     oversPicker
+                } else if tossPhase != "play" {
+                    // Same two-step toss as the online game, run locally — there is no server
+                    // in a bot match, so this view is the referee for it exactly as it already
+                    // is for the scoring rules.
+                    CricketToss(
+                        phase: tossPhase,
+                        iCall: true,          // you always call against the bot
+                        iElect: tossWonByHuman,
+                        coin: tossCoinRevealed,
+                        called: tossCalled,
+                        opponentName: "The bot",
+                        onCall: callToss,
+                        onElect: electToss)
                 } else {
                     Spacer(minLength: 0)
                     scoreboard
@@ -132,6 +159,11 @@ struct CricketBotView: View {
                 ForEach(1...5, id: \.self) { n in
                     Button {
                         Haptics.tap()
+                        // The coin is decided HERE, before the toss screen appears and so
+                        // before anyone can call it — the same ordering the server uses, and
+                        // for the same reason: a coin decided on the call is a coin whose
+                        // result depends on the call.
+                        tossCoin = Bool.random() ? "heads" : "tails"
                         overs = n
                     } label: {
                         Text("\(n)")
@@ -358,6 +390,41 @@ struct CricketBotView: View {
         }
     }
 
+    // MARK: - Toss
+
+    private func callToss(_ side: String) {
+        tossCalled = side
+        tossWonByHuman = side == tossCoin
+        tossPhase = "toss-decide"
+
+        guard !tossWonByHuman else { return }
+        // The bot won, so it decides. After a beat, so its choice does not land in the same
+        // frame as the coin — the player needs to read the result before it is acted on.
+        Task {
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard tossPhase == "toss-decide" else { return }
+            electToss(botElection())
+        }
+    }
+
+    private func electToss(_ choice: String) {
+        // Whoever elected, apply it from the ELECTOR's point of view: `tossWonByHuman` says
+        // whose choice this is, so one line covers both.
+        humanBatting = tossWonByHuman ? (choice == "bat") : (choice == "bowl")
+        tossPhase = "play"
+        updateCrowd()
+    }
+
+    /// What the bot elects.
+    ///
+    /// BOWLING FIRST IS THE STRONGER PLAY in a two-wicket format — batting second means
+    /// knowing exactly what you have to chase — so the bot prefers it, and prefers it harder
+    /// at higher difficulty. At low skill it is closer to a coin flip, which keeps easy mode
+    /// feeling like a real opponent rather than a solved one.
+    private func botElection() -> String {
+        Double.random(in: 0..<1) < 0.5 + 0.35 * skill ? "bowl" : "bat"
+    }
+
     /// One resolved ball -> its sound. Delegates to CricketSound, shared with the online game,
     /// so bot and online cricket cannot disagree about what a ball sounds like.
     private func playBallSound(runs: Int, wicket: Bool) {
@@ -404,6 +471,10 @@ struct CricketBotView: View {
         resolving = false; finished = false; humanWon = nil
         paused = false; recorded = false
         humanBatHistory = []; humanBowlHistory = []
+        // The toss is part of a match, so a new match gets a new one. Without this a rematch
+        // would inherit the last toss and walk straight into play with the old sides.
+        tossPhase = "toss-call"; tossCoin = ""; tossCalled = nil; tossWonByHuman = false
+        humanBatting = true
         overs = nil
     }
 }

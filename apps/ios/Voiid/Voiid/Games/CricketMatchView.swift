@@ -119,6 +119,32 @@ struct CricketMatchView: View {
 
     @ViewBuilder
     private func content(_ s: CricketState) -> some View {
+        // THE TOSS OWNS THE SCREEN UNTIL IT RESOLVES. Not a sheet over the scoreboard: there is
+        // no score yet, and showing 0-0 behind a coin invites a tap on a pick pad the server
+        // would only reject.
+        if s.phase != "play" {
+            CricketToss(
+                phase: s.phase,
+                iCall: s.toss.callerSeat == mySeat,
+                iElect: s.toss.wonSeat == mySeat,
+                coin: s.toss.coin,
+                called: s.toss.called,
+                opponentName: opponentName(s),
+                onCall: { engine.callToss($0) },
+                onElect: { engine.electToss($0) })
+        } else {
+            play(s)
+        }
+    }
+
+    private func opponentName(_ s: CricketState) -> String {
+        let theirSeat = mySeat == 0 ? 1 : 0
+        guard s.players.indices.contains(theirSeat) else { return "They" }
+        return UserDirectory.shared.displayName(s.players[theirSeat], fallback: "They")
+    }
+
+    @ViewBuilder
+    private func play(_ s: CricketState) -> some View {
         // My seat decides which half of every by-seat array is mine. A wrong seat would silently
         // swap the whole scoreboard.
         let theirSeat = mySeat == 0 ? 1 : 0

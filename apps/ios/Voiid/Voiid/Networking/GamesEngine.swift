@@ -117,6 +117,26 @@ struct RpsState {
 /// Same anti-cheat shape as `RpsState`: `hasPicked` is booleans, never the picks. A pick is
 /// revealed only once the ball has resolved, in `history`.
 struct CricketState {
+    /// The toss, before ball one (backend/games/src/engine/cricket).
+    ///
+    /// A match opens here rather than in play: one seat calls the coin, and whoever wins
+    /// elects to bat or bowl. `coin` is NIL until the call has been made — the server
+    /// withholds it exactly as it withholds picks, so a client cannot read it and call
+    /// correctly every time.
+    struct Toss {
+        /// Seat that holds the call.
+        let callerSeat: Int
+        /// What they called, or nil before they have.
+        let called: String?
+        /// Which face landed. Nil until `called` is set; revealing it earlier would be the
+        /// whole cheat.
+        let coin: String?
+        /// Seat that won the call and now elects. Nil until the call resolves.
+        let wonSeat: Int?
+        /// "bat" or "bowl", once elected.
+        let choice: String?
+    }
+
     /// One resolved ball. Both picks are safe here — the ball is already scored.
     struct Ball {
         let picks: [Int]
@@ -128,6 +148,9 @@ struct CricketState {
 
     let players: [String]
     let overs: Int
+    /// "toss-call" | "toss-decide" | "play". Nothing is playable until this reads "play".
+    let phase: String
+    let toss: Toss
     let innings: Int
     /// Seat batting RIGHT NOW. Swaps between innings.
     let battingSeat: Int
@@ -155,9 +178,19 @@ struct CricketState {
                 runs: (entry["runs"] as? Int) ?? 0,
                 wicket: (entry["wicket"] as? Bool) ?? false)
         }
+        let tossRaw = payload["toss"] as? [String: Any] ?? [:]
         return CricketState(
             players: players,
             overs: (payload["overs"] as? Int) ?? 2,
+            // Defaults to "play" so a match created before the toss shipped still renders —
+            // the server makes the same assumption on restore.
+            phase: (payload["phase"] as? String) ?? "play",
+            toss: Toss(
+                callerSeat: (tossRaw["callerSeat"] as? Int) ?? 0,
+                called: tossRaw["called"] as? String,
+                coin: tossRaw["coin"] as? String,
+                wonSeat: tossRaw["wonSeat"] as? Int,
+                choice: tossRaw["choice"] as? String),
             innings: (payload["innings"] as? Int) ?? 1,
             battingSeat: (payload["battingSeat"] as? Int) ?? 0,
             scores: (payload["scores"] as? [Int]) ?? [0, 0],
@@ -561,6 +594,22 @@ final class GamesEngine: ObservableObject {
     func pickCricket(_ pick: Int) {
         guard let matchId, let cricket, !cricket.finished else { return }
         WebSocketClient.shared.sendGameInput(matchId: matchId, payload: ["pick": pick])
+    }
+
+    /// Call the toss. `side` is "heads" | "tails".
+    ///
+    /// Fire-and-forget like every other input here. The server refuses a call from the seat
+    /// that does not hold it, so this does not police whose turn it is — it only avoids
+    /// sending a frame we already know is pointless.
+    func callToss(_ side: String) {
+        guard let matchId, let cricket, !cricket.finished else { return }
+        WebSocketClient.shared.sendGameInput(matchId: matchId, payload: ["call": side])
+    }
+
+    /// Elect to bat or bowl after winning the toss. `choice` is "bat" | "bowl".
+    func electToss(_ choice: String) {
+        guard let matchId, let cricket, !cricket.finished else { return }
+        WebSocketClient.shared.sendGameInput(matchId: matchId, payload: ["elect": choice])
     }
 
     /// Create a SOLO match — one human against server-side bots — and enter it.
