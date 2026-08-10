@@ -37,6 +37,8 @@ struct SnakeArenaView: View {
     @State private var stick: CGVector = .zero
     /// Last heading committed, so releasing boost cannot also change direction.
     @State private var lastHeading: Double = 0
+    /// Whether the finished match set a new personal best.
+    @State private var beatBest = false
 
     private var me: String? { TokenStore.shared.userId }
 
@@ -61,6 +63,12 @@ struct SnakeArenaView: View {
                 let mine = state.snakes.first { $0.id == me }
                 if state.finished {
                     gameOverPanel(mass: mine.map { Int($0.mass) })
+                        .onAppear {
+                            // Record ONCE. onAppear fires when the panel enters, and the
+                            // panel only enters on the transition into `finished`.
+                            guard let m = mine else { return }
+                            beatBest = SnakeRecordStore.record(length: Int(m.mass))
+                        }
                 } else if let mine, !mine.alive {
                     deathPanel(mass: Int(mine.mass), deaths: mine.deaths,
                                canRespawn: mine.canRespawn)
@@ -157,6 +165,20 @@ struct SnakeArenaView: View {
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(.white.opacity(0.65))
                         .padding(.top, 6)
+
+                    // A bare score gives no reason to tap again; a near-miss does. This is
+                    // the single cheapest retention line in the whole screen.
+                    if beatBest {
+                        Text("New best!")
+                            .font(.system(size: 15, weight: .heavy))
+                            .foregroundStyle(Color(red: 1.0, green: 0.85, blue: 0.24))
+                            .padding(.top, 4)
+                    } else if SnakeRecordStore.best > mass {
+                        Text("Your best: \(SnakeRecordStore.best)")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.5))
+                            .padding(.top, 4)
+                    }
                 }
 
                 if let onRestart {

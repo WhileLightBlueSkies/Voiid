@@ -42,3 +42,43 @@ class BotScoreStore(context: Context) {
 
     fun clear() = prefs.edit { clear() }
 }
+
+/**
+ * Snake's personal bests, persisted locally.
+ *
+ * Same reasoning as the bot scores above: a practice match never reaches the backend, so
+ * there is nothing to attach a record to and posting one would be an unverifiable claim.
+ *
+ * This exists because a bare final score gives a player no reason to tap again. "You got 84,
+ * your best is 87" does — near-misses drive another attempt far more reliably than the raw
+ * number, and a new best is worth calling out.
+ *
+ * Mirrors iOS `SnakeRecordStore`.
+ */
+class SnakeRecordStore(context: Context) {
+    private val prefs =
+        context.getSharedPreferences("voiid_snake_records", Context.MODE_PRIVATE)
+
+    /** Longest snake ever reached. */
+    val best: Int get() = prefs.getInt(KEY_BEST, 0)
+
+    /**
+     * Cumulative length across every match — the basis for unlocks, because it rewards
+     * PLAYING rather than winning. Gating cosmetics on wins punishes exactly the players
+     * most likely to give up.
+     */
+    val totalLength: Int get() = prefs.getInt(KEY_TOTAL, 0)
+
+    /** Record a finished match. Returns true when this beat the previous best. */
+    fun record(length: Int): Boolean {
+        prefs.edit().putInt(KEY_TOTAL, totalLength + length).apply()
+        if (length <= best) return false
+        prefs.edit().putInt(KEY_BEST, length).apply()
+        return true
+    }
+
+    private companion object {
+        const val KEY_BEST = "snake.bestLength"
+        const val KEY_TOTAL = "snake.totalLength"
+    }
+}

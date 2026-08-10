@@ -133,6 +133,9 @@ fun SnakeArenaScreen(
     val trails = remember { TrailStore() }
     val camera = remember { CameraMemory() }
     val predictor = remember { SnakePredictor() }
+    val eatState = remember { EatStreak() }
+    val records = remember { SnakeRecordStore(context) }
+    var beatBest by remember { mutableStateOf(false) }
 
     // Hex floor tile, built ONCE (docs/GAMES_SNAKE_VISUALS.md §3.1). A repeated shader rather
     // than per-hex geometry: the arena holds several hundred hexes and drawing them
@@ -167,7 +170,7 @@ fun SnakeArenaScreen(
         Canvas(Modifier.fillMaxSize()) {
             // Reading the clock inside the DRAW scope subscribes only this draw to it.
             @Suppress("UNUSED_EXPRESSION") frameClock.doubleValue
-            drawArena(framesRef.value, me, trails, stick, camera, predictor, particles, impact,
+            drawArena(framesRef.value, me, trails, stick, camera, predictor, eatState, particles, impact,
                 haptics, boostAudio, hexShader)
         }
 
@@ -208,10 +211,26 @@ fun SnakeArenaScreen(
             },
         )
 
+        // Record ONCE, on the transition into `finished`.
+        LaunchedEffect(matchOver) {
+            if (matchOver) {
+                mine?.let { beatBest = records.record(it.mass.toInt()) }
+            }
+        }
+
         if (matchOver) {
             GameOverPanel(
                 title = "Match over",
                 detail = mine?.let { "You finished with ${it.mass.toInt()}" } ?: "",
+                // A bare score gives no reason to tap again; a near-miss does. This is the
+                // single cheapest retention line on the whole screen.
+                note = when {
+                    beatBest -> "New best!"
+                    mine != null && records.best > mine.mass.toInt() ->
+                        "Your best: ${records.best}"
+                    else -> null
+                },
+                noteHighlighted = beatBest,
                 onRestart = onRestart,
                 onQuit = onClose,
             )
@@ -295,6 +314,8 @@ private fun BoxScope.DeathPanel(
 private fun BoxScope.GameOverPanel(
     title: String,
     detail: String,
+    note: String? = null,
+    noteHighlighted: Boolean = false,
     onRestart: (() -> Unit)?,
     onQuit: () -> Unit,
 ) {
@@ -312,6 +333,16 @@ private fun BoxScope.GameOverPanel(
                 Text(detail, color = Color.White.copy(alpha = 0.65f),
                     fontSize = 14.sp, fontWeight = FontWeight.Medium,
                     modifier = Modifier.padding(top = 6.dp))
+            }
+            if (note != null) {
+                Text(
+                    note,
+                    color = if (noteHighlighted) Color(0xFFFFD93D)
+                            else Color.White.copy(alpha = 0.5f),
+                    fontSize = if (noteHighlighted) 15.sp else 13.sp,
+                    fontWeight = if (noteHighlighted) FontWeight.ExtraBold
+                                 else FontWeight.SemiBold,
+                    modifier = Modifier.padding(top = 4.dp))
             }
 
             if (onRestart != null) {
@@ -395,6 +426,14 @@ private fun labelFor(snake: GamesEngine.SnakeState.Snake, me: String?): String =
  * strongly worth making for a game steered by a stick rather than aimed.
  */
 private const val INTERP_DELAY = 0.15
+
+/** A gap longer than this ends an eating streak — grazing stays flat, real runs climb. */
+private const val EAT_STREAK_GAP_MS = 600L
+/** Roughly an octave of climb, then hold. */
+private const val EAT_STREAK_CAP = 24
+
+/** Mutable eat-streak cursor, owned by the draw loop rather than composition. */
+private class EatStreak { var streak = 0; var lastAtMs = 0L }
 
 private const val JOY_RADIUS_DP = 60f
 private const val JOY_KNOB_DP = 26f
@@ -761,6 +800,7 @@ private fun DrawScope.drawArena(
     stick: Offset,
     camera: CameraMemory,
     predictor: SnakePredictor,
+    eatState: EatStreak,
     particles: ParticleSystem,
     impact: ImpactTimeline,
     haptics: GameHaptics,
@@ -789,7 +829,24 @@ private fun DrawScope.drawArena(
                 // §7.4 "bake variants": 4 pitch-spaced eat files, picked at random rather than
                 // by mass bucket — the event carries no food value to bucket by (see
                 // GameHaptics.eat()'s identical note).
-                GameAudio.play("eat_${(1..4).random()}", gain = 0.6f)
+                // A RISING RUN, not a random variant.
+                //
+                // Random pitch gives variety but no meaning: every pellet sounds like the
+                // last one. Stepping the pitch up while you keep eating turns a corpse pile
+                // into an audible crescendo, which is the cheapest dopamine in the genre. The
+                // streak resets after a short gap so ordinary grazing stays flat and only
+                // real runs climb.
+                val nowMs = android.os.SystemClock.elapsedRealtime()
+                if (nowMs - eatState.lastAtMs > EAT_STREAK_GAP_MS) eatState.streak = 0
+                else eatState.streak++
+                eatState.lastAtMs = nowMs
+                // Cap the climb: past an octave it stops reading as triumphant and starts
+                // reading as a kettle.
+                val step = minOf(eatState.streak, EAT_STREAK_CAP)
+                GameAudio.play(
+                    "eat_1",
+                    pitch = Math.pow(2.0, step / 24.0).toFloat(),  // ~half a semitone each
+                    gain = 0.6f)
             }
 
             // Screen shake, hitstop AND haptic on YOUR kills only. `e.snakeId` on a "kill"

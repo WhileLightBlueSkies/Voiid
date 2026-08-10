@@ -286,6 +286,13 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     private var lastEventTime: Double = -1
     /// Wall-clock throttle for the `eat` haptic — see its call site for why.
     private var lastEatHapticAt: TimeInterval = 0
+    /// Consecutive pellets eaten without a pause, driving the rising eat pitch.
+    private var eatStreak = 0
+    private var lastEatAt: TimeInterval = 0
+    /// A gap longer than this ends a streak — grazing stays flat, real runs climb.
+    private static let eatStreakGap: TimeInterval = 0.6
+    /// Roughly an octave of climb, then hold.
+    private static let eatStreakCap = 24
     /// Local player's boost state as of the last frame, so start/end sounds fire once on the
     /// TRANSITION rather than every frame boost happens to be held/released — there is no
     /// server event for this (boost is continuous per-tick state, not a discrete event like
@@ -883,11 +890,21 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
                    CACurrentMediaTime() - lastEatHapticAt > 0.06 {
                     GameHaptics.eat()
                     lastEatHapticAt = CACurrentMediaTime()
-                    // §7.4 "bake variants": 4 pitch-spaced eat files, picked at random rather
-                    // than by mass bucket (the event carries no food value to bucket by — see
-                    // GameHaptics.eat()'s identical note) — cheap variety against the sound
-                    // that fires most often in the whole game.
-                    GameAudio.shared.play("eat_\(Int.random(in: 1...4))", gain: 0.6)
+                    // A RISING RUN, not a random variant.
+                    //
+                    // Random pitch gives variety but no meaning: every pellet sounds like the
+                    // last one. Stepping the pitch up while you keep eating turns a corpse
+                    // pile — or a good run through open food — into an audible crescendo, and
+                    // that is the cheapest dopamine in the genre. The streak resets after a
+                    // short gap so ordinary grazing stays flat and only real runs climb.
+                    let now = CACurrentMediaTime()
+                    if now - lastEatAt > Self.eatStreakGap { eatStreak = 0 } else { eatStreak += 1 }
+                    lastEatAt = now
+                    // Cap the climb: past an octave it stops reading as triumphant and starts
+                    // reading as a kettle.
+                    let step = min(eatStreak, Self.eatStreakCap)
+                    let pitch = pow(2.0, Float(step) / 24.0)   // ~half a semitone per pellet
+                    GameAudio.shared.play("eat_1", pitch: pitch, gain: 0.6)
                 }
 
                 // Screen shake on YOUR kills only. `event.snakeId` on a `kill` event is the

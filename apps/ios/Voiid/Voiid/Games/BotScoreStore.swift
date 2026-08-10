@@ -46,3 +46,34 @@ enum BotScoreStore {
         defaults.set(defaults.integer(forKey: k) + 1, forKey: k)
     }
 }
+
+/// Snake's personal bests, persisted locally.
+///
+/// Same reasoning as `BotScoreStore` above: a practice match never reaches the backend, so
+/// there is nothing to attach a record to and posting one would be an unverifiable claim.
+///
+/// This exists because a bare final score gives a player no reason to tap again. "You got 84,
+/// your best is 87" does — near-misses drive another attempt far more reliably than the raw
+/// number, and a new best is worth calling out.
+enum SnakeRecordStore {
+    private static let bestKey = "voiid.snake.bestLength"
+    private static let totalKey = "voiid.snake.totalLength"
+
+    /// Longest snake ever reached.
+    static var best: Int { UserDefaults.standard.integer(forKey: bestKey) }
+
+    /// Cumulative length across every match — the basis for unlocks, because it rewards
+    /// PLAYING rather than winning. Gating cosmetics on wins punishes exactly the players
+    /// most likely to give up.
+    static var totalLength: Int { UserDefaults.standard.integer(forKey: totalKey) }
+
+    /// Record a finished match. Returns true when this beat the previous best.
+    @discardableResult
+    static func record(length: Int) -> Bool {
+        let d = UserDefaults.standard
+        d.set(d.integer(forKey: totalKey) + length, forKey: totalKey)
+        guard length > d.integer(forKey: bestKey) else { return false }
+        d.set(length, forKey: bestKey)
+        return true
+    }
+}
