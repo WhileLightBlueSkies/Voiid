@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.voiid.app.net.GamesEngine
 import com.voiid.app.store.UserDirectory
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
@@ -134,6 +135,7 @@ fun SnakeArenaScreen(
     val camera = remember { CameraMemory() }
     val predictor = remember { SnakePredictor() }
     val eatState = remember { EatStreak() }
+    val renderClock = remember { RenderClock() }
     val records = remember { SnakeRecordStore(context) }
     var beatBest by remember { mutableStateOf(false) }
 
@@ -168,10 +170,12 @@ fun SnakeArenaScreen(
             .background(Color.Black),
     ) {
         Canvas(Modifier.fillMaxSize()) {
-            // Reading the clock inside the DRAW scope subscribes only this draw to it.
-            @Suppress("UNUSED_EXPRESSION") frameClock.doubleValue
+            // Reading the clock inside the DRAW scope subscribes only this draw to it. Its
+            // VALUE is now used, not just touched for the subscription: it is `withFrameNanos`'
+            // frame time, and it is what the render clock advances on (see `advanceClock`).
+            val now = frameClock.doubleValue
             drawArena(framesRef.value, me, trails, stick, camera, predictor, eatState, particles, impact,
-                haptics, boostAudio, hexShader)
+                haptics, boostAudio, hexShader, renderClock, now)
         }
 
         // Death / game-over panel.
@@ -481,6 +485,47 @@ private const val EAT_STREAK_CAP = 24
 /** Mutable eat-streak cursor, owned by the draw loop rather than composition. */
 private class EatStreak { var streak = 0; var lastAtMs = 0L }
 
+/**
+ * The render clock — persistent renderer state, NOT recomputed per frame. Mirrors iOS
+ * SnakeMetalView's `renderClock`/`lastDrawAt` pair. [t] is in SERVER time; [lastDrawAt] is on
+ * the display's own clock (`withFrameNanos`), never on arrival time.
+ */
+private class RenderClock { var t = 0.0; var lastDrawAt = 0.0 }
+
+/**
+ * The instant to draw the world at, in SERVER time.
+ *
+ * NEVER anchored to a frame's ARRIVAL time. Arrival jitter is precisely what the frame buffer
+ * exists to absorb; rebuilding the clock from it on every frame feeds that jitter straight back
+ * into the picture — the world snaps by (0.1 - interArrivalGap) seconds of travel, ten times a
+ * second, which at BASE_SPEED 240 u/s is most of a head radius per snap. Instead the clock
+ * free-runs on the local display clock and closes any drift by running slightly fast or slow. A
+ * ±10% rate error is imperceptible; a position snap is the bug.
+ *
+ * [now] comes from `withFrameNanos` — the display's cadence — deliberately not
+ * `SystemClock.elapsedRealtime()`, which is when the NETWORK happened to deliver.
+ *
+ * Every constant here is identical to iOS `advanceClock` (0.5 resync threshold, 0.10 rate
+ * clamp, 0.5 drift gain). Divergence is how two builds of one game come to feel different.
+ */
+private fun advanceClock(clock: RenderClock, newest: GamesEngine.SnakeFrame, now: Double): Double {
+    val dt = if (clock.lastDrawAt > 0.0) minOf(now - clock.lastDrawAt, 0.25) else 0.0
+    clock.lastDrawAt = now
+
+    val target = newest.state.time - INTERP_DELAY
+
+    // First frame, or a real stall (app backgrounded, socket reconnected): hard resync.
+    // Springing across a gap this large would sweep the world instead of cutting.
+    if (clock.t == 0.0 || abs(target - clock.t) > 0.5) {
+        clock.t = target
+    } else {
+        val drift = target - clock.t
+        val rate = 1.0 + (drift * 0.5).coerceIn(-0.10, 0.10)
+        clock.t += dt * rate
+    }
+    return clock.t
+}
+
 private const val JOY_RADIUS_DP = 60f
 private const val JOY_KNOB_DP = 26f
 
@@ -494,17 +539,23 @@ private class Sample(
 /**
  * Pick the two frames to draw between.
  *
- * The render clock derives from the SERVER's `t`, offset by how long the newest frame has been
- * sitting here, so arrival jitter moves the offset rather than the snake. When the buffer runs
- * dry the newest frame is HELD, never extrapolated — extrapolation looks smoother right up
- * until the real frame lands elsewhere and everything snaps, which reads far worse.
+ * The render instant comes from the free-running [advanceClock] above, in the SERVER's own time
+ * base, so arrival jitter moves nothing. When the buffer runs dry the newest frame is HELD,
+ * never extrapolated — extrapolation looks smoother right up until the real frame lands
+ * elsewhere and everything snaps, which reads far worse.
  */
-private fun pickSample(frames: List<GamesEngine.SnakeFrame>): Sample? {
+private fun pickSample(
+    frames: List<GamesEngine.SnakeFrame>,
+    clock: RenderClock,
+    now: Double,
+): Sample? {
     val newest = frames.lastOrNull() ?: return null
-    if (frames.size < 2) return Sample(newest.state, newest.state, 1.0)
 
-    val elapsed = (android.os.SystemClock.elapsedRealtime() - newest.arrivedAtMs) / 1000.0
-    val renderT = newest.state.time + elapsed - INTERP_DELAY
+    // Advanced EVERY frame, including when only one server frame is buffered: the clock is
+    // persistent state, and skipping the call would let its `dt` accumulate across the gap and
+    // lurch on the next draw.
+    val renderT = advanceClock(clock, newest, now)
+    if (frames.size < 2) return Sample(newest.state, newest.state, 1.0)
 
     for (i in frames.size - 2 downTo 0) {
         val a = frames[i].state
@@ -852,8 +903,10 @@ private fun DrawScope.drawArena(
     haptics: GameHaptics,
     boostAudio: BoostAudioState,
     hexShader: androidx.compose.ui.graphics.Brush?,
+    renderClock: RenderClock,
+    now: Double,
 ) {
-    val s = pickSample(frames) ?: return
+    val s = pickSample(frames, renderClock, now) ?: return
     val state = s.to
 
     // NEW events only, de-duped by the server's own clock (see ParticleSystem's doc comment).
