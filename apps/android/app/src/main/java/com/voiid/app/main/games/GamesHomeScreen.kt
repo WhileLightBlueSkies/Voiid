@@ -28,6 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.EmojiEvents
 import androidx.compose.material.icons.outlined.Grid3x3
 import androidx.compose.material.icons.outlined.PanTool
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -89,6 +90,8 @@ fun GamesHomeScreen(
     var loading by remember { mutableStateOf(true) }
     var loadFailed by remember { mutableStateOf(false) }
     var reloadToken by remember { mutableStateOf(0) }
+    /** Sound + haptics sheet (docs/games/CROSS_CUTTING.md §12). */
+    var showSettings by remember { mutableStateOf(false) }
 
     // Incoming invites. Polled rather than pushed: an invite arrives as a chat message, and the
     // games surface has no socket subscription of its own — a 20s poll while this tab is open is
@@ -144,6 +147,23 @@ fun GamesHomeScreen(
                     .clickable { onLeaderboard() }
                     .padding(VoiidSpacing.sm),
             )
+            // Sound and haptics. On the TAB rather than inside each match: it is a preference
+            // about the games, not a control for the one you happen to be in, and a player who
+            // wants silence wants it before the crowd starts.
+            Icon(
+                Icons.Outlined.Tune,
+                contentDescription = "Game settings",
+                tint = VoiidColor.textSecondary,
+                modifier = Modifier
+                    .minimumInteractiveComponentSize()
+                    .clip(CircleShape)
+                    .clickable { showSettings = true }
+                    .padding(VoiidSpacing.sm),
+            )
+        }
+
+        if (showSettings) {
+            GameSettingsSheet(onDismiss = { showSettings = false })
         }
 
         // Invites sit ABOVE the catalog: an invitation is time-bound and someone is waiting on it,

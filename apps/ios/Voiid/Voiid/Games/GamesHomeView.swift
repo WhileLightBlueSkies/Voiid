@@ -47,6 +47,8 @@ struct GamesHomeView: View {
     /// The snake appearance picker. Snake-only, so it lives here rather than in the shared
     /// setup sheet every game uses.
     @State private var showSkinPicker = false
+    /// Sound + haptics (docs/games/CROSS_CUTTING.md §12).
+    @State private var showSettings = false
 
     private struct OpenMatch: Identifiable, Hashable {
         let id: String
@@ -152,6 +154,16 @@ struct GamesHomeView: View {
                     }
                     .accessibilityLabel("Leaderboard")
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    // Sound and haptics. On the TAB rather than inside each match: it is a
+                    // preference about the games, not a control for the one you happen to be
+                    // in, and a player who wants silence wants it before the crowd starts.
+                    Button { showSettings = true } label: {
+                        Image(systemName: "slider.horizontal.3")
+                            .foregroundStyle(VoiidColor.textSecondary)
+                    }
+                    .accessibilityLabel("Game settings")
+                }
             }
             .navigationDestination(isPresented: $showLeaderboard) {
                 LeaderboardView { showLeaderboard = false }
@@ -198,6 +210,10 @@ struct GamesHomeView: View {
                     }
                 }
                 .environmentObject(session)
+            }
+            .sheet(isPresented: $showSettings) {
+                GameSettingsSheet { showSettings = false }
+                    .presentationDetents([.medium])
             }
             .sheet(isPresented: $showSkinPicker) {
                 SnakeSkinPicker { showSkinPicker = false }

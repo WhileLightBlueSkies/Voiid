@@ -21,6 +21,18 @@
 import CoreHaptics
 
 enum GameHaptics {
+    /// Persisted haptics toggle, mirroring `GameAudio.isMuted` (docs/games/CROSS_CUTTING.md
+    /// §12). Default ON — feedback is part of the product, not an opt-in.
+    ///
+    /// Stored as "enabled" and read inverted, exactly as GameAudio does, so that a missing key
+    /// (a fresh install, where `bool(forKey:)` returns false) means ENABLED rather than
+    /// silently shipping every new user a dead Taptic Engine.
+    static var isDisabled: Bool {
+        get { !UserDefaults.standard.bool(forKey: enabledKey) ? false : true }
+        set { UserDefaults.standard.set(!newValue, forKey: enabledKey) }
+    }
+    private static let enabledKey = "voiid.gameHapticsEnabled_v1_default_on"
+
     /// Lazily created, and re-created if the hardware engine stops (background, reset). `nil`
     /// on devices with no Taptic Engine (some iPads) — every call below no-ops in that case
     /// rather than crashing, which is the same posture `Haptics.swift` takes implicitly via
@@ -39,6 +51,9 @@ enum GameHaptics {
     }
 
     private static func play(_ events: [CHHapticEvent]) {
+        // ONE GATE, at the single chokepoint every haptic below funnels through — rather than
+        // a check in each of the seven public entry points, where the eighth would forget it.
+        guard !isDisabled else { return }
         guard let engine = ensureEngine(),
               let pattern = try? CHHapticPattern(events: events, parameters: []),
               let player = try? engine.makePlayer(with: pattern) else { return }

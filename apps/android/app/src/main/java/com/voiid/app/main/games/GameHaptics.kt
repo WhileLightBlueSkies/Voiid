@@ -30,6 +30,8 @@ import android.os.VibratorManager
  */
 class GameHaptics(context: Context) {
 
+    private val appContext = context.applicationContext
+
     private val vibrator: Vibrator? = run {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val mgr = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
@@ -40,9 +42,21 @@ class GameHaptics(context: Context) {
         }
     }
 
-    private val hasMotor = vibrator?.hasVibrator() == true
+    private val hasDeviceMotor = vibrator?.hasVibrator() == true
     private val hasAmplitudeControl =
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && vibrator?.hasAmplitudeControl() == true
+
+    /**
+     * Every public entry point below already gated on "is there a motor"; it now also gates on
+     * "does the player want this". ONE CHOKEPOINT rather than a check in each of the four
+     * methods, where the fifth would forget it.
+     *
+     * Read per call, not cached: the toggle lives in GameSettings and can be changed from the
+     * Games tab while a match is open behind it, and a value cached in this object's
+     * constructor would keep buzzing until the screen was recreated.
+     */
+    private val hasMotor: Boolean
+        get() = hasDeviceMotor && GameSettings.hapticsEnabled(appContext)
 
     /** Wall-clock throttle for [eat] — see that function for why. Owned HERE rather than left
      * to the caller: every caller of a retriggering haptic would otherwise have to remember
