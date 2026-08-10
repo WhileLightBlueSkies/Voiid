@@ -38,6 +38,48 @@ const MAX_PICK = 6;
 
 type Seat = 0 | 1;
 
+/** Which side of the coin a player called. */
+export type CoinSide = 'heads' | 'tails';
+/** What the toss winner elected to do. */
+export type TossChoice = 'bat' | 'bowl';
+
+/**
+ * THE TOSS, as its own phase before ball one.
+ *
+ * A match no longer starts in `bat` — it starts in `toss`, and no pick is accepted until the
+ * toss resolves. Two steps, because that is the real game:
+ *
+ *   `call`   the seat holding the call picks heads or tails. The coin is flipped AT CREATION
+ *            (see `coin`), not when the call arrives — see the anti-cheat note there.
+ *   `decide` whoever won the call elects to bat or bowl.
+ *
+ * Choosing to BOWL first is a genuine tactic and not a formality: batting second means you
+ * know the target, which in a two-wicket format is worth a lot. A toss that only decides who
+ * bats throws that decision away, which is why this is two steps and not one.
+ */
+type Phase = 'toss-call' | 'toss-decide' | 'play';
+
+interface TossState {
+  /**
+   * The coin, decided AT MATCH CREATION and never mutated.
+   *
+   * FLIPPED UP FRONT, DELIBERATELY. If it were flipped when the call arrived, the result
+   * would depend on input the server received from a player, and any future bug that leaked
+   * or reordered that would let someone win every toss. Deciding it before anyone can speak
+   * makes the call a pure guess against a value that already exists — the same posture as
+   * `pending`: the secret exists, and simply is never serialized until it is safe.
+   */
+  coin: CoinSide;
+  /** Seat that gets to call. Random, so neither seat has a structural edge. */
+  callerSeat: Seat;
+  /** What the caller said. Null until they call. */
+  called: CoinSide | null;
+  /** Set once the call resolves: the seat that won the toss and now chooses. */
+  wonSeat: Seat | null;
+  /** What the winner elected. Null until they choose. */
+  choice: TossChoice | null;
+}
+
 interface BallLog {
   /** Both picks, by seat. Safe to send: the ball is already resolved. */
   picks: [number, number];
@@ -52,6 +94,9 @@ interface State {
   players: string[];
   /** 1-5, fixed at creation. */
   overs: number;
+  /** `play` once the toss has resolved. No pick is accepted before then. */
+  phase: Phase;
+  toss: TossState;
   battingSeat: Seat;
   innings: 1 | 2;
   scores: [number, number];
@@ -83,6 +128,11 @@ class CricketEngine implements GameEngine {
     if (idx === -1) return { accepted: false };
     const seat = idx as Seat;
 
+    // THE TOSS OWNS THE OPENING PHASES. A `pick` arriving before the toss resolves is
+    // rejected outright rather than queued: accepting it would let a client that skipped the
+    // toss UI start playing while its opponent is still on the coin.
+    if (this.s.phase !== 'play') return this.applyToss(seat, input);
+
     const pick = input.pick;
     if (
       typeof pick !== 'number' ||
@@ -105,6 +155,40 @@ class CricketEngine implements GameEngine {
     }
 
     return this.resolveBall();
+  }
+
+  /**
+   * The two toss inputs: `{ call: 'heads' | 'tails' }` then `{ elect: 'bat' | 'bowl' }`.
+   *
+   * Both are seat-checked. Only the caller may call, and only the toss WINNER may elect —
+   * without those checks the loser could send `elect` first and take the decision, which is
+   * the entire prize being handed to the wrong player.
+   */
+  private applyToss(seat: Seat, input: GameInput): ApplyResult {
+    if (this.s.phase === 'toss-call') {
+      if (seat !== this.s.toss.callerSeat) return { accepted: false };
+      const call = input.call;
+      if (call !== 'heads' && call !== 'tails') return { accepted: false };
+      if (this.s.toss.called !== null) return { accepted: false };
+
+      this.s.toss.called = call;
+      // The coin was decided at creation; the call is a guess against a value that already
+      // exists, so this comparison cannot be influenced by anything the client sent.
+      this.s.toss.wonSeat = call === this.s.toss.coin ? seat : other(seat);
+      this.s.phase = 'toss-decide';
+      return { accepted: true };
+    }
+
+    // toss-decide
+    if (seat !== this.s.toss.wonSeat) return { accepted: false };
+    const elect = input.elect;
+    if (elect !== 'bat' && elect !== 'bowl') return { accepted: false };
+    if (this.s.toss.choice !== null) return { accepted: false };
+
+    this.s.toss.choice = elect;
+    this.s.battingSeat = elect === 'bat' ? seat : other(seat);
+    this.s.phase = 'play';
+    return { accepted: true };
   }
 
   /** Both picks are in. Score it, log it, and advance the innings if this ball ended one. */
@@ -182,6 +266,18 @@ class CricketEngine implements GameEngine {
     return {
       players: this.s.players,
       overs: this.s.overs,
+      phase: this.s.phase,
+      toss: {
+        callerSeat: this.s.toss.callerSeat,
+        called: this.s.toss.called,
+        wonSeat: this.s.toss.wonSeat,
+        choice: this.s.toss.choice,
+        // THE COIN IS WITHHELD UNTIL IT IS CALLED, for the same reason `pending` is withheld
+        // until both picks are in: a client that could read it before calling would win every
+        // toss. Once `called` is set the outcome is already decided, so revealing it then
+        // gives away nothing — and the client needs it to show which face landed.
+        coin: this.s.toss.called === null ? null : this.s.toss.coin,
+      },
       innings: this.s.innings,
       battingSeat: this.s.battingSeat,
       scores: this.s.scores,
@@ -207,7 +303,10 @@ class CricketEngine implements GameEngine {
    * and the ball never resolved (see GameEngine.serializeSecret).
    */
   serializeSecret(): GameStatePayload {
-    return { pending: this.s.pending };
+    // The coin rides the secret channel too. `serialize()` withholds it until the call, so
+    // without this a match that outlived a process restart would come back with no coin at
+    // all and re-flip it — turning a call already made into a fresh 50/50.
+    return { pending: this.s.pending, coin: this.s.toss.coin };
   }
 
   isFinished(): boolean {
@@ -232,13 +331,21 @@ export const cricket: GameFactory = {
   slug: 'cricket',
   // No tickHz: reactive, like every other turn-based game here.
   create(playerIds: string[], options?: Record<string, unknown>): GameEngine {
-    // Who bats first is RANDOM and announced in the opening frame, rather than a coin-toss
-    // UI: that would be a second interaction before the game starts.
-    const battingSeat: Seat = Math.random() < 0.5 ? 0 : 1;
+    // THE MATCH OPENS ON A TOSS, not on a silent coin-flip. This used to pick battingSeat
+    // randomly and announce it, on the grounds that a toss UI is "a second interaction before
+    // the game starts" — which was true, and was the wrong trade for THIS game. The toss is
+    // part of cricket, and electing to bowl first is a real decision rather than ceremony.
+    //
+    // `battingSeat` still gets a value here so no field is ever undefined, but it is
+    // provisional: the toss overwrites it before a single pick is accepted.
+    const coin: CoinSide = Math.random() < 0.5 ? 'heads' : 'tails';
+    const callerSeat: Seat = Math.random() < 0.5 ? 0 : 1;
     return new CricketEngine({
       players: [...playerIds],
       overs: normalizeOvers(options?.overs),
-      battingSeat,
+      phase: 'toss-call',
+      toss: { coin, callerSeat, called: null, wonSeat: null, choice: null },
+      battingSeat: 0,
       innings: 1,
       scores: [0, 0],
       wickets: [0, 0],
@@ -255,9 +362,23 @@ export const cricket: GameFactory = {
     // `pending`, so a blanket cast produces an engine whose pending is undefined, and the
     // very next serialize() throws — taking the games service down with any match that
     // outlived a process restart.
+    const toss = (state.toss ?? {}) as Record<string, unknown>;
     return new CricketEngine({
       players: state.players as string[],
       overs: normalizeOvers(state.overs),
+      // A match created BEFORE the toss shipped has no phase and is already in progress;
+      // defaulting it to 'play' lets it finish under the old rules rather than being dragged
+      // back to a toss it already passed.
+      phase: (state.phase as Phase) ?? 'play',
+      toss: {
+        // Off the secret channel; `serialize()` withholds it until the call. Falling back to
+        // the serialized value covers a match whose call already happened.
+        coin: (secret?.coin as CoinSide) ?? (toss.coin as CoinSide) ?? 'heads',
+        callerSeat: (toss.callerSeat as Seat) ?? 0,
+        called: (toss.called as CoinSide | null) ?? null,
+        wonSeat: (toss.wonSeat as Seat | null) ?? null,
+        choice: (toss.choice as TossChoice | null) ?? null,
+      },
       battingSeat: (state.battingSeat as Seat) ?? 0,
       innings: (state.innings as 1 | 2) ?? 1,
       scores: (state.scores as [number, number]) ?? [0, 0],
