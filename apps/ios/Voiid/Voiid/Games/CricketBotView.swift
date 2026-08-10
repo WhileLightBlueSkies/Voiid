@@ -101,7 +101,8 @@ struct CricketBotView: View {
                 } else {
                     Spacer(minLength: 0)
                     scoreboard
-                    CricketPitch(event: lastEvent, ballToken: ballToken)
+                    CricketPitch(event: lastEvent, ballToken: ballToken,
+                                 announcement: announcements.first)
                         .padding(.vertical, VoiidSpacing.md)
                     picks
                     Spacer(minLength: 0)
@@ -111,15 +112,6 @@ struct CricketBotView: View {
             .padding(.horizontal, VoiidSpacing.lg)
 
             if paused { pauseOverlay }
-
-            // Above the pause overlay: an announcement is a match event and should not be
-            // buried by a menu that happens to be open.
-            if let current = announcements.first {
-                CricketAnnouncementView(announcement: current) {
-                    announcements.removeFirst()
-                }
-                .transition(.opacity)
-            }
         }
         .navigationBarBackButtonHidden(true)
         .onAppear {
@@ -448,11 +440,9 @@ struct CricketBotView: View {
         tossPhase = "play"
         updateCrowd()
 
-        // TWO announcements, in order: who won and what they chose, then what that makes YOU.
-        // Both matter and they are different facts — "the bot won and chose to bowl" does not
-        // immediately read as "so I am batting", which is the whole reason for the second card.
-        announce(CricketAnnouncements.toss(
-            id: nextAnnouncementId(), iWon: tossWonByHuman, choice: choice, opponent: "The bot"))
+        // NO TOSS ANNOUNCEMENT. The toss screen has just said who won and what they chose,
+        // directly under the coin — repeating it on the pitch two seconds later is the same
+        // sentence twice. Only the CONSEQUENCE is announced: what you are now doing.
         announce(CricketAnnouncements.role(id: nextAnnouncementId(), batting: humanBatting))
     }
 
@@ -462,7 +452,27 @@ struct CricketBotView: View {
     }
 
     private func announce(_ a: CricketAnnouncement) {
+        let wasIdle = announcements.isEmpty
         announcements.append(a)
+        // Only the FIRST announcement starts the drain; the rest are pulled by the one ahead of
+        // them. Starting a timer per announcement would run them all concurrently and the whole
+        // queue would clear at once — the second message never being seen.
+        if wasIdle { scheduleDismiss(of: a) }
+    }
+
+    /// The queue drains itself.
+    ///
+    /// The modal card used to own this timer. Now that the message lives inside the pitch there
+    /// is no per-announcement view with a lifecycle to hang it on, so the owner of the queue
+    /// keeps it moving. The id is re-checked before dropping, so a restart that cleared the
+    /// queue mid-wait cannot pop somebody else's announcement.
+    private func scheduleDismiss(of a: CricketAnnouncement) {
+        let id = a.id
+        DispatchQueue.main.asyncAfter(deadline: .now() + a.duration) {
+            guard announcements.first?.id == id else { return }
+            withAnimation(.easeInOut(duration: 0.3)) { announcements.removeFirst() }
+            if let next = announcements.first { scheduleDismiss(of: next) }
+        }
     }
 
     /// What the bot elects.

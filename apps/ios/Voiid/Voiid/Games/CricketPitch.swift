@@ -113,10 +113,21 @@ struct CricketPitch: View {
     /// second being swallowed as "same state".
     let ballToken: Int
 
+    /// A match announcement to deliver ON THE PITCH — the innings changing, your role changing.
+    ///
+    /// IN HERE RATHER THAN OVER THE SCREEN. These first shipped as a card on a dimmed scrim and
+    /// looked exactly like what they were: a system alert dropped on top of a game. The pitch is
+    /// already the thing the player watches for "what just happened", so the announcement
+    /// belongs in that same window — the ground clears, the message is delivered where the ball
+    /// would be, and play resumes. Same surface, same place to look, no modal.
+    var announcement: CricketAnnouncement?
+
     @State private var strike: CGFloat = 0
     @State private var flight: CGFloat = 0
     @State private var bannerPop: CGFloat = 0
     @State private var shown: BallEvent?
+    /// 0 = pitch as normal, 1 = ground fully cleared for the announcement.
+    @State private var clear: CGFloat = 0
 
     var body: some View {
         GeometryReader { geo in
@@ -126,42 +137,87 @@ struct CricketPitch: View {
             ZStack(alignment: .topLeading) {
                 background(w: w, h: h)
 
-                // Stumps. Knocked over on a bowled.
-                Capsule()
-                    .fill(Color(red: 0.96, green: 0.92, blue: 0.82))
-                    .frame(width: 7, height: 48)
-                    .rotationEffect(.degrees(shown == .bowled ? 68 * Double(flight) : 0), anchor: .bottom)
-                    .position(x: w * 0.11, y: h * 0.52)
+                // THE PLAYERS FADE FOR AN ANNOUNCEMENT, THE GROUND STAYS. One group, one
+                // opacity — so nothing the pitch happened to be animating can show through the
+                // message. The grass itself is deliberately left up: this is a message ON the
+                // pitch, not a panel replacing it.
+                Group {
+                    // Stumps. Knocked over on a bowled.
+                    Capsule()
+                        .fill(Color(red: 0.96, green: 0.92, blue: 0.82))
+                        .frame(width: 7, height: 48)
+                        .rotationEffect(.degrees(shown == .bowled ? 68 * Double(flight) : 0),
+                                        anchor: .bottom)
+                        .position(x: w * 0.11, y: h * 0.52)
 
-                // The batter: a simple figure that leans into the shot. Reads as a person at a
-                // glance without needing art.
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color(red: 0.93, green: 0.91, blue: 0.96))
-                    .frame(width: 13, height: 40)
-                    .rotationEffect(.degrees(10 * Double(strike)), anchor: .bottom)
-                    .position(x: w * 0.165, y: h * 0.50)
+                    // The batter: a simple figure that leans into the shot. Reads as a person at
+                    // a glance without needing art.
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color(red: 0.93, green: 0.91, blue: 0.96))
+                        .frame(width: 13, height: 40)
+                        .rotationEffect(.degrees(10 * Double(strike)), anchor: .bottom)
+                        .position(x: w * 0.165, y: h * 0.50)
 
-                // The bat. Swings through on any shot; stays down on a bowled.
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(LinearGradient(
-                        colors: [Color(red: 0.91, green: 0.75, blue: 0.46),
-                                 Color(red: 0.73, green: 0.51, blue: 0.18)],
-                        startPoint: .top, endPoint: .bottom))
-                    .frame(width: 11, height: 56)
-                    .rotationEffect(.degrees(24 - 78 * Double(strike)), anchor: .bottom)
-                    .position(x: w * 0.215, y: h * 0.52)
+                    // The bat. Swings through on any shot; stays down on a bowled.
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(LinearGradient(
+                            colors: [Color(red: 0.91, green: 0.75, blue: 0.46),
+                                     Color(red: 0.73, green: 0.51, blue: 0.18)],
+                            startPoint: .top, endPoint: .bottom))
+                        .frame(width: 11, height: 56)
+                        .rotationEffect(.degrees(24 - 78 * Double(strike)), anchor: .bottom)
+                        .position(x: w * 0.215, y: h * 0.52)
 
-                trail(w: w, h: h)
-                ball(w: w, h: h)
-                fielder(w: w, h: h)
-                banner()
+                    trail(w: w, h: h)
+                    ball(w: w, h: h)
+                    fielder(w: w, h: h)
+                    banner()
+                        .frame(width: w, height: h, alignment: .center)
+                }
+                .opacity(1 - Double(clear))
+
+                announcementText()
                     .frame(width: w, height: h, alignment: .center)
+                    .opacity(Double(clear))
             }
             .frame(width: w, height: h)
             .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg))
         }
         .frame(height: 210)
         .onChange(of: ballToken) { _, _ in play() }
+        .onChange(of: announcement) { _, a in
+            withAnimation(.easeInOut(duration: 0.3)) { clear = a == nil ? 0 : 1 }
+        }
+        .onAppear { clear = announcement == nil ? 0 : 1 }
+    }
+
+    /// The announcement, drawn on the cleared ground.
+    ///
+    /// Plain type on the grass — no card, no panel, no scrim. A container here would put a
+    /// rectangle inside a rectangle and undo the whole point of moving this into the pitch.
+    @ViewBuilder
+    private func announcementText() -> some View {
+        if let a = announcement {
+            VStack(spacing: 6) {
+                Text(a.title)
+                    .font(.system(size: 25, weight: .black))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+                    // The ground is a mid-green gradient and the text sits directly on it, so
+                    // it needs its own separation rather than borrowing a panel's.
+                    .shadow(color: .black.opacity(0.45), radius: 6, y: 2)
+
+                Text(a.detail)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.92))
+                    .multilineTextAlignment(.center)
+                    .shadow(color: .black.opacity(0.4), radius: 4, y: 1)
+            }
+            .padding(.horizontal, VoiidSpacing.lg)
+            // Rises slightly as it arrives, the way the score banner does — same surface, so
+            // the same motion language.
+            .offset(y: (1 - clear) * 10)
+        }
     }
 
     // MARK: - Motion
