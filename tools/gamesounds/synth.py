@@ -1,15 +1,46 @@
 #!/usr/bin/env python3
 """
-Voiid game sound generator — stdlib only, no dependencies.
+Voiid game sound generator — the ABSTRACT half. Stdlib only, no dependencies.
 
-Renders every sound in docs/GAMES_AUDIO.md to 16-bit mono WAV at 44.1 kHz,
-then (if `afconvert` is available, i.e. on macOS) also emits an AAC .m4a
-copy for anything longer than 500 ms, per the doc's format table (§6).
+THE PALETTE IS SPLIT ACROSS TWO GENERATORS, and which one owns a sound is not
+arbitrary (docs/games/SOUND_DESIGN.md §4.2, §5.5):
+
+    synth.py     (this file)    ABSTRACT sounds, from oscillator primitives
+    physical.py  (next door)    PHYSICAL sounds, from models of real objects
+
+This file keeps:
+  * every UI sound — tap, sheet_open/close, error, match_found, invite_arrive,
+    countdown_*. A UI event is not a physical event, and a recorded-sounding UI
+    tick is a downgrade, not an upgrade.
+  * ALL of Snake. Snake is an abstract neon arcade game and retro genuinely fits
+    it — there is no real-world referent for a glowing snake eating a pellet, and
+    chasing one produces worse sound, not better. eat/kill/death/spawn/boost_*/
+    border_warn all stay exactly as they are.
+  * the tonal stingers the physical set does not replace (round_win/lose/tie,
+    rank_up, match_end, win_line, draw, mark_invalid, pick, reveal, innings).
+
+physical.py owns the sounds that model real objects: the shared `catch`, chalk on
+slate, ball into stumps, willow on leather, and the stadium crowd. Those are noise
+processes and resonating bodies, and the vocabulary in this file cannot make one.
+
+Sounds still rendered here that physical.py now SUPERSEDES at the call sites —
+mark_x/mark_o (chalk), runs_1..6/four/six (bat), wicket (wicket_timber + crowd) —
+are kept so this file still documents the original palette and so a regeneration
+never leaves a game with a missing file mid-migration.
+
+Renders to 16-bit mono WAV at 44.1 kHz, then (if `afconvert` is available, i.e. on
+macOS) also emits an AAC .m4a copy for anything longer than 500 ms, per the format
+table in docs/GAMES_AUDIO.md §6.
+
+MONO IS NOT A PREFERENCE. GameAudio wires its whole graph mono; a stereo buffer on
+a mono bus is an ObjC NSException `try?` cannot catch and the process dies.
 
 THIS IS NOT PART OF EITHER APP'S BUILD. Run it by hand when a sound needs to
 change; commit the generated files. That keeps the game builds free of a
 Python dependency and makes every change to the audio a reviewable binary
-diff rather than a build-time side effect.
+diff rather than a build-time side effect. Run tools/gamesounds/verify.py
+afterwards — it asserts mono, rate, headroom, latency and loudness across both
+platforms' asset folders.
 
 Usage:
     python3 tools/gamesounds/synth.py
