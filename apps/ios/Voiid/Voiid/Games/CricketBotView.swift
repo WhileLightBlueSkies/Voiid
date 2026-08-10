@@ -54,6 +54,12 @@ struct CricketBotView: View {
     /// show a face nobody has called yet.
     private var tossCoinRevealed: String? { tossCalled == nil ? nil : tossCoin }
 
+    /// The announcement currently on screen, if any. Queued rather than shown directly, so two
+    /// events that land together (the toss resolving AND your role being decided by it) play
+    /// one after the other instead of one silently replacing the other.
+    @State private var announcements: [CricketAnnouncement] = []
+    @State private var announcementSeq = 0
+
     @State private var lastEvent: BallEvent?
     @State private var ballToken = 0
     @State private var humanPick: Int?
@@ -105,6 +111,15 @@ struct CricketBotView: View {
             .padding(.horizontal, VoiidSpacing.lg)
 
             if paused { pauseOverlay }
+
+            // Above the pause overlay: an announcement is a match event and should not be
+            // buried by a menu that happens to be open.
+            if let current = announcements.first {
+                CricketAnnouncementView(announcement: current) {
+                    announcements.removeFirst()
+                }
+                .transition(.opacity)
+            }
         }
         .navigationBarBackButtonHidden(true)
         .onAppear {
@@ -326,7 +341,9 @@ struct CricketBotView: View {
     // MARK: - Game logic (mirrors backend/games/src/engine/cricket)
 
     private func pick(_ n: Int) {
-        guard !resolving, !finished, !paused, overs != nil else { return }
+        // `announcements.isEmpty` too: a card on screen is a deliberate pause in play, and a
+        // tap that lands through it would resolve a ball the player never saw begin.
+        guard !resolving, !finished, !paused, overs != nil, announcements.isEmpty else { return }
         GameAudio.shared.play("pick", gain: 0.45)
         humanPick = n
         botPick = nil
@@ -379,11 +396,24 @@ struct CricketBotView: View {
         guard inningsOver else { return }
 
         if innings == 1 {
+            let firstScore = battingScore
             innings = 2
             humanBatting.toggle()
             ballsBowled = 0
-            target = battingScore + 1
+            target = firstScore + 1
             CricketSound.inningsBreak()
+
+            // The innings change was previously invisible: the scoreboard just started
+            // counting a different number and the roles quietly swapped. Announce both — the
+            // break with the target, then the new role.
+            announce(CricketAnnouncements.inningsBreak(
+                id: nextAnnouncementId(),
+                firstInningsScore: firstScore,
+                target: firstScore + 1,
+                iChase: humanBatting,
+                opponent: "The bot"))
+            announce(CricketAnnouncements.role(
+                id: nextAnnouncementId(), batting: humanBatting))
         } else {
             // Second innings ended short. Equal totals = tie.
             finish(humanScore == botScore ? nil : humanScore > botScore)
@@ -413,6 +443,22 @@ struct CricketBotView: View {
         humanBatting = tossWonByHuman ? (choice == "bat") : (choice == "bowl")
         tossPhase = "play"
         updateCrowd()
+
+        // TWO announcements, in order: who won and what they chose, then what that makes YOU.
+        // Both matter and they are different facts — "the bot won and chose to bowl" does not
+        // immediately read as "so I am batting", which is the whole reason for the second card.
+        announce(CricketAnnouncements.toss(
+            id: nextAnnouncementId(), iWon: tossWonByHuman, choice: choice, opponent: "The bot"))
+        announce(CricketAnnouncements.role(id: nextAnnouncementId(), batting: humanBatting))
+    }
+
+    private func nextAnnouncementId() -> Int {
+        announcementSeq += 1
+        return announcementSeq
+    }
+
+    private func announce(_ a: CricketAnnouncement) {
+        announcements.append(a)
     }
 
     /// What the bot elects.
@@ -474,6 +520,7 @@ struct CricketBotView: View {
         // The toss is part of a match, so a new match gets a new one. Without this a rematch
         // would inherit the last toss and walk straight into play with the old sides.
         tossPhase = "toss-call"; tossCoin = ""; tossCalled = nil; tossWonByHuman = false
+        announcements = []
         humanBatting = true
         overs = nil
     }

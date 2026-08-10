@@ -180,13 +180,110 @@ struct CricketToss: View {
             return n < 90 || n > 270
         }
 
+        /// How side-on the coin is right now, 0 (flat to the viewer) to 1 (perfectly edge-on).
+        ///
+        /// This is what gives the coin THICKNESS. A flat disc rotated in 3D vanishes to a line
+        /// at 90°, which is what betrays it as a cut-out rather than an object. Fading a
+        /// rendered edge in as the faces turn away — widest exactly when the face is
+        /// narrowest — is what sells a solid piece of metal.
+        private var edgeOn: Double {
+            abs(sin(angle * .pi / 180))
+        }
+
         /// The modified view is a transparent spacer reserving the coin's footprint; the coin
         /// is drawn as an overlay so `face` receives the animated value.
         func body(content: Content) -> some View {
             content.overlay(
-                face(showingHeads)
-                    .rotation3DEffect(.degrees(angle), axis: (x: 0, y: 1, z: 0), perspective: 0.4)
+                ZStack {
+                    // THE EDGE — the coin's thickness, and the thing that makes it an object
+                    // rather than a cut-out.
+                    //
+                    // COUNTER-SCALED AGAINST THE ROTATION, which is the whole trick. The
+                    // rotation3DEffect below squashes everything horizontally as the coin
+                    // turns, reaching zero exactly at 90° — so an edge band drawn normally is
+                    // crushed to a hairline at precisely the moment it should be at its
+                    // widest, which is what a first attempt looks like. Dividing by the same
+                    // foreshortening the transform applies cancels it, leaving the edge a
+                    // constant real width in screen terms.
+                    CoinEdge()
+                        .frame(width: CricketToss.coinSize * 0.115,
+                               height: CricketToss.coinSize)
+                        // CLAMPED AT 6x. The counter-scale is 1/(1-edgeOn), which runs away to
+                        // infinity as the coin reaches exactly side-on — unclamped it becomes a
+                        // slab wider than the coin for the last few degrees. Six is past the
+                        // point where the edge already fills the silhouette, so the cap is
+                        // invisible and the blow-up cannot happen.
+                        .scaleEffect(x: min(1 / max(1 - edgeOn, 0.02), 6), y: 1, anchor: .center)
+                        // LATE AND FAST. The edge belongs to the last stretch of the turn
+                        // only: a linear fade has the coin reading as a bar for most of its
+                        // rotation, because `edgeOn` is already 0.5 at just 30°. Raising it to
+                        // a high power keeps the coin a FACE through the bulk of the spin and
+                        // hands over to the edge only as it genuinely goes side-on.
+                        .opacity(pow(edgeOn, 6))
+
+                    // The face fades out as the edge takes over, instead of showing THROUGH
+                    // it — a letter visible across the coin's own side is the clearest
+                    // possible tell that this is two flat layers rather than one solid object.
+                    // Same curve, inverted, so exactly one of the two is ever dominant.
+                    face(showingHeads)
+                        .opacity(1 - pow(edgeOn, 5))
+                }
+                .rotation3DEffect(.degrees(angle), axis: (x: 0, y: 1, z: 0), perspective: 0.4)
             )
+        }
+    }
+
+    /// The coin's side: a gold band with vertical milling, seen as the coin turns edge-on.
+    ///
+    /// Drawn as a band rather than a true 3D extrusion because SwiftUI has no solid geometry —
+    /// and it does not need one. At the moment this is visible the coin is nearly side-on, so
+    /// a rectangle of ridges reads exactly as the milled edge of a struck coin.
+    private struct CoinEdge: View {
+        /// Milling: the fine vertical grooves cut into a coin's side. Dense on purpose — too
+        /// few and it reads as a barcode rather than machined metal.
+        private static let ridges = 26
+
+        var body: some View {
+            GeometryReader { geo in
+                let w = geo.size.width
+                let h = geo.size.height
+                // Slightly shorter than the face, so the silhouette tucks in at top and bottom
+                // the way a real cylinder seen edge-on does rather than ending square.
+                let barHeight = h * 0.965
+
+                ZStack {
+                    // Darker at both extremes, brighter down the middle: a curved metal
+                    // surface catching light along its centre line.
+                    LinearGradient(
+                        colors: [
+                            CricketToss.goldRim,
+                            CricketToss.gold,
+                            Color(red: 0.93, green: 0.78, blue: 0.38),
+                            CricketToss.gold,
+                            CricketToss.goldRim,
+                        ],
+                        startPoint: .leading, endPoint: .trailing)
+
+                    // THE HORIZONTAL LINE DESIGN — the milling itself, drawn as evenly spaced
+                    // vertical grooves across the band.
+                    HStack(spacing: 0) {
+                        ForEach(0..<Self.ridges, id: \.self) { i in
+                            Rectangle()
+                                .fill(i.isMultiple(of: 2)
+                                      ? CricketToss.goldRim.opacity(0.5)
+                                      : Color.clear)
+                        }
+                    }
+                }
+                .frame(width: w, height: barHeight)
+                .clipShape(RoundedRectangle(cornerRadius: w * 0.3))
+                // Rim lines top and bottom, where the edge meets each face.
+                .overlay(
+                    RoundedRectangle(cornerRadius: w * 0.3)
+                        .strokeBorder(CricketToss.goldRim, lineWidth: 1.5)
+                        .frame(width: w, height: barHeight))
+                .frame(width: w, height: h)
+            }
         }
     }
 
