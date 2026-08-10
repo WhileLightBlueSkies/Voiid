@@ -428,10 +428,14 @@ struct CricketBotView: View {
         tossPhase = "toss-decide"
 
         guard !tossWonByHuman else { return }
-        // The bot won, so it decides. After a beat, so its choice does not land in the same
-        // frame as the coin — the player needs to read the result before it is acted on.
+        // The bot won, so it decides — but not until the player has actually SEEN it win.
+        //
+        // 2.4s, not 1.2s. The coin takes ~1.15s to land, so a shorter wait swapped the screen
+        // out barely after the result appeared: "The bot won the toss" flashed for a few frames
+        // and the player went straight to a pick pad wondering what had happened. This leaves
+        // the settled coin and its headline on screen for a full beat before anything moves.
         Task {
-            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            try? await Task.sleep(nanoseconds: 2_400_000_000)
             guard tossPhase == "toss-decide" else { return }
             electToss(botElection())
         }

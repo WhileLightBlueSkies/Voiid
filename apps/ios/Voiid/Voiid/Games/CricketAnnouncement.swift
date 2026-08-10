@@ -66,13 +66,21 @@ struct CricketAnnouncementView: View {
     var onDismiss: () -> Void
 
     @State private var shown = false
+    /// Guards re-entry into `dismiss` (a tap racing the auto-dismiss timer). Separate from
+    /// `shown` because that one drives the exit animation and cannot be cleared early.
+    @State private var dismissing = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack {
             // A scrim, not an opaque screen: the match stays visible behind it so the
             // announcement reads as happening TO the game rather than replacing it.
-            VoiidColor.background.opacity(0.82)
+            //
+            // ITS OPACITY IS TIED TO `shown` TOO. Previously only the card faded and the scrim
+            // sat at full strength the whole time — so on the way out the card vanished and
+            // left a grey sheet over the match, which is the washed-out screen this fixes.
+            VoiidColor.background
+                .opacity(shown ? 0.82 : 0)
                 .ignoresSafeArea()
                 .onTapGesture { dismiss() }
 
@@ -106,38 +114,65 @@ struct CricketAnnouncementView: View {
         // interrupts whatever it was saying — this is exactly the kind of thing that should.
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isModal)
-        .onAppear {
+        // KEYED ON THE ANNOUNCEMENT'S ID, so a second announcement gets a genuinely fresh view
+        // rather than reusing this one. Without it SwiftUI keeps the existing instance —
+        // `shown` is still true from the previous card, `onAppear` never fires again, and the
+        // queued announcement appears with no animation and no dismiss timer, leaving its
+        // scrim up forever. That is the other half of the stuck-overlay bug.
+        .id(announcement.id)
+        .task(id: announcement.id) {
+            shown = false
+            dismissing = false
             if reduceMotion {
                 shown = true
             } else {
                 withAnimation(.spring(response: 0.38, dampingFraction: 0.72)) { shown = true }
             }
             Haptics.tap()
-            // Auto-dismiss. A tap is offered too, for anyone who reads faster than the timer.
-            DispatchQueue.main.asyncAfter(deadline: .now() + announcement.duration) {
-                dismiss()
-            }
+
+            // Auto-dismiss, via the task rather than a detached asyncAfter: if this view goes
+            // away early (the player leaves the match), the sleep is cancelled with it. A
+            // stray asyncAfter would fire into a dead view and pop the NEXT announcement.
+            try? await Task.sleep(nanoseconds: UInt64(announcement.duration * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            dismiss()
         }
     }
 
     private func dismiss() {
-        guard shown else { return }        // already dismissing; a tap must not double-fire
-        if reduceMotion {
+        // `dismissing`, not `shown`, guards re-entry: `shown` is what the ANIMATION reads, and
+        // clearing it up front to block a double tap would also skip the fade it drives.
+        guard !dismissing else { return }
+        dismissing = true
+
+        guard !reduceMotion else {
             shown = false
             onDismiss()
             return
         }
-        withAnimation(.easeIn(duration: 0.18)) { shown = false }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { onDismiss() }
+        withAnimation(.easeIn(duration: Self.exitDuration)) { shown = false }
+        // Hand back only AFTER the fade, so the card and its scrim are gone before the next
+        // announcement (or the match) takes the screen.
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.exitDuration) { onDismiss() }
     }
+
+    private static let exitDuration: Double = 0.22
 }
 
 /// Builds the announcement copy, so the online and bot screens cannot word the same event two
 /// different ways. Pure functions of the facts — nothing here reads state.
 enum CricketAnnouncements {
     /// Fired once, when the toss resolves.
+    /// `choice` is what the TOSS WINNER elected — "bat" or "bowl" — whoever that was.
+    ///
+    /// The winner's election is about THEMSELVES, so turning it into "am I batting" depends on
+    /// who won: if I won and chose to bat, I bat; if THEY won and chose to bat, I bowl. Getting
+    /// that backwards is silent and produces an announcement that contradicts the scoreboard
+    /// two seconds later, which is worse than no announcement at all.
     static func toss(id: Int, iWon: Bool, choice: String, opponent: String) -> CricketAnnouncement {
-        let batting = (choice == "bat") == iWon
+        let winnerBats = choice == "bat"
+        let iBat = iWon ? winnerBats : !winnerBats
+        let who = iBat ? "you're batting first" : "\(opponent) bats first"
         return CricketAnnouncement(
             id: id,
             kind: .toss,
@@ -145,8 +180,8 @@ enum CricketAnnouncements {
             // Say what was chosen AND what it means for the player, because "they chose to
             // bowl" requires a beat of thought to turn into "so I'm batting".
             detail: iWon
-                ? "You chose to \(choice) — \(batting ? "you're batting first" : "they're batting first")."
-                : "\(opponent) chose to \(choice) — \(batting ? "you're batting first" : "they're batting first").")
+                ? "You chose to \(choice) — \(who)."
+                : "\(opponent) chose to \(choice) — \(who).")
     }
 
     /// Fired at the innings change, before the chase begins.

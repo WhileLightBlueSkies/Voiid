@@ -39,15 +39,16 @@ struct CricketToss: View {
     var onCall: (String) -> Void
     var onElect: (String) -> Void
 
-    /// Rotation in degrees. Drives which FACE is toward the viewer, so it is the coin's state
-    /// and not just decoration — see `showingHeads`.
-    @State private var spin: Double = 0
+    /// True once the coin has finished landing, which gates the result copy and the bat/bowl
+    /// buttons. The SPIN itself belongs to CoinSceneView — this is only "has it stopped yet",
+    /// tracked here because the copy underneath has to wait for it.
     @State private var settled = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// Long enough to read as a real flip, short enough not to delay the match.
-    private static let spinDuration: Double = 1.1
+    /// MUST MATCH CoinSceneView's landing duration. The copy revealing before the coin stops
+    /// would spoil its own result; revealing long after reads as a hang.
+    private static let landingDuration: Double = 1.15
     private static let coinSize: CGFloat = 150
 
     var body: some View {
@@ -75,216 +76,28 @@ struct CricketToss: View {
             settle()
         }
         .onAppear {
-            if coin != nil {
-                // Entered with the toss already called (a rejoin): show the landed face
-                // immediately rather than replaying a flip the player did not make.
-                spin = coin == "heads" ? 0 : 180
-                settled = true
-            } else {
-                idleSpin()
-            }
+            // Entered with the toss already called (a rejoin): the coin lands immediately and
+            // the copy should not sit on "…" waiting for a flip the player never saw.
+            if coin != nil { settled = true }
         }
     }
 
     // MARK: - Coin
 
+    /// The coin — a REAL 3D cylinder (SceneKit), not a disc with a painted-on edge.
+    ///
+    /// The previous version was pure SwiftUI: a circle under `rotation3DEffect` with a band
+    /// faked in for the side. That could not work, for a structural reason rather than a
+    /// tuning one — `rotation3DEffect` foreshortens a FLAT layer, so the "edge" was a
+    /// rectangle being squashed, and side-on it looked like a rectangle because it was one.
+    /// A coin's edge is a curved surface and has to actually be curved.
+    ///
+    /// `CoinSceneView` owns the spin too: it idles until `coin` arrives, then lands on the
+    /// face that was actually thrown.
     private var coinFace: some View {
-        // DRIVEN BY AN ANIMATABLE MODIFIER, not by reading `spin` directly.
-        //
-        // `withAnimation` interpolates what is RENDERED; the @State itself jumps straight to
-        // its final value. So a letter chosen from `spin` in the body would swap once, on the
-        // first frame, and the coin would spin showing one face the whole way round. CoinFlip
-        // is an AnimatableModifier, so SwiftUI hands it every intermediate angle and the
-        // faces alternate exactly as the rotation passes edge-on.
-        Color.clear
-            .frame(width: Self.coinSize, height: Self.coinSize)
-            .modifier(CoinFlip(angle: spin, face: { showingHeads in
-                coinBody(showingHeads: showingHeads)
-            }))
+        CoinSceneView(result: coin, size: Self.coinSize)
+            .frame(width: Self.coinSize * 1.35, height: Self.coinSize * 1.35)
             .accessibilityLabel(accessibilityCoinLabel)
-    }
-
-    private func coinBody(showingHeads: Bool) -> some View {
-        ZStack {
-            Circle()
-                .fill(Self.gold)
-                // MATTE, NOT SHINY. A gloss highlight on a spinning disc reads as plastic and
-                // fights the letter for attention — real coins are dull metal, and the
-                // shallow top-to-bottom shading below is all the roundness it needs.
-                .overlay(
-                    Circle().fill(
-                        LinearGradient(
-                            colors: [.white.opacity(0.10), .clear, .black.opacity(0.10)],
-                            startPoint: .top, endPoint: .bottom))
-                )
-                // The rim, in dark gold. Drawn INSIDE the circle's edge (inset by half the
-                // stroke) so it reads as a milled edge rather than a ring floating around it.
-                .overlay(
-                    Circle()
-                        .strokeBorder(Self.goldRim, lineWidth: Self.rimWidth)
-                )
-                // A second, inner rim — the raised ridge every struck coin has. This is the
-                // detail that separates "gold circle" from "coin" at a glance.
-                .overlay(
-                    Circle()
-                        .strokeBorder(Self.goldRim.opacity(0.55), lineWidth: 2)
-                        .padding(Self.rimWidth + 5)
-                )
-                .frame(width: Self.coinSize, height: Self.coinSize)
-                .shadow(color: .black.opacity(0.30), radius: 14, y: 8)
-
-            Text(showingHeads ? "H" : "T")
-                .font(.system(size: 62, weight: .black, design: .rounded))
-                .foregroundStyle(Self.goldLetter)
-                // Struck INTO the metal: a dark letter with a one-point light edge under it is
-                // the cheapest convincing intaglio, and it survives the coin being small.
-                .shadow(color: .white.opacity(0.35), radius: 0, x: 0, y: 1)
-                // The far face is mirrored, so counter-flip the glyph — without this the
-                // letter reads backwards for half of every rotation.
-                .rotation3DEffect(.degrees(showingHeads ? 0 : 180), axis: (x: 0, y: 1, z: 0))
-        }
-    }
-
-    // Gold, mixed by hand rather than taken from the theme: VoiidColor.accent is the app's
-    // amber and is tuned for text on dark surfaces, not for a metal object that has to read as
-    // gold against both light and dark backgrounds.
-    private static let gold = Color(red: 0.83, green: 0.65, blue: 0.22)
-    private static let goldRim = Color(red: 0.45, green: 0.31, blue: 0.05)
-    private static let goldLetter = Color(red: 0.30, green: 0.20, blue: 0.02)
-    private static let rimWidth: CGFloat = 7
-
-    /// Spins a two-faced object and tells its content which face is toward the viewer.
-    ///
-    /// This has to be an `AnimatableModifier` rather than a plain `rotation3DEffect`: only an
-    /// animatable type receives the INTERMEDIATE values of an animation, and the intermediate
-    /// values are the entire point — they are what makes H and T alternate as the coin turns.
-    private struct CoinFlip<Face: View>: AnimatableModifier {
-        var angle: Double
-        /// The generic is `Face`, NOT `Content`: `ViewModifier` already declares an associated
-        /// type called `Content`, and shadowing it with a generic parameter silently breaks
-        /// conformance ("does not conform to protocol 'ViewModifier'") with no other clue.
-        ///
-        /// Plain stored closure rather than `@ViewBuilder` for the same reason — keep this
-        /// declaration as boring as possible.
-        let face: (Bool) -> Face
-
-        var animatableData: Double {
-            get { angle }
-            set { angle = newValue }
-        }
-
-        /// Between 90° and 270° (mod 360) the coin's back is toward the viewer.
-        private var showingHeads: Bool {
-            let a = angle.truncatingRemainder(dividingBy: 360)
-            let n = a < 0 ? a + 360 : a
-            return n < 90 || n > 270
-        }
-
-        /// How side-on the coin is right now, 0 (flat to the viewer) to 1 (perfectly edge-on).
-        ///
-        /// This is what gives the coin THICKNESS. A flat disc rotated in 3D vanishes to a line
-        /// at 90°, which is what betrays it as a cut-out rather than an object. Fading a
-        /// rendered edge in as the faces turn away — widest exactly when the face is
-        /// narrowest — is what sells a solid piece of metal.
-        private var edgeOn: Double {
-            abs(sin(angle * .pi / 180))
-        }
-
-        /// The modified view is a transparent spacer reserving the coin's footprint; the coin
-        /// is drawn as an overlay so `face` receives the animated value.
-        func body(content: Content) -> some View {
-            content.overlay(
-                ZStack {
-                    // THE EDGE — the coin's thickness, and the thing that makes it an object
-                    // rather than a cut-out.
-                    //
-                    // COUNTER-SCALED AGAINST THE ROTATION, which is the whole trick. The
-                    // rotation3DEffect below squashes everything horizontally as the coin
-                    // turns, reaching zero exactly at 90° — so an edge band drawn normally is
-                    // crushed to a hairline at precisely the moment it should be at its
-                    // widest, which is what a first attempt looks like. Dividing by the same
-                    // foreshortening the transform applies cancels it, leaving the edge a
-                    // constant real width in screen terms.
-                    CoinEdge()
-                        .frame(width: CricketToss.coinSize * 0.115,
-                               height: CricketToss.coinSize)
-                        // CLAMPED AT 6x. The counter-scale is 1/(1-edgeOn), which runs away to
-                        // infinity as the coin reaches exactly side-on — unclamped it becomes a
-                        // slab wider than the coin for the last few degrees. Six is past the
-                        // point where the edge already fills the silhouette, so the cap is
-                        // invisible and the blow-up cannot happen.
-                        .scaleEffect(x: min(1 / max(1 - edgeOn, 0.02), 6), y: 1, anchor: .center)
-                        // LATE AND FAST. The edge belongs to the last stretch of the turn
-                        // only: a linear fade has the coin reading as a bar for most of its
-                        // rotation, because `edgeOn` is already 0.5 at just 30°. Raising it to
-                        // a high power keeps the coin a FACE through the bulk of the spin and
-                        // hands over to the edge only as it genuinely goes side-on.
-                        .opacity(pow(edgeOn, 6))
-
-                    // The face fades out as the edge takes over, instead of showing THROUGH
-                    // it — a letter visible across the coin's own side is the clearest
-                    // possible tell that this is two flat layers rather than one solid object.
-                    // Same curve, inverted, so exactly one of the two is ever dominant.
-                    face(showingHeads)
-                        .opacity(1 - pow(edgeOn, 5))
-                }
-                .rotation3DEffect(.degrees(angle), axis: (x: 0, y: 1, z: 0), perspective: 0.4)
-            )
-        }
-    }
-
-    /// The coin's side: a gold band with vertical milling, seen as the coin turns edge-on.
-    ///
-    /// Drawn as a band rather than a true 3D extrusion because SwiftUI has no solid geometry —
-    /// and it does not need one. At the moment this is visible the coin is nearly side-on, so
-    /// a rectangle of ridges reads exactly as the milled edge of a struck coin.
-    private struct CoinEdge: View {
-        /// Milling: the fine vertical grooves cut into a coin's side. Dense on purpose — too
-        /// few and it reads as a barcode rather than machined metal.
-        private static let ridges = 26
-
-        var body: some View {
-            GeometryReader { geo in
-                let w = geo.size.width
-                let h = geo.size.height
-                // Slightly shorter than the face, so the silhouette tucks in at top and bottom
-                // the way a real cylinder seen edge-on does rather than ending square.
-                let barHeight = h * 0.965
-
-                ZStack {
-                    // Darker at both extremes, brighter down the middle: a curved metal
-                    // surface catching light along its centre line.
-                    LinearGradient(
-                        colors: [
-                            CricketToss.goldRim,
-                            CricketToss.gold,
-                            Color(red: 0.93, green: 0.78, blue: 0.38),
-                            CricketToss.gold,
-                            CricketToss.goldRim,
-                        ],
-                        startPoint: .leading, endPoint: .trailing)
-
-                    // THE HORIZONTAL LINE DESIGN — the milling itself, drawn as evenly spaced
-                    // vertical grooves across the band.
-                    HStack(spacing: 0) {
-                        ForEach(0..<Self.ridges, id: \.self) { i in
-                            Rectangle()
-                                .fill(i.isMultiple(of: 2)
-                                      ? CricketToss.goldRim.opacity(0.5)
-                                      : Color.clear)
-                        }
-                    }
-                }
-                .frame(width: w, height: barHeight)
-                .clipShape(RoundedRectangle(cornerRadius: w * 0.3))
-                // Rim lines top and bottom, where the edge meets each face.
-                .overlay(
-                    RoundedRectangle(cornerRadius: w * 0.3)
-                        .strokeBorder(CricketToss.goldRim, lineWidth: 1.5)
-                        .frame(width: w, height: barHeight))
-                .frame(width: w, height: h)
-            }
-        }
     }
 
     private var accessibilityCoinLabel: String {
@@ -292,51 +105,17 @@ struct CricketToss: View {
         return coin == "heads" ? "The coin landed heads" : "The coin landed tails"
     }
 
-    /// A slow turn while nobody has called yet.
+    /// Wait out the coin's landing, then reveal the result copy.
     ///
-    /// A coin sitting dead still under "Heads or tails?" looks like a disabled control. Turning
-    /// it slowly says the toss has not happened yet AND shows both faces before you commit,
-    /// which is the honest thing to do when the player is about to bet on one of them.
-    private func idleSpin() {
-        guard !reduceMotion, coin == nil else { return }
-        withAnimation(.linear(duration: 3.2).repeatForever(autoreverses: false)) {
-            spin = 360
-        }
-    }
-
-    /// Spin the coin so that it COMES TO REST ON THE FACE THAT ACTUALLY LANDED.
-    ///
-    /// The target is not "some number of turns" — it is an exact final angle: a multiple of
-    /// 360° to show heads, an odd multiple of 180° to show tails. Anything else stops the coin
-    /// edge-on or displaying the wrong side, which would make the animation contradict the
-    /// result printed underneath it.
+    /// The coin does its own spinning; this only keeps the words in step with it. Reduce-motion
+    /// skips the wait entirely — CoinSceneView still shows the correct face, and a player who
+    /// has asked for less motion should not also be made to wait for it.
     private func settle() {
-        guard let coin else { return }
-        let wantsHeads = coin == "heads"
-
         guard !reduceMotion else {
-            // No spin, but still land on the right face — the result must be legible.
-            withAnimation(.none) { spin = wantsHeads ? 0 : 180 }
             settled = true
             return
         }
-
-        // CANCEL THE IDLE SPIN FIRST. It is a `repeatForever`, and starting the landing
-        // animation without stopping it leaves the coin turning under the result forever.
-        // Re-stating the CURRENT presented angle with no animation ends the repeat; reading
-        // it back off `spin` would give the target of the idle loop, not where it visually is.
-        let current = spin.truncatingRemainder(dividingBy: 360)
-        withAnimation(.none) { spin = current }
-
-        // Five and a bit turns from where it actually is, then snapped to the nearest angle
-        // that shows the correct face. Enough rotation to read as a real flip.
-        let minimum = current + 1800
-        let step = 360.0
-        var target = (minimum / step).rounded(.up) * step
-        if !wantsHeads { target += 180 }
-
-        withAnimation(.easeOut(duration: Self.spinDuration)) { spin = target }
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.spinDuration) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.landingDuration) {
             withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { settled = true }
             Haptics.success()
         }
