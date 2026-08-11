@@ -24,6 +24,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.ui.text.style.TextAlign
+import com.voiid.app.ui.theme.VoiidSpacing
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
@@ -92,6 +98,16 @@ fun CricketPitch(
     event: BallEvent?,
     ballToken: Int,
     modifier: Modifier = Modifier,
+    /**
+     * A match announcement to deliver ON THE PITCH — the innings changing, your role changing.
+     *
+     * IN HERE RATHER THAN OVER THE SCREEN. Delivered as a card on a dimmed scrim these looked
+     * exactly like what they were: a system alert dropped on a game. The pitch is already the
+     * thing the player watches for "what just happened", so the announcement belongs in that
+     * same window — the players fade, the grass stays, the message is delivered where the ball
+     * would be, and play resumes. Same surface, same place to look, no modal.
+     */
+    announcement: CricketAnnouncement? = null,
 ) {
     val haptics = LocalVoiidHaptics.current
 
@@ -173,6 +189,17 @@ fun CricketPitch(
         val h = maxHeight
         val e = shown
 
+        // THE PLAYERS FADE FOR AN ANNOUNCEMENT, THE GROUND STAYS. Everything that moves is
+        // gated on this one value, so nothing the pitch happened to be animating can show
+        // through the message. The grass itself is deliberately left up: this is a message ON
+        // the pitch, not a panel replacing it.
+        val clear by animateFloatAsState(
+            targetValue = if (announcement == null) 0f else 1f,
+            animationSpec = tween(300),
+            label = "clear",
+        )
+        val playAlpha = 1f - clear
+
         // Crowd band: a dotted strip along the skyline. Cheap, but it stops the top of the
         // frame reading as empty sky.
         Box(
@@ -208,6 +235,11 @@ fun CricketPitch(
                 .background(Color.White.copy(alpha = 0.40f))
         )
 
+        // EVERY MOVING ELEMENT LIVES IN THIS ONE BOX, so clearing the pitch for an
+        // announcement is a single alpha. Applying it per element would work until somebody
+        // added a ninth and forgot, and a lone stump floating over the message is exactly the
+        // kind of bug nobody notices until it ships.
+        Box(Modifier.fillMaxSize().alpha(playAlpha)) {
         // Stumps. Knocked over on a bowled.
         val tilt = if (e == BallEvent.Bowled) 68f * flight.value else 0f
         Box(
@@ -319,6 +351,38 @@ fun CricketPitch(
                         )
                         .padding(horizontal = 16.dp, vertical = 7.dp),
                 )
+            }
+        }
+        }   // end of the play-elements box
+
+        // The announcement, drawn on the cleared ground. Plain type on the grass — no card, no
+        // panel, no scrim. A container here would put a rectangle inside a rectangle and undo
+        // the whole point of moving this into the pitch.
+        announcement?.let { a ->
+            Box(
+                Modifier.fillMaxSize().alpha(clear),
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(horizontal = VoiidSpacing.lg),
+                ) {
+                    Text(
+                        a.title,
+                        color = Color.White,
+                        fontSize = 25.sp,
+                        fontWeight = FontWeight.Black,
+                        textAlign = TextAlign.Center,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        a.detail,
+                        color = Color.White.copy(alpha = 0.92f),
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        textAlign = TextAlign.Center,
+                    )
+                }
             }
         }
     }

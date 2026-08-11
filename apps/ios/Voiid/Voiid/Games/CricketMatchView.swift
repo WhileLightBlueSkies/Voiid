@@ -42,6 +42,14 @@ struct CricketMatchView: View {
     @State private var lastCount = 0
     @State private var lastInnings = 1
 
+    /// Announcements waiting to be delivered on the pitch. Same queue-and-chain model as the
+    /// bot screen, so the two modes announce identically.
+    @State private var announcements: [CricketAnnouncement] = []
+    @State private var announcementSeq = 0
+    /// The role last announced, so a change is noticed ONCE rather than on every server frame.
+    /// Nil until the toss resolves and there is a role to have.
+    @State private var lastAnnouncedBatting: Bool?
+
     var body: some View {
         VStack(spacing: 0) {
             if let s = engine.cricket {
@@ -107,13 +115,70 @@ struct CricketMatchView: View {
             lastCount = n
         }
         .onChange(of: engine.cricket?.innings ?? 1) { _, innings in
-            if innings > lastInnings { CricketSound.inningsBreak() }
+            if innings > lastInnings, let s = engine.cricket {
+                CricketSound.inningsBreak()
+                // The first innings' total is what the chase is measured against. `target` is
+                // that score plus one, so it is the honest source for both numbers — reading
+                // the scoreboard here would race the same frame that changed it.
+                let firstScore = (s.target ?? 1) - 1
+                announce(CricketAnnouncements.inningsBreak(
+                    id: nextAnnouncementId(),
+                    firstInningsScore: firstScore,
+                    target: s.target ?? 0,
+                    iChase: s.battingSeat == mySeat,
+                    opponent: opponentName(s)))
+            }
             lastInnings = innings
+        }
+        // ROLE CHANGES, wherever they come from. Online, this fires for BOTH the toss
+        // resolving and the innings switch — the server just reports a new battingSeat and does
+        // not say why. Keying on the value rather than the cause means one hook covers both and
+        // neither can be missed.
+        //
+        // `phase == "play"` gates it: during the toss `battingSeat` is still its provisional
+        // value, and announcing a role before anyone has elected would be a guess.
+        .onChange(of: rolePhaseKey) { _, _ in
+            guard let s = engine.cricket, s.phase == "play" else { return }
+            let batting = s.battingSeat == mySeat
+            guard batting != lastAnnouncedBatting else { return }
+            lastAnnouncedBatting = batting
+            announce(CricketAnnouncements.role(id: nextAnnouncementId(), batting: batting))
         }
         .onChange(of: engine.cricket?.finished ?? false) { _, finished in
             guard finished, let s = engine.cricket else { return }
             CricketSound.stopBed()
             CricketSound.matchEnd(won: s.winnerUserId == me)
+        }
+    }
+
+    /// What the role hook watches: the phase and the batting seat together.
+    ///
+    /// Both matter. The seat alone would miss the toss resolving when the elected seat happens
+    /// to match the provisional one; the phase alone would miss the innings switch.
+    private var rolePhaseKey: String {
+        guard let s = engine.cricket else { return "" }
+        return "\(s.phase)-\(s.battingSeat)"
+    }
+
+    private func nextAnnouncementId() -> Int {
+        announcementSeq += 1
+        return announcementSeq
+    }
+
+    private func announce(_ a: CricketAnnouncement) {
+        let wasIdle = announcements.isEmpty
+        announcements.append(a)
+        // Only the first starts the drain; the rest are pulled by the one ahead. Concurrent
+        // timers would clear the whole queue at once and the second message would never show.
+        if wasIdle { scheduleDismiss(of: a) }
+    }
+
+    private func scheduleDismiss(of a: CricketAnnouncement) {
+        let id = a.id
+        DispatchQueue.main.asyncAfter(deadline: .now() + a.duration) {
+            guard announcements.first?.id == id else { return }
+            withAnimation(.easeInOut(duration: 0.3)) { announcements.removeFirst() }
+            if let next = announcements.first { scheduleDismiss(of: next) }
         }
     }
 
@@ -182,7 +247,8 @@ struct CricketMatchView: View {
                     .foregroundStyle(VoiidColor.textSecondary)
             }
 
-            CricketPitch(event: event, ballToken: ballToken)
+            CricketPitch(event: event, ballToken: ballToken,
+                         announcement: announcements.first)
                 .padding(.vertical, VoiidSpacing.md)
 
             // Picks. Mine is known to me the moment I tap; theirs is genuinely unavailable until

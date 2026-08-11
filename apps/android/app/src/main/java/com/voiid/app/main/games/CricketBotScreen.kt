@@ -50,7 +50,10 @@ import androidx.compose.ui.unit.sp
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidRadius
 import com.voiid.app.ui.theme.VoiidSpacing
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlin.random.Random
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * Hand Cricket against the local bot (docs/GAMES_HAND_CRICKET.md).
@@ -87,6 +90,10 @@ fun CricketBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
         }
     }
 
+    // Drives the toss's delayed steps and the announcement queue. Scoped to the composable, so
+    // leaving the match cancels anything still pending rather than firing into a dead screen.
+    val scope = rememberCoroutineScope()
+
     // Null until the player picks a length — the match cannot start without one.
     var overs by remember { mutableStateOf<Int?>(null) }
 
@@ -98,6 +105,20 @@ fun CricketBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
     var botWickets by remember { mutableIntStateOf(0) }
     var ballsBowled by remember { mutableIntStateOf(0) }
     var target by remember { mutableStateOf<Int?>(null) }
+
+    // TOSS. Mirrors the server engine's phases exactly, so the two flows cannot drift: the coin
+    // is decided when the match length is chosen (BEFORE anyone can call, same as the server —
+    // deciding it on the call would make the outcome depend on the input), then the human calls,
+    // then whoever won elects.
+    var tossPhase by remember { mutableStateOf("toss-call") }
+    var tossCoin by remember { mutableStateOf("") }
+    var tossCalled by remember { mutableStateOf<String?>(null) }
+    var tossWonByHuman by remember { mutableStateOf(false) }
+
+    // Announcements waiting to be delivered on the pitch, and the counter that gives each a
+    // fresh id so the same message can play twice in a match.
+    val announcements = remember { mutableStateListOf<CricketAnnouncement>() }
+    var announcementSeq by remember { mutableIntStateOf(0) }
 
     var lastEvent by remember { mutableStateOf<BallEvent?>(null) }
     var ballToken by remember { mutableIntStateOf(0) }
@@ -135,7 +156,78 @@ fun CricketBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
         resolving = false; finished = false; humanWon = null
         paused = false; recorded = false
         humanBatHistory.clear(); humanBowlHistory.clear()
+        // The toss is part of a match, so a new match gets a new one. Without this a rematch
+        // would inherit the last toss and walk straight into play with the old sides.
+        tossPhase = "toss-call"; tossCoin = ""; tossCalled = null; tossWonByHuman = false
+        announcements.clear()
         overs = null
+    }
+
+    fun nextAnnouncementId(): Int {
+        announcementSeq += 1
+        return announcementSeq
+    }
+
+    /**
+     * The queue drains itself, and the timers CHAIN.
+     *
+     * Starting a timer per announcement would run them all concurrently and the whole queue
+     * would clear at once — the second message never being seen. The id is re-checked before
+     * dropping, so a restart that cleared the queue mid-wait cannot pop somebody else's.
+     */
+    fun scheduleDismiss(a: CricketAnnouncement) {
+        scope.launch {
+            delay(a.durationMs)
+            if (announcements.firstOrNull()?.id != a.id) return@launch
+            announcements.removeAt(0)
+            announcements.firstOrNull()?.let { scheduleDismiss(it) }
+        }
+    }
+
+    fun announce(a: CricketAnnouncement) {
+        val wasIdle = announcements.isEmpty()
+        announcements.add(a)
+        if (wasIdle) scheduleDismiss(a)
+    }
+
+    fun electToss(choice: String) {
+        // Whoever elected, apply it from the ELECTOR's point of view: `tossWonByHuman` says
+        // whose choice this is, so one line covers both.
+        humanBatting = if (tossWonByHuman) choice == "bat" else choice == "bowl"
+        tossPhase = "play"
+
+        // NO TOSS ANNOUNCEMENT. The toss screen has just said who won and what they chose,
+        // directly under the coin — repeating it on the pitch two seconds later is the same
+        // sentence twice. Only the CONSEQUENCE is announced: what you are now doing.
+        announce(CricketAnnouncements.role(nextAnnouncementId(), batting = humanBatting))
+    }
+
+    /**
+     * What the bot elects.
+     *
+     * BOWLING FIRST IS THE STRONGER PLAY in a two-wicket format — batting second means knowing
+     * exactly what you have to chase — so the bot prefers it, and prefers it harder at higher
+     * difficulty. At low skill it is closer to a coin flip, which keeps easy mode feeling like a
+     * real opponent rather than a solved one.
+     */
+    fun botElection(): String =
+        if (Random.nextFloat() < 0.5f + 0.35f * skill) "bowl" else "bat"
+
+    fun callToss(side: String) {
+        tossCalled = side
+        tossWonByHuman = side == tossCoin
+        tossPhase = "toss-decide"
+        if (tossWonByHuman) return
+
+        // The bot won, so it decides — but not until the player has actually SEEN it win. The
+        // coin takes ~1.15s to land, so a shorter wait would swap the screen out barely after
+        // the result appeared and the player would arrive at the pick pad wondering what
+        // happened.
+        scope.launch {
+            delay(2400)
+            if (tossPhase != "toss-decide") return@launch
+            electToss(botElection())
+        }
     }
 
     /** Score one ball, then advance the innings if this ball ended it. */
@@ -185,11 +277,26 @@ fun CricketBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
         if (!inningsOver) return
 
         if (innings == 1) {
+            val firstScore = battingScore
             innings = 2
             humanBatting = !humanBatting
             ballsBowled = 0
-            target = battingScore + 1
+            target = firstScore + 1
             CricketSound.inningsBreak()
+
+            // The innings change was previously invisible: the scoreboard just started counting
+            // a different number and the roles quietly swapped. Announce both — the break with
+            // the target, then the new role.
+            announce(
+                CricketAnnouncements.inningsBreak(
+                    id = nextAnnouncementId(),
+                    firstInningsScore = firstScore,
+                    target = firstScore + 1,
+                    iChase = humanBatting,
+                    opponent = "The bot",
+                )
+            )
+            announce(CricketAnnouncements.role(nextAnnouncementId(), batting = humanBatting))
         } else {
             // Second innings ended short. Equal totals = tie.
             when {
@@ -222,7 +329,10 @@ fun CricketBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
     }
 
     fun pick(n: Int) {
+        // `announcements.isEmpty()` too: a message on the pitch is a deliberate pause in play,
+        // and a tap that lands through it would resolve a ball the player never saw begin.
         if (resolving || finished || paused || overs == null) return
+        if (announcements.isNotEmpty()) return
         GameAudio.play("pick", gain = 0.45f)
         humanPick = n
         botPick = null
@@ -269,7 +379,29 @@ fun CricketBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
 
             val o = overs
             if (o == null) {
-                OversPicker { overs = it }
+                OversPicker {
+                    // The coin is decided HERE, before the toss screen appears and so before
+                    // anyone can call it — the same ordering the server uses, and for the same
+                    // reason: a coin decided on the call is a coin whose result depends on it.
+                    tossCoin = if (Random.nextBoolean()) "heads" else "tails"
+                    overs = it
+                }
+            } else if (tossPhase != "play") {
+                // Same two-step toss as the online game, run locally — there is no server in a
+                // bot match, so this screen is the referee for it exactly as it already is for
+                // the scoring rules.
+                CricketToss(
+                    phase = tossPhase,
+                    iCall = true,               // you always call against the bot
+                    iElect = tossWonByHuman,
+                    // Withheld until the call, matching what the server sends — the UI must not
+                    // be able to show a face nobody has called yet.
+                    coin = if (tossCalled == null) null else tossCoin,
+                    called = tossCalled,
+                    opponentName = "The bot",
+                    onCall = ::callToss,
+                    onElect = ::electToss,
+                )
             } else {
                 Spacer(Modifier.weight(1f))
 
@@ -319,6 +451,7 @@ fun CricketBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
                     event = lastEvent,
                     ballToken = ballToken,
                     modifier = Modifier.padding(vertical = VoiidSpacing.md),
+                    announcement = announcements.firstOrNull(),
                 )
 
                 // Both picks, revealed together once the ball resolves.

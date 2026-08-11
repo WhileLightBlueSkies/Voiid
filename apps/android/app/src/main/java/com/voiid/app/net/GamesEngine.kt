@@ -112,6 +112,9 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
     data class CricketState(
         val players: List<String>,
         val overs: Int,
+        /** "toss-call" | "toss-decide" | "play". Nothing is playable until this reads "play". */
+        val phase: String,
+        val toss: Toss,
         val innings: Int,
         /** Seat batting RIGHT NOW. Swaps between innings. */
         val battingSeat: Int,
@@ -135,6 +138,27 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
             val innings: Int,
             val runs: Int,
             val wicket: Boolean,
+        )
+
+        /**
+         * The toss, before ball one (backend/games/src/engine/cricket).
+         *
+         * A match opens here rather than in play: one seat calls the coin, and whoever wins
+         * elects to bat or bowl. [coin] is NULL until the call has been made — the server
+         * withholds it exactly as it withholds picks, so a client cannot read it and call
+         * correctly every time.
+         */
+        data class Toss(
+            /** Seat that holds the call. */
+            val callerSeat: Int,
+            /** What they called, or null before they have. */
+            val called: String?,
+            /** Which face landed. Null until [called] is set; revealing it earlier is the cheat. */
+            val coin: String?,
+            /** Seat that won the call and now elects. Null until the call resolves. */
+            val wonSeat: Int?,
+            /** "bat" or "bowl", once elected. */
+            val choice: String?,
         )
     }
 
@@ -425,9 +449,20 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         } ?: emptyList()
         fun ints(key: String, fallback: List<Int>) =
             payload.arr(key)?.map { (it as? JsonPrimitive)?.intOrNull ?: 0 } ?: fallback
+        val tossObj = payload["toss"] as? JsonObject
         return CricketState(
             players = players,
             overs = payload.int("overs") ?: 2,
+            // Defaults to "play" so a match created before the toss shipped still renders —
+            // the server makes the same assumption on restore.
+            phase = payload.str("phase") ?: "play",
+            toss = CricketState.Toss(
+                callerSeat = tossObj?.int("callerSeat") ?: 0,
+                called = tossObj?.str("called"),
+                coin = tossObj?.str("coin"),
+                wonSeat = tossObj?.int("wonSeat"),
+                choice = tossObj?.str("choice"),
+            ),
             innings = payload.int("innings") ?: 1,
             battingSeat = payload.int("battingSeat") ?: 0,
             scores = ints("scores", listOf(0, 0)),
@@ -600,6 +635,28 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         val s = _cricket.value ?: return
         if (s.finished) return
         WebSocketClient.get(context).sendGameInput(id, """{"pick":$pick}""")
+    }
+
+    /**
+     * Call the toss. [side] is "heads" or "tails".
+     *
+     * Fire-and-forget like every other input here. The server refuses a call from the seat that
+     * does not hold it, so this does not police whose turn it is — it only avoids sending a
+     * frame we already know is pointless.
+     */
+    fun callToss(context: Context, side: String) {
+        val id = matchId ?: return
+        val s = _cricket.value ?: return
+        if (s.finished) return
+        WebSocketClient.get(context).sendGameInput(id, """{"call":"$side"}""")
+    }
+
+    /** Elect to bat or bowl after winning the toss. [choice] is "bat" or "bowl". */
+    fun electToss(context: Context, choice: String) {
+        val id = matchId ?: return
+        val s = _cricket.value ?: return
+        if (s.finished) return
+        WebSocketClient.get(context).sendGameInput(id, """{"elect":"$choice"}""")
     }
 
     /**

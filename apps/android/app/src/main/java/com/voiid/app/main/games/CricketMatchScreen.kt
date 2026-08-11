@@ -25,7 +25,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -36,9 +38,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.voiid.app.net.GamesEngine
+import com.voiid.app.store.UserDirectory
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidRadius
 import com.voiid.app.ui.theme.VoiidSpacing
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * Hand Cricket against a FRIEND, refereed by the server (docs/GAMES_HAND_CRICKET.md).
@@ -97,11 +102,69 @@ fun CricketMatchScreen(matchId: String, onClose: () -> Unit) {
         lastCount = n
     }
 
+    // Announcements waiting to be delivered on the pitch. Same queue-and-chain model as the bot
+    // screen, so the two modes announce identically.
+    val announcements = remember { mutableStateListOf<CricketAnnouncement>() }
+    var announcementSeq by remember { mutableIntStateOf(0) }
+    // The role last announced, so a change is noticed ONCE rather than on every server frame.
+    var lastAnnouncedBatting by remember { mutableStateOf<Boolean?>(null) }
+    val scope = rememberCoroutineScope()
+
+    fun nextAnnouncementId(): Int {
+        announcementSeq += 1
+        return announcementSeq
+    }
+
+    fun scheduleDismiss(a: CricketAnnouncement) {
+        scope.launch {
+            delay(a.durationMs)
+            if (announcements.firstOrNull()?.id != a.id) return@launch
+            announcements.removeAt(0)
+            announcements.firstOrNull()?.let { scheduleDismiss(it) }
+        }
+    }
+
+    // Only the first starts the drain; the rest are pulled by the one ahead. Concurrent timers
+    // would clear the whole queue at once and the second message would never show.
+    fun announce(a: CricketAnnouncement) {
+        val wasIdle = announcements.isEmpty()
+        announcements.add(a)
+        if (wasIdle) scheduleDismiss(a)
+    }
+
     var lastInnings by remember { mutableIntStateOf(1) }
     LaunchedEffect(s?.innings) {
         val innings = s?.innings ?: 1
-        if (innings > lastInnings) CricketSound.inningsBreak()
+        if (innings > lastInnings && s != null) {
+            CricketSound.inningsBreak()
+            // `target` is the first innings' score plus one, so it is the honest source for both
+            // numbers — reading the scoreboard here would race the frame that changed it.
+            val firstScore = (s.target ?: 1) - 1
+            announce(
+                CricketAnnouncements.inningsBreak(
+                    id = nextAnnouncementId(),
+                    firstInningsScore = firstScore,
+                    target = s.target ?: 0,
+                    iChase = s.battingSeat == mySeat,
+                    opponent = opponentName(s, me),
+                )
+            )
+        }
         lastInnings = innings
+    }
+
+    // ROLE CHANGES, wherever they come from. Online, this fires for BOTH the toss resolving and
+    // the innings switch — the server just reports a new battingSeat and does not say why.
+    // Keying on the value rather than the cause means one hook covers both and neither can be
+    // missed. `phase == "play"` gates it: during the toss battingSeat is still provisional, and
+    // announcing a role before anyone has elected would be a guess.
+    LaunchedEffect(s?.phase, s?.battingSeat) {
+        val st = s ?: return@LaunchedEffect
+        if (st.phase != "play") return@LaunchedEffect
+        val batting = st.battingSeat == mySeat
+        if (batting == lastAnnouncedBatting) return@LaunchedEffect
+        lastAnnouncedBatting = batting
+        announce(CricketAnnouncements.role(nextAnnouncementId(), batting = batting))
     }
 
     var lastFinished by remember { mutableStateOf(false) }
@@ -143,6 +206,23 @@ fun CricketMatchScreen(matchId: String, onClose: () -> Unit) {
         }
 
         when {
+            s != null && s.phase != "play" -> {
+                // THE TOSS OWNS THE SCREEN UNTIL IT RESOLVES. Not a sheet over the scoreboard:
+                // there is no score yet, and showing 0-0 behind a coin invites a tap on a pick
+                // pad the server would only reject.
+                val mySeat = s.players.indexOf(me).coerceAtLeast(0)
+                CricketToss(
+                    phase = s.phase,
+                    iCall = s.toss.callerSeat == mySeat,
+                    iElect = s.toss.wonSeat == mySeat,
+                    coin = s.toss.coin,
+                    called = s.toss.called,
+                    opponentName = opponentName(s, me),
+                    onCall = { engine.callToss(context, it) },
+                    onElect = { engine.electToss(context, it) },
+                )
+            }
+
             s != null -> {
                 // My seat decides which half of every by-seat array is mine. A wrong seat
                 // would silently swap the whole scoreboard.
@@ -201,6 +281,7 @@ fun CricketMatchScreen(matchId: String, onClose: () -> Unit) {
                     event = event,
                     ballToken = ballToken,
                     modifier = Modifier.padding(vertical = VoiidSpacing.md),
+                    announcement = announcements.firstOrNull(),
                 )
 
                 // Picks. Mine is known to me the moment I tap; theirs is genuinely unavailable
@@ -344,4 +425,17 @@ private fun MatchPickButton(
             fontWeight = FontWeight.Bold,
         )
     }
+}
+
+/**
+ * The opponent's display name, for announcement and toss copy.
+ *
+ * Only this device knows what it calls its own contacts, so the name is resolved locally rather
+ * than trusted from the wire — the same reasoning as [labelFor] in the Snake screen.
+ */
+private fun opponentName(s: GamesEngine.CricketState, me: String?): String {
+    val mySeat = s.players.indexOf(me).coerceAtLeast(0)
+    val theirSeat = if (mySeat == 0) 1 else 0
+    val id = s.players.getOrNull(theirSeat) ?: return "They"
+    return UserDirectory.displayName(id, "They")
 }
