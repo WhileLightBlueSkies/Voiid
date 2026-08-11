@@ -70,6 +70,18 @@ final class SnakeHudModel: ObservableObject {
     @Published var timeRemaining: String = ""
     @Published var myMass: Int = 0
 
+    // BOOST STATE, so the HUD can show what boost is costing.
+    //
+    // Boost drains mass and drops it behind you as food, and it cuts out entirely below
+    // MIN_BOOST_MASS — none of which was visible. SNAKE.md §3.2 calls an invisible mechanic
+    // "an unfair-feeling mechanic purely because it is invisible": you hold the button, nothing
+    // obvious happens, and later you are shorter for reasons you never saw.
+    /// True while boost is actually TAKING EFFECT — held AND affordable. Not the same as the
+    /// button being down: below the floor the engine ignores the input entirely.
+    @Published var boostActive: Bool = false
+    /// How much boost fuel is left, 0-1. Mass above the floor, as a fraction of a full tank.
+    @Published var boostFuel: Double = 1
+
     struct Row: Identifiable {
         let id: String
         let rank: Int
@@ -1437,6 +1449,16 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         let timeText = String(format: "%d:%02d", Int(left) / 60, Int(left) % 60)
         let myMass = Int(mine?.mass ?? 0)
 
+        // `boosting && mass > floor` mirrors the engine's own condition exactly — the client
+        // must not claim boost is working when the server is ignoring it.
+        let mass = mine?.mass ?? 0
+        let active = (mine?.boosting ?? false) && mass > SnakeMotion.minBoostMass
+        // Full at twice the floor. Chosen because it is roughly where a mid-match snake sits,
+        // so the bar reads as "most of a tank" rather than pinned at either end for a whole
+        // match — a meter that never moves teaches nothing.
+        let fuel = min(max((mass - SnakeMotion.minBoostMass)
+                           / SnakeMotion.minBoostMass, 0), 1)
+
         // THROTTLED TO ~6 Hz, and that matters more than it looks.
         //
         // Publishing every frame spawned a Task 60 times a second, each one hopping to the
@@ -1452,6 +1474,8 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
             hud.board = rows
             hud.timeRemaining = timeText
             hud.myMass = myMass
+            hud.boostActive = active
+            hud.boostFuel = fuel
         }
     }
 

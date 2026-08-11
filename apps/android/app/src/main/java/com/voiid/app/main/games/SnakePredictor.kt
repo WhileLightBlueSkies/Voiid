@@ -21,6 +21,14 @@ object SnakeMotion {
     const val BOOST_SPEED = 510.0
     val TURN_RATE = 400.0 * PI / 180.0
     val TURN_RATE_BOOST = 440.0 * PI / 180.0
+
+    /**
+     * Below this mass the engine IGNORES a boost input entirely (snake/index.ts
+     * MIN_BOOST_MASS). Mirrored here so the HUD's fuel ring can say so — a button that does
+     * nothing when pressed reads as broken unless the UI explains why. Identical to iOS
+     * `SnakeMotion.minBoostMass`.
+     */
+    const val MIN_BOOST_MASS = 12.0
 }
 
 /**

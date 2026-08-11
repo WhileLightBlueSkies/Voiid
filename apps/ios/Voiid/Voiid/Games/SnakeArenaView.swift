@@ -49,6 +49,19 @@ struct SnakeArenaView: View {
             Color.black.ignoresSafeArea()
 
             SnakeMetalView(engine: engine, me: me, hud: hud, stick: $stick, boosting: boosting)
+
+            // SPEED LINES while boost is actually taking effect.
+            //
+            // The arena camera stays locked to the head, so a snake at 510 u/s looks almost
+            // exactly like a snake at 300 — everything moves together and there is no fixed
+            // reference to read speed against. Streaks at the edge of the frame supply that
+            // reference, which is why every racing game has them.
+            //
+            // DRIVEN BY `hud.boostActive`, NOT the button: below the boost floor the engine
+            // ignores the input, and drawing speed lines for a boost that is not happening
+            // would be the client lying about the game state.
+            SpeedLines(active: hud.boostActive)
+                .allowsHitTesting(false)
                 .ignoresSafeArea()
 
             // The chrome deliberately does NOT ignore the safe area, unlike the arena behind
@@ -338,10 +351,37 @@ struct SnakeArenaView: View {
         Circle()
             .fill(boosting ? Color.white.opacity(0.3) : Color.white.opacity(0.12))
             .overlay(Circle().stroke(.white.opacity(boosting ? 0.9 : 0.35), lineWidth: 2))
+            // THE FUEL RING — how much boost is left, drawn around the button that spends it.
+            //
+            // Boost costs mass and cuts out below a floor, and neither was visible: you held
+            // the button, nothing obvious happened, and later you were shorter for reasons you
+            // never saw. SNAKE.md §3.2 calls that "an unfair-feeling mechanic purely because it
+            // is invisible".
+            //
+            // ON THE BUTTON rather than in the corner, because that is where the thumb and the
+            // eye already are at the moment it matters. A meter elsewhere is a meter nobody
+            // reads mid-fight.
+            .overlay(
+                Circle()
+                    .trim(from: 0, to: hud.boostFuel)
+                    .stroke(
+                        // Amber as it runs down: the colour change is what carries "about to
+                        // cut out" at a glance, without a number to read.
+                        hud.boostFuel < 0.25
+                            ? Color(red: 1.0, green: 0.55, blue: 0.20)
+                            : Color(red: 0.13, green: 0.88, blue: 0.94),
+                        style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                    // Starts at twelve o'clock and runs clockwise, the way every fuel gauge
+                    // and cooldown ring in the genre does.
+                    .rotationEffect(.degrees(-90))
+                    .padding(-5)
+                    .animation(.easeOut(duration: 0.2), value: hud.boostFuel))
             .overlay(
                 Text("BOOST")
                     .font(.system(size: 10, weight: .black))
-                    .foregroundStyle(.white.opacity(0.9)))
+                    // Dimmed when boost cannot fire, so the button reads as unavailable rather
+                    // than as broken when a small snake holds it and nothing happens.
+                    .foregroundStyle(.white.opacity(hud.boostFuel <= 0 ? 0.35 : 0.9)))
             .frame(width: 78, height: 78)
             .scaleEffect(boosting ? 0.93 : 1)
             .animation(.easeOut(duration: 0.08), value: boosting)
@@ -605,3 +645,56 @@ final class TrailStore {
 }
 
 
+
+/// Radial streaks at the edge of the frame while boosting.
+///
+/// WHY THE ARENA NEEDS THEM. The camera follows the head, so at boost speed the whole world
+/// slides at once and there is nothing stationary to judge speed against — a boosting snake and
+/// a cruising one look nearly identical. Streaks anchored to the SCREEN rather than the world
+/// give the eye that fixed reference back.
+///
+/// Deliberately at the edges only. A full-screen effect would sit on top of the arena the player
+/// is trying to read, and the one thing worse than not seeing your speed is not seeing the snake
+/// about to kill you.
+private struct SpeedLines: View {
+    let active: Bool
+
+    /// Enough to read as motion, few enough to stay cheap and not crowd the frame.
+    private static let count = 14
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width, h = geo.size.height
+            ZStack {
+                ForEach(0..<Self.count, id: \.self) { i in
+                    // Spread around a circle, with a fixed per-index jitter so the fan is
+                    // irregular rather than a clock face. Derived from the index rather than
+                    // random, so streaks do not reshuffle on every state change.
+                    let angle = Double(i) / Double(Self.count) * 2 * .pi
+                        + Double(i % 5) * 0.09
+                    let dx = cos(angle), dy = sin(angle)
+                    // Anchored past the middle so the inner end stays clear of the arena's
+                    // centre, where the snake and the action are.
+                    let inner = min(w, h) * 0.42
+
+                    Capsule()
+                        .fill(
+                            LinearGradient(
+                                colors: [.white.opacity(0), .white.opacity(0.55)],
+                                startPoint: .leading, endPoint: .trailing))
+                        .frame(width: active ? 90 : 0, height: 2.5)
+                        .rotationEffect(.radians(angle))
+                        .offset(x: dx * inner, y: dy * inner)
+                        .position(x: w / 2, y: h / 2)
+                }
+            }
+            // FAST IN, SLOWER OUT. Boost engages instantly and the lines must arrive with it;
+            // on release they trail off, which reads as momentum bleeding away rather than as
+            // an effect being switched off.
+            .animation(
+                active ? .easeOut(duration: 0.12) : .easeIn(duration: 0.28),
+                value: active)
+            .opacity(active ? 1 : 0)
+        }
+    }
+}

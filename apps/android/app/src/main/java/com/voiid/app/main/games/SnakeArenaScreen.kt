@@ -1,5 +1,7 @@
 package com.voiid.app.main.games
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -193,10 +195,22 @@ fun SnakeArenaScreen(
         val mine = hud?.snakes?.firstOrNull { it.id == me }
         val matchOver = hud?.finished == true
 
+        // Boost fuel and whether boost is actually taking effect. Derived HERE rather than in
+        // the overlay so the condition mirrors the engine's exactly (`boost && mass > floor`) —
+        // the client must not claim boost is working when the server is ignoring it.
+        val myMass = mine?.mass ?: 0.0
+        val boostActive = boosting && myMass > SnakeMotion.MIN_BOOST_MASS
+        // Full at twice the floor: roughly where a mid-match snake sits, so the ring reads as
+        // "most of a tank" rather than pinned at either end for a whole match.
+        val boostFuel = (((myMass - SnakeMotion.MIN_BOOST_MASS) / SnakeMotion.MIN_BOOST_MASS)
+            .coerceIn(0.0, 1.0)).toFloat()
+
         Overlay(
             state = hudState.value,
             me = me,
             boosting = boosting,
+            boostActive = boostActive,
+            boostFuel = boostFuel,
             onClose = onClose,
             onStick = { v ->
                 stick = v
@@ -1767,6 +1781,15 @@ private fun Overlay(
     onClose: () -> Unit,
     onStick: (Offset) -> Unit,
     onBoostChange: (Boolean) -> Unit,
+    /**
+     * True while boost is actually TAKING EFFECT — held AND affordable. Not the same as the
+     * button being down: below MIN_BOOST_MASS the engine ignores the input entirely, and
+     * drawing speed lines for a boost that is not happening would be the client lying about
+     * the game state.
+     */
+    boostActive: Boolean,
+    /** Boost fuel left, 0-1: mass above the floor as a fraction of a full tank. */
+    boostFuel: Float,
 ) {
     Box(Modifier.fillMaxSize().padding(14.dp)) {
         Box(
@@ -1828,6 +1851,51 @@ private fun Overlay(
             }
         }
 
+        // SPEED LINES while boost is actually taking effect.
+        //
+        // The arena camera stays locked to the head, so a snake at 510 u/s looks almost exactly
+        // like one at 300 — everything moves together and there is no fixed reference to read
+        // speed against. Streaks anchored to the SCREEN supply that reference back, which is
+        // why every racing game has them.
+        //
+        // Edges only: a full-screen effect would sit on top of the arena the player is trying
+        // to read, and the one thing worse than not seeing your speed is not seeing the snake
+        // about to kill you.
+        val streak by animateFloatAsState(
+            targetValue = if (boostActive) 1f else 0f,
+            // FAST IN, SLOWER OUT. Boost engages instantly and the lines must arrive with it;
+            // on release they trail off, which reads as momentum bleeding away rather than as
+            // an effect being switched off.
+            animationSpec = tween(if (boostActive) 120 else 280),
+            label = "speedLines",
+        )
+        if (streak > 0.01f) {
+            Canvas(Modifier.fillMaxSize()) {
+                val cx = size.width / 2f
+                val cy = size.height / 2f
+                val inner = minOf(size.width, size.height) * 0.42f
+                repeat(14) { i ->
+                    // Fixed per-index jitter so the fan is irregular rather than a clock face,
+                    // derived from the index so streaks do not reshuffle every frame.
+                    val angle = (i / 14f) * 2f * Math.PI.toFloat() + (i % 5) * 0.09f
+                    val dx = kotlin.math.cos(angle)
+                    val dy = kotlin.math.sin(angle)
+                    val start = Offset(cx + dx * inner, cy + dy * inner)
+                    val end = Offset(
+                        cx + dx * (inner + 90f * streak),
+                        cy + dy * (inner + 90f * streak),
+                    )
+                    drawLine(
+                        color = Color.White.copy(alpha = 0.55f * streak),
+                        start = start,
+                        end = end,
+                        strokeWidth = 2.5f.dp.toPx(),
+                        cap = StrokeCap.Round,
+                    )
+                }
+            }
+        }
+
         VirtualJoystick(
             onVector = onStick,
             modifier = Modifier
@@ -1854,8 +1922,37 @@ private fun Overlay(
                 },
             contentAlignment = Alignment.Center,
         ) {
-            Text("BOOST", color = Color.White.copy(alpha = 0.9f),
-                fontSize = 10.sp, fontWeight = FontWeight.Black)
+            // THE FUEL RING — how much boost is left, drawn around the button that spends it.
+            //
+            // Boost costs mass and cuts out below a floor, and neither was visible: you held
+            // the button, nothing obvious happened, and later you were shorter for reasons you
+            // never saw. ON THE BUTTON rather than in a corner, because that is where the thumb
+            // and the eye already are at the moment it matters.
+            val ringSweep by animateFloatAsState(
+                targetValue = boostFuel.coerceIn(0f, 1f) * 360f,
+                animationSpec = tween(200),
+                label = "boostFuel",
+            )
+            Canvas(Modifier.size(88.dp)) {
+                drawArc(
+                    // Amber as it runs down: the colour change is what carries "about to cut
+                    // out" at a glance, without a number to read.
+                    color = if (boostFuel < 0.25f) Color(0xFFFF8C33) else Color(0xFF22E0F0),
+                    // Starts at twelve o'clock and runs clockwise, the way every fuel gauge and
+                    // cooldown ring in the genre does.
+                    startAngle = -90f,
+                    sweepAngle = ringSweep,
+                    useCenter = false,
+                    style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round),
+                )
+            }
+            Text(
+                "BOOST",
+                // Dimmed when boost cannot fire, so the button reads as unavailable rather than
+                // as broken when a small snake holds it and nothing happens.
+                color = Color.White.copy(alpha = if (boostFuel <= 0f) 0.35f else 0.9f),
+                fontSize = 10.sp, fontWeight = FontWeight.Black,
+            )
         }
     }
 }
