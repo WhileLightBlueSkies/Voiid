@@ -52,35 +52,6 @@ enum BallEvent: Equatable {
 
     var isWicket: Bool { self == .caught || self == .bowled }
 
-    /// How hard the shot is played, 0-1. Drives backlift depth, swing timing and follow-through.
-    ///
-    /// This is the one number that makes a six look different from a single. Before it, every
-    /// connecting shot used an identical swing and only the BALL's travel changed — so the
-    /// batter played the same stroke whether they blocked or cleared the rope.
-    var swingPower: Double {
-        switch self {
-        case .runs(let r):
-            switch r {
-            case 6: return 1.0
-            case 5: return 0.85
-            case 4: return 0.8
-            case 3: return 0.55
-            case 2: return 0.42
-            default: return 0.32
-            }
-        // A dot is a defensive push: a real stroke, deliberately a small one.
-        case .dot:    return 0.22
-        // Caught is a mistimed drive — full commitment, bad contact. It has to look like a shot
-        // worth playing or the dismissal reads as bad luck rather than a mistake.
-        case .caught: return 0.7
-        case .bowled: return 0
-        }
-    }
-
-    /// When the bat meets the ball, in seconds from the start of the animation. The ball's
-    /// flight is delayed by this so it never moves before it was hit.
-    var contactDelay: Double { 0.10 + 0.05 * swingPower + 0.085 }
-
     /// How far out the ball travels, as a fraction of the frame. Bigger hits go further.
     var reach: CGFloat {
         switch self {
@@ -181,27 +152,13 @@ struct CricketPitch: View {
 
                     // The batter: a simple figure that leans into the shot. Reads as a person at
                     // a glance without needing art.
-                    //
-                    // THE BODY COUNTER-ROTATES INTO THE BACKLIFT. `strike` is negative while
-                    // loading, so this leans AWAY as the bat goes up and then drives through —
-                    // which is the coiling that makes a swing look powered rather than waved.
                     RoundedRectangle(cornerRadius: 6)
                         .fill(Color(red: 0.93, green: 0.91, blue: 0.96))
                         .frame(width: 13, height: 40)
-                        .rotationEffect(.degrees(12 * Double(strike)), anchor: .bottom)
-                        // WEIGHT SHIFT. A batter steps INTO the ball; the body moving forward a
-                        // few points as the bat comes through is most of what separates effort
-                        // from a hinge rotating in place. Sideways only — a vertical bob would
-                        // read as a jump.
-                        .offset(x: CGFloat(max(strike, 0)) * 5)
+                        .rotationEffect(.degrees(10 * Double(strike)), anchor: .bottom)
                         .position(x: w * 0.165, y: h * 0.50)
 
                     // The bat. Swings through on any shot; stays down on a bowled.
-                    //
-                    // The arc runs from +24° (address, angled back) through 0 to well past
-                    // vertical on the follow-through. Because `strike` now reaches ~1.3 on a
-                    // six, the same expression finishes the bat high over the shoulder without
-                    // any extra case — and at -1 it is fully cocked behind the head.
                     RoundedRectangle(cornerRadius: 3)
                         .fill(LinearGradient(
                             colors: [Color(red: 0.91, green: 0.75, blue: 0.46),
@@ -209,7 +166,6 @@ struct CricketPitch: View {
                             startPoint: .top, endPoint: .bottom))
                         .frame(width: 11, height: 56)
                         .rotationEffect(.degrees(24 - 78 * Double(strike)), anchor: .bottom)
-                        .offset(x: CGFloat(max(strike, 0)) * 5)
                         .position(x: w * 0.215, y: h * 0.52)
 
                     trail(w: w, h: h)
@@ -273,46 +229,10 @@ struct CricketPitch: View {
         flight = 0
         bannerPop = 0
 
-        // A REAL SHOT IS THREE MOVEMENTS, NOT ONE.
-        //
-        // This used to be a single easeOut from 0 to 1 that stopped dead at contact, identical
-        // for every outcome — which is why a six felt no different from a single. A stroke is a
-        // BACKLIFT (weight loads, bat goes up and back), a STRIKE (fast, accelerating into the
-        // ball), then a FOLLOW-THROUGH that overshoots and settles. The pause at the top of the
-        // backlift is what makes the strike read as fast: speed is only visible against
-        // stillness.
-        //
-        // `strike` is now a phase cursor rather than a 0-1 ramp:
-        //      -1  fully loaded at the top of the backlift
-        //       0  address, bat down
-        //       1  contact
-        //     1.3  end of the follow-through, before it settles back
-        //
-        // A bowled has no connecting swing — the whole point is that the bat missed.
+        // Bat first, ball after contact — in that order, or the ball appears to move before it
+        // was hit. A bowled has no connecting swing.
         if e != .bowled {
-            let power = e.swingPower
-
-            // 1. BACKLIFT. Bigger shots load further and take slightly longer, which is most of
-            // what separates a defensive push from a heave.
-            withAnimation(.easeOut(duration: 0.10 + 0.05 * power)) {
-                strike = -power
-            }
-
-            // 2. STRIKE. easeIn, not easeOut: a bat ACCELERATES into the ball. Using easeOut
-            // here (as the old version did) makes the fastest part of the motion happen first
-            // and the bat appears to decelerate into contact, which reads as a poke.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.10 + 0.05 * power) {
-                withAnimation(.easeIn(duration: 0.085)) { strike = 1 }
-            }
-
-            // 3. FOLLOW-THROUGH, overshooting past contact then settling. Scaled by power, so a
-            // dot ball barely continues and a six finishes high with the bat over the shoulder.
-            let contactAt = 0.10 + 0.05 * power + 0.085
-            DispatchQueue.main.asyncAfter(deadline: .now() + contactAt) {
-                withAnimation(.spring(response: 0.42, dampingFraction: 0.62)) {
-                    strike = 1 + 0.3 * power
-                }
-            }
+            withAnimation(.easeOut(duration: 0.17)) { strike = 1 }
         }
 
         // Haptics graded by how big the event is: a mini tick for small runs, a light knock for a
@@ -326,15 +246,10 @@ struct CricketPitch: View {
         case .caught, .bowled:          Haptics.rigid()
         }
 
-        // The ball leaves on CONTACT, not on a fixed 0.12s — the swing's timing now varies with
-        // the shot, and a hardcoded delay would have the ball departing before the bat arrives
-        // on the slower, bigger swings.
-        withAnimation(.linear(duration: e.flightDuration)
-            .delay(e == .bowled ? 0 : e.contactDelay)) {
+        withAnimation(.linear(duration: e.flightDuration).delay(e == .bowled ? 0 : 0.12)) {
             flight = 1
         }
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.55)
-            .delay(e == .bowled ? 0.1 : e.contactDelay)) {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.55).delay(0.1)) {
             bannerPop = 1
         }
     }
