@@ -24,7 +24,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
@@ -60,6 +63,33 @@ sealed interface BallEvent {
     data object Caught : BallEvent
     /** Matched on 3-6: a big swing that missed. */
     data object Bowled : BallEvent
+
+    /**
+     * How hard the shot is played, 0-1. Drives backlift depth, swing timing and follow-through.
+     *
+     * This is the one number that makes a six look different from a single. Before it, every
+     * connecting shot used an identical swing and only the BALL's travel changed — so the batter
+     * played the same stroke whether they blocked or cleared the rope.
+     *
+     * Identical to iOS `BallEvent.swingPower`.
+     */
+    val swingPower: Float
+        get() = when (this) {
+            is Runs -> when (runs) {
+                6 -> 1.0f
+                5 -> 0.85f
+                4 -> 0.8f
+                3 -> 0.55f
+                2 -> 0.42f
+                else -> 0.32f
+            }
+            // A dot is a defensive push: a real stroke, deliberately a small one.
+            Dot -> 0.22f
+            // Caught is a mistimed drive — full commitment, bad contact. It has to look like a
+            // shot worth playing or the dismissal reads as bad luck rather than a mistake.
+            Caught -> 0.7f
+            Bowled -> 0f
+        }
 
     companion object {
         /**
@@ -133,8 +163,8 @@ fun CricketPitch(
         when (e) {
             is BallEvent.Runs -> {
                 // Bat first, ball after contact — in that order, or the ball appears to move
-                // before it was hit.
-                strike.animateTo(1f, tween(170, easing = FastOutSlowInEasing))
+                // before it was hit. Returns at contact; the follow-through runs on.
+                strike.playSwing(e.swingPower, this)
                 when {
                     e.runs >= 6 -> haptics.boundary()
                     e.runs == 4 -> haptics.soft()
@@ -145,14 +175,14 @@ fun CricketPitch(
                 flight.animateTo(1f, tween(flightMs(e.runs), easing = LinearEasing))
             }
             BallEvent.Dot -> {
-                strike.animateTo(1f, tween(150, easing = FastOutSlowInEasing))
+                strike.playSwing(BallEvent.Dot.swingPower, this)
                 haptics.tap()
                 banner = "Dot ball"
                 bannerPop.animateTo(1f, tween(200, easing = LinearOutSlowInEasing))
                 flight.animateTo(1f, tween(280, easing = FastOutSlowInEasing))
             }
             BallEvent.Caught -> {
-                strike.animateTo(1f, tween(160, easing = FastOutSlowInEasing))
+                strike.playSwing(BallEvent.Caught.swingPower, this)
                 flight.animateTo(1f, tween(520, easing = FastOutSlowInEasing))
                 haptics.rigid()
                 banner = "Caught!"
@@ -254,11 +284,18 @@ fun CricketPitch(
 
         // The batter: a simple figure that leans into the shot. Reads as a person at a glance
         // without needing art.
-        val lean = 10f * strike.value
+        // THE BODY COUNTER-ROTATES INTO THE BACKLIFT. `strike` is negative while loading, so
+        // this leans AWAY as the bat goes up and then drives through — the coiling that makes a
+        // swing look powered rather than waved.
+        val lean = 12f * strike.value
+        // WEIGHT SHIFT. A batter steps INTO the ball; the body moving forward a few dp as the
+        // bat comes through is most of what separates effort from a hinge rotating in place.
+        // Sideways only — a vertical bob would read as a jump.
+        val step = (strike.value.coerceAtLeast(0f) * 5f).dp
         Box(
             Modifier
                 .align(Alignment.CenterStart)
-                .offset(x = w * 0.155f, y = h * 0.0f)
+                .offset(x = w * 0.155f + step, y = h * 0.0f)
                 .rotate(lean)
                 .size(width = 13.dp, height = 40.dp)
                 .clip(RoundedCornerShape(6.dp))
@@ -270,7 +307,7 @@ fun CricketPitch(
         Box(
             Modifier
                 .align(Alignment.CenterStart)
-                .offset(x = w * 0.205f, y = h * 0.03f)
+                .offset(x = w * 0.205f + step, y = h * 0.03f)
                 .rotate(24f + swing)
                 .size(width = 11.dp, height = 56.dp)
                 .clip(RoundedCornerShape(3.dp))
@@ -385,6 +422,52 @@ fun CricketPitch(
                 }
             }
         }
+    }
+}
+
+/**
+ * A REAL SHOT IS THREE MOVEMENTS, NOT ONE.
+ *
+ * This used to be a single 170ms tween from 0 to 1 that stopped dead at contact, identical for
+ * every outcome — which is why a six felt no different from a single. A stroke is a BACKLIFT
+ * (weight loads, bat goes up and back), a STRIKE (fast, accelerating into the ball), then a
+ * FOLLOW-THROUGH that overshoots and settles. The pause at the top of the backlift is what makes
+ * the strike read as fast: speed is only visible against stillness.
+ *
+ * `strike` is a phase cursor rather than a 0-1 ramp:
+ *      -1  fully loaded at the top of the backlift
+ *       0  address, bat down
+ *       1  contact
+ *     1.3  end of the follow-through, before it settles back
+ *
+ * Suspends until CONTACT and returns, so the caller starts the ball's flight on the right frame
+ * — the follow-through continues in the background while the ball is already travelling, exactly
+ * as it does in life.
+ *
+ * Identical timing to iOS `CricketPitch.play()`.
+ */
+private suspend fun androidx.compose.animation.core.Animatable<Float, *>.playSwing(
+    power: Float,
+    scope: kotlinx.coroutines.CoroutineScope,
+) {
+    val backliftMs = (100 + 50 * power).toInt()
+
+    // 1. BACKLIFT. Bigger shots load further and take slightly longer, which is most of what
+    // separates a defensive push from a heave.
+    animateTo(-power, tween(backliftMs, easing = FastOutSlowInEasing))
+
+    // 2. STRIKE. easeIn, not easeOut: a bat ACCELERATES into the ball. Using a decelerating
+    // curve here (as the old version did) makes the fastest part happen first and the bat
+    // appears to slow into contact, which reads as a poke.
+    animateTo(1f, tween(85, easing = androidx.compose.animation.core.EaseIn))
+
+    // 3. FOLLOW-THROUGH, overshooting past contact then settling. Launched rather than awaited
+    // so the ball can leave on contact instead of waiting for the bat to finish.
+    scope.launch {
+        animateTo(
+            1f + 0.3f * power,
+            spring(dampingRatio = 0.62f, stiffness = Spring.StiffnessLow),
+        )
     }
 }
 
