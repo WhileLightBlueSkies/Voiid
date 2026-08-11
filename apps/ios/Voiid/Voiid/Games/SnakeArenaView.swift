@@ -44,6 +44,9 @@ struct SnakeArenaView: View {
     @State private var beatBest = false
     /// Set to open the share sheet with a challenge message.
     @State private var shareText: String?
+    /// Teaches the game once, on top of a real match. Finishes immediately for a player who
+    /// has already been through it, so the wiring below is identical either way.
+    @StateObject private var coach = SnakeCoach(enabled: true)
 
     private var me: String? { TokenStore.shared.userId }
 
@@ -126,6 +129,15 @@ struct SnakeArenaView: View {
         .onAppear {
             session.hideTabBar = true
             GameAudio.shared.preload(for: "snake")
+        }
+        .onChange(of: hud.myMass) { _, _ in
+            coach.update(head: hud.myHead, mass: hud.myMass, boostActive: hud.boostActive)
+        }
+        // Mass is the coarse signal; the head moves on every publish, so it is what actually
+        // ticks the coach's timers. Both feed the same call — `update` is idempotent for a
+        // step whose condition is not yet met.
+        .onChange(of: hud.myHead) { _, _ in
+            coach.update(head: hud.myHead, mass: hud.myMass, boostActive: hud.boostActive)
         }
         .task { await engine.open(matchId: matchId) }
         // Flush pending steering on its own clock. A send is a side effect and must not ride
@@ -313,6 +325,13 @@ struct SnakeArenaView: View {
                         killFeed
                     }
                 }
+                // UNDER the top HUD, not over the middle of the board. The middle is where
+                // the snake is, and covering the thing you are teaching someone to look at
+                // defeats the purpose.
+                SnakeCoachBanner(step: coach.step)
+                    .padding(.top, VoiidSpacing.sm)
+                    .animation(.spring(response: 0.38, dampingFraction: 0.82), value: coach.step)
+
                 Spacer()
             }
             .padding(14)

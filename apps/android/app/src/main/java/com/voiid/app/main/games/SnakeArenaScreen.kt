@@ -146,6 +146,9 @@ fun SnakeArenaScreen(
     // Read ONCE when the arena opens. A scheme that changed mid-match would move the controls
     // out from under a thumb that is already steering.
     val scheme = remember { SnakeChoiceStore(context).controlScheme }
+    // Teaches the game once, on top of a real match. Finishes immediately for a player who has
+    // already been through it, so the wiring below is identical either way.
+    val coach = remember { SnakeCoach(context, enabled = true) }
 
     // ONE steering handler, shared by the joystick and the swipe layer. Both schemes produce
     // the same thing — a unit vector — so everything downstream (deadzone, predictor, wire)
@@ -260,6 +263,17 @@ fun SnakeArenaScreen(
         val boostFuel = (((myMass - SnakeMotion.MIN_BOOST_MASS) / SnakeMotion.MIN_BOOST_MASS)
             .coerceIn(0.0, 1.0)).toFloat()
 
+        // Fed from the same derived state the HUD uses, so the coach cannot disagree with what
+        // is on screen — and it inherits the HUD's own update rate, which is ample for four
+        // milestones. `update` is idempotent for a step whose condition is not yet met.
+        LaunchedEffect(mine?.x, mine?.y, myMass, boostActive) {
+            coach.update(
+                head = Offset((mine?.x ?: 0.0).toFloat(), (mine?.y ?: 0.0).toFloat()),
+                mass = myMass.toInt(),
+                boostActive = boostActive,
+            )
+        }
+
         Overlay(
             state = hudState.value,
             me = me,
@@ -268,6 +282,7 @@ fun SnakeArenaScreen(
             boostFuel = boostFuel,
             killFeed = killFeed.value,
             scheme = scheme,
+            coachStep = coach.step.value,
             onClose = onClose,
             onStick = onStick,
             onBoostChange = { held ->
@@ -1889,6 +1904,8 @@ private fun Overlay(
     /** Which steering control to mount. Only one is ever present, so they cannot fight over
      * the same touch. */
     scheme: SnakeChoiceStore.ControlScheme,
+    /** The line the coach is currently teaching, or null when there is nothing left. */
+    coachStep: SnakeCoachStep?,
 ) {
     Box(Modifier.fillMaxSize().padding(14.dp)) {
         Box(
@@ -1902,6 +1919,16 @@ private fun Overlay(
             Text("✕", color = Color.White.copy(alpha = 0.9f), fontSize = 14.sp,
                 fontWeight = FontWeight.Bold)
         }
+
+        // UNDER the top HUD row, not over the middle of the board. The middle is where the
+        // snake is, and covering the thing you are teaching someone to look at defeats the
+        // purpose. Top-centre keeps it clear of both the close button and the leaderboard.
+        SnakeCoachBanner(
+            step = coachStep,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 44.dp),
+        )
 
         if (state != null) {
           Column(

@@ -69,6 +69,10 @@ final class SnakeHudModel: ObservableObject {
     @Published var board: [Row] = []
     @Published var timeRemaining: String = ""
     @Published var myMass: Int = 0
+    /// My head, in world units. Published for the coach, which proves "you steered" by
+    /// measuring distance travelled rather than by listening to a control — so it works for
+    /// both steering schemes without knowing either exists.
+    @Published var myHead: CGPoint = .zero
 
     // BOOST STATE, so the HUD can show what boost is costing.
     //
@@ -1506,6 +1510,7 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         let left = max(0, state.duration - state.time)
         let timeText = String(format: "%d:%02d", Int(left) / 60, Int(left) % 60)
         let myMass = Int(mine?.mass ?? 0)
+        let myHead = CGPoint(x: mine?.x ?? 0, y: mine?.y ?? 0)
 
         // `boosting && mass > floor` mirrors the engine's own condition exactly — the client
         // must not claim boost is working when the server is ignoring it.
@@ -1532,6 +1537,7 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
             hud.board = rows
             hud.timeRemaining = timeText
             hud.myMass = myMass
+            hud.myHead = myHead
             hud.boostActive = active
             hud.boostFuel = fuel
         }
