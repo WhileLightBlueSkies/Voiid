@@ -149,11 +149,21 @@ struct CricketMatchView: View {
             guard let s = engine.cricket, s.phase == "play" else { return }
             let batting = s.battingSeat == mySeat
             guard batting != lastAnnouncedBatting else { return }
+            let isFirst = lastAnnouncedBatting == nil
             lastAnnouncedBatting = batting
             // Also delayed: at the innings switch this lands on the same frame as the break,
             // and both would wipe the closing ball. At the toss there is no ball in flight, so
             // the wait costs nothing there.
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.ballSettleDelay) {
+                // The FIRST role change is the match beginning, so the format card leads.
+                // It states the house rules (two wickets, matched numbers are out), which are
+                // not obvious and which a player who does not know them gets wrong on ball one.
+                if isFirst, let st = engine.cricket {
+                    announce(CricketAnnouncements.matchStart(
+                        id: nextAnnouncementId(),
+                        overs: st.overs,
+                        wickets: st.wicketsPerInnings))
+                }
                 announce(CricketAnnouncements.role(id: nextAnnouncementId(), batting: batting))
             }
         }
@@ -264,6 +274,12 @@ struct CricketMatchView: View {
                     .font(VoiidFont.rounded(13, .regular))
                     .foregroundStyle(VoiidColor.textSecondary)
             }
+
+            CricketOverStrip(
+                history: s.history,
+                innings: s.innings,
+                ballsBowled: s.ballsBowled)
+                .padding(.top, VoiidSpacing.sm)
 
             CricketPitch(event: event, ballToken: ballToken,
                          announcement: announcements.first)

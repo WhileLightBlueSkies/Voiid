@@ -27,6 +27,7 @@ import SwiftUI
 /// same text can be shown twice in a match (two innings breaks in a rematch, say).
 struct CricketAnnouncement: Equatable, Identifiable {
     enum Kind: Equatable {
+        case matchStart     // the match is beginning: format and stakes
         case toss           // who won it and what they chose
         case inningsBreak   // first innings done, sides swap
         case roleChange     // you are batting / you are bowling, now
@@ -59,6 +60,7 @@ struct CricketAnnouncement: Equatable, Identifiable {
 
     var symbol: String {
         switch kind {
+        case .matchStart:   return "flag.checkered"
         case .toss:         return "circle.circle.fill"
         case .inningsBreak: return "arrow.triangle.2.circlepath"
         case .roleChange:   return "figure.cricket"
@@ -169,6 +171,20 @@ struct CricketAnnouncementView: View {
 /// Builds the announcement copy, so the online and bot screens cannot word the same event two
 /// different ways. Pure functions of the facts — nothing here reads state.
 enum CricketAnnouncements {
+    /// Fired as the first innings begins — the match actually starting.
+    ///
+    /// Says the FORMAT, because Hand Cricket's rules are house rules: two wickets is not
+    /// obvious, and a player who does not know it is playing a different game from the one on
+    /// screen. The over count is the other half of the plan.
+    static func matchStart(id: Int, overs: Int, wickets: Int) -> CricketAnnouncement {
+        CricketAnnouncement(
+            id: id,
+            kind: .matchStart,
+            title: "Match start",
+            detail: "\(overs) over\(overs == 1 ? "" : "s") a side, \(wickets) wickets. "
+                + "Matching numbers is out.")
+    }
+
     /// Fired once, when the toss resolves.
     /// `choice` is what the TOSS WINNER elected — "bat" or "bowl" — whoever that was.
     ///

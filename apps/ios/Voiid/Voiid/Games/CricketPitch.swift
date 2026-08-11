@@ -128,6 +128,8 @@ struct CricketPitch: View {
     @State private var shown: BallEvent?
     /// 0 = pitch as normal, 1 = ground fully cleared for the announcement.
     @State private var clear: CGFloat = 0
+    /// 1 = full time remaining, 0 = about to dismiss. Drives the countdown bar.
+    @State private var countdown: CGFloat = 1
 
     var body: some View {
         GeometryReader { geo in
@@ -187,6 +189,11 @@ struct CricketPitch: View {
         .onChange(of: ballToken) { _, _ in play() }
         .onChange(of: announcement) { _, a in
             withAnimation(.easeInOut(duration: 0.3)) { clear = a == nil ? 0 : 1 }
+            guard let a else { return }
+            // Reset instantly, then drain linearly over the announcement's own lifetime — so
+            // the bar can never disagree with when the message actually leaves.
+            withAnimation(.none) { countdown = 1 }
+            withAnimation(.linear(duration: a.duration)) { countdown = 0 }
         }
         .onAppear { clear = announcement == nil ? 0 : 1 }
     }
@@ -212,6 +219,23 @@ struct CricketPitch: View {
                     .foregroundStyle(.white.opacity(0.92))
                     .multilineTextAlignment(.center)
                     .shadow(color: .black.opacity(0.4), radius: 4, y: 1)
+
+                // HOW LONG IS LEFT. A message that vanishes with no warning reads as a glitch —
+                // the player is mid-sentence and the screen changes under them. A bar draining
+                // to empty says "this is going, and here is how long you have", which turns a
+                // disappearance into an expected end.
+                //
+                // A thin line rather than a ring or a number: it has to be legible in peripheral
+                // vision while the eye is on the words, and a countdown you have to READ defeats
+                // the purpose of a countdown.
+                GeometryReader { bar in
+                    Capsule()
+                        .fill(.white.opacity(0.85))
+                        .frame(width: bar.size.width * countdown, height: 3)
+                }
+                .frame(width: 132, height: 3)
+                .background(Capsule().fill(.white.opacity(0.22)).frame(height: 3))
+                .padding(.top, VoiidSpacing.sm)
             }
             .padding(.horizontal, VoiidSpacing.lg)
             // Rises slightly as it arrives, the way the score banner does — same surface, so

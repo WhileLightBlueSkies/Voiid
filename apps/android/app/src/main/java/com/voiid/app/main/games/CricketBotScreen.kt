@@ -47,6 +47,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.voiid.app.net.GamesEngine
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidRadius
 import com.voiid.app.ui.theme.VoiidSpacing
@@ -129,6 +130,11 @@ fun CricketBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
     val announcements = remember { mutableStateListOf<CricketAnnouncement>() }
     var announcementSeq by remember { mutableIntStateOf(0) }
 
+    // Every ball bowled this match, for the over strip. The bot match kept only the LAST event,
+    // because the pitch only ever animated one ball; the strip needs the whole over. Recorded in
+    // the same shape the server sends online, so CricketOverStrip has one input type.
+    val ballHistory = remember { mutableStateListOf<GamesEngine.CricketState.Ball>() }
+
     var lastEvent by remember { mutableStateOf<BallEvent?>(null) }
     var ballToken by remember { mutableIntStateOf(0) }
     var humanPick by remember { mutableStateOf<Int?>(null) }
@@ -161,6 +167,7 @@ fun CricketBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
         humanScore = 0; botScore = 0
         humanWickets = 0; botWickets = 0
         ballsBowled = 0; target = null
+        ballHistory.clear()
         lastEvent = null; humanPick = null; botPick = null
         resolving = false; finished = false; humanWon = null
         paused = false; recorded = false
@@ -222,6 +229,16 @@ fun CricketBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
         // NO TOSS ANNOUNCEMENT. The toss screen has just said who won and what they chose,
         // directly under the coin — repeating it on the pitch two seconds later is the same
         // sentence twice. Only the CONSEQUENCE is announced: what you are now doing.
+        // The match-start card comes FIRST: format, then your role. It states the house rules
+        // (two wickets, matched numbers are out), which are not obvious and which a player who
+        // does not know them will get wrong on the first ball.
+        announce(
+            CricketAnnouncements.matchStart(
+                id = nextAnnouncementId(),
+                overs = overs ?: 0,
+                wickets = WICKETS,
+            )
+        )
         announce(CricketAnnouncements.role(nextAnnouncementId(), batting = humanBatting))
     }
 
@@ -266,6 +283,15 @@ fun CricketBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
             if (humanBatting) humanScore += runs else botScore += runs
         }
         ballsBowled++
+        ballHistory.add(
+            GamesEngine.CricketState.Ball(
+                picks = listOf(mine, theirs),
+                battingSeat = if (humanBatting) 0 else 1,
+                innings = innings,
+                runs = runs,
+                wicket = wicket,
+            )
+        )
         lastEvent = BallEvent.of(runs = runs, wicket = wicket, matchedPick = mine)
         ballToken++
         // `humanBatting` decides which way the crowd reacts: the same wicket is a roar when
@@ -474,6 +500,13 @@ fun CricketBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
                     fontSize = 13.sp,
                     modifier = Modifier.fillMaxWidth(),
                     textAlign = TextAlign.Center,
+                )
+
+                CricketOverStrip(
+                    history = ballHistory,
+                    innings = innings,
+                    ballsBowled = ballsBowled,
+                    modifier = Modifier.padding(top = VoiidSpacing.sm),
                 )
 
                 CricketPitch(

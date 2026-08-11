@@ -27,6 +27,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.height
 import androidx.compose.ui.text.style.TextAlign
 import com.voiid.app.ui.theme.VoiidSpacing
@@ -199,6 +201,16 @@ fun CricketPitch(
             label = "clear",
         )
         val playAlpha = 1f - clear
+
+        // Drains linearly over the announcement's own lifetime, so the bar can never disagree
+        // with when the message actually leaves. Keyed on the id, so a second announcement
+        // restarts it rather than continuing the first one's countdown.
+        val countdown = remember(announcement?.id) { Animatable(1f) }
+        LaunchedEffect(announcement?.id) {
+            val a = announcement ?: return@LaunchedEffect
+            countdown.snapTo(1f)
+            countdown.animateTo(0f, tween(a.durationMs.toInt(), easing = LinearEasing))
+        }
 
         // Crowd band: a dotted strip along the skyline. Cheap, but it stops the top of the
         // frame reading as empty sky.
@@ -382,6 +394,31 @@ fun CricketPitch(
                         fontWeight = FontWeight.Medium,
                         textAlign = TextAlign.Center,
                     )
+
+                    // HOW LONG IS LEFT. A message that vanishes with no warning reads as a
+                    // glitch — the player is mid-sentence and the screen changes under them. A
+                    // bar draining to empty says "this is going, and here is how long you
+                    // have", which turns a disappearance into an expected end.
+                    //
+                    // A thin line rather than a ring or a number: it has to be legible in
+                    // peripheral vision while the eye is on the words, and a countdown you have
+                    // to READ defeats the purpose of a countdown.
+                    Spacer(Modifier.height(VoiidSpacing.sm))
+                    Box(
+                        Modifier
+                            .width(132.dp)
+                            .height(3.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(Color.White.copy(alpha = 0.22f)),
+                    ) {
+                        Box(
+                            Modifier
+                                .fillMaxHeight()
+                                .fillMaxWidth(countdown.value)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(Color.White.copy(alpha = 0.85f)),
+                        )
+                    }
                 }
             }
         }

@@ -26,7 +26,7 @@ data class CricketAnnouncement(
     /** One line of consequence: what it MEANS for the player, not a restatement of the title. */
     val detail: String,
 ) {
-    enum class Kind { TOSS, INNINGS_BREAK, ROLE_CHANGE, TARGET }
+    enum class Kind { MATCH_START, TOSS, INNINGS_BREAK, ROLE_CHANGE, TARGET }
 
     /**
      * Milliseconds the message stays on the pitch.
@@ -55,6 +55,21 @@ data class CricketAnnouncement(
  * different ways. Pure functions of the facts — nothing here reads state.
  */
 object CricketAnnouncements {
+    /**
+     * Fired as the first innings begins — the match actually starting.
+     *
+     * Says the FORMAT, because Hand Cricket's rules are house rules: two wickets is not obvious,
+     * and a player who does not know it is playing a different game from the one on screen. The
+     * over count is the other half of the plan.
+     */
+    fun matchStart(id: Int, overs: Int, wickets: Int): CricketAnnouncement = CricketAnnouncement(
+        id = id,
+        kind = CricketAnnouncement.Kind.MATCH_START,
+        title = "Match start",
+        detail = "$overs over${if (overs == 1) "" else "s"} a side, $wickets wickets. " +
+            "Matching numbers is out.",
+    )
+
     /**
      * [choice] is what the TOSS WINNER elected — "bat" or "bowl" — whoever that was.
      *

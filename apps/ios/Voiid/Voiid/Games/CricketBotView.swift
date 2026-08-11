@@ -60,6 +60,13 @@ struct CricketBotView: View {
     @State private var announcements: [CricketAnnouncement] = []
     @State private var announcementSeq = 0
 
+    /// Every ball bowled this match, for the over strip.
+    ///
+    /// The bot match kept only the LAST event, because the pitch only ever animated one ball.
+    /// The over strip needs the whole over, so the balls are recorded as they resolve — using
+    /// the same shape the server sends online, so CricketOverStrip has one input type.
+    @State private var ballHistory: [CricketState.Ball] = []
+
     @State private var lastEvent: BallEvent?
     @State private var ballToken = 0
     @State private var humanPick: Int?
@@ -101,6 +108,12 @@ struct CricketBotView: View {
                 } else {
                     Spacer(minLength: 0)
                     scoreboard
+                    CricketOverStrip(
+                        history: ballHistory,
+                        innings: innings,
+                        ballsBowled: ballsBowled)
+                        .padding(.top, VoiidSpacing.sm)
+
                     CricketPitch(event: lastEvent, ballToken: ballToken,
                                  announcement: announcements.first)
                         .padding(.vertical, VoiidSpacing.md)
@@ -366,6 +379,12 @@ struct CricketBotView: View {
             if humanBatting { humanScore += runs } else { botScore += runs }
         }
         ballsBowled += 1
+        ballHistory.append(CricketState.Ball(
+            picks: [mine, theirs],
+            battingSeat: humanBatting ? 0 : 1,
+            innings: innings,
+            runs: runs,
+            wicket: wicket))
         lastEvent = BallEvent.of(runs: runs, wicket: wicket, matchedPick: mine)
         ballToken += 1
         playBallSound(runs: runs, wicket: wicket)
@@ -452,6 +471,14 @@ struct CricketBotView: View {
         // NO TOSS ANNOUNCEMENT. The toss screen has just said who won and what they chose,
         // directly under the coin — repeating it on the pitch two seconds later is the same
         // sentence twice. Only the CONSEQUENCE is announced: what you are now doing.
+        //
+        // The match-start card comes FIRST: format, then your role. It states the house rules
+        // (two wickets, matched numbers are out), which are not obvious and which a player who
+        // does not know them will get wrong on the first ball.
+        announce(CricketAnnouncements.matchStart(
+            id: nextAnnouncementId(),
+            overs: overs ?? 0,
+            wickets: wicketsPerInnings))
         announce(CricketAnnouncements.role(id: nextAnnouncementId(), batting: humanBatting))
     }
 
@@ -554,6 +581,7 @@ struct CricketBotView: View {
         humanScore = 0; botScore = 0
         humanWickets = 0; botWickets = 0
         ballsBowled = 0; target = nil
+        ballHistory = []
         lastEvent = nil; humanPick = nil; botPick = nil
         resolving = false; finished = false; humanWon = nil
         paused = false; recorded = false

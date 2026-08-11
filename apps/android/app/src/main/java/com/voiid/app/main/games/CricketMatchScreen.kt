@@ -167,11 +167,24 @@ fun CricketMatchScreen(matchId: String, onClose: () -> Unit) {
         if (st.phase != "play") return@LaunchedEffect
         val batting = st.battingSeat == mySeat
         if (batting == lastAnnouncedBatting) return@LaunchedEffect
+        val isFirst = lastAnnouncedBatting == null
         lastAnnouncedBatting = batting
         // Also delayed: at the innings switch this lands on the same frame as the break, and
         // both would wipe the closing ball. At the toss there is no ball in flight, so the wait
         // costs nothing there.
         delay(BALL_SETTLE_MS)
+        // The FIRST role change is the match beginning, so the format card leads. It states the
+        // house rules (two wickets, matched numbers are out), which are not obvious and which a
+        // player who does not know them gets wrong on ball one.
+        if (isFirst) {
+            announce(
+                CricketAnnouncements.matchStart(
+                    id = nextAnnouncementId(),
+                    overs = st.overs,
+                    wickets = st.wicketsPerInnings,
+                )
+            )
+        }
         announce(CricketAnnouncements.role(nextAnnouncementId(), batting = batting))
     }
 
@@ -283,6 +296,13 @@ fun CricketMatchScreen(matchId: String, onClose: () -> Unit) {
                     fontSize = 13.sp,
                     modifier = Modifier.fillMaxWidth(),
                     textAlign = TextAlign.Center,
+                )
+
+                CricketOverStrip(
+                    history = s.history,
+                    innings = s.innings,
+                    ballsBowled = s.ballsBowled,
+                    modifier = Modifier.padding(top = VoiidSpacing.sm),
                 )
 
                 CricketPitch(
