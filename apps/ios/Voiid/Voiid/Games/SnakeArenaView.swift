@@ -33,6 +33,9 @@ struct SnakeArenaView: View {
     @StateObject private var hud = SnakeHudModel()
 
     @State private var boosting = false
+    /// Read once when the arena opens. A scheme that changed mid-match would move the controls
+    /// out from under a thumb that is already steering.
+    @State private var scheme: SnakeChoiceStore.ControlScheme = SnakeChoiceStore.controlScheme
     /// Live joystick vector, normalized to the ring radius. `.zero` at rest.
     @State private var stick: CGVector = .zero
     /// Last heading committed, so releasing boost cannot also change direction.
@@ -62,7 +65,33 @@ struct SnakeArenaView: View {
             // would be the client lying about the game state.
             SpeedLines(active: hud.boostActive)
                 .allowsHitTesting(false)
+
                 .ignoresSafeArea()
+
+            // SWIPE STEERING, when chosen. A drag anywhere on the arena steers toward the
+            // direction of the drag — no fixed ring, so the whole screen is the control and
+            // the bottom-left corner (the hardest place for a thumb on a large phone) is free.
+            //
+            // The vector is the drag TRANSLATION, normalised: direction is what matters, and
+            // treating distance as magnitude would make a long drag steer harder than a short
+            // one in the same direction, which is not how steering works.
+            if scheme == .swipe {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { g in
+                                let t = g.translation
+                                let len = hypot(t.width, t.height)
+                                guard len > 6 else { return }
+                                steer(CGVector(dx: t.width / len, dy: t.height / len))
+                            }
+                            // NOT released on end. A joystick springs back because the thumb
+                            // physically leaves it; a swipe is a direction you set and the
+                            // snake keeps. Releasing here would stop the snake dead every time
+                            // the finger lifted.
+                    )
+            }
 
             // The chrome deliberately does NOT ignore the safe area, unlike the arena behind
             // it. The arena should bleed to the edges; the controls must not — the boost
@@ -291,16 +320,14 @@ struct SnakeArenaView: View {
             VStack {
                 Spacer()
                 HStack(alignment: .bottom) {
-                    VirtualJoystick(vector: $stick) { vector in
-                        // A zero vector means the thumb lifted: stop the resend loop rather
-                        // than steering toward atan2(0, 0).
-                        guard hypot(vector.dx, vector.dy) >= 0.15 else {
-                            engine.releaseSteering()
-                            return
-                        }
-                        let heading = atan2(vector.dy, vector.dx)
-                        lastHeading = heading
-                        engine.steer(heading: heading, boost: boosting)
+                    // The joystick is a VIEW; swipe is a gesture on the arena itself (attached
+                    // above). Only one is ever mounted, so the two can never fight over the
+                    // same touch.
+                    if scheme == .joystick {
+                        VirtualJoystick(vector: $stick, onChange: steer)
+                    } else {
+                        // Keeps the boost button in its corner without the joystick's width.
+                        Color.clear.frame(width: 1, height: 1)
                     }
                     Spacer()
                     boostButton
@@ -381,6 +408,23 @@ struct SnakeArenaView: View {
     private static func swiftColor(_ index: Int) -> Color {
         let c = SnakeRenderer.palette(index)
         return Color(red: Double(c.x), green: Double(c.y), blue: Double(c.z))
+    }
+
+    /// Turn a stick/drag vector into a heading and send it.
+    ///
+    /// ONE HANDLER FOR BOTH SCHEMES. Joystick and swipe differ only in how the vector is
+    /// produced; the deadzone, the release behaviour and the resend all have to be identical or
+    /// the two would feel like different games.
+    private func steer(_ vector: CGVector) {
+        // A zero vector means the thumb lifted: stop the resend loop rather than steering
+        // toward atan2(0, 0).
+        guard hypot(vector.dx, vector.dy) >= 0.15 else {
+            engine.releaseSteering()
+            return
+        }
+        let heading = atan2(vector.dy, vector.dx)
+        lastHeading = heading
+        engine.steer(heading: heading, boost: boosting)
     }
 
     private var boostButton: some View {

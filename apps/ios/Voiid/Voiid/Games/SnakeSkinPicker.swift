@@ -81,6 +81,50 @@ enum SnakeChoiceStore {
         if case .skin(let id) = current { return id }
         return nil
     }
+
+    // MARK: - Control scheme
+
+    private static let controlKey = "voiid.snake.control"
+
+    /// How the player steers.
+    ///
+    /// CROSS_CUTTING.md §12 lists this as a missing setting, and the competitor audit found it
+    /// is table stakes rather than a nicety — they ship two schemes with a settings tab and a
+    /// preview for each. One joystick is a bet that every thumb is the same.
+    enum ControlScheme: String, CaseIterable, Identifiable {
+        /// A fixed ring, bottom-left. The knob follows the thumb inside it.
+        case joystick
+        /// Drag anywhere on the arena; the snake steers toward the drag direction.
+        ///
+        /// Suits one-handed play, which is how a game inside a messenger is actually held —
+        /// and it frees the bottom-left corner, which on a large phone is the hardest place
+        /// for a thumb to reach.
+        case swipe
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .joystick: return "Joystick"
+            case .swipe:    return "Swipe"
+            }
+        }
+
+        var detail: String {
+            switch self {
+            case .joystick: return "A fixed ring in the corner"
+            case .swipe:    return "Drag anywhere to steer"
+            }
+        }
+    }
+
+    static var controlScheme: ControlScheme {
+        get {
+            ControlScheme(rawValue: UserDefaults.standard.string(forKey: controlKey) ?? "")
+                ?? .joystick        // the scheme every existing player already learned
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: controlKey) }
+    }
 }
 
 struct SnakeSkinPicker: View {

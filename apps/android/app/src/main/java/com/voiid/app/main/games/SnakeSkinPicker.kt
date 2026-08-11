@@ -92,9 +92,39 @@ class SnakeChoiceStore(context: Context) {
     fun matchOptions(): Map<String, Int> =
         if (colour > 0) mapOf("color" to colour) else emptyMap()
 
+    /**
+     * How the player steers.
+     *
+     * CROSS_CUTTING.md §12 lists this as a missing setting, and the competitor audit found it is
+     * table stakes rather than a nicety — they ship two schemes with a settings tab and a
+     * preview for each. One joystick is a bet that every thumb is the same.
+     *
+     * Mirrors iOS `SnakeChoiceStore.ControlScheme`.
+     */
+    enum class ControlScheme(val label: String, val detail: String) {
+        /** A fixed ring, bottom-left. The knob follows the thumb inside it. */
+        JOYSTICK("Joystick", "A fixed ring in the corner"),
+
+        /**
+         * Drag anywhere on the arena; the snake steers toward the drag direction.
+         *
+         * Suits one-handed play, which is how a game inside a messenger is actually held — and
+         * it frees the bottom-left corner, which on a large phone is the hardest place for a
+         * thumb to reach.
+         */
+        SWIPE("Swipe", "Drag anywhere to steer"),
+    }
+
+    var controlScheme: ControlScheme
+        get() = runCatching {
+            ControlScheme.valueOf(prefs.getString(KEY_CONTROL, null) ?: "")
+        }.getOrDefault(ControlScheme.JOYSTICK)   // the scheme every existing player learned
+        set(value) { prefs.edit().putString(KEY_CONTROL, value.name).apply() }
+
     private companion object {
         const val KEY_SKIN = "snake.skin"
         const val KEY_COLOUR = "snake.colour"
+        const val KEY_CONTROL = "snake.control"
     }
 }
 

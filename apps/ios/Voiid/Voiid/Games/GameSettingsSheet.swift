@@ -9,9 +9,13 @@
 //  phone. That was liveable while the palette was a handful of synthesised bleeps; with a
 //  stadium crowd running under every cricket match it is not.
 //
-//  DELIBERATELY TWO SWITCHES AND NOTHING ELSE. §12 also lists a Snake control scheme, a
-//  left/right-handed layout and a graphics-quality tier; those are real settings for real
-//  problems, and none of them is what shipping realistic audio just made necessary.
+//  Sound and haptics came first, because shipping realistic audio made them necessary. The
+//  Snake steering scheme joined them once the competitor audit showed two control schemes are
+//  table stakes rather than a nicety (docs/games/SNAKE_COMPETITIVE_PARITY.md §2.5).
+//
+//  §12 also lists a left/right-handed layout and a graphics-quality tier. Both are real
+//  settings for real problems and neither is here yet — this sheet grows when something makes
+//  a setting necessary, not to pre-empt one.
 //
 //  Mirrors Android `GameSettingsSheet.kt`.
 //
@@ -26,6 +30,7 @@ struct GameSettingsSheet: View {
     // makes the switches move.
     @State private var soundOn = !GameAudio.isMuted
     @State private var hapticsOn = !GameHaptics.isDisabled
+    @State private var control = SnakeChoiceStore.controlScheme
 
     var body: some View {
         NavigationStack {
@@ -59,6 +64,39 @@ struct GameSettingsSheet: View {
                         }
                 } footer: {
                     Text("Games always respect the silent switch and never play over a call.")
+                        .font(VoiidFont.rounded(12, .regular))
+                        .foregroundStyle(VoiidColor.textSecondary)
+                }
+                .listRowBackground(VoiidColor.surfaceCard)
+
+                // SNAKE ONLY, and labelled as such. Sound and haptics above apply to every
+                // game; a control scheme applies to exactly one, and burying that distinction
+                // would have players hunting for why the setting did nothing in cricket.
+                Section {
+                    Picker("Steering", selection: $control) {
+                        ForEach(SnakeChoiceStore.ControlScheme.allCases) { s in
+                            Text(s.label).tag(s)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: control) { _, new in
+                        SnakeChoiceStore.controlScheme = new
+                        Haptics.tap()
+                    }
+
+                    Text(control.detail)
+                        .font(VoiidFont.rounded(12, .regular))
+                        .foregroundStyle(VoiidColor.textSecondary)
+                } header: {
+                    Text("Snake")
+                        .font(VoiidFont.rounded(12, .semibold))
+                        .foregroundStyle(VoiidColor.textSecondary)
+                } footer: {
+                    // Says WHEN it takes effect, because it does not take effect now. The
+                    // arena reads the scheme once on open so the controls cannot move out from
+                    // under a thumb mid-match, and a setting that appears to do nothing is
+                    // worse than one that explains its own timing.
+                    Text("Applies to your next match.")
                         .font(VoiidFont.rounded(12, .regular))
                         .foregroundStyle(VoiidColor.textSecondary)
                 }

@@ -41,6 +41,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -142,6 +143,29 @@ fun SnakeArenaScreen(
     val predictor = remember { SnakePredictor() }
     val eatState = remember { EatStreak() }
     val renderClock = remember { RenderClock() }
+    // Read ONCE when the arena opens. A scheme that changed mid-match would move the controls
+    // out from under a thumb that is already steering.
+    val scheme = remember { SnakeChoiceStore(context).controlScheme }
+
+    // ONE steering handler, shared by the joystick and the swipe layer. Both schemes produce
+    // the same thing — a unit vector — so everything downstream (deadzone, predictor, wire)
+    // must not care which one produced it, or the two schemes drift.
+    val onStick: (Offset) -> Unit = { v ->
+        stick = v
+        // A zero vector means the thumb lifted: stop the resend loop rather than
+        // steering toward atan2(0,0).
+        if (v == Offset.Zero) engine.releaseSteering()
+        // Deadzone: below this the thumb is resting, not steering, and atan2 on a
+        // near-zero vector is meaningless noise.
+        if (hypot(v.x, v.y) >= 0.15f) {
+            val heading = atan2(v.y.toDouble(), v.x.toDouble())
+            lastHeading = heading
+            // Straight into the predictor so the local head begins turning on the
+            // frame the thumb moves, not when the server confirms it.
+            predictor.desiredHeading = heading
+            engine.steer(context, heading, boosting)
+        }
+    }
     val records = remember { SnakeRecordStore(context) }
     var beatBest by remember { mutableStateOf(false) }
 
@@ -181,7 +205,34 @@ fun SnakeArenaScreen(
             .fillMaxSize()
             .background(Color.Black),
     ) {
-        Canvas(Modifier.fillMaxSize()) {
+        Canvas(
+            Modifier
+                .fillMaxSize()
+                // SWIPE STEERING, when chosen. A drag anywhere on the arena steers toward the
+                // direction of the drag — no fixed ring, so the whole screen is the control and
+                // the bottom-left corner (the hardest place for a thumb on a large phone) is
+                // free.
+                //
+                // The vector is the drag TRANSLATION, normalised: direction is what matters,
+                // and treating distance as magnitude would make a long drag steer harder than a
+                // short one in the same direction, which is not how steering works.
+                //
+                // NOT released on drag end. A joystick springs back because the thumb
+                // physically leaves it; a swipe is a direction you set and the snake keeps.
+                // Releasing here would stop the snake dead every time the finger lifted.
+                .then(
+                    if (scheme == SnakeChoiceStore.ControlScheme.SWIPE) {
+                        Modifier.pointerInput(Unit) {
+                            detectDragGestures { change, _ ->
+                                val dx = change.position.x - change.previousPosition.x
+                                val dy = change.position.y - change.previousPosition.y
+                                val len = hypot(dx, dy)
+                                if (len > 1.5f) onStick(Offset(dx / len, dy / len))
+                            }
+                        }
+                    } else Modifier
+                ),
+        ) {
             // Reading the clock inside the DRAW scope subscribes only this draw to it. Its
             // VALUE is now used, not just touched for the subscription: it is `withFrameNanos`'
             // frame time, and it is what the render clock advances on (see `advanceClock`).
@@ -216,23 +267,9 @@ fun SnakeArenaScreen(
             boostActive = boostActive,
             boostFuel = boostFuel,
             killFeed = killFeed.value,
+            scheme = scheme,
             onClose = onClose,
-            onStick = { v ->
-                stick = v
-                // A zero vector means the thumb lifted: stop the resend loop rather than
-                // steering toward atan2(0,0).
-                if (v == Offset.Zero) engine.releaseSteering()
-                // Deadzone: below this the thumb is resting, not steering, and atan2 on a
-                // near-zero vector is meaningless noise.
-                if (hypot(v.x, v.y) >= 0.15f) {
-                    val heading = atan2(v.y.toDouble(), v.x.toDouble())
-                    lastHeading = heading
-                    // Straight into the predictor so the local head begins turning on the
-                    // frame the thumb moves, not when the server confirms it.
-                    predictor.desiredHeading = heading
-                    engine.steer(context, heading, boosting)
-                }
-            },
+            onStick = onStick,
             onBoostChange = { held ->
                 boosting = held
                 predictor.boosting = held
@@ -1849,6 +1886,9 @@ private fun Overlay(
     boostFuel: Float,
     /** Recent kills, newest first. See [KillEntry]. */
     killFeed: List<KillEntry>,
+    /** Which steering control to mount. Only one is ever present, so they cannot fight over
+     * the same touch. */
+    scheme: SnakeChoiceStore.ControlScheme,
 ) {
     Box(Modifier.fillMaxSize().padding(14.dp)) {
         Box(
@@ -1979,12 +2019,14 @@ private fun Overlay(
             }
         }
 
-        VirtualJoystick(
-            onVector = onStick,
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .padding(start = 12.dp, bottom = 20.dp),
-        )
+        if (scheme == SnakeChoiceStore.ControlScheme.JOYSTICK) {
+            VirtualJoystick(
+                onVector = onStick,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = 12.dp, bottom = 20.dp),
+            )
+        }
 
         // Press-and-hold, not a toggle: boost is a held commitment, and a toggle costs a tap
         // to release at exactly the moment a player is busy steering.
