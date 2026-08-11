@@ -45,6 +45,42 @@ struct GamesAPI {
     }
     struct JoinResponse: Decodable { let ok: Bool; let match_id: String }
 
+    // MARK: - Daily challenge
+
+    struct DailyBody: Encodable { let skin: String? }
+    struct DailyStartResponse: Decodable { let match_id: String; let day: String }
+
+    /// One row of today's board. GLOBAL, unlike `LeaderboardRow` — see the route header: the
+    /// comparison is meaningful precisely because everyone played the same arena.
+    struct DailyRow: Decodable, Identifiable {
+        let user_id: String
+        let full_name: String?
+        let username: String?
+        let score: Int
+        var id: String { user_id }
+    }
+    struct DailyMine: Decodable {
+        /// Null while a run is still in progress — which is how "playing" is told from "played".
+        let score: Int?
+        let status: String
+    }
+    struct DailyResponse: Decodable {
+        let day: String
+        let seed: Int
+        let leaderboard: [DailyRow]
+        let mine: DailyMine?
+    }
+
+    /// Start today's run. Throws on 409 — they already played, which is the rule, not an error
+    /// to retry.
+    func startDaily(skin: String?) async throws -> DailyStartResponse {
+        try await api.request("POST", "games/daily", body: DailyBody(skin: skin))
+    }
+
+    func daily() async throws -> DailyResponse {
+        try await api.request("GET", "games/daily")
+    }
+
     /// One opponent's head-to-head record with the caller. Scoped to people actually
     /// played — never a global ranking (see the route header for why).
     struct LeaderboardRow: Decodable, Identifiable {

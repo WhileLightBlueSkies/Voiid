@@ -162,4 +162,51 @@ class GamesService(private val api: ApiClient) {
         val body = api.request("POST", "games/matches/$matchId/rematch", "{}")
         return json.decodeFromString<CreateResponse>(body).match_id
     }
+
+    // ── Daily challenge (docs/games/CROSS_CUTTING.md §5) ────────────────────────────────
+
+    /**
+     * One row of today's board. GLOBAL, unlike [LeaderboardRow] — see the route header: the
+     * comparison is meaningful precisely because everyone played the same arena.
+     */
+    @Serializable
+    data class DailyRow(
+        val user_id: String,
+        val full_name: String? = null,
+        val username: String? = null,
+        val score: Int,
+    )
+
+    @Serializable
+    data class DailyMine(
+        /** Null while a run is still going — which is how "playing" is told from "played". */
+        val score: Int? = null,
+        val status: String,
+    )
+
+    @Serializable
+    data class DailyResponse(
+        val day: String,
+        val seed: Long,
+        val leaderboard: List<DailyRow> = emptyList(),
+        val mine: DailyMine? = null,
+    )
+
+    @Serializable
+    private data class DailyStartResponse(val match_id: String, val day: String)
+
+    suspend fun daily(): DailyResponse {
+        val body = api.request("GET", "games/daily")
+        return json.decodeFromString<DailyResponse>(body)
+    }
+
+    /**
+     * Start today's run. Throws on 409 — they already played, which is the rule rather than an
+     * error to retry.
+     */
+    suspend fun startDaily(skin: String?): String {
+        val skinField = if (skin != null) "\"skin\":\"$skin\"" else ""
+        val body = api.request("POST", "games/daily", "{$skinField}")
+        return json.decodeFromString<DailyStartResponse>(body).match_id
+    }
 }

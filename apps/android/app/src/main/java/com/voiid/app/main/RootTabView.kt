@@ -180,6 +180,8 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
         mutableStateOf<Triple<String, com.voiid.app.main.games.BotDifficulty, Float>?>(null)
     }
     var showLeaderboard by remember { mutableStateOf(false) }
+    /** Today's seeded Snake arena. Full-screen, same treatment as the leaderboard. */
+    var showDaily by remember { mutableStateOf(false) }
     // Creating a match is a suspend call made from a click, so it needs a scope.
     val gamesScope = androidx.compose.runtime.rememberCoroutineScope()
     val appContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
@@ -299,6 +301,7 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                     Tab.GAMES -> com.voiid.app.main.games.GamesHomeScreen(
                         onPickGame = { setupGame = it },
                         onLeaderboard = { showLeaderboard = true },
+                        onDaily = { showDaily = true },
                         onAcceptInvite = { inv ->
                             // Accepting from a banner is the same act as tapping the invite bubble
                             // in chat, so it goes through the same seam.
@@ -513,6 +516,23 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                     }
                 },
                 onDismiss = { pendingCricket = null },
+            )
+        }
+
+        // Today's daily challenge — full-screen, same treatment as the leaderboard.
+        AnimatedVisibility(
+            visible = showDaily,
+            enter = slideInVertically { it } + fadeIn(),
+            exit = slideOutVertically { it } + fadeOut(),
+        ) {
+            com.voiid.app.main.games.DailyChallengeScreen(
+                onPlay = { id ->
+                    // Leave the daily screen behind: coming back from the arena should land on
+                    // the games tab, not on a board showing a run that is now over.
+                    showDaily = false
+                    openGameMatch = id to "snake"
+                },
+                onClose = { showDaily = false },
             )
         }
 

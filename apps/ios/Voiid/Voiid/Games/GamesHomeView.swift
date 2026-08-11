@@ -44,6 +44,9 @@ struct GamesHomeView: View {
     /// The open online match, as id + slug. The SLUG chooses the renderer.
     @State private var openMatch: OpenMatch?
     @State private var showLeaderboard = false
+    /// Today's seeded Snake arena. Pushed rather than sheeted: it has a board of its own and a
+    /// match launches out of it, which is a place you go, not a thing you glance at.
+    @State private var showDaily = false
     /// The snake appearance picker. Snake-only, so it lives here rather than in the shared
     /// setup sheet every game uses.
     @State private var showSkinPicker = false
@@ -132,6 +135,39 @@ struct GamesHomeView: View {
                             .padding(.top, VoiidSpacing.sm)
                         }
 
+                        // BELOW invites, ABOVE the catalog — which is exactly its urgency.
+                        // Someone waiting on an invite beats it; browsing does not, because
+                        // the daily expires at midnight and browsing does not.
+                        Button {
+                            Haptics.tap()
+                            showDaily = true
+                        } label: {
+                            HStack(spacing: VoiidSpacing.md) {
+                                Image(systemName: "calendar.badge.clock")
+                                    .font(.system(size: 20, weight: .semibold))
+                                    .foregroundStyle(VoiidColor.primary)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Daily challenge")
+                                        .font(VoiidFont.rounded(16, .semibold))
+                                        .foregroundStyle(VoiidColor.textPrimary)
+                                    Text("One Snake arena. Same for everyone. Resets at midnight.")
+                                        .font(VoiidFont.rounded(12, .regular))
+                                        .foregroundStyle(VoiidColor.textSecondary)
+                                }
+                                Spacer(minLength: 0)
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(VoiidColor.textSecondary)
+                            }
+                            .padding(VoiidSpacing.md)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(RoundedRectangle(cornerRadius: VoiidRadius.lg)
+                                .fill(VoiidColor.surfaceCard))
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, VoiidSpacing.md)
+                        .padding(.top, VoiidSpacing.sm)
+
                         LazyVGrid(columns: columns, spacing: VoiidSpacing.sm) {
                             ForEach(games) { game in
                                 GameCard(game: game) { setupGame = game }
@@ -170,6 +206,16 @@ struct GamesHomeView: View {
             }
             .navigationDestination(isPresented: $showLeaderboard) {
                 LeaderboardView { showLeaderboard = false }
+            }
+            .navigationDestination(isPresented: $showDaily) {
+                DailyChallengeView(
+                    onPlay: { id in
+                        // Leave the daily screen behind: coming back from the arena should land
+                        // on the games tab, not on a board showing a run that is now over.
+                        showDaily = false
+                        openMatch = OpenMatch(id: id, slug: "snake")
+                    },
+                    onClose: { showDaily = false })
             }
             .navigationDestination(item: $openMatch) { m in
                 // Renderer per game, keyed by the same slug the server's rules modules use.
@@ -355,7 +401,7 @@ struct GamesHomeView: View {
         // covers every exit path (back button, Exit, give up, lobby cancel) without each screen
         // having to remember to restore it.
         .onChange(of: openMatch == nil && botGame == nil && lobby == nil
-                  && !showLeaderboard) { _, atRoot in
+                  && !showLeaderboard && !showDaily) { _, atRoot in
             if atRoot { session.hideTabBar = false }
         }
         // Join tapped on an invite bubble. Joining is authorized server-side (the caller must

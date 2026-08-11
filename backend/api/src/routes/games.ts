@@ -552,4 +552,156 @@ async function runLeaderboard(userId: string, slug: string | null) {
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────────
+// THE DAILY CHALLENGE (docs/games/CROSS_CUTTING.md §5, SNAKE_COMPETITIVE_PARITY.md §4 P3.8).
+//
+// One seeded Snake arena a day, the same for everyone, board resets at midnight.
+//
+// THE SEED IS DERIVED HERE AND NEVER ACCEPTED FROM A CLIENT. `POST /games/matches` passes its
+// `options` bag through to the engine untouched — deliberately, because this router knows no
+// game's rules — and the snake engine reads `options.seed`. That is harmless for an ordinary
+// match, where a reproducible arena is a testing convenience. It is fatal for a ranked one:
+// a player could roll seeds locally until they found a generous food layout and then send it.
+//
+// So the daily has its own route. It never reads a seed off the request, and it stamps
+// `challenge_day` itself.
+
+/** The challenge day, in UTC. Chosen so the reset is the same instant worldwide. */
+function challengeDay(now = new Date()): string {
+  return now.toISOString().slice(0, 10);
+}
+
+/**
+ * The day's seed. A pure function of the date and a fixed salt, so every server process and
+ * every restart derives the same arena without storing anything, and tomorrow's is not
+ * predictable-in-a-useful-way from today's — there is nothing to gain from predicting it
+ * anyway, since the arena is identical for everyone by design.
+ */
+function challengeSeed(day: string): number {
+  // FNV-1a. Not for security: this needs to be stable and identical across processes, which a
+  // hash with a runtime-salted implementation (or anything in Math.random's family) is not.
+  let h = 0x811c9dc5;
+  const input = `voiid.snake.daily.${day}`;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  // The engine treats a non-positive seed as "roll one" and would silently make the arena
+  // random, so 0 is mapped away rather than left to fall through that branch.
+  return (h >>> 0) || 0x9e3779b9;
+}
+
+/**
+ * POST /games/daily — start today's challenge run.
+ *
+ * ONE PER PERSON PER DAY, and the unique index is what enforces it, not this handler. Two taps
+ * in flight both pass a `select` and both insert; only one survives a unique index. The 409
+ * below is the loser of that race being reported honestly rather than being handed a second
+ * arena.
+ */
+router.post(
+  '/daily',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id: userId } = (req as any).auth as { user_id: string };
+    const day = challengeDay();
+
+    const games = await query<{ id: string }>(
+      `select id from games where slug = 'snake' and enabled = true`
+    );
+    const game = games[0];
+    if (!game) return res.status(404).json({ error: 'unknown game' });
+
+    // Everything about the arena is fixed by the server. Only the skin is the player's, and
+    // only because it changes nothing about the match — it is what their snake looks like.
+    const skin = typeof req.body?.skin === 'string' && req.body.skin.length <= 32
+      ? req.body.skin
+      : undefined;
+    const options: Record<string, unknown> = {
+      seed: challengeSeed(day),
+      // Same arena means the same bots, and the same number of them. Difficulty is not the
+      // player's to choose on a ranked board.
+      bots: 5,
+      ...(skin ? { skin } : {}),
+    };
+
+    let rows;
+    try {
+      rows = await query<{ id: string }>(
+        `insert into game_matches
+           (game_id, player_ids, created_by, status, options, challenge_day)
+         values ($1, $2::jsonb, $3, 'waiting', $4::jsonb, $5::date)
+         returning id`,
+        [game.id, JSON.stringify([userId]), userId, JSON.stringify(options), day]
+      );
+    } catch (e) {
+      // 23505 = unique_violation, which here means exactly one thing: they already played.
+      if ((e as { code?: string }).code === '23505') {
+        return res.status(409).json({ error: 'already played today', day });
+      }
+      throw e;
+    }
+
+    res.status(201).json({ match_id: rows[0].id, day });
+  })
+);
+
+/**
+ * GET /games/daily — today's board, and whether the caller has played.
+ *
+ * GLOBAL, unlike `GET /games/leaderboard`, and that is not an inconsistency. The ordinary board
+ * is scoped to people you have actually played because a global ranking of a two-player game is
+ * a list of strangers you cannot challenge. The daily is the opposite: everyone played the SAME
+ * arena, so the comparison is meaningful precisely BECAUSE it is global. That is the whole
+ * feature.
+ *
+ * Capped at the top 50. A board nobody can reach the bottom of is a wall of names.
+ */
+router.get(
+  '/daily',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id: userId } = (req as any).auth as { user_id: string };
+    const day = challengeDay();
+
+    const board = await query<{
+      user_id: string;
+      full_name: string | null;
+      username: string | null;
+      score: number;
+    }>(
+      `select r.user_id, u.full_name, u.username, r.score
+         from game_matches m
+         join game_match_results r on r.match_id = m.id
+         left join users u on u.id = r.user_id
+        where m.challenge_day = $1::date
+          and m.status = 'finished'
+        order by r.score desc
+        limit 50`,
+      [day]
+    );
+
+    // Reported separately from the board, because a player can have played and still not be in
+    // the top 50 — and "you already played" is the fact the button needs, not "you are ranked".
+    const mine = await query<{ score: number | null; status: string }>(
+      `select r.score, m.status
+         from game_matches m
+         left join game_match_results r on r.match_id = m.id and r.user_id = $2
+        where m.challenge_day = $1::date
+          and m.created_by = $2
+        limit 1`,
+      [day, userId]
+    );
+
+    res.json({
+      day,
+      seed: challengeSeed(day),
+      leaderboard: board,
+      // Null when they have not started one. `score` stays null for a run in progress, which
+      // is how the client tells "playing" from "played".
+      mine: mine[0] ? { score: mine[0].score, status: mine[0].status } : null,
+    });
+  })
+);
+
 export default router;

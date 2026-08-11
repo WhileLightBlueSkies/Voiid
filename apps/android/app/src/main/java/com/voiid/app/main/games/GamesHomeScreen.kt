@@ -81,6 +81,8 @@ import com.voiid.app.ui.theme.VoiidSpacing
 fun GamesHomeScreen(
     onPickGame: (GamesService.CatalogGame) -> Unit,
     onLeaderboard: () -> Unit,
+    /** Today's seeded Snake arena (docs/games/CROSS_CUTTING.md §5). */
+    onDaily: () -> Unit = {},
     onAcceptInvite: (GamesService.PendingInvite) -> Unit = {},
 ) {
     val context = LocalContext.current
@@ -187,6 +189,39 @@ fun GamesHomeScreen(
                     )
                 }
             }
+        }
+
+        // BELOW invites, ABOVE the catalog — which is exactly its urgency. Someone waiting on an
+        // invite beats it; browsing does not, because the daily expires at midnight and browsing
+        // does not.
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(bottom = VoiidSpacing.sm)
+                .clip(RoundedCornerShape(VoiidRadius.lg))
+                .background(VoiidColor.surfaceCard)
+                .clickable { onDaily() }
+                .padding(VoiidSpacing.md),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.md),
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Daily challenge",
+                    style = VoiidFont.rounded(16, FontWeight.SemiBold),
+                    color = VoiidColor.textPrimary,
+                )
+                Text(
+                    "One Snake arena. Same for everyone. Resets at midnight.",
+                    style = VoiidFont.rounded(12, FontWeight.Normal),
+                    color = VoiidColor.textSecondary,
+                )
+            }
+            Text(
+                "›",
+                style = VoiidFont.rounded(18, FontWeight.SemiBold),
+                color = VoiidColor.textSecondary,
+            )
         }
 
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
