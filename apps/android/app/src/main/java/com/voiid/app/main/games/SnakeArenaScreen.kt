@@ -1321,7 +1321,18 @@ private fun DrawScope.drawSnake(
     // Width comes from the SERVER's head radius, so the drawn body is exactly the shape that
     // kills. A local formula could drift from the hitbox on any tuning change — and the
     // snake now thickens as it eats, so that drift would grow with the snake.
-    val width = (snake.headRadius * 1.9).toFloat()
+    // THE DRAWN BODY IS THE LETHAL BODY, exactly.
+    //
+    // This used to be `headRadius * 1.9`, which was a guess dressed as a rule: the engine kills
+    // on `headR + bodyRadius` (see snake/index.ts bodyHit), and 1.9 * hr is only about half
+    // that. The result was an invisible lethal margin of 11-23 world units around every snake —
+    // wider on bigger ones — so a player died from a clear gap away with nothing on screen to
+    // explain it. It read as lag; it was geometry.
+    //
+    // `bodyRadius` now comes from the server on the same frame as the position that uses it, so
+    // the two cannot drift on a tuning change. Doubled because `width` is a full stroke width
+    // and the radius is a half-width.
+    val width = (snake.bodyRadius * 2).toFloat()
 
     val path = Path().apply {
         moveTo(points[0].x, points[0].y)

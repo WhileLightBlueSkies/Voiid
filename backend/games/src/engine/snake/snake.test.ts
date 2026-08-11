@@ -392,5 +392,25 @@ console.log('\nSnake engine\n');
   check('sustained bandwidth under 30 KB/s', perSec < 30, `${perSec.toFixed(0)} KB/s`);
 }
 
+// --- N. The drawn body must BE the lethal body ---------------------------------------
+//
+// The clients stroke each body at `br * 2` and the engine kills on `headR + br`. If `br` ever
+// stops being serialized, or the clients go back to deriving a width from `hr`, a player gets an
+// invisible lethal margin around every snake and dies from a visible gap away — which reads as
+// lag and is impossible to diagnose from the outside. It shipped that way once.
+{
+  const state = snake.create(['u1'], { bots: 1 }).serialize();
+  const snakes = state.snakes as Array<Record<string, unknown>>;
+  const first = snakes[0];
+
+  check('serializes a body radius', typeof first.br === 'number', `br=${first.br}`);
+  check('serializes a head radius', typeof first.hr === 'number', `hr=${first.hr}`);
+  // BODY_RADIUS < HEAD_RADIUS, so a body is always slightly thinner than a head. If these are
+  // ever equal, someone has probably wired `br` to the wrong constant.
+  check('body radius is under head radius',
+        (first.br as number) < (first.hr as number),
+        `br=${first.br} hr=${first.hr}`);
+}
+
 console.log(failures === 0 ? '\nAll checks passed.\n' : `\n${failures} check(s) FAILED.\n`);
 process.exit(failures === 0 ? 0 : 1);

@@ -224,9 +224,13 @@ struct SnakeState {
         let name: String?
         /// Skin id; nil draws the plain palette colour. See `SnakeSkins`.
         let skin: String?
-        /// Head radius in world units, straight from the server — the body is drawn at this
-        /// width so the visible snake is exactly the shape that kills.
+        /// Head radius in world units, straight from the server — the head is drawn at this
+        /// width so the visible head is exactly the shape that kills.
         let headRadius: Double
+        /// BODY radius in world units, also from the server. Distinct from `headRadius`: the
+        /// engine collides bodies against `BODY_RADIUS`, and deriving one from the other
+        /// client-side is exactly how the drawn body and the lethal body drifted apart.
+        let bodyRadius: Double
         let x: Double
         let y: Double
         let heading: Double
@@ -331,6 +335,7 @@ struct SnakeState {
                 skin: (s["sk"] as? String)
                     ?? previous?.snakes.first { $0.id == id }?.skin,
                 headRadius: (s["hr"] as? Double) ?? 11,
+                bodyRadius: (s["br"] as? Double) ?? 10,
                 x: (s["x"] as? Double) ?? 0,
                 y: (s["y"] as? Double) ?? 0,
                 heading: (s["h"] as? Double) ?? 0,

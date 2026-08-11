@@ -219,6 +219,12 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
              * width so the visible snake is exactly the shape that kills.
              */
             val headRadius: Double,
+            /**
+             * BODY radius in world units, from the server. Distinct from [headRadius]: the
+             * engine collides bodies against BODY_RADIUS, and deriving one from the other
+             * client-side is exactly how the drawn body and the lethal body drifted apart.
+             */
+            val bodyRadius: Double,
             val x: Double,
             val y: Double,
             val heading: Double,
@@ -365,6 +371,7 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
                 // Skin rides full frames only, like the name, so a delta frame inherits it.
                 skin = o.str("sk") ?: previous?.snakes?.firstOrNull { it.id == id }?.skin,
                 headRadius = o.dbl("hr") ?: 11.0,
+                bodyRadius = o.dbl("br") ?: 10.0,
                 x = o.dbl("x") ?: 0.0,
                 y = o.dbl("y") ?: 0.0,
                 heading = o.dbl("h") ?: 0.0,

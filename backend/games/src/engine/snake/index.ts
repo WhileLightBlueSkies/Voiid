@@ -754,6 +754,15 @@ class SnakeEngine implements GameEngine {
         // Head radius, so the client draws EXACTLY the circle that kills. Deriving it
         // client-side would mean two formulas that could drift apart on any tuning change.
         hr: round(radiusFor(sn.mass, TUNING.HEAD_RADIUS), 1),
+        // BODY radius, for the same reason — and it is NOT the head radius.
+        //
+        // Sending only `hr` was a real bug, not an omission. The clients drew the body as a
+        // ribbon of width `hr * 1.9` (half-width ~1.05 * hr) while `bodyHit` tests against
+        // `headR + radiusFor(mass, BODY_RADIUS)` — roughly 2 * hr. So the lethal zone around
+        // every snake was about TWICE the width of the body drawn on screen, and a player
+        // could die from a visible gap away with nothing on screen to explain it. It read as
+        // lag; it was geometry.
+        br: round(radiusFor(sn.mass, TUNING.BODY_RADIUS), 1),
         x: round(sn.x), y: round(sn.y),
         h: round(sn.h, 3), th: round(sn.th, 3),
         m: round(sn.mass, 1),
