@@ -109,6 +109,10 @@ fun SnakeArenaScreen(
     val framesRef = remember { mutableStateOf<List<GamesEngine.SnakeFrame>>(emptyList()) }
     // The HUD is a SEPARATE, slow state: a leaderboard does not need 10 Hz.
     val hudState = remember { mutableStateOf<GamesEngine.SnakeState?>(null) }
+    // Recent kills, newest first. `kill` events were already parsed and rendered as NOTHING
+    // textual, so the most dramatic thing in a match left no trace: a body burst into food with
+    // no indication whose it was or who did it. Mirrors iOS SnakeHudModel.killFeed.
+    val killFeed = remember { mutableStateOf<List<KillEntry>>(emptyList()) }
 
     LaunchedEffect(Unit) {
         engine.snakeFrames.collect { framesRef.value = it }
@@ -183,7 +187,7 @@ fun SnakeArenaScreen(
             // frame time, and it is what the render clock advances on (see `advanceClock`).
             val now = frameClock.doubleValue
             drawArena(framesRef.value, me, trails, stick, camera, predictor, eatState, particles, impact,
-                haptics, boostAudio, hexShader, renderClock, now)
+                haptics, boostAudio, hexShader, renderClock, now, killFeed)
         }
 
         // Death / game-over panel.
@@ -211,6 +215,7 @@ fun SnakeArenaScreen(
             boosting = boosting,
             boostActive = boostActive,
             boostFuel = boostFuel,
+            killFeed = killFeed.value,
             onClose = onClose,
             onStick = { v ->
                 stick = v
@@ -471,6 +476,46 @@ private fun paletteColor(index: Int): Color =
  * Bots carry their name on the wire; humans are looked up locally, because only this device
  * knows what it calls its own contacts.
  */
+/**
+ * One line of the kill feed.
+ *
+ * [mine] is true for either side of a kill involving the local player — being eaten is as much
+ * your news as eating someone. Mirrors iOS `SnakeHudModel.KillEntry`.
+ */
+data class KillEntry(val id: Long, val text: String, val mine: Boolean)
+
+/**
+ * Turn a `kill` event into a line of commentary.
+ *
+ * NAMES, NOT IDS. A feed is only worth having if it says WHO — and the only place that knows
+ * what this device calls a person is this device, so names resolve locally exactly as they do
+ * above the heads and in the leaderboard.
+ */
+private fun recordKill(
+    e: GamesEngine.SnakeState.SnakeEvent,
+    state: GamesEngine.SnakeState,
+    me: String?,
+    feed: androidx.compose.runtime.MutableState<List<KillEntry>>,
+) {
+    // `snakeId` on a kill is the KILLER and `victimId` the victim — see the engine's own note on
+    // that asymmetry. Without both there is no sentence to write, so a malformed event is
+    // dropped rather than rendered as "someone ate someone".
+    val victimId = e.victimId ?: return
+    val killer = state.snakes.firstOrNull { it.id == e.snakeId } ?: return
+    val victim = state.snakes.firstOrNull { it.id == victimId } ?: return
+
+    val iKilled = killer.id == me
+    val iDied = victim.id == me
+    val killerName = if (iKilled) "You" else labelFor(killer, me)
+    val victimName = if (iDied) "you" else labelFor(victim, me)
+
+    // Newest first, capped at three. A longer feed becomes a wall that covers the arena, and in
+    // a six-snake match the older lines are stale within seconds.
+    feed.value = (listOf(
+        KillEntry(System.nanoTime(), "$killerName ate $victimName", iKilled || iDied)
+    ) + feed.value).take(3)
+}
+
 private fun labelFor(snake: GamesEngine.SnakeState.Snake, me: String?): String = when {
     snake.id == me -> "You"
     !snake.name.isNullOrEmpty() -> snake.name!!
@@ -993,6 +1038,11 @@ private fun DrawScope.drawArena(
     hexShader: androidx.compose.ui.graphics.Brush?,
     renderClock: RenderClock,
     now: Double,
+    /**
+     * The kill feed, appended to as `kill` events arrive. Passed in rather than owned here
+     * because the draw scope is recreated every frame — the feed must outlive it.
+     */
+    killFeed: androidx.compose.runtime.MutableState<List<KillEntry>>,
 ) {
     val s = pickSample(frames, renderClock, now) ?: return
     val state = s.to
@@ -1040,11 +1090,18 @@ private fun DrawScope.drawArena(
             // event is the KILLER (backend/games/src/engine/snake/index.ts kill() pushes
             // `id: killerId`), so this fires for the player who just won a fight, not their
             // victim.
-            if (e.kind == "kill" && e.snakeId == me) {
-                camera.triggerShake(6f)
-                impact.triggerKill()
-                haptics.kill()
-                GameAudio.play("kill", gain = 0.75f)
+            if (e.kind == "kill") {
+                // EVERY kill goes in the feed, not just mine. A feed that only reports your own
+                // kills is a personal scoreboard; the point is knowing the arena is dangerous
+                // and who is doing the damage.
+                recordKill(e, state, me, killFeed)
+
+                if (e.snakeId == me) {
+                    camera.triggerShake(6f)
+                    impact.triggerKill()
+                    haptics.kill()
+                    GameAudio.play("kill", gain = 0.75f)
+                }
             }
             // "death" events push `id: sn.id` — the snake that died — so this is unambiguously
             // "did I just die", not a kill I made. Opposite field semantics from "kill" above,
@@ -1790,6 +1847,8 @@ private fun Overlay(
     boostActive: Boolean,
     /** Boost fuel left, 0-1: mass above the floor as a fraction of a full tank. */
     boostFuel: Float,
+    /** Recent kills, newest first. See [KillEntry]. */
+    killFeed: List<KillEntry>,
 ) {
     Box(Modifier.fillMaxSize().padding(14.dp)) {
         Box(
@@ -1805,9 +1864,13 @@ private fun Overlay(
         }
 
         if (state != null) {
+          Column(
+              Modifier.align(Alignment.TopEnd),
+              horizontalAlignment = Alignment.End,
+              verticalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
             Column(
                 Modifier
-                    .align(Alignment.TopEnd)
                     .background(Color.White.copy(alpha = 0.10f), RoundedCornerShape(12.dp))
                     .padding(horizontal = 10.dp, vertical = 8.dp),
                 horizontalAlignment = Alignment.End,
@@ -1849,6 +1912,26 @@ private fun Overlay(
                     fontSize = 12.sp, fontWeight = FontWeight.Bold,
                     fontFamily = FontFamily.Monospace)
             }
+
+            // UNDER the leaderboard, sharing its column. Both answer "what is happening to
+            // everyone else", and the eye already goes to this corner for that — a feed on the
+            // opposite side would be a second place to look during the exact seconds a player
+            // has none to spare.
+            killFeed.forEach { entry ->
+                Text(
+                    entry.text,
+                    // Lines involving the player are brighter. In a six-snake match most kills
+                    // are somebody else's business, and undifferentiated text means the one line
+                    // that IS your business gets skimmed past with the rest.
+                    color = if (entry.mine) Color(0xFF22E0F0) else Color.White.copy(alpha = 0.62f),
+                    fontSize = 11.sp,
+                    fontWeight = if (entry.mine) FontWeight.Black else FontWeight.SemiBold,
+                    modifier = Modifier
+                        .background(Color.Black.copy(alpha = 0.28f), RoundedCornerShape(50))
+                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                )
+            }
+          }
         }
 
         // SPEED LINES while boost is actually taking effect.

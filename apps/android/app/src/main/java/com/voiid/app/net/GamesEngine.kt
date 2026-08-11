@@ -205,6 +205,11 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
             val snakeId: String,
             /** Death cause ("border" | "body" | "head"), present only on `death` events. */
             val cause: String?,
+            /**
+             * The VICTIM, present only on `kill` events — [snakeId] is already spent naming the
+             * KILLER there, so without this a kill event cannot say who was eaten.
+             */
+            val victimId: String?,
         )
 
         data class Snake(
@@ -423,6 +428,7 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
                 y = o.dbl("y") ?: 0.0,
                 snakeId = id,
                 cause = o.str("c"),
+                victimId = o.str("v"),
             )
         } ?: emptyList()
 

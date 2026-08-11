@@ -195,7 +195,21 @@ interface State {
   arenaRadius: number;
   duration: number;
   /** Recent deaths, for client-side VFX. Cleared each broadcast. */
-  events: { k: string; x: number; y: number; id: string; c?: string }[];
+  events: {
+    k: string;
+    x: number;
+    y: number;
+    /**
+     * WHOSE EVENT THIS IS, and it means different things per kind — deliberately, because the
+     * clients branch on exactly this. On `death` it is the snake that died; on `kill` it is the
+     * KILLER. Both call sites in the renderers depend on that asymmetry.
+     */
+    id: string;
+    /** Death cause ("border" | "body" | "head"), on `death` only. */
+    c?: string;
+    /** The VICTIM, on `kill` only — `id` is already spent on the killer. */
+    v?: string;
+  }[];
 
   // --- Food delta bookkeeping -----------------------------------------------------------
   // Food was 59% of a 7 KB payload — 300+ pellets resent 12x/sec when almost none of them
@@ -518,7 +532,11 @@ class SnakeEngine implements GameEngine {
       if (killer) {
         killer.kills += 1;
         killer.score += 250 + Math.floor(sn.mass * 2);
-        this.s.events.push({ k: 'kill', x: sn.x, y: sn.y, id: killerId });
+        // `v` is the VICTIM. `id` on a kill event is the KILLER (that asymmetry is
+        // deliberate and load-bearing — see the client call sites), which means a kill event
+        // alone could never say who was eaten. A feed reading "You ate someone" is worth
+        // nothing; "You ate Priya" is the line a player screenshots.
+        this.s.events.push({ k: 'kill', x: sn.x, y: sn.y, id: killerId, v: sn.id });
       }
     }
   }

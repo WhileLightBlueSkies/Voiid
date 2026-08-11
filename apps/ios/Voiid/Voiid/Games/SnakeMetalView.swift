@@ -82,6 +82,23 @@ final class SnakeHudModel: ObservableObject {
     /// How much boost fuel is left, 0-1. Mass above the floor, as a fraction of a full tank.
     @Published var boostFuel: Double = 1
 
+    /// Recent kills, newest first — the match's running commentary.
+    ///
+    /// `kill` events were already parsed on both platforms and rendered as NOTHING textual, so
+    /// the single most dramatic thing that happens in a match left no trace on screen. "You ate
+    /// Priya" is the line a player screenshots; "someone died somewhere" is not, which is why
+    /// this needs the victim's name and not just a count.
+    @Published var killFeed: [KillEntry] = []
+
+    struct KillEntry: Identifiable, Equatable {
+        let id: UUID
+        let text: String
+        /// True when the local player did the eating — their own kills are worth colouring.
+        let mine: Bool
+        /// When it landed, so the overlay can expire it.
+        let at: TimeInterval
+    }
+
     struct Row: Identifiable {
         let id: String
         let rank: Int
@@ -883,10 +900,17 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         // sliding for 16ms while everything else had already stopped.
         if state.time > lastEventTime {
             for event in state.events {
-                if event.kind == "kill", event.snakeId == me {
-                    impact.triggerKill()
-                    GameHaptics.kill()
-                    GameAudio.shared.play("kill", gain: 0.75)
+                if event.kind == "kill" {
+                    // EVERY kill goes in the feed, not just mine. A feed that only reports
+                    // your own kills is a personal scoreboard; the point is knowing the arena
+                    // is dangerous and who is doing the damage.
+                    recordKill(event: event, state: state)
+
+                    if event.snakeId == me {
+                        impact.triggerKill()
+                        GameHaptics.kill()
+                        GameAudio.shared.play("kill", gain: 0.75)
+                    }
                 }
                 if event.kind == "death", event.snakeId == me {
                     impact.triggerDeath()
@@ -1435,6 +1459,40 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
             circles.append(CircleInstance(
                 centre: SIMD2(Float(tail.x), Float(tail.y)),
                 radius: half, softness: 0, colour: colour))
+        }
+    }
+
+    /// Turn a `kill` event into a line of commentary.
+    ///
+    /// NAMES, NOT IDS. A feed is only worth having if it says WHO — and the only place that
+    /// knows what this device calls a person is this device, so names resolve locally exactly
+    /// as they do above the heads and in the leaderboard.
+    private func recordKill(event: SnakeState.Event, state: SnakeState) {
+        // `snakeId` on a kill is the KILLER and `victimId` the victim — see the engine's own
+        // note on that asymmetry. Without both there is no sentence to write, so a malformed
+        // event is dropped rather than rendered as "someone ate someone".
+        guard let victimId = event.victimId else { return }
+        let killer = state.snakes.first { $0.id == event.snakeId }
+        let victim = state.snakes.first { $0.id == victimId }
+        guard let killer, let victim else { return }
+
+        let iKilled = killer.id == me
+        let iDied = victim.id == me
+        let killerName = iKilled ? "You" : SnakeState.label(for: killer, me: me)
+        let victimName = iDied ? "you" : SnakeState.label(for: victim, me: me)
+        let text = "\(killerName) ate \(victimName)"
+
+        let entry = SnakeHudModel.KillEntry(
+            id: UUID(), text: text,
+            // Coloured for either side of a kill involving the player: being eaten is as much
+            // your news as eating someone.
+            mine: iKilled || iDied,
+            at: CACurrentMediaTime())
+
+        Task { @MainActor in
+            // Newest first, capped at three. A longer feed becomes a wall that covers the
+            // arena, and in a six-snake match the older lines are stale within seconds.
+            hud.killFeed = ([entry] + hud.killFeed).prefix(3).map { $0 }
         }
     }
 

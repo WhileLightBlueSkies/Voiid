@@ -275,7 +275,14 @@ struct SnakeArenaView: View {
 
                     Spacer()
 
-                    leaderboard
+                    VStack(alignment: .trailing, spacing: 8) {
+                        leaderboard
+                        // UNDER the leaderboard, sharing its column. Both answer "what is
+                        // happening to everyone else", and the eye already goes to this corner
+                        // for that — a feed on the opposite side would be a second place to
+                        // look during the exact seconds a player has none to spare.
+                        killFeed
+                    }
                 }
                 Spacer()
             }
@@ -302,6 +309,35 @@ struct SnakeArenaView: View {
             .padding(.horizontal, 26)
             .padding(.bottom, 18)
         }
+    }
+
+    /// Recent kills, newest at the top.
+    ///
+    /// `kill` events were already parsed and rendered as NOTHING textual, so the most dramatic
+    /// thing in a match left no trace: you would see a body burst into food with no idea whose
+    /// it was or who did it. SNAKE.md §3.2 lists this next to the boost meter for the same
+    /// reason — information the game has and does not show.
+    private var killFeed: some View {
+        VStack(alignment: .trailing, spacing: 3) {
+            ForEach(hud.killFeed) { entry in
+                Text(entry.text)
+                    .font(.system(size: 11, weight: entry.mine ? .heavy : .semibold))
+                    // Lines involving the player are brighter. In a six-snake match most kills
+                    // are somebody else's business, and undifferentiated text means the one
+                    // line that IS your business gets skimmed past with the rest.
+                    .foregroundStyle(entry.mine
+                                     ? Color(red: 0.13, green: 0.88, blue: 0.94)
+                                     : .white.opacity(0.62))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(.black.opacity(0.28), in: Capsule())
+                    // Arrives from the right, the direction the column is anchored to, so it
+                    // slides in from off-screen rather than appearing over the arena.
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+        }
+        .animation(.spring(response: 0.34, dampingFraction: 0.8), value: hud.killFeed)
+        .allowsHitTesting(false)
     }
 
     /// Top ten, live. Rank is the whole point of the board, so it is shown explicitly rather

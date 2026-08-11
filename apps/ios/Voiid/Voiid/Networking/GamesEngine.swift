@@ -278,6 +278,9 @@ struct SnakeState {
         let snakeId: String
         /// Death cause ("border" | "body" | "head"), present only on `death` events.
         let cause: String?
+        /// The VICTIM, present only on `kill` events — `snakeId` is already spent naming the
+        /// KILLER there, so without this a kill event cannot say who was eaten.
+        let victimId: String?
     }
 
     let players: [String]
@@ -372,7 +375,8 @@ struct SnakeState {
             guard let kind = e["k"] as? String, let id = e["id"] as? String else { return nil }
             return Event(kind: kind,
                         position: CGPoint(x: e["x"] as? Double ?? 0, y: e["y"] as? Double ?? 0),
-                        snakeId: id, cause: e["c"] as? String)
+                        snakeId: id, cause: e["c"] as? String,
+                        victimId: e["v"] as? String)
         }
 
         return SnakeState(
