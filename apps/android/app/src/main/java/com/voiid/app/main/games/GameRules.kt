@@ -3,7 +3,9 @@ package com.voiid.app.main.games
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.TrendingUp
 import androidx.compose.material.icons.outlined.AutoAwesomeMotion
+import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Cancel
+import androidx.compose.material.icons.outlined.OpenInFull
 import androidx.compose.material.icons.outlined.EmojiEvents
 import androidx.compose.material.icons.outlined.Grid3x3
 import androidx.compose.material.icons.outlined.PanTool
@@ -93,14 +95,23 @@ object GameRules {
         Line(Icons.Outlined.EmojiEvents, "First to 3 rounds takes the match. Ties replay the round."),
     )
 
+    // CHECKED LINE BY LINE AGAINST backend/games/src/engine/snake. Two of these were wrong on
+    // the first pass — boost's cost and what happens when you hit a body — which is exactly the
+    // kind of error that teaches a player the opposite of the game they are playing.
     private val snake = listOf(
         Line(Icons.AutoMirrored.Outlined.TrendingUp,
-            "Steer with the stick and eat pellets to grow. Hold BOOST to sprint — it burns " +
-                "your own length."),
+            "Steer with the stick and eat pellets to grow."),
+        Line(Icons.Outlined.Bolt,
+            "Hold BOOST to sprint. It burns your own mass and drops it behind you as food, " +
+                "and it cuts out if you get too small to afford it."),
         Line(Icons.Outlined.Warning,
-            "Hit another snake's body, or the arena wall, and you die. Heads-on, the smaller " +
-                "snake loses."),
+            "Run into another snake's body and YOU die — the one you hit is unharmed. So " +
+                "cutting in front of a big snake beats trying to outgrow it."),
+        Line(Icons.Outlined.OpenInFull,
+            "Head to head, the longer snake survives. If you are near enough the same size, " +
+                "you both go. The arena wall kills outright."),
         Line(Icons.Outlined.AutoAwesomeMotion,
-            "Cut someone off and they burst into food. Longest snake when the clock runs out wins."),
+            "Anything that dies bursts into food worth taking. Longest snake when the clock " +
+                "runs out wins."),
     )
 }
