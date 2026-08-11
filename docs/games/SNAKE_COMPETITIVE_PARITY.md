@@ -182,10 +182,13 @@ their meta-game is monetisation scaffolding we do not want.
 
 ### P0 — the match has no ending
 
-1. **Post-match summary + share to chat.**
-   Their `GameOverPopup` + `NativeShareDialog`; our `"You finished with 47"`. This is
-   [`CROSS_CUTTING.md`](./CROSS_CUTTING.md) §2 and it is the single highest-value item in the
-   games surface. Share-to-chat is the thing only we can do.
+1. ~~**Post-match summary + share to chat.**~~ **ALREADY SHIPPED — this recommendation was
+   wrong.** Both platforms already show final score, personal best, a "New best!" callout and a
+   "Challenge a friend" share through the system share sheet (`SnakeArenaView.gameOverPanel`,
+   `SnakeArenaScreen`). It was written from [`SNAKE.md`](./SNAKE.md)'s stale claim that our whole
+   post-match is `"You finished with 47"` — the code was not checked. Left in, struck through,
+   because a doc that quietly deletes its own mistakes teaches nobody: **verify against the code,
+   not against another doc.**
 
 2. **Rematch.** Already P1 in CROSS_CUTTING. Two people who just played are the two most likely
    to play again in the next thirty seconds.
