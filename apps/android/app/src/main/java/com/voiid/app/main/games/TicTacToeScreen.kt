@@ -47,7 +47,15 @@ import com.voiid.app.ui.theme.VoiidSpacing
  * Mirrors iOS `TicTacToeView.swift`.
  */
 @Composable
-fun TicTacToeScreen(matchId: String, onClose: () -> Unit) {
+fun TicTacToeScreen(
+    matchId: String,
+    onClose: () -> Unit,
+    /**
+     * Open a freshly-minted rematch. Null hides the Rematch button — a caller that cannot
+     * navigate to a new match must not offer one.
+     */
+    onRematch: ((String) -> Unit)? = null,
+) {
     val context = LocalContext.current
     val engine = GamesEngine.get(context)
     val state by engine.state.collectAsState()
@@ -162,6 +170,20 @@ fun TicTacToeScreen(matchId: String, onClose: () -> Unit) {
                         .padding(top = VoiidSpacing.md),
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 )
+
+                // Appears only once the result has SETTLED, so it arrives after the win stroke
+                // rather than competing with it.
+                if (settled && onRematch != null) {
+                    RematchBar(
+                        matchId = matchId,
+                        onRematch = { newId ->
+                            // Leave the old match first — the engine holds one at a time.
+                            engine.leave()
+                            onRematch(newId)
+                        },
+                        onExit = { engine.leave(); onClose() },
+                    )
+                }
             }
 
             joinError != null -> {

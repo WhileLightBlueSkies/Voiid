@@ -587,13 +587,19 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
             openGameMatch?.let { (matchId, slug) ->
                 // Renderer per game, keyed by the same slug the server's rules modules use.
                 when (slug) {
+                    // ONE HANDLER SHAPE FOR EVERY REMATCH. The server has already minted the
+                    // new match by the time this runs, so opening it is ordinary navigation —
+                    // reassigning `openGameMatch` swaps the destination in place rather than
+                    // stacking a second board on top of the finished one.
                     "rps" -> com.voiid.app.main.games.RpsMatchScreen(
                         matchId = matchId,
                         onClose = { openGameMatch = null },
+                        onRematch = { openGameMatch = it to "rps" },
                     )
                     "cricket" -> com.voiid.app.main.games.CricketMatchScreen(
                         matchId = matchId,
                         onClose = { openGameMatch = null },
+                        onRematch = { openGameMatch = it to "cricket" },
                     )
                     "snake" -> com.voiid.app.main.games.SnakeArenaScreen(
                         matchId = matchId,
@@ -617,6 +623,7 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                     else -> com.voiid.app.main.games.TicTacToeScreen(
                         matchId = matchId,
                         onClose = { openGameMatch = null },
+                        onRematch = { openGameMatch = it to "tictactoe" },
                     )
                 }
             }

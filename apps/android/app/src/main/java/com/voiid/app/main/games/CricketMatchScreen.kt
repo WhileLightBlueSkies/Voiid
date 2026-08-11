@@ -62,7 +62,15 @@ import kotlinx.coroutines.launch
  * Mirrors iOS `CricketMatchView.swift`.
  */
 @Composable
-fun CricketMatchScreen(matchId: String, onClose: () -> Unit) {
+fun CricketMatchScreen(
+    matchId: String,
+    onClose: () -> Unit,
+    /**
+     * Open a freshly-minted rematch. Null hides the Rematch button — a caller that cannot
+     * navigate to a new match must not offer one.
+     */
+    onRematch: ((String) -> Unit)? = null,
+) {
     val context = LocalContext.current
     val engine = GamesEngine.get(context)
     val state by engine.cricket.collectAsState()
@@ -347,6 +355,16 @@ fun CricketMatchScreen(matchId: String, onClose: () -> Unit) {
                     modifier = Modifier.fillMaxWidth().padding(top = VoiidSpacing.md),
                     textAlign = TextAlign.Center,
                 )
+
+                // The match is over: offer another rather than leaving the player on a dead
+                // scoreboard whose only exit is the back arrow.
+                if (s.finished && onRematch != null) {
+                    RematchBar(
+                        matchId = matchId,
+                        onRematch = { newId -> engine.leave(); onRematch(newId) },
+                        onExit = { engine.leave(); onClose() },
+                    )
+                }
 
                 Spacer(Modifier.weight(1f))
 

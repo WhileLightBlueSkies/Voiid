@@ -65,7 +65,15 @@ import com.voiid.app.ui.theme.VoiidSpacing
  * Mirrors iOS `RpsMatchView.swift`.
  */
 @Composable
-fun RpsMatchScreen(matchId: String, onClose: () -> Unit) {
+fun RpsMatchScreen(
+    matchId: String,
+    onClose: () -> Unit,
+    /**
+     * Open a freshly-minted rematch. Null hides the Rematch button — a caller that cannot
+     * navigate to a new match must not offer one.
+     */
+    onRematch: ((String) -> Unit)? = null,
+) {
     val context = LocalContext.current
     val engine = GamesEngine.get(context)
     val state by engine.rps.collectAsState()
@@ -207,6 +215,16 @@ fun RpsMatchScreen(matchId: String, onClose: () -> Unit) {
                     modifier = Modifier.fillMaxWidth().padding(top = VoiidSpacing.lg),
                     textAlign = TextAlign.Center,
                 )
+
+                // The match is over: offer another rather than leaving the player on a dead
+                // screen whose only exit is the back arrow.
+                if (s.finished && onRematch != null) {
+                    RematchBar(
+                        matchId = matchId,
+                        onRematch = { newId -> engine.leave(); onRematch(newId) },
+                        onExit = { engine.leave(); onClose() },
+                    )
+                }
 
                 Spacer(Modifier.weight(1f))
 
