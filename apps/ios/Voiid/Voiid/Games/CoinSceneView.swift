@@ -78,8 +78,8 @@ struct CoinSceneView: UIViewRepresentable {
             // thing the flat version had to fake by swapping a label mid-rotation.
             cylinder.materials = [
                 Self.edgeMaterial(),
-                Self.faceMaterial(letter: "H", pixels: size * 3),
-                Self.faceMaterial(letter: "T", pixels: size * 3),
+                Self.faceMaterial(letter: "H", pixels: size * 3, flipped: false),
+                Self.faceMaterial(letter: "T", pixels: size * 3, flipped: true),
             ]
 
             coin.geometry = cylinder
@@ -183,7 +183,15 @@ struct CoinSceneView: UIViewRepresentable {
             return m
         }
 
-        private static func faceMaterial(letter: String, pixels: CGFloat) -> SCNMaterial {
+        /// One face of the coin.
+        ///
+        /// `flipped` is for the BOTTOM cap. SCNCylinder's two end caps face opposite ways, so
+        /// their texture spaces are mirrors of each other — a rotation that stands the letter
+        /// upright on the top cap stands it on its head on the bottom. That is why H read
+        /// correctly and T came out upside down: both were given the same transform.
+        private static func faceMaterial(
+            letter: String, pixels: CGFloat, flipped: Bool
+        ) -> SCNMaterial {
             let m = SCNMaterial()
             m.diffuse.contents = faceTexture(letter: letter, pixels: max(pixels, 256))
             // METALNESS WELL UNDER 1. A fully metallic surface takes its colour entirely from
@@ -193,13 +201,19 @@ struct CoinSceneView: UIViewRepresentable {
             m.metalness.contents = 0.35
             m.roughness.contents = 0.45
             m.lightingModel = .physicallyBased
-            // ROTATE THE TEXTURE A QUARTER TURN. SCNCylinder maps its end caps with the
-            // texture's +Y running along the cylinder's axis, and the node is tipped upright
-            // to face the camera — so an un-rotated letter ends up lying on its side.
+
+            // ROTATE THE TEXTURE ABOUT ITS OWN CENTRE. SCNCylinder maps its end caps with the
+            // texture's +Y running along the cylinder's axis, and the node is tipped upright to
+            // face the camera — so an un-rotated letter lies on its side. A quarter turn fixes
+            // the top cap; the bottom needs the opposite quarter, being mirrored.
+            //
+            // Rotation happens around (0.5, 0.5) rather than the texture's origin: rotating
+            // about the corner would swing the glyph out of the visible square entirely.
+            let angle: Float = flipped ? -.pi / 2 : .pi / 2
             m.diffuse.contentsTransform = SCNMatrix4Mult(
                 SCNMatrix4MakeTranslation(-0.5, -0.5, 0),
                 SCNMatrix4Mult(
-                    SCNMatrix4MakeRotation(.pi / 2, 0, 0, 1),
+                    SCNMatrix4MakeRotation(angle, 0, 0, 1),
                     SCNMatrix4MakeTranslation(0.5, 0.5, 0)))
             return m
         }

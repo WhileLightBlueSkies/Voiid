@@ -146,7 +146,15 @@ struct GameSetupSheet: View {
         // fold, hiding the thing you tapped AND one of the two choices the sheet exists to
         // offer. The heights scale with the rules actually present, and the ScrollView above
         // means a small screen or large type can still reach the bottom option.
-        .presentationDetents([.height(sheetHeight)])
+        // TWO DETENTS, OPENING ON THE LARGER. The single computed height was a guess at how
+        // tall the content would be, and a guess that was too small — 46pt per rule line
+        // assumed every line fits on one row, and Snake's are long enough to wrap. Being 20pt
+        // short is invisible; being 100pt short hides an option.
+        //
+        // Offering `.large` as a second detent means the estimate no longer has to be right:
+        // the player can drag the sheet up if their type size or their language needs more
+        // room, and the drag indicator already tells them they can.
+        .presentationDetents([.height(sheetHeight), .large])
         .presentationDragIndicator(.visible)
         .scrollBounceBehavior(.basedOnSize)
     }
@@ -154,13 +162,24 @@ struct GameSetupSheet: View {
     /// Roughly how tall the sheet needs to be, in points.
     ///
     /// Estimated from the content rather than measured: a GeometryReader feeding a detent is a
-    /// layout loop waiting to happen, and being 20pt out costs nothing here because the content
-    /// scrolls. Each rule line is two lines of 13pt text plus spacing, in the worst case.
+    /// layout loop waiting to happen, and an estimate is safe here because the content scrolls
+    /// AND `.large` is available as a second detent.
+    ///
+    /// DELIBERATELY GENEROUS. Every constant below assumes the worst case — a rule line that
+    /// wraps to two rows, a tagline that wraps — because the failure modes are not symmetric.
+    /// Too tall costs a little empty space at the bottom; too short hides "The bot", which is
+    /// one of the two choices this sheet exists to offer.
     private var sheetHeight: CGFloat {
-        let base: CGFloat = 300
-        let rules = CGFloat(GameRules.lines(for: slug).count) * 46
-        let tagline: CGFloat = GameRules.tagline(for: slug) == nil ? 0 : 24
-        return min(base + rules + tagline + (botExpanded ? 220 : 0), 720)
+        // Title, "Who are you playing?", both opponent rows, padding, drag indicator.
+        let chrome: CGFloat = 330
+        // 13pt text wrapping to two rows, plus the row spacing.
+        let perRule: CGFloat = 62
+        let rules = CGFloat(GameRules.lines(for: slug).count) * perRule
+        // The rules card's own padding, top and bottom.
+        let rulesPadding: CGFloat = GameRules.lines(for: slug).isEmpty ? 0 : 32
+        let tagline: CGFloat = GameRules.tagline(for: slug) == nil ? 0 : 44
+        let difficulty: CGFloat = botExpanded ? 220 : 0
+        return min(chrome + rules + rulesPadding + tagline + difficulty, 860)
     }
 
     /// The rules, as a short scannable list.
