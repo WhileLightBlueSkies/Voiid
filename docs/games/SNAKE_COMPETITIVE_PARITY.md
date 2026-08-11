@@ -180,6 +180,10 @@ Worth stating, because the list above is long and it is not a rewrite.
 Ranked by (impact × cheapness), and deliberately **not** a list of everything above. Most of
 their meta-game is monetisation scaffolding we do not want.
 
+**Status: all eight are now shipped on both platforms.** Where the implementation departed from
+the recommendation, the item below says so and why — in two cases (6 and 7) the recommendation
+asked for a whole new mode and the shipped version deliberately is not one.
+
 ### P0 — the match has no ending
 
 1. ~~**Post-match summary + share to chat.**~~ **ALREADY SHIPPED — this recommendation was
@@ -190,37 +194,67 @@ their meta-game is monetisation scaffolding we do not want.
    because a doc that quietly deletes its own mistakes teaches nobody: **verify against the code,
    not against another doc.**
 
-2. **Rematch.** Already P1 in CROSS_CUTTING. Two people who just played are the two most likely
+2. ✅ **Rematch.** Already P1 in CROSS_CUTTING. Two people who just played are the two most likely
    to play again in the next thirty seconds.
 
 ### P1 — the match is not legible
 
-3. **Boost feedback (speed lines + a mass/boost meter).**
+3. ✅ **Boost feedback (speed lines + a mass/boost meter).**
    Their `HudSpeedLinesEffect` + `HudBooster`. Our boost has a real cost the player cannot see.
    [`SNAKE.md`](./SNAKE.md) §3.2 calls an invisible mechanic "an unfair-feeling mechanic purely
    because it is invisible".
 
-4. **Kill feed.** Their `KillEventsStatsList`. Our `kill` events are already parsed on both
+4. ✅ **Kill feed.** Their `KillEventsStatsList`. Our `kill` events are already parsed on both
    platforms and render as nothing textual. "You ate Priya" is the shareable moment.
 
-5. **Second control scheme + a settings tab.** Their `ControlsTab` and two preview classes.
+5. ✅ **Second control scheme + a settings tab.** Their `ControlsTab` and two preview classes.
    Ours is one joystick, and CROSS_CUTTING §12 already wants this.
+
+   *Shipped:* swipe-to-steer alongside the joystick, chosen in a Snake section of the game
+   settings sheet. One steering handler serves both schemes so they cannot drift, and only one
+   control is ever mounted so they cannot fight over a touch. The arena reads the scheme once on
+   open — changing it mid-match would move the controls out from under a thumb.
 
 ### P2 — the game does not teach itself
 
-6. **A coached first match for Snake.** Their `TutorialGameMode` + `TutorialSnakeBot` +
+6. ✅ **A coached first match for Snake.** Their `TutorialGameMode` + `TutorialSnakeBot` +
    `TutorialTouchZone`. Not a slideshow: a real match against a scripted opponent. Our rules list
    covers the other three games; Snake is the one that needs more.
 
+   *Shipped, but NOT as a mode, and not against a scripted opponent — this recommendation was
+   half wrong.* A parallel tutorial arena is a second copy of the game to keep in step with the
+   first, and the day they drift it teaches something false. A scripted bot is worse: a player
+   beats it, meets a real one, and finds the game they were taught is not the game they are
+   playing. What shipped is four coaching lines riding on top of an ordinary match. Each clears
+   when the player does the thing — steering is proved by distance travelled, so it works for
+   both control schemes without knowing either exists. Only the rule that kills people is told
+   rather than tested, since nobody can safely be made to demonstrate dying.
+
 ### P3 — one reason to come back
 
-7. **Duel mode (1v1 with a friend).** Their `DuelGameMode`. Cheapest new mode for us: the engine
-   supports it, the picker returns one conversation, and it is the most social version of Snake
-   we could ship.
+7. ✅ **Duel mode (1v1 with a friend).** Their `DuelGameMode`. Cheapest new mode for us: the
+   engine supports it, the picker returns one conversation, and it is the most social version of
+   Snake we could ship.
 
-8. **Daily challenge.** Their `LuckyWheel`/`ChallengeMetric` cluster, minus the currency. One
+   *Shipped as a choice, not a mode.* The engine already takes a player list and a bot count, so
+   a duel is two seats and zero bots — a mode around that would be a second code path for a
+   difference of one integer. Inviting a friend to Snake now asks how busy the arena should be.
+   Zero bots is what a friend match silently already was; it is now labelled, and the lobby names
+   the choice back to the creator. The same change fixed a real bug: the friend path plumbed
+   `skin` as far as the API and dropped it, so a player's chosen skin never appeared in the only
+   mode another human could see it.
+
+8. ✅ **Daily challenge.** Their `LuckyWheel`/`ChallengeMetric` cluster, minus the currency. One
    seeded arena a day, shared leaderboard, resets at midnight — CROSS_CUTTING §5's own
    recommendation, and the highest retention-per-line-of-code option available.
+
+   *Shipped, with one thing the recommendation missed:* the seed cannot come from the client.
+   `POST /games/matches` passes its options bag to the engine untouched, and the engine reads
+   `options.seed` — harmless for a friendly match, fatal for a ranked one, since a player could
+   roll seeds locally until one produced a generous food layout. The daily therefore has its own
+   route that derives the seed from the UTC date. One attempt per person per day is enforced by a
+   unique index, not by the handler, because two taps in flight both pass a `select`. No new
+   scores table: `game_match_results` already holds the number.
 
 ### Explicitly NOT recommended
 
