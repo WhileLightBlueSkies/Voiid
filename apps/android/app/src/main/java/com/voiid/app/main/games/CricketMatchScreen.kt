@@ -140,6 +140,10 @@ fun CricketMatchScreen(matchId: String, onClose: () -> Unit) {
             // `target` is the first innings' score plus one, so it is the honest source for both
             // numbers — reading the scoreboard here would race the frame that changed it.
             val firstScore = (s.target ?: 1) - 1
+            // AFTER the ball, because an innings almost always ends ON one: the last wicket or
+            // the shot that used up the overs. Announcing on the frame that reports the switch
+            // clears that ball off the pitch mid-flight.
+            delay(BALL_SETTLE_MS)
             announce(
                 CricketAnnouncements.inningsBreak(
                     id = nextAnnouncementId(),
@@ -164,6 +168,10 @@ fun CricketMatchScreen(matchId: String, onClose: () -> Unit) {
         val batting = st.battingSeat == mySeat
         if (batting == lastAnnouncedBatting) return@LaunchedEffect
         lastAnnouncedBatting = batting
+        // Also delayed: at the innings switch this lands on the same frame as the break, and
+        // both would wipe the closing ball. At the toss there is no ball in flight, so the wait
+        // costs nothing there.
+        delay(BALL_SETTLE_MS)
         announce(CricketAnnouncements.role(nextAnnouncementId(), batting = batting))
     }
 
@@ -439,3 +447,10 @@ private fun opponentName(s: GamesEngine.CricketState, me: String?): String {
     val id = s.players.getOrNull(theirSeat) ?: return "They"
     return UserDirectory.displayName(id, "They")
 }
+
+/**
+ * How long to let a ball finish before an announcement clears the pitch. One constant for every
+ * outcome — a wicket and a six should hold for the same length, or the pacing lurches. Identical
+ * to iOS and to CricketBotScreen.
+ */
+private const val BALL_SETTLE_MS = 1500L

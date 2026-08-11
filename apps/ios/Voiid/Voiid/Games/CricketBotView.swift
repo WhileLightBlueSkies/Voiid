@@ -398,14 +398,23 @@ struct CricketBotView: View {
             // The innings change was previously invisible: the scoreboard just started
             // counting a different number and the roles quietly swapped. Announce both — the
             // break with the target, then the new role.
-            announce(CricketAnnouncements.inningsBreak(
-                id: nextAnnouncementId(),
-                firstInningsScore: firstScore,
-                target: firstScore + 1,
-                iChase: humanBatting,
-                opponent: "The bot"))
-            announce(CricketAnnouncements.role(
-                id: nextAnnouncementId(), batting: humanBatting))
+            //
+            // AFTER the ball, because an innings almost always ends ON one: the last wicket or
+            // the shot that used up the overs. Announcing immediately cleared that ball off the
+            // pitch mid-flight.
+            let chasing = humanBatting
+            announceAfterBall {
+                [
+                    CricketAnnouncements.inningsBreak(
+                        id: nextAnnouncementId(),
+                        firstInningsScore: firstScore,
+                        target: firstScore + 1,
+                        iChase: chasing,
+                        opponent: "The bot"),
+                    CricketAnnouncements.role(
+                        id: nextAnnouncementId(), batting: chasing),
+                ]
+            }
         } else {
             // Second innings ended short. Equal totals = tie.
             finish(humanScore == botScore ? nil : humanScore > botScore)
@@ -459,6 +468,24 @@ struct CricketBotView: View {
         // queue would clear at once — the second message never being seen.
         if wasIdle { scheduleDismiss(of: a) }
     }
+
+    /// Announce only AFTER the ball that caused it has finished playing.
+    ///
+    /// The innings almost always ends ON a wicket or a boundary, and announcing synchronously
+    /// wiped that ball off the pitch mid-flight: you got out on the last ball and never saw it,
+    /// because the announcement cleared the ground the same instant the animation started.
+    ///
+    /// `Self.ballSettleDelay` is the ball's own animation plus a beat to read the result.
+    private func announceAfterBall(_ build: @escaping () -> [CricketAnnouncement]) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.ballSettleDelay) {
+            build().forEach(announce)
+        }
+    }
+
+    /// Longest ball animation (a six, 0.90s) plus its 0.12s contact delay, plus a beat to read
+    /// the banner. Deliberately one constant for every outcome rather than per-event timing:
+    /// a wicket and a six should hold for the same length, or the pacing lurches.
+    private static let ballSettleDelay: Double = 1.5
 
     /// The queue drains itself.
     ///

@@ -75,6 +75,15 @@ import kotlinx.coroutines.launch
 private const val BALLS_PER_OVER = 6
 private const val WICKETS = 2
 
+/**
+ * How long to let a ball finish before an announcement clears the pitch.
+ *
+ * Longest ball animation (a six) plus its contact delay, plus a beat to read the banner.
+ * Deliberately ONE constant for every outcome rather than per-event timing: a wicket and a six
+ * should hold for the same length, or the pacing lurches. Identical to iOS `ballSettleDelay`.
+ */
+private const val BALL_SETTLE_MS = 1500L
+
 @Composable
 fun CricketBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
     val context = LocalContext.current
@@ -190,6 +199,20 @@ fun CricketBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
         if (wasIdle) scheduleDismiss(a)
     }
 
+    /**
+     * Announce only AFTER the ball that caused it has finished playing.
+     *
+     * The innings almost always ends ON a wicket or a boundary, and announcing synchronously
+     * wiped that ball off the pitch mid-flight: you got out on the last ball and never saw it,
+     * because the announcement cleared the ground the same instant the animation started.
+     */
+    fun announceAfterBall(build: () -> List<CricketAnnouncement>) {
+        scope.launch {
+            delay(BALL_SETTLE_MS)
+            build().forEach(::announce)
+        }
+    }
+
     fun electToss(choice: String) {
         // Whoever elected, apply it from the ELECTOR's point of view: `tossWonByHuman` says
         // whose choice this is, so one line covers both.
@@ -287,16 +310,22 @@ fun CricketBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
             // The innings change was previously invisible: the scoreboard just started counting
             // a different number and the roles quietly swapped. Announce both — the break with
             // the target, then the new role.
-            announce(
-                CricketAnnouncements.inningsBreak(
-                    id = nextAnnouncementId(),
-                    firstInningsScore = firstScore,
-                    target = firstScore + 1,
-                    iChase = humanBatting,
-                    opponent = "The bot",
+            // AFTER the ball, because an innings almost always ends ON one: the last wicket or
+            // the shot that used up the overs. Announcing immediately cleared that ball off the
+            // pitch mid-flight.
+            val chasing = humanBatting
+            announceAfterBall {
+                listOf(
+                    CricketAnnouncements.inningsBreak(
+                        id = nextAnnouncementId(),
+                        firstInningsScore = firstScore,
+                        target = firstScore + 1,
+                        iChase = chasing,
+                        opponent = "The bot",
+                    ),
+                    CricketAnnouncements.role(nextAnnouncementId(), batting = chasing),
                 )
-            )
-            announce(CricketAnnouncements.role(nextAnnouncementId(), batting = humanBatting))
+            }
         } else {
             // Second innings ended short. Equal totals = tie.
             when {

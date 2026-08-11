@@ -31,21 +31,23 @@ data class CricketAnnouncement(
     /**
      * Milliseconds the message stays on the pitch.
      *
-     * These are timed against how long the text takes to be NOTICED, PARSED and turned into a
-     * decision — not merely read. "You need 14 to win" is four words and several seconds of
-     * thought, and the innings break is the one moment in the match where the player is
-     * re-planning rather than reacting.
+     * THE SAME FOR EVERY KIND, deliberately. These were tuned per-announcement (4000-5600ms) on
+     * the theory that a longer message deserves longer, and in a sequence that reads as the
+     * pacing lurching: two cards back to back at different lengths feel like one of them was cut
+     * short. A single interval makes a run of announcements feel like a rhythm rather than a
+     * list, and the longest message is the one that sets it.
      *
-     * A message that outstays its welcome costs a beat; one that leaves early costs the
+     * Timed against how long the text takes to be NOTICED, PARSED and turned into a decision —
+     * not merely read. "You need 14 to win" is four words and several seconds of thought. A
+     * message that outstays its welcome costs a beat; one that leaves early costs the
      * information entirely, and there is no way to ask for it back.
      */
-    val durationMs: Long
-        get() = when (kind) {
-            Kind.TOSS -> 5200
-            Kind.INNINGS_BREAK -> 5600      // carries the target — the most thinking per word
-            Kind.ROLE_CHANGE -> 4000
-            Kind.TARGET -> 5200
-        }
+    val durationMs: Long get() = STANDARD_DURATION_MS
+
+    companion object {
+        /** One interval for every announcement. See [durationMs]. Identical to iOS. */
+        const val STANDARD_DURATION_MS = 5600L
+    }
 }
 
 /**

@@ -121,12 +121,20 @@ struct CricketMatchView: View {
                 // that score plus one, so it is the honest source for both numbers — reading
                 // the scoreboard here would race the same frame that changed it.
                 let firstScore = (s.target ?? 1) - 1
-                announce(CricketAnnouncements.inningsBreak(
-                    id: nextAnnouncementId(),
-                    firstInningsScore: firstScore,
-                    target: s.target ?? 0,
-                    iChase: s.battingSeat == mySeat,
-                    opponent: opponentName(s)))
+                // AFTER the ball, because an innings almost always ends ON one: the last wicket
+                // or the shot that used up the overs. Announcing on the frame that reports the
+                // switch clears that ball off the pitch mid-flight.
+                let chasing = s.battingSeat == mySeat
+                let opponent = opponentName(s)
+                let target = s.target ?? 0
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.ballSettleDelay) {
+                    announce(CricketAnnouncements.inningsBreak(
+                        id: nextAnnouncementId(),
+                        firstInningsScore: firstScore,
+                        target: target,
+                        iChase: chasing,
+                        opponent: opponent))
+                }
             }
             lastInnings = innings
         }
@@ -142,7 +150,12 @@ struct CricketMatchView: View {
             let batting = s.battingSeat == mySeat
             guard batting != lastAnnouncedBatting else { return }
             lastAnnouncedBatting = batting
-            announce(CricketAnnouncements.role(id: nextAnnouncementId(), batting: batting))
+            // Also delayed: at the innings switch this lands on the same frame as the break,
+            // and both would wipe the closing ball. At the toss there is no ball in flight, so
+            // the wait costs nothing there.
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.ballSettleDelay) {
+                announce(CricketAnnouncements.role(id: nextAnnouncementId(), batting: batting))
+            }
         }
         .onChange(of: engine.cricket?.finished ?? false) { _, finished in
             guard finished, let s = engine.cricket else { return }
@@ -159,6 +172,11 @@ struct CricketMatchView: View {
         guard let s = engine.cricket else { return "" }
         return "\(s.phase)-\(s.battingSeat)"
     }
+
+    /// Longest ball animation plus a beat to read the banner. One constant for every outcome:
+    /// a wicket and a six should hold for the same length, or the pacing lurches. Identical to
+    /// CricketBotView.
+    private static let ballSettleDelay: Double = 1.5
 
     private func nextAnnouncementId() -> Int {
         announcementSeq += 1

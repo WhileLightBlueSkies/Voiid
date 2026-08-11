@@ -42,22 +42,20 @@ struct CricketAnnouncement: Equatable, Identifiable {
 
     /// Seconds the message stays on the pitch before dismissing itself.
     ///
-    /// DOUBLED FROM THE FIRST PASS (2.0-2.8s). Those were timed against how long the text takes
-    /// to READ, which is the wrong measure — an announcement also has to be noticed, parsed,
-    /// and turned into a decision. "You need 14 to win" is four words and several seconds of
-    /// thought, and the innings break is the one moment in the match where the player is
-    /// re-planning rather than reacting.
+    /// THE SAME FOR EVERY KIND, deliberately. These were tuned per-announcement (4.0-5.6s) on
+    /// the theory that a longer message deserves longer, and in a sequence that reads as the
+    /// pacing lurching: two cards back to back at different lengths feel like one of them was
+    /// cut short. A single interval makes a run of announcements feel like a rhythm rather than
+    /// a list, and the longest message is the one that sets it.
     ///
-    /// A message that outstays its welcome costs a beat; one that leaves early costs the
+    /// Timed against how long the text takes to be NOTICED, PARSED and turned into a decision —
+    /// not merely read. "You need 14 to win" is four words and several seconds of thought. A
+    /// message that outstays its welcome costs a beat; one that leaves early costs the
     /// information entirely, and there is no way to ask for it back.
-    var duration: Double {
-        switch kind {
-        case .toss:         return 5.2
-        case .inningsBreak: return 5.6     // carries the target — the most thinking per word
-        case .roleChange:   return 4.0
-        case .target:       return 5.2
-        }
-    }
+    var duration: Double { Self.standardDuration }
+
+    /// One interval for every announcement. See `duration`.
+    static let standardDuration: Double = 5.6
 
     var symbol: String {
         switch kind {
