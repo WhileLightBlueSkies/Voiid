@@ -19,6 +19,9 @@ import SwiftUI
 struct TicTacToeView: View {
     let matchId: String
     var onClose: (() -> Void)?
+    /// Open a freshly-minted rematch. Nil hides the Rematch button — a caller that cannot
+    /// navigate to a new match must not offer one.
+    var onRematch: ((String) -> Void)?
 
     @StateObject private var engine = GamesEngine.shared
     @EnvironmentObject var session: AppSession
@@ -145,10 +148,28 @@ struct TicTacToeView: View {
             return isMyTurn ? "Your turn" : "Their turn"
         }()
 
-        Text(text)
-            .font(VoiidFont.rounded(16, .semibold))
-            .foregroundStyle(settled ? VoiidColor.primary : VoiidColor.textSecondary)
-            .padding(.top, VoiidSpacing.md)
-            .accessibilityAddTraits(.updatesFrequently)
+        VStack(spacing: 0) {
+            Text(text)
+                .font(VoiidFont.rounded(16, .semibold))
+                .foregroundStyle(settled ? VoiidColor.primary : VoiidColor.textSecondary)
+                .padding(.top, VoiidSpacing.md)
+                .accessibilityAddTraits(.updatesFrequently)
+
+            // Appears only once the result has SETTLED, so it arrives after the win stroke
+            // rather than competing with it — same beat the record panel uses in the bot game.
+            if settled {
+                RematchBar(
+                    matchId: matchId,
+                    onRematch: { newId in
+                        // Straight into the new match. Leaving the old one first keeps the
+                        // engine's single-match invariant: it holds one match id at a time.
+                        engine.leave()
+                        onRematch?(newId)
+                    },
+                    onExit: { engine.leave(); onClose?() })
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+        }
+        .animation(.spring(response: 0.4, dampingFraction: 0.7), value: settled)
     }
 }

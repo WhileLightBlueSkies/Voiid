@@ -23,6 +23,9 @@ import SwiftUI
 struct CricketMatchView: View {
     let matchId: String
     let onClose: () -> Void
+    /// Open a freshly-minted rematch. Nil hides the Rematch button — a caller that cannot
+    /// navigate to a new match must not offer one.
+    var onRematch: ((String) -> Void)?
 
     @EnvironmentObject var session: AppSession
     @ObservedObject private var engine = GamesEngine.shared
@@ -302,6 +305,20 @@ struct CricketMatchView: View {
                 .foregroundStyle(s.finished ? VoiidColor.primary : VoiidColor.textSecondary)
                 .multilineTextAlignment(.center)
                 .padding(.top, VoiidSpacing.md)
+
+            // The match is over: offer another rather than leaving the player on a dead
+            // scoreboard whose only exit is the back arrow.
+            if s.finished {
+                RematchBar(
+                    matchId: matchId,
+                    onRematch: { newId in
+                        // Leave the old match first — the engine holds one match id at a time.
+                        engine.leave()
+                        onRematch?(newId)
+                    },
+                    onExit: { engine.leave(); onClose() })
+                .padding(.horizontal, VoiidSpacing.lg)
+            }
 
             Spacer(minLength: 0)
 

@@ -362,6 +362,91 @@ router.post(
   })
 );
 
+/**
+ * POST /games/matches/:id/rematch — play the same people again, at the same settings.
+ *
+ * THE HIGHEST-VALUE MISSING BUTTON IN THE PRODUCT (docs/games/CROSS_CUTTING.md §1). Two people
+ * who just finished a match are the two most likely to play another in the next thirty seconds,
+ * and until now that took six taps through three screens plus a fresh invite the opponent had to
+ * accept — by which point they have put the phone down.
+ *
+ * A CLONE, NOT A RESET. The finished row is left exactly as it is: it holds the result, the
+ * leaderboard counts it, and history shows it. This mints a NEW match with the same game, the
+ * same players and the same options. Mutating the old row would silently rewrite a result
+ * somebody already saw.
+ *
+ * SEAT ORDER IS PRESERVED, deliberately, including who sits first. For Tic Tac Toe that means
+ * the same player is X again — which is a known unfairness (TICTACTOE.md §2.3 wants alternation)
+ * but it is the EXISTING unfairness, and changing who goes first as a side effect of adding a
+ * button would be a rules change smuggled in under a convenience feature. Alternation is its own
+ * task.
+ */
+router.post(
+  '/matches/:id/rematch',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id: userId } = (req as any).auth as { user_id: string };
+    const matchId = req.params.id;
+    if (!UUID_RE.test(matchId)) return res.status(400).json({ error: 'bad match id' });
+
+    const rows = await query<{
+      game_id: string;
+      player_ids: string[];
+      status: string;
+      options: Record<string, unknown> | null;
+      min_players: number;
+      max_players: number;
+      enabled: boolean;
+    }>(
+      `select m.game_id, m.player_ids, m.status, m.options,
+              g.min_players, g.max_players, g.enabled
+         from game_matches m
+         join games g on g.id = m.game_id
+        where m.id = $1`,
+      [matchId]
+    );
+    const prev = rows[0];
+    if (!prev) return res.status(404).json({ error: 'no such match' });
+    if (!prev.player_ids.includes(userId)) {
+      return res.status(403).json({ error: 'not a player in this match' });
+    }
+    // A game pulled from the catalog since the last match must not be re-enterable through a
+    // rematch button — that is the whole point of the `enabled` flag.
+    if (!prev.enabled) return res.status(404).json({ error: 'unknown game' });
+
+    // Only a match that is genuinely OVER can be replayed. Rematching a live game would leave
+    // two matches open between the same people and the clients would have no way to say which
+    // one a later invite refers to.
+    if (prev.status !== 'finished') {
+      return res.status(409).json({ error: 'match is not finished' });
+    }
+
+    // RE-AUTHORIZED, not grandfathered. Permission to invite someone is checked at creation
+    // (see reachableOpponents), and a rematch is a creation. If the other player has since
+    // blocked the caller or the conversation is gone, this must fail exactly as a fresh invite
+    // would — otherwise a stale match id becomes a permanent bypass of that check.
+    const opponents = prev.player_ids.filter((id) => id !== userId);
+    if (opponents.length > 0) {
+      const reachable = await reachableOpponents(userId, opponents);
+      if (opponents.some((id) => !reachable.has(id))) {
+        return res.status(403).json({ error: 'not permitted to invite one of these players' });
+      }
+    }
+
+    // THE REQUESTER SITS WHERE THEY SAT. Re-using player_ids verbatim keeps seat order stable
+    // rather than putting whoever tapped Rematch first, which would hand them X every time.
+    const insert = await query<{ id: string }>(
+      `insert into game_matches (game_id, player_ids, created_by, status, options)
+       values ($1, $2::jsonb, $3, 'waiting', $4::jsonb)
+       returning id`,
+      [prev.game_id, JSON.stringify(prev.player_ids), userId,
+       JSON.stringify(prev.options ?? {})]
+    );
+
+    res.status(201).json({ match_id: insert[0].id, players: prev.player_ids });
+  })
+);
+
 /** GET /games/matches — the caller's recent matches, newest first. */
 router.get(
   '/matches',

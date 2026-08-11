@@ -174,8 +174,20 @@ struct GamesHomeView: View {
                 // tic-tac-toe grid, RPS included.
                 Group {
                     switch m.slug {
-                    case "rps":     RpsMatchView(matchId: m.id) { openMatch = nil }
-                    case "cricket": CricketMatchView(matchId: m.id) { openMatch = nil }
+                    // ONE HANDLER FOR EVERY REMATCH. The server has already minted the new
+                    // match by the time this runs, so opening it is the same navigation as
+                    // opening any other — replacing `openMatch` swaps the destination in place
+                    // rather than pushing a second board onto the stack.
+                    case "rps":
+                        RpsMatchView(
+                            matchId: m.id,
+                            onClose: { openMatch = nil },
+                            onRematch: { openMatch = OpenMatch(id: $0, slug: "rps") })
+                    case "cricket":
+                        CricketMatchView(
+                            matchId: m.id,
+                            onClose: { openMatch = nil },
+                            onRematch: { openMatch = OpenMatch(id: $0, slug: "cricket") })
                     case "snake":
                         SnakeArenaView(
                             matchId: m.id,
@@ -194,7 +206,11 @@ struct GamesHomeView: View {
                                     }
                                 }
                             })
-                    default:        TicTacToeView(matchId: m.id) { openMatch = nil }
+                    default:
+                        TicTacToeView(
+                            matchId: m.id,
+                            onClose: { openMatch = nil },
+                            onRematch: { openMatch = OpenMatch(id: $0, slug: "tictactoe") })
                     }
                 }
                 .environmentObject(session)

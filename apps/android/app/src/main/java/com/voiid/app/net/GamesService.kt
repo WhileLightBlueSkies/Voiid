@@ -147,4 +147,19 @@ class GamesService(private val api: ApiClient) {
     suspend fun leave(matchId: String) {
         api.request("POST", "games/matches/$matchId/leave", "{}")
     }
+
+    /**
+     * Play the same people again, at the same settings.
+     *
+     * Mints a NEW match rather than reopening the finished one: the old row holds a result the
+     * leaderboard already counted, and rewriting it would change something a player has seen.
+     * The server re-checks permission exactly as it does for a fresh invite, so a stale match id
+     * is not a bypass.
+     *
+     * Returns the new match id, which the caller opens exactly as it would after [create].
+     */
+    suspend fun rematch(matchId: String): String {
+        val body = api.request("POST", "games/matches/$matchId/rematch", "{}")
+        return json.decodeFromString<CreateResponse>(body).match_id
+    }
 }
