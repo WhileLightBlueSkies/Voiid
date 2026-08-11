@@ -18,6 +18,7 @@ One file per game. Each answers the same three questions: **what exists**, **wha
 | [`BACKEND_HOSTING.md`](./BACKEND_HOSTING.md) | — | Answer to "should games get its own server?" |
 | [`EXECUTION_PROMPT_SOUND_AND_FIXES.md`](./EXECUTION_PROMPT_SOUND_AND_FIXES.md) | — | **Hand-off prompt** — scoped to sound rework + fixing the four existing games, nothing new |
 | [`EXECUTION_PROMPT_NEW_GAME_DOCS.md`](./EXECUTION_PROMPT_NEW_GAME_DOCS.md) | — | **Hand-off prompt** — write full design docs for the eight future games (docs only, no code) |
+| [`SNAKE_COMPETITIVE_PARITY.md`](./SNAKE_COMPETITIVE_PARITY.md) | Snake | What a shipped commercial .io game has that we don't, and which of it is worth having |
 
 ---
 
