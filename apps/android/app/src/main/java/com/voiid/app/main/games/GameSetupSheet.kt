@@ -1,5 +1,9 @@
 package com.voiid.app.main.games
 
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
@@ -68,6 +72,11 @@ import com.voiid.app.ui.theme.VoiidSpacing
 @Composable
 fun GameSetupSheet(
     gameName: String,
+    /**
+     * The catalog slug, which is how the rules are looked up. Defaulted so a caller that has no
+     * slug still compiles — it simply shows no rules rather than another game's.
+     */
+    slug: String = "",
     onPlayFriend: () -> Unit,
     onPlayBot: (BotDifficulty, Float) -> Unit,
     /**
@@ -90,6 +99,10 @@ fun GameSetupSheet(
         Column(
             Modifier
                 .fillMaxWidth()
+                // SCROLLABLE, because the rules can push this past a small screen. Without it
+                // the bottom option is simply unreachable — a sheet whose primary action cannot
+                // be tapped is worse than one with no rules in it.
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = VoiidSpacing.md)
                 .padding(bottom = VoiidSpacing.xl),
             verticalArrangement = Arrangement.spacedBy(VoiidSpacing.sm),
@@ -100,11 +113,58 @@ fun GameSetupSheet(
                 fontSize = 22.sp,
                 fontWeight = FontWeight.Bold,
             )
+            GameRules.tagline(slug)?.let { tagline ->
+                Text(
+                    tagline,
+                    color = VoiidColor.textSecondary,
+                    fontSize = 14.sp,
+                )
+            }
+
+            // The rules, as a short scannable list.
+            //
+            // COLLAPSED AFTER THE FIRST LOOK would be the obvious refinement, and is deliberately
+            // not done: a player who needs the rules needs them on the sheet, and remembering
+            // "has this person played before" is state that does not exist here. Five short
+            // lines cost less than a wrong first match.
+            val rules = GameRules.lines(slug)
+            if (rules.isNotEmpty()) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(VoiidRadius.lg))
+                        .background(VoiidColor.fieldFill.copy(alpha = 0.5f))
+                        .padding(VoiidSpacing.md),
+                    verticalArrangement = Arrangement.spacedBy(VoiidSpacing.sm),
+                ) {
+                    rules.forEach { line ->
+                        Row(verticalAlignment = Alignment.Top) {
+                            Icon(
+                                line.icon,
+                                contentDescription = null,
+                                tint = VoiidColor.primary,
+                                // Fixed width so the text edges line up into a column; ragged
+                                // icons make a list read as clutter rather than as structure.
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Spacer(Modifier.width(VoiidSpacing.sm))
+                            Text(
+                                line.text,
+                                color = VoiidColor.textSecondary,
+                                fontSize = 13.sp,
+                                lineHeight = 18.sp,
+                            )
+                        }
+                    }
+                }
+            }
+
             Text(
                 "Who are you playing?",
                 color = VoiidColor.textSecondary,
                 fontSize = 14.sp,
-                modifier = Modifier.padding(bottom = VoiidSpacing.sm),
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(top = VoiidSpacing.xs, bottom = VoiidSpacing.xs),
             )
 
             if (onCustomise != null) {

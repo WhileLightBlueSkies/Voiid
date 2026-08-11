@@ -20,6 +20,9 @@ import SwiftUI
 
 struct GameSetupSheet: View {
     let gameName: String
+    /// The catalog slug, which is how the rules are looked up. Defaulted so a caller that has
+    /// no slug still compiles — it simply shows no rules rather than another game's.
+    var slug: String = ""
     let onPlayFriend: () -> Void
     let onPlayBot: (BotDifficulty, Double) -> Void
     /// Snake only: open the appearance picker. Nil hides the row, so no other game shows an
@@ -32,14 +35,27 @@ struct GameSetupSheet: View {
     @State private var skill: Double = BotDifficulty.moderate.skill
 
     var body: some View {
+        // SCROLLABLE, because the rules can push this past a small screen. Without it the
+        // bottom option is simply unreachable on an SE — a sheet whose primary action cannot be
+        // tapped is worse than one with no rules in it.
+        ScrollView {
         VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
             Text(gameName)
                 .font(VoiidFont.rounded(22, .bold))
                 .foregroundStyle(VoiidColor.textPrimary)
+            if let tagline = GameRules.tagline(for: slug) {
+                Text(tagline)
+                    .font(VoiidFont.rounded(14, .regular))
+                    .foregroundStyle(VoiidColor.textSecondary)
+            }
+
+            rules
+
             Text("Who are you playing?")
-                .font(VoiidFont.rounded(14, .regular))
+                .font(VoiidFont.rounded(14, .semibold))
                 .foregroundStyle(VoiidColor.textSecondary)
-                .padding(.bottom, VoiidSpacing.sm)
+                .padding(.top, VoiidSpacing.xs)
+                .padding(.bottom, VoiidSpacing.xs)
 
             if let onCustomise {
                 option(icon: "paintpalette", title: "Your snake",
@@ -117,14 +133,68 @@ struct GameSetupSheet: View {
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
-            Spacer()
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, VoiidSpacing.md)
         .padding(.top, VoiidSpacing.lg)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .padding(.bottom, VoiidSpacing.lg)
+        .frame(maxWidth: .infinity, alignment: .top)
+        }
         .background(VoiidColor.background.ignoresSafeArea())
-        .presentationDetents([.height(botExpanded ? 520 : 300)])
+        // TALL ENOUGH FOR THE RULES. These were fixed at 300/520 and the rules pushed the sheet
+        // well past both: the game's own name scrolled off the top and "The bot" sat below the
+        // fold, hiding the thing you tapped AND one of the two choices the sheet exists to
+        // offer. The heights scale with the rules actually present, and the ScrollView above
+        // means a small screen or large type can still reach the bottom option.
+        .presentationDetents([.height(sheetHeight)])
         .presentationDragIndicator(.visible)
+        .scrollBounceBehavior(.basedOnSize)
+    }
+
+    /// Roughly how tall the sheet needs to be, in points.
+    ///
+    /// Estimated from the content rather than measured: a GeometryReader feeding a detent is a
+    /// layout loop waiting to happen, and being 20pt out costs nothing here because the content
+    /// scrolls. Each rule line is two lines of 13pt text plus spacing, in the worst case.
+    private var sheetHeight: CGFloat {
+        let base: CGFloat = 300
+        let rules = CGFloat(GameRules.lines(for: slug).count) * 46
+        let tagline: CGFloat = GameRules.tagline(for: slug) == nil ? 0 : 24
+        return min(base + rules + tagline + (botExpanded ? 220 : 0), 720)
+    }
+
+    /// The rules, as a short scannable list.
+    ///
+    /// COLLAPSED BY DEFAULT AFTER THE FIRST LOOK would be the obvious refinement, and is
+    /// deliberately not done yet: a player who needs the rules needs them on the sheet, and
+    /// remembering "has this person played before" is state that does not exist here. Five short
+    /// lines cost less than a wrong first match.
+    @ViewBuilder
+    private var rules: some View {
+        let lines = GameRules.lines(for: slug)
+        if !lines.isEmpty {
+            VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+                ForEach(lines) { line in
+                    HStack(alignment: .top, spacing: VoiidSpacing.sm) {
+                        Image(systemName: line.icon)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(VoiidColor.primary)
+                            // Fixed width so the text edges line up into a column; ragged icons
+                            // make a list read as clutter rather than as structure.
+                            .frame(width: 18, alignment: .center)
+                        Text(line.text)
+                            .font(VoiidFont.rounded(13, .regular))
+                            .foregroundStyle(VoiidColor.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .padding(VoiidSpacing.md)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: VoiidRadius.lg)
+                .fill(VoiidColor.fieldFill.opacity(0.5)))
+            .padding(.top, VoiidSpacing.xs)
+        }
     }
 
     private func option(icon: String, title: String, subtitle: String,

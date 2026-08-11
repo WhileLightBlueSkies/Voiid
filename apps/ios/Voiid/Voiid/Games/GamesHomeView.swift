@@ -222,6 +222,7 @@ struct GamesHomeView: View {
             .sheet(item: $setupGame) { game in
                 GameSetupSheet(
                     gameName: game.name,
+                    slug: game.slug,
                     onPlayFriend: { pendingGame = game },
                     onPlayBot: { level, skill in
                         // Snake's bots live on the SERVER, so "play a bot" mints a real

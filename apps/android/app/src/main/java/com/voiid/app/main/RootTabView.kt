@@ -484,6 +484,7 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
         setupGame?.let { game ->
             com.voiid.app.main.games.GameSetupSheet(
                 gameName = game.name,
+                slug = game.slug,
                 onPlayFriend = {
                     setupGame = null
                     pendingGame = game
