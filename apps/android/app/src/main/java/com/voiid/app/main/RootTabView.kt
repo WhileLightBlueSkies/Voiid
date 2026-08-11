@@ -165,6 +165,12 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
     // An online cricket match waiting on its over count: (slug, display name, (convoId, peer)).
     // Held because the length must be chosen BEFORE the match row exists — the server builds
     // the innings from it.
+    // An online Snake match waiting on its bot count, for the same reason cricket waits on its
+    // overs: the server populates the arena when the row is created, so it cannot be chosen
+    // afterwards.
+    var pendingDuel by remember {
+        mutableStateOf<Triple<String, String, Pair<String, String>>?>(null)
+    }
     var pendingCricket by remember {
         mutableStateOf<Triple<String, String, Pair<String, String>>?>(null)
     }
@@ -421,6 +427,8 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                     // other game has nothing left to ask.
                     if (game.slug == "cricket") {
                         pendingCricket = Triple(game.slug, game.name, convo.id to peer)
+                    } else if (game.slug == "snake") {
+                        pendingDuel = Triple(game.slug, game.name, convo.id to peer)
                     } else {
                         gamesScope.launch {
                             // Creating the match SENDS THE INVITE into this conversation. The
@@ -442,6 +450,43 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                     }
                 },
                 onDismiss = { pendingGame = null },
+            )
+        }
+
+        // How busy the arena is, for an online Snake match. Zero bots is a duel, which is what a
+        // friend match silently was before it was ever a choice.
+        pendingDuel?.let { (slug, name, who) ->
+            val (convoId, peer) = who
+            com.voiid.app.main.games.DuelSheet(
+                onPick = { bots ->
+                    pendingDuel = null
+                    gamesScope.launch {
+                        val choice = com.voiid.app.main.games.SnakeChoiceStore(appContext)
+                        com.voiid.app.net.GamesEngine.get(appContext)
+                            .create(
+                                slug, peer, convoId, name,
+                                mapOf("bots" to bots) + choice.matchOptions(),
+                                // A friend match sent NO skin until duels — so a player who had
+                                // picked one got the default snake in the only mode anybody
+                                // else could see it.
+                                choice.skinId,
+                            )
+                            ?.let {
+                                lobby = com.voiid.app.main.games.LobbyArgs(
+                                    matchId = it,
+                                    slug = slug,
+                                    gameName = name,
+                                    opponentName = chat.directConversations
+                                        .firstOrNull { c -> c.id == convoId }?.title ?: "them",
+                                    // Names the choice back to the creator while they wait, so
+                                    // the lobby confirms what they picked rather than leaving
+                                    // them to find out when the arena opens.
+                                    detailLine = if (bots == 0) "duel — no bots" else "$bots bots",
+                                )
+                            }
+                    }
+                },
+                onDismiss = { pendingDuel = null },
             )
         }
 

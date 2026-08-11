@@ -548,11 +548,15 @@ final class GamesEngine: ObservableObject {
         opponentId: String,
         conversationId: String,
         gameName: String,
-        options: [String: Int] = [:]
+        options: [String: Int] = [:],
+        /// Snake's chosen skin id. Travels separately because `options` is [String: Int].
+        /// A friend match sent NO skin until duels — so a player who had picked one got the
+        /// default snake in the only mode anybody else could see it.
+        skin: String? = nil
     ) async -> String? {
         do {
             let id = try await api.create(
-                slug: slug, opponentIds: [opponentId], options: options)
+                slug: slug, opponentIds: [opponentId], options: options, skin: skin)
             // Everything the poster bubble and the rich notification need travels INSIDE the
             // encrypted body — which is what lets the recipient's banner name the game while the
             // push that woke their device said only "New message".

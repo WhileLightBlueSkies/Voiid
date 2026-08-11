@@ -58,6 +58,9 @@ struct GamesHomeView: View {
     /// An online cricket match waiting on its over count. Held because the length must be chosen
     /// BEFORE the match row exists — the server builds the innings from it.
     @State private var pendingCricket: PendingCricket?
+    /// An online Snake match waiting on its bot count, for the same reason: the arena is
+    /// populated when the match row is created, so it cannot be chosen afterwards.
+    @State private var pendingDuel: PendingCricket?
 
     /// Incoming invites. Polled rather than pushed: an invite arrives as a chat message, and the
     /// games surface has no socket subscription of its own — a 20s poll while this tab is open is
@@ -287,8 +290,27 @@ struct GamesHomeView: View {
                     // nothing left to ask.
                     if game.slug == "cricket" {
                         pendingCricket = PendingCricket(game: game, conversation: convo)
+                    } else if game.slug == "snake" {
+                        // Snake needs its bot count before the row is minted, for the same
+                        // reason cricket needs its overs: the server builds the arena from it.
+                        pendingDuel = PendingCricket(game: game, conversation: convo)
                     } else {
                         Task { await startMatch(game: game, conversation: convo) }
+                    }
+                }
+            }
+            // How busy the arena is, for an online Snake match. Zero bots is a duel, which is
+            // what a friend match silently was before it was ever a choice.
+            .sheet(item: $pendingDuel) { pending in
+                DuelSheet { bots in
+                    pendingDuel = nil
+                    Task {
+                        await startMatch(
+                            game: pending.game,
+                            conversation: pending.conversation,
+                            options: ["bots": bots].merging(
+                                SnakeChoiceStore.matchOptions) { a, _ in a },
+                            skin: SnakeChoiceStore.skinId)
                     }
                 }
             }
@@ -351,7 +373,10 @@ struct GamesHomeView: View {
     private func startMatch(
         game: GamesAPI.CatalogGame,
         conversation: VConversation,
-        options: [String: Int] = [:]
+        options: [String: Int] = [:],
+        /// Snake only. Forwarded rather than read here so the games that have no skin do not
+        /// have to know one exists.
+        skin: String? = nil
     ) async {
         guard let peer = conversation.peerUserId, !peer.isEmpty else { return }
         if let id = await GamesEngine.shared.create(
@@ -359,7 +384,8 @@ struct GamesHomeView: View {
             opponentId: peer,
             conversationId: conversation.id,
             gameName: game.name,
-            options: options
+            options: options,
+            skin: skin
         ) {
             // The creator WAITS IN THE LOBBY. Opening the board here is what made it look like
             // nothing happened: no opponent means no opening frame, so the board sat on
@@ -370,9 +396,18 @@ struct GamesHomeView: View {
                 slug: game.slug,
                 gameName: game.name,
                 opponentName: conversation.title,
-                detailLine: overs > 0
-                    ? "\(overs) \(overs == 1 ? "over" : "overs")"
-                    : (game.slug == "rps" ? "first to 3" : ""))
+                detailLine: {
+                    if overs > 0 { return "\(overs) \(overs == 1 ? "over" : "overs")" }
+                    if game.slug == "rps" { return "first to 3" }
+                    // Names the choice back to the creator while they wait, so the lobby
+                    // confirms what they picked rather than leaving them to find out when the
+                    // arena opens.
+                    if game.slug == "snake" {
+                        let bots = options["bots"] ?? 0
+                        return bots == 0 ? "duel — no bots" : "\(bots) bots"
+                    }
+                    return ""
+                }())
         }
     }
 

@@ -574,10 +574,16 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         gameName: String,
         /** Per-game settings chosen before the match exists (hand cricket's over count). */
         options: Map<String, Int> = emptyMap(),
+        /**
+         * Snake's chosen skin id. Travels separately because [options] is string->int. A friend
+         * match sent none until duels — so a player who had picked a skin got the default snake
+         * in the only mode anybody else could see it.
+         */
+        skin: String? = null,
     ): String? {
         return runCatching {
             android.util.Log.i(TAG, "create: slug=$slug peer=$opponentId convo=$conversationId opts=$options")
-            val id = service.create(slug, listOf(opponentId), options)
+            val id = service.create(slug, listOf(opponentId), options, skin)
             android.util.Log.i(TAG, "create: match minted id=$id — sending invite")
             // Everything the poster bubble and the rich notification need travels INSIDE the
             // encrypted body — which is what lets the recipient's banner name the game while the
