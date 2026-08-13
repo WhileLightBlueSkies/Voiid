@@ -15,7 +15,15 @@
 // therefore trusts WHO sent a frame, and trusts nothing else about it.
 import { sub, pub, GAMES_INPUT_CHANNEL } from './redis';
 import { factoryFor } from './engine/registry';
-import { loadMatch, saveMatch, finishMatch, markStarted, type LiveMatch } from './matches';
+import {
+  loadMatch,
+  saveMatch,
+  finishMatch,
+  markStarted,
+  setDeadline,
+  popDueDeadlines,
+  type LiveMatch,
+} from './matches';
 import { advanceTournament, forfeitFixtures } from './tournaments';
 import { query } from './db';
 import type { GameEngine, GameOutcome, GameStatePayload } from './engine/GameEngine';
@@ -66,19 +74,56 @@ function rateLimited(matchId: string, userId: string, slug: string): boolean {
  * new connection, no new reconnect logic, and no second socket: a game frame arrives on
  * the pipe they already hold open for chat.
  */
-async function broadcast(m: LiveMatch, wire?: GameStatePayload): Promise<void> {
-  const frame = JSON.stringify({
-    type: 'game_state',
-    match_id: m.matchId,
-    game: m.slug,
-    seq: m.seq,
-    // `wire` is the engine's client-facing projection when it has one (continuous games send
-    // food as a delta). Falling back to m.state keeps every turn-based game unchanged.
-    payload: wire ?? m.state,
-  });
+async function broadcast(
+  m: LiveMatch,
+  wire?: GameStatePayload,
+  engine?: GameEngine
+): Promise<void> {
+  const envelope = (payload: GameStatePayload) =>
+    JSON.stringify({
+      type: 'game_state',
+      match_id: m.matchId,
+      game: m.slug,
+      seq: m.seq,
+      payload,
+    });
+
+  // PER-RECIPIENT FRAMES, when the engine has an information projection
+  // (docs/games/future/README.md §2.1).
+  //
+  // Until Sea Battle every game's state was the same for everyone, so one frame went to every
+  // player and that was not merely an optimisation — it was the shape of the games. A hidden-
+  // state game breaks it: you must see your own fleet and your opponent must not, and there is
+  // no single set of bytes that is true for both of you.
+  //
+  // Cost is N JSON serializations per broadcast instead of one, for turn-based games that
+  // broadcast a few times a minute. Nothing measurable. Every game without the method takes the
+  // shared-frame path below, byte for byte as before.
+  if (engine?.serializeForPlayer) {
+    for (const uid of m.players) {
+      await pub.publish(`channel:user:${uid}`, envelope(engine.serializeForPlayer(uid)));
+    }
+    return;
+  }
+
+  // `wire` is the engine's client-facing projection when it has one (continuous games send
+  // food as a delta). Falling back to m.state keeps every turn-based game unchanged.
+  const frame = envelope(wire ?? m.state);
   for (const uid of m.players) {
     await pub.publish(`channel:user:${uid}`, frame);
   }
+}
+
+/**
+ * Keep the sorted-set deadline in step with whatever the engine now says.
+ *
+ * Called after every accepted input and every join, because both can change whose turn it is —
+ * and therefore what the outstanding deadline is. An engine with no deadlineAt() never touches
+ * the set at all.
+ */
+async function syncDeadline(m: LiveMatch, engine: GameEngine): Promise<void> {
+  if (!engine.deadlineAt) return;
+  await setDeadline(m.matchId, engine.isFinished() ? null : engine.deadlineAt());
 }
 
 async function endMatch(m: LiveMatch, engine: GameEngine, outcome: GameOutcome) {
@@ -92,7 +137,11 @@ async function endMatch(m: LiveMatch, engine: GameEngine, outcome: GameOutcome) 
   m.secret = engine.serializeSecret?.();
   // Broadcast the terminal state BEFORE clearing Redis: the players must see the winning
   // board, and finishMatch drops the key.
-  await broadcast(m, wire);
+  //
+  // The terminal frame is still per-recipient. For Sea Battle that is what reveals the loser's
+  // unhit ships without ever having leaked them mid-match — the engine widens its own projection
+  // once the match is over, rather than the runtime deciding to stop projecting.
+  await broadcast(m, wire, engine);
   for (const uid of m.players) inputRate.delete(`${m.matchId}:${uid}`);
   await finishMatch(m.matchId, m.players, outcome);
 }
@@ -215,7 +264,7 @@ async function runTick(matchId: string): Promise<void> {
 
   // Broadcast FIRST, persist on a slower cadence. The players are what the tick is for; the
   // Redis write is only so a process restart does not lose the match outright.
-  await broadcast(m, wire);
+  await broadcast(m, wire, engine);
 
   const n = (tickCounts.get(matchId) ?? 0) + 1;
   tickCounts.set(matchId, n);
@@ -318,10 +367,14 @@ async function handleInput(msg: Record<string, any>): Promise<void> {
   // next tick — at most 100 ms away — overwrites anything written here.
   if (!live) {
     m.seq += 1;
+    // Whose turn it is may have just changed, so the outstanding deadline has too. Written
+    // before the save so a crash between them leaves a deadline that is at worst early — the
+    // engine's own moveCount check rejects a stale one — rather than one that never fires.
+    await syncDeadline(m, engine);
     await saveMatch(m);
   }
 
-  if (mustBroadcast) await broadcast(m);
+  if (mustBroadcast) await broadcast(m, undefined, engine);
 }
 
 /**
@@ -358,10 +411,20 @@ async function handleJoin(msg: Record<string, any>): Promise<void> {
     // everyone is here — a rejoin after that is a genuine resync and still gets a frame.
     if (existing.joined.length >= existing.players.length) {
       await markStarted(matchId);
-      await broadcast(existing);
+      // Rebuild the engine for the frame rather than sending the stored state blob.
+      //
+      // A REJOIN IS THE CASE A HIDDEN-STATE GAME LIVES OR DIES ON. The stored `state` is the
+      // public shape — for Sea Battle that is a board with no fleet on it. A player cold-
+      // starting from a push notification, a reinstall, or a second device has nothing cached
+      // to fill that in, so without the engine here they resync into a match where their own
+      // ships have vanished. Games with no serializeForPlayer are unaffected: broadcast falls
+      // through to the shared frame built from exactly the same state.
+      const f = factoryFor(existing.slug);
+      const engine = liveEngines.get(matchId) ?? f?.restore(existing.state, existing.secret);
+      await broadcast(existing, undefined, engine);
+      if (engine) await syncDeadline(existing, engine);
       // Idempotent: a rejoin/resync after the match is already running must not start a
       // second loop, which startLoop guards against.
-      const f = factoryFor(existing.slug);
       if (f?.tickHz) startLoop(matchId, f.tickHz);
     }
     return;
@@ -403,8 +466,14 @@ async function handleJoin(msg: Record<string, any>): Promise<void> {
   // and held until the remaining seats join — see the resync branch above for why.
   if (m.joined!.length >= players.length) {
     await markStarted(matchId);
-    await broadcast(m);
+    await broadcast(m, undefined, engine);
+    await syncDeadline(m, engine);
     if (factory.tickHz) startLoop(matchId, factory.tickHz);
+  } else {
+    // The opening deadline runs from match creation, not from the second join — a placement
+    // clock that only starts once both players are present would never fire on the case it
+    // exists for, which is an invite nobody ever accepts.
+    await syncDeadline(m, engine);
   }
 }
 
@@ -467,6 +536,71 @@ async function handleTournamentForfeit(msg: Record<string, any>): Promise<void> 
   await advanceTournament(tournamentId);
   if (forfeited > 0) console.log(`[games] forfeited ${forfeited} fixture(s) in ${tournamentId}`);
 }
+
+// --- The deadline sweeper (docs/games/future/README.md §2.3) -------------------------
+//
+// ONE interval for the whole process, over one Redis sorted set. Not one timer per match: an
+// async game's deadline is measured in hours or days, and a setTimeout that long is really a
+// promise to still be the same process next Tuesday, which no deploy keeps. The set is in
+// Redis, so a restart resumes every outstanding deadline rather than quietly forgiving them.
+//
+// A due match is fed back through the same path an input takes — restore, apply, broadcast,
+// persist — because a forfeit is a state transition like any other and giving it a second,
+// parallel implementation is how two definitions of "finished" appear in one service.
+const SWEEP_INTERVAL_MS = 1000;
+
+async function sweepOne(matchId: string): Promise<void> {
+  const m = liveMatches.get(matchId) ?? (await loadMatch(matchId));
+  if (!m) return; // finished or abandoned by another path; the member is already popped
+
+  const factory = factoryFor(m.slug);
+  if (!factory) return;
+
+  const engine = liveEngines.get(matchId) ?? factory.restore(m.state, m.secret);
+  if (!engine.onTimeout || engine.isFinished()) return;
+
+  // The engine decides whether the deadline is real. It may have been scheduled against a move
+  // that has since been made — the sweeper pops a member without knowing that — so onTimeout is
+  // allowed to reject, and a rejection means "stale, and the current deadline stands".
+  const result = engine.onTimeout();
+  if (!result.accepted) {
+    await syncDeadline(m, engine);
+    return;
+  }
+
+  if (result.outcome) {
+    await endMatch(m, engine, result.outcome);
+    console.log(`[games] ${matchId} ended on deadline`);
+    return;
+  }
+
+  m.state = engine.serialize();
+  m.secret = engine.serializeSecret?.();
+  m.seq += 1;
+  await syncDeadline(m, engine);
+  await saveMatch(m);
+  await broadcast(m, undefined, engine);
+}
+
+let sweeping = false;
+setInterval(() => {
+  // Same overlap guard as the tick loop, for the same reason: a slow sweep must not have the
+  // next one start on top of it and re-handle matches the first is still working through.
+  if (sweeping) return;
+  sweeping = true;
+  popDueDeadlines(Date.now())
+    .then(async (due) => {
+      for (const id of due) {
+        // Per-match catch: one engine throwing must not abandon the rest of the batch, whose
+        // members have already been popped and would otherwise never fire again.
+        await sweepOne(id).catch((e) => console.error('[games] sweep error', id, e));
+      }
+    })
+    .catch((e) => console.error('[games] sweep error', e))
+    .finally(() => {
+      sweeping = false;
+    });
+}, SWEEP_INTERVAL_MS);
 
 sub.subscribe(GAMES_INPUT_CHANNEL, (err) => {
   if (err) {

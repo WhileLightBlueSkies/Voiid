@@ -25,3 +25,17 @@ export const stateKey = (matchId: string) => `match:${matchId}:state`;
 
 /** Long enough to outlive a slow turn-based game; short enough that abandoned matches reap themselves. */
 export const STATE_TTL_SECONDS = Number(process.env.VOIID_GAME_STATE_TTL_SECONDS) || 3600;
+
+/**
+ * Pending turn deadlines: a sorted set scored by epoch ms, member = match id.
+ *
+ * ONE SET AND ONE TIMER FOR THE WHOLE PROCESS (docs/games/future/README.md §2.3). The
+ * alternatives are both worse: a setTimeout per match is measured in days for an async game and
+ * would not survive the next deploy, and giving turn-based factories a tickHz just to get a
+ * clock would start a per-match interval for a game that changes state once a minute.
+ *
+ * A deadline 72 hours out costs exactly one member here, and the set survives a restart — which
+ * is the property that makes forfeiting an absent player actually work rather than work until
+ * the next deploy.
+ */
+export const DEADLINES_KEY = 'games:deadlines';

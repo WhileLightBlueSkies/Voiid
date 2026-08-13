@@ -96,6 +96,56 @@ export interface GameEngine {
    */
   serializeSecret?(): GameStatePayload;
 
+  /**
+   * The state as ONE specific player may see it.
+   *
+   * Distinct from serializeForWire(), which is a BANDWIDTH projection sent identically to
+   * everyone. This is an INFORMATION projection: your own fleet, your own hand. Hidden-state
+   * games (Sea Battle, Voiid Cards) do not exist without it — serializeSecret is server-only
+   * and never reaches a client at all, which is right for a hand-cricket pick and wrong for
+   * your own ships, because you have to be able to see them.
+   *
+   * "The client remembers what it placed" is not an alternative. It collapses on rejoin,
+   * reinstall, second device, and cold start from a push notification — and for an async
+   * game, cold start IS the normal case.
+   *
+   * CALLED ONCE PER RECIPIENT, SO IT MUST BE PURE. serializeForWire() is explicitly allowed
+   * to clear per-frame delta buffers and Snake relies on that; this is explicitly not, because
+   * draining a buffer on the first recipient would under-report the change to everyone after
+   * them. That is why this is a separate method rather than serializeForWire(playerId?).
+   *
+   * A spectator, or any caller with no seat, must fall through to serialize()/serializeForWire().
+   * Implementations are additive over serialize() — they add a private field, never remove a
+   * public one — which is what makes a leak to a spectator structurally impossible rather than
+   * merely unwritten: you would have to add one, not forget to prevent one.
+   */
+  serializeForPlayer?(playerId: string): GameStatePayload;
+
+  /**
+   * Epoch ms by which the player to move must act, or null when nothing is pending.
+   *
+   * Turn-based factories have no tickHz and therefore no clock, by design — so a match with an
+   * absent opponent hangs forever (docs/games/CROSS_CUTTING.md §6). Giving them a tickHz to get
+   * a timer would be wrong twice over: a per-match interval for a game that changes once a
+   * minute, and a setTimeout measured in days that would not survive the next process restart.
+   *
+   * Instead the runtime keeps ONE Redis sorted set scored by this value, and one interval for
+   * the whole process pops what is due. A deadline 72 hours out costs one member in a set.
+   *
+   * ABSOLUTE TIMESTAMP, NEVER A COUNTDOWN. It is read after arbitrary downtime, and a countdown
+   * would silently hand an AFK player a fresh window on every restart.
+   */
+  deadlineAt?(): number | null;
+
+  /**
+   * The deadline passed. Same return shape as applyInput — forfeit, auto-move, or pass.
+   *
+   * The per-game timeout value and what expiry DOES are not shared: Sea Battle forfeits after
+   * 24h, a live game would want 60s, and chess wants a real clock. The sweeper only decides
+   * WHEN to call this.
+   */
+  onTimeout?(): ApplyResult;
+
   /** True once the match is over; the runtime stops accepting input. */
   isFinished(): boolean;
 }

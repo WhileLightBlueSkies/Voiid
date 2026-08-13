@@ -14,6 +14,32 @@ for (const slug of ['tictactoe', 'rps', 'cricket']) {
   const e = f.create(['a', 'b'], { overs: 1 });
   ok(`${slug} has no wire projection`, e.serializeForWire === undefined);
   ok(`${slug} has no tick`, e.tick === undefined);
+  // Sea Battle added three more optional members to the interface. The shipped games must not
+  // acquire any of them by accident: a serializeForPlayer here would silently switch that game
+  // to per-recipient frames, and a deadlineAt would put it on the sweeper's clock.
+  ok(`${slug} has no player projection`, e.serializeForPlayer === undefined);
+  ok(`${slug} has no deadline`, e.deadlineAt === undefined);
+  ok(`${slug} has no timeout handler`, e.onTimeout === undefined);
+}
+
+// Snake, the continuous game, must also stay off the deadline sweeper — it has its own clock.
+{
+  const s = factoryFor('snake')!.create(['a'], { bots: 1 });
+  ok('snake has no deadline', s.deadlineAt === undefined);
+  ok('snake has no player projection', s.serializeForPlayer === undefined);
+}
+
+// Sea Battle is the one that opts into all three.
+{
+  const f = factoryFor('seabattle')!;
+  ok('seabattle registered', !!f);
+  ok('seabattle is turn-based (no tickHz)', f.tickHz === undefined);
+  const e = f.create(['a', 'b']);
+  ok('seabattle has a player projection', typeof e.serializeForPlayer === 'function');
+  ok('seabattle has a deadline', typeof e.deadlineAt === 'function');
+  ok('seabattle has a timeout handler', typeof e.onTimeout === 'function');
+  ok('seabattle has a secret channel', typeof e.serializeSecret === 'function');
+  ok('seabattle has no wire projection', e.serializeForWire === undefined);
 }
 
 // A legal tictactoe move must still be a broadcasting move.

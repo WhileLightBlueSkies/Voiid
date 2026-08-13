@@ -105,35 +105,12 @@ export function segmentSegmentDist2(
 /**
  * Deterministic PRNG (mulberry32), seeded per match and threaded explicitly.
  *
- * Math.random() would be fatal here, not merely untidy: the runtime rebuilds the engine from
- * serialized state on every single input, so an engine using global randomness would produce
- * a different world each time it was restored. Determinism is what lets state round-trip
- * through Redis unchanged.
+ * MOVED to ../rng.ts when Sea Battle became its second consumer — nothing about mulberry32
+ * is snake-shaped, and two copies of a PRNG is how two games end up with subtly different
+ * sequences. Re-exported here so every existing `import { Rng } from './geometry'` in this
+ * folder keeps working unchanged; new games should import from '../rng' directly.
  */
-export class Rng {
-  private s: number;
-
-  constructor(seed: number) {
-    this.s = seed >>> 0;
-  }
-
-  /** Current seed, so it can be serialized and the sequence resumed exactly. */
-  get seed(): number {
-    return this.s;
-  }
-
-  next(): number {
-    this.s = (this.s + 0x6d2b79f5) >>> 0;
-    let t = this.s;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  }
-
-  range(lo: number, hi: number): number {
-    return lo + this.next() * (hi - lo);
-  }
-}
+export { Rng } from '../rng';
 
 /**
  * Sample a point at arc distance `d` back from the head along a path polyline.

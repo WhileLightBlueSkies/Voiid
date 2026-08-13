@@ -1,8 +1,8 @@
 # Sea Battle
 
-> **Status:** design only, nothing built.
+> **Status:** **phases 0 and 1 built** — shared infrastructure and the headless engine. Phases 2-6 (both clients, retention, polish) are still design only. See §16 for what shipped and where it departed from this doc.
 > **Kind:** turn-based, hidden state, 2 players. No `tickHz`.
-> **Blocked on:** per-recipient wire frames ([`README.md`](./README.md) §2.1), durable turn-based state (§2.2), deadline sweeper (§2.3). All three are in build step 0.
+> **Was blocked on:** per-recipient wire frames ([`README.md`](./README.md) §2.1), durable turn-based state (§2.2), deadline sweeper (§2.3). **All three now exist** — see §16.1.
 > **Reference implementations to read first:** [`cricket/index.ts`](../../../backend/games/src/engine/cricket/index.ts) for the hidden-state pattern, [`tictactoe/index.ts`](../../../backend/games/src/engine/tictactoe/index.ts) for the grid and turn pattern.
 
 ---
@@ -720,3 +720,45 @@ Things needing the user's decision. Honest about which are real.
 7. **Board size — is 10×10 right for a phone?** 8×8 with a 4-ship fleet would give 41 pt cells, above the Android minimum and near Apple's. It is a materially better fit for the hardware and a materially worse fit for everyone's expectations of the game. Recommendation: **10×10 with the loupe** (§7.2), and treat this as revisitable if playtesting shows mis-taps are still happening.
 
 8. **Reduce-motion.** Every §9 duration assumes a switch that does not exist ([`CROSS_CUTTING.md`](../CROSS_CUTTING.md) §13). Not Sea Battle's to build, but Sea Battle should not ship without it.
+
+---
+
+# 16. What was built
+
+Phases 0 and 1 of §14. The infrastructure and the headless engine exist; no client does. Recorded here rather than left implicit, so the next person reads what is true rather than what was planned.
+
+## 16.1 Phase 0 — the three blockers, built against the shipped games first
+
+All three are shared surface, and none of them mentions Sea Battle.
+
+| Change | Where | Note |
+|---|---|---|
+| `serializeForPlayer()` | [`GameEngine.ts`](../../../backend/games/src/engine/GameEngine.ts), [`broadcast()`](../../../backend/games/src/index.ts) | `broadcast()` now takes the engine and builds one frame per recipient **only** when the method exists. Every shipped game takes the old shared-frame path byte for byte |
+| Durable turn-based state | [`040_games_durable_turn_state.sql`](../../../database/migrations/040_games_durable_turn_state.sql), [`matches.ts`](../../../backend/games/src/matches.ts) | `state` and `secret` in one row written in one statement, per §4.4. Redis stays the hot path and is rehydrated from the row on a miss |
+| Deadline sweeper | [`games:deadlines`](../../../backend/games/src/redis.ts), [`matches.ts`](../../../backend/games/src/matches.ts), [`index.ts`](../../../backend/games/src/index.ts) | One sorted set, one 1s interval for the whole process, and the two optional interface methods |
+
+The engine-facing half of all three is optional, and [`registry.test.ts`](../../../backend/games/src/engine/registry.test.ts) now asserts that Tic Tac Toe, RPS, Cricket and Snake acquire **none** of them — a `serializeForPlayer` appearing on a shipped game would silently switch it to per-recipient frames, and a `deadlineAt` would put it on the sweeper's clock.
+
+`Rng` moved from [`snake/geometry.ts`](../../../backend/games/src/engine/snake/geometry.ts) to [`engine/rng.ts`](../../../backend/games/src/engine/rng.ts) on its second consumer, as §4.5 anticipated. geometry.ts re-exports it, so no shipped Snake code changed.
+
+## 16.2 Phase 1 — the engine
+
+[`engine/seabattle/`](../../../backend/games/src/engine/seabattle/): `fleet.ts` for the pure board rules, `index.ts` for the engine, and a test suite covering every placement rejection reason separately, turn alternation, no-refire, hit/sunk/win, resignation, all four deadline outcomes, the serialize→restore→serialize byte-equality round trip, and restore-without-secret abandoning rather than continuing.
+
+Rules are as specified: 10×10, the Milton Bradley fleet, ships may touch, one shot per turn with no extra shot on a hit, sinks announced, score is shots fired, 24-hour deadlines.
+
+## 16.3 Three departures from this doc
+
+Stated rather than quietly absorbed.
+
+1. **§14 says "ship phase 0 against Tic Tac Toe with a 24h deadline to prove it".** It was not. Tic Tac Toe acquiring a deadline is a visible behaviour change to a shipped game — a match that hangs today would start forfeiting people — and that is a product decision, not a debugging convenience. The infrastructure is instead proven by the regression test asserting the shipped games are untouched, plus Sea Battle exercising all three paths. **The proving step is still worth doing before real async traffic**, and it needs the call on whether Tic Tac Toe should forfeit at all.
+
+2. **`loadMatch`'s Postgres fallback is gated on a Redis marker key**, which this doc does not describe. Several callers invoke `loadMatch` speculatively for matches that may legitimately not exist — an input for an expired arcade match, a tick after a match finished elsewhere — and each of those cost one null Redis read before. Falling through to the durable table unconditionally would turn every one of them into a three-table join on paths that run at tick rate. A durable save now also writes a small marker key that outlives the state key, and only its presence admits the query.
+
+3. **`endedBy` is in `serialize()`**, which §4.2's field list does not have. §13.4 requires resignation, timeout forfeit and abandonment to be recorded *distinctly* — the head-to-head has to show a resignation as a loss and an unplayed match as nothing — and `winnerId` alone cannot express the difference between "won by walkover" and "won by playing". Without it the distinction §13.4 calls load-bearing is not representable in the state at all.
+
+## 16.4 What is still open before this is playable
+
+Nothing in §15 was decided by building this; those questions are unchanged. Concretely blocking a real match: **both renderers (phases 2-4), the "your turn" notification carrier (§15 Q2), and the retention floor (§12.1)**. The engine and its infrastructure are verifiable on their own, which is what phase 1 was for, but a game nobody can see is not a shipped game.
+
+Also unverified: **migrations 040 and 041 have not been applied to a database.** They are additive-only and follow the existing patterns, but Docker was not running when they were written.

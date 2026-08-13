@@ -1,6 +1,6 @@
 # The eight unbuilt games — design docs
 
-> **Status:** design only. No engine, renderer, migration or client screen in this folder has been written.
+> **Status:** design only, **except** build step 0 (§3) and Sea Battle's engine, which are built — see [`SEA_BATTLE.md`](./SEA_BATTLE.md) §16. No renderer or client screen in this folder has been written, for any game.
 > **Written against:** [`GameEngine.ts`](../../../backend/games/src/engine/GameEngine.ts) · [`index.ts`](../../../backend/games/src/index.ts) · [`snake/index.ts`](../../../backend/games/src/engine/snake/index.ts) · [`cricket/index.ts`](../../../backend/games/src/engine/cricket/index.ts) · [`GAMES.md`](../../GAMES.md) · [`SNAKE.md`](../SNAKE.md) · [`SOUND_DESIGN.md`](../SOUND_DESIGN.md) · [`CROSS_CUTTING.md`](../CROSS_CUTTING.md)
 
 Four games ship today: Tic Tac Toe, RPS, Hand Cricket, Snake. These are the eight named in [`GAMES.md`](../../GAMES.md) that do not, each with a full design doc detailed enough to build from.
@@ -185,8 +185,8 @@ Ordered so nothing is built twice, and each step ships on its own.
 
 | # | Step | Why here | Unblocks |
 |---|---|---|---|
-| 0 | **Per-recipient wire** (§2.1) + **durable turn-based state** (§2.2) + **deadline sweeper** (§2.3) | Three small changes, one PR, and the first game needs all three | Sea Battle, Chess, every turn timer |
-| 1 | **Sea Battle** | Lowest risk in the folder, and the game that proves async play works end to end | The async pattern every later turn-based game copies |
+| 0 | ~~**Per-recipient wire** (§2.1) + **durable turn-based state** (§2.2) + **deadline sweeper** (§2.3)~~ **BUILT** | Three small changes, one PR, and the first game needs all three | Sea Battle, Chess, every turn timer |
+| 1 | **Sea Battle** — engine **BUILT**, clients not | Lowest risk in the folder, and the game that proves async play works end to end | The async pattern every later turn-based game copies |
 | 2 | **Air Hockey** | Inherits Snake's entire tick machinery; adds `physics2d/`, which Ping Pong and Pool would later share | The continuous-physics template |
 | 3 | **Multi-seat lobbies** (§2.4) | Client work, no engine | Ludo, Voiid Cards, **and Snake 3-6P** |
 | 4 | **Ludo** | Biggest audience of the four-player games, simplest of them | — |

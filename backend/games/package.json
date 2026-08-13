@@ -7,7 +7,7 @@
     "dev": "tsx watch --env-file=../../.env src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node --env-file=../../.env dist/index.js",
-    "test": "tsx src/engine/registry.test.ts && tsx src/engine/snake/snake.test.ts && tsx src/engine/cricket/cricket.test.ts"
+    "test": "tsx src/engine/registry.test.ts && tsx src/engine/snake/snake.test.ts && tsx src/engine/cricket/cricket.test.ts && tsx src/engine/seabattle/seabattle.test.ts"
   },
   "dependencies": {
     "ioredis": "^5.4.1",
