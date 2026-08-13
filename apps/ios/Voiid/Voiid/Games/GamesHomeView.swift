@@ -77,6 +77,16 @@ struct GamesHomeView: View {
     /// invite expires.
     @State private var lobby: LobbyArgs?
 
+    /// Which games can be practised against a local bot.
+    ///
+    /// AN ALLOWLIST, NOT A DENYLIST, and it must stay in step with the `botGame` switch below —
+    /// that switch falls through to Tic Tac Toe, so a game listed here without a case opens the
+    /// wrong game rather than failing visibly. Adding a bot is: write the view, add its case,
+    /// add its slug here.
+    private static func hasLocalBot(_ slug: String) -> Bool {
+        ["tictactoe", "rps", "cricket", "snake"].contains(slug)
+    }
+
     private struct PendingCricket: Identifiable {
         let id = UUID()
         let game: GamesAPI.CatalogGame
@@ -299,7 +309,11 @@ struct GamesHomeView: View {
                     gameName: game.name,
                     slug: game.slug,
                     onPlayFriend: { pendingGame = game },
-                    onPlayBot: { level, skill in
+                    // NIL FOR A GAME WITH NO BOT. The bot destination below switches on slug and
+                    // falls through to Tic Tac Toe, so a game without a case does not merely
+                    // show a dead button — it opens a DIFFERENT GAME. Sea Battle and Ludo are
+                    // exactly that today: engines and renderers, no client-side bot yet.
+                    onPlayBot: Self.hasLocalBot(game.slug) ? { level, skill in
                         // Snake's bots live on the SERVER, so "play a bot" mints a real
                         // one-seat match rather than opening a local simulation. Every other
                         // game here is turn-based and simulates its opponent on-device.
@@ -336,7 +350,7 @@ struct GamesHomeView: View {
                         } else {
                             botGame = BotSession(slug: game.slug, level: level, skill: skill)
                         }
-                    },
+                    } : nil,
                     onCustomise: game.slug == "snake" ? { showSkinPicker = true } : nil)
             }
             .sheet(item: $pendingGame) { game in

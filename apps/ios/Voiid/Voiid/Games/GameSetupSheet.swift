@@ -24,7 +24,14 @@ struct GameSetupSheet: View {
     /// no slug still compiles — it simply shows no rules rather than another game's.
     var slug: String = ""
     let onPlayFriend: () -> Void
-    let onPlayBot: (BotDifficulty, Double) -> Void
+    /// Offline practice. NIL HIDES THE ROW, exactly as `onCustomise` does — a game with no
+    /// local bot must not offer one.
+    ///
+    /// Sea Battle and Ludo have engines and renderers but no client-side bot yet (their docs'
+    /// phase 2), and the bot destination falls through to Tic Tac Toe by default. So offering
+    /// the row for them was not a dead button, which would merely be untidy — it opened a
+    /// DIFFERENT GAME, which is worse than not offering it at all.
+    var onPlayBot: ((BotDifficulty, Double) -> Void)? = nil
     /// Snake only: open the appearance picker. Nil hides the row, so no other game shows an
     /// option it does not have.
     var onCustomise: (() -> Void)? = nil
@@ -71,14 +78,16 @@ struct GameSetupSheet: View {
                 onPlayFriend()
             }
 
-            option(icon: "cpu", title: "The bot",
-                   subtitle: "Offline practice — doesn't count") {
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
-                    botExpanded.toggle()
+            if onPlayBot != nil {
+                option(icon: "cpu", title: "The bot",
+                       subtitle: "Offline practice — doesn't count") {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
+                        botExpanded.toggle()
+                    }
                 }
             }
 
-            if botExpanded {
+            if botExpanded, let onPlayBot {
                 VStack(spacing: VoiidSpacing.sm) {
                     HStack(spacing: VoiidSpacing.sm) {
                         ForEach(BotDifficulty.allCases) { l in

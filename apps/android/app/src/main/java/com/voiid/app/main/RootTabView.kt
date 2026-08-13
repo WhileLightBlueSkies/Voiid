@@ -591,7 +591,14 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                     setupGame = null
                     pendingGame = game
                 },
-                onPlayBot = { level, skill ->
+                // NULL FOR A GAME WITH NO BOT. The bot destination below switches on slug and
+                // falls through to Tic Tac Toe, so a game without a case does not merely show a
+                // dead button — it opens a DIFFERENT GAME. Sea Battle and Ludo are exactly that
+                // today: engines and renderers, no client-side bot yet.
+                //
+                // AN ALLOWLIST, NOT A DENYLIST, and it must stay in step with that switch.
+                onPlayBot = if (game.slug !in listOf("tictactoe", "rps", "cricket", "snake")) null
+                else { level, skill ->
                     setupGame = null
                     if (game.slug == "snake") {
                         // Snake's bots live on the SERVER, so "play a bot" mints a real

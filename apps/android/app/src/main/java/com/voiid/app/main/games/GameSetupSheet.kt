@@ -78,7 +78,16 @@ fun GameSetupSheet(
      */
     slug: String = "",
     onPlayFriend: () -> Unit,
-    onPlayBot: (BotDifficulty, Float) -> Unit,
+    /**
+     * Offline practice. NULL HIDES THE ROW, exactly as `onCustomise` does — a game with no local
+     * bot must not offer one.
+     *
+     * Sea Battle and Ludo have engines and renderers but no client-side bot yet (their docs'
+     * phase 2), and the bot destination falls through to Tic Tac Toe by default. So offering the
+     * row for them was not a dead button, which would merely be untidy — it opened a DIFFERENT
+     * GAME, which is worse than not offering it at all.
+     */
+    onPlayBot: ((BotDifficulty, Float) -> Unit)? = null,
     /**
      * Snake only: open the appearance picker. Null hides the row, so no other game shows an
      * option it does not have.
@@ -188,7 +197,7 @@ fun GameSetupSheet(
                 onClick = onPlayFriend,
             )
 
-            OpponentOption(
+            if (onPlayBot != null) OpponentOption(
                 icon = Icons.Outlined.Memory,
                 title = "The bot",
                 subtitle = "Offline practice — doesn't count",
@@ -265,7 +274,7 @@ fun GameSetupSheet(
                             .fillMaxWidth()
                             .clip(CircleShape)
                             .background(VoiidColor.primary)
-                            .clickable { onPlayBot(level, skill) }
+                            .clickable { onPlayBot?.invoke(level, skill) }
                             .padding(vertical = VoiidSpacing.md),
                         contentAlignment = Alignment.Center,
                     ) {
