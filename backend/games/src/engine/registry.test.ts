@@ -29,6 +29,22 @@ for (const slug of ['tictactoe', 'rps', 'cricket']) {
   ok('snake has no player projection', s.serializeForPlayer === undefined);
 }
 
+// LUDO HAS NO HIDDEN PLAYER INFORMATION, so it must NOT acquire a player projection — unusual
+// for a multi-seat game, and worth asserting because the instinct after Sea Battle is that more
+// seats implies per-seat views. Its secret is the RNG alone: the next draw is the dice, and a
+// client holding the seed does not cheat at Ludo, it solves it.
+{
+  const f = factoryFor('ludo')!;
+  ok('ludo registered', !!f);
+  ok('ludo stays turn-based (no tickHz)', f.tickHz === undefined);
+  const e = f.create(['a', 'b', 'c', 'd'], { tokens: 2 });
+  ok('ludo has NO player projection', e.serializeForPlayer === undefined);
+  ok('ludo has a secret channel', typeof e.serializeSecret === 'function');
+  ok('ludo keeps its seed OFF the wire', !('seed' in e.serialize()));
+  ok('ludo has a deadline', typeof e.deadlineAt === 'function');
+  ok('ludo has a timeout handler', typeof e.onTimeout === 'function');
+}
+
 // Sea Battle is the one that opts into all three.
 {
   const f = factoryFor('seabattle')!;

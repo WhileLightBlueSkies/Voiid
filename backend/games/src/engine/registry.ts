@@ -7,8 +7,9 @@ import { rps } from './rps';
 import { cricket } from './cricket';
 import { snake } from './snake';
 import { seabattle } from './seabattle';
+import { ludo } from './ludo';
 
-const FACTORIES: GameFactory[] = [tictactoe, rps, cricket, snake, seabattle];
+const FACTORIES: GameFactory[] = [tictactoe, rps, cricket, snake, seabattle, ludo];
 
 const bySlug = new Map<string, GameFactory>(FACTORIES.map((f) => [f.slug, f]));
 
