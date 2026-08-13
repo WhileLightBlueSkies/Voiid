@@ -253,6 +253,61 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         data class Food(val id: Int, val x: Double, val y: Double, val value: Double)
     }
 
+    /**
+     * Authoritative Sea Battle state (backend/games/src/engine/seabattle,
+     * docs/games/future/SEA_BATTLE.md).
+     *
+     * THE ONE STRUCTURALLY DIFFERENT STATE IN THIS FILE. Every other game broadcasts the same
+     * bytes to everyone; Sea Battle's frame is built per recipient by `serializeForPlayer`, so
+     * [myFleet] and [seat] are in YOUR frame and absent from your opponent's. That is why there
+     * is no opponent-fleet field and never will be one until the match ends — the information
+     * is not withheld by this parser, it never arrives.
+     *
+     * The corollary matters for rendering: the client cannot derive whether a shot hit. It
+     * reads [results], which the server computed — the same posture [RpsState] takes by
+     * refusing to model a pending throw.
+     *
+     * Mirrors iOS `SeaBattleState`.
+     */
+    data class SeaBattleState(
+        val players: List<String>,
+        /** "placing" | "firing" | "done". */
+        val phase: String,
+        /** Seat to fire, or null during placement and once finished. */
+        val turn: Int?,
+        val turnUserId: String?,
+        /** Packed cells (`y * 10 + x`) fired, in order, indexed by the FIRING seat. */
+        val shots: List<List<Int>>,
+        /** Parallel to [shots]: 0 miss, 1 hit, 2 hit-and-sunk. */
+        val results: List<List<Int>>,
+        /** Ship type ids sunk, indexed by the seat whose fleet lost them. */
+        val sunk: List<List<Int>>,
+        /** Revealed outlines of those sunk ships, same indexing. */
+        val sunkCells: List<List<Int>>,
+        val placed: List<Boolean>,
+        /** Ship lengths, from the server, so the renderer never hardcodes the fleet. */
+        val fleetSpec: List<Int>,
+        val deadlineAt: Double?,
+        val finished: Boolean,
+        val winnerUserId: String?,
+        /** "win" | "resign" | "timeout" | "abandoned" — the post-match line differs for each. */
+        val endedBy: String?,
+        /**
+         * The shot to animate on arrival. Explicit rather than diffed: a client cold-started
+         * from a push has no previous frame, and for this game cold start is the normal case.
+         */
+        val lastShot: Int?,
+        val lastResult: Int?,
+        /** MY seat. Null means this frame was built for a spectator, not a player. */
+        val seat: Int?,
+        /** MY fleet. Never the opponent's. */
+        val myFleet: List<Ship>,
+        /** Both fleets, and only once the match is over. */
+        val revealedFleets: List<List<Ship>>?,
+    ) {
+        data class Ship(val type: Int, val cells: List<Int>, val hits: Int)
+    }
+
     private val appContext = context.applicationContext
     private val tokens = TokenStore.get(context)
     private val service = GamesService(ApiClient(tokens))
@@ -270,6 +325,9 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
 
     private val _cricket = MutableStateFlow<CricketState?>(null)
     val cricket: StateFlow<CricketState?> = _cricket.asStateFlow()
+
+    private val _seaBattle = MutableStateFlow<SeaBattleState?>(null)
+    val seaBattle: StateFlow<SeaBattleState?> = _seaBattle.asStateFlow()
 
     /** One received snake frame plus when it landed, on the monotonic uptime clock. */
     data class SnakeFrame(val state: SnakeState, val arrivedAtMs: Long)
@@ -319,6 +377,7 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         when (game) {
             "rps" -> _rps.value = parseRps(payload)
             "cricket" -> _cricket.value = parseCricket(payload)
+            "seabattle" -> _seaBattle.value = parseSeaBattle(payload)
             "snake" -> {
                 // Parse against the NEWEST frame, because food deltas are relative to it,
                 // then append to the jitter buffer the renderer interpolates across.
@@ -519,6 +578,54 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         )
     }
 
+    private fun parseSeaBattle(payload: JsonObject): SeaBattleState? {
+        val players = payload.arr("players")?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+            ?: return null
+
+        // Nested int arrays, one per seat. Defaulted to two empty lists rather than null so the
+        // renderer can index by seat without guarding every access — an opening frame has these
+        // empty, which is a real state rather than a missing one.
+        fun intGrid(key: String): List<List<Int>> =
+            payload.arr(key)?.map { row ->
+                (row as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.intOrNull } ?: emptyList()
+            } ?: listOf(emptyList(), emptyList())
+
+        fun ships(raw: JsonArray?): List<SeaBattleState.Ship> =
+            raw?.mapNotNull { entry ->
+                val obj = entry as? JsonObject ?: return@mapNotNull null
+                val type = obj.int("type") ?: return@mapNotNull null
+                val cells = obj.arr("cells")?.mapNotNull { (it as? JsonPrimitive)?.intOrNull }
+                    ?: return@mapNotNull null
+                SeaBattleState.Ship(type, cells, obj.int("hits") ?: 0)
+            } ?: emptyList()
+
+        return SeaBattleState(
+            players = players,
+            phase = payload.str("phase") ?: "placing",
+            turn = payload.int("turn"),
+            turnUserId = payload.str("turnUserId"),
+            shots = intGrid("shots"),
+            results = intGrid("results"),
+            sunk = intGrid("sunk"),
+            sunkCells = intGrid("sunkCells"),
+            placed = payload.arr("placed")?.map {
+                (it as? JsonPrimitive)?.booleanOrNull ?: false
+            } ?: listOf(false, false),
+            fleetSpec = payload.arr("fleetSpec")?.mapNotNull {
+                (it as? JsonPrimitive)?.intOrNull
+            } ?: listOf(5, 4, 3, 3, 2),
+            deadlineAt = payload.dbl("deadlineAt"),
+            finished = payload.bool("finished") ?: false,
+            winnerUserId = payload.str("winnerUserId"),
+            endedBy = payload.str("endedBy"),
+            lastShot = payload.int("lastShot"),
+            lastResult = payload.int("lastResult"),
+            seat = payload.int("seat"),
+            myFleet = ships(payload.arr("myFleet")),
+            revealedFleets = payload.arr("revealedFleets")?.map { ships(it as? JsonArray) },
+        )
+    }
+
     private fun parse(payload: JsonObject): TicTacToeState? {
         val players = payload.arr("players")?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
             ?: return null
@@ -542,6 +649,7 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         _state.value = null
         _rps.value = null
         _cricket.value = null
+        _seaBattle.value = null
         _snakeFrames.value = emptyList()
         desiredHeading = null
         desiredBoost = false
@@ -676,6 +784,46 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         val s = _cricket.value ?: return
         if (s.finished) return
         WebSocketClient.get(context).sendGameInput(id, """{"elect":"$choice"}""")
+    }
+
+    /**
+     * Commit a whole Sea Battle fleet. Five ships, one frame.
+     *
+     * ATOMIC BY DESIGN, and the client must not "helpfully" send ships one at a time: the
+     * server treats a half-placed fleet as no fleet, so per-ship frames would leave a state
+     * legal to nobody and let a client stall having placed four. The fleet is legal in full or
+     * rejected in full (SEA_BATTLE.md §4.7).
+     */
+    fun placeFleet(context: Context, ships: List<SeaBattleState.Ship>) {
+        val id = matchId ?: return
+        val s = _seaBattle.value ?: return
+        if (s.finished) return
+        val body = ships.joinToString(",") { ship ->
+            """{"type":${ship.type},"cells":[${ship.cells.joinToString(",")}]}"""
+        }
+        WebSocketClient.get(context).sendGameInput(id, """{"place":[$body]}""")
+    }
+
+    /**
+     * Fire at one packed cell (0–99).
+     *
+     * Fire-and-forget like every other input. The client does NOT predict the outcome — it
+     * starts the shell animation and the arriving frame decides what that resolves into
+     * (SEA_BATTLE.md §3.3). Predicting a hit would be predicting authority.
+     */
+    fun fire(context: Context, cell: Int) {
+        val id = matchId ?: return
+        val s = _seaBattle.value ?: return
+        if (s.finished) return
+        WebSocketClient.get(context).sendGameInput(id, """{"fire":$cell}""")
+    }
+
+    /** Resign. A result, not an abandonment — it counts as a loss (SEA_BATTLE.md §13.4). */
+    fun resignSeaBattle(context: Context) {
+        val id = matchId ?: return
+        val s = _seaBattle.value ?: return
+        if (s.finished) return
+        WebSocketClient.get(context).sendGameInput(id, """{"resign":true}""")
     }
 
     /**

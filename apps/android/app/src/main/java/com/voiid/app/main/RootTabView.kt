@@ -666,6 +666,11 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                         onClose = { openGameMatch = null },
                         onRematch = { openGameMatch = it to "cricket" },
                     )
+                    "seabattle" -> com.voiid.app.main.games.SeaBattleScreen(
+                        matchId = matchId,
+                        onClose = { openGameMatch = null },
+                        onRematch = { openGameMatch = it to "seabattle" },
+                    )
                     "snake" -> com.voiid.app.main.games.SnakeArenaScreen(
                         matchId = matchId,
                         onClose = { openGameMatch = null },

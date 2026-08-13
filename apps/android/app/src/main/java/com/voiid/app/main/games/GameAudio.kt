@@ -354,6 +354,16 @@ object GameAudio {
             "wicket_timber", CATCH,
             "crowd_cheer", "crowd_roar", "crowd_gasp", "crowd_groan", "crowd_applause",
         )
+        // Three variants of splash and hit_metal, chosen at random with the existing varispeed:
+        // a match contains 40–90 of these, and SOUND_DESIGN.md §4.3 makes exactly this argument
+        // for chalk — without variation "it becomes machine-like by move four".
+        "seabattle" -> listOf(
+            "fire_launch",
+            "splash_1", "splash_2", "splash_3",
+            "hit_metal_1", "hit_metal_2", "hit_metal_3",
+            "sink_groan", "your_turn", "place_thud", "error",
+            CATCH,
+        )
         "ui" -> listOf("tap", "sheet_open", "sheet_close", "match_found", "invite_arrive", "error")
         else -> emptyList()
     }

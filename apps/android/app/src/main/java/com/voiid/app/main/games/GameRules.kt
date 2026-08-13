@@ -50,6 +50,7 @@ object GameRules {
         "tictactoe" -> tictactoe
         "rps" -> rps
         "snake" -> snake
+        "seabattle" -> seabattle
         else -> emptyList()
     }
 
@@ -59,6 +60,7 @@ object GameRules {
         "tictactoe" -> "Three in a row. Simple, solved, and still worth a rematch."
         "rps" -> "First to 3. The trick is reading them, not the throw."
         "snake" -> "Eat, grow, survive. Six snakes, one arena, no brakes."
+        "seabattle" -> "Hide a fleet, hunt theirs. Play a shot now, the next one tonight."
         else -> null
     }
 
@@ -113,5 +115,25 @@ object GameRules {
         Line(Icons.Outlined.AutoAwesomeMotion,
             "Anything that dies bursts into food worth taking. Longest snake when the clock " +
                 "runs out wins."),
+    )
+
+    // EVERYONE KNOWS THIS GAME, WHICH IS EXACTLY WHY THE SHEET EXISTS. A returning Battleship
+    // player does not need to be told what a hit is; they need the two house rules they will
+    // otherwise assume differently (SEA_BATTLE.md §12.4) — ships may touch, and a hit does NOT
+    // buy another shot. A player who assumes the other way will believe the game is broken
+    // rather than different.
+    private val seabattle = listOf(
+        Line(Icons.Outlined.Grid3x3,
+            "Hide five ships on your 10x10 grid, then take turns naming one square on theirs. " +
+                "Sink their whole fleet to win."),
+        Line(Icons.Outlined.SwapHoriz,
+            "Ships sit straight, across or down, and they ARE allowed to touch."),
+        Line(Icons.Outlined.Cancel,
+            "One shot per turn. A hit does not buy you another — it keeps the rhythm even when " +
+                "a turn is hours apart."),
+        Line(Icons.Outlined.RemoveRedEye,
+            "Sinking a ship announces which one, so you can work out what is left."),
+        Line(Icons.Outlined.Timeline,
+            "No rush. Fire a shot and put your phone down — you have a day to take each turn."),
     )
 }
