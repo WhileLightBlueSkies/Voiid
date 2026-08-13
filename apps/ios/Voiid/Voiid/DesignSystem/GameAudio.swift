@@ -397,6 +397,14 @@ final class GameAudio {
                     "hit_metal_1", "hit_metal_2", "hit_metal_3",
                     "sink_groan", "your_turn", "place_thud", "error",
                     Self.catchShared]
+        case "ludo":
+            // hop is the most-triggered sound in the game — four variants plus the engine's own
+            // pitch jitter, per SOUND_DESIGN.md §4.3's chalk argument.
+            return ["die_roll", "die_settle",
+                    "hop_1", "hop_2", "hop_3", "hop_4",
+                    "enter", "capture", "home", "extra_turn", "three_sixes", "pass",
+                    "your_turn", "rank_up", "match_end",
+                    Self.catchShared]
         case "ui":
             return ["tap", "sheet_open", "sheet_close", "match_found", "invite_arrive", "error"]
         default:

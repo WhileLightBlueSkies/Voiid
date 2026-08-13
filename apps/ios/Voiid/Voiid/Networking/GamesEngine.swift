@@ -483,6 +483,83 @@ struct SeaBattleState {
     }
 }
 
+/// Authoritative Ludo state (backend/games/src/engine/ludo, docs/games/future/LUDO.md).
+///
+/// NOTE WHAT IS ABSENT, AND WHY IT IS THE OPPOSITE OF SEA BATTLE: there is no per-player
+/// projection and no hidden field, because Ludo has no hidden player information — every token,
+/// roll and capture is public to every seat. The instinct after Sea Battle is that more seats
+/// implies per-seat views, and here that would be wrong.
+///
+/// The only hidden thing is the FUTURE, and it is protected server-side: the RNG seed rides the
+/// secret channel and never reaches a client, because mulberry32's state IS its seed and a
+/// client holding it could compute every future roll. That is why there is no `seed` here to
+/// parse — not an omission, a design property.
+struct LudoState {
+    /// What just happened, for the animation. Explicit rather than diffed, because a client that
+    /// just cold-started has no previous state to diff against.
+    struct LastMove {
+        let seat: Int
+        let token: Int
+        let from: Int
+        let to: Int
+        /// [seat, token] of a token sent home, or nil.
+        let captured: [Int]?
+    }
+
+    let players: [String]
+    let tokensPerPlayer: Int
+    /// [seat][token] -> position encoding (see `Ludo` in LudoBoard.swift).
+    let tokens: [[Int]]
+    let turn: Int
+    let turnUserId: String?
+    /// "awaitingRoll" | "awaitingMove" | "done".
+    let phase: String
+    /// The rolled face, once rolled. Nil before the roll and after the turn passes.
+    let die: Int?
+    /// Token indices legally movable with `die`, as computed by the SERVER.
+    ///
+    /// The client highlights exactly this set and never re-derives it. Deriving legality here
+    /// would put a second copy of the block/exact-entry rules on the phone, and LUDO.md §4.2 is
+    /// explicit that one function answers "what can this player do" for all four consumers.
+    let legal: [Int]
+    let sixStreak: Int
+    let extraTurn: Bool
+    /// Seats in finishing order.
+    let finishedOrder: [Int]
+    let deadlineAt: Double?
+    let lastMove: LastMove?
+    let finished: Bool
+    let winnerUserId: String?
+
+    static func parse(_ payload: [String: Any]) -> LudoState? {
+        guard let players = payload["players"] as? [String],
+              let tokens = payload["tokens"] as? [[Int]] else { return nil }
+        var last: LastMove?
+        if let m = payload["lastMove"] as? [String: Any],
+           let seat = m["seat"] as? Int, let token = m["token"] as? Int,
+           let from = m["from"] as? Int, let to = m["to"] as? Int {
+            last = LastMove(seat: seat, token: token, from: from, to: to,
+                            captured: m["captured"] as? [Int])
+        }
+        return LudoState(
+            players: players,
+            tokensPerPlayer: (payload["tokensPerPlayer"] as? Int) ?? tokens.first?.count ?? 4,
+            tokens: tokens,
+            turn: (payload["turn"] as? Int) ?? 0,
+            turnUserId: payload["turnUserId"] as? String,
+            phase: (payload["phase"] as? String) ?? "awaitingRoll",
+            die: payload["die"] as? Int,
+            legal: (payload["legal"] as? [Int]) ?? [],
+            sixStreak: (payload["sixStreak"] as? Int) ?? 0,
+            extraTurn: (payload["extraTurn"] as? Bool) ?? false,
+            finishedOrder: (payload["finishedOrder"] as? [Int]) ?? [],
+            deadlineAt: payload["deadlineAt"] as? Double,
+            lastMove: last,
+            finished: (payload["finished"] as? Bool) ?? false,
+            winnerUserId: payload["winnerUserId"] as? String)
+    }
+}
+
 @MainActor
 final class GamesEngine: ObservableObject {
     static let shared = GamesEngine()
@@ -498,6 +575,7 @@ final class GamesEngine: ObservableObject {
     @Published private(set) var rps: RpsState?
     @Published private(set) var cricket: CricketState?
     @Published private(set) var seaBattle: SeaBattleState?
+    @Published private(set) var ludo: LudoState?
     /// One received snake frame plus when it landed, on the monotonic host clock.
     struct SnakeFrame {
         let state: SnakeState
@@ -585,6 +663,7 @@ final class GamesEngine: ObservableObject {
         case "rps":     rps = RpsState.parse(payload)
         case "cricket": cricket = CricketState.parse(payload)
         case "seabattle": seaBattle = SeaBattleState.parse(payload)
+        case "ludo":      ludo = LudoState.parse(payload)
         case "snake":
             // Parse against the NEWEST frame, because food deltas are relative to it, then
             // append to the jitter buffer the renderer interpolates across.
@@ -607,6 +686,7 @@ final class GamesEngine: ObservableObject {
         self.rps = nil
         self.cricket = nil
         self.seaBattle = nil
+        self.ludo = nil
         self.snakeFrames = []
         self.snakeFramesSnapshot = []
         self.joinError = nil
@@ -746,6 +826,24 @@ final class GamesEngine: ObservableObject {
     func resignSeaBattle() {
         guard let matchId, let seaBattle, !seaBattle.finished else { return }
         WebSocketClient.shared.sendGameInput(matchId: matchId, payload: ["resign": true])
+    }
+
+    /// Roll the Ludo die.
+    ///
+    /// ITS OWN STEP, deliberately (LUDO.md §3.3). The die must be broadcast and visible BEFORE
+    /// the move is chosen: it is the drama, it bounds what this client knows, and auto-move —
+    /// where the server plays the only legal move for you — is only expressible if rolling is
+    /// separate. Fire-and-forget: the face is whatever the server rolled.
+    func rollLudo() {
+        guard let matchId, let ludo, !ludo.finished else { return }
+        WebSocketClient.shared.sendGameInput(matchId: matchId, payload: ["roll": true])
+    }
+
+    /// Move one of my tokens. `token` indexes only MY OWN tokens — there is no frame shape that
+    /// expresses moving someone else's.
+    func moveLudo(token: Int) {
+        guard let matchId, let ludo, !ludo.finished else { return }
+        WebSocketClient.shared.sendGameInput(matchId: matchId, payload: ["move": token])
     }
 
     /// Create a SOLO match — one human against server-side bots — and enter it.
