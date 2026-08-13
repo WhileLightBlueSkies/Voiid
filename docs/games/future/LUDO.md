@@ -1,8 +1,8 @@
 # Ludo
 
-> **Status:** design only, nothing built.
+> **Status:** **phases 0, 1, 3, 4 and 5 built** — multi-seat lobbies, the engine, and both renderers online. Phase 2 (practice mode + bot), 6 (retention) and 7 (polish) are still design only. See §16.
 > **Kind:** turn-based, 2–4 players. No `tickHz`.
-> **Blocked on:** multi-seat lobbies ([`README.md`](./README.md) §2.4) and the deadline sweeper (§2.3). The lobby work is **shared with unlocking Snake's 3–6 player mode** and must be sequenced once for both.
+> **Was blocked on:** multi-seat lobbies ([`README.md`](./README.md) §2.4) and the deadline sweeper (§2.3). **Both now exist** — the sweeper shipped with Sea Battle, the lobby work shipped here.
 > **Reference implementations to read first:** [`tictactoe/index.ts`](../../../backend/games/src/engine/tictactoe/index.ts) for the turn model, [`cricket/index.ts`](../../../backend/games/src/engine/cricket/index.ts) for secret state and per-match options.
 
 ---
@@ -746,3 +746,45 @@ Rules sheet, colourblind shape markers, reduce-motion, accessibility pass.
 8. **Options-bag typing.** *(O11)* `tokens` is an int and fits today's `[String: Int]` ([`GamesAPI.swift:37`](../../../apps/ios/Voiid/Voiid/Networking/GamesAPI.swift#L37)). Noted only because a future board-variant option would be a string, which is the third such case in this folder.
 
 9. **Reduce-motion.** §9 specifies hop chains, capture arcs and particle bursts. The switch does not exist ([`CROSS_CUTTING.md`](../CROSS_CUTTING.md) §13). Ludo's motion is more informational than decorative, so the reduced version must still communicate distance — a token that teleports loses the count, which is why the fallback is a fade *plus a distance readout*, not just a fade.
+
+---
+
+# 16. What was built
+
+Recorded here rather than left implicit, so the next person reads what is true rather than what was planned.
+
+## 16.1 The engine
+
+[`engine/ludo/`](../../../backend/games/src/engine/ludo/) — `board.ts` for the pure movement maths, `index.ts` for the rules, plus a test suite covering everything §14 asks for: entry requiring a 6, exact roll to home, overshoot illegal, capture and its two exemptions, blocks that cannot be landed on or passed, no block on a safe square, three sixes forfeiting without using the third, extra turns composing to one, auto-pass and auto-move, the serialize→restore byte-equality round trip over `phase`/`sixStreak`/`extraTurn`, and a fixed-seed dice determinism check.
+
+**The seed is in `serializeSecret()` and the registry test asserts it is absent from `serialize()`.** This is the folder's clearest case of the §1.3 rule: mulberry32's state *is* its seed, so a client holding it computes every future roll.
+
+Two test bugs are worth recording because both "passed" while measuring nothing. The dice-uniformity check sampled a board where every token was in the yard — a non-6 auto-passes and clears the die, so the sample recorded only sixes and read as a die that always rolls 6. And a wrap assertion had the wrong seat: square 50 is the end of seat 0's lap so it turns into the home column, while the same square mid-lap for seat 1 wraps. Both engine behaviours were correct.
+
+## 16.2 Both renderers
+
+`LudoBoard`/`LudoBoardView`/`LudoView` and their Kotlin twins. The board geometry is a shared lookup table per §6.2, and it was **derived by tracing the cross rather than typed** — the hand-written first pass had four corner steps that jumped two cells, which would have walked tokens through walls and was not visible by reading. `LudoBoardTest` pins the properties: 52 distinct cells, entries matching the server's `seat * 13`, exactly 48 orthogonal and 4 diagonal steps, columns of 5 that never touch the track, and all 944 possible token placements landing on the board.
+
+The four diagonal steps are inherent — the orthogonal perimeter of this cross is 56, so a 52-cell ring must cut the arm corners.
+
+Built as specified: you are always at the bottom (client-side rotation, tokens counter-rotated), the active player's strip as the primary turn indicator, shape markers so colour is never the only channel, legal tokens lifting while illegal ones dim, the die as the primary target, the three-sixes state made visible, and captures narrated by name.
+
+## 16.3 Multi-seat lobbies (§14 phase 0)
+
+`SeatPickerSheet` on both platforms, plus `createMulti` and a seat-count-aware lobby. Which picker opens is keyed on the **catalog row**, so the next multi-seat game needs no client change.
+
+**This uncovered a real bug in shipped code:** both lobbies decided a match had started by watching three state fields and silently omitted Snake, so a Snake friend match would have sat in the lobby forever while its board was live behind it. Fixed on both platforms.
+
+## 16.4 Three departures from this doc
+
+1. **The hop chain is not built.** §9 calls it the most important animation in the game and says it must not be optimised away — it is what shows the player *how far* a move went. Tokens currently spring between squares. It is deliberately deferred because §9 also requires it behind the reduce-motion switch (§15 Q9), which still does not exist, and shipping motion without the opt-out is what CROSS_CUTTING.md §13 flags about Snake. **This is the single largest visible gap against the doc.**
+
+2. **Groups are still excluded from the picker.** §12.3 calls "play Ludo with this group" the highest-value entry point in this doc. It needs a group-membership read and a fan-out invite, which the picker has no business inventing, so seats are filled from direct chats and the group entry point is named as the next piece of work.
+
+3. **No bot, so no practice mode (phase 2).** §11's four bands and the "playstyle, not strength" labelling are unbuilt. Timeout auto-play uses the middle greedy policy server-side, which is the same shape §11.1 describes for band 0.25–0.5, but it is not exposed as a difficulty.
+
+## 16.5 What is still open before this is playable
+
+- **Migration 042 has not been applied.** The catalog is server-side, so Ludo does not appear in either app's game list until it runs. A push to `main` applies it via `deploy-dev.sh` and restarts the services.
+- **The sound assets do not exist.** `die_roll`, `die_settle`, `hop_1..4`, `enter`, `capture`, `home` are registered in both `GameAudio` tables and referenced by `LudoSound`. A missing buffer is a silent no-op on both platforms, so the game plays correctly and quietly.
+- **Neither renderer has been seen running.** Both compile and their geometry tests pass; no match has been played, because the catalog row does not exist yet.
