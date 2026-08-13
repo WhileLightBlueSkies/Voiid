@@ -364,6 +364,15 @@ object GameAudio {
             "sink_groan", "your_turn", "place_thud", "error",
             CATCH,
         )
+        // hop is the most-triggered sound in the game — four variants plus the engine's own
+        // pitch jitter, per SOUND_DESIGN.md §4.3's chalk argument.
+        "ludo" -> listOf(
+            "die_roll", "die_settle",
+            "hop_1", "hop_2", "hop_3", "hop_4",
+            "enter", "capture", "home", "extra_turn", "three_sixes", "pass",
+            "your_turn", "rank_up", "match_end",
+            CATCH,
+        )
         "ui" -> listOf("tap", "sheet_open", "sheet_close", "match_found", "invite_arrive", "error")
         else -> emptyList()
     }

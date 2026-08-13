@@ -308,6 +308,55 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         data class Ship(val type: Int, val cells: List<Int>, val hits: Int)
     }
 
+    /**
+     * Authoritative Ludo state (backend/games/src/engine/ludo, docs/games/future/LUDO.md).
+     *
+     * NOTE WHAT IS ABSENT, AND WHY IT IS THE OPPOSITE OF SEA BATTLE: there is no per-player
+     * projection and no hidden field, because Ludo has no hidden player information — every
+     * token, roll and capture is public to every seat. The instinct after Sea Battle is that
+     * more seats implies per-seat views, and here that would be wrong.
+     *
+     * The only hidden thing is the FUTURE, protected server-side: the RNG seed rides the secret
+     * channel and never reaches a client, because mulberry32's state IS its seed and a client
+     * holding it could compute every future roll. There is no `seed` here to parse — not an
+     * omission, a design property.
+     *
+     * Mirrors iOS `LudoState`.
+     */
+    data class LudoState(
+        val players: List<String>,
+        val tokensPerPlayer: Int,
+        /** [seat][token] -> position encoding (see `Ludo` in LudoBoard.kt). */
+        val tokens: List<List<Int>>,
+        val turn: Int,
+        val turnUserId: String?,
+        /** "awaitingRoll" | "awaitingMove" | "done". */
+        val phase: String,
+        val die: Int?,
+        /**
+         * Token indices legally movable with [die], as computed by the SERVER. The client
+         * highlights exactly this set and never re-derives it.
+         */
+        val legal: List<Int>,
+        val sixStreak: Int,
+        val extraTurn: Boolean,
+        val finishedOrder: List<Int>,
+        val deadlineAt: Double?,
+        val lastMove: LastMove?,
+        val finished: Boolean,
+        val winnerUserId: String?,
+    ) {
+        /** What just happened, for the animation. Explicit rather than diffed. */
+        data class LastMove(
+            val seat: Int,
+            val token: Int,
+            val from: Int,
+            val to: Int,
+            /** [seat, token] of a token sent home, or null. */
+            val captured: List<Int>?,
+        )
+    }
+
     private val appContext = context.applicationContext
     private val tokens = TokenStore.get(context)
     private val service = GamesService(ApiClient(tokens))
@@ -328,6 +377,9 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
 
     private val _seaBattle = MutableStateFlow<SeaBattleState?>(null)
     val seaBattle: StateFlow<SeaBattleState?> = _seaBattle.asStateFlow()
+
+    private val _ludo = MutableStateFlow<LudoState?>(null)
+    val ludo: StateFlow<LudoState?> = _ludo.asStateFlow()
 
     /** One received snake frame plus when it landed, on the monotonic uptime clock. */
     data class SnakeFrame(val state: SnakeState, val arrivedAtMs: Long)
@@ -378,6 +430,7 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
             "rps" -> _rps.value = parseRps(payload)
             "cricket" -> _cricket.value = parseCricket(payload)
             "seabattle" -> _seaBattle.value = parseSeaBattle(payload)
+            "ludo" -> _ludo.value = parseLudo(payload)
             "snake" -> {
                 // Parse against the NEWEST frame, because food deltas are relative to it,
                 // then append to the jitter buffer the renderer interpolates across.
@@ -626,6 +679,42 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         )
     }
 
+    private fun parseLudo(payload: JsonObject): LudoState? {
+        val players = payload.arr("players")?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+            ?: return null
+        val tokens = payload.arr("tokens")?.map { row ->
+            (row as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.intOrNull } ?: emptyList()
+        } ?: return null
+        val lastMove = (payload["lastMove"] as? JsonObject)?.let { m ->
+            val seat = m.int("seat") ?: return@let null
+            val token = m.int("token") ?: return@let null
+            val from = m.int("from") ?: return@let null
+            val to = m.int("to") ?: return@let null
+            LudoState.LastMove(seat, token, from, to,
+                m.arr("captured")?.mapNotNull { (it as? JsonPrimitive)?.intOrNull })
+        }
+        return LudoState(
+            players = players,
+            tokensPerPlayer = payload.int("tokensPerPlayer") ?: tokens.firstOrNull()?.size ?: 4,
+            tokens = tokens,
+            turn = payload.int("turn") ?: 0,
+            turnUserId = payload.str("turnUserId"),
+            phase = payload.str("phase") ?: "awaitingRoll",
+            die = payload.int("die"),
+            legal = payload.arr("legal")?.mapNotNull { (it as? JsonPrimitive)?.intOrNull }
+                ?: emptyList(),
+            sixStreak = payload.int("sixStreak") ?: 0,
+            extraTurn = payload.bool("extraTurn") ?: false,
+            finishedOrder = payload.arr("finishedOrder")?.mapNotNull {
+                (it as? JsonPrimitive)?.intOrNull
+            } ?: emptyList(),
+            deadlineAt = payload.dbl("deadlineAt"),
+            lastMove = lastMove,
+            finished = payload.bool("finished") ?: false,
+            winnerUserId = payload.str("winnerUserId"),
+        )
+    }
+
     private fun parse(payload: JsonObject): TicTacToeState? {
         val players = payload.arr("players")?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
             ?: return null
@@ -650,6 +739,7 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         _rps.value = null
         _cricket.value = null
         _seaBattle.value = null
+        _ludo.value = null
         _snakeFrames.value = emptyList()
         desiredHeading = null
         desiredBoost = false
@@ -824,6 +914,32 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         val s = _seaBattle.value ?: return
         if (s.finished) return
         WebSocketClient.get(context).sendGameInput(id, """{"resign":true}""")
+    }
+
+    /**
+     * Roll the Ludo die.
+     *
+     * ITS OWN STEP, deliberately (LUDO.md §3.3): the die must be broadcast and visible BEFORE
+     * the move is chosen. It is the drama, it bounds what this client knows, and auto-move —
+     * where the server plays the only legal move for you — is only expressible if rolling is
+     * separate.
+     */
+    fun rollLudo(context: Context) {
+        val id = matchId ?: return
+        val s = _ludo.value ?: return
+        if (s.finished) return
+        WebSocketClient.get(context).sendGameInput(id, """{"roll":true}""")
+    }
+
+    /**
+     * Move one of my tokens. [token] indexes only MY OWN tokens — there is no frame shape that
+     * expresses moving someone else's.
+     */
+    fun moveLudo(context: Context, token: Int) {
+        val id = matchId ?: return
+        val s = _ludo.value ?: return
+        if (s.finished) return
+        WebSocketClient.get(context).sendGameInput(id, """{"move":$token}""")
     }
 
     /**

@@ -5,6 +5,10 @@ import androidx.compose.material.icons.automirrored.outlined.TrendingUp
 import androidx.compose.material.icons.outlined.AutoAwesomeMotion
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Cancel
+import androidx.compose.material.icons.outlined.Casino
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Star
+import androidx.compose.material.icons.outlined.Timer
 import androidx.compose.material.icons.outlined.OpenInFull
 import androidx.compose.material.icons.outlined.EmojiEvents
 import androidx.compose.material.icons.outlined.Grid3x3
@@ -51,6 +55,7 @@ object GameRules {
         "rps" -> rps
         "snake" -> snake
         "seabattle" -> seabattle
+        "ludo" -> ludoRules
         else -> emptyList()
     }
 
@@ -61,6 +66,7 @@ object GameRules {
         "rps" -> "First to 3. The trick is reading them, not the throw."
         "snake" -> "Eat, grow, survive. Six snakes, one arena, no brakes."
         "seabattle" -> "Hide a fleet, hunt theirs. Play a shot now, the next one tonight."
+        "ludo" -> "Four tokens, one board, and a die that owes you nothing."
         else -> null
     }
 
@@ -135,5 +141,27 @@ object GameRules {
             "Sinking a ship announces which one, so you can work out what is left."),
         Line(Icons.Outlined.Timeline,
             "No rush. Fire a shot and put your phone down — you have a day to take each turn."),
+    )
+
+    // EVERYONE IN THIS MARKET KNOWS LUDO, so the sheet is not for the rules — it is for the two
+    // house rules a returning player will assume differently (§12.4): blocks are ON, and the
+    // default token count is lower than the four they expect. "The rules everyone knows are not
+    // the rules everyone agrees on."
+    private val ludoRules = listOf(
+        Line(Icons.Outlined.Casino,
+            "Roll a 6 to bring a token out. Race it round the board and up your own column — " +
+                "you need the exact roll to get home."),
+        Line(Icons.Outlined.Refresh,
+            "Roll a 6, capture, or get a token home and you roll again. Three sixes in a row " +
+                "and you lose the turn."),
+        Line(Icons.Outlined.PanTool,
+            "Two of your tokens on one square is a BLOCK — nobody can land on it or pass it. " +
+                "Not on a starred square, though."),
+        Line(Icons.Outlined.Star,
+            "Starred squares are safe. Land on a lone opponent anywhere else and they go all " +
+                "the way back to their yard."),
+        Line(Icons.Outlined.Timer,
+            "Shorter than you remember: 2 tokens each with 3-4 players, so a game runs about " +
+                "fifteen minutes rather than forty."),
     )
 }
