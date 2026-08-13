@@ -109,14 +109,30 @@ struct LudoBoardView: View {
                 .font(.system(size: unit * 0.34, weight: .bold))
                 .foregroundStyle(.white.opacity(0.95))
         }
+        // A 48pt HIT TARGET REGARDLESS OF VISUAL SIZE (§7.2). A 52-square track on a 390pt board
+        // gives ~40pt cells and ~28pt tokens, well under the platform minimum, so the tappable
+        // area is deliberately larger than the disc.
         .frame(width: unit * 0.72, height: unit * 0.72)
-        // Legal tokens lift and pulse so the player can see what the die bought them without
-        // working it out (§7.1, §9).
+        // Legal tokens lift so the player can see what the die bought them without working it
+        // out (§7.1, §9).
         .scaleEffect(isLegal ? 1.18 : 1.0)
         .opacity(isMine && !legal.isEmpty && !isLegal ? 0.45 : 1.0)
         // Counter-rotate the token by the board's rotation, so a marker is never upside down
         // for the player looking at it.
         .rotationEffect(.degrees(Double(90 * (mySeat ?? 0))))
+        // THE HIT AREA AND THE TAP MUST BE ATTACHED BEFORE `.position`, NOT AFTER.
+        //
+        // `.position` expands the view to fill its parent and places the content inside it, so a
+        // `.contentShape` applied afterwards describes a shape inscribed in the WHOLE BOARD
+        // rather than in the token. Every token then claimed the same board-sized hit area,
+        // taps landed on whichever view was last in z-order, and moving a token by tapping it
+        // simply did not work — while looking completely correct on screen.
+        .frame(width: max(unit * 0.72, 44), height: max(unit * 0.72, 44))
+        .contentShape(Circle())
+        .onTapGesture { if isLegal { onTapToken?(token.index) } }
+        .accessibilityLabel("\(Ludo.seatNames[token.seat % Ludo.maxSeats]) token \(token.index + 1)")
+        .accessibilityHint(isLegal ? "Tap to move" : "")
+        .accessibilityAddTraits(isLegal ? .isButton : [])
         .position(
             x: centre.x * side + offset * spread,
             y: centre.y * side + offset * spread)
@@ -126,10 +142,6 @@ struct LudoBoardView: View {
         // deliberately not built — it needs the reduce-motion switch that does not exist yet.
         .animation(.spring(response: 0.34, dampingFraction: 0.68), value: token.position)
         .animation(.easeOut(duration: 0.26), value: isLegal)
-        .contentShape(Circle())
-        .onTapGesture { if isLegal { onTapToken?(token.index) } }
-        .accessibilityLabel("\(Ludo.seatNames[token.seat % Ludo.maxSeats]) token \(token.index + 1)")
-        .accessibilityHint(isLegal ? "Tap to move" : "")
     }
 
     // MARK: - The static board

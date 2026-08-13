@@ -229,7 +229,7 @@ struct LudoView: View {
                                 .stroke(canRoll ? VoiidColor.primary
                                                : VoiidColor.textSecondary.opacity(0.25),
                                         lineWidth: 1.5))
-                    DiePips(face: s.die ?? tumbleFace)
+                    LudoDiePips(face: s.die ?? tumbleFace)
                         .padding(12)
                         .foregroundStyle(canRoll || s.die != nil
                                          ? VoiidColor.textPrimary : VoiidColor.textSecondary)
@@ -252,28 +252,3 @@ struct LudoView: View {
     }
 }
 
-/// A die face, drawn as pips rather than a numeral — a numeral reads as a score, pips read as a die.
-private struct DiePips: View {
-    let face: Int
-
-    /// Pip layout per face, in a 3x3 grid.
-    private static let layouts: [Int: [(Int, Int)]] = [
-        1: [(1, 1)],
-        2: [(0, 0), (2, 2)],
-        3: [(0, 0), (1, 1), (2, 2)],
-        4: [(0, 0), (2, 0), (0, 2), (2, 2)],
-        5: [(0, 0), (2, 0), (1, 1), (0, 2), (2, 2)],
-        6: [(0, 0), (2, 0), (0, 1), (2, 1), (0, 2), (2, 2)],
-    ]
-
-    var body: some View {
-        GeometryReader { geo in
-            let unit = geo.size.width / 3
-            ForEach(Array((Self.layouts[face] ?? []).enumerated()), id: \.offset) { _, p in
-                Circle()
-                    .frame(width: unit * 0.44, height: unit * 0.44)
-                    .position(x: (CGFloat(p.0) + 0.5) * unit, y: (CGFloat(p.1) + 0.5) * unit)
-            }
-        }
-    }
-}
