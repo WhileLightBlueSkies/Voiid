@@ -42,6 +42,7 @@ enum GameRules {
         case "tictactoe": return tictactoe
         case "rps":       return rps
         case "snake":     return snake
+        case "seabattle": return seabattle
         default:          return []
         }
     }
@@ -53,6 +54,7 @@ enum GameRules {
         case "tictactoe": return "Three in a row. Simple, solved, and still worth a rematch."
         case "rps":       return "First to 3. The trick is reading them, not the throw."
         case "snake":     return "Eat, grow, survive. Six snakes, one arena, no brakes."
+        case "seabattle": return "Hide a fleet, hunt theirs. Play a shot now, the next one tonight."
         default:          return nil
         }
     }
@@ -113,5 +115,26 @@ enum GameRules {
         Line(icon: "flag.checkered",
              text: "Anything that dies bursts into food worth taking. Longest snake when the "
                  + "clock runs out wins."),
+    ]
+
+    // EVERYONE KNOWS THIS GAME, WHICH IS EXACTLY WHY THE SHEET EXISTS. A returning Battleship
+    // player does not need to be told what a hit is; they need to be told the two house rules
+    // they will otherwise assume differently (SEA_BATTLE.md §12.4) — ships may touch, and a hit
+    // does NOT buy another shot. Both are decisions with reasons, and a player who assumes the
+    // other way will believe the game is broken rather than different.
+    private static let seabattle: [Line] = [
+        Line(icon: "square.grid.3x3",
+             text: "Hide five ships on your 10×10 grid, then take turns naming one square on "
+                 + "theirs. Sink their whole fleet to win."),
+        Line(icon: "arrow.left.and.right",
+             text: "Ships sit straight, across or down, and they ARE allowed to touch."),
+        Line(icon: "1.circle",
+             text: "One shot per turn. A hit does not buy you another — it keeps the rhythm "
+                 + "even when a turn is hours apart."),
+        Line(icon: "bell",
+             text: "Sinking a ship announces which one, so you can work out what is left."),
+        Line(icon: "clock",
+             text: "No rush. Fire a shot and put your phone down — you have a day to take "
+                 + "each turn."),
     ]
 }

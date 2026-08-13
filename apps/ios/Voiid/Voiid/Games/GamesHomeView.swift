@@ -237,6 +237,11 @@ struct GamesHomeView: View {
                             matchId: m.id,
                             onClose: { openMatch = nil },
                             onRematch: { openMatch = OpenMatch(id: $0, slug: "cricket") })
+                    case "seabattle":
+                        SeaBattleView(
+                            matchId: m.id,
+                            onClose: { openMatch = nil },
+                            onRematch: { openMatch = OpenMatch(id: $0, slug: "seabattle") })
                     case "snake":
                         SnakeArenaView(
                             matchId: m.id,

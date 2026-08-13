@@ -392,6 +392,97 @@ struct SnakeState {
     }
 }
 
+/// Authoritative Sea Battle state (backend/games/src/engine/seabattle, docs/games/future/SEA_BATTLE.md).
+///
+/// THE ONE STRUCTURALLY DIFFERENT STATE IN THIS FILE. Every other game here broadcasts the same
+/// bytes to everyone; Sea Battle's frame is built per recipient by `serializeForPlayer`, so
+/// `myFleet` and `seat` are present in YOUR frame and absent from your opponent's. That is why
+/// there is no "opponent fleet" field to parse and never will be one until the match ends —
+/// the information is not withheld by this parser, it never arrives.
+///
+/// The corollary matters for rendering: the client cannot derive whether a shot hit. It reads
+/// `results`, which the server computed. Same posture as `RpsState` refusing to model a pending
+/// throw — a renderer that could compute the answer would be a renderer that could leak it.
+struct SeaBattleState {
+    /// One ship, as the server knows it. Only ever YOUR ships, or a sunk/revealed enemy ship.
+    struct Ship {
+        /// Index into `fleetSpec` — 0 Carrier … 4 Destroyer.
+        let type: Int
+        /// Packed cells (`y * 10 + x`), in order along the hull.
+        let cells: [Int]
+        let hits: Int
+    }
+
+    let players: [String]
+    /// "placing" | "firing" | "done".
+    let phase: String
+    /// Seat to fire, or nil during placement and once finished.
+    let turn: Int?
+    let turnUserId: String?
+    /// Packed cells fired, in order, indexed by the FIRING seat.
+    let shots: [[Int]]
+    /// Parallel to `shots`: 0 miss, 1 hit, 2 hit-and-sunk.
+    let results: [[Int]]
+    /// Ship type ids sunk, indexed by the seat whose fleet lost them.
+    let sunk: [[Int]]
+    /// Revealed outlines of those sunk ships, same indexing.
+    let sunkCells: [[Int]]
+    /// Whether each seat has committed a fleet.
+    let placed: [Bool]
+    /// Ship lengths, from the server, so the renderer never hardcodes the fleet.
+    let fleetSpec: [Int]
+    /// Epoch ms the player on the clock must act by.
+    let deadlineAt: Double?
+    let finished: Bool
+    let winnerUserId: String?
+    /// "win" | "resign" | "timeout" | "abandoned" — the post-match line reads differently for each.
+    let endedBy: String?
+    /// The shot to animate on arrival. Explicit rather than diffed, because a client that just
+    /// cold-started from a push has no previous frame to diff against — and for this game, cold
+    /// start is the normal case.
+    let lastShot: Int?
+    let lastResult: Int?
+    /// MY seat. Nil means this frame was built for a spectator, not for a player.
+    let seat: Int?
+    /// MY fleet. Never the opponent's.
+    let myFleet: [Ship]
+    /// Both fleets, and only once the match is over.
+    let revealedFleets: [[Ship]]?
+
+    private static func ships(_ raw: Any?) -> [Ship] {
+        guard let arr = raw as? [[String: Any]] else { return [] }
+        return arr.compactMap { s in
+            guard let type = s["type"] as? Int, let cells = s["cells"] as? [Int] else { return nil }
+            return Ship(type: type, cells: cells, hits: (s["hits"] as? Int) ?? 0)
+        }
+    }
+
+    static func parse(_ payload: [String: Any]) -> SeaBattleState? {
+        guard let players = payload["players"] as? [String] else { return nil }
+        let revealed = (payload["revealedFleets"] as? [Any])?.map { ships($0) }
+        return SeaBattleState(
+            players: players,
+            phase: (payload["phase"] as? String) ?? "placing",
+            turn: payload["turn"] as? Int,
+            turnUserId: payload["turnUserId"] as? String,
+            shots: (payload["shots"] as? [[Int]]) ?? [[], []],
+            results: (payload["results"] as? [[Int]]) ?? [[], []],
+            sunk: (payload["sunk"] as? [[Int]]) ?? [[], []],
+            sunkCells: (payload["sunkCells"] as? [[Int]]) ?? [[], []],
+            placed: (payload["placed"] as? [Bool]) ?? [false, false],
+            fleetSpec: (payload["fleetSpec"] as? [Int]) ?? [5, 4, 3, 3, 2],
+            deadlineAt: payload["deadlineAt"] as? Double,
+            finished: (payload["finished"] as? Bool) ?? false,
+            winnerUserId: payload["winnerUserId"] as? String,
+            endedBy: payload["endedBy"] as? String,
+            lastShot: payload["lastShot"] as? Int,
+            lastResult: payload["lastResult"] as? Int,
+            seat: payload["seat"] as? Int,
+            myFleet: ships(payload["myFleet"]),
+            revealedFleets: revealed)
+    }
+}
+
 @MainActor
 final class GamesEngine: ObservableObject {
     static let shared = GamesEngine()
@@ -406,6 +497,7 @@ final class GamesEngine: ObservableObject {
     /// a crash where an unused nil is inert.
     @Published private(set) var rps: RpsState?
     @Published private(set) var cricket: CricketState?
+    @Published private(set) var seaBattle: SeaBattleState?
     /// One received snake frame plus when it landed, on the monotonic host clock.
     struct SnakeFrame {
         let state: SnakeState
@@ -492,6 +584,7 @@ final class GamesEngine: ObservableObject {
         switch info["game"] as? String {
         case "rps":     rps = RpsState.parse(payload)
         case "cricket": cricket = CricketState.parse(payload)
+        case "seabattle": seaBattle = SeaBattleState.parse(payload)
         case "snake":
             // Parse against the NEWEST frame, because food deltas are relative to it, then
             // append to the jitter buffer the renderer interpolates across.
@@ -513,6 +606,7 @@ final class GamesEngine: ObservableObject {
         self.state = nil
         self.rps = nil
         self.cricket = nil
+        self.seaBattle = nil
         self.snakeFrames = []
         self.snakeFramesSnapshot = []
         self.joinError = nil
@@ -623,6 +717,35 @@ final class GamesEngine: ObservableObject {
     func electToss(_ choice: String) {
         guard let matchId, let cricket, !cricket.finished else { return }
         WebSocketClient.shared.sendGameInput(matchId: matchId, payload: ["elect": choice])
+    }
+
+    /// Commit a whole Sea Battle fleet. Five ships, one frame.
+    ///
+    /// ATOMIC BY DESIGN, and the client must not "helpfully" send ships one at a time: the
+    /// server treats a half-placed fleet as no fleet, so per-ship frames would leave a state
+    /// that is legal to nobody and lets a client stall having placed four. The fleet is legal
+    /// in full or rejected in full (SEA_BATTLE.md §4.7).
+    func placeFleet(_ ships: [SeaBattleState.Ship]) {
+        guard let matchId, let seaBattle, !seaBattle.finished else { return }
+        let payload = ships.map { ["type": $0.type, "cells": $0.cells] as [String: Any] }
+        WebSocketClient.shared.sendGameInput(matchId: matchId, payload: ["place": payload])
+    }
+
+    /// Fire at one packed cell (0–99).
+    ///
+    /// Fire-and-forget like every other input. The client does NOT predict the outcome — it
+    /// starts the shell animation and the arriving frame decides what that resolves into
+    /// (SEA_BATTLE.md §3.3). Predicting a hit here would be predicting authority, which is the
+    /// one thing SnakePredictor is careful never to do either.
+    func fire(cell: Int) {
+        guard let matchId, let seaBattle, !seaBattle.finished else { return }
+        WebSocketClient.shared.sendGameInput(matchId: matchId, payload: ["fire": cell])
+    }
+
+    /// Resign the match. A result, not an abandonment — it counts as a loss (SEA_BATTLE.md §13.4).
+    func resignSeaBattle() {
+        guard let matchId, let seaBattle, !seaBattle.finished else { return }
+        WebSocketClient.shared.sendGameInput(matchId: matchId, payload: ["resign": true])
     }
 
     /// Create a SOLO match — one human against server-side bots — and enter it.
