@@ -29,6 +29,9 @@ struct LobbyArgs: Identifiable, Hashable {
     let gameName: String
     let opponentName: String
     let detailLine: String
+    /// TOTAL seats including the creator. Two for every 1:1 game, which is why it defaults —
+    /// only a multi-seat game has to say anything.
+    var seatCount: Int = 2
 }
 
 struct GameLobbyView: View {
@@ -94,7 +97,8 @@ struct GameLobbyView: View {
             }
 
             if expired {
-                Text("\(args.opponentName) didn't join")
+                Text(args.seatCount > 2 ? "Not everyone joined"
+                                        : "\(args.opponentName) didn't join")
                     .font(VoiidFont.rounded(17, .semibold))
                     .foregroundStyle(VoiidColor.textPrimary)
                     .padding(.top, VoiidSpacing.lg)
@@ -132,7 +136,30 @@ struct GameLobbyView: View {
                     }
                 }
 
-                Text("Waiting for \(args.opponentName)…")
+                // SEATS FILLING IN REAL TIME IS ITSELF ENGAGING (LUDO.md §12.4) — it is the
+                // "who else is coming" moment, and it should be visible rather than hidden
+                // behind a spinner. Only drawn for a genuinely multi-seat match; two pips for a
+                // 1:1 game would be noise dressed up as information.
+                if args.seatCount > 2 {
+                    HStack(spacing: 6) {
+                        ForEach(0..<args.seatCount, id: \.self) { seat in
+                            // Seat 0 is the creator, who is by definition here. The rest are
+                            // unknown until the board arrives — the server does not narrate
+                            // individual joins, so this shows "you, plus N still coming" rather
+                            // than inventing per-person state it does not have.
+                            Circle()
+                                .fill(seat == 0 ? VoiidColor.primary
+                                                : VoiidColor.textSecondary.opacity(0.25))
+                                .frame(width: 10, height: 10)
+                        }
+                    }
+                    .padding(.top, VoiidSpacing.md)
+                    .accessibilityLabel("\(args.seatCount) seats, 1 filled")
+                }
+
+                Text(args.seatCount > 2
+                     ? "Waiting for \(args.seatCount - 1) players…"
+                     : "Waiting for \(args.opponentName)…")
                     .font(VoiidFont.rounded(17, .semibold))
                     .foregroundStyle(VoiidColor.textPrimary)
                     .padding(.top, VoiidSpacing.sm)
@@ -153,9 +180,15 @@ struct GameLobbyView: View {
         // footer after quitting a game — the bar is opt-out, so every screen that hides
         // it owns putting it back.
         .onDisappear { session.hideTabBar = false }
-        // Any of the three game states arriving means the server built the board — which only
-        // happens once the opponent joins.
-        .onChange(of: engine.state == nil && engine.rps == nil && engine.cricket == nil) { _, empty in
+        // ANY game state arriving means the server built the board, which only happens once
+        // every seat is filled.
+        //
+        // EVERY GAME MUST BE LISTED HERE. This checked three states and silently omitted Snake;
+        // a game left out never leaves the lobby, because the frame that means "we are live"
+        // lands in a property nothing is watching. Adding a game is one more term.
+        .onChange(of: engine.state == nil && engine.rps == nil && engine.cricket == nil
+                  && engine.seaBattle == nil && engine.ludo == nil
+                  && engine.snakeFrames.isEmpty) { _, empty in
             if !empty { onStart() }
         }
         .task {

@@ -765,6 +765,63 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
      * ordinary E2EE text message ([GameInvite]) so wake, push, and offline retry are the
      * ones the message pipe already gets right.
      */
+    /**
+     * Create a match with SEVERAL opponents and invite all of them.
+     *
+     * The multi-seat half of [create] (docs/games/future/README.md §2.4). The server has always
+     * accepted an array; what did not exist was any client able to send one.
+     *
+     * SEAT ORDER IS THE ORDER PASSED, and the creator is seat 0. In Ludo that decides colour,
+     * entry square and turn order, so the picker's pick order is carried through rather than
+     * re-sorted into something tidier.
+     *
+     * ONE INVITE PER OPPONENT, each into its own direct thread. There is no group fan-out yet,
+     * so this is N ordinary E2EE messages inheriting wake, push and offline retry from the
+     * message pipe exactly as the 1:1 invite does.
+     *
+     * A FAILED INVITE DOES NOT UNMAKE THE MATCH: the row exists the moment the server answers,
+     * and the rest can still join. Reporting the failure and letting the lobby show who actually
+     * arrived is more honest than deleting a match some people may already have accepted.
+     */
+    suspend fun createMulti(
+        slug: String,
+        /** (userId, conversationId) per opponent, in seat order. */
+        opponents: List<Pair<String, String>>,
+        gameName: String,
+        options: Map<String, Int> = emptyMap(),
+    ): String? {
+        if (opponents.isEmpty()) return null
+        return runCatching {
+            val id = service.create(slug, opponents.map { it.first }, options, null)
+            val meta = GameInvite.Meta(
+                game = gameName,
+                from = myUserId
+                    ?.let { com.voiid.app.store.UserDirectory.displayName(it, "") }
+                    ?.takeIf { it != "Unknown" }
+                    .orEmpty(),
+                overs = options["overs"] ?: 0,
+                format = if (opponents.size > 1) "${opponents.size + 1} players" else "",
+                sentAt = System.currentTimeMillis(),
+            )
+            val body = GameInvite.encode(slug, id, meta)
+            var failures = 0
+            for ((peer, convo) in opponents) {
+                runCatching { ChatEngine.get(appContext).sendText(body, convo, peer) }
+                    .onFailure { failures++ }
+            }
+            if (failures > 0) {
+                _joinError.value = if (failures == opponents.size) "Couldn't send the invites."
+                else "Couldn't reach $failures player${if (failures == 1) "" else "s"}."
+            }
+            open(id)
+            id
+        }.getOrElse {
+            android.util.Log.e(TAG, "createMulti failed", it)
+            _joinError.value = "Couldn't create the match."
+            null
+        }
+    }
+
     suspend fun create(
         slug: String,
         opponentId: String,

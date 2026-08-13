@@ -408,6 +408,43 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
         // Opponent picker. A catalog row picks a GAME; the match is created once an
         // opponent is chosen, which is what turns a slug into the match id the board needs.
         pendingGame?.let { game ->
+            // MORE THAN TWO SEATS GETS THE MULTI-SELECT PICKER (README §2.4). Keyed on the
+            // CATALOG ROW rather than a list of slugs: the row is already the authority on how
+            // many seats a game takes, and a second copy here is how the two disagree after the
+            // next game ships.
+            if (game.max_players > 2) {
+                com.voiid.app.main.games.SeatPickerSheet(
+                    conversations = chat.directConversations.toList(),
+                    maxOpponents = game.max_players - 1,
+                    minOpponents = maxOf(1, game.min_players - 1),
+                    onDismiss = { pendingGame = null },
+                    onConfirm = { convos ->
+                        pendingGame = null
+                        val opponents = convos.mapNotNull { c ->
+                            c.peerUserId?.takeIf { it.isNotBlank() }?.let { it to c.id }
+                        }
+                        if (opponents.isNotEmpty()) {
+                            gamesScope.launch {
+                                com.voiid.app.net.GamesEngine.get(appContext)
+                                    .createMulti(game.slug, opponents, game.name)
+                                    ?.let {
+                                        lobby = com.voiid.app.main.games.LobbyArgs(
+                                            matchId = it,
+                                            slug = game.slug,
+                                            gameName = game.name,
+                                            // Every name, not just the first: "waiting for Priya"
+                                            // when three were invited misleads about who is missing.
+                                            opponentName = convos.joinToString(", ") { c -> c.title },
+                                            detailLine = "${opponents.size + 1} players",
+                                            seatCount = opponents.size + 1,
+                                        )
+                                    }
+                            }
+                        }
+                    },
+                )
+                return@let
+            }
             com.voiid.app.main.games.OpponentPickerSheet(
                 conversations = chat.directConversations.toList(),
                 onPick = { convo ->
@@ -634,6 +671,7 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                     gameName = args.gameName,
                     opponentName = args.opponentName,
                     detailLine = args.detailLine,
+                    seatCount = args.seatCount,
                     onStart = {
                         openGameMatch = args.matchId to args.slug
                         lobby = null

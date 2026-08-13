@@ -340,6 +340,20 @@ struct GamesHomeView: View {
                     onCustomise: game.slug == "snake" ? { showSkinPicker = true } : nil)
             }
             .sheet(item: $pendingGame) { game in
+                // MORE THAN TWO SEATS GETS THE MULTI-SELECT PICKER (README §2.4). Keyed on the
+                // CATALOG ROW rather than on a list of slugs, exactly as the server keys durable
+                // persistence on tickHz being absent: the row is already the authority on how
+                // many seats a game takes, and hardcoding a second copy here is how the two
+                // disagree after the next game ships.
+                if game.max_players > 2 {
+                    SeatPickerSheet(
+                        conversations: chat.directConversations,
+                        maxOpponents: game.max_players - 1,
+                        minOpponents: max(1, game.min_players - 1)
+                    ) { convos in
+                        Task { await startMultiMatch(game: game, conversations: convos) }
+                    }
+                } else {
                 OpponentPickerSheet(conversations: chat.directConversations) { convo in
                     // Hand cricket needs its match length before the row is minted (the server
                     // builds the innings from it), so it takes one more step. Every other game has
@@ -353,6 +367,7 @@ struct GamesHomeView: View {
                     } else {
                         Task { await startMatch(game: game, conversation: convo) }
                     }
+                }
                 }
             }
             // How busy the arena is, for an online Snake match. Zero bots is a duel, which is
@@ -426,6 +441,41 @@ struct GamesHomeView: View {
 
     /// Create the match — which SENDS THE INVITE into this conversation — then open the board
     /// on the id the server minted. The board only opens once the opponent has been told.
+    /// Create a match with several opponents and wait in the lobby for them.
+    ///
+    /// Same shape as `startMatch`, and deliberately so: the difference between a 2-player and a
+    /// 4-player match is the number of invites sent, not a different lifecycle. The lobby then
+    /// shows seats filling one by one, which LUDO.md §12.4 calls the "who else is coming" moment
+    /// and asks to be visible rather than hidden behind a spinner.
+    private func startMultiMatch(
+        game: GamesAPI.CatalogGame,
+        conversations: [VConversation],
+        options: [String: Int] = [:]
+    ) async {
+        let opponents: [(userId: String, conversationId: String)] = conversations.compactMap {
+            guard let peer = $0.peerUserId, !peer.isEmpty else { return nil }
+            return (userId: peer, conversationId: $0.id)
+        }
+        guard !opponents.isEmpty else { return }
+
+        if let id = await GamesEngine.shared.createMulti(
+            slug: game.slug,
+            opponents: opponents,
+            gameName: game.name,
+            options: options
+        ) {
+            lobby = LobbyArgs(
+                id: id,
+                slug: game.slug,
+                gameName: game.name,
+                // Every name, not just the first: in a 4-player lobby "waiting for Priya" when
+                // three people were invited is actively misleading about who is missing.
+                opponentName: conversations.map(\.title).joined(separator: ", "),
+                detailLine: "\(opponents.count + 1) players",
+                seatCount: opponents.count + 1)
+        }
+    }
+
     private func startMatch(
         game: GamesAPI.CatalogGame,
         conversation: VConversation,

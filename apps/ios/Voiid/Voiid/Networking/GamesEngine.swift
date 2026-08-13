@@ -846,6 +846,66 @@ final class GamesEngine: ObservableObject {
         WebSocketClient.shared.sendGameInput(matchId: matchId, payload: ["move": token])
     }
 
+    /// Create a match with SEVERAL opponents and invite all of them.
+    ///
+    /// The multi-seat half of `create` (docs/games/future/README.md §2.4). The server side has
+    /// always accepted an array; what did not exist was any client able to send one.
+    ///
+    /// SEAT ORDER IS THE ORDER PASSED, and the creator is seat 0. In Ludo that decides colour,
+    /// entry square and turn order, so the picker's pick order is carried through here rather
+    /// than being re-sorted into something tidier.
+    ///
+    /// ONE INVITE PER OPPONENT, each into its own direct thread. There is no group fan-out yet
+    /// (see SeatPickerSheet), so this is N ordinary E2EE messages and it inherits wake, push and
+    /// offline retry from the message pipe exactly as the 1:1 invite does.
+    ///
+    /// A FAILED INVITE DOES NOT UNMAKE THE MATCH. The row exists the moment the server answers,
+    /// and the remaining players can still join and play; reporting the failure and leaving the
+    /// lobby to show who has actually arrived is more honest than deleting a match some people
+    /// may already have accepted.
+    func createMulti(
+        slug: String,
+        opponents: [(userId: String, conversationId: String)],
+        gameName: String,
+        options: [String: Int] = [:]
+    ) async -> String? {
+        guard !opponents.isEmpty else { return nil }
+        do {
+            let id = try await api.create(
+                slug: slug, opponentIds: opponents.map(\.userId), options: options, skin: nil)
+            let ownName = TokenStore.shared.userId
+                .map { UserDirectory.shared.displayName($0, fallback: "") } ?? ""
+            let meta = GameInvite.Meta(
+                game: gameName,
+                from: ownName == "Unknown" ? "" : ownName,
+                overs: options["overs"] ?? 0,
+                format: opponents.count > 1 ? "\(opponents.count + 1) players" : "",
+                sentAt: GameInvite.nowMs())
+            let body = GameInvite.encode(slug: slug, matchId: id, meta: meta)
+            var failures = 0
+            for opponent in opponents {
+                do {
+                    _ = try await ChatEngine.shared.sendText(
+                        body,
+                        conversationId: opponent.conversationId,
+                        peerUserId: opponent.userId)
+                } catch {
+                    failures += 1
+                }
+            }
+            if failures > 0 {
+                joinError = failures == opponents.count
+                    ? "Couldn't send the invites."
+                    : "Couldn't reach \(failures) player\(failures == 1 ? "" : "s")."
+            }
+            await open(matchId: id)
+            return id
+        } catch {
+            joinError = "Couldn't create the match."
+            return nil
+        }
+    }
+
     /// Create a SOLO match — one human against server-side bots — and enter it.
     ///
     /// No invite and no opponent, unlike `create`. Snake is the first game whose catalog row

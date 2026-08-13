@@ -88,6 +88,11 @@ data class LobbyArgs(
     val gameName: String,
     val opponentName: String,
     val detailLine: String,
+    /**
+     * TOTAL seats including the creator. Two for every 1:1 game, which is why it defaults —
+     * only a multi-seat game has to say anything.
+     */
+    val seatCount: Int = 2,
 )
 
 @Composable
@@ -97,6 +102,8 @@ fun GameLobbyScreen(
     gameName: String,
     opponentName: String,
     detailLine: String,
+    /** TOTAL seats including the creator. Two for every 1:1 game, so it defaults. */
+    seatCount: Int = 2,
     onStart: () -> Unit,
     onClose: () -> Unit,
 ) {
@@ -107,6 +114,9 @@ fun GameLobbyScreen(
     val tttState by engine.state.collectAsState()
     val rpsState by engine.rps.collectAsState()
     val cricketState by engine.cricket.collectAsState()
+    val seaBattleState by engine.seaBattle.collectAsState()
+    val ludoState by engine.ludo.collectAsState()
+    val snakeFrames by engine.snakeFrames.collectAsState()
 
     val service = remember { GamesService(ApiClient(TokenStore.get(context))) }
     var expiresIn by remember { mutableLongStateOf(GameInvite.EXPIRY_MS) }
@@ -117,8 +127,13 @@ fun GameLobbyScreen(
     }
 
     // The opponent joined — hand off to the board.
-    LaunchedEffect(tttState, rpsState, cricketState) {
-        if (tttState != null || rpsState != null || cricketState != null) onStart()
+    // EVERY GAME MUST BE LISTED HERE. This watched three states and silently omitted Snake; a
+    // game left out never leaves the lobby, because the frame that means "we are live" lands in
+    // a flow nothing is collecting. Adding a game is one more term.
+    LaunchedEffect(tttState, rpsState, cricketState, seaBattleState, ludoState, snakeFrames) {
+        if (tttState != null || rpsState != null || cricketState != null ||
+            seaBattleState != null || ludoState != null || snakeFrames.isNotEmpty()
+        ) onStart()
     }
 
     // Countdown. One tick a second is enough for a minutes-scale timer and costs nothing.
@@ -265,8 +280,34 @@ fun GameLobbyScreen(
                     )
                 }
             }
+            // SEATS FILLING IN REAL TIME IS ITSELF ENGAGING (LUDO.md §12.4) — the "who else is
+            // coming" moment, which should be visible rather than hidden behind a spinner. Only
+            // drawn for a genuinely multi-seat match; two pips for a 1:1 game would be noise
+            // dressed up as information.
+            if (seatCount > 2) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.padding(top = VoiidSpacing.md),
+                ) {
+                    repeat(seatCount) { seat ->
+                        // Seat 0 is the creator, who is by definition here. The server does not
+                        // narrate individual joins, so this shows "you, plus N still coming"
+                        // rather than inventing per-person state it does not have.
+                        Box(
+                            Modifier
+                                .size(10.dp)
+                                .background(
+                                    if (seat == 0) VoiidColor.primary
+                                    else VoiidColor.textSecondary.copy(alpha = 0.25f),
+                                    androidx.compose.foundation.shape.CircleShape,
+                                )
+                        )
+                    }
+                }
+            }
             Text(
-                "Waiting for $opponentName…",
+                if (seatCount > 2) "Waiting for ${seatCount - 1} players…"
+                else "Waiting for $opponentName…",
                 color = VoiidColor.textPrimary,
                 fontSize = 17.sp,
                 fontWeight = FontWeight.SemiBold,
