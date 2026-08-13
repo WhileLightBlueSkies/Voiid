@@ -365,3 +365,73 @@ struct SeaBattleGrid: View {
         }
     }
 }
+
+// MARK: - Deriving the two boards from a frame
+
+/// What each square shows, derived from a frame.
+///
+/// SHARED BY THE ONLINE MATCH AND PRACTICE MODE, and that is the whole reason it is not a method
+/// on either screen. The bot game builds a `SeaBattleState` that looks exactly like a server
+/// frame, so both screens can read the board through the same two functions — which means a
+/// player cannot tell a practice board from a real one, and a fix to one is a fix to both.
+///
+/// Every rule that decides what is visible lives here: their un-hit ships are never in a frame,
+/// sunk outlines become public at the moment of sinking, and both fleets appear only once the
+/// match is over.
+enum SeaBattleCells {
+    /// The OPPONENT's board as this player may see it: my shots, and any ship I have sunk.
+    ///
+    /// Their un-hit ships are not in the frame at all, so there is nothing here to accidentally
+    /// draw — the projection is the server's, not this function's.
+    static func enemy(_ s: SeaBattleState, mySeat: Int?) -> [SeaBattleCell] {
+        var cells = [SeaBattleCell](repeating: .water, count: SeaBattle.cells)
+        guard let seat = mySeat, s.shots.indices.contains(seat) else { return cells }
+        let enemy = 1 - seat
+        for (i, cell) in s.shots[seat].enumerated() where cell < cells.count {
+            let result = s.results[seat].indices.contains(i) ? s.results[seat][i] : 0
+            cells[cell] = result == 0 ? .miss : .hit
+        }
+        // Sunk outlines are public once the ship is down, and they are what makes the endgame
+        // deduction rather than a grind (§2.4).
+        if s.sunkCells.indices.contains(enemy) {
+            for c in s.sunkCells[enemy] where c < cells.count { cells[c] = .sunk }
+        }
+        // Once the match is over the terminal frame carries both fleets, so the loser's unhit
+        // ships finally appear. This is the ONLY path that draws an enemy ship that is not sunk.
+        if s.finished, let revealed = s.revealedFleets, revealed.indices.contains(enemy) {
+            for ship in revealed[enemy] {
+                for c in ship.cells where c < cells.count && cells[c] == .water { cells[c] = .ship }
+            }
+        }
+        return cells
+    }
+
+    /// This player's own board: their fleet, and the opponent's shots on it.
+    ///
+    /// `draft` covers the placement phase, where the frame has no fleet yet — the only point at
+    /// which a local draft and a server fleet are interchangeable, and only because nothing has
+    /// been committed.
+    static func own(
+        _ s: SeaBattleState, mySeat: Int?, draft: [SeaBattleShip] = []
+    ) -> [SeaBattleCell] {
+        var cells = [SeaBattleCell](repeating: .water, count: SeaBattle.cells)
+        let fleet = s.myFleet.isEmpty
+            ? draft.map { SeaBattleState.Ship(type: $0.type, cells: $0.cells, hits: $0.hits) }
+            : s.myFleet
+        for ship in fleet {
+            for c in ship.cells where c < cells.count { cells[c] = .ship }
+        }
+        guard let seat = mySeat else { return cells }
+        let enemy = 1 - seat
+        if s.shots.indices.contains(enemy) {
+            for (i, cell) in s.shots[enemy].enumerated() where cell < cells.count {
+                let result = s.results[enemy].indices.contains(i) ? s.results[enemy][i] : 0
+                cells[cell] = result == 0 ? .miss : .shipHit
+            }
+        }
+        if s.sunkCells.indices.contains(seat) {
+            for c in s.sunkCells[seat] where c < cells.count { cells[c] = .sunk }
+        }
+        return cells
+    }
+}

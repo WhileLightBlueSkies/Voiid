@@ -315,54 +315,12 @@ struct SeaBattleView: View {
         SeaBattleGrid(cells: ownCells(s), dimmed: isMyTurn, showLabels: false)
     }
 
-    /// What the OPPONENT's board looks like from here: my shots, and any ship I have sunk.
-    /// Their un-hit ships are not in this frame at all, so there is nothing to accidentally draw.
     private func enemyCells(_ s: SeaBattleState) -> [SeaBattleCell] {
-        var cells = [SeaBattleCell](repeating: .water, count: SeaBattle.cells)
-        guard let seat = mySeat, s.shots.indices.contains(seat) else { return cells }
-        let enemy = 1 - seat
-        for (i, cell) in s.shots[seat].enumerated() where cell < cells.count {
-            let result = s.results[seat].indices.contains(i) ? s.results[seat][i] : 0
-            cells[cell] = result == 0 ? .miss : .hit
-        }
-        // Sunk outlines are public once the ship is down, and they are what makes the endgame
-        // deduction rather than a grind (§2.4).
-        if s.sunkCells.indices.contains(enemy) {
-            for c in s.sunkCells[enemy] where c < cells.count { cells[c] = .sunk }
-        }
-        // Once the match is over the terminal frame carries both fleets, so the loser's unhit
-        // ships finally appear. This is the ONLY path that draws an enemy ship that is not sunk.
-        if s.finished, let revealed = s.revealedFleets, revealed.indices.contains(enemy) {
-            for ship in revealed[enemy] {
-                for c in ship.cells where c < cells.count && cells[c] == .water { cells[c] = .ship }
-            }
-        }
-        return cells
+        SeaBattleCells.enemy(s, mySeat: mySeat)
     }
 
-    /// My own board: my fleet, and their shots on it.
     private func ownCells(_ s: SeaBattleState) -> [SeaBattleCell] {
-        var cells = [SeaBattleCell](repeating: .water, count: SeaBattle.cells)
-        // During placement the frame has no fleet yet, so fall back to the local draft — this
-        // is the only place the two are interchangeable, and only because nothing is committed.
-        let fleet = s.myFleet.isEmpty
-            ? draft.map { SeaBattleState.Ship(type: $0.type, cells: $0.cells, hits: $0.hits) }
-            : s.myFleet
-        for ship in fleet {
-            for c in ship.cells where c < cells.count { cells[c] = .ship }
-        }
-        guard let seat = mySeat else { return cells }
-        let enemy = 1 - seat
-        if s.shots.indices.contains(enemy) {
-            for (i, cell) in s.shots[enemy].enumerated() where cell < cells.count {
-                let result = s.results[enemy].indices.contains(i) ? s.results[enemy][i] : 0
-                cells[cell] = result == 0 ? .miss : .shipHit
-            }
-        }
-        if s.sunkCells.indices.contains(seat) {
-            for c in s.sunkCells[seat] where c < cells.count { cells[c] = .sunk }
-        }
-        return cells
+        SeaBattleCells.own(s, mySeat: mySeat, draft: draft)
     }
 
     // MARK: - HUD

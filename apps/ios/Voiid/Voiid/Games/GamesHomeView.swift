@@ -84,7 +84,7 @@ struct GamesHomeView: View {
     /// wrong game rather than failing visibly. Adding a bot is: write the view, add its case,
     /// add its slug here.
     private static func hasLocalBot(_ slug: String) -> Bool {
-        ["tictactoe", "rps", "cricket", "snake"].contains(slug)
+        ["tictactoe", "rps", "cricket", "snake", "seabattle"].contains(slug)
     }
 
     private struct PendingCricket: Identifiable {
@@ -291,6 +291,8 @@ struct GamesHomeView: View {
                     switch s.slug {
                     case "rps":     RpsBotView(level: s.level, skill: s.skill) { botGame = nil }
                     case "cricket": CricketBotView(level: s.level, skill: s.skill) { botGame = nil }
+                    case "seabattle":
+                        SeaBattleBotView(level: s.level, skill: s.skill) { botGame = nil }
                     default:        TicTacToeBotView(level: s.level, skill: s.skill) { botGame = nil }
                     }
                 }
