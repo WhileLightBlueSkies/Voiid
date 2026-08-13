@@ -1,6 +1,6 @@
 # Sea Battle
 
-> **Status:** **phases 0 and 1 built** — shared infrastructure and the headless engine. Phases 2-6 (both clients, retention, polish) are still design only. See §16 for what shipped and where it departed from this doc.
+> **Status:** **phases 0, 1, 3 and 4 built** — infrastructure, engine, and both renderers online. Phase 2 (practice mode + bot), 5 (retention) and 6 (polish) are still design only. See §16 for what shipped and where it departed from this doc.
 > **Kind:** turn-based, hidden state, 2 players. No `tickHz`.
 > **Was blocked on:** per-recipient wire frames ([`README.md`](./README.md) §2.1), durable turn-based state (§2.2), deadline sweeper (§2.3). **All three now exist** — see §16.1.
 > **Reference implementations to read first:** [`cricket/index.ts`](../../../backend/games/src/engine/cricket/index.ts) for the hidden-state pattern, [`tictactoe/index.ts`](../../../backend/games/src/engine/tictactoe/index.ts) for the grid and turn pattern.
@@ -757,8 +757,22 @@ Stated rather than quietly absorbed.
 
 3. **`endedBy` is in `serialize()`**, which §4.2's field list does not have. §13.4 requires resignation, timeout forfeit and abandonment to be recorded *distinctly* — the head-to-head has to show a resignation as a loss and an unplayed match as nothing — and `winnerId` alone cannot express the difference between "won by walkover" and "won by playing". Without it the distinction §13.4 calls load-bearing is not representable in the state at all.
 
-## 16.4 What is still open before this is playable
+## 16.4 Phases 3 and 4 — both renderers, online
+
+`SeaBattleView.swift` + `SeaBattleBoard.swift` + `SeaBattleSound.swift`, and their Kotlin twins. Both are dumb views over the games engine: no rules, no outcomes, and no computing whether a shot hit — the frame says, and the renderer draws.
+
+The client's copy of the fleet rules exists only so placement can show a ship red before the drop. It is a mirror, not an authority, and it is tested as one: 14 cases in the Android JVM test target, the same table `seabattle.test.ts` asserts, plus a one-off differential run of the Swift copy against the TypeScript. Three implementations of one rule set is three chances to drift.
+
+Built as specified: the two-board layout with emphasis following the turn, two-step FIRE commit (a 10x10 grid is ~33pt cells, below both platform minimums, and a mis-tap costs the match), Random-first placement, hit and miss differing in shape before colour, the fleet strip, the deadline shown only inside 6 hours, and `catch.wav` on your own ship sinking.
+
+**Not built from §9:** the 380 ms shell travel, the sunk-ship outline draw-in, the board-swap shared-element transition, and screen shake. The motion table assumes a reduce-motion switch that still does not exist (§15 Q8), and shipping the animations before the opt-out would repeat exactly what CROSS_CUTTING.md §13 flags about Snake.
+
+## 16.5 What is still open before this is playable
 
 Nothing in §15 was decided by building this; those questions are unchanged. Concretely blocking a real match: **both renderers (phases 2-4), the "your turn" notification carrier (§15 Q2), and the retention floor (§12.1)**. The engine and its infrastructure are verifiable on their own, which is what phase 1 was for, but a game nobody can see is not a shipped game.
 
-Also unverified: **migrations 040 and 041 have not been applied to a database.** They are additive-only and follow the existing patterns, but Docker was not running when they were written.
+Also unverified:
+
+- **Migrations 040 and 041 have not been applied to any database.** They are additive-only and follow the existing patterns, but Docker was not running locally, and applying them to the shared dev database is a deploy rather than a local step — the games catalog is server-side, so **Sea Battle does not appear in either app's game list until they run.** A push to `main` applies them via `deploy-dev.sh` and restarts the services.
+- **The Android UI has not been seen.** It compiles and its rules tests pass; no emulator was running to render it.
+- **The sound assets do not exist.** `fire_launch`, `splash_1..3`, `hit_metal_1..3`, `sink_groan`, `your_turn` and `place_thud` are registered in both `GameAudio` tables and referenced by `SeaBattleSound`. A missing buffer is a silent no-op on both platforms, so the game plays correctly and quietly until they are recorded.
