@@ -258,6 +258,31 @@ struct SnakeState {
         return UserDirectory.shared.displayName(snake.id, fallback: "Player")
     }
 
+    /// One rock, spike or slick.
+    struct Hazard {
+        /// "rock" | "spike" | "slick".
+        let kind: String
+        let x: Double
+        let y: Double
+        let radius: Double
+        /// Spike cycle in seconds. Nil on rock and slick, which never change state.
+        let period: Double?
+        /// Phase offset, so a field of spikes does not pulse in unison.
+        let offset: Double?
+
+        /// Is this spike out right now?
+        ///
+        /// A PURE FUNCTION OF SIMULATION TIME, matching the server exactly — the client never
+        /// tracks a phase of its own, so the two cannot drift apart and a spike can never be
+        /// drawn retracted while it is killing you.
+        func extended(at t: Double) -> Bool {
+            guard kind == "spike" else { return false }
+            let p = period ?? 3
+            let phase = ((t + (offset ?? 0)).truncatingRemainder(dividingBy: p)) / p
+            return phase < 0.45   // HAZARD_TUNING.SPIKE_DUTY
+        }
+    }
+
     struct Food {
         let id: Int
         let position: CGPoint
@@ -286,6 +311,15 @@ struct SnakeState {
     let players: [String]
     let snakes: [Snake]
     let food: [Food]
+    /**
+     * Arena geography (backend/games/src/engine/snake/hazards.ts).
+     *
+     * STATIC FOR THE WHOLE MATCH, and sent only with a full-food frame — so it is CARRIED
+     * FORWARD from the previous state when a delta arrives, exactly as food is. A frame without
+     * the field means "unchanged", never "there are none": treating it as empty would make the
+     * arena's rocks flicker in and out ten times a second.
+     */
+    let hazards: [Hazard]
     let time: Double
     let arenaRadius: Double
     let duration: Double
@@ -379,10 +413,28 @@ struct SnakeState {
                         victimId: e["v"] as? String)
         }
 
+        // CARRIED FORWARD when the frame does not carry them. Hazards ride the full-food frame
+        // only, so ~1 frame in 30 has the field — treating its absence as "no hazards" would
+        // make the arena's rocks flicker in and out ten times a second.
+        let hazards: [Hazard] = (payload["hazards"] as? [[String: Any]]).map { raw in
+            raw.compactMap { h in
+                guard let kind = h["k"] as? String,
+                      let x = h["x"] as? Double ?? (h["x"] as? Int).map(Double.init),
+                      let y = h["y"] as? Double ?? (h["y"] as? Int).map(Double.init),
+                      let r = h["r"] as? Double ?? (h["r"] as? Int).map(Double.init)
+                else { return nil }
+                return Hazard(
+                    kind: kind, x: x, y: y, radius: r,
+                    period: h["p"] as? Double ?? (h["p"] as? Int).map(Double.init),
+                    offset: h["o"] as? Double ?? (h["o"] as? Int).map(Double.init))
+            }
+        } ?? previous?.hazards ?? []
+
         return SnakeState(
             players: players,
             snakes: snakes,
             food: Array(food.values),
+            hazards: hazards,
             time: (payload["t"] as? Double) ?? 0,
             arenaRadius: (payload["arenaRadius"] as? Double) ?? 1400,
             duration: (payload["duration"] as? Double) ?? 180,

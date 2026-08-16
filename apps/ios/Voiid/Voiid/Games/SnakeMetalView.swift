@@ -971,6 +971,9 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         let focus = stepCamera(target: target)
 
         buildArena(radius: state.arenaRadius)
+        // Terrain first: under the food and under the snakes. A rock drawn over a snake would
+        // make the snake look like it had already crashed into it.
+        buildHazards(state: state)
         buildFood(state: state)
 
         // Rank by mass, so the label over a head and the HUD row always agree.
@@ -1219,6 +1222,74 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         circles.append(CircleInstance(
             centre: .zero, radius: Float(radius) - Self.borderWidth, softness: 0,
             colour: SIMD4(0.055, 0.05, 0.13, 1)))
+    }
+
+    /// Arena geography: rocks, spikes and slicks.
+    ///
+    /// DRAWN UNDER THE FOOD AND THE SNAKES, because it is terrain — a rock that occluded a
+    /// snake would make the snake look like it had already crashed.
+    ///
+    /// EACH KIND HAS TO READ AS WHAT IT DOES, not merely as different colours. A rock is solid
+    /// and opaque, a spike is only sometimes lethal so its state must be unmistakable at a
+    /// glance, and a slick is passable so it must never look like a wall. Getting that wrong
+    /// costs a player their run for a reason they cannot see, which is the worst kind of death
+    /// in this game.
+    private func buildHazards(state: SnakeState) {
+        for h in state.hazards {
+            let centre = SIMD2(Float(h.x), Float(h.y))
+            let r = Float(h.radius)
+
+            switch h.kind {
+            case "rock":
+                // SOLID AND OPAQUE. It kills like the wall, so it is drawn like the wall — hard
+                // edge, no glow, nothing that suggests you might pass through it.
+                circles.append(CircleInstance(
+                    centre: centre, radius: r, softness: 0,
+                    colour: SIMD4(0.30, 0.30, 0.38, 1)))
+                // A lighter cap, lit from the top-left like every other surface in the app.
+                circles.append(CircleInstance(
+                    centre: centre + SIMD2(-r * 0.16, -r * 0.16), radius: r * 0.72,
+                    softness: 0.25, colour: SIMD4(0.44, 0.44, 0.53, 1)))
+                // A dark rim so it separates from the floor rather than floating on it.
+                circles.append(CircleInstance(
+                    centre: centre, radius: r * 1.06, softness: 0.5,
+                    colour: SIMD4(0.10, 0.09, 0.16, 0.55)))
+
+            case "spike":
+                // ITS STATE IS THE WHOLE POINT. Extended is bright, hard-edged and larger;
+                // retracted is a dim flat marker that still shows WHERE it is, so the player
+                // can plan a route through rather than being surprised by one that pops up.
+                let out = h.extended(at: state.time)
+                if out {
+                    circles.append(CircleInstance(
+                        centre: centre, radius: r * 1.5, softness: 0.7,
+                        colour: SIMD4(1.0, 0.35, 0.30, 0.30)))
+                    circles.append(CircleInstance(
+                        centre: centre, radius: r, softness: 0,
+                        colour: SIMD4(1.0, 0.42, 0.32, 1)))
+                    circles.append(CircleInstance(
+                        centre: centre, radius: r * 0.45, softness: 0,
+                        colour: SIMD4(1.0, 0.92, 0.80, 1)))
+                } else {
+                    circles.append(CircleInstance(
+                        centre: centre, radius: r * 0.72, softness: 0.35,
+                        colour: SIMD4(0.45, 0.22, 0.24, 0.75)))
+                    circles.append(CircleInstance(
+                        centre: centre, radius: r * 0.28, softness: 0,
+                        colour: SIMD4(0.62, 0.30, 0.30, 0.9)))
+                }
+
+            default:
+                // SLICK: soft, translucent, no rim. It must not read as a wall — a player who
+                // steers around a slick has paid for nothing.
+                circles.append(CircleInstance(
+                    centre: centre, radius: r, softness: 0.85,
+                    colour: SIMD4(0.35, 0.70, 0.95, 0.16)))
+                circles.append(CircleInstance(
+                    centre: centre, radius: r * 0.62, softness: 0.9,
+                    colour: SIMD4(0.55, 0.85, 1.0, 0.10)))
+            }
+        }
     }
 
     private func buildFood(state: SnakeState) {
