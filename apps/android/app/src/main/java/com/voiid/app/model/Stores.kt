@@ -407,6 +407,16 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
             fetchPresence(conv.id, peer)
         } catch (e: Exception) {
             loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t load messages."
+            // MARK THE READ ANYWAY. Everything above can throw — resolving the peer, the
+            // fetch itself — and every one of those throws used to skip the receipt because
+            // it sat inside the try. The messages already on screen were still read by a
+            // human; a network failure while re-syncing does not un-read them.
+            //
+            // The visible symptom was a chat you are looking at still showing unread, and a
+            // sender on the other platform stuck on Delivered forever. Safe here: markRead
+            // only reports ids already in the local store, and markOpenConversationRead
+            // still gates on the chat being open.
+            runCatching { markOpenConversationRead(conv.id) }
         }
     }
 

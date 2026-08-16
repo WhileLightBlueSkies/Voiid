@@ -22,6 +22,7 @@
 
 import Foundation
 import Security
+import UIKit
 
 private extension String {
     /// Add `=` padding to a base64 string whose length isn't a multiple of 4
@@ -144,7 +145,21 @@ final class ChatEngine {
     // the app-launch / chat-LIST critical path and is what made the list take seconds. The
     // list now renders entirely from SQLite (LocalStore); the message store is decoded LAZILY
     // on first access (opening a chat / a sync) via `ensureLoaded()`.
-    private init() {}
+    private init() {
+        // FLUSH FAILED RECEIPTS WHEN THE APP COMES BACK.
+        //
+        // A receipt whose POST failed is released and queued, but the only thing that
+        // re-sends it is `markRead`, which is gated on the chat being open. So a user who
+        // read a message, hit a dead network for a second and then left the chat had that
+        // receipt dropped with nothing to retry it — the sender sat on Delivered until they
+        // happened to re-open that conversation. Foregrounding is when connectivity
+        // typically returns; same hook MapPresenceEngine uses for the same reason.
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
+        ) { _ in
+            Task { @MainActor in await ChatEngine.shared.flushPendingReceipts() }
+        }
+    }
 
     /// Lazily decode the message store on first access. Idempotent. Mutation critical sections
     /// already force a fresh cross-process reload via `reloadSharedState()` / `reloadStore()`;
@@ -171,6 +186,13 @@ final class ChatEngine {
         // hang that task forever, and the work it was waiting to do is now meaningless.
         for (_, waiters) in syncWaiters { for w in waiters { w.resume() } }
         syncWaiters.removeAll()
+        // `readReported` is STATIC, and this process does not restart on sign-out (see the
+        // doc above). Leaving it populated means every id in it is permanently
+        // un-reportable for the life of the process: sign out, sign back in, and the next
+        // account's reads for those same server ids are silently swallowed by the dedup
+        // filter in `markRead`. Same for a restore-from-backup that re-ingests known ids.
+        Self.readReported.removeAll()
+        Self.pendingReadReceipts.removeAll()
     }
 
     /// Acquire the per-conversation lock (hand-off: a waiter is woken WITH the lock
@@ -240,6 +262,19 @@ final class ChatEngine {
             return
         }
         append(m, to: conversationId)
+        // MARK IT DELIVERED, exactly as the 1:1 path does on newly-received messages.
+        //
+        // This was missing entirely, so a group message never reported `delivered` and the
+        // sender's status sat on "Sent" until somebody opened the chat and triggered a
+        // `read`. Delivered and read are different facts — "it reached a device" versus "a
+        // human looked at it" — and skipping the first made the second the only signal a
+        // group sender ever got.
+        //
+        // Inbound only: our own echo is not a delivery to anyone, and control envelopes and
+        // undecryptable tombstones were never received by a person.
+        if !m.isMine, m.control != true, !m.failed {
+            Task { await markReceipts([m.id], status: "delivered") }
+        }
     }
 
     /// Re-read the shared decrypted-message store from the app-group container. Used by
@@ -963,7 +998,18 @@ final class ChatEngine {
             // dropped request would otherwise strand it forever — the sender stuck on
             // Delivered with nothing to retry it. Re-marking on the next sync is cheap;
             // never re-marking is unrecoverable.
-            if status == "read" { await MainActor.run { Self.readReported.subtract(ids) } }
+            if status == "read" {
+                await MainActor.run {
+                    Self.readReported.subtract(ids)
+                    // AND QUEUE THEM FOR RETRY. Releasing the ids only helps if something
+                    // calls `markRead` again — and the only caller is gated on the chat
+                    // being open. A user who reads a message, loses signal for a moment and
+                    // then leaves the chat had their receipt dropped with nothing to
+                    // re-send it, so the sender sat on Delivered until they happened to
+                    // re-open that conversation. `flushPendingReceipts` drains this.
+                    Self.pendingReadReceipts.formUnion(ids)
+                }
+            }
             NSLog("[VOIID] receipt \(status) failed, will retry: \(error.localizedDescription)")
         }
         }
@@ -973,6 +1019,29 @@ final class ChatEngine {
     /// server fans out a `receipt` WS event to the original senders (blue ticks).
     /// Server ids this device has already reported as READ.
     private static var readReported: Set<String> = []
+
+    /// Read receipts whose POST failed, waiting for a retry.
+    ///
+    /// Separate from `readReported` because they answer different questions: that one is
+    /// "have we already told the server", this one is "did we try and fail". An id lives in
+    /// exactly one of them at a time.
+    private static var pendingReadReceipts: Set<String> = []
+
+    /// Re-send read receipts that failed earlier. Safe to call often — a no-op when the
+    /// queue is empty, and the server upsert is idempotent besides.
+    ///
+    /// Called on websocket reconnect and app foreground, which are the two moments
+    /// connectivity typically comes back. Without a caller like this the retry queue is
+    /// just a slower way of losing the receipt.
+    func flushPendingReceipts() async {
+        let ids = Array(Self.pendingReadReceipts)
+        guard !ids.isEmpty else { return }
+        Self.pendingReadReceipts.removeAll()
+        // Re-mark as reported before sending, exactly as markRead does; markReceipts puts
+        // them back in the pending set if this attempt fails too.
+        Self.readReported.formUnion(ids)
+        await markReceipts(ids, status: "read")
+    }
 
     /// Mark inbound messages READ. See the Android twin for the full rationale.
     ///

@@ -174,6 +174,11 @@ class ChatEngine private constructor(context: Context) {
         store.clear()
         dirtyConversations.clear()
         storeLoaded = false   // next login lazily loads the new account's shards
+        // `readReported` outlives sign-out otherwise — it belongs to the ENGINE, and the
+        // engine is not recreated when an account leaves. Every id left in it is
+        // permanently un-reportable for the life of the process, so the next account's
+        // reads for those same server ids are swallowed by the dedup filter in markRead.
+        readReported.clear()
     }
 
     /** Locally-stored (already decrypted) messages for a conversation, oldest-first. */
@@ -447,6 +452,22 @@ class ChatEngine private constructor(context: Context) {
             }
         }
         return null
+    }
+
+    /**
+     * Mark inbound GROUP messages delivered.
+     *
+     * The 1:1 path does this inline on newly-received messages; the MLS path had no
+     * equivalent, so a group message never reported `delivered` and the sender's status sat
+     * on "Sent" until somebody opened the chat and produced a `read`. Delivered and read are
+     * different facts — "it reached a device" versus "a human looked at it" — and skipping
+     * the first made the second the only signal a group sender ever got.
+     *
+     * A narrow door rather than widening [markReceipts]: GroupEngine has no business
+     * choosing a receipt status, and 'read' for a group is markRead's job.
+     */
+    suspend fun markGroupDelivered(ids: List<String>) {
+        if (ids.isNotEmpty()) markReceipts(ids, "delivered")
     }
 
     private suspend fun markReceipts(ids: List<String>, status: String) {
