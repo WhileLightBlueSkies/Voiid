@@ -12,7 +12,10 @@ use std::time::Instant;
 use voiid_e2e_core::{api, GroupMember, Session};
 
 fn env_usize(key: &str, default: usize) -> usize {
-    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 /// 1:1: sustained bidirectional traffic with periodic out-of-order delivery and
@@ -95,7 +98,10 @@ fn soak_group_churn() {
         for j in 0..msgs_per_round {
             let payload = format!("r{round}-m{j}");
             let ct = ag.encrypt(&alice, payload.as_bytes()).unwrap();
-            assert_eq!(bg.decrypt(&bob, &ct).unwrap().as_deref(), Some(payload.as_bytes()));
+            assert_eq!(
+                bg.decrypt(&bob, &ct).unwrap().as_deref(),
+                Some(payload.as_bytes())
+            );
             total_msgs += 1;
         }
 
@@ -139,7 +145,10 @@ fn soak_media_stream() {
         assert_eq!(dec, plaintext, "media #{i} ({size} bytes) round-trip");
     }
 
-    println!("soak media: {count} attachments in {:.1}s", start.elapsed().as_secs_f64());
+    println!(
+        "soak media: {count} attachments in {:.1}s",
+        start.elapsed().as_secs_f64()
+    );
 }
 
 /// Grow a group to N leaves and measure what that costs on the wire.
@@ -230,5 +239,5 @@ fn group_scale_welcome_and_tree_size() {
         last_tree as f64 / 1_048_576.0,
         commit_total as f64 / 1_048_576.0,
     );
-    assert_eq!(ag.member_count() as usize, members + 1);
+    assert_eq!(ag.member_count(), members + 1);
 }

@@ -4,8 +4,8 @@
 //! they only ever return Err (never panic / hang). The `fuzz/` crate provides
 //! deeper libFuzzer coverage when run with `cargo fuzz`.
 
-use rand::{Rng, RngCore, SeedableRng};
 use rand::rngs::StdRng;
+use rand::{Rng, RngCore, SeedableRng};
 use voiid_e2e_core::{api, GroupMember, MediaKey, WireMessage};
 
 /// Deterministic RNG so failures reproduce. Seed is fixed.

@@ -11,6 +11,7 @@ examine.
 | Capability | Mechanism | Library |
 |---|---|---|
 | 1:1 messages | Double Ratchet (classic X25519) | vodozemac 0.10 (Apache-2.0) |
+| 1:1 reachability | fallback key (X3DH signed-prekey role) | vodozemac 0.10 |
 | Media (image/video/audio) | per-file AES-256-GCM blob, key over ratchet | aes-gcm |
 | Group messages | MLS / RFC 9420 | openmls 0.8 (Apache-2.0) |
 | Group PQ key agreement | **hybrid X-Wing (X25519 + ML-KEM-768)** | openmls_libcrux_crypto |
@@ -49,8 +50,15 @@ All dependencies are permissively licensed. No AGPL, no libsignal code.
    identity state with a 32-byte key the caller supplies. That key MUST be
    stored in the platform secure enclave (iOS Keychain / Android Keystore),
    never on disk in plaintext, never logged.
-4. **No signed prekeys / prekey rotation policy** is enforced here — the app must
-   rotate and replenish one-time keys and not reuse them.
+4. **Fallback key rotation is the app's responsibility.** The crate now publishes
+   a **fallback key** (the X3DH "signed prekey" role) in every bundle, so a device
+   whose one-time keys are exhausted stays reachable. But the fallback key is NOT
+   consumed by use — many senders may share it, so it gives weaker forward secrecy
+   than a one-time key. The app MUST: (a) rotate it on a schedule via
+   `rotate_fallback_key()` (~weekly), (b) call `forget_previous_fallback_key()`
+   one full rotation later to close the window, and (c) have the backend hand out
+   a one-time key whenever one is available, falling back only when the supply is
+   empty. The app must still replenish one-time keys and never reuse them.
 5. **No forward-secrecy guarantee for media blobs at rest** beyond the per-file
    key; deleting the key (delivered over the ratchet) is what makes a blob
    unrecoverable.
@@ -60,6 +68,36 @@ All dependencies are permissively licensed. No AGPL, no libsignal code.
    not yet stable. Move to v2 once it stabilizes if libolm interop is not
    required. (Found in adversarial review; tracked, not yet changed.)
 
+## Dependency advisories (`cargo audit`)
+
+`cargo audit` runs in CI (`.github/workflows/e2e-core-audit.yml`) over the FULL
+transitive tree, weekly and on every change to this crate.
+
+**Why this is not optional:** a by-hand review of the *direct* dependencies on
+2026-08-16 found zero advisories. `cargo audit`, walking all 254 transitive
+crates, found **ten** — most of them high-severity, in the libcrux stack that
+`openmls_libcrux_crypto` pulls in for the post-quantum X-Wing ciphersuite.
+Direct-dependency review is not sufficient for a crypto crate.
+
+Two were fixable immediately and are fixed (`crossbeam-epoch`, `anyhow`). The
+remaining nine are pinned beyond our reach: `hpke-rs 0.6.1` pins the vulnerable
+`libcrux-*` `0.0.x` releases, and because `0.0.x` versions are semver-incompatible
+with each other, Cargo cannot bump them. Upstream fixes exist but are reachable
+only through `openmls_libcrux_crypto 0.4.0-rc`, which drags the whole MLS stack
+(`openmls 0.9-rc`, `openmls_traits 0.6-rc`) onto release candidates. **We do not
+ship release-candidate crypto**, so they are recorded in `.cargo/audit.toml` with
+per-advisory reasoning.
+
+That file is a **tracked-liability register, not a mute button.** Re-check it on
+every `openmls` release; when a stable `openmls_libcrux_crypto >= 0.4` ships, drop
+the ignores and upgrade. Note the blast radius: these advisories are reachable
+through **MLS group operations**, not the 1:1 ratchet — several are panics
+(availability) rather than confidentiality breaks, but `RUSTSEC-2026-0212`
+(constant-time swap/select on aarch64, i.e. every iPhone and most Androids) and
+`RUSTSEC-2026-0211` (non-constant-time AES-GCM tag check) are side-channel issues
+and should be treated as real. An auditor should assess exploitability in our
+specific call paths.
+
 ## Logging / data-handling rules (enforced in code, verify in review)
 
 - Error types carry **no secrets** — variants are fixed strings, no key material
@@ -68,6 +106,15 @@ All dependencies are permissively licensed. No AGPL, no libsignal code.
 
 ## Pre-audit checklist (for the external reviewer)
 
+- [ ] **Fallback key handling** (`keys.rs`): confirm the fallback key is bound
+      into the handshake exactly as a one-time key is, that rotation retains the
+      previous key only for one interval, and that `forget_previous_fallback_key`
+      genuinely prevents new sessions against the retired key. Assess the forward-
+      secrecy cost of many senders sharing one fallback key.
+- [ ] **Transitive libcrux advisories**: assess exploitability of the nine
+      advisories in `.cargo/audit.toml` against our actual MLS call paths —
+      particularly RUSTSEC-2026-0212 (aarch64 constant-time swap/select) and
+      RUSTSEC-2026-0211 (non-constant-time AES-GCM tag check).
 - [ ] **Nonce uniqueness** in `media.rs`: confirm a fresh random 96-bit nonce
       per encryption and that key+nonce are never reused across blobs.
 - [ ] **RNG**: confirm `rand::thread_rng()` is a CSPRNG on every target platform
@@ -94,7 +141,7 @@ All dependencies are permissively licensed. No AGPL, no libsignal code.
 
 ## Test coverage today
 
-47 unit/integration tests + 3 soak tests (`--ignored`). Coverage: messaging
+93 unit/integration tests + 4 soak tests (`--ignored`). Coverage: messaging
 round-trips, media, groups (PQ), calls, verification; negative cases (tampering,
 replay, bad keys, wrong pickle key, non-prekey bootstrap rejection); protocol
 edge cases (out-of-order delivery, prekey exhaustion/replenishment, multi-device

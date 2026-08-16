@@ -1,0 +1,33 @@
+# cargo-audit configuration for voiid-e2e-core.
+#
+# Advisories listed under `ignore` are ones we have assessed and CANNOT fix from
+# here — they live in libcrux crates pinned by `hpke-rs 0.6.1`, which is pinned in
+# turn by `openmls_libcrux_crypto 0.3.1`. Upstream fixes exist but are only
+# reachable via `openmls_libcrux_crypto 0.4.0-rc`, which requires the whole MLS
+# stack (openmls 0.9-rc, openmls_traits 0.6-rc) to move to release candidates.
+# We do not ship release-candidate crypto.
+#
+# EVERY ENTRY HERE IS A TRACKED LIABILITY, NOT AN ACCEPTED RISK. Re-check on each
+# openmls release: when a stable openmls_libcrux_crypto >=0.4 ships, drop these
+# and upgrade. See SECURITY.md "Known limitations".
+#
+# Reviewed: 2026-08-16
+
+[advisories]
+ignore = [
+    # --- libcrux, via openmls_libcrux_crypto -> hpke-rs -> libcrux-* ---
+    # Reachable only through MLS group operations, not the 1:1 ratchet.
+    "RUSTSEC-2026-0124", # libcrux-chacha20poly1305: panic on overlong ciphertext (8.2)
+    "RUSTSEC-2026-0075", # libcrux-ed25519: all-zero keygen on catastrophic RNG failure (8.2)
+    "RUSTSEC-2026-0073", # libcrux-poly1305: panic in standalone MAC ops (8.7)
+    "RUSTSEC-2026-0212", # libcrux-secrets: incorrect constant-time swap/select on aarch64 (8.2)
+    "RUSTSEC-2026-0207", # libcrux-sha3: incorrect incremental SHAKE on multi-squeeze (8.2)
+    "RUSTSEC-2026-0208", # libcrux-sha3: panic in AVX2 SHAKE-256 (8.2)
+    "RUSTSEC-2026-0209", # libcrux-aesgcm: AAD length limit not enforced (6.3, no fix available)
+    "RUSTSEC-2026-0211", # libcrux-aesgcm: non-constant-time tag check (6.3, no fix available)
+    "RUSTSEC-2026-0210", # libcrux-aesgcm: unmaintained, renamed to libcrux-aes
+
+    # --- build-time only, never linked into the shipped library ---
+    "RUSTSEC-2026-0173", # proc-macro-error2: unmaintained (uniffi macro dependency)
+]
+informational_warnings = ["unmaintained", "unsound"]

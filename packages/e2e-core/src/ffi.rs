@@ -49,6 +49,9 @@ pub struct PublicBundle {
     pub identity_key: String,
     pub signing_key: String,
     pub one_time_keys: Vec<String>,
+    /// The X3DH "signed prekey" — used when one-time keys are exhausted.
+    /// `None` means no NEW fallback key to upload; the published one stands.
+    pub fallback_key: Option<String>,
 }
 
 impl From<keys::PublicBundle> for PublicBundle {
@@ -57,6 +60,7 @@ impl From<keys::PublicBundle> for PublicBundle {
             identity_key: b.identity_key,
             signing_key: b.signing_key,
             one_time_keys: b.one_time_keys,
+            fallback_key: b.fallback_key,
         }
     }
 }
@@ -215,13 +219,17 @@ impl Identity {
 
     /// Stable Ed25519 fingerprint (base64) for safety-number verification.
     pub fn fingerprint(&self) -> String {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).fingerprint()
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .fingerprint()
     }
 
     /// Public bundle to upload so peers can start a session with us.
     pub fn publish_bundle(&self, one_time_key_count: u32) -> PublicBundle {
         self.inner
-            .lock().unwrap_or_else(|e| e.into_inner())
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .public_bundle(one_time_key_count as usize)
             .into()
     }
@@ -236,6 +244,40 @@ impl Identity {
             .into()
     }
 
+    /// Rotate the fallback key (X3DH "signed prekey"). Call ~weekly. Returns the
+    /// bundle to upload; peers use it once our one-time keys run out.
+    pub fn rotate_fallback_key(&self) -> PublicBundle {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .rotate_fallback_key()
+            .into()
+    }
+
+    /// The fallback key currently published for this device, if any.
+    pub fn current_fallback_key(&self) -> Option<String> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .current_fallback_key()
+    }
+
+    /// Drop the previous fallback key, one rotation after `rotate_fallback_key`.
+    pub fn forget_previous_fallback_key(&self) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .forget_previous_fallback_key()
+    }
+
+    /// Re-attach a published fallback key after restoring from a pickle.
+    pub fn restore_fallback_key(&self, fallback_key: String) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .restore_fallback_key(&fallback_key)
+    }
+
     /// Maximum one-time keys this device can hold at once.
     pub fn max_one_time_keys(&self) -> u32 {
         self.inner
@@ -247,7 +289,11 @@ impl Identity {
     /// Encrypted pickle to persist this identity in device storage.
     pub fn to_pickle(&self, pickle_key: Vec<u8>) -> FfiResult<String> {
         let key = to_key32(&pickle_key)?;
-        Ok(self.inner.lock().unwrap_or_else(|e| e.into_inner()).to_pickle(&key))
+        Ok(self
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .to_pickle(&key))
     }
 
     /// Start a 1:1 session as the sender of the first message.
@@ -304,20 +350,36 @@ impl Session {
     /// PreKey message's `prekey_session_id`). Used by clients to dedup candidate
     /// sessions and avoid re-accepting a PreKey for a session they already hold.
     pub fn session_id(&self) -> String {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).session_id()
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .session_id()
     }
 
     pub fn encrypt(&self, plaintext: Vec<u8>) -> FfiResult<WireMessage> {
-        Ok(self.inner.lock().unwrap_or_else(|e| e.into_inner()).encrypt(&plaintext)?.into())
+        Ok(self
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .encrypt(&plaintext)?
+            .into())
     }
 
     pub fn decrypt(&self, message: WireMessage) -> FfiResult<Vec<u8>> {
-        Ok(self.inner.lock().unwrap_or_else(|e| e.into_inner()).decrypt(&message.into())?)
+        Ok(self
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .decrypt(&message.into())?)
     }
 
     pub fn to_pickle(&self, pickle_key: Vec<u8>) -> FfiResult<String> {
         let key = to_key32(&pickle_key)?;
-        Ok(self.inner.lock().unwrap_or_else(|e| e.into_inner()).to_pickle(&key))
+        Ok(self
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .to_pickle(&key))
     }
 
     #[uniffi::constructor]
@@ -411,7 +473,8 @@ impl GroupSession {
     ) -> FfiResult<AddMemberOutput> {
         let out = self
             .inner
-            .lock().unwrap_or_else(|e| e.into_inner())
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .add_member(&member.inner, &their_key_package)?;
         Ok(AddMemberOutput {
             commit: out.commit,
@@ -441,10 +504,7 @@ impl GroupSession {
     /// This matters now rather than theoretically: a group may have up to 50 admins
     /// (036_group_roles.sql), so concurrent adds and removes are expected, not exotic.
     pub fn epoch(&self) -> u64 {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .epoch()
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).epoch()
     }
 
     /// Discard a pending commit that LOST a concurrency race, so the winning commit can be
@@ -484,7 +544,8 @@ impl GroupSession {
     pub fn encrypt(&self, member: &GroupMember, plaintext: Vec<u8>) -> FfiResult<Vec<u8>> {
         Ok(self
             .inner
-            .lock().unwrap_or_else(|e| e.into_inner())
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .encrypt(&member.inner, &plaintext)?)
     }
 
@@ -493,13 +554,18 @@ impl GroupSession {
     pub fn decrypt(&self, member: &GroupMember, message: Vec<u8>) -> FfiResult<Option<Vec<u8>>> {
         Ok(self
             .inner
-            .lock().unwrap_or_else(|e| e.into_inner())
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .decrypt(&member.inner, &message)?)
     }
 
     /// Derive SRTP keys for a group call from the group's exporter secret.
     pub fn call_keys(&self, member: &GroupMember) -> FfiResult<SrtpKeys> {
-        let root = self.inner.lock().unwrap_or_else(|e| e.into_inner()).export_call_key(&member.inner, 32)?;
+        let root = self
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .export_call_key(&member.inner, 32)?;
         Ok(call::derive_srtp_keys(&root)?.into())
     }
 }
@@ -606,10 +672,7 @@ pub fn wrap_master_secret_with_pin(secret: Vec<u8>, pin: String) -> FfiResult<Pi
 /// Recover a master secret from a PIN-wrapped secret using the PIN. A wrong PIN
 /// or tampered wrap errors (GCM auth) rather than returning a wrong secret.
 #[uniffi::export]
-pub fn unwrap_master_secret_with_pin(
-    wrapped: PinWrappedSecret,
-    pin: String,
-) -> FfiResult<Vec<u8>> {
+pub fn unwrap_master_secret_with_pin(wrapped: PinWrappedSecret, pin: String) -> FfiResult<Vec<u8>> {
     Ok(api::unwrap_master_secret_with_pin(&wrapped.into(), &pin)?.to_vec())
 }
 
@@ -647,7 +710,5 @@ pub fn srtp_keys_for_1to1(call_secret: CallSecret) -> FfiResult<SrtpKeys> {
 
 /// Convert a caller-provided byte vec into a 32-byte pickle key.
 fn to_key32(bytes: &[u8]) -> FfiResult<[u8; 32]> {
-    bytes
-        .try_into()
-        .map_err(|_| E2eFfiError::InvalidKey)
+    bytes.try_into().map_err(|_| E2eFfiError::InvalidKey)
 }

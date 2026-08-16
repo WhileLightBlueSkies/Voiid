@@ -21,7 +21,9 @@ fn two_member_group_message() {
         .expect("bob joins");
 
     // Alice -> group.
-    let ct = alice_group.encrypt(&alice, b"hello group").expect("encrypt");
+    let ct = alice_group
+        .encrypt(&alice, b"hello group")
+        .expect("encrypt");
     let pt = bob_group.decrypt(&bob, &ct).expect("bob decrypts");
     assert_eq!(pt.as_deref(), Some(&b"hello group"[..]));
 
@@ -71,7 +73,11 @@ fn member_survives_restart() {
     let alice2 = GroupMember::restore(&alice_blob).unwrap();
     let mut alice_group2 = alice2.load_group(&group_id).unwrap();
 
-    assert_eq!(alice_group2.member_count(), 2, "restored group keeps its membership");
+    assert_eq!(
+        alice_group2.member_count(),
+        2,
+        "restored group keeps its membership"
+    );
 
     // Restored Alice -> Bob.
     let ct = alice_group2.encrypt(&alice2, b"after restart").unwrap();
@@ -121,8 +127,12 @@ fn restored_member_can_add_member() {
     let carol = GroupMember::new(b"carol").unwrap();
 
     let mut alice_group = alice.create_group().unwrap();
-    let add_bob = alice_group.add_member(&alice, &bob.key_package().unwrap()).unwrap();
-    let mut bob_group: GroupSession = bob.join_group(&add_bob.welcome, &add_bob.ratchet_tree).unwrap();
+    let add_bob = alice_group
+        .add_member(&alice, &bob.key_package().unwrap())
+        .unwrap();
+    let mut bob_group: GroupSession = bob
+        .join_group(&add_bob.welcome, &add_bob.ratchet_tree)
+        .unwrap();
     let gid = alice_group.group_id();
 
     // Alice restarts.
@@ -132,15 +142,29 @@ fn restored_member_can_add_member() {
     let mut alice_g = alice2.load_group(&gid).unwrap();
 
     // Restored Alice adds Carol.
-    let add_carol = alice_g.add_member(&alice2, &carol.key_package().unwrap()).unwrap();
-    let mut carol_group: GroupSession = carol.join_group(&add_carol.welcome, &add_carol.ratchet_tree).unwrap();
+    let add_carol = alice_g
+        .add_member(&alice2, &carol.key_package().unwrap())
+        .unwrap();
+    let mut carol_group: GroupSession = carol
+        .join_group(&add_carol.welcome, &add_carol.ratchet_tree)
+        .unwrap();
     assert_eq!(alice_g.member_count(), 3);
 
     // Bob applies the commit and everyone can talk.
-    assert_eq!(bob_group.decrypt(&bob, &add_carol.commit).unwrap(), None, "commit applied, no plaintext");
+    assert_eq!(
+        bob_group.decrypt(&bob, &add_carol.commit).unwrap(),
+        None,
+        "commit applied, no plaintext"
+    );
     let ct = alice_g.encrypt(&alice2, b"carol is here").unwrap();
-    assert_eq!(bob_group.decrypt(&bob, &ct).unwrap().as_deref(), Some(&b"carol is here"[..]));
-    assert_eq!(carol_group.decrypt(&carol, &ct).unwrap().as_deref(), Some(&b"carol is here"[..]));
+    assert_eq!(
+        bob_group.decrypt(&bob, &ct).unwrap().as_deref(),
+        Some(&b"carol is here"[..])
+    );
+    assert_eq!(
+        carol_group.decrypt(&carol, &ct).unwrap().as_deref(),
+        Some(&b"carol is here"[..])
+    );
 }
 
 /// load_group with an unknown group id fails cleanly (no panic).
@@ -158,7 +182,11 @@ fn load_unknown_group_errors() {
 fn restore_roundtrip_is_stable() {
     let alice = GroupMember::new(b"alice").unwrap();
     let mut g = alice.create_group().unwrap();
-    g.add_member(&alice, &GroupMember::new(b"bob").unwrap().key_package().unwrap()).ok();
+    g.add_member(
+        &alice,
+        &GroupMember::new(b"bob").unwrap().key_package().unwrap(),
+    )
+    .ok();
     let gid = g.group_id();
 
     let blob1 = alice.serialize().unwrap();

@@ -89,7 +89,10 @@ fn pickle_wrong_key_fails() {
 #[test]
 fn media_empty_roundtrips() {
     let enc = api::encrypt_media(b"").unwrap();
-    assert_eq!(api::decrypt_media(&enc.media_key, &enc.ciphertext).unwrap(), b"");
+    assert_eq!(
+        api::decrypt_media(&enc.media_key, &enc.ciphertext).unwrap(),
+        b""
+    );
 }
 
 /// A media key with a wrong-length key/nonce is rejected.
@@ -117,5 +120,7 @@ fn safety_number_format() {
     let n = api::safety_number(b"id1", "alice-key", b"id2", "bob-key");
     let groups: Vec<&str> = n.split(' ').collect();
     assert_eq!(groups.len(), 12);
-    assert!(groups.iter().all(|g| g.len() == 5 && g.chars().all(|c| c.is_ascii_digit())));
+    assert!(groups
+        .iter()
+        .all(|g| g.len() == 5 && g.chars().all(|c| c.is_ascii_digit())));
 }

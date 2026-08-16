@@ -87,6 +87,9 @@ fn gap_within_window() {
     assert_eq!(api::decrypt(&mut bob, &msgs[29]).unwrap(), b"m29");
     // Backfill the last ~30 (within the 40-key retention window).
     for (i, msg) in msgs.iter().enumerate().take(29) {
-        assert_eq!(api::decrypt(&mut bob, msg).unwrap(), format!("m{i}").as_bytes());
+        assert_eq!(
+            api::decrypt(&mut bob, msg).unwrap(),
+            format!("m{i}").as_bytes()
+        );
     }
 }

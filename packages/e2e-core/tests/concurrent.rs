@@ -31,8 +31,14 @@ fn concurrent_application_messages_no_conflict() {
     let b = bg.encrypt(&bob, b"from bob").unwrap();
 
     // Each receives the other's; order doesn't matter, epoch unchanged.
-    assert_eq!(bg.decrypt(&bob, &a).unwrap().as_deref(), Some(&b"from alice"[..]));
-    assert_eq!(ag.decrypt(&alice, &b).unwrap().as_deref(), Some(&b"from bob"[..]));
+    assert_eq!(
+        bg.decrypt(&bob, &a).unwrap().as_deref(),
+        Some(&b"from alice"[..])
+    );
+    assert_eq!(
+        ag.decrypt(&alice, &b).unwrap().as_deref(),
+        Some(&b"from bob"[..])
+    );
     assert_eq!(ag.epoch(), bg.epoch());
 }
 
@@ -49,10 +55,14 @@ fn losing_committer_reconciles() {
 
     let mut ag = alice.create_group().unwrap();
     let add_bob = ag.add_member(&alice, &bob_kp).unwrap();
-    let mut bg = bob.join_group(&add_bob.welcome, &add_bob.ratchet_tree).unwrap();
+    let mut bg = bob
+        .join_group(&add_bob.welcome, &add_bob.ratchet_tree)
+        .unwrap();
     let add_carol = ag.add_member(&alice, &carol_kp).unwrap();
     bg.decrypt(&bob, &add_carol.commit).unwrap();
-    let _cg = carol.join_group(&add_carol.welcome, &add_carol.ratchet_tree).unwrap();
+    let _cg = carol
+        .join_group(&add_carol.welcome, &add_carol.ratchet_tree)
+        .unwrap();
 
     let start_epoch = ag.epoch();
     assert_eq!(start_epoch, bg.epoch());
@@ -69,13 +79,20 @@ fn losing_committer_reconciles() {
     bg.decrypt(&bob, &winning_commit).unwrap();
 
     // Both converge to the same new epoch and member count.
-    assert_eq!(ag.epoch(), bg.epoch(), "both converge to the winner's epoch");
+    assert_eq!(
+        ag.epoch(),
+        bg.epoch(),
+        "both converge to the winner's epoch"
+    );
     assert_eq!(ag.member_count(), bg.member_count());
     assert_eq!(ag.member_count(), 2);
 
     // And they can still message each other in the new epoch.
     let m = ag.encrypt(&alice, b"post-reconcile").unwrap();
-    assert_eq!(bg.decrypt(&bob, &m).unwrap().as_deref(), Some(&b"post-reconcile"[..]));
+    assert_eq!(
+        bg.decrypt(&bob, &m).unwrap().as_deref(),
+        Some(&b"post-reconcile"[..])
+    );
 }
 
 /// A stale commit (built against an old epoch) is rejected, not silently

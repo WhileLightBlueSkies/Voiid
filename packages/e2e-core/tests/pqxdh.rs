@@ -22,7 +22,10 @@ fn ml_kem_prekey_roundtrip() {
 
     // Bob decapsulates and recovers the same secret.
     let bob_secret = bob_prekey.decapsulate(&ciphertext).unwrap();
-    assert_eq!(alice_secret, bob_secret, "both sides derive the same PQ secret");
+    assert_eq!(
+        alice_secret, bob_secret,
+        "both sides derive the same PQ secret"
+    );
 }
 
 /// A garbage / wrong-length public key is rejected.
