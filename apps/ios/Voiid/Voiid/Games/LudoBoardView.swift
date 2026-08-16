@@ -103,22 +103,41 @@ struct LudoBoardView: View {
             position: drawn, seat: token.seat, tokenIndex: token.index)
         // Fan a stack so two tokens on one square are both visible — rare, and it beats an
         // ambiguous target (§7.2).
-        let spread: CGFloat = token.stackCount > 1 ? unit * 0.18 : 0
-        let offset = CGFloat(token.stackIndex) - CGFloat(token.stackCount - 1) / 2
+        //
+        // NOT IN THE YARD. Every token in a yard shares position -1, so the stack logic saw four
+        // tokens on one square and fanned them — on top of `squareCentre` already giving each one
+        // its own pocket slot by `tokenIndex`. The two offsets compounded and every yard token
+        // sat visibly up and left of the circle drawn for it. A yard is not a stack; it is four
+        // separate places that happen to share an encoding.
+        let stacked = token.stackCount > 1 && !Ludo.inYard(drawn)
+        let spread: CGFloat = stacked ? unit * 0.18 : 0
+        let offset = stacked
+            ? CGFloat(token.stackIndex) - CGFloat(token.stackCount - 1) / 2
+            : 0
         let isMine = token.seat == mySeat
         let isLegal = isMine && legal.contains(token.index)
 
         ZStack {
-            Circle()
-                .fill(Ludo.seatColors[token.seat % Ludo.maxSeats])
-                .overlay(Circle().stroke(boardInk.opacity(0.35), lineWidth: 1))
-                .shadow(color: .black.opacity(0.25), radius: 1.5, y: 1)
+            // A REAL PIECE, NOT A FILLED CIRCLE (§8.1 asks for "rounded pieces that look like
+            // objects that can be picked up"). Contact shadow, lit body, off-centre specular —
+            // three cheap layers in GameSurface that do most of what a sprite would.
+            Canvas { ctx, size in
+                GameSurface.token(
+                    in: ctx,
+                    centre: CGPoint(x: size.width / 2, y: size.height / 2),
+                    radius: min(size.width, size.height) / 2 - 1,
+                    color: Ludo.seatColors[token.seat % Ludo.maxSeats],
+                    // The shadow shrinks and softens while the token is airborne, which is most
+                    // of what sells a hop as leaving the board.
+                    lifted: hopping)
+            }
             // COLOUR IS NEVER THE ONLY CHANNEL (§8.1). Ludo is traditionally colour-only and
             // that is the trap: with four players it is four times worse than Snake's version of
             // the same problem, which CROSS_CUTTING.md §13 flags for ~8% of men.
             Image(systemName: Ludo.seatMarkers[token.seat % Ludo.maxSeats])
-                .font(.system(size: unit * 0.34, weight: .bold))
-                .foregroundStyle(.white.opacity(0.95))
+                .font(.system(size: unit * 0.30, weight: .bold))
+                .foregroundStyle(.white.opacity(0.92))
+                .shadow(color: .black.opacity(0.35), radius: 0.5, y: 0.5)
         }
         // A 48pt HIT TARGET REGARDLESS OF VISUAL SIZE (§7.2). A 52-square track on a 390pt board
         // gives ~40pt cells and ~28pt tokens, well under the platform minimum, so the tappable
@@ -134,6 +153,13 @@ struct LudoBoardView: View {
         // Counter-rotate the token by the board's rotation, so a marker is never upside down
         // for the player looking at it.
         .rotationEffect(.degrees(Double(90 * (mySeat ?? 0))))
+        // CENTRE THE VISUAL INSIDE THE LARGER HIT FRAME.
+        //
+        // The hit frame below is 44pt (the platform minimum) while the disc is ~17pt on a phone,
+        // so there is ~27pt of slack. Without an explicit alignment SwiftUI is free to seat the
+        // smaller child anywhere in it, and the tokens visibly drifted up and left of the yard
+        // circles they are supposed to sit in — the piece disagreeing with its own square.
+        .frame(width: max(unit * 0.72, 44), height: max(unit * 0.72, 44), alignment: .center)
         // THE HIT AREA AND THE TAP MUST BE ATTACHED BEFORE `.position`, NOT AFTER.
         //
         // `.position` expands the view to fill its parent and places the content inside it, so a
@@ -141,7 +167,6 @@ struct LudoBoardView: View {
         // rather than in the token. Every token then claimed the same board-sized hit area,
         // taps landed on whichever view was last in z-order, and moving a token by tapping it
         // simply did not work — while looking completely correct on screen.
-        .frame(width: max(unit * 0.72, 44), height: max(unit * 0.72, 44))
         .contentShape(Circle())
         .onTapGesture { if isLegal { onTapToken?(token.index) } }
         .accessibilityLabel("\(Ludo.seatNames[token.seat % Ludo.maxSeats]) token \(token.index + 1)")
@@ -166,7 +191,10 @@ struct LudoBoardView: View {
     private func drawBoard(ctx: GraphicsContext, side: CGFloat) {
         let unit = side / CGFloat(Ludo.gridSize)
 
-        ctx.fill(Path(CGRect(x: 0, y: 0, width: side, height: side)), with: .color(boardPaper))
+        // FELT, NOT A FLAT FILL. §8.1 asks for warm and tactile — a mat on the floor — and a
+        // large even rectangle reads as an empty view no matter what colour it is.
+        GameSurface.felt(
+            in: ctx, rect: CGRect(x: 0, y: 0, width: side, height: side), base: boardPaper)
 
         func cellRect(_ x: Int, _ y: Int) -> CGRect {
             CGRect(x: CGFloat(x) * unit, y: CGFloat(y) * unit, width: unit, height: unit)
@@ -200,8 +228,9 @@ struct LudoBoardView: View {
                 fill = Ludo.seatColors[seat].opacity(0.30)
             }
             ctx.fill(Path(roundedRect: rect, cornerRadius: 2), with: .color(fill))
-            ctx.stroke(Path(roundedRect: rect, cornerRadius: 2),
-                       with: .color(boardInk.opacity(0.22)), lineWidth: 0.6)
+            // Pressed into the board rather than sitting on it — one light direction, top-left,
+            // shared with every other surface in the app.
+            GameSurface.inset(in: ctx, rect: rect, radius: 2, depth: 0.9)
 
             // SAFE SQUARES ARE PRINTED STARS. This is a rule the board must teach (§8.1) — a
             // player who does not know a square is safe cannot reason about capture at all.
