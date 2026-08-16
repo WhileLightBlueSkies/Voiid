@@ -277,7 +277,11 @@ private fun LudoBoardCanvas(
         Box(Modifier.size(side.dp).rotate(boardRotation)) {
             Canvas(Modifier.fillMaxSize()) {
                 val unit = size.width / Ludo.GRID
-                drawRect(boardPaper, Offset.Zero, size)
+                // FELT, NOT A FLAT FILL. §8.1 asks for warm and tactile — a mat on the floor —
+                // and a large even rectangle reads as an empty view whatever colour it is.
+                with(GameSurface) {
+                    felt(androidx.compose.ui.geometry.Rect(Offset.Zero, size), boardPaper)
+                }
 
                 fun cellOffset(x: Int, y: Int) = Offset(x * unit, y * unit)
 
@@ -318,13 +322,15 @@ private fun LudoBoardCanvas(
                         size = Size(unit - 1f, unit - 1f),
                         cornerRadius = androidx.compose.ui.geometry.CornerRadius(2f),
                     )
-                    drawRoundRect(
-                        boardInk.copy(alpha = 0.22f),
-                        topLeft = cellOffset(x, y) + Offset(0.5f, 0.5f),
-                        size = Size(unit - 1f, unit - 1f),
-                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(2f),
-                        style = Stroke(width = 0.6f),
-                    )
+                    // Pressed into the board rather than sitting on it — one light direction,
+                    // top-left, shared with every other surface in the app.
+                    with(GameSurface) {
+                        inset(
+                            androidx.compose.ui.geometry.Rect(
+                                cellOffset(x, y) + Offset(0.5f, 0.5f),
+                                Size(unit - 1f, unit - 1f)),
+                            radius = 2f, depth = 0.9f)
+                    }
 
                     // SAFE SQUARES ARE PRINTED STARS — a rule the board must teach (§8.1). A
                     // player who does not know a square is safe cannot reason about capture.
@@ -446,20 +452,31 @@ private fun LudoTokenView(
         if (reduceMotion) tween(0) else tween(140), label = "scale")
 
     val diameter = unit * 0.72f
+    val dim = isMine && anyLegal && !isLegal
     Box(
         Modifier
             .offset((x - diameter / 2).dp, (y - diameter / 2).dp)
             .size(diameter.dp)
             .rotate(-boardRotation)   // never upside down for the player looking at it
-            .background(
-                Ludo.SEAT_COLORS[seat % Ludo.MAX_SEATS].copy(
-                    alpha = if (isMine && anyLegal && !isLegal) 0.45f else 1f),
-                CircleShape,
-            )
-            .border(1.dp, Color.Black.copy(alpha = 0.35f), CircleShape)
             .clickable(enabled = isLegal) { onTap() },
         contentAlignment = Alignment.Center,
     ) {
+        // A REAL PIECE, NOT A FILLED CIRCLE (§8.1 asks for "rounded pieces that look like objects
+        // that can be picked up"). Contact shadow, lit body, off-centre specular — the same three
+        // layers as iOS, from the same shared GameSurface.
+        Canvas(Modifier.fillMaxSize()) {
+            with(GameSurface) {
+                token(
+                    centre = Offset(size.width / 2, size.height / 2),
+                    radius = min(size.width, size.height) / 2 - 1f,
+                    color = Ludo.SEAT_COLORS[seat % Ludo.MAX_SEATS]
+                        .copy(alpha = if (dim) 0.45f else 1f),
+                    // The shadow shrinks and softens while airborne, which is most of what sells
+                    // a hop as leaving the board.
+                    lifted = hopping,
+                )
+            }
+        }
         // COLOUR IS NEVER THE ONLY CHANNEL (§8.1). A numeral is the cheapest marker that is
         // legible at this size and unambiguous in greyscale.
         Text(

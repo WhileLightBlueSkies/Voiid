@@ -11,7 +11,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
@@ -226,6 +228,8 @@ fun SeaBattleGrid(
     modifier: Modifier = Modifier,
     reticle: Int? = null,
     firing: Int? = null,
+    /** Seconds, for the water shimmer and the flame flicker. */
+    now: Float = 0f,
     dimmed: Boolean = false,
     onTap: ((Int) -> Unit)? = null,
     onDrag: ((Int) -> Unit)? = null,
@@ -251,6 +255,13 @@ fun SeaBattleGrid(
             val cellSize = size.width / SeaBattle.SIZE
             val alpha = if (dimmed) 0.6f else 1f
 
+            // THE CHART UNDER THE WATER (§8.2). Paper and ink, not naval realism.
+            with(GameSurface) {
+                paper(
+                    androidx.compose.ui.geometry.Rect(Offset.Zero, size),
+                    Paper, grain = 0.020, seed = 3)
+            }
+
             for (index in 0 until SeaBattle.CELLS) {
                 val x = SeaBattle.cx(index) * cellSize
                 val y = SeaBattle.cy(index) * cellSize
@@ -263,13 +274,27 @@ fun SeaBattleGrid(
                     size = Size(cellSize - inset * 2, cellSize - inset * 2),
                     cornerRadius = androidx.compose.ui.geometry.CornerRadius(1.5f),
                 )
-                drawRoundRect(
-                    color = Ink.copy(alpha = 0.12f * alpha),
-                    topLeft = Offset(x + inset, y + inset),
-                    size = Size(cellSize - inset * 2, cellSize - inset * 2),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(1.5f),
-                    style = Stroke(width = 0.5f),
-                )
+                // WATER SHIMMER on anything still unknown. Each cell has its own phase from a
+                // positional hash, so the surface moves as a field rather than the whole screen
+                // breathing in unison. ~0.04 amplitude, per §8.2.
+                if (state == SeaBattleCell.WATER) {
+                    val phase = GameSurface.noise(SeaBattle.cx(index), SeaBattle.cy(index), 5)
+                    val caustic = (0.04 * (0.5 + 0.5 * kotlin.math.sin(now * 0.79 + phase * 6.28)))
+                        .toFloat()
+                    drawRoundRect(
+                        color = Color.White.copy(alpha = caustic * alpha),
+                        topLeft = Offset(x + inset, y + inset),
+                        size = Size(cellSize - inset * 2, cellSize - inset * 2),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(1.5f),
+                    )
+                }
+                with(GameSurface) {
+                    inset(
+                        androidx.compose.ui.geometry.Rect(
+                            Offset(x + inset, y + inset),
+                            Size(cellSize - inset * 2, cellSize - inset * 2)),
+                        radius = 1.5f, depth = 0.6f)
+                }
 
                 // HIT AND MISS DIFFER IN SHAPE AND FILL BEFORE THEY DIFFER IN COLOUR (§8.4).
                 // CROSS_CUTTING.md §13 flags Snake identifying players by colour alone as a
@@ -277,25 +302,72 @@ fun SeaBattleGrid(
                 // the board must survive being rendered in greyscale.
                 val centre = Offset(x + cellSize / 2, y + cellSize / 2)
                 when (state) {
-                    // A small hollow ring. Recedes.
-                    SeaBattleCell.MISS -> drawCircle(
-                        color = Ink.copy(alpha = 0.5f * alpha),
-                        radius = cellSize * 0.18f,
-                        center = centre,
-                        style = Stroke(width = 1.2f),
-                    )
-                    // A large filled mark. Advances.
+                    // A SPLASH: the ring plus two fainter ones still spreading. Recedes.
+                    SeaBattleCell.MISS -> {
+                        drawCircle(
+                            color = Ink.copy(alpha = 0.5f * alpha),
+                            radius = cellSize * 0.18f,
+                            center = centre,
+                            style = Stroke(width = 1.2f),
+                        )
+                        listOf(1.55f to 0.16f, 2.05f to 0.10f).forEach { (scale, a) ->
+                            drawCircle(
+                                color = Ink.copy(alpha = a * alpha),
+                                radius = cellSize * 0.18f * scale,
+                                center = centre,
+                                style = Stroke(width = 0.7f),
+                            )
+                        }
+                    }
+                    // A SCORCH: a hot radial burn. Advances.
                     SeaBattleCell.HIT, SeaBattleCell.SHIP_HIT -> drawCircle(
-                        color = HitRed.copy(alpha = alpha),
-                        radius = cellSize * 0.30f,
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                Color(0.95f, 0.55f, 0.15f),
+                                HitRed,
+                                Color(0.30f, 0.10f, 0.08f),
+                            ),
+                            center = centre,
+                            radius = cellSize * 0.32f,
+                        ),
+                        radius = cellSize * 0.32f,
                         center = centre,
                     )
-                    SeaBattleCell.SUNK -> drawRoundRect(
-                        color = SunkRed.copy(alpha = alpha),
-                        topLeft = Offset(x + cellSize * 0.12f, y + cellSize * 0.12f),
-                        size = Size(cellSize * 0.76f, cellSize * 0.76f),
-                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(1.5f),
-                    )
+                    // A SUNK HULL, still burning. The flame flickers on its own phase so a
+                    // multi-cell wreck does not pulse as one block.
+                    SeaBattleCell.SUNK -> {
+                        drawRoundRect(
+                            color = Color(0.24f, 0.09f, 0.07f).copy(alpha = alpha),
+                            topLeft = Offset(x + cellSize * 0.10f, y + cellSize * 0.10f),
+                            size = Size(cellSize * 0.80f, cellSize * 0.80f),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(1.5f),
+                        )
+                        val phase = GameSurface.noise(SeaBattle.cx(index), SeaBattle.cy(index), 9)
+                        val flicker = (0.5 + 0.5 * kotlin.math.sin(now * 6.1 + phase * 6.28)).toFloat()
+                        val fh = cellSize * (0.26f + 0.16f * flicker)
+                        val base = centre.y + cellSize * 0.10f
+                        val flame = Path().apply {
+                            moveTo(centre.x - cellSize * 0.14f, base)
+                            quadraticBezierTo(
+                                centre.x - cellSize * 0.18f, base - fh * 0.3f, centre.x, base - fh)
+                            quadraticBezierTo(
+                                centre.x + cellSize * 0.18f, base - fh * 0.3f,
+                                centre.x + cellSize * 0.14f, base)
+                            close()
+                        }
+                        drawPath(
+                            flame,
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    Color(0.55f, 0.12f, 0.05f).copy(alpha = 0f),
+                                    Color(0.92f, 0.36f, 0.10f).copy(alpha = 0.75f),
+                                    Color(1f, 0.85f, 0.35f).copy(alpha = 0.95f),
+                                ),
+                                startY = base - fh,
+                                endY = base,
+                            ),
+                        )
+                    }
                     else -> Unit
                 }
             }

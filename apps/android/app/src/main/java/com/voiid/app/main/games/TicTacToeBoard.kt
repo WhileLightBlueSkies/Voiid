@@ -27,6 +27,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
@@ -146,7 +147,22 @@ fun TicTacToeBoard(
         label = "drawFade",
     )
 
-    Box(modifier) {
+    Box(
+        modifier
+            // A SLATE THE TILES SIT ON, rather than nine tiles floating on the app background.
+            //
+            // The chalk vocabulary this game already uses in sound (chalk_x, chalk_o, chalk_line)
+            // had no visual counterpart — the marks were drawn as chalk and the surface was a
+            // plain fill. Grain and a vignette give them something to be drawn ON.
+            .drawBehind {
+                with(GameSurface) {
+                    paper(
+                        androidx.compose.ui.geometry.Rect(Offset.Zero, size),
+                        Color(0.16f, 0.18f, 0.20f), grain = 0.035, seed = 13)
+                }
+            }
+            .padding(VoiidSpacing.sm)
+    ) {
         Column(
             Modifier.fillMaxWidth().alpha(1f - drawFade * 0.30f),
             verticalArrangement = Arrangement.spacedBy(VoiidSpacing.sm),

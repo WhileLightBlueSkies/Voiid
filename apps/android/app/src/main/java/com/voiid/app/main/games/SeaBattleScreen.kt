@@ -29,6 +29,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -81,6 +82,19 @@ fun SeaBattleScreen(
     var firingCell by remember { mutableStateOf<Int?>(null) }
     var showingOwnBoard by remember { mutableStateOf(false) }
     var confirmResign by remember { mutableStateOf(false) }
+
+    // A LIVE CLOCK, at a deliberately low rate — the counterpart to iOS's TimelineView.
+    //
+    // §8.2's shimmer exists to prove the screen is alive during the long pauses of an async
+    // match. 20 fps is plenty for something that slow, and a board game has no reason to hold the
+    // display at 120 Hz.
+    var now by remember { mutableStateOf(0f) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            withFrameNanos { now = (it / 1_000_000_000.0).toFloat() }
+            kotlinx.coroutines.delay(50)
+        }
+    }
 
     DisposableEffect(Unit) {
         GameAudio.preload(context, "seabattle")
@@ -302,6 +316,7 @@ fun SeaBattleScreen(
                         modifier = mod,
                         reticle = reticle,
                         firing = firingCell,
+                        now = now,
                         dimmed = !isMyTurn,
                         onTap = { cell ->
                             if (isMyTurn && !s.finished && mySeat != null &&
@@ -316,6 +331,7 @@ fun SeaBattleScreen(
                     SeaBattleGrid(
                         cells = ownCells(s, mySeat, draft),
                         modifier = mod.clickable { showingOwnBoard = !showingOwnBoard },
+                        now = now,
                         dimmed = isMyTurn,
                     )
                 }
