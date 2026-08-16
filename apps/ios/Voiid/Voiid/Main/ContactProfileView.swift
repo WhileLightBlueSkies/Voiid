@@ -32,6 +32,8 @@ struct ContactProfileView: View {
     /// mutation lands, without this view tracking its own copy of the state.
     @ObservedObject private var blocks = BlockService.shared
     @State private var blockFailure: String?
+    /// Report flow: the confirmation establishes intent, the sheet collects the reason.
+    @State private var showReportSheet = false
 
     /// Explicit states, because "profile == nil" meant BOTH "still loading" and "failed" —
     /// and the screen drew the same empty page for each.
@@ -174,6 +176,25 @@ struct ContactProfileView: View {
                  : "Neither of you will be able to message or call the other. They won't be "
                    + "told. Your messages and any groups you share stay where they are.")
         }
+        // A group has no single person to report, so the sheet is only reachable when there
+        // is a peer. Guarded here rather than inside the sheet: a sheet that opens and
+        // cannot submit is worse than a button that explains itself.
+        .sheet(isPresented: $showReportSheet) {
+            if let peerId = conversation.peerUserId {
+                ReportSheet(target: .person(userId: peerId)) { showReportSheet = false }
+            } else {
+                VStack(spacing: 14) {
+                    Text("There's no individual contact to report in a group.")
+                        .font(VoiidFont.rounded(16, .regular))
+                        .foregroundColor(VoiidColor.textPrimary)
+                        .multilineTextAlignment(.center)
+                    Button("OK") { showReportSheet = false }
+                        .font(VoiidFont.rounded(15, .semibold))
+                        .foregroundColor(VoiidColor.primary)
+                }
+                .padding(32)
+            }
+        }
         .alert(isBlocked ? "Couldn't unblock" : "Couldn't block",
                isPresented: Binding(get: { blockFailure != nil },
                                     set: { if !$0 { blockFailure = nil } })) {
@@ -182,7 +203,10 @@ struct ContactProfileView: View {
             Text(blockFailure ?? "")
         }
         .confirmationDialog("Report \(displayName)?", isPresented: $showReportConfirm, titleVisibility: .visible) {
-            Button("Report", role: .destructive) { notImplemented = "Reporting isn’t available yet." }
+            // Opens the SHEET rather than submitting. The confirmation establishes intent;
+            // a report needs a reason, and a one-tap Report that guessed one would file
+            // "spam" against someone reported for something serious.
+            Button("Report", role: .destructive) { showReportSheet = true }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("The last few messages from this chat are sent to Voiid for review.")
@@ -662,9 +686,9 @@ struct ContactProfileView: View {
     /// The row flips to Unblock when this person is already blocked, so the one control
     /// carries both directions rather than hiding the way back.
     ///
-    /// Report still has no client half — the backend route and table exist (035_reports),
-    /// but nothing here calls them, so it stays honest about not being live rather than
-    /// looking like it worked.
+    /// Report is live too: the confirmation establishes intent and ReportSheet collects the
+    /// reason. The route and table (035_reports) had shipped with no client on either
+    /// platform — Android even had a finished sheet that was reachable from nowhere.
     ///
     /// Destructive actions sit LAST and unlabelled — no "DANGER" header shouting at a screen
     /// you opened to see someone's photo. The red carries it, and the confirmation catches
