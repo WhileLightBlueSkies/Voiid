@@ -575,6 +575,15 @@ class GroupEngine private constructor(context: Context) {
                         }
                 }
             }
+            // Report DELIVERED for everything we just took in, in one call rather than one
+            // per message. Without this a group sender never left "Sent" until a read
+            // happened to land — see ChatEngine.markGroupDelivered.
+            //
+            // Tombstoned messages are included on purpose: the ciphertext genuinely reached
+            // this device, which is what `delivered` asserts. Only `read` requires a human,
+            // and markRead excludes them separately.
+            val received = fresh.map { it.id }
+            if (received.isNotEmpty()) chat.markGroupDelivered(received)
         }
     }
 

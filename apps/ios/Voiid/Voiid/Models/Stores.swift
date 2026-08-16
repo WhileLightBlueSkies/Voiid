@@ -497,6 +497,21 @@ final class ChatStore: ObservableObject {
             await fetchPresence(conv.id, peerUserId: peer)
         } catch {
             loadError = (error as? APIError)?.errorDescription ?? "Couldn’t load messages."
+            // MARK THE READ ANYWAY.
+            //
+            // Everything above can throw — resolving the peer, the fetch itself — and every
+            // one of those throws used to skip the receipt, because it sat INSIDE the `do`.
+            // The messages already on screen were still read by a human; a network failure
+            // while re-syncing does not un-read them.
+            //
+            // That is what produced the reported symptom: an iOS device opens a chat, sees
+            // an Android peer's message, hits any error on the sync, and then neither reports
+            // the read (so the sender stays on Delivered forever) nor clears its own unread
+            // badge (so the chat you are looking at still says unread).
+            //
+            // Safe to call on the error path: markRead only ever reports ids ALREADY in the
+            // local store, and markOpenConversationRead still gates on the chat being open.
+            await markOpenConversationRead(conv.id)
         }
     }
 
