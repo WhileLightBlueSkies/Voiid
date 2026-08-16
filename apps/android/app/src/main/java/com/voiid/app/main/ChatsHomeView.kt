@@ -1,17 +1,20 @@
 package com.voiid.app.main
 
-import kotlinx.coroutines.tasks.await
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
-import androidx.compose.animation.togetherWith
-import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -33,60 +36,42 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.ui.draw.clip
-import com.voiid.app.net.AvatarCache
-import com.voiid.app.net.ContactsService
-import com.voiid.app.net.VContact
-import kotlinx.coroutines.launch
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AlternateEmail
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.ChatBubble
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Create
-import androidx.compose.material.icons.filled.AlternateEmail
-import androidx.compose.material.icons.filled.ChevronRight
-import androidx.compose.material.icons.filled.Inbox
-import com.voiid.app.net.ContactPinService
-
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Groups
+import androidx.compose.material.icons.filled.Inbox
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.material.icons.filled.Groups
-import androidx.compose.material.icons.filled.ChatBubble
-import androidx.compose.ui.text.style.TextAlign
-import com.voiid.app.ui.theme.ChatLayoutPreference
-import com.voiid.app.ui.theme.ChatLayout
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.PersonAdd
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
@@ -99,6 +84,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -107,21 +93,33 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import com.voiid.app.model.ChatStore
 import com.voiid.app.model.ConversationType
 import com.voiid.app.model.DummyData
 import com.voiid.app.model.VConversation
+import com.voiid.app.net.AvatarCache
+import com.voiid.app.net.ContactPinService
+import com.voiid.app.net.ContactsService
+import com.voiid.app.net.VContact
 import com.voiid.app.store.UserDirectory
 import com.voiid.app.ui.components.LocalVoiidHaptics
+import com.voiid.app.ui.components.VoiidMenu
+import com.voiid.app.ui.components.VoiidMenuDivider
+import com.voiid.app.ui.components.VoiidMenuItem
 import com.voiid.app.ui.components.VoiidWordmark
 import com.voiid.app.ui.components.reduceMotionEnabled
 import com.voiid.app.ui.components.softClickable
+import com.voiid.app.ui.theme.ChatLayout
+import com.voiid.app.ui.theme.ChatLayoutPreference
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
 import kotlin.math.hypot
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 
 private enum class ChatTab(val label: String) { CHATS("Chats"), GROUPS("Groups") }
 
@@ -905,40 +903,28 @@ private fun Header(
         Box {
             var menuOpen by remember { mutableStateOf(false) }
             HeaderGlyph(Icons.Default.MoreVert, "More") { haptics.tap(); menuOpen = true }
-            DropdownMenu(
-                expanded = menuOpen,
-                onDismissRequest = { menuOpen = false },
-                containerColor = VoiidColor.surfaceCard,
-            ) {
-                DropdownMenuItem(
-                    text = { Text("New chat", style = VoiidFont.rounded(15), color = VoiidColor.textPrimary) },
-                    onClick = { menuOpen = false; haptics.tap(); onNewChat() },
-                    leadingIcon = { Icon(Icons.Default.PersonAdd, null, tint = VoiidColor.textPrimary) },
-                )
-                DropdownMenuItem(
-                    text = { Text("Find by username", style = VoiidFont.rounded(15), color = VoiidColor.textPrimary) },
-                    onClick = { menuOpen = false; haptics.tap(); onFindByUsername() },
-                    leadingIcon = { Icon(Icons.Default.AlternateEmail, null, tint = VoiidColor.textPrimary) },
-                )
-                DropdownMenuItem(
-                    text = { Text("New group", style = VoiidFont.rounded(15), color = VoiidColor.textPrimary) },
-                    onClick = { menuOpen = false; haptics.tap(); onNewGroup() },
-                    leadingIcon = { Icon(Icons.Default.Groups, null, tint = VoiidColor.textPrimary) },
-                )
-                HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.4f))
-                DropdownMenuItem(
-                    text = { Text("Calls", style = VoiidFont.rounded(15), color = VoiidColor.textPrimary) },
-                    onClick = { menuOpen = false; haptics.tap(); onOpenCallLog() },
-                    leadingIcon = { Icon(Icons.Default.Call, null, tint = VoiidColor.textPrimary) },
-                )
+            VoiidMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                VoiidMenuItem("New chat", Icons.Default.PersonAdd) {
+                    menuOpen = false; haptics.tap(); onNewChat()
+                }
+                VoiidMenuItem("Find by username", Icons.Default.AlternateEmail) {
+                    menuOpen = false; haptics.tap(); onFindByUsername()
+                }
+                VoiidMenuItem("New group", Icons.Default.Groups) {
+                    menuOpen = false; haptics.tap(); onNewGroup()
+                }
+                // The divider separates "start something" from "go somewhere" — the two
+                // groups this menu actually contains.
+                VoiidMenuDivider()
+                VoiidMenuItem("Calls", Icons.Default.Call) {
+                    menuOpen = false; haptics.tap(); onOpenCallLog()
+                }
                 // SETTINGS IS HERE TOO, not only behind the avatar. Tapping your own face to
                 // reach app settings is a convention people learn, not one they guess — this
                 // is the discoverable path, and the avatar stays as the shortcut.
-                DropdownMenuItem(
-                    text = { Text("Settings", style = VoiidFont.rounded(15), color = VoiidColor.textPrimary) },
-                    onClick = { menuOpen = false; haptics.tap(); onOpenSettings() },
-                    leadingIcon = { Icon(Icons.Default.Settings, null, tint = VoiidColor.textPrimary) },
-                )
+                VoiidMenuItem("Settings", Icons.Default.Settings) {
+                    menuOpen = false; haptics.tap(); onOpenSettings()
+                }
             }
         }
     }

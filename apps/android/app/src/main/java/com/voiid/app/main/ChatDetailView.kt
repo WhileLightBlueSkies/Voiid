@@ -2,7 +2,6 @@ package com.voiid.app.main
 
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
-import kotlinx.coroutines.launch
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -28,12 +27,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.ui.draw.alpha
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -41,43 +39,42 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Forward
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowUpward
-import androidx.compose.material.icons.outlined.Mood
 import androidx.compose.material.icons.filled.BarChart
-import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Photo
 import androidx.compose.material.icons.filled.Videocam
-import androidx.compose.material.icons.automirrored.filled.Forward
 import androidx.compose.material.icons.outlined.AddCircleOutline
+import androidx.compose.material.icons.outlined.Mood
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -94,9 +91,12 @@ import com.voiid.app.model.VMember
 import com.voiid.app.model.VMessage
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.VoiidAvatar
+import com.voiid.app.ui.components.VoiidMenu
+import com.voiid.app.ui.components.VoiidMenuItem
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
+import kotlinx.coroutines.launch
 
 /** 1:1 / group chat — port of the (refined) `ChatDetailView.swift`. */
 @Composable
@@ -490,26 +490,25 @@ fun ChatDetailView(
                                 modifier = Modifier.size(17.dp),
                             )
                         }
-                        DropdownMenu(expanded = showAttach, onDismissRequest = { showAttach = false }) {
-                            DropdownMenuItem(
-                                text = { Text("Photo") },
-                                onClick = {
-                                    showAttach = false
-                                    pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                                },
-                                leadingIcon = { Icon(Icons.Default.Photo, null) },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Location") },
-                                onClick = { showAttach = false; showLocation = true },
-                                leadingIcon = { Icon(Icons.Default.LocationOn, null) },
-                            )
+                        // Anchored to the LEFT, because the attach button sits at the left
+                        // edge of the composer — an end-aligned menu would grow away from
+                        // the control that opened it.
+                        VoiidMenu(
+                            expanded = showAttach,
+                            onDismissRequest = { showAttach = false },
+                            alignEnd = false,
+                        ) {
+                            VoiidMenuItem("Photo", Icons.Default.Photo) {
+                                showAttach = false
+                                pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                            }
+                            VoiidMenuItem("Location", Icons.Default.LocationOn) {
+                                showAttach = false; showLocation = true
+                            }
                             if (isGroup) {
-                                DropdownMenuItem(
-                                    text = { Text("Poll") },
-                                    onClick = { showAttach = false; showPollCompose = true },
-                                    leadingIcon = { Icon(Icons.Default.BarChart, null) },
-                                )
+                                VoiidMenuItem("Poll", Icons.Default.BarChart) {
+                                    showAttach = false; showPollCompose = true
+                                }
                             }
                         }
                     }
