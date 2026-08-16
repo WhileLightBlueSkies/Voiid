@@ -224,6 +224,10 @@ struct SeaBattleGrid: View {
     var reticle: Int?
     /// Cell the shell is currently falling on, drawn mid-flight.
     var firing: Int?
+    /// 0...1 through the shell's travel, so the reticle can contract to a point (§9).
+    var shellProgress: Double = 0
+    /// Cells of a ship that has just been sunk, revealed one at a time (§9).
+    var sunkReveal: [Int] = []
     /// Dimmed when it is not the board the player should be looking at.
     var dimmed: Bool = false
     var showLabels: Bool = true
@@ -341,10 +345,31 @@ struct SeaBattleGrid: View {
                        with: .color(Color(red: 0.72, green: 0.22, blue: 0.15)), lineWidth: 2)
         }
 
+        // THE SHELL (§9). The reticle contracts to a point over 380 ms, accelerating — because
+        // accelerating reads as falling. That window is also where the server's answer arrives,
+        // which is what lets a fully round-tripped game feel instant.
         if let firing {
             let rect = cellRect(firing, cellSize: cellSize)
-            ctx.fill(Path(ellipseIn: rect.insetBy(dx: cellSize * 0.34, dy: cellSize * 0.34)),
-                     with: .color(ink.opacity(0.8)))
+            let t = max(0, min(1, shellProgress))
+            // easeIn: t^2. Slow away, fast into the water.
+            let eased = t * t
+            let shrink = cellSize * 0.5 * (1 - eased)
+            ctx.stroke(Path(roundedRect: rect.insetBy(dx: shrink, dy: shrink), cornerRadius: 2),
+                       with: .color(Color(red: 0.72, green: 0.22, blue: 0.15)),
+                       lineWidth: 2 * (1 - eased) + 0.5)
+            let dot = cellSize * 0.06 + cellSize * 0.10 * eased
+            ctx.fill(Path(ellipseIn: CGRect(x: rect.midX - dot, y: rect.midY - dot,
+                                            width: dot * 2, height: dot * 2)),
+                     with: .color(ink.opacity(0.35 + 0.5 * eased)))
+        }
+
+        // THE SUNK OUTLINE, DRAWN IN CELL BY CELL (§9). A ship that simply turns dark reads as a
+        // state change; drawing it along its own hull reads as the ship going down, and it is
+        // what makes the announcement land as a consequence rather than a label.
+        for cell in sunkReveal where cell < SeaBattle.cells {
+            let rect = cellRect(cell, cellSize: cellSize)
+            ctx.stroke(Path(roundedRect: rect.insetBy(dx: -1, dy: -1), cornerRadius: 2),
+                       with: .color(Color(red: 0.42, green: 0.13, blue: 0.10)), lineWidth: 2)
         }
     }
 

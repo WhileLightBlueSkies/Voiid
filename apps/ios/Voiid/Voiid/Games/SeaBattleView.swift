@@ -21,7 +21,9 @@ struct SeaBattleView: View {
     var onRematch: ((String) -> Void)?
 
     @StateObject private var engine = GamesEngine.shared
+    @StateObject private var motion = SeaBattleMotion()
     @EnvironmentObject var session: AppSession
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var me: String? { TokenStore.shared.userId }
 
@@ -105,13 +107,36 @@ struct SeaBattleView: View {
             session.hideTabBar = false
             engine.leave()
             GameAudio.shared.release(for: "seabattle")
+            motion.cancel()
         }
-        // The shot resolves when the FRAME arrives, not when the animation ends. Clearing the
-        // local firing cell here is what hands the square back to the server's answer.
-        .onChange(of: engine.seaBattle?.lastShot) { _, _ in
-            firingCell = nil
-            reticle = nil
-            SeaBattleSound.shotResolved(engine.seaBattle, me: me)
+        // THE RESULT IS REVEALED WHEN THE SHELL LANDS, NOT WHEN THE FRAME ARRIVES (§9).
+        //
+        // The frame usually beats the animation — on the dev box by 300 ms — and showing the
+        // answer the instant it lands would make a fast connection feel different from a slow
+        // one. Holding the reveal until the end of the fixed 380 ms travel is what makes every
+        // shot feel the same, and it is the whole reason the travel exists.
+        .onChange(of: engine.seaBattle?.lastShot) { _, shot in
+            guard shot != nil else { return }
+            let land = {
+                firingCell = nil
+                reticle = nil
+                SeaBattleSound.shotResolved(engine.seaBattle, me: me)
+                if engine.seaBattle?.lastResult ?? 0 > 0 {
+                    motion.hitShake(reduceMotion: reduceMotion)
+                }
+                if engine.seaBattle?.lastResult == 2, let s = engine.seaBattle, let seat = mySeat {
+                    // Whichever fleet just lost a ship owns the outline being drawn in.
+                    let owner = s.turn.map { 1 - $0 } == seat ? 1 - seat : seat
+                    motion.revealSunk(Array(s.sunkCells[owner].suffix(5)),
+                                      reduceMotion: reduceMotion)
+                }
+            }
+            // Only wait when WE fired — an incoming shot has no shell of ours in the air.
+            if firingCell != nil {
+                motion.fire(reduceMotion: reduceMotion, onLand: land)
+            } else {
+                land()
+            }
         }
         .onChange(of: engine.seaBattle?.finished) { _, finished in
             guard finished == true else { return }
@@ -301,6 +326,8 @@ struct SeaBattleView: View {
             cells: enemyCells(s),
             reticle: reticle,
             firing: firingCell,
+            shellProgress: motion.shellProgress,
+            sunkReveal: motion.sunkReveal,
             dimmed: !isMyTurn,
             onTap: { cell in
                 guard isMyTurn, !s.finished else { return }

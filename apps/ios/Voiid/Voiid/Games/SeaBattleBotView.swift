@@ -24,7 +24,9 @@ struct SeaBattleBotView: View {
     var onClose: (() -> Void)?
 
     @StateObject private var match = SeaBattleBotMatch()
+    @StateObject private var motion = SeaBattleMotion()
     @EnvironmentObject var session: AppSession
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     // Placement is local until committed, exactly as it is online.
     @State private var draft: [SeaBattleShip] = []
@@ -70,11 +72,20 @@ struct SeaBattleBotView: View {
         .onDisappear {
             session.hideTabBar = false
             GameAudio.shared.release(for: "seabattle")
+            motion.cancel()
         }
         // Same two beats as online, driven by the same fields.
-        .onChange(of: match.state.lastShot) { _, _ in
+        .onChange(of: match.state.lastShot) { _, shot in
+            guard shot != nil else { return }
             reticle = nil
             SeaBattleSound.shotResolved(match.state, me: "you")
+            if (match.state.lastResult ?? 0) > 0 { motion.hitShake(reduceMotion: reduceMotion) }
+            if match.state.lastResult == 2 {
+                let owner = match.state.turn == SeaBattleBotMatch.humanSeat
+                    ? SeaBattleBotMatch.botSeat : SeaBattleBotMatch.humanSeat
+                motion.revealSunk(Array(match.state.sunkCells[owner].suffix(5)),
+                                  reduceMotion: reduceMotion)
+            }
         }
         .onChange(of: match.state.finished) { _, finished in
             guard finished else { return }
@@ -202,6 +213,8 @@ struct SeaBattleBotView: View {
         SeaBattleGrid(
             cells: SeaBattleCells.enemy(s, mySeat: SeaBattleBotMatch.humanSeat),
             reticle: reticle,
+            shellProgress: motion.shellProgress,
+            sunkReveal: motion.sunkReveal,
             dimmed: !match.canFire,
             onTap: { cell in
                 guard match.canFire else { return }
@@ -266,8 +279,10 @@ struct SeaBattleBotView: View {
         let canFire = match.canFire && reticle != nil
         Button {
             guard let cell = reticle else { return }
-            match.fire(at: cell)
             GameAudio.shared.play("fire_launch", gain: 0.7)
+            // The shell falls, THEN the shot resolves — so a local bot game has the same beat as
+            // a round-tripped online one rather than answering instantly.
+            motion.fire(reduceMotion: reduceMotion) { match.fire(at: cell) }
         } label: {
             Text(reticle.map { "FIRE — \(SeaBattle.coordLabel($0))" } ?? "Select a square")
                 .font(VoiidFont.rounded(16, .semibold))
