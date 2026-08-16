@@ -82,6 +82,27 @@ struct TicTacToeBoard: View {
                 }
             }
         }
+        // A SLATE THE TILES SIT ON, rather than nine tiles floating on the app background.
+        //
+        // The chalk vocabulary this game already uses in sound (chalk_x, chalk_o, chalk_line)
+        // had no visual counterpart — the marks were drawn as chalk and the surface was a plain
+        // fill. Grain and a vignette give them something to be drawn ON, and it costs one Canvas
+        // behind the grid.
+        .padding(VoiidSpacing.sm)
+        .background {
+            Canvas { ctx, size in
+                let rect = CGRect(origin: .zero, size: size)
+                GameSurface.paper(
+                    in: ctx, rect: rect,
+                    base: Color(red: 0.16, green: 0.18, blue: 0.20),
+                    grain: 0.035, seed: 13)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg))
+            .overlay(
+                RoundedRectangle(cornerRadius: VoiidRadius.lg)
+                    .stroke(.white.opacity(0.10), lineWidth: 1))
+            .shadow(color: .black.opacity(0.22), radius: 8, y: 3)
+        }
         // Overlaid on the GRID, so the geometry reader reports exactly the grid's frame and
         // cell centres fall out of the same spacing constant the layout above uses.
         .overlay { winLine }
@@ -214,6 +235,15 @@ struct TicTacToeBoard: View {
                     .fill(isWinning && swelled
                           ? VoiidColor.primary.opacity(0.20)
                           : VoiidColor.surfaceCard)
+                    // Pressed into the slate: shadow on the top-left, catch-light on the
+                    // bottom-right. One light direction, shared with every other board.
+                    .overlay(
+                        RoundedRectangle(cornerRadius: VoiidRadius.lg)
+                            .stroke(
+                                LinearGradient(
+                                    colors: [.black.opacity(0.16), .clear, .white.opacity(0.30)],
+                                    startPoint: .topLeading, endPoint: .bottomTrailing),
+                                lineWidth: 1.2))
 
                 if let mark {
                     MarkShape(isCross: mark == 0)
@@ -223,6 +253,8 @@ struct TicTacToeBoard: View {
                                                lineCap: .round, lineJoin: .round)
                         )
                         .padding(VoiidSpacing.lg)
+                        // The mark sits ON the tile, so it casts a little.
+                        .shadow(color: .black.opacity(0.20), radius: 1.5, y: 1)
                         // Lands with an overshoot rather than appearing — the bouncy feel.
                         .transition(.scale(scale: 0.4).combined(with: .opacity))
                 }
