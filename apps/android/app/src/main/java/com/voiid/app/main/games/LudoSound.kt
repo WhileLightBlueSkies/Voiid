@@ -29,16 +29,23 @@ object LudoSound {
         haptics?.eat()
     }
 
-    /** A token moved. [move] is the server's own record of what happened. */
+    /**
+     * ONE SQUARE OF A HOP CHAIN.
+     *
+     * THE MOST-TRIGGERED SOUND IN THE GAME — a 6-square move fires it six times, ~200 times a
+     * match. Four variants plus the engine's own jitter, per the chalk argument
+     * (SOUND_DESIGN.md §4.3): without variation it is machine-like by move four.
+     */
+    fun hopped() {
+        GameAudio.playAny(listOf("hop_1", "hop_2", "hop_3", "hop_4"), gain = 0.45f)
+    }
+
+    /** A token LANDED. Called when the hop chain finishes, not when the frame arrives. */
     fun moved(move: GamesEngine.LudoState.LastMove, mySeat: Int?, haptics: GameHaptics? = null) {
+        // Entering from the yard is a firmer placement, and it crosses no squares — so it gets
+        // its own sound rather than a one-square chain.
         if (move.from == Ludo.YARD) {
-            // Entering from the yard is a firmer placement than an ordinary step.
             GameAudio.play("enter", gain = 0.6f)
-        } else {
-            // The most-triggered sound in the game — a full hop chain fires it once per square,
-            // ~200 times a match. Four variants plus the engine's own jitter, per the chalk
-            // argument (SOUND_DESIGN.md §4.3): without variation it is machine-like by move four.
-            GameAudio.playAny(listOf("hop_1", "hop_2", "hop_3", "hop_4"), gain = 0.45f)
         }
 
         val captured = move.captured

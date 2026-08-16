@@ -34,6 +34,9 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
@@ -77,12 +80,19 @@ fun LudoScreen(
     val joinError by engine.joinError.collectAsState()
     val me = engine.myUserId
     val haptics = remember { GameHaptics(context) }
+    val scope = rememberCoroutineScope()
+    val hop = remember(scope) { LudoHop(scope) }
+    val reduceMotion = remember(context) { ReduceMotion.isEnabled(context) }
+    // The die face the CURRENT move was made with: `die` is cleared when the turn passes, so the
+    // arriving move frame no longer carries the number the hop needs to count out.
+    var lastDie by remember { mutableStateOf(0) }
 
     DisposableEffect(Unit) {
         GameAudio.preload(context, "ludo")
         onDispose {
             GameAudio.release("ludo")
             engine.leave()
+            hop.skip()
         }
     }
 
@@ -91,12 +101,20 @@ fun LudoScreen(
     // The die settling and the move landing are two separate beats, driven by two separate
     // fields, because they are two separate events — collapsing them would read as one.
     LaunchedEffect(state?.die) {
-        if (state?.die != null) LudoSound.dieSettled(haptics)
+        state?.die?.let { lastDie = it; LudoSound.dieSettled(haptics) }
     }
+    // THE MOVE SOUND FIRES WHEN THE HOP LANDS, NOT WHEN THE FRAME ARRIVES. A capture heard
+    // before the token has visibly reached the square reads as two unrelated events.
     LaunchedEffect(state?.lastMove?.to) {
         val s = state ?: return@LaunchedEffect
         val move = s.lastMove ?: return@LaunchedEffect
-        LudoSound.moved(move, s.players.indexOf(me).takeIf { it >= 0 }, haptics)
+        val seat = s.players.indexOf(me).takeIf { it >= 0 }
+        hop.play(
+            seat = move.seat, token = move.token, from = move.from, to = move.to,
+            die = lastDie, reduceMotion = reduceMotion,
+            onStep = { LudoSound.hopped() },
+            onFinish = { LudoSound.moved(move, seat, haptics) },
+        )
     }
     LaunchedEffect(state?.finished) {
         if (state?.finished == true) LudoSound.matchEnded(state, me)
@@ -157,6 +175,8 @@ fun LudoScreen(
                     mySeat = mySeat,
                     legal = if (isMyMove) s.legal else emptyList(),
                     onTapToken = { engine.moveLudo(context, it) },
+                    hopOverrides = hop.overrides,
+                    reduceMotion = reduceMotion,
                 )
                 Status(s, me, isMyTurn, mySeat)
                 if (s.finished) {
@@ -236,6 +256,9 @@ private fun LudoBoardCanvas(
     mySeat: Int?,
     legal: List<Int>,
     onTapToken: (Int) -> Unit,
+    /** Positions to draw INSTEAD of the state's, while a hop chain is in flight (§9). */
+    hopOverrides: Map<String, Int> = emptyMap(),
+    reduceMotion: Boolean = false,
 ) {
     val boardPaper = Color(0.97f, 0.95f, 0.90f)
     val boardInk = Color(0.22f, 0.20f, 0.18f)
@@ -362,7 +385,9 @@ private fun LudoBoardCanvas(
                     LudoTokenView(
                         seat = seat,
                         index = index,
-                        position = position,
+                        position = hopOverrides[LudoHop.key(seat, index)] ?: position,
+                        hopping = hopOverrides.containsKey(LudoHop.key(seat, index)),
+                        reduceMotion = reduceMotion,
                         stackIndex = stackIndex,
                         stackCount = stackCount,
                         side = side,
@@ -383,6 +408,8 @@ private fun LudoTokenView(
     seat: Int,
     index: Int,
     position: Int,
+    hopping: Boolean = false,
+    reduceMotion: Boolean = false,
     stackIndex: Int,
     stackCount: Int,
     side: Float,
@@ -403,9 +430,20 @@ private fun LudoTokenView(
     // spring between squares reads as a token being moved rather than teleporting. The true
     // square-by-square hop chain, which shows the player HOW FAR, is deliberately not built —
     // it needs the reduce-motion switch that does not exist yet.
-    val x by animateFloatAsState(cx * side + fanOffset, spring(dampingRatio = 0.68f), label = "x")
-    val y by animateFloatAsState(cy * side + fanOffset, spring(dampingRatio = 0.68f), label = "y")
-    val scale by animateFloatAsState(if (isLegal) 1.18f else 1f, tween(260), label = "scale")
+    // Each hop lifts, which is what makes a token read as an object being picked up rather than
+    // a dot sliding (§9). Under reduce-motion every spring collapses to an instant cut.
+    val lift = if (hopping) -unit * 0.22f else 0f
+    val x by animateFloatAsState(
+        cx * side + fanOffset,
+        if (reduceMotion) tween(0) else spring(dampingRatio = 0.62f, stiffness = 900f),
+        label = "x")
+    val y by animateFloatAsState(
+        cy * side + fanOffset + lift,
+        if (reduceMotion) tween(0) else spring(dampingRatio = 0.62f, stiffness = 900f),
+        label = "y")
+    val scale by animateFloatAsState(
+        if (hopping) 1.16f else if (isLegal) 1.18f else 1f,
+        if (reduceMotion) tween(0) else tween(140), label = "scale")
 
     val diameter = unit * 0.72f
     Box(
