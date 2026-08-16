@@ -77,6 +77,7 @@ import com.voiid.app.model.VConversation
 import com.voiid.app.net.BlockService
 import com.voiid.app.net.ContactDirectory
 import com.voiid.app.net.ProfileService
+import com.voiid.app.net.ReportTarget
 import com.voiid.app.store.UserDirectory
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.ProfilePhotoViewer
@@ -130,12 +131,14 @@ fun ContactProfileView(
      *
      *  Block is LIVE now (043_user_blocks + /blocks, enforced server-side across messages,
      *  calls, profile, presence, conversation creation, group invites, stories and typing).
-     *  Report still has no client half — the route and table exist, nothing here calls
-     *  them — so it keeps saying so rather than appearing to work. */
+     *  Report is live too: the confirmation establishes intent and ReportSheet collects
+     *  the reason. That sheet was written, correct, and reachable from nowhere. */
     var confirm by remember { mutableStateOf<String?>(null) }
     var notImplemented by remember { mutableStateOf<String?>(null) }
     /** Set when a block/unblock fails, so the row's state and the message stay honest. */
     var blockFailure by remember { mutableStateOf<String?>(null) }
+    /** Report flow: the confirmation establishes intent, the sheet collects the reason. */
+    var showReportSheet by remember { mutableStateOf(false) }
     var photoUrl by remember { mutableStateOf<String?>(null) }
     // The four most recent calls with this contact, newest first — same source the transcript's
     // call bubbles use, asked a different question. Four because the card is a summary, not a log.
@@ -261,7 +264,11 @@ fun ContactProfileView(
                                 }
                             }
                         }
-                        else -> notImplemented = "Reporting isn’t available yet."
+                        // Report opens the SHEET rather than submitting here. The
+                        // confirmation only establishes intent; the reason and the
+                        // reporter's own words are chosen in ReportSheet, which has
+                        // existed and been reachable from nowhere until now.
+                        else -> showReportSheet = true
                     }
                 }) { Text(action, color = VoiidColor.error) }
             },
@@ -284,6 +291,30 @@ fun ContactProfileView(
                 }
             },
         )
+    }
+
+    // Report. Hosted here rather than inside the danger card so it survives the card
+    // scrolling out of view, and dismissed by the sheet's own onDone.
+    if (showReportSheet) {
+        val peer = conversation.peerUserId
+        if (peer == null) {
+            // A group has no single person to report. Nothing here can be a valid target,
+            // so say so rather than opening a sheet that cannot submit.
+            showReportSheet = false
+            notImplemented = "There's no individual contact to report in a group."
+        } else {
+            androidx.compose.ui.window.Dialog(
+                onDismissRequest = { showReportSheet = false },
+                properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+            ) {
+                Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+                    ReportSheet(
+                        target = ReportTarget.Person(peer),
+                        onDone = { showReportSheet = false },
+                    )
+                }
+            }
+        }
     }
 
     blockFailure?.let { msg ->
