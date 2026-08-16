@@ -55,8 +55,7 @@ pub fn new_call_secret() -> CallSecret {
 
 /// Derive SRTP keys for a 1:1 call from the exchanged [`CallSecret`].
 pub fn srtp_keys_for_1to1(call_secret: &CallSecret) -> Result<SrtpKeys, E2eError> {
-    let root =
-        vodozemac::base64_decode(&call_secret.secret).map_err(|_| E2eError::InvalidKey)?;
+    let root = vodozemac::base64_decode(&call_secret.secret).map_err(|_| E2eError::InvalidKey)?;
     derive_srtp_keys(&root)
 }
 

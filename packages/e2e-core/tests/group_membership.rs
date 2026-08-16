@@ -21,7 +21,9 @@ fn three_member_group() -> (
 
     // Add Bob.
     let add_bob = ag.add_member(&alice, &bob_kp).unwrap();
-    let mut bg = bob.join_group(&add_bob.welcome, &add_bob.ratchet_tree).unwrap();
+    let mut bg = bob
+        .join_group(&add_bob.welcome, &add_bob.ratchet_tree)
+        .unwrap();
 
     // Add Carol. Bob must process the add commit to stay in sync.
     let add_carol = ag.add_member(&alice, &carol_kp).unwrap();
@@ -42,8 +44,14 @@ fn remove_locks_out_member() {
 
     // Sanity: all three can exchange a message first.
     let hello = ag.encrypt(&alice, b"hi all").unwrap();
-    assert_eq!(bg.decrypt(&bob, &hello).unwrap().as_deref(), Some(&b"hi all"[..]));
-    assert_eq!(cg.decrypt(&carol, &hello).unwrap().as_deref(), Some(&b"hi all"[..]));
+    assert_eq!(
+        bg.decrypt(&bob, &hello).unwrap().as_deref(),
+        Some(&b"hi all"[..])
+    );
+    assert_eq!(
+        cg.decrypt(&carol, &hello).unwrap().as_deref(),
+        Some(&b"hi all"[..])
+    );
 
     // Alice removes Carol; Bob processes the removal commit.
     let commit = ag.remove_member(&alice, b"carol").unwrap();
@@ -52,7 +60,10 @@ fn remove_locks_out_member() {
 
     // Alice and Bob can still talk.
     let after = ag.encrypt(&alice, b"carol is gone").unwrap();
-    assert_eq!(bg.decrypt(&bob, &after).unwrap().as_deref(), Some(&b"carol is gone"[..]));
+    assert_eq!(
+        bg.decrypt(&bob, &after).unwrap().as_deref(),
+        Some(&b"carol is gone"[..])
+    );
 
     // Carol, with stale state, must NOT be able to decrypt the post-removal
     // message. (She never received the rekeying commit, and even the ciphertext

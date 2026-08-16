@@ -167,7 +167,12 @@ impl GroupMember {
     /// this device to a group. Returns the TLS-serialized bytes.
     pub fn key_package(&self) -> Result<Vec<u8>, E2eError> {
         let bundle = KeyPackage::builder()
-            .build(CIPHERSUITE, &self.provider, &self.signer, self.credential.clone())
+            .build(
+                CIPHERSUITE,
+                &self.provider,
+                &self.signer,
+                self.credential.clone(),
+            )
             .map_err(|_| E2eError::InvalidKey)?;
         bundle
             .key_package()
@@ -182,8 +187,13 @@ impl GroupMember {
         let config = MlsGroupCreateConfig::builder()
             .ciphersuite(CIPHERSUITE)
             .build();
-        let group = MlsGroup::new(&self.provider, &self.signer, &config, self.credential.clone())
-            .map_err(|_| E2eError::Serialization)?;
+        let group = MlsGroup::new(
+            &self.provider,
+            &self.signer,
+            &config,
+            self.credential.clone(),
+        )
+        .map_err(|_| E2eError::Serialization)?;
         Ok(GroupSession { group })
     }
 

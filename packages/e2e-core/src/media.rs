@@ -123,8 +123,8 @@ fn encrypt_media_with_key_bytes(
 /// Verifies the ciphertext hash before decrypting.
 pub fn decrypt_media(media_key: &MediaKey, ciphertext: &[u8]) -> Result<Vec<u8>, E2eError> {
     // Verify integrity of the downloaded blob first.
-    let expected = vodozemac::base64_decode(&media_key.ciphertext_sha256)
-        .map_err(|_| E2eError::InvalidKey)?;
+    let expected =
+        vodozemac::base64_decode(&media_key.ciphertext_sha256).map_err(|_| E2eError::InvalidKey)?;
     let actual = {
         let mut hasher = Sha256::new();
         hasher.update(ciphertext);
@@ -161,8 +161,14 @@ mod tests {
         let first = encrypt_media_with_key(&key, b"avatar v1").unwrap();
         let second = encrypt_media_with_key(&key, b"avatar v2").unwrap();
 
-        assert_eq!(decrypt_media(&first.media_key, &first.ciphertext).unwrap(), b"avatar v1");
-        assert_eq!(decrypt_media(&second.media_key, &second.ciphertext).unwrap(), b"avatar v2");
+        assert_eq!(
+            decrypt_media(&first.media_key, &first.ciphertext).unwrap(),
+            b"avatar v1"
+        );
+        assert_eq!(
+            decrypt_media(&second.media_key, &second.ciphertext).unwrap(),
+            b"avatar v2"
+        );
 
         // Same key both times — that is the whole point of a long-lived profile key.
         assert_eq!(first.media_key.key, second.media_key.key);
@@ -178,7 +184,10 @@ mod tests {
         let a = encrypt_media_with_key(&key, b"same bytes").unwrap();
         let b = encrypt_media_with_key(&key, b"same bytes").unwrap();
 
-        assert_ne!(a.media_key.nonce, b.media_key.nonce, "nonce MUST differ per encryption");
+        assert_ne!(
+            a.media_key.nonce, b.media_key.nonce,
+            "nonce MUST differ per encryption"
+        );
         // Identical plaintext under one key must still produce different ciphertext.
         assert_ne!(a.ciphertext, b.ciphertext);
     }

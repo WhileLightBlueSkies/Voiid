@@ -16,12 +16,18 @@ fn fan_out_to_two_devices() {
     let mut alice = api::create_identity();
     let alice_bundle = api::publish_bundle(&mut alice, 1);
 
-    let phone_session =
-        api::start_session(&alice, &phone_bundle.identity_key, &phone_bundle.one_time_keys[0])
-            .unwrap();
-    let laptop_session =
-        api::start_session(&alice, &laptop_bundle.identity_key, &laptop_bundle.one_time_keys[0])
-            .unwrap();
+    let phone_session = api::start_session(
+        &alice,
+        &phone_bundle.identity_key,
+        &phone_bundle.one_time_keys[0],
+    )
+    .unwrap();
+    let laptop_session = api::start_session(
+        &alice,
+        &laptop_bundle.identity_key,
+        &laptop_bundle.one_time_keys[0],
+    )
+    .unwrap();
 
     let mut fanout = DeviceFanout::new();
     fanout.add_device("bob-phone", phone_session);
@@ -36,7 +42,8 @@ fn fan_out_to_two_devices() {
     for dm in &outgoing {
         let (mut device, pt) = match dm.device_id.as_str() {
             "bob-phone" => {
-                api::accept_session(&mut bob_phone, &alice_bundle.identity_key, &dm.message).unwrap()
+                api::accept_session(&mut bob_phone, &alice_bundle.identity_key, &dm.message)
+                    .unwrap()
             }
             "bob-laptop" => {
                 api::accept_session(&mut bob_laptop, &alice_bundle.identity_key, &dm.message)
@@ -56,8 +63,12 @@ fn unknown_device_errors() {
     let bob_bundle = api::publish_bundle(&mut bob, 1);
     let mut alice = api::create_identity();
     let _ = api::publish_bundle(&mut alice, 1);
-    let session =
-        api::start_session(&alice, &bob_bundle.identity_key, &bob_bundle.one_time_keys[0]).unwrap();
+    let session = api::start_session(
+        &alice,
+        &bob_bundle.identity_key,
+        &bob_bundle.one_time_keys[0],
+    )
+    .unwrap();
 
     let mut fanout = DeviceFanout::new();
     fanout.add_device("known", session);

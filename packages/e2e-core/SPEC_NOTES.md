@@ -36,6 +36,33 @@ implemented **from public specifications and permissively-licensed libraries**.
 2. Sender fetches peer bundle → `start_session()` → `encrypt()`.
 3. Receiver `accept_session()` on first message → `encrypt()/decrypt()` after.
 
+### Fallback key — the X3DH "signed prekey" role  (✅ implemented)
+
+X3DH publishes a **signed prekey** alongside the one-time keys so a sender can
+always start a session. Without it, a device whose one-time keys have all been
+consumed is simply **unreachable** — a silent availability failure that hits
+exactly the accounts you least want it to (popular ones, and long-idle ones).
+
+`publish_bundle()` now always includes a `fallback_key`. It is **not consumed by
+use**, so it keeps the device reachable indefinitely. The trade is forward
+secrecy: many senders may share one fallback key, so it is strictly a *fallback*.
+
+**The backend MUST prefer one-time keys.** Hand out a one-time key whenever the
+device has an unconsumed one, and serve the fallback key only when the supply is
+empty. Serving the fallback key when one-time keys exist needlessly weakens
+forward secrecy for that session.
+
+**Rotation is the app's job:**
+- `rotate_fallback_key()` — issue a new one, ~weekly. Returns the bundle to upload.
+- `forget_previous_fallback_key()` — call one full rotation later. vodozemac
+  retains the previous key so in-flight first messages still open; forgetting it
+  closes the window. Skipping this makes rotation pointless.
+- `current_fallback_key()` / `restore_fallback_key()` — read back / re-attach the
+  published value after a pickle restore.
+
+Covered by 7 tests in `tests/prekeys.rs`, including the property the feature
+exists for: a sender reaches a device whose one-time keys are all gone.
+
 ### Post-quantum status (1:1)  — ⚠️ classic, by design
 
 vodozemac (≤0.10) implements the **classic** X25519 double ratchet, **not**

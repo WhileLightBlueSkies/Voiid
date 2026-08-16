@@ -47,10 +47,19 @@ fn each_wrap_is_randomized() {
 
     assert_ne!(a.salt, b.salt, "salt must be random per wrap");
     assert_ne!(a.nonce, b.nonce, "nonce must be random per wrap");
-    assert_ne!(a.ciphertext, b.ciphertext, "ciphertext must differ per wrap");
+    assert_ne!(
+        a.ciphertext, b.ciphertext,
+        "ciphertext must differ per wrap"
+    );
 
-    assert_eq!(api::unwrap_master_secret_with_pin(&a, "1234").unwrap(), secret);
-    assert_eq!(api::unwrap_master_secret_with_pin(&b, "1234").unwrap(), secret);
+    assert_eq!(
+        api::unwrap_master_secret_with_pin(&a, "1234").unwrap(),
+        secret
+    );
+    assert_eq!(
+        api::unwrap_master_secret_with_pin(&b, "1234").unwrap(),
+        secret
+    );
 }
 
 /// Tampering with the ciphertext is caught by AES-GCM authentication.
@@ -146,7 +155,10 @@ fn phrase_roundtrip() {
     );
 
     let recovered = api::phrase_to_master_secret(&phrase).expect("parse phrase");
-    assert_eq!(recovered, secret, "phrase must decode to the original secret");
+    assert_eq!(
+        recovered, secret,
+        "phrase must decode to the original secret"
+    );
 }
 
 /// The phrase is deterministic: the same secret always yields the same phrase.
@@ -229,7 +241,10 @@ fn backup_blob_is_encrypted_and_framed() {
     let plaintext = b"top secret history";
     let blob = api::encrypt_backup(&secret, plaintext).expect("encrypt");
     assert_eq!(blob[0], 1, "first byte is the blob version");
-    assert!(blob.len() > 1 + 12 + plaintext.len(), "version+nonce+ciphertext+tag");
+    assert!(
+        blob.len() > 1 + 12 + plaintext.len(),
+        "version+nonce+ciphertext+tag"
+    );
     assert!(
         !blob.windows(plaintext.len()).any(|w| w == plaintext),
         "plaintext must not appear in the sealed blob"
@@ -264,7 +279,10 @@ fn backup_tampered_blob_fails() {
     let mut blob = api::encrypt_backup(&secret, b"history").expect("encrypt");
     let last = blob.len() - 1;
     blob[last] ^= 0xFF;
-    assert!(api::decrypt_backup(&secret, &blob).is_err(), "tamper must fail");
+    assert!(
+        api::decrypt_backup(&secret, &blob).is_err(),
+        "tamper must fail"
+    );
 }
 
 /// An unknown version byte or a truncated blob is rejected cleanly.
@@ -272,9 +290,15 @@ fn backup_tampered_blob_fails() {
 fn backup_bad_frame_rejected() {
     let secret = api::generate_master_secret();
     assert!(api::decrypt_backup(&secret, &[]).is_err(), "empty blob");
-    assert!(api::decrypt_backup(&secret, &[9, 0, 0]).is_err(), "unknown version");
+    assert!(
+        api::decrypt_backup(&secret, &[9, 0, 0]).is_err(),
+        "unknown version"
+    );
     let short = vec![1u8; 8]; // version + partial nonce, no ciphertext
-    assert!(api::decrypt_backup(&secret, &short).is_err(), "truncated blob");
+    assert!(
+        api::decrypt_backup(&secret, &short).is_err(),
+        "truncated blob"
+    );
 }
 
 /// A backup restores across "devices": a secret recovered from its phrase opens a

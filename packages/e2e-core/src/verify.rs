@@ -60,8 +60,8 @@ pub fn safety_number(
 /// bytes if the fingerprint isn't valid base64 (defensive — still deterministic
 /// and unique per input).
 fn local_fingerprint(identifier: &[u8], fingerprint_b64: &str) -> String {
-    let key_bytes =
-        vodozemac::base64_decode(fingerprint_b64).unwrap_or_else(|_| fingerprint_b64.as_bytes().to_vec());
+    let key_bytes = vodozemac::base64_decode(fingerprint_b64)
+        .unwrap_or_else(|_| fingerprint_b64.as_bytes().to_vec());
 
     let seed = |h: &mut Sha512| {
         h.update(VERSION);
@@ -88,7 +88,10 @@ fn local_fingerprint(identifier: &[u8], fingerprint_b64: &str) -> String {
 /// non-overlapping 5-byte window per group (big-endian) mod 100000. SHA-512 is
 /// 64 bytes, so up to 12 groups fit without reuse; we only need 6.
 fn encode_decimal(bytes: &[u8], groups: usize) -> String {
-    debug_assert!(bytes.len() >= groups * 5, "hash too short for {groups} groups");
+    debug_assert!(
+        bytes.len() >= groups * 5,
+        "hash too short for {groups} groups"
+    );
     let mut out = String::with_capacity(groups * 5);
     for g in 0..groups {
         let start = g * 5;
@@ -141,7 +144,12 @@ mod tests {
     #[test]
     fn a_substituted_key_changes_the_number() {
         let honest = safety_number(ALICE, KEY_A, BOB, KEY_B);
-        let attacker = safety_number(ALICE, KEY_A, BOB, "YXR0YWNrZXIga2V5IHN1YnN0aXR1dGVkIGhlcmU=");
+        let attacker = safety_number(
+            ALICE,
+            KEY_A,
+            BOB,
+            "YXR0YWNrZXIga2V5IHN1YnN0aXR1dGVkIGhlcmU=",
+        );
         assert_ne!(honest, attacker);
     }
 

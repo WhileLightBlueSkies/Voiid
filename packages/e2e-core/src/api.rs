@@ -50,6 +50,32 @@ pub fn replenish_prekeys(identity: &mut IdentityKeys, count: usize) -> PublicBun
     identity.replenish(count)
 }
 
+/// Rotate the fallback key (the X3DH "signed prekey" role) and return the bundle
+/// to upload. Call on a schedule — roughly weekly.
+///
+/// The fallback key keeps us reachable when every one-time key has been
+/// consumed. It is not consumed by use, so it must be rotated rather than
+/// replenished.
+pub fn rotate_fallback_key(identity: &mut IdentityKeys) -> PublicBundle {
+    identity.rotate_fallback_key()
+}
+
+/// The fallback key currently published for this device (base64), if any.
+pub fn current_fallback_key(identity: &IdentityKeys) -> Option<String> {
+    identity.current_fallback_key()
+}
+
+/// Drop the previous fallback key, one full rotation after `rotate_fallback_key`.
+/// Returns whether a key was forgotten.
+pub fn forget_previous_fallback_key(identity: &mut IdentityKeys) -> bool {
+    identity.forget_previous_fallback_key()
+}
+
+/// Re-attach a previously published fallback key after restoring from a pickle.
+pub fn restore_fallback_key(identity: &mut IdentityKeys, fallback_key_b64: &str) {
+    identity.restore_fallback_key(fallback_key_b64)
+}
+
 /// Maximum one-time keys this device can hold at once.
 pub fn max_one_time_keys(identity: &IdentityKeys) -> usize {
     identity.max_one_time_keys()
