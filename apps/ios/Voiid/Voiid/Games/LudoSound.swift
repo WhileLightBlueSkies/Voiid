@@ -31,17 +31,21 @@ enum LudoSound {
         GameHaptics.eat()
     }
 
-    /// A token moved. `move` is the server's own record of what happened.
+    /// ONE SQUARE OF A HOP CHAIN.
+    ///
+    /// THE MOST-TRIGGERED SOUND IN THE GAME — a 6-square move fires it six times, ~200 times a
+    /// match. Four variants plus the engine's own ±3% jitter, per the chalk argument
+    /// (SOUND_DESIGN.md §4.3): without variation it is machine-like by move four.
+    static func hopped() {
+        GameAudio.shared.play("hop_\(Int.random(in: 1...4))", gain: 0.45)
+    }
+
+    /// A token LANDED. Called when the hop chain finishes, not when the frame arrives.
     static func moved(_ move: LudoState.LastMove, mySeat: Int?) {
-        // Entering from the yard is a firmer placement than an ordinary step.
+        // Entering from the yard is a firmer placement than an ordinary step, and it crosses no
+        // squares — so it gets its own sound rather than a one-square chain.
         if move.from == Ludo.yard {
             GameAudio.shared.play("enter", gain: 0.6)
-        } else {
-            // The most-triggered sound in the game — a 6-square move would fire it six times in
-            // a full hop chain, ~200 times a match. Four variants plus the engine's own ±3%
-            // jitter, per the chalk argument (SOUND_DESIGN.md §4.3): without variation it
-            // becomes machine-like by move four.
-            GameAudio.shared.play("hop_\(Int.random(in: 1...4))", gain: 0.45)
         }
 
         if let captured = move.captured, captured.count == 2 {

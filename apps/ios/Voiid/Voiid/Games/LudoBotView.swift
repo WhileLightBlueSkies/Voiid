@@ -23,7 +23,10 @@ struct LudoBotView: View {
     var onClose: (() -> Void)?
 
     @StateObject private var match = LudoBotMatch()
+    @StateObject private var hop = LudoHop()
     @EnvironmentObject var session: AppSession
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var lastDie = 0
 
     private var s: LudoState { match.state }
 
@@ -34,7 +37,10 @@ struct LudoBotView: View {
                 state: s,
                 mySeat: LudoBotMatch.humanSeat,
                 legal: match.canMove ? s.legal : [],
-                onTapToken: { match.move(token: $0) })
+                onTapToken: { match.move(token: $0) },
+                hopOverrides: hop.overrides,
+                reduceMotion: reduceMotion)
+                .onTapGesture { hop.skip() }
                 .padding(.horizontal, VoiidSpacing.sm)
             status
             if s.finished { endBar } else { dieButton }
@@ -68,14 +74,20 @@ struct LudoBotView: View {
         .onDisappear {
             session.hideTabBar = false
             GameAudio.shared.release(for: "ludo")
+            hop.skip()
         }
         .onChange(of: match.state.die) { _, face in
-            guard face != nil else { return }
+            guard let face else { return }
+            lastDie = face
             LudoSound.dieSettled()
         }
         .onChange(of: match.state.lastMove?.to) { _, _ in
             guard let move = match.state.lastMove else { return }
-            LudoSound.moved(move, mySeat: LudoBotMatch.humanSeat)
+            hop.play(
+                seat: move.seat, token: move.token, from: move.from, to: move.to,
+                die: lastDie, reduceMotion: reduceMotion,
+                onStep: { LudoSound.hopped() },
+                onFinish: { LudoSound.moved(move, mySeat: LudoBotMatch.humanSeat) })
         }
         .onChange(of: match.state.finished) { _, finished in
             guard finished else { return }

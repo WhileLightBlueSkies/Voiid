@@ -21,6 +21,12 @@ struct LudoView: View {
 
     @StateObject private var engine = GamesEngine.shared
     @EnvironmentObject var session: AppSession
+    /// The hop-chain driver (§9). Owned here because it has to outlive a body evaluation.
+    @StateObject private var hop = LudoHop()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The die face the CURRENT move was made with. `die` is cleared when the turn passes, so
+    /// the arriving move frame no longer carries the number the hop needs to count out.
+    @State private var lastDie = 0
 
     private var me: String? { TokenStore.shared.userId }
 
@@ -37,7 +43,12 @@ struct LudoView: View {
                     state: s,
                     mySeat: mySeat,
                     legal: isMyMove(s) ? s.legal : [],
-                    onTapToken: { engine.moveLudo(token: $0) })
+                    onTapToken: { engine.moveLudo(token: $0) },
+                    hopOverrides: hop.overrides,
+                    reduceMotion: reduceMotion)
+                    // A tap skips to the end (§9): a player who has seen the count does not
+                    // need to watch the rest of it.
+                    .onTapGesture { hop.skip() }
                     .padding(.horizontal, VoiidSpacing.sm)
                 status(s)
                 if s.finished {
@@ -84,16 +95,24 @@ struct LudoView: View {
             session.hideTabBar = false
             engine.leave()
             GameAudio.shared.release(for: "ludo")
+            hop.skip()
         }
         // The die settling and the move landing are two separate beats, driven by two separate
         // fields, because they are two separate events — collapsing them would read as one.
         .onChange(of: engine.ludo?.die) { _, face in
-            guard face != nil else { return }
+            guard let face else { return }
+            lastDie = face
             LudoSound.dieSettled()
         }
+        // THE MOVE SOUND FIRES WHEN THE HOP LANDS, NOT WHEN THE FRAME ARRIVES. A capture heard
+        // before the token has visibly reached the square reads as two unrelated events.
         .onChange(of: engine.ludo?.lastMove?.to) { _, _ in
-            guard let s = engine.ludo, let move = s.lastMove else { return }
-            LudoSound.moved(move, mySeat: mySeat)
+            guard let move = engine.ludo?.lastMove else { return }
+            hop.play(
+                seat: move.seat, token: move.token, from: move.from, to: move.to,
+                die: lastDie, reduceMotion: reduceMotion,
+                onStep: { LudoSound.hopped() },
+                onFinish: { LudoSound.moved(move, mySeat: mySeat) })
         }
         .onChange(of: engine.ludo?.finished) { _, finished in
             guard finished == true else { return }

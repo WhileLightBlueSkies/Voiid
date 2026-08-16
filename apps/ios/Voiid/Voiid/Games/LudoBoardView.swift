@@ -35,6 +35,13 @@ struct LudoBoardView: View {
     /// Tokens the local player may move right now. Empty unless it is their turn to move.
     let legal: [Int]
     var onTapToken: ((Int) -> Void)?
+    /// Positions to draw INSTEAD of the state's, while a hop chain is in flight (§9).
+    ///
+    /// Passed in rather than owned here because the driver has to outlive a single body
+    /// evaluation, and because the screen decides when a move begins — the board only draws.
+    var hopOverrides: [String: Int] = [:]
+    /// Set when the player has asked the system to reduce motion. Collapses every spring.
+    var reduceMotion: Bool = false
 
     /// Warm and tactile (§8.1) — Ludo is the one game in the folder where nostalgia is an asset,
     /// because it has a referent people actually played on a mat on the floor.
@@ -88,8 +95,12 @@ struct LudoBoardView: View {
     @ViewBuilder
     private func tokenView(_ token: LudoToken, side: CGFloat) -> some View {
         let unit = side / CGFloat(Ludo.gridSize)
+        // A token mid-hop draws at its intermediate square; everything else draws the truth.
+        let drawn = hopOverrides[LudoHop.key(seat: token.seat, token: token.index)]
+            ?? token.position
+        let hopping = hopOverrides[LudoHop.key(seat: token.seat, token: token.index)] != nil
         let centre = Ludo.squareCentre(
-            position: token.position, seat: token.seat, tokenIndex: token.index)
+            position: drawn, seat: token.seat, tokenIndex: token.index)
         // Fan a stack so two tokens on one square are both visible — rare, and it beats an
         // ambiguous target (§7.2).
         let spread: CGFloat = token.stackCount > 1 ? unit * 0.18 : 0
@@ -115,7 +126,10 @@ struct LudoBoardView: View {
         .frame(width: unit * 0.72, height: unit * 0.72)
         // Legal tokens lift so the player can see what the die bought them without working it
         // out (§7.1, §9).
-        .scaleEffect(isLegal ? 1.18 : 1.0)
+        // The arc: each hop lifts and squashes on landing, which is what makes a token read as
+        // an object being picked up rather than a dot sliding (§9).
+        .scaleEffect(hopping ? 1.16 : (isLegal ? 1.18 : 1.0))
+        .offset(y: hopping ? -unit * 0.22 : 0)
         .opacity(isMine && !legal.isEmpty && !isLegal ? 0.45 : 1.0)
         // Counter-rotate the token by the board's rotation, so a marker is never upside down
         // for the player looking at it.
@@ -136,12 +150,15 @@ struct LudoBoardView: View {
         .position(
             x: centre.x * side + offset * spread,
             y: centre.y * side + offset * spread)
-        // THE HOP IS THE MOST IMPORTANT ANIMATION IN THE GAME (§9) and this is its cheap form: a
-        // spring between squares reads as a token being moved rather than teleporting. A true
-        // square-by-square hop chain, which is what shows the player HOW FAR, is listed in §16 as
-        // deliberately not built — it needs the reduce-motion switch that does not exist yet.
-        .animation(.spring(response: 0.34, dampingFraction: 0.68), value: token.position)
-        .animation(.easeOut(duration: 0.26), value: isLegal)
+        // THE HOP CHAIN (§9). `drawn` steps square by square while a move is in flight, and each
+        // step animates on its own short spring — so the token visibly counts out the distance
+        // instead of sliding to the answer. Under reduce-motion the driver never runs and this
+        // collapses to an instant cut, per §9's fallback.
+        .animation(
+            reduceMotion ? nil : .spring(response: 0.16, dampingFraction: 0.62),
+            value: drawn)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: hopping)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.26), value: isLegal)
     }
 
     // MARK: - The static board
