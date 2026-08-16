@@ -13,6 +13,7 @@ import { publisher } from '../redis';
 import { requireAuth } from '../auth';
 import { announcementPostDeniedReason } from '../communityGuard';
 import { b64, asyncHandler } from '../util';
+import { blockedCounterpartForSend, hasBlocked } from '../blocking';
 import { sendWakePush, PushMeta } from '../push';
 
 const router = Router();
@@ -84,6 +85,41 @@ async function isConversationMember(conversationId: string, userId: string): Pro
   return rows.length > 0;
 }
 
+/**
+ * Block enforcement for a send, shared by BOTH send paths.
+ *
+ * Returns a response body to reject with, or null to allow. Two different answers on
+ * purpose:
+ *
+ *   * The BLOCKER messaging someone they blocked gets a plain 403. They know the block
+ *     exists — they created it — so silently dropping their message would read as a bug,
+ *     and the client can offer to unblock.
+ *
+ *   * The BLOCKED party gets a 200 that looks exactly like a successful send, and the
+ *     message goes nowhere. They must not be able to tell being blocked from the other
+ *     person being offline. A distinctive error here would turn this endpoint into a
+ *     block-detector, which is the one thing blocking has to hide.
+ *
+ * Groups are never gated: one blocked pair must not silence a whole room. Delivery-time
+ * filtering handles that case instead.
+ */
+async function blockGuardForSend(
+  conversationId: string,
+  senderId: string
+): Promise<{ status: number; body: any } | null> {
+  const counterpart = await blockedCounterpartForSend(conversationId, senderId);
+  if (!counterpart) return null;
+
+  if (await hasBlocked(senderId, counterpart)) {
+    return {
+      status: 403,
+      body: { error: 'you have blocked this user', blocked_user_id: counterpart },
+    };
+  }
+  // Silently accepted, deliberately never delivered.
+  return { status: 200, body: { message_id: null, delivered_devices: 0 } };
+}
+
 router.post('/send', requireAuth, asyncHandler(async (req, res) => {
   const { user_id, device_id: authDeviceId } = (req as any).auth;
   const {
@@ -125,6 +161,9 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
     // member could post to an announcement channel with curl.
     const announceDenied = await announcementPostDeniedReason(conversation_id, user_id);
     if (announceDenied) return res.status(403).json({ error: announceDenied });
+    // Blocking (039). See blockGuardForSend: the blocker is told, the blocked is not.
+    const fanBlocked = await blockGuardForSend(conversation_id, user_id);
+    if (fanBlocked) return res.status(fanBlocked.status).json(fanBlocked.body);
     for (const entry of messages) {
       if (!entry?.recipient_device_id || !entry?.ciphertext) {
         return res.status(400).json({ error: 'each messages[] entry requires recipient_device_id and ciphertext' });
@@ -232,6 +271,9 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
   // leaves the other as a way in.
   const legacyAnnounceDenied = await announcementPostDeniedReason(conversation_id, user_id);
   if (legacyAnnounceDenied) return res.status(403).json({ error: legacyAnnounceDenied });
+  // Blocking (039) — same guard as the fan-out path, for the same reason as the line above.
+  const legacyBlocked = await blockGuardForSend(conversation_id, user_id);
+  if (legacyBlocked) return res.status(legacyBlocked.status).json(legacyBlocked.body);
   // Which of OUR devices encrypted this — so a multi-device recipient resolves the
   // correct sender identity key on acceptSession (else decrypt fails). The JWT may
   // not carry a device id, so the client sends it in the body.

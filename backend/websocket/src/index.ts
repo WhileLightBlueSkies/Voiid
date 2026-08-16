@@ -362,8 +362,19 @@ wss.on('connection', (ws, req) => {
           user_id: userId,
           state: msg.state === 'stop' ? 'stop' : 'start',
         });
+        // Blocking (039). This process holds no database connection by design, so the API
+        // mirrors each block pair into the Redis both share (`block:a:b`, written in both
+        // directions) exactly as account deletion does with `auth:revoked:` above.
+        //
+        // Fail OPEN on a Redis error, unlike the revocation check. The harm of a leaked
+        // typing indicator is small and bounded; the harm of silently dropping every
+        // typing frame during a Redis blip is a feature that looks broken for everyone.
+        // Postgres remains the authority for every path that actually carries content.
         for (const rid of msg.recipient_ids) {
-          if (rid !== userId) pub.publish(`channel:user:${rid}`, out);
+          if (rid === userId) continue;
+          presence.get(`block:${userId}:${rid}`).then((blocked) => {
+            if (!blocked) pub.publish(`channel:user:${rid}`, out);
+          }).catch(() => { pub.publish(`channel:user:${rid}`, out); });
         }
         return;
       }

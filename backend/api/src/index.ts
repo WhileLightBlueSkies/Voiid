@@ -30,6 +30,7 @@ import clipsRoutes from './routes/clips';
 import creatorRoutes from './routes/creators';
 import reportRoutes from './routes/reports';
 import consentRoutes from './routes/consent';
+import blockRoutes from './routes/blocks';
 import dpdpRoutes from './routes/dpdp';
 import eventRoutes from './routes/events';
 import paymentRoutes from './routes/payments';
@@ -188,6 +189,10 @@ api.use('/reports', rateLimit({ max: 20, windowSeconds: 60, bucket: 'reports' })
 // prefix. A LOW ceiling on /dpdp: an export is expensive to produce and a right that is
 // exercised occasionally, not in a loop.
 api.use('/consent', rateLimit({ max: 30, windowSeconds: 60, bucket: 'consent' }), consentRoutes);
+
+// User blocking. Blocking and unblocking are deliberate, infrequent acts — a low ceiling
+// is plenty, and it bounds any attempt to use the endpoints to probe account existence.
+api.use('/blocks', rateLimit({ max: 30, windowSeconds: 60, bucket: 'blocks' }), blockRoutes);
 api.use('/dpdp', rateLimit({ max: 10, windowSeconds: 60, bucket: 'dpdp' }), dpdpRoutes);
 // Tournaments and community events declare their paths IN FULL ('/communities/:id/events',
 // '/tournaments/:id'), so they mount at the router root with no prefix — giving them one
