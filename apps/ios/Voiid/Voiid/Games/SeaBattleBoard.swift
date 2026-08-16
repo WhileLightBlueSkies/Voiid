@@ -242,6 +242,19 @@ struct SeaBattleGrid: View {
     private let sea = Color(red: 0.80, green: 0.85, blue: 0.87)
 
     var body: some View {
+        // A LIVE CLOCK, at a deliberately low rate.
+        //
+        // §8.2 asks for "a barely-perceptible caustic shimmer, ~0.04 amplitude, 8-second period"
+        // whose whole job is to prove the screen is alive during the long pauses of an async
+        // match. 20 fps is plenty for something that slow, and a board game has no reason to
+        // hold the display at 120 Hz — the shimmer must not cost more than the game does.
+        TimelineView(.periodic(from: .now, by: 1.0 / 20.0)) { timeline in
+            content(now: timeline.date.timeIntervalSinceReferenceDate)
+        }
+    }
+
+    @ViewBuilder
+    private func content(now: TimeInterval) -> some View {
         GeometryReader { geo in
             let labelSpace: CGFloat = showLabels ? 14 : 0
             let side = min(geo.size.width - labelSpace, geo.size.height - labelSpace)
@@ -254,7 +267,7 @@ struct SeaBattleGrid: View {
 
                 ZStack(alignment: .topLeading) {
                     Canvas { ctx, _ in
-                        draw(ctx: ctx, cellSize: cellSize)
+                        draw(ctx: ctx, cellSize: cellSize, now: now)
                     }
                     .frame(width: side, height: side)
                 }
@@ -302,7 +315,15 @@ struct SeaBattleGrid: View {
         }
     }
 
-    private func draw(ctx: GraphicsContext, cellSize: CGFloat) {
+    private func draw(ctx: GraphicsContext, cellSize: CGFloat, now: TimeInterval) {
+        // THE CHART UNDER THE WATER (§8.2). Paper and ink, not naval realism — the fiction is
+        // that you are working a problem on a naval chart, which is what the player is actually
+        // doing, and it makes "nothing moves" a deliberate aesthetic rather than a limitation.
+        let board = CGRect(x: 0, y: 0,
+                           width: cellSize * CGFloat(SeaBattle.size),
+                           height: cellSize * CGFloat(SeaBattle.size))
+        GameSurface.paper(in: ctx, rect: board, base: paper, grain: 0.020, seed: 3)
+
         for index in 0..<SeaBattle.cells {
             let x = CGFloat(SeaBattle.cx(index)) * cellSize
             let y = CGFloat(SeaBattle.cy(index)) * cellSize
@@ -310,8 +331,28 @@ struct SeaBattleGrid: View {
             let state = index < cells.count ? cells[index] : .water
 
             ctx.fill(Path(roundedRect: rect, cornerRadius: 1.5), with: .color(fill(state)))
-            ctx.stroke(Path(roundedRect: rect, cornerRadius: 1.5),
-                       with: .color(ink.opacity(0.12)), lineWidth: 0.5)
+
+            // WATER SHIMMER on anything still unknown. Each cell gets its own phase from a
+            // positional hash, so the surface moves as a field rather than pulsing in unison —
+            // one board-wide sine would read as the whole screen breathing.
+            if state == .water {
+                let phase = GameSurface.noise(SeaBattle.cx(index), SeaBattle.cy(index), seed: 5)
+                let wave = sin(now * 0.79 + phase * 6.28)
+                // ~0.04 amplitude, per §8.2. Just enough to prove the screen is alive.
+                let caustic = 0.04 * (0.5 + 0.5 * wave)
+                ctx.fill(Path(roundedRect: rect, cornerRadius: 1.5),
+                         with: .color(.white.opacity(caustic)))
+                // A slow diagonal glint across a small fraction of cells.
+                if phase > 0.86 {
+                    let g = 0.05 * (0.5 + 0.5 * sin(now * 0.51 + phase * 9.4))
+                    ctx.fill(Path(roundedRect: rect.insetBy(dx: cellSize * 0.3, dy: cellSize * 0.34),
+                                  cornerRadius: 1),
+                             with: .color(.white.opacity(g)))
+                }
+            }
+
+            // Every square is pressed into the chart, one light direction shared app-wide.
+            GameSurface.inset(in: ctx, rect: rect, radius: 1.5, depth: 0.6)
 
             // HIT AND MISS DIFFER IN SHAPE AND FILL BEFORE THEY DIFFER IN COLOUR (§8.4).
             // Snake identifies players by colour alone and CROSS_CUTTING.md §13 flags that as a
@@ -319,21 +360,65 @@ struct SeaBattleGrid: View {
             // board must survive being rendered in greyscale.
             switch state {
             case .miss:
-                // A small hollow ring. Recedes.
-                let r = cellSize * 0.18
+                // A SPLASH: a hollow ring with two fainter rings still spreading. Recedes.
                 let c = CGPoint(x: rect.midX, y: rect.midY)
+                let r = cellSize * 0.18
                 ctx.stroke(Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)),
                            with: .color(ink.opacity(0.5)), lineWidth: 1.2)
+                for (i, scale) in [1.55, 2.05].enumerated() {
+                    let rr = r * scale
+                    ctx.stroke(
+                        Path(ellipseIn: CGRect(x: c.x - rr, y: c.y - rr, width: rr * 2, height: rr * 2)),
+                        with: .color(ink.opacity(0.16 - Double(i) * 0.06)), lineWidth: 0.7)
+                }
             case .hit, .shipHit:
-                // A large filled mark. Advances.
-                let r = cellSize * 0.30
+                // A SCORCH: a dark burn with a ragged rim and a hot centre. Advances.
                 let c = CGPoint(x: rect.midX, y: rect.midY)
-                ctx.fill(Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)),
-                         with: .color(Color(red: 0.72, green: 0.22, blue: 0.15)))
+                let r = cellSize * 0.32
+                ctx.fill(
+                    Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: r * 2, height: r * 2)),
+                    with: .radialGradient(
+                        Gradient(colors: [
+                            Color(red: 0.95, green: 0.55, blue: 0.15),
+                            Color(red: 0.72, green: 0.22, blue: 0.15),
+                            Color(red: 0.30, green: 0.10, blue: 0.08),
+                        ]),
+                        center: c, startRadius: 0, endRadius: r))
+                // Debris: a few specks thrown clear, seeded per cell so they never move.
+                for k in 0..<4 {
+                    let a = GameSurface.noise(index, k, seed: 21) * 6.28
+                    let d = r * (1.15 + GameSurface.noise(index, k, seed: 22) * 0.5)
+                    let p = CGPoint(x: c.x + CoreGraphics.cos(a) * d, y: c.y + CoreGraphics.sin(a) * d)
+                    ctx.fill(Path(ellipseIn: CGRect(x: p.x - 0.8, y: p.y - 0.8, width: 1.6, height: 1.6)),
+                             with: .color(ink.opacity(0.35)))
+                }
             case .sunk:
-                ctx.fill(Path(roundedRect: rect.insetBy(dx: cellSize * 0.12, dy: cellSize * 0.12),
+                // A SUNK HULL, still burning. The flame flickers on its own phase so a
+                // multi-cell wreck does not pulse as one block.
+                ctx.fill(Path(roundedRect: rect.insetBy(dx: cellSize * 0.10, dy: cellSize * 0.10),
                               cornerRadius: 1.5),
-                         with: .color(Color(red: 0.42, green: 0.13, blue: 0.10)))
+                         with: .color(Color(red: 0.24, green: 0.09, blue: 0.07)))
+                let phase = GameSurface.noise(SeaBattle.cx(index), SeaBattle.cy(index), seed: 9)
+                let flicker = 0.5 + 0.5 * sin(now * 6.1 + phase * 6.28)
+                let fh = cellSize * (0.26 + 0.16 * flicker)
+                let c = CGPoint(x: rect.midX, y: rect.midY)
+                var flame = Path()
+                flame.move(to: CGPoint(x: c.x - cellSize * 0.14, y: c.y + cellSize * 0.10))
+                flame.addQuadCurve(
+                    to: CGPoint(x: c.x, y: c.y + cellSize * 0.10 - fh),
+                    control: CGPoint(x: c.x - cellSize * 0.18, y: c.y - fh * 0.3))
+                flame.addQuadCurve(
+                    to: CGPoint(x: c.x + cellSize * 0.14, y: c.y + cellSize * 0.10),
+                    control: CGPoint(x: c.x + cellSize * 0.18, y: c.y - fh * 0.3))
+                flame.closeSubpath()
+                ctx.fill(flame, with: .linearGradient(
+                    Gradient(colors: [
+                        Color(red: 1.0, green: 0.85, blue: 0.35).opacity(0.95),
+                        Color(red: 0.92, green: 0.36, blue: 0.10).opacity(0.75),
+                        Color(red: 0.55, green: 0.12, blue: 0.05).opacity(0.0),
+                    ]),
+                    startPoint: CGPoint(x: c.x, y: c.y + cellSize * 0.10),
+                    endPoint: CGPoint(x: c.x, y: c.y + cellSize * 0.10 - fh)))
             default:
                 break
             }
