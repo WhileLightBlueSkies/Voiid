@@ -180,6 +180,8 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         val players: List<String>,
         val snakes: List<Snake>,
         val food: List<Food>,
+        /** Arena geography. Carried forward across delta frames — see [Hazard]. */
+        val hazards: List<Hazard> = emptyList(),
         val time: Double,
         val arenaRadius: Double,
         val duration: Double,
@@ -251,6 +253,40 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
 
         /** [value]: 1 = standard, 2 = corpse, 0.5 = boost drop. */
         data class Food(val id: Int, val x: Double, val y: Double, val value: Double)
+
+        /**
+         * Arena geography (backend/games/src/engine/snake/hazards.ts).
+         *
+         * STATIC FOR THE WHOLE MATCH, and sent only with a full-food frame — so it is CARRIED
+         * FORWARD when a delta arrives, exactly as food is. A frame without the field means
+         * "unchanged", never "there are none": treating it as empty would make the arena's rocks
+         * flicker in and out ten times a second.
+         */
+        data class Hazard(
+            /** "rock" | "spike" | "slick". */
+            val kind: String,
+            val x: Double,
+            val y: Double,
+            val radius: Double,
+            /** Spike cycle in seconds. Null on rock and slick, which never change state. */
+            val period: Double?,
+            /** Phase offset, so a field of spikes does not pulse in unison. */
+            val offset: Double?,
+        ) {
+            /**
+             * Is this spike out right now?
+             *
+             * A PURE FUNCTION OF SIMULATION TIME, matching the server exactly — the client never
+             * tracks a phase of its own, so a spike can never be drawn retracted while it is
+             * killing you.
+             */
+            fun extended(t: Double): Boolean {
+                if (kind != "spike") return false
+                val p = period ?: 3.0
+                val phase = ((t + (offset ?: 0.0)) % p) / p
+                return phase < 0.45   // HAZARD_TUNING.SPIKE_DUTY
+            }
+        }
     }
 
     /**
@@ -544,9 +580,26 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
             )
         } ?: emptyList()
 
+        // CARRIED FORWARD when the frame omits them. Hazards ride the full-food frame only, so
+        // most frames lack the field — treating its absence as "no hazards" would make every
+        // rock flicker in and out ten times a second.
+        val hazards: List<SnakeState.Hazard> = payload.arr("hazards")?.mapNotNull { entry ->
+            val o = entry as? JsonObject ?: return@mapNotNull null
+            val kind = o.str("k") ?: return@mapNotNull null
+            SnakeState.Hazard(
+                kind = kind,
+                x = o.dbl("x") ?: return@mapNotNull null,
+                y = o.dbl("y") ?: return@mapNotNull null,
+                radius = o.dbl("r") ?: return@mapNotNull null,
+                period = o.dbl("p"),
+                offset = o.dbl("o"),
+            )
+        } ?: previous?.hazards ?: emptyList()
+
         return SnakeState(
             players = players,
             snakes = snakes,
+            hazards = hazards,
             food = food.values.toList(),
             time = payload.dbl("t") ?: 0.0,
             arenaRadius = payload.dbl("arenaRadius") ?: 1400.0,

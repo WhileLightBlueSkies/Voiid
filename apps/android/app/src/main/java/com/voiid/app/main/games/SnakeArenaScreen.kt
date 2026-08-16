@@ -1269,6 +1269,9 @@ private fun DrawScope.drawArena(
         translate(-focus.x, -focus.y)
     }) {
         drawBoundary(state.arenaRadius.toFloat(), hexShader)
+        // Terrain first: under the food and under the snakes. A rock drawn over a snake would
+        // make the snake look like it had already crashed into it.
+        drawHazards(state)
         drawFood(state)
 
         // Rank by mass, so a label over a head and the HUD row can never disagree.
@@ -1404,6 +1407,56 @@ private const val OUTLINE_WIDTH = 3.5f
  * unfair. The stroke grows inward and outward equally around that line.
  */
 private const val BORDER_WIDTH = 14f
+
+/**
+ * Arena geography: rocks, spikes and slicks.
+ *
+ * EACH KIND HAS TO READ AS WHAT IT DOES, not merely as a different colour. Getting that wrong
+ * costs a player their run for a reason they cannot see, which is the worst kind of death in
+ * this game.
+ *
+ * Ported from iOS `SnakeMetalView.buildHazards`. Keep the colours and radii identical.
+ */
+private fun DrawScope.drawHazards(state: GamesEngine.SnakeState) {
+    for (h in state.hazards) {
+        val centre = Offset(h.x.toFloat(), h.y.toFloat())
+        val r = h.radius.toFloat()
+
+        when (h.kind) {
+            "rock" -> {
+                // SOLID AND OPAQUE. It kills like the wall, so it is drawn like the wall — hard
+                // edge, no glow, nothing that suggests you might pass through it.
+                drawCircle(Color(0xFF1A172A).copy(alpha = 0.55f), radius = r * 1.06f, center = centre)
+                drawCircle(Color(0xFF4D4D61), radius = r, center = centre)
+                // A lighter cap, lit from the top-left like every other surface in the app.
+                drawCircle(
+                    Color(0xFF707087), radius = r * 0.72f,
+                    center = centre + Offset(-r * 0.16f, -r * 0.16f))
+            }
+
+            "spike" -> {
+                // ITS STATE IS THE WHOLE POINT. Extended is bright, hard-edged and larger;
+                // retracted is a dim marker that still shows WHERE it is, so the player can plan
+                // a route through rather than being surprised by one that pops up.
+                if (h.extended(state.time)) {
+                    drawCircle(Color(0xFFFF593D).copy(alpha = 0.30f), radius = r * 1.5f, center = centre)
+                    drawCircle(Color(0xFFFF6B52), radius = r, center = centre)
+                    drawCircle(Color(0xFFFFEACC), radius = r * 0.45f, center = centre)
+                } else {
+                    drawCircle(Color(0xFF733838).copy(alpha = 0.75f), radius = r * 0.72f, center = centre)
+                    drawCircle(Color(0xFF9E4C4C).copy(alpha = 0.9f), radius = r * 0.28f, center = centre)
+                }
+            }
+
+            else -> {
+                // SLICK: soft, translucent, no rim. It must not read as a wall — a player who
+                // steers around a slick has paid for nothing.
+                drawCircle(Color(0xFF59B3F2).copy(alpha = 0.16f), radius = r, center = centre)
+                drawCircle(Color(0xFF8CD9FF).copy(alpha = 0.10f), radius = r * 0.62f, center = centre)
+            }
+        }
+    }
+}
 
 private fun DrawScope.drawFood(state: GamesEngine.SnakeState) {
     // Food never moves, so it is drawn from the newest frame with no interpolation.
