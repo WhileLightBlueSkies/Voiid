@@ -38,6 +38,13 @@ import {
   type Vec,
 } from './geometry';
 import { stepBot, type BotMemory } from './bot';
+import {
+  HAZARD_TUNING,
+  generateHazards,
+  hazardHit,
+  spikeExtended,
+  type Hazard,
+} from './hazards';
 
 // --- Tuning ---------------------------------------------------------------------------
 // Exported so the headless test can reason about them, and so a future dev overlay has one
@@ -131,7 +138,7 @@ function radiusFor(mass: number, base: number): number {
   return base * Math.min(1 + Math.max(0, mass - TUNING.START_MASS) * 0.012, 2.2);
 }
 
-type DeathCause = 'border' | 'body' | 'head';
+type DeathCause = 'border' | 'body' | 'head' | 'rock';
 
 interface SnakeState {
   /** User id, or `bot:<n>` for a practice-mode bot. */
@@ -167,6 +174,14 @@ interface SnakeState {
   score: number;
   /** Simulation time at which this snake respawns; 0 when alive. */
   respawnAt: number;
+  /**
+   * Simulation time until which this snake is still slowed by a slick it has left.
+   *
+   * A TIMESTAMP, NOT A BOOLEAN, for the same reason `invulnUntil` is: the engine is rebuilt
+   * from serialized state on every input, so a flag would have to be cleared by something and
+   * an absolute time simply expires on its own.
+   */
+  slickUntil?: number;
   /** Simulation time until which this snake cannot kill or be killed. */
   invulnUntil: number;
   /** Colour index, assigned at spawn and stable for the match. */
@@ -194,6 +209,11 @@ interface State {
   arena: ArenaShape;
   arenaRadius: number;
   duration: number;
+  /**
+   * Arena geography (hazards.ts). STATIC for the whole match: generated once from the match
+   * seed and never mutated, which is what lets it be broadcast once rather than every tick.
+   */
+  hazards: Hazard[];
   /** Recent deaths, for client-side VFX. Cleared each broadcast. */
   events: {
     k: string;
@@ -340,7 +360,8 @@ class SnakeEngine implements GameEngine {
           mem = { targetFood: -1, retarget: 0, jitter: this.rng.next() * Math.PI * 2 };
           this.botMem.set(sn.id, mem);
         }
-        stepBot(sn, mem, dt, this.s.snakes, this.s.food, this.s.arena, this.s.arenaRadius, this.rng);
+        stepBot(sn, mem, dt, this.s.snakes, this.s.food, this.s.arena, this.s.arenaRadius,
+        this.s.hazards, this.rng);
       }
     }
 
@@ -387,7 +408,13 @@ class SnakeEngine implements GameEngine {
         }
       }
 
-      const speed = boosting ? TUNING.BOOST_SPEED : TUNING.BASE_SPEED;
+      let speed = boosting ? TUNING.BOOST_SPEED : TUNING.BASE_SPEED;
+      // SLICKS SLOW YOU, and the slow LINGERS briefly after you leave.
+      //
+      // Without the linger, clipping a slick's edge produced a one-tick stutter that read as
+      // a dropped frame rather than as terrain — the same class of complaint SNAKE.md §2
+      // documents for the render clock. Decaying out of it makes it feel like ground.
+      if (this.s.t < (sn.slickUntil ?? 0)) speed *= HAZARD_TUNING.SLICK_SPEED;
       sn.x += Math.cos(sn.h) * speed * dt;
       sn.y += Math.sin(sn.h) * speed * dt;
 
@@ -442,6 +469,50 @@ class SnakeEngine implements GameEngine {
         doomed.push({ snake: sn, cause: 'border', killer: null });
         continue;
       }
+
+      // ARENA GEOGRAPHY, tested before any snake-vs-snake rule: the world kills you regardless
+      // of who happens to be nearby, and a rock you hit while someone was also hitting you is
+      // still a rock.
+      //
+      // Swept along the same samples the border uses, for the same reason — at boost speed a
+      // head covers 51 units a tick and would otherwise step clean over a 26-unit rock.
+      let hazardDeath = false;
+      let slicked = false;
+      for (const h of this.s.hazards) {
+        let touched = false;
+        for (let k = 1; k <= steps && !touched; k++) {
+          const t = k / steps;
+          const sx = prevX + (sn.x - prevX) * t;
+          const sy = prevY + (sn.y - prevY) * t;
+          if (hazardHit(h, sx, sy, headR)) touched = true;
+        }
+        if (!touched) continue;
+
+        if (h.k === 'rock') {
+          // Lethal, like a wall. It IS a wall — just one in the middle.
+          doomed.push({ snake: sn, cause: 'rock', killer: null });
+          hazardDeath = true;
+          break;
+        }
+        if (h.k === 'spike' && spikeExtended(h, this.s.t)) {
+          // COSTS MASS, DOES NOT KILL OUTRIGHT. Mass is the health bar this game already has:
+          // the player watches it, it is already on the wire, and losing it is immediately
+          // legible as "that hurt" without a single new HUD element. Falling under the floor
+          // kills, which is the same way starving already works.
+          sn.mass -= HAZARD_TUNING.SPIKE_MASS_COST;
+          this.s.events.push({ k: 'spike', x: Math.round(sn.x), y: Math.round(sn.y), id: sn.id });
+          if (sn.mass < TUNING.START_MASS * 0.5) {
+            doomed.push({ snake: sn, cause: 'rock', killer: null });
+            hazardDeath = true;
+            break;
+          }
+        }
+        if (h.k === 'slick') slicked = true;
+      }
+      // Refreshed every tick while inside, then decays — so the edge is soft rather than a
+      // one-tick stutter that reads as a dropped frame.
+      if (slicked) sn.slickUntil = this.s.t + HAZARD_TUNING.SLICK_LINGER;
+      if (hazardDeath) continue;
 
       // Head-to-head: longer survives; within 5% both die.
       let resolved = false;
@@ -687,6 +758,9 @@ class SnakeEngine implements GameEngine {
 
     return {
       ...this.common(false, true),
+      // ALWAYS here: this is the persistence shape, and a field missing from it is silently
+      // reset on the next tick. The WIRE copy is gated (see serializeForWire).
+      hazards: this.s.hazards,
       food: this.s.food.map((f) => [round(f.x), round(f.y), f.v, f.i]),
       nextFoodId: this.s.nextFoodId,
       // Deltas are cleared by a full frame, so persisting them would resend stale changes.
@@ -718,7 +792,25 @@ class SnakeEngine implements GameEngine {
     // stale value that reset on every restore: the threshold was never reached, every single
     // frame sent a full snapshot, and the delta encoding silently did nothing at all.
     const wantFull = this.wantsFullFood();
-    const base = { ...this.common(true, wantFull), pathStep: PATH_STEP };
+    // HAZARDS RIDE THE FULL-FOOD FRAME, AND THE REASON IS A BUG WORTH RECORDING.
+    //
+    // The obvious design is "send once, then never again", with a flag on the engine. It does
+    // not work here, and the bandwidth test caught it: the runtime REBUILDS THE ENGINE FROM
+    // REDIS ON EVERY INPUT (index.ts), so any per-instance flag resets constantly and the
+    // "sent once" field went out on essentially every frame — the opposite of the intent, and
+    // invisible except as a number in a test.
+    //
+    // Persisting the flag in serialize() would be worse: a client that joined late, or dropped
+    // the one frame carrying the field, would then never receive the arena at all.
+    //
+    // So it rides the existing full-snapshot cadence, which already exists precisely to be a
+    // resync floor for late and lossy clients. ~12 static objects on a frame that is already
+    // sending the whole food field is noise, and it inherits a path that is already tested.
+    const base = {
+      ...this.common(true, wantFull),
+      pathStep: PATH_STEP,
+      ...(wantFull ? { hazards: this.s.hazards } : {}),
+    };
 
     if (wantFull) {
       this.s.added = [];
@@ -930,6 +1022,13 @@ function restoreState(state: GameStatePayload): State {
     arena: (state.arena as ArenaShape) ?? 'circle',
     arenaRadius: (state.arenaRadius as number) ?? TUNING.ARENA_RADIUS,
     duration: (state.duration as number) ?? TUNING.MATCH_SECONDS,
+    // A match created BEFORE hazards shipped has none in its state. Regenerating from the seed
+    // is the only answer that keeps such a match playable AND identical for every client —
+    // defaulting to an empty field would silently hand one player a clear arena.
+    hazards: (state.hazards as Hazard[] | undefined)
+      ?? generateHazards(
+           new Rng(((state.seed as number) ?? 1) ^ 0x51ed270b),
+           (state.arenaRadius as number) ?? TUNING.ARENA_RADIUS),
     events: (state.events as State['events']) ?? [],
   };
 }
@@ -966,6 +1065,9 @@ export const snake: GameFactory = {
       arena: 'circle',
       arenaRadius: TUNING.ARENA_RADIUS,
       duration,
+      // Drawn from a DERIVED seed rather than the match RNG itself, so adding hazards does not
+      // shift every subsequent draw and change the food layout of an otherwise identical seed.
+      hazards: generateHazards(new Rng(seed ^ 0x51ed270b), TUNING.ARENA_RADIUS),
       events: [],
       nextFoodId: 0,
       added: [],

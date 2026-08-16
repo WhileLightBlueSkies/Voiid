@@ -361,20 +361,29 @@ console.log('\nSnake engine\n');
 // This payload goes to every player 12x/sec. If it is fat, phones pay for it continuously —
 // on mobile data, for the whole match.
 {
-  let state: GameStatePayload = snake.create(['u1', 'u2'], { bots: 4, seed: 999 }).serialize();
+  // AVERAGED OVER SEVERAL SEEDS, not measured on one match.
+  //
+  // A single match swung between 27 and 34 KB/s depending only on how long its bots happened
+  // to survive, and that noise sent two rounds of tuning chasing a number rather than a cause:
+  // fewer hazards measured WORSE than more, because the bots lived longer. One sample of a
+  // random arena is not a measurement of the payload, it is a measurement of that arena.
+  const SEEDS = [999, 1000, 1001, 1002, 1003, 1004];
   let totalWire = 0;
   let frames = 0;
   let peak = 0;
 
   const TICKS = TUNING.TICK_HZ * 30;
-  for (let i = 0; i < TICKS; i++) {
-    const e = snake.restore(state);
-    e.tick!();
-    state = e.serialize();
-    const bytes = JSON.stringify(e.serializeForWire!()).length;
-    totalWire += bytes;
-    if (bytes > peak) peak = bytes;
-    frames++;
+  for (const seed of SEEDS) {
+    let state: GameStatePayload = snake.create(['u1', 'u2'], { bots: 4, seed }).serialize();
+    for (let i = 0; i < TICKS; i++) {
+      const e = snake.restore(state);
+      e.tick!();
+      state = e.serialize();
+      const bytes = JSON.stringify(e.serializeForWire!()).length;
+      totalWire += bytes;
+      if (bytes > peak) peak = bytes;
+      frames++;
+    }
   }
 
   const avg = totalWire / frames;

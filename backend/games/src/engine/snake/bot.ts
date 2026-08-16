@@ -70,6 +70,12 @@ export function stepBot(
   food: Food[],
   arena: ArenaShape,
   arenaRadius: number,
+  /**
+   * Arena geography. A bot that does not know about rocks drives into them, which is not a
+   * difficulty setting — it is a broken opponent, and the headless test caught exactly that:
+   * 14 deaths in 25 seconds once hazards existed.
+   */
+  hazards: readonly { k: string; x: number; y: number; r: number }[] = [],
   rng: Rng
 ): void {
   sn.boost = false;
@@ -119,6 +125,45 @@ export function stepBot(
     return;
   }
 
+  // --- Survival: rocks -----------------------------------------------------------------
+  //
+  // MODELLED ON THE WALL, NOT ON BODIES, and that distinction is the whole fix. The first
+  // attempt treated a rock as an obstacle to react to once it was already in front of the
+  // head, which is how a body is handled — and bots died to rocks 12 times in 25 seconds.
+  //
+  // A wall gets an AWARENESS RADIUS covering the turn radius plus reaction time, because a bot
+  // decides at 10 Hz and may already be turning the wrong way when it notices. A rock is the
+  // same problem in the middle of the arena, so it gets the same margin: steer away as soon as
+  // one is within reach, rather than when it is unavoidable.
+  {
+    let worst: { h: typeof hazards[number]; d: number } | null = null;
+    for (const h of hazards) {
+      if (h.k !== 'rock') continue;
+      const d = Math.hypot(h.x - sn.x, h.y - sn.y) - h.r;
+      // Only rocks roughly ahead matter — one behind is not a threat, and steering away from
+      // it would make bots wander.
+      const bearing = Math.atan2(h.y - sn.y, h.x - sn.x);
+      if (Math.abs(shortestAngle(sn.h, bearing)) > Math.PI / 2.2) continue;
+      // A WIDER MARGIN THAN THE WALL'S, because a rock can be dodged on either side and the
+      // arena cannot. Tuned against the headless test: at plain `awareness` bots still died to
+      // rocks often enough to fail the survival check, because the cone below only considers
+      // rocks roughly ahead — so a rock entering the cone late needs the extra room.
+      if (d < awareness * 1.6 && (!worst || d < worst.d)) worst = { h, d };
+    }
+    if (worst) {
+      // Turn to whichever side clears the rock with the smaller course change, so avoidance
+      // arcs around it rather than reading as a panic flip.
+      const bearing = Math.atan2(worst.h.y - sn.y, worst.h.x - sn.x);
+      const away = shortestAngle(sn.h, bearing) > 0 ? -1 : 1;
+      // Wider turn the closer it is: a rock at arm's length needs a hard commit, one at the
+      // edge of awareness only needs a nudge.
+      const urgency = 1 - Math.max(0, worst.d) / (awareness * 1.6);
+      sn.th = sn.h + away * (Math.PI / 3) * (0.45 + 0.55 * urgency);
+      mem.targetFood = -1;
+      return;
+    }
+  }
+
   // --- Survival: bodies ----------------------------------------------------------------
   // Cheap directional probe rather than a full ray-march: sample a few headings and take the
   // one with the most clearance. At 12 Hz this is plenty of resolution to avoid a body.
@@ -132,6 +177,18 @@ export function stepBot(
       if (dx * dx + dy * dy < 40 * 40) { blocked = true; break; }
     }
     if (blocked) break;
+  }
+
+  // A ROCK AHEAD BLOCKS, exactly as a body does. Spikes and slicks deliberately do NOT: a
+  // spike is survivable and a slick is only slow, so steering hard around either would make
+  // bots look frightened of terrain that is not actually dangerous.
+  if (!blocked) {
+    for (const h of hazards) {
+      if (h.k !== 'rock') continue;
+      const dx = h.x - lookX, dy = h.y - lookY;
+      const reach = h.r + 34;
+      if (dx * dx + dy * dy < reach * reach) { blocked = true; break; }
+    }
   }
 
   if (blocked) {
@@ -151,6 +208,13 @@ export function stepBot(
           const d = Math.hypot(path[i] - px, path[i + 1] - py);
           if (d < clear) clear = d;
         }
+      }
+      // Score rocks into the SAME clearance number rather than as a separate veto: an escape
+      // turn that dodges a body straight into a rock is not an escape.
+      for (const h of hazards) {
+        if (h.k !== 'rock') continue;
+        const d = Math.hypot(h.x - px, h.y - py) - h.r;
+        if (d < clear) clear = d;
       }
       // Bias toward small turns, so escaping never looks like a physically impossible flip.
       const score = clear - Math.abs(deg) * 0.6;
