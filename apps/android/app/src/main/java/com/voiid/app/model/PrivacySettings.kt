@@ -23,10 +23,13 @@ import kotlinx.coroutines.launch
  * reads is a lie the user cannot see, and it is exactly the failure this type exists to
  * prevent.
  *
- * Deliberately NOT stored here: blocking, last-seen visibility, profile-photo visibility,
- * disappearing messages, screenshot blocking, app lock, "who can add me to groups". None of
- * those has a schema, a route or a line of client code in this project, so none of them has
- * a setting — same reasoning as the iOS type this mirrors.
+ * Deliberately NOT stored here: disappearing messages, screenshot blocking, app lock, "who
+ * can add me to groups". None of those has a schema, a route or a line of client code in
+ * this project, so none of them has a setting — same reasoning as the iOS type this mirrors.
+ *
+ * Blocking is not here either, but for the opposite reason: it is real (039_user_blocks +
+ * /blocks) and SERVER-side, so it has no local preference to store. Its state lives in
+ * BlockService; Privacy settings only links to the list.
  *
  * Plain (unencrypted) SharedPreferences, matching iOS's choice of plain UserDefaults for
  * these three booleans — they are display/behaviour preferences, not secrets.

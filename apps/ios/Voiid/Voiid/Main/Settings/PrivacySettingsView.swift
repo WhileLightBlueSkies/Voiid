@@ -17,11 +17,13 @@
 //
 //  What is deliberately absent, and why
 //  ------------------------------------
-//  No blocking (there is no block/unblock route on the backend and no client code for
-//  one), no last-seen visibility, no profile-photo visibility, no disappearing messages,
-//  no screenshot blocking, no "who can add me to groups". Every one of those has zero
-//  schema, zero route and zero client code, so shipping a control for it would be an
-//  advertisement for a feature that does not exist.
+//  No disappearing messages, no screenshot blocking, no "who can add me to groups". Each
+//  has zero schema, zero route and zero client code, so shipping a control for it would be
+//  an advertisement for a feature that does not exist.
+//
+//  Blocking IS here now (039_user_blocks + /blocks, enforced server-side). It gets a row
+//  rather than a toggle, because blocking is per-person: the switch lives on each person's
+//  profile, and this screen is where you see the list and undo it.
 //
 //  No app lock and no PIN row either. There is no `LocalAuthentication` import anywhere
 //  in this app — no biometric or passcode gate exists to switch on. The only PIN Voiid
@@ -43,6 +45,8 @@ import SwiftUI
 struct PrivacySettingsView: View {
 
     @ObservedObject private var settings = PrivacySettings.shared
+    /// Blocking (039). Drives the count beside the Blocked contacts row.
+    @ObservedObject private var blocks = BlockService.shared
     // Feature (B) — the Map — mirrors Ghost Mode and the kill switch here (§8). Unlike the
     // three toggles above, these are backed by real state with real consumers: Ghost Mode
     // is a hard local gate on `MapPresenceEngine`'s emission, and the kill switch ends every
@@ -171,6 +175,35 @@ struct PrivacySettingsView: View {
             }
 
             // MARK: Map location
+
+            // MARK: Blocked contacts
+
+            // A row, not a toggle: blocking is per-person and starts on that person's
+            // profile. This is the way back — you should not have to find someone you have
+            // been avoiding in order to stop avoiding them.
+            SettingsSection(
+                "Blocked",
+                footer: "Blocked people can't message or call you, and you can't message or "
+                    + "call them. They're never told."
+            ) {
+                NavigationLink {
+                    BlockedContactsView()
+                } label: {
+                    HStack {
+                        Label("Blocked contacts", systemImage: "hand.raised.slash")
+                            .font(VoiidFont.rounded(16, .regular))
+                            .foregroundColor(VoiidColor.textPrimary)
+                        Spacer()
+                        // Only once loaded, and only when non-zero: a "0" beside a settings
+                        // row invites the question of what it counts.
+                        if blocks.didLoad, !blocks.blocked.isEmpty {
+                            Text("\(blocks.blocked.count)")
+                                .font(VoiidFont.rounded(15, .regular))
+                                .foregroundColor(VoiidColor.textSecondary)
+                        }
+                    }
+                }
+            }
 
             SettingsSection(
                 "Map location",

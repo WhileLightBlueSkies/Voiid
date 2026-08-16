@@ -1,6 +1,7 @@
 package com.voiid.app.main
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -9,9 +10,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -21,19 +25,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.foundation.layout.width
-import com.voiid.app.model.PrivacySettings
 import com.voiid.app.model.MapVisibility
+import com.voiid.app.model.PrivacySettings
+import com.voiid.app.net.BlockService
 import com.voiid.app.net.ContactPinService
-import kotlinx.coroutines.launch
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.size
 import com.voiid.app.net.MapPresenceEngine
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.VoiidToggle
@@ -41,6 +42,7 @@ import com.voiid.app.ui.components.softClickable
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
+import kotlinx.coroutines.launch
 
 /**
  * Settings -> Privacy. Port of iOS `PrivacySettingsView.swift`.
@@ -50,13 +52,20 @@ import com.voiid.app.ui.theme.VoiidRadius
  * Ghost Mode / kill switch, backed by the real [MapPresenceEngine] singleton (a hard local
  * gate on the location provider, not a display filter).
  *
- * Deliberately absent, mirroring iOS: no blocking, last-seen visibility, profile-photo
- * visibility, disappearing messages, screenshot blocking, app lock, or "who can add me to
- * groups" — none of those has a schema, a route or a line of client code in this project.
+ * Deliberately absent, mirroring iOS: no disappearing messages, screenshot blocking, app
+ * lock, or "who can add me to groups" — none of those has a schema, a route or a line of
+ * client code in this project.
+ *
+ * Blocking IS here now (039_user_blocks + /blocks, enforced server-side). It gets a row
+ * rather than a toggle, because blocking is per-person: the switch lives on each person's
+ * profile, and this screen is where you see the list and undo it.
  */
 @Composable
-fun PrivacySettingsScreen(onBack: () -> Unit) {
+fun PrivacySettingsScreen(onBack: () -> Unit, onBlockedContacts: () -> Unit = {}) {
     val context = LocalContext.current
+    val blockedUsers by BlockService.blocked.collectAsState()
+    val blocksLoaded by BlockService.didLoad.collectAsState()
+    LaunchedEffect(Unit) { BlockService.loadIfNeeded(context) }
 
     var sendReceipts by remember { mutableStateOf(PrivacySettings.sendReadReceipts(context)) }
     var sendTyping by remember { mutableStateOf(PrivacySettings.sendTypingIndicators(context)) }
@@ -204,6 +213,36 @@ fun PrivacySettingsScreen(onBack: () -> Unit) {
         ) {
             PrivacyToggleRow("Show when contacts are online", showOnline) {
                 showOnline = it; PrivacySettings.setShowOnlineStatus(context, it)
+            }
+        }
+
+        Spacer(Modifier.height(20.dp))
+
+        // A row, not a toggle: blocking is per-person and starts on that person's profile.
+        // This is the way back — you should not have to find someone you have been avoiding
+        // in order to stop avoiding them.
+        PrivacySection(
+            header = "Blocked",
+            footer = "Blocked people can't message or call you, and you can't message or " +
+                "call them. They're never told.",
+        ) {
+            Row(
+                Modifier.fillMaxWidth()
+                    .softClickable { haptics.tap(); onBlockedContacts() }
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Blocked contacts",
+                     style = VoiidFont.rounded(15),
+                     color = VoiidColor.textPrimary,
+                     modifier = Modifier.weight(1f))
+                // Only once loaded, and only when non-zero: a "0" beside a settings row
+                // invites the question of what it counts.
+                if (blocksLoaded && blockedUsers.isNotEmpty()) {
+                    Text("${blockedUsers.size}",
+                         style = VoiidFont.rounded(15),
+                         color = VoiidColor.textSecondary)
+                }
             }
         }
 

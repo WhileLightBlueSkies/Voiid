@@ -28,6 +28,10 @@ struct ContactProfileView: View {
     @State private var viewPhoto = false
     @State private var showAllMedia = false
     @State private var profile: UserProfile?
+    /// Blocking (039). Observed so the row flips between Block and Unblock the moment the
+    /// mutation lands, without this view tracking its own copy of the state.
+    @ObservedObject private var blocks = BlockService.shared
+    @State private var blockFailure: String?
 
     /// Explicit states, because "profile == nil" meant BOTH "still loading" and "failed" —
     /// and the screen drew the same empty page for each.
@@ -150,11 +154,32 @@ struct ContactProfileView: View {
         } message: {
             Text("Every message in this conversation is deleted from this device. This cannot be undone.")
         }
-        .confirmationDialog("Block \(displayName)?", isPresented: $showBlockConfirm, titleVisibility: .visible) {
-            Button("Block", role: .destructive) { notImplemented = "Blocking isn’t available yet." }
+        // Block / unblock. The copy differs because the two actions promise different
+        // things, and because blocking is SYMMETRIC — saying only "they won't be able to
+        // message you" would leave the user to discover their own sends failing and read
+        // it as a bug.
+        .confirmationDialog(
+            isBlocked ? "Unblock \(displayName)?" : "Block \(displayName)?",
+            isPresented: $showBlockConfirm, titleVisibility: .visible
+        ) {
+            if isBlocked {
+                Button("Unblock") { toggleBlock() }
+            } else {
+                Button("Block", role: .destructive) { toggleBlock() }
+            }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("They won’t be able to message or call you.")
+            Text(isBlocked
+                 ? "You'll both be able to message and call each other again."
+                 : "Neither of you will be able to message or call the other. They won't be "
+                   + "told. Your messages and any groups you share stay where they are.")
+        }
+        .alert(isBlocked ? "Couldn't unblock" : "Couldn't block",
+               isPresented: Binding(get: { blockFailure != nil },
+                                    set: { if !$0 { blockFailure = nil } })) {
+            Button("OK", role: .cancel) { blockFailure = nil }
+        } message: {
+            Text(blockFailure ?? "")
         }
         .confirmationDialog("Report \(displayName)?", isPresented: $showReportConfirm, titleVisibility: .visible) {
             Button("Report", role: .destructive) { notImplemented = "Reporting isn’t available yet." }
@@ -632,10 +657,14 @@ struct ContactProfileView: View {
         }
     }
 
-    /// Block and Report have NO backend yet (no route, no table). Rather than leave them as
-    /// silent no-ops that look like they worked, they confirm and then say plainly that the
-    /// feature is not live. A button that appears to succeed and does nothing is the worst of
-    /// the three options for a safety feature.
+    /// Block is live (039_user_blocks + /blocks, enforced server-side across messages,
+    /// calls, profile, presence, conversation creation, group invites, stories and typing).
+    /// The row flips to Unblock when this person is already blocked, so the one control
+    /// carries both directions rather than hiding the way back.
+    ///
+    /// Report still has no client half — the backend route and table exist (035_reports),
+    /// but nothing here calls them, so it stays honest about not being live rather than
+    /// looking like it worked.
     ///
     /// Destructive actions sit LAST and unlabelled — no "DANGER" header shouting at a screen
     /// you opened to see someone's photo. The red carries it, and the confirmation catches
@@ -649,9 +678,52 @@ struct ContactProfileView: View {
             // ellipsis.
             actionRow("trash.fill", "Clear chat") { showClearChatConfirm = true }
             Divider().background(VoiidColor.divider.opacity(0.4))
-            actionRow("hand.raised.fill", "Block \(displayName)") { showBlockConfirm = true }
+            actionRow(isBlocked ? "hand.raised.slash.fill" : "hand.raised.fill",
+                      isBlocked ? "Unblock \(displayName)" : "Block \(displayName)") {
+                showBlockConfirm = true
+            }
             Divider().background(VoiidColor.divider.opacity(0.4))
             actionRow("exclamationmark.bubble.fill", "Report \(displayName)") { showReportConfirm = true }
+        }
+    }
+
+    // MARK: blocking
+
+    /// Whether THIS account has blocked the peer. Answers from BlockService's cache, which
+    /// is why the profile does not need its own fetch or its own loading state.
+    ///
+    /// Deliberately cannot answer the reverse — whether the peer blocked US. There is no
+    /// route for that and there must not be: a blocked person being able to detect the
+    /// block defeats the point of blocking silently.
+    private var isBlocked: Bool {
+        guard let peerId = conversation.peerUserId else { return false }
+        return blocks.isBlocked(peerId)
+    }
+
+    /// Block or unblock, whichever the current state calls for.
+    ///
+    /// On failure the service has already rolled its optimistic change back, so the row
+    /// returns to its previous label on its own; this only has to say what happened. A
+    /// silent failure here is the dangerous case — someone believing they are protected
+    /// when they are not.
+    private func toggleBlock() {
+        guard let peerId = conversation.peerUserId else {
+            blockFailure = "This conversation has no contact to block."
+            return
+        }
+        let wasBlocked = isBlocked
+        Task {
+            let ok = wasBlocked
+                ? await blocks.unblock(userId: peerId)
+                : await blocks.block(userId: peerId,
+                                     displayName: displayName,
+                                     username: profile?.username,
+                                     photoURL: profile?.photoURL)
+            if !ok {
+                blockFailure = wasBlocked
+                    ? "Check your connection and try again. \(displayName) is still blocked."
+                    : "Check your connection and try again. \(displayName) has not been blocked."
+            }
         }
     }
 

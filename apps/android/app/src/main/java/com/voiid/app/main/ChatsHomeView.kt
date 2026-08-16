@@ -171,6 +171,9 @@ fun ChatsHomeView(
     androidx.compose.runtime.LaunchedEffect(Unit) { refreshRequestCount() }
     var showBackup by remember { mutableStateOf(false) }
     var showPrivacy by remember { mutableStateOf(false) }
+    // Blocked contacts, reached from inside Privacy. Hosted here because this is the only
+    // place sub-screens are hosted; see the Dialog block below.
+    var showBlocked by remember { mutableStateOf(false) }
     var showStorage by remember { mutableStateOf(false) }
     var showLinkedDevices by remember { mutableStateOf(false) }
     var showAbout by remember { mutableStateOf(false) }
@@ -411,12 +414,26 @@ fun ChatsHomeView(
     }
 
     // Privacy — fullscreen dialog
+    // Blocked contacts — stacked ON TOP of Privacy rather than replacing it, so dismissing
+    // it returns to the Privacy screen the user opened it from rather than to the chat list.
+    if (showBlocked) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showBlocked = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            BlockedContactsScreen(onBack = { showBlocked = false })
+        }
+    }
+
     if (showPrivacy) {
         androidx.compose.ui.window.Dialog(
             onDismissRequest = { showPrivacy = false },
             properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
         ) {
-            PrivacySettingsScreen(onBack = { showPrivacy = false })
+            PrivacySettingsScreen(
+                onBack = { showPrivacy = false },
+                onBlockedContacts = { showBlocked = true },
+            )
         }
     }
 
