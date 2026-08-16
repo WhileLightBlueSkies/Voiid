@@ -17,6 +17,7 @@ import {
 } from '../callMetrics';
 import { requireAuth } from '../auth';
 import { asyncHandler } from '../util';
+import { isBlockedEitherWay } from '../blocking';
 import jwt from 'jsonwebtoken';
 import { sendWakePush, sendVoipPush, voipConfigured } from '../push';
 import { redis } from '../redis';
@@ -730,6 +731,11 @@ async function loadCall(callId: string): Promise<CallRow | null> {
  * them afterwards.
  */
 async function canReachForCall(requester: string, invitee: string): Promise<boolean> {
+  // Blocking (043) overrides every other proof of reachability. A mutual contact-sync or a
+  // shared accepted conversation both predate the block; neither should let a blocked user
+  // ring a phone. Checked FIRST so the expensive reachability query is skipped entirely.
+  if (await isBlockedEitherWay(requester, invitee)) return false;
+
   const rows = await query<{ a_saved_b: boolean; b_saved_a: boolean; accepted_conv: boolean }>(
     `select
        exists(select 1 from contact_sync where owner_user_id = $1 and contact_user_id = $2) as a_saved_b,

@@ -28,8 +28,6 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Videocam
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -56,6 +54,8 @@ import com.voiid.app.store.LocalStore
 import com.voiid.app.store.UserDirectory
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.VoiidCircleBack
+import com.voiid.app.ui.components.VoiidMenu
+import com.voiid.app.ui.components.VoiidMenuItem
 import com.voiid.app.ui.components.softClickable
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
@@ -137,16 +137,12 @@ fun CallLogScreen(chat: ChatStore, onBack: () -> Unit, onOpenConversation: (VCon
                         modifier = Modifier.size(40.dp).clip(CircleShape)
                             .clickable { haptics.tap(); menuOpen = true }.padding(8.dp),
                     )
-                    DropdownMenu(
-                        expanded = menuOpen,
-                        onDismissRequest = { menuOpen = false },
-                        containerColor = VoiidColor.surfaceCard,
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Clear call history", style = VoiidFont.rounded(15), color = VoiidColor.error) },
-                            onClick = { menuOpen = false; haptics.rigid(); confirmClear = true },
-                            leadingIcon = { Icon(Icons.Default.Delete, null, tint = VoiidColor.error) },
-                        )
+                    VoiidMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        VoiidMenuItem(
+                            "Clear call history",
+                            Icons.Default.Delete,
+                            destructive = true,
+                        ) { menuOpen = false; haptics.rigid(); confirmClear = true }
                     }
                 }
             }

@@ -2,6 +2,7 @@
 // Server stores only metadata + membership; message content stays ciphertext (see messages.ts).
 import { Router } from 'express';
 import { pool, query } from '../db';
+import { isBlockedEitherWay, blockedUserIds } from '../blocking';
 import { publisher } from '../redis';
 import { asyncHandler } from '../util';
 import { requireAuth } from '../auth';
@@ -132,6 +133,16 @@ router.post('/create', requireAuth, async (req, res) => {
     // Self-chats have their own type above — this stays blocked so a 'direct' can never be
     // created with a duplicate member and start matching the two-member lookup.
     if (member_id === user_id) return res.status(400).json({ error: 'cannot create direct conversation with self' });
+
+    // Blocking (043). Checked BEFORE the idempotent lookup, so a blocked pair cannot even
+    // resurface an existing 1:1 into their chat list by "creating" it again.
+    //
+    // 404, not 403: a distinctive error would tell the blocked party a block exists. This
+    // is the same shape the endpoint returns for a user id that does not exist, which is
+    // what someone unreachable should look like.
+    if (await isBlockedEitherWay(user_id, member_id)) {
+      return res.status(404).json({ error: 'user not found' });
+    }
 
     // Idempotent: reuse an existing 1:1 between exactly these two users.
     const existing = await query<{ id: string }>(
@@ -297,6 +308,20 @@ router.post('/:id/members', requireAuth, async (req, res) => {
   if (!caller) return res.status(403).json({ error: 'not a member of this conversation' });
   if (caller.role !== 'admin' && caller.role !== 'owner') {
     return res.status(403).json({ error: 'only an admin can add members' });
+  }
+
+  // Blocking (043). An admin may not drag someone they have a block with into a group —
+  // that is the obvious way to route around a block, and it is the harassment vector the
+  // feature exists to close.
+  //
+  // Scoped to the ADDER's blocks only. A block between the invitee and some OTHER member
+  // is deliberately not checked here: those two already share whatever groups they share,
+  // and letting one member's block veto an unrelated invitation would hand anyone a silent
+  // veto over a group they are merely a member of.
+  const adderBlocks = await blockedUserIds(user_id);
+  const blockedInvitee = (userIds as string[]).find((u) => adderBlocks.has(u));
+  if (blockedInvitee) {
+    return res.status(403).json({ error: 'cannot add a user you have blocked or who has blocked you' });
   }
 
   // COUNTED INSIDE A TRANSACTION HOLDING THE CONVERSATION ROW. Two admins adding at the

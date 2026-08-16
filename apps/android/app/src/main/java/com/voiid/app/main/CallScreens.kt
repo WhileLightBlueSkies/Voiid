@@ -1,14 +1,19 @@
 package com.voiid.app.main
 
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -22,14 +27,18 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Cameraswitch
-import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Headset
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PersonAdd
+import androidx.compose.material.icons.filled.PhoneInTalk
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.VideocamOff
@@ -38,48 +47,39 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
-import androidx.compose.material.icons.filled.Bluetooth
-import androidx.compose.material.icons.filled.Headset
-import androidx.compose.material.icons.filled.PhoneInTalk
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.ui.graphics.graphicsLayer
-import com.voiid.app.store.UserDirectory
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.unit.IntSize
-import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.foundation.layout.BoxScope
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.voiid.app.net.CallManager
 import com.voiid.app.net.ConferenceManager
+import com.voiid.app.store.UserDirectory
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.VoiidAvatar
+import com.voiid.app.ui.components.VoiidMenu
+import com.voiid.app.ui.components.VoiidMenuItem
 import com.voiid.app.ui.components.reduceMotionEnabled
 import com.voiid.app.ui.components.softClickable
 import com.voiid.app.ui.theme.VoiidColor
@@ -921,34 +921,19 @@ private fun AudioRouteControl(speaker: Boolean, isVideo: Boolean, onToggleSpeake
                 haptics.tap()
                 menuOpen = true
             }
-            DropdownMenu(
-                expanded = menuOpen,
-                onDismissRequest = { menuOpen = false },
-                containerColor = VoiidColor.surfaceCard,
-            ) {
+            VoiidMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                 routes.forEach { route ->
-                    val selected = route.id == current.id
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                route.label,
-                                style = VoiidFont.rounded(15, if (selected) FontWeight.SemiBold else FontWeight.Normal),
-                                color = VoiidColor.textPrimary,
-                            )
-                        },
-                        onClick = {
-                            menuOpen = false
-                            haptics.tap()
-                            CallManager.selectAudioRoute(route)
-                        },
-                        leadingIcon = {
-                            Icon(
-                                if (selected) Icons.Default.Check else routeIcon(route),
-                                null,
-                                tint = if (selected) VoiidColor.primary else VoiidColor.textSecondary,
-                            )
-                        },
-                    )
+                    // A one-of-many choice, so `selected` drives the tick and the weight —
+                    // see VoiidMenuItem's note on why that is distinct from a list of actions.
+                    VoiidMenuItem(
+                        route.label,
+                        routeIcon(route),
+                        selected = route.id == current.id,
+                    ) {
+                        menuOpen = false
+                        haptics.tap()
+                        CallManager.selectAudioRoute(route)
+                    }
                 }
             }
         }

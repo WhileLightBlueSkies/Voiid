@@ -43,6 +43,10 @@ object SessionTeardown {
         runCatching { UserDirectory.wipe() }
         runCatching { E2EManager.get(appContext).resetForSignOut() }
         runCatching { GroupEngine.get(appContext).resetForSignOut() }
+        // Blocking (043). Without this the next account on this device inherits the
+        // previous one's blocked list, so a person they have never blocked renders as
+        // "Unblock" on their profile.
+        runCatching { BlockService.reset() }
 
         // 2 — the local-first store every screen reads from.
         runCatching { VoiidDatabase.wipeAllForSignOut(appContext) }

@@ -294,6 +294,7 @@ const db = {
   call_participants: [] as Row[],
   devices: [] as Row[],
   contact_pin_attempts: [] as Row[],
+  user_blocks: [] as Row[],
 };
 
 /** Every statement executed since the last reset — the dynamic half of guard (1). */
@@ -516,6 +517,20 @@ async function fakeQuery(text: string, params: any[] = []): Promise<{ rows: Row[
     db.conversation_members.push({ conversation_id: convId, user_id: sender, request_state: 'accepted', opened_via: openedVia, left_at: null, joined_at: now() });
     db.conversation_members.push({ conversation_id: convId, user_id: target, request_state: recipientState, opened_via: openedVia, left_at: null, joined_at: now() });
     return rows([]);
+  }
+
+  // ── blocking.ts: isBlockedEitherWay — a block in EITHER direction blocks the pair.
+  // canReachForCall consults this before any other proof of reachability, so a blocked
+  // user cannot ring a phone on the strength of a mutual contact-sync that predates
+  // the block.
+  if (s.includes('from user_blocks')) {
+    const [a, b] = p;
+    const hit = db.user_blocks.some(
+      (r) =>
+        (r.blocker_user_id === a && r.blocked_user_id === b) ||
+        (r.blocker_user_id === b && r.blocked_user_id === a)
+    );
+    return rows(hit ? [{ one: 1 }] : []);
   }
 
   throw new Error(

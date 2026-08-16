@@ -1,12 +1,13 @@
 package com.voiid.app.main
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.background
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -28,17 +30,17 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Message
 import androidx.compose.material.icons.filled.Block
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallMade
 import androidx.compose.material.icons.filled.CallReceived
-import androidx.compose.material.icons.filled.PhoneMissed
 import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FormatQuote
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.NotificationsOff
-import androidx.compose.material.icons.filled.FormatQuote
+import androidx.compose.material.icons.filled.PhoneMissed
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Report
 import androidx.compose.material.icons.filled.Search
@@ -49,36 +51,35 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.Dispatchers
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.foundation.border
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.unit.sp
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.unit.dp
-import com.voiid.app.model.DummyData
+import androidx.compose.ui.unit.sp
 import com.voiid.app.model.ConversationType
+import com.voiid.app.model.DummyData
 import com.voiid.app.model.VConversation
+import com.voiid.app.net.BlockService
 import com.voiid.app.net.ContactDirectory
 import com.voiid.app.net.ProfileService
+import com.voiid.app.store.UserDirectory
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.ProfilePhotoViewer
-import com.voiid.app.store.UserDirectory
 import com.voiid.app.ui.components.VoiidAvatar
 import com.voiid.app.ui.components.VoiidCircleBack
 import com.voiid.app.ui.components.VoiidToggle
@@ -87,6 +88,9 @@ import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
 import com.voiid.app.ui.theme.VoiidSpacing
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** 1:1 contact profile (WhatsApp-style) — port of iOS `ContactProfileView.swift`. */
 @Composable
@@ -108,17 +112,30 @@ fun ContactProfileView(
 ) {
     BackHandler { onBack() }
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    // Blocking (043). Collected so the row flips between Block and Unblock the moment the
+    // mutation lands, without this screen keeping its own copy of the state.
+    //
+    // Answers only whether WE blocked THEM. There is deliberately no route for the reverse
+    // — a blocked person being able to detect the block defeats blocking silently.
+    val blockedUsers by BlockService.blocked.collectAsState()
+    val isBlocked = conversation.peerUserId?.let { peer -> blockedUsers.any { it.id == peer } } == true
     val haptics = LocalVoiidHaptics.current
     var muted by remember { mutableStateOf(false) }
     // The safety-number screen (anti-MITM verification), reachable from the Encryption card below.
     var showSafetyNumber by remember { mutableStateOf(false) }
     var showAllMedia by remember { mutableStateOf(false) }
     var viewPhoto by remember { mutableStateOf(false) }
-    /** "block" | "report" | null — Block and Report have no backend yet (no route, no table),
-     *  so they confirm and then say so plainly. A safety button that appears to succeed and
-     *  silently does nothing is worse than one that admits it is not built. */
+    /** "clear" | "block" | "report" | null.
+     *
+     *  Block is LIVE now (043_user_blocks + /blocks, enforced server-side across messages,
+     *  calls, profile, presence, conversation creation, group invites, stories and typing).
+     *  Report still has no client half — the route and table exist, nothing here calls
+     *  them — so it keeps saying so rather than appearing to work. */
     var confirm by remember { mutableStateOf<String?>(null) }
     var notImplemented by remember { mutableStateOf<String?>(null) }
+    /** Set when a block/unblock fails, so the row's state and the message stay honest. */
+    var blockFailure by remember { mutableStateOf<String?>(null) }
     var photoUrl by remember { mutableStateOf<String?>(null) }
     // The four most recent calls with this contact, newest first — same source the transcript's
     // call bubbles use, asked a different question. Four because the card is a summary, not a log.
@@ -171,18 +188,26 @@ fun ContactProfileView(
         // block and report still have no backend, and say so rather than appearing to work.
         val title = when (which) {
             "clear" -> "Clear this chat?"
-            "block" -> "Block ${conversation.title}?"
+            "block" -> if (isBlocked) "Unblock ${conversation.title}?"
+                       else "Block ${conversation.title}?"
             else -> "Report ${conversation.title}?"
         }
+        // The block copy states that blocking is SYMMETRIC. The old line — "They won't be
+        // able to message or call you" — described a one-way mute, which is not what the
+        // server does; a user who believed it would read their own failed sends as a bug.
         val body = when (which) {
             "clear" -> "Every message in this conversation is deleted from this device. " +
                 "This cannot be undone."
-            "block" -> "They won’t be able to message or call you."
+            "block" -> if (isBlocked)
+                "You’ll both be able to message and call each other again."
+            else
+                "Neither of you will be able to message or call the other. They won’t be " +
+                "told. Your messages and any groups you share stay where they are."
             else -> "The last few messages from this chat are sent to Voiid for review."
         }
         val action = when (which) {
             "clear" -> "Clear chat"
-            "block" -> "Block"
+            "block" -> if (isBlocked) "Unblock" else "Block"
             else -> "Report"
         }
         androidx.compose.material3.AlertDialog(
@@ -203,7 +228,39 @@ fun ContactProfileView(
                         // the chat behind it is now empty, and staying here would leave the
                         // user two screens deep in a conversation that no longer has content.
                         "clear" -> { onClearChat(); onBack() }
-                        "block" -> notImplemented = "Blocking isn’t available yet."
+                        // Block / unblock, whichever the current state calls for. The
+                        // service rolls its own optimistic change back on failure, so the
+                        // row returns to its previous label by itself; this only has to
+                        // say what happened. A silent failure is the dangerous case —
+                        // someone believing they are protected when they are not.
+                        "block" -> {
+                            val peer = conversation.peerUserId
+                            if (peer == null) {
+                                blockFailure = "This conversation has no contact to block."
+                            } else {
+                                val wasBlocked = isBlocked
+                                scope.launch {
+                                    val ok = if (wasBlocked) {
+                                        BlockService.unblock(context, peer)
+                                    } else {
+                                        BlockService.block(
+                                            context, peer,
+                                            displayName = conversation.title,
+                                            username = username,
+                                            photoUrl = photoUrl,
+                                        )
+                                    }
+                                    if (!ok) {
+                                        blockFailure = if (wasBlocked)
+                                            "Check your connection and try again. " +
+                                            "${conversation.title} is still blocked."
+                                        else
+                                            "Check your connection and try again. " +
+                                            "${conversation.title} has not been blocked."
+                                    }
+                                }
+                            }
+                        }
                         else -> notImplemented = "Reporting isn’t available yet."
                     }
                 }) { Text(action, color = VoiidColor.error) }
@@ -223,6 +280,24 @@ fun ContactProfileView(
             text = { Text(msg, style = VoiidFont.rounded(14), color = VoiidColor.textSecondary) },
             confirmButton = {
                 androidx.compose.material3.TextButton(onClick = { notImplemented = null }) {
+                    Text("OK", color = VoiidColor.primary)
+                }
+            },
+        )
+    }
+
+    blockFailure?.let { msg ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { blockFailure = null },
+            containerColor = VoiidColor.surfaceCard,
+            title = {
+                Text(if (isBlocked) "Couldn’t unblock" else "Couldn’t block",
+                     style = VoiidFont.rounded(17, FontWeight.SemiBold),
+                     color = VoiidColor.textPrimary)
+            },
+            text = { Text(msg, style = VoiidFont.rounded(14), color = VoiidColor.textSecondary) },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = { blockFailure = null }) {
                     Text("OK", color = VoiidColor.primary)
                 }
             },
@@ -574,7 +649,11 @@ fun ContactProfileView(
                 // two, and the chat toolbar loses its last reason to carry an ellipsis.
                 ProfileRow(Icons.Default.Delete, "Clear chat", tint = VoiidColor.error) { haptics.rigid(); confirm = "clear" }
                 HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.4f))
-                ProfileRow(Icons.Default.Block, "Block ${conversation.title}", tint = VoiidColor.error) { haptics.rigid(); confirm = "block" }
+                ProfileRow(
+        Icons.Default.Block,
+        if (isBlocked) "Unblock ${conversation.title}" else "Block ${conversation.title}",
+        tint = VoiidColor.error,
+    ) { haptics.rigid(); confirm = "block" }
                 HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.4f))
                 ProfileRow(Icons.Default.Report, "Report ${conversation.title}", tint = VoiidColor.error) { haptics.rigid(); confirm = "report" }
             }
