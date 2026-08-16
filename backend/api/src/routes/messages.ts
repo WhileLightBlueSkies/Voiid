@@ -35,12 +35,46 @@ function isControlContentType(contentType?: string | null): boolean {
   return contentType === 'location';
 }
 
-function scheduleWakePush(whereSql: string, params: unknown[], meta?: PushMeta): void {
+/**
+ * Content-free wake push to every device matching `whereSql`, MINUS anyone the sender has a
+ * block with.
+ *
+ * BLOCKING IS FILTERED HERE, NOT AT THE CALL SITES. `sendWakePush` takes device tokens, so
+ * by the time a target reaches it there is no user id left to check. Both call sites below
+ * select devices — one by device id (fan-out), one by user id (legacy) — so the filter has
+ * to sit in this one query, joined back through `devices.user_id`.
+ *
+ * WHY THIS MATTERS FOR GROUPS SPECIFICALLY. A 1:1 send to a blocked pair never gets this
+ * far: blockGuardForSend stops it. A GROUP send deliberately does not stop — one blocked
+ * pair must not silence a whole room — so the message is written and relayed, and without
+ * this a blocked member's phone would still light up with "New message" from the person who
+ * blocked them. That is the most visible thing blocking is supposed to prevent, and it was
+ * the last place it leaked.
+ *
+ * `senderId` is nullable so a caller with no sender (there is none today, but the signature
+ * should not force one) skips the filter rather than silently pushing to nobody.
+ */
+function scheduleWakePush(
+  whereSql: string,
+  params: unknown[],
+  meta?: PushMeta,
+  senderId?: string | null
+): void {
+  // $N of the block parameter, appended after whatever the caller already passed.
+  const blockParam = `$${params.length + 1}`;
+  const filter = senderId
+    ? `and not exists (
+           select 1 from user_blocks b
+            where (b.blocker_user_id = devices.user_id and b.blocked_user_id = ${blockParam})
+               or (b.blocked_user_id = devices.user_id and b.blocker_user_id = ${blockParam})
+         )`
+    : '';
   query<{ push_token: string; push_provider: string }>(
     `select push_token, push_provider from devices
        where ${whereSql} and revoked_at is null
-         and push_token is not null and push_provider is not null`,
-    params
+         and push_token is not null and push_provider is not null
+         ${filter}`,
+    senderId ? [...params, senderId] : params
   )
     .then((targets) => {
       if (targets.length) void sendWakePush(targets, meta);
@@ -229,9 +263,24 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
     // device then calls GET /messages/pending to pull ITS OWN ciphertext. We never place a
     // device's ciphertext on the shared user channel — only a routing signal (message_id +
     // the device ids targeted for that user, which are non-secret metadata).
+    //
+    // Blocking (039): a device whose owner has a block with the sender is dropped here, so
+    // it is neither relayed to nor (via the same exclusion in scheduleWakePush) pushed to.
+    //
+    // The RECIPIENT LIST COMES FROM THE CLIENT — it is whoever the sender's app chose to
+    // encrypt to — so this is the server's own check rather than trust in a well-behaved
+    // client. A modified client that fans out to someone who blocked them still gets its
+    // ciphertext stored (there is nothing secret in that; the row is opaque and the reader
+    // must already hold the key), but no device is ever told it is there.
     const owners = await query<{ id: string; user_id: string }>(
-      `select id, user_id from devices where id = any($1::uuid[]) and revoked_at is null`,
-      [deviceIds]
+      `select id, user_id from devices
+        where id = any($1::uuid[]) and revoked_at is null
+          and not exists (
+            select 1 from user_blocks b
+             where (b.blocker_user_id = devices.user_id and b.blocked_user_id = $2)
+                or (b.blocked_user_id = devices.user_id and b.blocker_user_id = $2)
+          )`,
+      [deviceIds, user_id]
     );
     const byUser = new Map<string, string[]>();
     for (const o of owners) {
@@ -254,7 +303,7 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
         message_id: message.id,
         conversation_id,
         silent: isControlContentType(content_type),
-      });
+      }, user_id);
     }
 
     return res.json({ message_id: message.id, delivered_devices: deviceIds.length });
@@ -288,9 +337,19 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
   const message = rows[0];
 
   // Route to each active member's user channel; WS instance with the live socket delivers it.
+  //
+  // Blocking (039) is filtered in the SQL rather than after the fact, so the same list
+  // drives both the live relay below and the wake push further down. A group send is
+  // deliberately never rejected for one blocked pair — that would let one member silence a
+  // room — so suppression happens per RECIPIENT here instead.
   const members = await query<{ user_id: string }>(
-    `select user_id from conversation_members
-       where conversation_id = $1 and left_at is null and user_id <> $2`,
+    `select cm.user_id from conversation_members cm
+       where cm.conversation_id = $1 and cm.left_at is null and cm.user_id <> $2
+         and not exists (
+           select 1 from user_blocks b
+            where (b.blocker_user_id = cm.user_id and b.blocked_user_id = $2)
+               or (b.blocked_user_id = cm.user_id and b.blocker_user_id = $2)
+         )`,
     [conversation_id, user_id]
   );
   for (const m of members) {
@@ -310,7 +369,7 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
       message_id: message.id,
       conversation_id,
       silent: isControlContentType(content_type),
-    });
+    }, user_id);
   }
 
   res.json({ message_id: message.id, created_at: message.created_at });
