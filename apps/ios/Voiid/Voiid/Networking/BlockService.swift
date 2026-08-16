@@ -2,7 +2,7 @@
 //  BlockService.swift
 //  Voiid
 //
-//  The client half of user blocking (039_user_blocks.sql, backend/api/src/routes/blocks.ts).
+//  The client half of user blocking (043_user_blocks.sql, backend/api/src/routes/blocks.ts).
 //
 //  Until this file existed the Block button raised "Blocking isn't available yet" beneath a
 //  dialog promising "They won't be able to message or call you." The backend now enforces

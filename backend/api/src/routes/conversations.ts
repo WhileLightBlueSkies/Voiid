@@ -134,7 +134,7 @@ router.post('/create', requireAuth, async (req, res) => {
     // created with a duplicate member and start matching the two-member lookup.
     if (member_id === user_id) return res.status(400).json({ error: 'cannot create direct conversation with self' });
 
-    // Blocking (039). Checked BEFORE the idempotent lookup, so a blocked pair cannot even
+    // Blocking (043). Checked BEFORE the idempotent lookup, so a blocked pair cannot even
     // resurface an existing 1:1 into their chat list by "creating" it again.
     //
     // 404, not 403: a distinctive error would tell the blocked party a block exists. This
@@ -310,7 +310,7 @@ router.post('/:id/members', requireAuth, async (req, res) => {
     return res.status(403).json({ error: 'only an admin can add members' });
   }
 
-  // Blocking (039). An admin may not drag someone they have a block with into a group —
+  // Blocking (043). An admin may not drag someone they have a block with into a group —
   // that is the obvious way to route around a block, and it is the harassment vector the
   // feature exists to close.
   //

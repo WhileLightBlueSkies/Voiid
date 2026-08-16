@@ -1,4 +1,4 @@
--- 039_user_blocks.sql
+-- 043_user_blocks.sql
 --
 -- User-level blocking. Until now Voiid had none: the iOS Block button raised
 -- "Blocking isn't available yet", directly beneath a dialog promising "They won't be

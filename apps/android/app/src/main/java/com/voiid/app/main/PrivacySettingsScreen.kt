@@ -56,7 +56,7 @@ import kotlinx.coroutines.launch
  * lock, or "who can add me to groups" — none of those has a schema, a route or a line of
  * client code in this project.
  *
- * Blocking IS here now (039_user_blocks + /blocks, enforced server-side). It gets a row
+ * Blocking IS here now (043_user_blocks + /blocks, enforced server-side). It gets a row
  * rather than a toggle, because blocking is per-person: the switch lives on each person's
  * profile, and this screen is where you see the list and undo it.
  */

@@ -64,7 +64,7 @@ router.get('/:id', requireAuth, async (req, res) => {
     );
     viewerIsContact = c.length > 0;
   }
-  // Blocking (039) hides the same fields the 'nobody' scope hides — photo and bio — by
+  // Blocking (043) hides the same fields the 'nobody' scope hides — photo and bio — by
   // folding into the single `allowed` choke point rather than patching each field, so a
   // future field added here inherits the rule automatically instead of silently leaking.
   //
@@ -177,7 +177,7 @@ router.get('/status/:id', requireAuth, async (req, res) => {
 
   // Resolve last-seen visibility for THIS viewer.
   let showLastSeen = true;
-  // Blocking (039) hides presence in BOTH directions, and does it by reusing the existing
+  // Blocking (043) hides presence in BOTH directions, and does it by reusing the existing
   // hidden shape — `online: false, last_seen: null` — rather than a distinctive error.
   // That is the same answer a viewer gets from someone whose scope is 'nobody', so a
   // blocked user cannot tell a block from a privacy setting.

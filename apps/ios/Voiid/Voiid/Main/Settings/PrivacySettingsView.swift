@@ -21,7 +21,7 @@
 //  has zero schema, zero route and zero client code, so shipping a control for it would be
 //  an advertisement for a feature that does not exist.
 //
-//  Blocking IS here now (039_user_blocks + /blocks, enforced server-side). It gets a row
+//  Blocking IS here now (043_user_blocks + /blocks, enforced server-side). It gets a row
 //  rather than a toggle, because blocking is per-person: the switch lives on each person's
 //  profile, and this screen is where you see the list and undo it.
 //
@@ -45,7 +45,7 @@ import SwiftUI
 struct PrivacySettingsView: View {
 
     @ObservedObject private var settings = PrivacySettings.shared
-    /// Blocking (039). Drives the count beside the Blocked contacts row.
+    /// Blocking (043). Drives the count beside the Blocked contacts row.
     @ObservedObject private var blocks = BlockService.shared
     // Feature (B) — the Map — mirrors Ghost Mode and the kill switch here (§8). Unlike the
     // three toggles above, these are backed by real state with real consumers: Ghost Mode

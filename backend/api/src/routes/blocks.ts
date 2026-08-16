@@ -70,7 +70,7 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
   if (typeof targetId !== 'string' || !UUID_RE.test(targetId)) {
     return res.status(400).json({ error: 'user_id must be a uuid' });
   }
-  // 039 has a check constraint for this, but a clear message beats a constraint violation.
+  // 043 has a check constraint for this, but a clear message beats a constraint violation.
   if (targetId === blockerId) {
     return res.status(400).json({ error: 'cannot block yourself' });
   }

@@ -28,7 +28,7 @@ struct ContactProfileView: View {
     @State private var viewPhoto = false
     @State private var showAllMedia = false
     @State private var profile: UserProfile?
-    /// Blocking (039). Observed so the row flips between Block and Unblock the moment the
+    /// Blocking (043). Observed so the row flips between Block and Unblock the moment the
     /// mutation lands, without this view tracking its own copy of the state.
     @ObservedObject private var blocks = BlockService.shared
     @State private var blockFailure: String?
@@ -657,7 +657,7 @@ struct ContactProfileView: View {
         }
     }
 
-    /// Block is live (039_user_blocks + /blocks, enforced server-side across messages,
+    /// Block is live (043_user_blocks + /blocks, enforced server-side across messages,
     /// calls, profile, presence, conversation creation, group invites, stories and typing).
     /// The row flips to Unblock when this person is already blocked, so the one control
     /// carries both directions rather than hiding the way back.

@@ -362,7 +362,7 @@ wss.on('connection', (ws, req) => {
           user_id: userId,
           state: msg.state === 'stop' ? 'stop' : 'start',
         });
-        // Blocking (039). This process holds no database connection by design, so the API
+        // Blocking (043). This process holds no database connection by design, so the API
         // mirrors each block pair into the Redis both share (`block:a:b`, written in both
         // directions) exactly as account deletion does with `auth:revoked:` above.
         //

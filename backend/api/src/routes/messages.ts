@@ -195,7 +195,7 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
     // member could post to an announcement channel with curl.
     const announceDenied = await announcementPostDeniedReason(conversation_id, user_id);
     if (announceDenied) return res.status(403).json({ error: announceDenied });
-    // Blocking (039). See blockGuardForSend: the blocker is told, the blocked is not.
+    // Blocking (043). See blockGuardForSend: the blocker is told, the blocked is not.
     const fanBlocked = await blockGuardForSend(conversation_id, user_id);
     if (fanBlocked) return res.status(fanBlocked.status).json(fanBlocked.body);
     for (const entry of messages) {
@@ -264,7 +264,7 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
     // device's ciphertext on the shared user channel — only a routing signal (message_id +
     // the device ids targeted for that user, which are non-secret metadata).
     //
-    // Blocking (039): a device whose owner has a block with the sender is dropped here, so
+    // Blocking (043): a device whose owner has a block with the sender is dropped here, so
     // it is neither relayed to nor (via the same exclusion in scheduleWakePush) pushed to.
     //
     // The RECIPIENT LIST COMES FROM THE CLIENT — it is whoever the sender's app chose to
@@ -320,7 +320,7 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
   // leaves the other as a way in.
   const legacyAnnounceDenied = await announcementPostDeniedReason(conversation_id, user_id);
   if (legacyAnnounceDenied) return res.status(403).json({ error: legacyAnnounceDenied });
-  // Blocking (039) — same guard as the fan-out path, for the same reason as the line above.
+  // Blocking (043) — same guard as the fan-out path, for the same reason as the line above.
   const legacyBlocked = await blockGuardForSend(conversation_id, user_id);
   if (legacyBlocked) return res.status(legacyBlocked.status).json(legacyBlocked.body);
   // Which of OUR devices encrypted this — so a multi-device recipient resolves the
@@ -338,7 +338,7 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
 
   // Route to each active member's user channel; WS instance with the live socket delivers it.
   //
-  // Blocking (039) is filtered in the SQL rather than after the fact, so the same list
+  // Blocking (043) is filtered in the SQL rather than after the fact, so the same list
   // drives both the live relay below and the wake push further down. A group send is
   // deliberately never rejected for one blocked pair — that would let one member silence a
   // room — so suppression happens per RECIPIENT here instead.

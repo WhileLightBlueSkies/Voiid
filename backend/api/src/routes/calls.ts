@@ -731,7 +731,7 @@ async function loadCall(callId: string): Promise<CallRow | null> {
  * them afterwards.
  */
 async function canReachForCall(requester: string, invitee: string): Promise<boolean> {
-  // Blocking (039) overrides every other proof of reachability. A mutual contact-sync or a
+  // Blocking (043) overrides every other proof of reachability. A mutual contact-sync or a
   // shared accepted conversation both predate the block; neither should let a blocked user
   // ring a phone. Checked FIRST so the expensive reachability query is skipped entirely.
   if (await isBlockedEitherWay(requester, invitee)) return false;

@@ -282,7 +282,7 @@ router.get('/feed', requireAuth, asyncHandler(async (req, res) => {
   );
   if (!owned[0]) return res.status(403).json({ error: 'device does not belong to this user' });
 
-  // Blocking (039). One query for the whole set, used by both feed paths below — a story
+  // Blocking (043). One query for the whole set, used by both feed paths below — a story
   // audience can be large, and asking per author would be a query per row.
   const blockedAuthors = [...(await blockedUserIds(user_id))];
 
@@ -297,7 +297,7 @@ router.get('/feed', requireAuth, asyncHandler(async (req, res) => {
          from story_keys k
          join stories s on s.id = k.story_id
         where k.recipient_device_id = $1::uuid and s.expires_at > now()
-          -- Blocking (039): never surface a story authored by someone this user has a
+          -- Blocking (043): never surface a story authored by someone this user has a
           -- block with, in either direction. Filtered in SQL so BOTH feed paths inherit it
           -- rather than one being fixed and the other quietly leaking.
           and not (s.author_id = any($2::uuid[]))
@@ -324,7 +324,7 @@ router.get('/feed', requireAuth, asyncHandler(async (req, res) => {
          where d.id = $1::uuid and d.user_id = $2::uuid and d.revoked_at is null
            and k.delivered_at is null
            and s.expires_at > now()
-           -- Blocking (039), applied in the CTE rather than after the UPDATE. Filtering
+           -- Blocking (043), applied in the CTE rather than after the UPDATE. Filtering
            -- later would still stamp delivered_at on a blocked author's row, consuming it
            -- so the key could never be re-fetched if the block were later lifted.
            and not (s.author_id = any($3::uuid[]))

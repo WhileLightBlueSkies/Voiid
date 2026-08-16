@@ -7,7 +7,7 @@
 //
 // THE PAIR RULE
 // -------------
-// A block is stored directionally (blocker -> blocked, see 039_user_blocks.sql) but
+// A block is stored directionally (blocker -> blocked, see 043_user_blocks.sql) but
 // ENFORCED symmetrically: if a block exists in EITHER direction, the two users cannot
 // reach each other. This is deliberate. If enforcement were one-way, blocking someone
 // would become a way to talk AT them while they had no way to answer — a harassment tool
@@ -30,7 +30,7 @@ import { query } from './db';
  * Is there a block in EITHER direction between these two users?
  *
  * This is the question almost every enforcement point wants. Returns false for a user
- * paired with themselves — Note to Self must never be blockable, and 039's check
+ * paired with themselves — Note to Self must never be blockable, and 043's check
  * constraint already makes a self-block unstorable.
  */
 export async function isBlockedEitherWay(userA: string, userB: string): Promise<boolean> {

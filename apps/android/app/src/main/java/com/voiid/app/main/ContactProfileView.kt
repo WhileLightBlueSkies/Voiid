@@ -113,7 +113,7 @@ fun ContactProfileView(
     BackHandler { onBack() }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    // Blocking (039). Collected so the row flips between Block and Unblock the moment the
+    // Blocking (043). Collected so the row flips between Block and Unblock the moment the
     // mutation lands, without this screen keeping its own copy of the state.
     //
     // Answers only whether WE blocked THEM. There is deliberately no route for the reverse
@@ -128,7 +128,7 @@ fun ContactProfileView(
     var viewPhoto by remember { mutableStateOf(false) }
     /** "clear" | "block" | "report" | null.
      *
-     *  Block is LIVE now (039_user_blocks + /blocks, enforced server-side across messages,
+     *  Block is LIVE now (043_user_blocks + /blocks, enforced server-side across messages,
      *  calls, profile, presence, conversation creation, group invites, stories and typing).
      *  Report still has no client half — the route and table exist, nothing here calls
      *  them — so it keeps saying so rather than appearing to work. */

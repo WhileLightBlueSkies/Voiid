@@ -13,7 +13,7 @@ import kotlinx.serialization.json.put
  *
  * Until this file existed the Block button raised "Blocking isn't available yet" beneath a
  * dialog promising "They won't be able to message or call you." The backend now enforces
- * that promise (039_user_blocks.sql, routes/blocks.ts) across messages, calls, profile,
+ * that promise (043_user_blocks.sql, routes/blocks.ts) across messages, calls, profile,
  * presence, conversation creation, group invitations, stories and typing indicators; this
  * is what lets a person actually press it.
  *

@@ -27,7 +27,7 @@ import kotlinx.coroutines.launch
  * can add me to groups". None of those has a schema, a route or a line of client code in
  * this project, so none of them has a setting — same reasoning as the iOS type this mirrors.
  *
- * Blocking is not here either, but for the opposite reason: it is real (039_user_blocks +
+ * Blocking is not here either, but for the opposite reason: it is real (043_user_blocks +
  * /blocks) and SERVER-side, so it has no local preference to store. Its state lives in
  * BlockService; Privacy settings only links to the list.
  *

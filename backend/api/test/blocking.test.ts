@@ -3,7 +3,7 @@
 // WHAT THIS EXISTS FOR
 // --------------------
 // The iOS Block button raised "Blocking isn't available yet" beneath a dialog promising
-// "They won't be able to message or call you." 039_user_blocks.sql plus src/blocking.ts
+// "They won't be able to message or call you." 043_user_blocks.sql plus src/blocking.ts
 // make that true; this pins the two rules that are easy to get wrong and impossible to
 // notice when they are.
 //
