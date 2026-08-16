@@ -765,7 +765,11 @@ The client's copy of the fleet rules exists only so placement can show a ship re
 
 Built as specified: the two-board layout with emphasis following the turn, two-step FIRE commit (a 10x10 grid is ~33pt cells, below both platform minimums, and a mis-tap costs the match), Random-first placement, hit and miss differing in shape before colour, the fleet strip, the deadline shown only inside 6 hours, and `catch.wav` on your own ship sinking.
 
-**Not built from §9:** the 380 ms shell travel, the sunk-ship outline draw-in, the board-swap shared-element transition, and screen shake. The motion table assumes a reduce-motion switch that still does not exist (§15 Q8), and shipping the animations before the opt-out would repeat exactly what CROSS_CUTTING.md §13 flags about Snake.
+**Built from §9:** the 380 ms shell travel with its easeIn contraction, the sunk-ship outline draw-in after a 120 ms hold, and the 2 px hit shake — all behind reduce-motion. The reveal is gated on the shell LANDING rather than on the frame arriving, which is what makes a fast connection feel the same as a slow one.
+
+**Still not built from §9:** the board-swap shared-element transition, and the reticle drag with its magnified callout (§7.2) — the board currently takes a tap rather than a drag.
+
+**The reduce-motion switch already existed.** `UIAccessibility.isReduceMotionEnabled` via SwiftUI's environment on iOS, and `ReduceMotion.kt` reading the animator duration scale on Android. §15 Q8 and the note above were both stale.
 
 ## 16.5 What is still open before this is playable
 

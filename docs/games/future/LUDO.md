@@ -777,7 +777,9 @@ Built as specified: you are always at the bottom (client-side rotation, tokens c
 
 ## 16.4 Three departures from this doc
 
-1. **The hop chain is not built.** §9 calls it the most important animation in the game and says it must not be optimised away — it is what shows the player *how far* a move went. Tokens currently spring between squares. It is deliberately deferred because §9 also requires it behind the reduce-motion switch (§15 Q9), which still does not exist, and shipping motion without the opt-out is what CROSS_CUTTING.md §13 flags about Snake. **This is the single largest visible gap against the doc.**
+1. ~~**The hop chain is not built.**~~ **BUILT.** `LudoHop` walks the server's own path and republishes an intermediate position per step, so a token counts out the distance square by square rather than sliding to the answer. 110 ms per square, capped at 900 ms total, tap to skip, with a lift-and-squash arc per hop. The `hop` sound moved with it and now fires per square; the landing sound — including a capture — fires when the chain finishes, because a capture heard before the token has visibly arrived reads as two unrelated events.
+
+   **The reduce-motion switch this was blocked on already existed** on both platforms — the doc was stale. Under it the chain does not run.
 
 2. **Groups are still excluded from the picker.** §12.3 calls "play Ludo with this group" the highest-value entry point in this doc. It needs a group-membership read and a fan-out invite, which the picker has no business inventing, so seats are filled from direct chats and the group entry point is named as the next piece of work.
 
