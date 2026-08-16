@@ -293,17 +293,47 @@ router.get('/conversation/:id', requireAuth, asyncHandler(async (req, res) => {
     `select m.id, m.sender_id, m.sender_device_id,
             translate(encode(coalesce(mc.ciphertext, m.ciphertext),'base64'), E'\n', '') as ciphertext,
             m.content_type, m.media_url, m.media_mime, m.created_at,
-            -- Highest receipt state any recipient has reached for this message, so the
-            -- SENDER can advance Sent→Delivered→Seen on poll even if the live WS receipt
-            -- push was missed (delivery-independent status, mirrors Signal's receipt sync).
-            case when bool_or(r.status = 'read') then 'read'
-                 when bool_or(r.status = 'delivered') then 'delivered'
-                 else null end as receipt_status
+            -- Receipt state for the SENDER's ticks, so they advance Sent→Delivered→Seen on
+            -- poll even when the live WS receipt push was missed (mirrors Signal's receipt
+            -- sync). Two rules this MUST get right, both of which it used to get wrong:
+            --
+            --  1. ONLY OTHER PEOPLE'S RECEIPTS COUNT. The join used to be unfiltered, so a
+            --     receipt written by the sender's OWN linked device (fan-out marks inbound
+            --     copies delivered) satisfied bool_or and reported Delivered/Seen for a
+            --     message no recipient had touched. Worst in Note to Self, where every
+            --     receipt is your own. iOS happens to filter !isMine client-side, but the
+            --     server must not depend on a client behaving — Android or a replayed
+            --     request would still forge the tick.
+            --
+            --  2. 'read' MEANS EVERY ACTIVE RECIPIENT READ IT. bool_or turned the tick blue
+            --     as soon as ONE group member read, which is not what a blue tick promises
+            --     and not what WhatsApp/Signal do. We now compare the count of distinct
+            --     recipients who reached 'read' against the number of active members other
+            --     than the sender. 'delivered' stays ANY-recipient: it answers "did this
+            --     leave the building", which is true as soon as one device has it.
+            --
+            -- Direct chats fall out of the same expression — one other member means
+            -- all-read and any-read coincide.
+            case
+              when count(distinct r.user_id) filter (where r.status = 'read') > 0
+               and count(distinct r.user_id) filter (where r.status = 'read')
+                   >= (select count(*) from conversation_members cm
+                        where cm.conversation_id = m.conversation_id
+                          and cm.left_at is null
+                          and cm.user_id <> m.sender_id)
+                then 'read'
+              when count(distinct r.user_id) filter (where r.status in ('delivered','read')) > 0
+                then 'delivered'
+              else null
+            end as receipt_status
        from messages m
        left join message_ciphertexts mc on mc.message_id = m.id and mc.recipient_device_id = $3::uuid
-       left join message_read_receipts r on r.message_id = m.id
+       -- Sender's own receipts excluded here rather than in the aggregate, so they never
+       -- reach any of the counts above.
+       left join message_read_receipts r
+              on r.message_id = m.id and r.user_id <> m.sender_id
        where m.conversation_id = $1 ${before ? 'and m.created_at < $4' : ''}
-       group by m.id, mc.ciphertext
+       group by m.id, m.conversation_id, m.sender_id, mc.ciphertext
        order by m.created_at desc limit $2`,
     before ? [req.params.id, limit, deviceId, before] : [req.params.id, limit, deviceId]
   );
