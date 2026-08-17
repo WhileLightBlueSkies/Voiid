@@ -126,6 +126,16 @@ struct CricketBotView: View {
 
             if paused { pauseOverlay }
         }
+        // THE PITCH AND SCOREBOARD STAY VISIBLE BEHIND THE VERDICT (§9.2).
+        .overlay {
+            if finished {
+                MatchEndOverlay(
+                    result: botResult(),
+                    onPlayAgain: { restart() },
+                    onExit: { onClose() })
+                .transition(.opacity)
+            }
+        }
         .navigationBarBackButtonHidden(true)
         .onAppear {
             session.hideTabBar = true
@@ -273,17 +283,30 @@ struct CricketBotView: View {
         .disabled(resolving)
     }
 
+    /// The pick pad's slot once the match is over. EMPTY on purpose: the verdict, the scores
+    /// and the buttons all live in MatchEndOverlay now (§9.3), drawn over the pitch rather
+    /// than under it.
     private var result: some View {
-        VStack(spacing: VoiidSpacing.md) {
-            Text(resultText)
-                .font(VoiidFont.rounded(20, .bold))
-                .foregroundStyle(VoiidColor.primary)
-            HStack(spacing: VoiidSpacing.sm) {
-                pill("Play again", filled: true) { restart() }
-                pill("Exit", filled: false) { onClose() }
+        Color.clear.frame(height: 1)
+    }
+
+    /// Built from local match state — a practice match never reaches the backend.
+    private func botResult() -> MatchEndResult {
+        let margin: String? = {
+            guard humanScore != botScore else { return nil }
+            if humanScore > botScore {
+                let left = (overs.map { _ in 2 } ?? 2) - humanWickets
+                return humanBatting && innings == 2 && left > 0
+                    ? "by \(left) wicket\(left == 1 ? "" : "s")"
+                    : "by \(humanScore - botScore) run\(humanScore - botScore == 1 ? "" : "s")"
             }
-        }
-        .padding(.bottom, VoiidSpacing.xl)
+            return nil
+        }()
+        return .cricket(
+            myScore: humanScore,
+            theirScore: botScore,
+            margin: margin,
+            wickets: botWickets)
     }
 
     private var resultText: String {

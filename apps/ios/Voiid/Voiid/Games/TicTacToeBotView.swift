@@ -34,6 +34,17 @@ struct TicTacToeBotView: View {
 
             if match.paused { pauseOverlay }
         }
+        // GATED ON `resultRevealed`, so the win stroke finishes drawing before the verdict
+        // speaks — the same rule the online screen follows (§9.2).
+        .overlay {
+            if match.finished && resultRevealed {
+                MatchEndOverlay(
+                    result: botResult(),
+                    onPlayAgain: { withAnimation { match.restart() } },
+                    onExit: { onClose?() })
+                .transition(.opacity)
+            }
+        }
         .animation(.easeInOut(duration: 0.18), value: match.paused)
         .onAppear {
             session.hideTabBar = true
@@ -103,39 +114,22 @@ struct TicTacToeBotView: View {
 
             statusLine
 
-            if match.finished && resultRevealed {
-                let record = BotScoreStore.record(level)
-                VStack(spacing: VoiidSpacing.sm) {
-                    // Running record at this difficulty, shown after a result — the moment
-                    // it means something.
-                    HStack {
-                        stat("Won", record.wins)
-                        Spacer()
-                        stat("Drawn", record.draws)
-                        Spacer()
-                        stat("Lost", record.losses)
-                    }
-                    .padding(VoiidSpacing.md)
-                    .background(RoundedRectangle(cornerRadius: VoiidRadius.lg)
-                        .fill(VoiidColor.surfaceCard))
-
-                    HStack(spacing: VoiidSpacing.sm) {
-                        pill("Play again", filled: true) {
-                            Haptics.tap()
-                            withAnimation { match.restart() }
-                        }
-                        pill("Exit", filled: false) { onClose?() }
-                    }
-                }
-                .padding(.top, VoiidSpacing.lg)
-                .transition(.scale(scale: 0.85).combined(with: .opacity))
-            }
+            // The record card and the buttons moved into MatchEndOverlay (§9.3).
 
             Spacer()
         }
         .padding(.horizontal, VoiidSpacing.lg)
         .padding(.top, VoiidSpacing.md)
         .animation(.spring(response: 0.4, dampingFraction: 0.6), value: resultRevealed)
+    }
+
+    /// Built from local match state — a practice match never reaches the backend.
+    private func botResult() -> MatchEndResult {
+        let record = BotScoreStore.record(level)
+        return .ticTacToe(
+            won: match.winnerSeat.map { $0 == TicTacToeBotMatch.humanSeat },
+            moves: match.board.filter { $0 != nil }.count,
+            record: "\(record.wins)W \(record.draws)D \(record.losses)L")
     }
 
     private var statusLine: some View {

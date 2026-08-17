@@ -43,12 +43,22 @@ struct LudoBotView: View {
                 .onTapGesture { hop.skip() }
                 .padding(.horizontal, VoiidSpacing.sm)
             status
-            if s.finished { endBar } else { dieButton }
+            // The end screen is an OVERLAY over the board (§9.2).
+            if !s.finished { dieButton }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, VoiidSpacing.md)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(VoiidColor.background.ignoresSafeArea())
+        .overlay {
+            if s.finished {
+                MatchEndOverlay(
+                    result: botResult(),
+                    onPlayAgain: { match.restart() },
+                    onExit: { onClose?() })
+                .transition(.opacity)
+            }
+        }
         .navigationTitle("Ludo")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(true)
@@ -201,18 +211,23 @@ struct LudoBotView: View {
         .padding(.bottom, VoiidSpacing.sm)
     }
 
-    private var endBar: some View {
-        HStack(spacing: VoiidSpacing.md) {
-            Button("Play again") { match.restart() }
-                .font(VoiidFont.rounded(16, .semibold))
-                .foregroundStyle(VoiidColor.primary)
-            Spacer()
-            Button("Back to games") { onClose?() }
-                .font(VoiidFont.rounded(15, .medium))
-                .foregroundStyle(VoiidColor.textSecondary)
-        }
-        .padding(.horizontal, VoiidSpacing.sm)
-        .padding(.top, VoiidSpacing.sm)
+    /// Built from local match state. Placement matters more here than a win flag: in a
+    /// 4-player game "2nd of 4" is the honest result and "you lose" is not.
+    private func botResult() -> MatchEndResult {
+        guard s.winnerUserId != nil else { return .abandoned() }
+        let seat = LudoBotMatch.humanSeat
+        let home = s.tokens[seat].filter { $0 == Ludo.home }.count
+        let placement = (s.finishedOrder.firstIndex(of: seat).map { $0 + 1 })
+            ?? (s.finishedOrder.count + 1)
+        let cap = s.lastMove?.captured
+        return .ludo(
+            placement: placement,
+            seats: s.players.count,
+            home: home,
+            tokens: s.tokensPerPlayer,
+            captures: (cap?.count == 2 && s.lastMove?.seat == seat) ? 1 : 0,
+            lost: (cap?.count == 2 && cap?[0] == seat) ? 1 : 0,
+            won: s.winnerUserId == "you")
     }
 }
 

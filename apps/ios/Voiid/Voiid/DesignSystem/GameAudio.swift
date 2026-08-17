@@ -47,6 +47,24 @@ final class GameAudio {
     /// name, spelled around a language keyword.
     static let catchShared = "catch_shared"
 
+    /// THE RESULT SET — win, defeat and tie, played by every game at the moment a match ends
+    /// (docs/games/VISUALS_AUDIO_AND_PARITY.md §9.6).
+    ///
+    /// These are in EVERY game's preload list for the same reason `catch_shared` is: a result
+    /// vocabulary that exists in only some games teaches nothing.
+    ///
+    /// THEY REPLACE A LIE. Ludo and Sea Battle used to play `winner == me ? rank_up :
+    /// match_end`, and `match_end` is a resolving MAJOR triad — so losing sounded like a
+    /// pleasant resolution, and a tie had no sound at all outside Tic Tac Toe. The three
+    /// differ in DIRECTION: win rises, defeat falls, tie stays unresolved.
+    ///
+    /// `match_end` keeps its real job — the neutral chord for an ABANDONED match, where
+    /// nobody won and nothing should be celebrated.
+    static let resultWin = "result_win"
+    static let resultLose = "result_lose"
+    static let resultTie = "result_tie"
+    static let resultSet = [resultWin, resultLose, resultTie]
+
     /// The three X variants — TWO STROKES each, with an audible gap.
     /// Picked at random per placement by `playAny`.
     static let chalkX = ["chalk_x_1", "chalk_x_2", "chalk_x_3"]
@@ -59,9 +77,26 @@ final class GameAudio {
 
     /// Persisted mute toggle (docs/GAMES_AUDIO.md §12). Default on — sound is part of the
     /// product, not an opt-in.
+    ///
+    /// THE KEY STORES `soundEnabled`, NOT `isMuted` — read the name. This property is the
+    /// inverse of what is on disk, and getting that backwards is exactly what shipped: the
+    /// old getter was `!bool(forKey:) ? false : true`, which collapses to `bool(forKey:)` and
+    /// therefore returned `soundEnabled` unchanged. So `isMuted == soundEnabled`, and turning
+    /// the Sound switch ON in GameSettingsSheet muted every game while turning it OFF unmuted
+    /// them. A fresh install worked only by accident (absent key -> false -> not muted).
+    ///
+    /// `object(forKey:)` guards the default rather than trusting `bool(forKey:)`, which
+    /// returns false for a missing key — and false here would mean "sound disabled", the
+    /// opposite of the default this key's own name promises.
+    private static let soundKey = "voiid.gameSoundEnabled_v1_default_on"
+
     static var isMuted: Bool {
-        get { !UserDefaults.standard.bool(forKey: "voiid.gameSoundEnabled_v1_default_on") ? false : true }
-        set { UserDefaults.standard.set(!newValue, forKey: "voiid.gameSoundEnabled_v1_default_on") }
+        get {
+            let defaults = UserDefaults.standard
+            guard defaults.object(forKey: soundKey) != nil else { return false }
+            return !defaults.bool(forKey: soundKey)
+        }
+        set { UserDefaults.standard.set(!newValue, forKey: soundKey) }
     }
 
     private let engine = AVAudioEngine()
@@ -279,13 +314,25 @@ final class GameAudio {
     }
 
     /// Configure the session ONCE, and never while a call is live — see this file's header.
-    /// `.ambient` (not `.playback`) is what makes the hardware silent switch work; a casual
-    /// game must respect it, unlike a ringtone.
+    ///
+    /// `.playback`, NOT `.ambient`. `.ambient` is the category that OBEYS the hardware
+    /// ring/silent switch and rides the ringer volume, which is correct for a notification and
+    /// wrong for a game: every game on the store plays through silent, on the media slider.
+    /// A player who has silenced their ringer has silenced their *notifications*, and has not
+    /// asked the game they deliberately opened to be mute.
+    ///
+    /// `.mixWithOthers` stays. Without it, opening a game stops whatever the player was
+    /// listening to; with it, both play. And `.playback` does NOT weaken the one hard rule —
+    /// the `callIsActive` guard below is what enforces "never over a call", not the category.
+    ///
+    /// Deliberately NOT paired with the `audio` background mode: without it the system
+    /// deactivates the session on suspend, which is exactly what should happen when a match is
+    /// backgrounded. Do not add the capability.
     private func configureSessionIfNeeded() -> Bool {
         guard !callIsActive else { return false }
         guard !configuredSession else { return true }
         do {
-            try AVAudioSession.sharedInstance().setCategory(.ambient, options: [.mixWithOthers])
+            try AVAudioSession.sharedInstance().setCategory(.playback, options: [.mixWithOthers])
             try AVAudioSession.sharedInstance().setActive(true)
             configuredSession = true
             return true
@@ -372,22 +419,24 @@ final class GameAudio {
             return ["eat_1", "eat_2", "eat_3", "eat_4", "eat_big",
                     "boost_start", "boost_loop", "boost_end",
                     "kill", "death", "spawn", "border_warn", "rank_up", "match_end",
-                    Self.catchShared]
+                    Self.catchShared] + Self.resultSet
         case "tictactoe":
             return ["chalk_x_1", "chalk_x_2", "chalk_x_3",
                     "chalk_o_1", "chalk_o_2", "chalk_o_3",
                     "chalk_line", "chalk_stub", "chalk_erase",
                     "mark_invalid", "win_line", "draw", Self.catchShared]
+                    + Self.resultSet
         case "rps":
             return ["countdown_1", "countdown_2", "countdown_3",
                     "hand_pump", "hand_reveal", "reveal",
                     "round_win", "round_lose", "round_tie", Self.catchShared]
+                    + Self.resultSet
         case "cricket":
             return ["pick", "reveal", "innings",
                     "bat_soft", "bat_crack", "bat_block",
                     "wicket_timber", Self.catchShared,
                     "crowd_base", "crowd_cheer", "crowd_roar", "crowd_gasp",
-                    "crowd_groan", "crowd_applause"]
+                    "crowd_groan", "crowd_applause"] + Self.resultSet
         case "seabattle":
             // Three variants of splash and hit_metal, chosen at random with the existing ±4%
             // varispeed: a match contains 40–90 of these, and SOUND_DESIGN.md §4.3 makes exactly
@@ -396,7 +445,7 @@ final class GameAudio {
                     "splash_1", "splash_2", "splash_3",
                     "hit_metal_1", "hit_metal_2", "hit_metal_3",
                     "sink_groan", "your_turn", "place_thud", "error",
-                    Self.catchShared]
+                    Self.catchShared] + Self.resultSet
         case "ludo":
             // hop is the most-triggered sound in the game — four variants plus the engine's own
             // pitch jitter, per SOUND_DESIGN.md §4.3's chalk argument.
@@ -404,7 +453,7 @@ final class GameAudio {
                     "hop_1", "hop_2", "hop_3", "hop_4",
                     "enter", "capture", "home", "extra_turn", "three_sixes", "pass",
                     "your_turn", "rank_up", "match_end",
-                    Self.catchShared]
+                    Self.catchShared] + Self.resultSet
         case "ui":
             return ["tap", "sheet_open", "sheet_close", "match_found", "invite_arrive", "error"]
         default:

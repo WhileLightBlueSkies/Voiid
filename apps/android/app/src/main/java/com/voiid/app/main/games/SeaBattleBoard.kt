@@ -17,6 +17,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
+import com.voiid.app.net.GamesEngine
 import kotlin.math.min
 import kotlin.random.Random
 
@@ -228,6 +229,15 @@ fun SeaBattleGrid(
     modifier: Modifier = Modifier,
     reticle: Int? = null,
     firing: Int? = null,
+    /**
+     * 0..1 through the shell's travel, so the reticle can contract to a point (§9).
+     *
+     * Was missing entirely: `firing` used to draw a static dot that appeared and vanished, so a
+     * shot on a fast connection was over before it registered. See [SeaBattleMotion].
+     */
+    shellProgress: Float = 0f,
+    /** Cells of a ship that has just been sunk, revealed one at a time (§9). */
+    sunkReveal: List<Int> = emptyList(),
     /** Seconds, for the water shimmer and the flame flicker. */
     now: Float = 0f,
     dimmed: Boolean = false,
@@ -382,13 +392,48 @@ fun SeaBattleGrid(
                 )
             }
 
+            // THE SHELL (§9). The reticle contracts to a point over 380 ms, accelerating —
+            // because accelerating reads as falling. That window is also where the server's
+            // answer arrives, which is what lets a fully round-tripped game feel instant.
             firing?.let {
+                val t = shellProgress.coerceIn(0f, 1f)
+                // easeIn: t^2. Slow away, fast into the water.
+                val eased = t * t
+                val shrink = cellSize * 0.5f * (1f - eased)
+                val inset = 0.6f
+                drawRoundRect(
+                    color = HitRed,
+                    topLeft = Offset(
+                        SeaBattle.cx(it) * cellSize + inset + shrink,
+                        SeaBattle.cy(it) * cellSize + inset + shrink),
+                    size = Size(
+                        (cellSize - inset * 2 - shrink * 2).coerceAtLeast(0f),
+                        (cellSize - inset * 2 - shrink * 2).coerceAtLeast(0f)),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(2f),
+                    style = Stroke(width = 2f * (1f - eased) + 0.5f),
+                )
+                val dot = cellSize * 0.06f + cellSize * 0.10f * eased
                 drawCircle(
-                    color = Ink.copy(alpha = 0.8f),
-                    radius = cellSize * 0.16f,
+                    color = Ink.copy(alpha = 0.35f + 0.5f * eased),
+                    radius = dot,
                     center = Offset(
                         SeaBattle.cx(it) * cellSize + cellSize / 2,
                         SeaBattle.cy(it) * cellSize + cellSize / 2),
+                )
+            }
+
+            // THE SUNK OUTLINE, DRAWN IN CELL BY CELL (§9). A ship that simply turns dark reads
+            // as a state change; drawing it along its own hull reads as the ship going down.
+            for (cell in sunkReveal) {
+                if (cell >= SeaBattle.CELLS) continue
+                drawRoundRect(
+                    color = SunkRed,
+                    topLeft = Offset(
+                        SeaBattle.cx(cell) * cellSize - 0.4f,
+                        SeaBattle.cy(cell) * cellSize - 0.4f),
+                    size = Size(cellSize + 0.8f, cellSize + 0.8f),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(2f),
+                    style = Stroke(width = 2f),
                 )
             }
         }
@@ -410,4 +455,85 @@ private fun fillFor(state: SeaBattleCell): Color = when (state) {
     SeaBattleCell.SUNK -> Paper
     SeaBattleCell.SHIP -> Ink.copy(alpha = 0.62f)
     SeaBattleCell.SHIP_HIT -> Ink.copy(alpha = 0.45f)
+}
+
+// ---- deriving the two boards from a frame -------------------------------------------------
+//
+// SHARED BY THE ONLINE MATCH AND PRACTICE MODE, and that is the whole reason these are not
+// private to a screen. The bot match builds a `SeaBattleState` that looks exactly like a server
+// frame, so both screens read the board through the same three functions — which means a player
+// cannot tell a practice board from a real one, and a fix to one is a fix to both.
+//
+// Every rule that decides what is VISIBLE lives here: their un-hit ships are never in a frame,
+// sunk outlines become public at the moment of sinking, and both fleets appear only once the
+// match is over. Mirrors iOS `SeaBattleCells`.
+
+/**
+ * What the OPPONENT's board looks like from here: my shots, and any ship I have sunk. Their
+ * un-hit ships are not in this frame at all, so there is nothing to accidentally draw.
+ */
+fun enemyCells(s: GamesEngine.SeaBattleState, mySeat: Int?): List<SeaBattleCell> {
+    val cells = MutableList(SeaBattle.CELLS) { SeaBattleCell.WATER }
+    val seat = mySeat ?: return cells
+    val enemy = 1 - seat
+    s.shots.getOrElse(seat) { emptyList() }.forEachIndexed { i, cell ->
+        if (cell in cells.indices) {
+            val result = s.results.getOrElse(seat) { emptyList() }.getOrElse(i) { 0 }
+            cells[cell] = if (result == 0) SeaBattleCell.MISS else SeaBattleCell.HIT
+        }
+    }
+    // Sunk outlines are public once the ship is down, and they are what makes the endgame
+    // deduction rather than a grind (§2.4).
+    s.sunkCells.getOrElse(enemy) { emptyList() }.forEach {
+        if (it in cells.indices) cells[it] = SeaBattleCell.SUNK
+    }
+    // Once the match is over the terminal frame carries both fleets, so the loser's unhit ships
+    // finally appear. This is the ONLY path that draws an enemy ship that is not sunk.
+    if (s.finished) {
+        s.revealedFleets?.getOrNull(enemy)?.forEach { ship ->
+            ship.cells.forEach {
+                if (it in cells.indices && cells[it] == SeaBattleCell.WATER) {
+                    cells[it] = SeaBattleCell.SHIP
+                }
+            }
+        }
+    }
+    return cells
+}
+
+/** My own board: my fleet, and their shots on it. */
+fun ownCells(
+    s: GamesEngine.SeaBattleState,
+    mySeat: Int?,
+    draft: List<SeaBattleShip>,
+): List<SeaBattleCell> {
+    val cells = MutableList(SeaBattle.CELLS) { SeaBattleCell.WATER }
+    // During placement the frame has no fleet yet, so fall back to the local draft — the only
+    // place the two are interchangeable, and only because nothing is committed.
+    val fleet = if (s.myFleet.isEmpty()) {
+        draft.map { GamesEngine.SeaBattleState.Ship(it.type, it.cells, it.hits) }
+    } else s.myFleet
+    fleet.forEach { ship ->
+        ship.cells.forEach { if (it in cells.indices) cells[it] = SeaBattleCell.SHIP }
+    }
+    val seat = mySeat ?: return cells
+    val enemy = 1 - seat
+    s.shots.getOrElse(enemy) { emptyList() }.forEachIndexed { i, cell ->
+        if (cell in cells.indices) {
+            val result = s.results.getOrElse(enemy) { emptyList() }.getOrElse(i) { 0 }
+            cells[cell] = if (result == 0) SeaBattleCell.MISS else SeaBattleCell.SHIP_HIT
+        }
+    }
+    s.sunkCells.getOrElse(seat) { emptyList() }.forEach {
+        if (it in cells.indices) cells[it] = SeaBattleCell.SUNK
+    }
+    return cells
+}
+
+fun draftCells(draft: List<SeaBattleShip>): List<SeaBattleCell> {
+    val cells = MutableList(SeaBattle.CELLS) { SeaBattleCell.WATER }
+    draft.forEach { ship ->
+        ship.cells.forEach { if (it in cells.indices) cells[it] = SeaBattleCell.SHIP }
+    }
+    return cells
 }

@@ -39,6 +39,34 @@ struct CricketMatchView: View {
         max(0, engine.cricket?.players.firstIndex(of: me ?? "") ?? 0)
     }
 
+    /// Built entirely from the frame — no new wire field (§9.8).
+    ///
+    /// A CRICKET MATCH CAN GENUINELY TIE, unlike Sea Battle or Ludo, and the engine reports
+    /// that as `finished` with no winner. That is a real result and gets the tie treatment —
+    /// it is NOT the abandoned path, which is for a match nobody finished.
+    private func cricketResult(_ s: CricketState) -> MatchEndResult {
+        let their = mySeat == 0 ? 1 : 0
+        let mine = s.scores.indices.contains(mySeat) ? s.scores[mySeat] : 0
+        let theirs = s.scores.indices.contains(their) ? s.scores[their] : 0
+        // Wickets I took are the ones the OTHER side lost.
+        let taken = s.wickets.indices.contains(their) ? s.wickets[their] : 0
+
+        let margin: String? = {
+            guard mine != theirs else { return nil }
+            if mine > theirs {
+                // Chasing and over the line is a wickets margin; defending is a runs margin.
+                let left = s.wicketsPerInnings - (s.wickets.indices.contains(mySeat)
+                    ? s.wickets[mySeat] : 0)
+                return s.battingSeat == mySeat && s.innings == 2
+                    ? "by \(max(left, 1)) wicket\(left == 1 ? "" : "s")"
+                    : "by \(mine - theirs) run\(mine - theirs == 1 ? "" : "s")"
+            }
+            return nil
+        }()
+
+        return .cricket(myScore: mine, theirScore: theirs, margin: margin, wickets: taken)
+    }
+
     /// Replays the pitch animation when a NEW ball resolves. Derived from history length rather
     /// than from the ball itself, so two identical balls in a row still animate twice.
     @State private var ballToken = 0
@@ -78,6 +106,17 @@ struct CricketMatchView: View {
         .padding(.horizontal, VoiidSpacing.lg)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(VoiidColor.background.ignoresSafeArea())
+        // THE SCOREBOARD STAYS VISIBLE BEHIND THE VERDICT (§9.2).
+        .overlay {
+            if let s = engine.cricket, s.finished {
+                MatchEndOverlay(
+                    result: cricketResult(s),
+                    matchId: matchId,
+                    onRematch: { newId in engine.leave(); onRematch?(newId) },
+                    onExit: { engine.leave(); onClose() })
+                .transition(.opacity)
+            }
+        }
         .navigationTitle("Hand Cricket")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(true)
@@ -306,19 +345,8 @@ struct CricketMatchView: View {
                 .multilineTextAlignment(.center)
                 .padding(.top, VoiidSpacing.md)
 
-            // The match is over: offer another rather than leaving the player on a dead
-            // scoreboard whose only exit is the back arrow.
-            if s.finished {
-                RematchBar(
-                    matchId: matchId,
-                    onRematch: { newId in
-                        // Leave the old match first — the engine holds one match id at a time.
-                        engine.leave()
-                        onRematch?(newId)
-                    },
-                    onExit: { engine.leave(); onClose() })
-                .padding(.horizontal, VoiidSpacing.lg)
-            }
+            // The end screen is an OVERLAY over the scoreboard (§9.2) — see the `overlay`
+            // modifier on the body. The scoreboard stays readable behind the verdict.
 
             Spacer(minLength: 0)
 

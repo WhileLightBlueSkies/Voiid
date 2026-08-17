@@ -216,85 +216,40 @@ struct SnakeArenaView: View {
         }
     }
 
-    /// The match itself is over. This one blocks — there is nothing left to play.
+    /// The match itself is over.
+    ///
+    /// THIS USED TO BE A BESPOKE PANEL — "Match over", a mass, a share button, Restart and
+    /// Quit — and it was the BEST end screen in the app; the other five games showed a line of
+    /// text (CROSS_CUTTING.md §2). It now goes through the same MatchEndOverlay as everything
+    /// else, so a Snake result and a Ludo result are the same screen with different numbers.
+    ///
+    /// The death panel below is deliberately NOT routed here: dying is not the end of a match
+    /// in Largest Snake, you respawn, and giving a respawn the full result treatment would be
+    /// the loudest possible lie about what just happened.
     private func gameOverPanel(mass: Int?) -> some View {
-        ZStack {
-            Color.black.opacity(0.8).ignoresSafeArea()
+        MatchEndOverlay(
+            result: snakeResult(mass: mass),
+            onPlayAgain: onRestart.map { restart in { restart() } },
+            onExit: {
+                session.hideTabBar = false
+                onClose()
+            })
+    }
 
-            VStack(spacing: 0) {
-                Text("Match over")
-                    .font(.system(size: 30, weight: .black))
-                if let mass {
-                    Text("You finished with \(mass)")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.65))
-                        .padding(.top, 6)
-
-                    // A bare score gives no reason to tap again; a near-miss does. This is
-                    // the single cheapest retention line in the whole screen.
-                    if beatBest {
-                        Text("New best!")
-                            .font(.system(size: 15, weight: .heavy))
-                            .foregroundStyle(Color(red: 1.0, green: 0.85, blue: 0.24))
-                            .padding(.top, 4)
-                    } else if SnakeRecordStore.best > mass {
-                        Text("Your best: \(SnakeRecordStore.best)")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.5))
-                            .padding(.top, 4)
-                    }
-                }
-
-                // BRAG. The whole reason this game sits inside a messaging app: the people
-                // you want to beat are already one tap away, and a score with nobody to show
-                // it to is a score you forget. Rides the ordinary share sheet rather than a
-                // bespoke flow, so it works with any conversation the user already has.
-                if let mass {
-                    Button {
-                        let text = SnakeRecordStore.best == mass
-                            ? "New best in Snake: \(mass). Beat that."
-                            : "I got \(mass) in Snake. Beat that."
-                        shareText = text
-                    } label: {
-                        Label("Challenge a friend", systemImage: "square.and.arrow.up")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundStyle(.white.opacity(0.85))
-                            .padding(.horizontal, 22)
-                            .padding(.vertical, 11)
-                            .background(.white.opacity(0.12),
-                                        in: RoundedRectangle(cornerRadius: 12))
-                    }
-                    .padding(.top, 18)
-                }
-
-                if let onRestart {
-                    Button { onRestart() } label: {
-                        Text("Restart")
-                            .font(.system(size: 15, weight: .black))
-                            .foregroundStyle(Color(red: 0.03, green: 0.02, blue: 0.06))
-                            .padding(.horizontal, 46)
-                            .padding(.vertical, 14)
-                            .background(Color(red: 0.13, green: 0.88, blue: 0.94),
-                                        in: RoundedRectangle(cornerRadius: 14))
-                    }
-                    .padding(.top, 26)
-                }
-
-                Button {
-                    session.hideTabBar = false
-                    onClose()
-                } label: {
-                    Text("Quit")
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.9))
-                        .padding(.horizontal, 50)
-                        .padding(.vertical, 13)
-                        .background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
-                }
-                .padding(.top, 12)
-            }
-            .foregroundStyle(.white)
-        }
+    /// Built from the final frame plus the local record store.
+    private func snakeResult(mass: Int?) -> MatchEndResult {
+        let length = mass ?? 0
+        let mine = engine.snake?.snakes.first { $0.id == me }
+        // Rank by mass across the final frame — the same ordering the live rank badge uses.
+        let ordered = (engine.snake?.snakes ?? []).sorted { $0.mass > $1.mass }
+        let rank = (ordered.firstIndex { $0.id == me }.map { $0 + 1 }) ?? 1
+        return .snake(
+            length: length,
+            kills: mine.map { Int($0.kills) } ?? 0,
+            rank: rank,
+            of: max(ordered.count, 1),
+            best: SnakeRecordStore.best,
+            isBest: beatBest)
     }
 
     // MARK: - Chrome

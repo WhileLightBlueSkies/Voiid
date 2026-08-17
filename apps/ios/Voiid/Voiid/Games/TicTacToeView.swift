@@ -71,6 +71,22 @@ struct TicTacToeView: View {
         .padding(.horizontal, VoiidSpacing.lg)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(VoiidColor.background.ignoresSafeArea())
+        // GATED ON `resultRevealed`, NOT ON `finished`.
+        //
+        // This game already implemented §9.2's rule before the rule was written down: the win
+        // stroke draws, and only then does the verdict speak. `resultRevealed` is that beat, so
+        // the overlay waits for it — the board finishes its sentence first. Every other game
+        // gets the same effect from the overlay's own 450 ms hold; here the stroke IS the hold.
+        .overlay {
+            if let s = engine.state, s.finished, resultRevealed {
+                MatchEndOverlay(
+                    result: ticTacToeResult(s),
+                    matchId: matchId,
+                    onRematch: { newId in engine.leave(); onRematch?(newId) },
+                    onExit: { engine.leave(); onClose?() })
+                .transition(.opacity)
+            }
+        }
         .navigationTitle("Tic Tac Toe")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(true)
@@ -116,6 +132,20 @@ struct TicTacToeView: View {
         }
     }
 
+    // MARK: - The result
+
+    /// Built entirely from the frame — no new wire field (§9.8).
+    private func ticTacToeResult(_ s: TicTacToeState) -> MatchEndResult {
+        let moves = s.board.filter { $0 != nil }.count
+        // A draw is `finished` with no winner and a FULL board; an abandoned match is
+        // `finished` with no winner and an unfinished one. Only the first is a real result.
+        if s.winnerUserId == nil && moves < s.board.count { return .abandoned() }
+        return .ticTacToe(
+            won: s.winnerUserId.map { $0 == me },
+            moves: moves,
+            record: nil)
+    }
+
     // MARK: - Pieces
 
 
@@ -155,20 +185,7 @@ struct TicTacToeView: View {
                 .padding(.top, VoiidSpacing.md)
                 .accessibilityAddTraits(.updatesFrequently)
 
-            // Appears only once the result has SETTLED, so it arrives after the win stroke
-            // rather than competing with it — same beat the record panel uses in the bot game.
-            if settled {
-                RematchBar(
-                    matchId: matchId,
-                    onRematch: { newId in
-                        // Straight into the new match. Leaving the old one first keeps the
-                        // engine's single-match invariant: it holds one match id at a time.
-                        engine.leave()
-                        onRematch?(newId)
-                    },
-                    onExit: { engine.leave(); onClose?() })
-                .transition(.opacity.combined(with: .move(edge: .bottom)))
-            }
+            // The end screen is an OVERLAY (§9.2) — see the `overlay` modifier on the body.
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.7), value: settled)
     }

@@ -597,7 +597,13 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                 // today: engines and renderers, no client-side bot yet.
                 //
                 // AN ALLOWLIST, NOT A DENYLIST, and it must stay in step with that switch.
-                onPlayBot = if (game.slug !in listOf("tictactoe", "rps", "cricket", "snake")) null
+                // The same six slugs iOS offers (GamesHomeView.hasLocalBot). Sea Battle and Ludo
+                // were missing here, so both games were online-only on Android — unplayable
+                // without a friend already online. Every slug in this list MUST have a branch in
+                // the practice router below.
+                onPlayBot = if (game.slug !in
+                    listOf("tictactoe", "rps", "cricket", "snake", "seabattle", "ludo")
+                ) null
                 else { level, skill ->
                     setupGame = null
                     if (game.slug == "snake") {
@@ -653,13 +659,23 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
             exit = slideOutVertically { it } + fadeOut(),
         ) {
             botGame?.let { (slug, level, skill) ->
+                // EVERY SLUG IS NAMED, and the fallback is Tic Tac Toe ONLY for the slug that
+                // actually is Tic Tac Toe. This used to be a bare `else ->` catch-all, which
+                // meant the day a slug was added to the allow-list above without a branch here,
+                // tapping Practice on that game silently opened a different game — a failure
+                // that looks like a working screen. An unknown slug now closes instead.
                 when (slug) {
                     "rps" -> com.voiid.app.main.games.RpsBotScreen(
                         level = level, skill = skill, onClose = { botGame = null })
                     "cricket" -> com.voiid.app.main.games.CricketBotScreen(
                         level = level, skill = skill, onClose = { botGame = null })
-                    else -> com.voiid.app.main.games.TicTacToeBotScreen(
+                    "seabattle" -> com.voiid.app.main.games.SeaBattleBotScreen(
                         level = level, skill = skill, onClose = { botGame = null })
+                    "ludo" -> com.voiid.app.main.games.LudoBotScreen(
+                        level = level, skill = skill, onClose = { botGame = null })
+                    "tictactoe" -> com.voiid.app.main.games.TicTacToeBotScreen(
+                        level = level, skill = skill, onClose = { botGame = null })
+                    else -> LaunchedEffect(slug) { botGame = null }
                 }
             }
         }

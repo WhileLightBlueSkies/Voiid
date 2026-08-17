@@ -99,120 +99,128 @@ fun TicTacToeScreen(
         lastFinished = finished
     }
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(VoiidColor.background)
-            // Full-screen cover drawn edge to edge; without this the header sits under
-            // the clock and battery.
-            .statusBarsPadding()
-            .padding(horizontal = VoiidSpacing.lg),
-    ) {
-        // Header
-        Row(
-            Modifier.fillMaxWidth().padding(top = VoiidSpacing.md),
-            verticalAlignment = Alignment.CenterVertically,
+    // A Box, not the bare Column: the end screen is a SIBLING that sits OVER the
+    // board (§9.2). Inside the Column it would be laid out in flow and push the
+    // board up the screen instead of covering it.
+    Box(Modifier.fillMaxSize()) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .background(VoiidColor.background)
+                // Full-screen cover drawn edge to edge; without this the header sits under
+                // the clock and battery.
+                .statusBarsPadding()
+                .padding(horizontal = VoiidSpacing.lg),
         ) {
-            Icon(
-                Icons.AutoMirrored.Filled.ArrowBack,
-                contentDescription = "Back",
-                tint = VoiidColor.textPrimary,
-                modifier = Modifier.clickable { engine.leave(); onClose() },
-            )
-            Text(
-                "Tic Tac Toe",
-                color = VoiidColor.textPrimary,
-                fontSize = 17.sp,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.weight(1f),
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-            )
-            // Balances the back arrow so the title stays optically centred.
-            Box(Modifier.size(24.dp))
+            // Header
+            Row(
+                Modifier.fillMaxWidth().padding(top = VoiidSpacing.md),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back",
+                    tint = VoiidColor.textPrimary,
+                    modifier = Modifier.clickable { engine.leave(); onClose() },
+                )
+                Text(
+                    "Tic Tac Toe",
+                    color = VoiidColor.textPrimary,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                )
+                // Balances the back arrow so the title stays optically centred.
+                Box(Modifier.size(24.dp))
+            }
+
+            val s = state
+            when {
+                s != null -> {
+                    val isMyTurn = !s.finished && s.turnUserId == me
+
+                    // Shared with the bot game so the two modes cannot drift visually. Taps are
+                    // disabled unless it is genuinely my turn — the server would reject them
+                    // anyway, so this only avoids sending frames we know are pointless.
+                    TicTacToeBoard(
+                        board = s.board,
+                        line = s.line,
+                        enabled = isMyTurn,
+                        onTap = { engine.play(context, it) },
+                        modifier = Modifier.fillMaxWidth().padding(top = VoiidSpacing.md),
+                        isDraw = s.finished && s.winnerUserId == null,
+                        onLineComplete = { resultRevealed = true },
+                    )
+
+                    // `settled` rather than `s.finished`: the result is announced once the win
+                    // stroke has been drawn, so the player reads the line and then the verdict
+                    // instead of both at once. Until then the last in-play status holds.
+                    val settled = s.finished && resultRevealed
+                    val status = when {
+                        settled && s.winnerUserId == null -> "Dead heat — nobody could force it"
+                        settled && s.winnerUserId == me -> "You win"
+                        settled -> "You lose"
+                        isMyTurn -> "Your turn"
+                        else -> "Their turn"
+                    }
+                    Text(
+                        status,
+                        color = if (settled) VoiidColor.primary else VoiidColor.textSecondary,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = VoiidSpacing.md),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    )
+
+                    // The end screen is an OVERLAY, gated on `settled` (§9.2).
+                }
+
+                joinError != null -> {
+                    // Truthful failure rather than an empty board that will never fill in.
+                    Text(
+                        joinError ?: "",
+                        color = VoiidColor.error,
+                        fontSize = 15.sp,
+                        modifier = Modifier.fillMaxWidth().padding(top = VoiidSpacing.xl),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    )
+                }
+
+                else -> {
+                    // The opening board is built by the server and arrives as a frame, so there
+                    // is a real (brief) waiting state here.
+                    Column(
+                        Modifier.fillMaxWidth().padding(top = VoiidSpacing.xl),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        CircularProgressIndicator(color = VoiidColor.primary)
+                        Text(
+                            "Setting up the board…",
+                            color = VoiidColor.textSecondary,
+                            fontSize = 14.sp,
+                            modifier = Modifier.padding(top = VoiidSpacing.sm),
+                        )
+                    }
+                }
+            }
         }
 
-        val s = state
-        when {
-            s != null -> {
-                val isMyTurn = !s.finished && s.turnUserId == me
-
-                // Shared with the bot game so the two modes cannot drift visually. Taps are
-                // disabled unless it is genuinely my turn — the server would reject them
-                // anyway, so this only avoids sending frames we know are pointless.
-                TicTacToeBoard(
-                    board = s.board,
-                    line = s.line,
-                    enabled = isMyTurn,
-                    onTap = { engine.play(context, it) },
-                    modifier = Modifier.fillMaxWidth().padding(top = VoiidSpacing.md),
-                    isDraw = s.finished && s.winnerUserId == null,
-                    onLineComplete = { resultRevealed = true },
-                )
-
-                // `settled` rather than `s.finished`: the result is announced once the win
-                // stroke has been drawn, so the player reads the line and then the verdict
-                // instead of both at once. Until then the last in-play status holds.
-                val settled = s.finished && resultRevealed
-                val status = when {
-                    settled && s.winnerUserId == null -> "Dead heat — nobody could force it"
-                    settled && s.winnerUserId == me -> "You win"
-                    settled -> "You lose"
-                    isMyTurn -> "Your turn"
-                    else -> "Their turn"
-                }
-                Text(
-                    status,
-                    color = if (settled) VoiidColor.primary else VoiidColor.textSecondary,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = VoiidSpacing.md),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                )
-
-                // Appears only once the result has SETTLED, so it arrives after the win stroke
-                // rather than competing with it.
-                if (settled && onRematch != null) {
-                    RematchBar(
-                        matchId = matchId,
-                        onRematch = { newId ->
-                            // Leave the old match first — the engine holds one at a time.
-                            engine.leave()
-                            onRematch(newId)
-                        },
-                        onExit = { engine.leave(); onClose() },
-                    )
-                }
-            }
-
-            joinError != null -> {
-                // Truthful failure rather than an empty board that will never fill in.
-                Text(
-                    joinError ?: "",
-                    color = VoiidColor.error,
-                    fontSize = 15.sp,
-                    modifier = Modifier.fillMaxWidth().padding(top = VoiidSpacing.xl),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                )
-            }
-
-            else -> {
-                // The opening board is built by the server and arrives as a frame, so there
-                // is a real (brief) waiting state here.
-                Column(
-                    Modifier.fillMaxWidth().padding(top = VoiidSpacing.xl),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    CircularProgressIndicator(color = VoiidColor.primary)
-                    Text(
-                        "Setting up the board…",
-                        color = VoiidColor.textSecondary,
-                        fontSize = 14.sp,
-                        modifier = Modifier.padding(top = VoiidSpacing.sm),
-                    )
-                }
-            }
+        // GATED ON `resultRevealed`, NOT ON `finished`. This game already implemented §9.2's rule
+        // before the rule was written down: the win stroke draws, and only then does the
+        // verdict speak. Every other game gets the same effect from the overlay's own 450 ms
+        // hold; here the stroke IS the hold.
+        val done = state
+        if (done != null && done.finished && resultRevealed) {
+            MatchEndOverlay(
+                result = ticTacToeResult(done, me),
+                onExit = { engine.leave(); onClose() },
+                matchId = matchId,
+                onRematch = onRematch?.let { cb -> { newId: String -> engine.leave(); cb(newId) } },
+            )
         }
     }
+
 }

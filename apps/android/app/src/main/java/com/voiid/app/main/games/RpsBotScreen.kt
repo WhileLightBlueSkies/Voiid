@@ -245,18 +245,26 @@ fun RpsBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
                         ) { throwHand(i) }
                     }
                 }
-            } else {
-                AnimatedVisibility(
-                    visible = true,
-                    enter = fadeIn() + scaleIn(initialScale = 0.85f,
-                        animationSpec = spring(dampingRatio = 0.5f)),
-                ) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.sm)) {
-                        RpsPill("Play again", filled = true, modifier = Modifier.weight(1f)) { restart() }
-                        RpsPill("Exit", filled = false, modifier = Modifier.weight(1f)) { onClose() }
-                    }
-                }
             }
+            // The buttons moved into MatchEndOverlay (§9.3) — one end screen for all six games
+            // rather than a bespoke row per game.
+        }
+
+        // THE HANDS STAY VISIBLE BEHIND THE VERDICT (§9.2).
+        if (matchOver) {
+            MatchEndOverlay(
+                result = MatchEndResult.rps(
+                    mine = myWins,
+                    theirs = botWins,
+                    mostThrown = history.groupingBy { it }.eachCount()
+                        .maxByOrNull { it.value }
+                        ?.let { "${throwGlyph(it.key)} x${it.value}" },
+                    record = scores.value?.record(level)
+                        ?.let { "${it.wins}W ${it.draws}D ${it.losses}L" },
+                ),
+                onExit = onClose,
+                onPlayAgain = { restart() },
+            )
         }
 
         AnimatedVisibility(visible = paused, enter = fadeIn(tween(150)), exit = fadeOut(tween(150))) {
@@ -305,7 +313,13 @@ private fun ScorePill(label: String, value: Int) {
     }
 }
 
-/** One hand: shakes while the round resolves, then lands on its throw. */
+/**
+ * One hand, drawn from the rig rather than as a glyph (§3).
+ *
+ * THE POSE IS THE ANIMATION. During the pumps the fingers hold `NEUTRAL` and the FOREARM swings;
+ * when the shake ends the curls interpolate to the thrown pose, so the fingers are visibly seen
+ * to form the shape. An emoji could only ever cut.
+ */
 @Composable
 private fun Hand(
     throwIdx: Int?,
@@ -313,25 +327,40 @@ private fun Hand(
     mirrored: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    // Tilt oscillates while shaking. animateFloatAsState toggling between two targets keeps
-    // it a spring rather than a linear wobble, which reads as a hand, not a metronome.
-    val tilt by animateFloatAsState(
-        targetValue = if (shaking) 18f else 0f,
+    // The forearm swings; the wrist follows it a beat later. That lag is the single detail that
+    // makes the pump look human (§3.5) — animateFloatAsState toggling between two targets keeps
+    // it a spring rather than a linear wobble.
+    val forearm by animateFloatAsState(
+        targetValue = if (shaking) HandRig.PUMP_UP else 0f,
         animationSpec = spring(dampingRatio = 0.25f, stiffness = Spring.StiffnessLow),
-        label = "tilt",
+        label = "forearm",
     )
-    val pop by animateFloatAsState(
-        targetValue = if (throwIdx != null && !shaking) 1f else 0.82f,
-        animationSpec = spring(dampingRatio = 0.42f, stiffness = Spring.StiffnessMediumLow),
-        label = "pop",
+    // Fingers stay neutral through the wind-up and tighten slightly — the hand gathering
+    // itself — then snap to the throw when the shake ends.
+    val tighten by animateFloatAsState(
+        targetValue = if (shaking) 0.10f else 0f,
+        animationSpec = spring(dampingRatio = 0.42f, stiffness = Spring.StiffnessLow),
+        label = "tighten",
     )
+    val settle by animateFloatAsState(
+        targetValue = if (!shaking && throwIdx != null) 1f else 0f,
+        animationSpec = spring(dampingRatio = 0.55f, stiffness = Spring.StiffnessMediumLow),
+        label = "settle",
+    )
+
+    val windUp = HandRig.lerp(HandRig.NEUTRAL, HandRig.ROCK, tighten.toDouble())
+    val pose = if (shaking || throwIdx == null) {
+        windUp
+    } else {
+        HandRig.lerp(windUp, HandRig.pose(throwIdx), settle.toDouble())
+    }
 
     Box(
         modifier
             .aspectRatio(1f)
             .clip(RoundedCornerShape(VoiidRadius.lg))
             // A lit panel rather than a flat card: the radial fall-off reads as a spotlit
-            // arena, which is what makes two emoji feel like a face-off instead of a list.
+            // arena, which is what makes two hands feel like a face-off instead of a list.
             .background(
                 androidx.compose.ui.graphics.Brush.radialGradient(
                     0f to VoiidColor.primary.copy(alpha = 0.20f),
@@ -340,17 +369,13 @@ private fun Hand(
             ),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            when {
-                shaking || throwIdx == null -> "✊"
-                throwIdx == RpsBot.ROCK -> "✊"
-                throwIdx == RpsBot.PAPER -> "✋"
-                else -> "✌️"
-            },
-            fontSize = 56.sp,
-            modifier = Modifier
-                .rotate(if (mirrored) -tilt else tilt)
-                .scale(pop),
+        HandView(
+            pose = pose,
+            modifier = Modifier.padding(VoiidSpacing.sm),
+            forearm = forearm,
+            wrist = forearm * HandRig.WRIST_FOLLOW,
+            mirrored = mirrored,
+            knucklePop = if (!shaking && throwIdx == RpsBot.ROCK) HandRig.ROCK_KNUCKLE_POP else 1f,
         )
     }
 }
@@ -430,4 +455,17 @@ private fun RpsMenuButton(
         Spacer(Modifier.size(VoiidSpacing.sm))
         Text(text, color = fg, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
     }
+}
+
+/**
+ * Wire index -> glyph.
+ *
+ * iOS has `RpsBot.emoji(_:)`; the Kotlin bot never grew one because the screen inlined the
+ * three glyphs at its own call site. Named here so the end screen and the hands cannot
+ * disagree about which glyph an index means.
+ */
+private fun throwGlyph(index: Int): String = when (index) {
+    RpsBot.ROCK -> "\u270A"
+    RpsBot.PAPER -> "\u270B"
+    else -> "\u270C\uFE0F"
 }

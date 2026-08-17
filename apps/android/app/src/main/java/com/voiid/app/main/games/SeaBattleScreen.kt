@@ -28,6 +28,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -83,6 +84,14 @@ fun SeaBattleScreen(
     var showingOwnBoard by remember { mutableStateOf(false) }
     var confirmResign by remember { mutableStateOf(false) }
 
+    // Shell travel, sunk reveal and hit shake (§9). Scoped to this composable, so a shell in
+    // flight cannot land after the player has left the match.
+    val motionScope = rememberCoroutineScope()
+    val motion = rememberSeaBattleMotion(motionScope)
+    // Read once when the match opens, per ReduceMotion's own note — not per frame.
+    val reduceMotion = remember { ReduceMotion.isEnabled(context) }
+    DisposableEffect(motion) { onDispose { motion.cancel() } }
+
     // A LIVE CLOCK, at a deliberately low rate — the counterpart to iOS's TimelineView.
     //
     // §8.2's shimmer exists to prove the screen is alive during the long pauses of an async
@@ -106,14 +115,31 @@ fun SeaBattleScreen(
 
     LaunchedEffect(matchId) { engine.open(matchId) }
 
-    // The shot resolves when the FRAME arrives, not when an animation ends. Clearing the local
-    // firing cell here is what hands the square back to the server's answer.
+    // THE RESULT IS REVEALED WHEN THE SHELL LANDS, NOT WHEN THE FRAME ARRIVES (§9).
+    //
+    // The frame usually beats the animation, and showing the answer the instant it lands would
+    // make a fast connection feel different from a slow one. Holding the reveal until the end
+    // of the fixed 380 ms travel is what makes every shot feel the same, and it is the whole
+    // reason the travel exists. Android previously resolved on frame arrival with no travel at
+    // all, so a shot was over in under 50 ms.
     LaunchedEffect(state?.lastShot) {
-        if (state?.lastShot != null) {
+        val shot = state?.lastShot ?: return@LaunchedEffect
+        val land = {
+            val s0 = engine.seaBattle.value
             firingCell = null
             reticle = null
-            SeaBattleSound.shotResolved(state, me, haptics)
+            SeaBattleSound.shotResolved(s0, me, haptics)
+            if ((s0?.lastResult ?: 0) > 0) motion.hitShake(reduceMotion)
+            val seat = s0?.seat ?: s0?.players?.indexOf(me)?.takeIf { it >= 0 }
+            if (s0?.lastResult == 2 && seat != null) {
+                // Whichever fleet just lost a ship owns the outline being drawn in.
+                val owner = if (s0.turn?.let { 1 - it } == seat) 1 - seat else seat
+                motion.revealSunk(
+                    s0.sunkCells.getOrElse(owner) { emptyList() }.takeLast(5), reduceMotion)
+            }
         }
+        // Only wait when WE fired — an incoming shot has no shell of ours in the air.
+        if (firingCell != null) motion.fire(reduceMotion, land) else land()
     }
     LaunchedEffect(state?.finished) {
         if (state?.finished == true) SeaBattleSound.matchEnded(state, me)
@@ -142,253 +168,268 @@ fun SeaBattleScreen(
         )
     }
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(VoiidColor.background)
-            .statusBarsPadding()
-            .padding(horizontal = VoiidSpacing.md),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            Icon(
-                Icons.AutoMirrored.Filled.ArrowBack,
-                contentDescription = "Back",
-                tint = VoiidColor.textPrimary,
-                modifier = Modifier.clickable { engine.leave(); onClose() },
-            )
-            Text(
-                "Sea Battle",
-                fontSize = 17.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = VoiidColor.textPrimary,
-                modifier = Modifier.padding(start = VoiidSpacing.md).weight(1f),
-            )
-            if (s != null && !s.finished && s.phase == "firing") {
-                Text(
-                    "Resign",
-                    fontSize = 14.sp,
-                    color = VoiidColor.textSecondary,
-                    modifier = Modifier.clickable { confirmResign = true },
+    // A Box, not the bare Column: the end screen is a SIBLING that sits OVER the
+    // board (§9.2). Inside the Column it would be laid out in flow and push the
+    // board up the screen instead of covering it.
+    Box(Modifier.fillMaxSize()) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .background(VoiidColor.background)
+                .statusBarsPadding()
+                .padding(horizontal = VoiidSpacing.md),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back",
+                    tint = VoiidColor.textPrimary,
+                    modifier = Modifier.clickable { engine.leave(); onClose() },
                 )
-            }
-        }
-
-        Spacer(Modifier.height(VoiidSpacing.md))
-
-        when {
-            s == null && joinError != null -> Text(
-                joinError!!,
-                fontSize = 15.sp,
-                color = VoiidColor.error,
-                modifier = Modifier.padding(top = VoiidSpacing.lg),
-            )
-
-            s == null -> Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.fillMaxWidth().padding(top = VoiidSpacing.lg),
-            ) {
-                CircularProgressIndicator()
                 Text(
-                    "Setting up the board…",
-                    fontSize = 14.sp,
-                    color = VoiidColor.textSecondary,
-                    modifier = Modifier.padding(top = VoiidSpacing.sm),
+                    "Sea Battle",
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = VoiidColor.textPrimary,
+                    modifier = Modifier.padding(start = VoiidSpacing.md).weight(1f),
                 )
-            }
-
-            s.phase == "placing" -> {
-                val committed = mySeat != null && s.placed.getOrElse(mySeat) { false }
-                if (committed) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        CircularProgressIndicator()
-                        Text(
-                            "Fleet ready. Waiting for your opponent…",
-                            fontSize = 14.sp,
-                            color = VoiidColor.textSecondary,
-                            modifier = Modifier.padding(top = VoiidSpacing.sm),
-                        )
-                        SeaBattleGrid(cells = ownCells(s, mySeat, draft), dimmed = true)
-                    }
-                } else {
+                if (s != null && !s.finished && s.phase == "firing") {
                     Text(
-                        "Your ships are placed. Drag to move them, or tap Ready.",
+                        "Resign",
                         fontSize = 14.sp,
                         color = VoiidColor.textSecondary,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.clickable { confirmResign = true },
                     )
-                    SeaBattleGrid(
-                        cells = draftCells(draft),
-                        onTap = { cell ->
-                            // Tap while dragging rotates. A separate rotate button is a
-                            // two-handed operation and a long-press conflicts with the drag.
-                            val type = draft.firstOrNull { cell in it.cells }?.type
-                            if (type != null) {
-                                val idx = draft.indexOfFirst { it.type == type }
-                                val isH = horizontal[type] ?: true
-                                val ship = draft[idx]
-                                val cells = SeaBattleRules.run(ship.cells[0], ship.cells.size, !isH)
-                                val others = draft.filter { it.type != type }
-                                if (SeaBattleRules.canPlace(cells, others, ship.cells.size)) {
-                                    horizontal = horizontal + (type to !isH)
-                                    draft = draft.toMutableList()
-                                        .also { it[idx] = ship.copy(cells = cells) }
-                                    GameAudio.play("place_thud", gain = 0.45f)
-                                } else {
-                                    // Refuse rather than silently correct — silent correction is
-                                    // worse, because the player learns nothing about why.
-                                    GameAudio.play("error", gain = 0.4f)
-                                }
-                            }
-                        },
-                        onDrag = { cell ->
-                            val type = draggingType
-                                ?: draft.firstOrNull { cell in it.cells }?.type
-                                ?: return@SeaBattleGrid
-                            draggingType = type
-                            val idx = draft.indexOfFirst { it.type == type }
-                            if (idx < 0) return@SeaBattleGrid
-                            val ship = draft[idx]
-                            val isH = horizontal[type] ?: true
-                            val cells = SeaBattleRules.run(cell, ship.cells.size, isH)
-                            val others = draft.filter { it.type != type }
-                            if (SeaBattleRules.canPlace(cells, others, ship.cells.size)) {
-                                draft = draft.toMutableList()
-                                    .also { it[idx] = ship.copy(cells = cells) }
-                            }
-                        },
-                    )
-
-                    placementError?.let {
-                        Text(it, fontSize = 13.sp, color = VoiidColor.error)
-                    }
-
-                    Row(
-                        Modifier.fillMaxWidth().padding(top = VoiidSpacing.sm),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        Text(
-                            "Random",
-                            fontSize = 15.sp,
-                            color = VoiidColor.textSecondary,
-                            modifier = Modifier.clickable {
-                                draft = SeaBattleRules.randomFleet()
-                                placementError = null
-                                GameAudio.play("place_thud", gain = 0.5f)
-                            },
-                        )
-                        val valid = SeaBattleRules.validate(draft) == null
-                        Text(
-                            "Ready",
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = if (valid) VoiidColor.primary else VoiidColor.textSecondary,
-                            modifier = Modifier.clickable(enabled = valid) {
-                                val failure = SeaBattleRules.validate(draft)
-                                if (failure != null) {
-                                    placementError = failure.message
-                                    GameAudio.play("error", gain = 0.5f)
-                                } else {
-                                    placementError = null
-                                    engine.placeFleet(context, draft.map {
-                                        GamesEngine.SeaBattleState.Ship(it.type, it.cells, 0)
-                                    })
-                                }
-                            },
-                        )
-                    }
                 }
             }
 
-            else -> {
-                Status(s, me, isMyTurn, mySeat)
+            Spacer(Modifier.height(VoiidSpacing.md))
 
-                // THE LAYOUT IS THE DESIGN (§8.1). The opponent's board is primary — it is where
-                // you act and where the deduction happens, so it gets the space. Your own board
-                // is a strip: a status readout answering "how much trouble am I in" without a
-                // tap. Emphasis follows the action rather than making the player follow it.
-                val enemy = @Composable { mod: Modifier ->
-                    SeaBattleGrid(
-                        cells = enemyCells(s, mySeat),
-                        modifier = mod,
-                        reticle = reticle,
-                        firing = firingCell,
-                        now = now,
-                        dimmed = !isMyTurn,
-                        onTap = { cell ->
-                            if (isMyTurn && !s.finished && mySeat != null &&
-                                cell !in s.shots.getOrElse(mySeat) { emptyList() }
-                            ) {
-                                reticle = cell
-                            }
-                        },
-                    )
-                }
-                val own = @Composable { mod: Modifier ->
-                    SeaBattleGrid(
-                        cells = ownCells(s, mySeat, draft),
-                        modifier = mod.clickable { showingOwnBoard = !showingOwnBoard },
-                        now = now,
-                        dimmed = isMyTurn,
+            when {
+                s == null && joinError != null -> Text(
+                    joinError!!,
+                    fontSize = 15.sp,
+                    color = VoiidColor.error,
+                    modifier = Modifier.padding(top = VoiidSpacing.lg),
+                )
+
+                s == null -> Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.fillMaxWidth().padding(top = VoiidSpacing.lg),
+                ) {
+                    CircularProgressIndicator()
+                    Text(
+                        "Setting up the board…",
+                        fontSize = 14.sp,
+                        color = VoiidColor.textSecondary,
+                        modifier = Modifier.padding(top = VoiidSpacing.sm),
                     )
                 }
 
-                if (showingOwnBoard) {
-                    own(Modifier)
-                    enemy(Modifier.heightIn(max = 96.dp))
-                } else {
-                    enemy(Modifier)
-                    own(Modifier.heightIn(max = 96.dp))
-                }
-
-                FleetStrip(s, mySeat)
-
-                if (s.finished) {
-                    RematchBar(
-                        matchId = matchId,
-                        onRematch = { newId -> engine.leave(); onRematch?.invoke(newId) },
-                        onExit = { engine.leave(); onClose() },
-                    )
-                } else {
-                    // FIRE is the confirmation step the irreversibility demands (§7.2).
-                    //
-                    // A 10x10 grid gives ~33dp cells, below Material's 48dp minimum. One-tap
-                    // firing on a sub-minimum target, where a mis-tap is irreversible and costs
-                    // the match, is not acceptable — so you aim, then commit. The hesitation is
-                    // also the most Battleship thing about Battleship.
-                    val canFire = isMyTurn && reticle != null && firingCell == null
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(top = VoiidSpacing.sm)
-                            .background(
-                                if (canFire) VoiidColor.primary.copy(alpha = 0.16f) else Color.Transparent,
-                                RoundedCornerShape(12.dp),
+                s.phase == "placing" -> {
+                    val committed = mySeat != null && s.placed.getOrElse(mySeat) { false }
+                    if (committed) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            CircularProgressIndicator()
+                            Text(
+                                "Fleet ready. Waiting for your opponent…",
+                                fontSize = 14.sp,
+                                color = VoiidColor.textSecondary,
+                                modifier = Modifier.padding(top = VoiidSpacing.sm),
                             )
-                            .clickable(enabled = canFire) {
-                                val cell = reticle ?: return@clickable
-                                firingCell = cell
-                                engine.fire(context, cell)
-                                GameAudio.play("fire_launch", gain = 0.7f)
-                            }
-                            .padding(vertical = VoiidSpacing.sm),
-                        contentAlignment = Alignment.Center,
-                    ) {
+                            SeaBattleGrid(cells = ownCells(s, mySeat, draft), dimmed = true)
+                        }
+                    } else {
                         Text(
-                            reticle?.let { "FIRE — ${SeaBattle.coordLabel(it)}" }
-                                ?: "Select a square",
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = if (canFire) VoiidColor.primary else VoiidColor.textSecondary,
+                            "Your ships are placed. Drag to move them, or tap Ready.",
+                            fontSize = 14.sp,
+                            color = VoiidColor.textSecondary,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth(),
                         )
+                        SeaBattleGrid(
+                            cells = draftCells(draft),
+                            onTap = { cell ->
+                                // Tap while dragging rotates. A separate rotate button is a
+                                // two-handed operation and a long-press conflicts with the drag.
+                                val type = draft.firstOrNull { cell in it.cells }?.type
+                                if (type != null) {
+                                    val idx = draft.indexOfFirst { it.type == type }
+                                    val isH = horizontal[type] ?: true
+                                    val ship = draft[idx]
+                                    val cells = SeaBattleRules.run(ship.cells[0], ship.cells.size, !isH)
+                                    val others = draft.filter { it.type != type }
+                                    if (SeaBattleRules.canPlace(cells, others, ship.cells.size)) {
+                                        horizontal = horizontal + (type to !isH)
+                                        draft = draft.toMutableList()
+                                            .also { it[idx] = ship.copy(cells = cells) }
+                                        GameAudio.play("place_thud", gain = 0.45f)
+                                    } else {
+                                        // Refuse rather than silently correct — silent correction is
+                                        // worse, because the player learns nothing about why.
+                                        GameAudio.play("error", gain = 0.4f)
+                                    }
+                                }
+                            },
+                            onDrag = { cell ->
+                                val type = draggingType
+                                    ?: draft.firstOrNull { cell in it.cells }?.type
+                                    ?: return@SeaBattleGrid
+                                draggingType = type
+                                val idx = draft.indexOfFirst { it.type == type }
+                                if (idx < 0) return@SeaBattleGrid
+                                val ship = draft[idx]
+                                val isH = horizontal[type] ?: true
+                                val cells = SeaBattleRules.run(cell, ship.cells.size, isH)
+                                val others = draft.filter { it.type != type }
+                                if (SeaBattleRules.canPlace(cells, others, ship.cells.size)) {
+                                    draft = draft.toMutableList()
+                                        .also { it[idx] = ship.copy(cells = cells) }
+                                }
+                            },
+                        )
+
+                        placementError?.let {
+                            Text(it, fontSize = 13.sp, color = VoiidColor.error)
+                        }
+
+                        Row(
+                            Modifier.fillMaxWidth().padding(top = VoiidSpacing.sm),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(
+                                "Random",
+                                fontSize = 15.sp,
+                                color = VoiidColor.textSecondary,
+                                modifier = Modifier.clickable {
+                                    draft = SeaBattleRules.randomFleet()
+                                    placementError = null
+                                    GameAudio.play("place_thud", gain = 0.5f)
+                                },
+                            )
+                            val valid = SeaBattleRules.validate(draft) == null
+                            Text(
+                                "Ready",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (valid) VoiidColor.primary else VoiidColor.textSecondary,
+                                modifier = Modifier.clickable(enabled = valid) {
+                                    val failure = SeaBattleRules.validate(draft)
+                                    if (failure != null) {
+                                        placementError = failure.message
+                                        GameAudio.play("error", gain = 0.5f)
+                                    } else {
+                                        placementError = null
+                                        engine.placeFleet(context, draft.map {
+                                            GamesEngine.SeaBattleState.Ship(it.type, it.cells, 0)
+                                        })
+                                    }
+                                },
+                            )
+                        }
+                    }
+                }
+
+                else -> {
+                    Status(s, me, isMyTurn, mySeat)
+
+                    // THE LAYOUT IS THE DESIGN (§8.1). The opponent's board is primary — it is where
+                    // you act and where the deduction happens, so it gets the space. Your own board
+                    // is a strip: a status readout answering "how much trouble am I in" without a
+                    // tap. Emphasis follows the action rather than making the player follow it.
+                    val enemy = @Composable { mod: Modifier ->
+                        SeaBattleGrid(
+                            cells = enemyCells(s, mySeat),
+                            modifier = mod,
+                            reticle = reticle,
+                            firing = firingCell,
+                            shellProgress = motion.shellProgress,
+                            sunkReveal = motion.sunkReveal,
+                            now = now,
+                            dimmed = !isMyTurn,
+                            onTap = { cell ->
+                                if (isMyTurn && !s.finished && mySeat != null &&
+                                    cell !in s.shots.getOrElse(mySeat) { emptyList() }
+                                ) {
+                                    reticle = cell
+                                }
+                            },
+                        )
+                    }
+                    val own = @Composable { mod: Modifier ->
+                        SeaBattleGrid(
+                            cells = ownCells(s, mySeat, draft),
+                            modifier = mod.clickable { showingOwnBoard = !showingOwnBoard },
+                            now = now,
+                            dimmed = isMyTurn,
+                        )
+                    }
+
+                    if (showingOwnBoard) {
+                        own(Modifier)
+                        enemy(Modifier.heightIn(max = 96.dp))
+                    } else {
+                        enemy(Modifier)
+                        own(Modifier.heightIn(max = 96.dp))
+                    }
+
+                    FleetStrip(s, mySeat)
+
+                    // The end screen is an OVERLAY over the boards (§9.2) — see the Box wrapper
+                    // at the bottom of this composable. Nothing takes the fire button's place.
+                    if (!s.finished) {
+                        // FIRE is the confirmation step the irreversibility demands (§7.2).
+                        //
+                        // A 10x10 grid gives ~33dp cells, below Material's 48dp minimum. One-tap
+                        // firing on a sub-minimum target, where a mis-tap is irreversible and costs
+                        // the match, is not acceptable — so you aim, then commit. The hesitation is
+                        // also the most Battleship thing about Battleship.
+                        val canFire = isMyTurn && reticle != null && firingCell == null
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(top = VoiidSpacing.sm)
+                                .background(
+                                    if (canFire) VoiidColor.primary.copy(alpha = 0.16f) else Color.Transparent,
+                                    RoundedCornerShape(12.dp),
+                                )
+                                .clickable(enabled = canFire) {
+                                    val cell = reticle ?: return@clickable
+                                    firingCell = cell
+                                    engine.fire(context, cell)
+                                    GameAudio.play("fire_launch", gain = 0.7f)
+                                }
+                                .padding(vertical = VoiidSpacing.sm),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                reticle?.let { "FIRE — ${SeaBattle.coordLabel(it)}" }
+                                    ?: "Select a square",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (canFire) VoiidColor.primary else VoiidColor.textSecondary,
+                            )
+                        }
                     }
                 }
             }
         }
+
+        // THE BOARDS STAY VISIBLE BEHIND THE VERDICT (§9.2).
+        val done = state
+        if (done != null && done.finished) {
+            MatchEndOverlay(
+                result = seaBattleResult(done, mySeat, me),
+                onExit = { engine.leave(); onClose() },
+                matchId = matchId,
+                onRematch = { newId -> engine.leave(); onRematch?.invoke(newId) },
+            )
+        }
     }
+
 }
 
 @Composable
@@ -483,72 +524,3 @@ private fun FleetStrip(s: GamesEngine.SeaBattleState, mySeat: Int?) {
     }
 }
 
-/**
- * What the OPPONENT's board looks like from here: my shots, and any ship I have sunk. Their
- * un-hit ships are not in this frame at all, so there is nothing to accidentally draw.
- */
-private fun enemyCells(s: GamesEngine.SeaBattleState, mySeat: Int?): List<SeaBattleCell> {
-    val cells = MutableList(SeaBattle.CELLS) { SeaBattleCell.WATER }
-    val seat = mySeat ?: return cells
-    val enemy = 1 - seat
-    s.shots.getOrElse(seat) { emptyList() }.forEachIndexed { i, cell ->
-        if (cell in cells.indices) {
-            val result = s.results.getOrElse(seat) { emptyList() }.getOrElse(i) { 0 }
-            cells[cell] = if (result == 0) SeaBattleCell.MISS else SeaBattleCell.HIT
-        }
-    }
-    // Sunk outlines are public once the ship is down, and they are what makes the endgame
-    // deduction rather than a grind (§2.4).
-    s.sunkCells.getOrElse(enemy) { emptyList() }.forEach {
-        if (it in cells.indices) cells[it] = SeaBattleCell.SUNK
-    }
-    // Once the match is over the terminal frame carries both fleets, so the loser's unhit ships
-    // finally appear. This is the ONLY path that draws an enemy ship that is not sunk.
-    if (s.finished) {
-        s.revealedFleets?.getOrNull(enemy)?.forEach { ship ->
-            ship.cells.forEach {
-                if (it in cells.indices && cells[it] == SeaBattleCell.WATER) {
-                    cells[it] = SeaBattleCell.SHIP
-                }
-            }
-        }
-    }
-    return cells
-}
-
-/** My own board: my fleet, and their shots on it. */
-private fun ownCells(
-    s: GamesEngine.SeaBattleState,
-    mySeat: Int?,
-    draft: List<SeaBattleShip>,
-): List<SeaBattleCell> {
-    val cells = MutableList(SeaBattle.CELLS) { SeaBattleCell.WATER }
-    // During placement the frame has no fleet yet, so fall back to the local draft — the only
-    // place the two are interchangeable, and only because nothing is committed.
-    val fleet = if (s.myFleet.isEmpty()) {
-        draft.map { GamesEngine.SeaBattleState.Ship(it.type, it.cells, it.hits) }
-    } else s.myFleet
-    fleet.forEach { ship ->
-        ship.cells.forEach { if (it in cells.indices) cells[it] = SeaBattleCell.SHIP }
-    }
-    val seat = mySeat ?: return cells
-    val enemy = 1 - seat
-    s.shots.getOrElse(enemy) { emptyList() }.forEachIndexed { i, cell ->
-        if (cell in cells.indices) {
-            val result = s.results.getOrElse(enemy) { emptyList() }.getOrElse(i) { 0 }
-            cells[cell] = if (result == 0) SeaBattleCell.MISS else SeaBattleCell.SHIP_HIT
-        }
-    }
-    s.sunkCells.getOrElse(seat) { emptyList() }.forEach {
-        if (it in cells.indices) cells[it] = SeaBattleCell.SUNK
-    }
-    return cells
-}
-
-private fun draftCells(draft: List<SeaBattleShip>): List<SeaBattleCell> {
-    val cells = MutableList(SeaBattle.CELLS) { SeaBattleCell.WATER }
-    draft.forEach { ship ->
-        ship.cells.forEach { if (it in cells.indices) cells[it] = SeaBattleCell.SHIP }
-    }
-    return cells
-}

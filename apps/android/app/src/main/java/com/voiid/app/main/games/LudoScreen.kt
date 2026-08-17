@@ -125,72 +125,84 @@ fun LudoScreen(
     val isMyTurn = s != null && !s.finished && s.turnUserId == me
     val isMyMove = isMyTurn && s?.phase == "awaitingMove"
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(VoiidColor.background)
-            .statusBarsPadding()
-            .padding(horizontal = VoiidSpacing.md),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            Icon(
-                Icons.AutoMirrored.Filled.ArrowBack,
-                contentDescription = "Back",
-                tint = VoiidColor.textPrimary,
-                modifier = Modifier.clickable { engine.leave(); onClose() },
-            )
-            Text(
-                "Ludo",
-                fontSize = 17.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = VoiidColor.textPrimary,
-                modifier = Modifier.padding(start = VoiidSpacing.md),
-            )
-        }
-
-        Spacer(Modifier.height(VoiidSpacing.sm))
-
-        when {
-            s == null && joinError != null -> Text(
-                joinError!!, fontSize = 15.sp, color = VoiidColor.error,
-                modifier = Modifier.padding(top = VoiidSpacing.lg),
-            )
-
-            s == null -> Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.fillMaxWidth().padding(top = VoiidSpacing.lg),
-            ) {
-                CircularProgressIndicator()
+    // A Box, not the bare Column: the end screen is a SIBLING that sits OVER the
+    // board (§9.2). Inside the Column it would be laid out in flow and push the
+    // board up the screen instead of covering it.
+    Box(Modifier.fillMaxSize()) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .background(VoiidColor.background)
+                .statusBarsPadding()
+                .padding(horizontal = VoiidSpacing.md),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back",
+                    tint = VoiidColor.textPrimary,
+                    modifier = Modifier.clickable { engine.leave(); onClose() },
+                )
                 Text(
-                    "Setting up the board…", fontSize = 14.sp,
-                    color = VoiidColor.textSecondary,
-                    modifier = Modifier.padding(top = VoiidSpacing.sm),
+                    "Ludo",
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = VoiidColor.textPrimary,
+                    modifier = Modifier.padding(start = VoiidSpacing.md),
                 )
             }
 
-            else -> {
-                PlayerStrips(s, me)
-                LudoBoardCanvas(
-                    state = s,
-                    mySeat = mySeat,
-                    legal = if (isMyMove) s.legal else emptyList(),
-                    onTapToken = { engine.moveLudo(context, it) },
-                    hopOverrides = hop.overrides,
-                    reduceMotion = reduceMotion,
+            Spacer(Modifier.height(VoiidSpacing.sm))
+
+            when {
+                s == null && joinError != null -> Text(
+                    joinError!!, fontSize = 15.sp, color = VoiidColor.error,
+                    modifier = Modifier.padding(top = VoiidSpacing.lg),
                 )
-                Status(s, me, isMyTurn, mySeat)
-                if (s.finished) {
-                    RematchBar(
-                        matchId = matchId,
-                        onRematch = { newId -> engine.leave(); onRematch?.invoke(newId) },
-                        onExit = { engine.leave(); onClose() },
+
+                s == null -> Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.fillMaxWidth().padding(top = VoiidSpacing.lg),
+                ) {
+                    CircularProgressIndicator()
+                    Text(
+                        "Setting up the board…", fontSize = 14.sp,
+                        color = VoiidColor.textSecondary,
+                        modifier = Modifier.padding(top = VoiidSpacing.sm),
                     )
-                } else {
-                    DieButton(s, isMyTurn) { engine.rollLudo(context); LudoSound.dieRolled() }
+                }
+
+                else -> {
+                    PlayerStrips(s, me)
+                    LudoBoardCanvas(
+                        state = s,
+                        mySeat = mySeat,
+                        legal = if (isMyMove) s.legal else emptyList(),
+                        onTapToken = { engine.moveLudo(context, it) },
+                        hopOverrides = hop.overrides,
+                        reduceMotion = reduceMotion,
+                    )
+                    Status(s, me, isMyTurn, mySeat)
+                    // The end screen is an OVERLAY over the board (§9.2).
+                    if (!s.finished) {
+                        DieButton(s, isMyTurn) { engine.rollLudo(context); LudoSound.dieRolled() }
+                    }
                 }
             }
         }
+
+        // THE BOARD STAYS VISIBLE BEHIND THE VERDICT (§9.2).
+        val done = state
+        if (done != null && done.finished) {
+            MatchEndOverlay(
+                result = ludoResult(done, mySeat, me),
+                onExit = { engine.leave(); onClose() },
+                matchId = matchId,
+                onRematch = { newId -> engine.leave(); onRematch?.invoke(newId) },
+            )
+        }
     }
+
 }
 
 /**
@@ -200,7 +212,7 @@ fun LudoScreen(
  * at a glance, because in a 4-player game you are mostly waiting.
  */
 @Composable
-private fun PlayerStrips(s: GamesEngine.LudoState, me: String?) {
+fun PlayerStrips(s: GamesEngine.LudoState, me: String?) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.sm)) {
         s.players.forEachIndexed { seat, uid ->
             val active = !s.finished && seat == s.turn
@@ -251,7 +263,7 @@ private fun PlayerStrips(s: GamesEngine.LudoState, me: String?) {
  * so each animates individually with `animateFloatAsState`.
  */
 @Composable
-private fun LudoBoardCanvas(
+fun LudoBoardCanvas(
     state: GamesEngine.LudoState,
     mySeat: Int?,
     legal: List<Int>,
@@ -492,7 +504,7 @@ private fun LudoTokenView(
 }
 
 @Composable
-private fun Status(
+fun Status(
     s: GamesEngine.LudoState,
     me: String?,
     isMyTurn: Boolean,
@@ -556,7 +568,7 @@ private fun Status(
 
 /** The die is the primary target: bottom-centre, large, reachable by either thumb (§7.2). */
 @Composable
-private fun DieButton(s: GamesEngine.LudoState, isMyTurn: Boolean, onRoll: () -> Unit) {
+fun DieButton(s: GamesEngine.LudoState, isMyTurn: Boolean, onRoll: () -> Unit) {
     val canRoll = isMyTurn && s.phase == "awaitingRoll"
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -596,7 +608,7 @@ private fun DieButton(s: GamesEngine.LudoState, isMyTurn: Boolean, onRoll: () ->
 
 /** A die face as pips rather than a numeral — a numeral reads as a score, pips read as a die. */
 @Composable
-private fun DiePips(face: Int, color: Color) {
+fun DiePips(face: Int, color: Color) {
     val layouts = mapOf(
         1 to listOf(1 to 1),
         2 to listOf(0 to 0, 2 to 2),

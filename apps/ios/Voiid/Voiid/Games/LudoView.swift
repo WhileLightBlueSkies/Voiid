@@ -51,12 +51,9 @@ struct LudoView: View {
                     .onTapGesture { hop.skip() }
                     .padding(.horizontal, VoiidSpacing.sm)
                 status(s)
-                if s.finished {
-                    RematchBar(
-                        matchId: matchId,
-                        onRematch: { newId in engine.leave(); onRematch?(newId) },
-                        onExit: { engine.leave(); onClose?() })
-                } else {
+                // The end screen is an OVERLAY over the board (§9.2) — see the `overlay`
+                // modifier below. Nothing takes the die's place here.
+                if !s.finished {
                     dieButton(s)
                 }
             } else if let err = engine.joinError {
@@ -75,6 +72,17 @@ struct LudoView: View {
         .padding(.horizontal, VoiidSpacing.md)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(VoiidColor.background.ignoresSafeArea())
+        // THE BOARD STAYS VISIBLE BEHIND THE VERDICT (§9.2).
+        .overlay {
+            if let s = engine.ludo, s.finished {
+                MatchEndOverlay(
+                    result: ludoResult(s),
+                    matchId: matchId,
+                    onRematch: { newId in engine.leave(); onRematch?(newId) },
+                    onExit: { engine.leave(); onClose?() })
+                .transition(.opacity)
+            }
+        }
         .navigationTitle("Ludo")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(true)
@@ -178,6 +186,42 @@ struct LudoView: View {
             }
         }
         .padding(.top, VoiidSpacing.xs)
+    }
+
+    // MARK: - The result
+
+    /// Built entirely from the frame — no new wire field (§9.8).
+    private func ludoResult(_ s: LudoState) -> MatchEndResult {
+        guard let winner = s.winnerUserId else { return .abandoned() }
+        let seat = mySeat ?? 0
+        let won = winner == me
+        let home = s.tokens.indices.contains(seat)
+            ? s.tokens[seat].filter({ $0 == Ludo.home }).count : 0
+        // Placement is where my seat sits in the finish order; a seat that never finished
+        // ranks behind everyone who did.
+        let placement = (s.finishedOrder.firstIndex(of: seat).map { $0 + 1 })
+            ?? (s.finishedOrder.count + 1)
+        return .ludo(
+            placement: placement,
+            seats: s.players.count,
+            home: home,
+            tokens: s.tokensPerPlayer,
+            captures: captureCount(s, by: seat),
+            lost: captureCount(s, against: seat),
+            won: won)
+    }
+
+    /// Captures are only ever reported one move at a time, so a running tally would need
+    /// history the client does not keep. `lastMove` is the honest answer: 1 if the final move
+    /// was a capture of the relevant kind, 0 otherwise.
+    private func captureCount(_ s: LudoState, by seat: Int) -> Int {
+        guard let move = s.lastMove, let cap = move.captured, cap.count == 2 else { return 0 }
+        return move.seat == seat ? 1 : 0
+    }
+
+    private func captureCount(_ s: LudoState, against seat: Int) -> Int {
+        guard let move = s.lastMove, let cap = move.captured, cap.count == 2 else { return 0 }
+        return cap[0] == seat ? 1 : 0
     }
 
     // MARK: - Status and die

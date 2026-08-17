@@ -19,6 +19,7 @@ One file per game. Each answers the same three questions: **what exists**, **wha
 | [`EXECUTION_PROMPT_SOUND_AND_FIXES.md`](./EXECUTION_PROMPT_SOUND_AND_FIXES.md) | — | **Hand-off prompt** — scoped to sound rework + fixing the four existing games, nothing new |
 | [`EXECUTION_PROMPT_NEW_GAME_DOCS.md`](./EXECUTION_PROMPT_NEW_GAME_DOCS.md) | — | **Hand-off prompt** — write full design docs for the eight future games (docs only, no code) |
 | [`SNAKE_COMPETITIVE_PARITY.md`](./SNAKE_COMPETITIVE_PARITY.md) | Snake | What a shipped commercial .io game has that we don't, and which of it is worth having |
+| [`VISUALS_AUDIO_AND_PARITY.md`](./VISUALS_AUDIO_AND_PARITY.md) | All | **Current work plan (2026-08-17)** — game sound on silent/media volume, the Android gaps, win/defeat/tie screens for every game, and the art upgrade per game: RPS hand rig, cricket batter + bowler, Ludo pawns and die, Sea Battle boats + bomb arc, Snake obstacles that read |
 
 ---
 

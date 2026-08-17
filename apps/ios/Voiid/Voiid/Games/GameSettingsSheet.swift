@@ -63,7 +63,11 @@ struct GameSettingsSheet: View {
                             if on { Haptics.tap() }
                         }
                 } footer: {
-                    Text("Games always respect the silent switch and never play over a call.")
+                    // SAYS WHAT IS ACTUALLY TRUE. This used to promise the silent switch was
+                    // respected, which stopped being the case when the session moved to
+                    // `.playback` — a game is media and rides the media slider, like every
+                    // other game on the store. The call rule is unchanged and still absolute.
+                    Text("Games play at your media volume, even on silent. They never play over a call.")
                         .font(VoiidFont.rounded(12, .regular))
                         .foregroundStyle(VoiidColor.textSecondary)
                 }

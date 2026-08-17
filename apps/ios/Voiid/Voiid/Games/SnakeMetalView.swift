@@ -250,6 +250,15 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     // Per-frame CPU-side buffers, reused so a frame allocates nothing.
     private var circles: [CircleInstance] = []
     private var ribbon: [RibbonVertex] = []
+    /// Arena geography, as triangles.
+    ///
+    /// ITS OWN BUFFER AND ITS OWN DRAW, before the bodies, because terrain has to be UNDER the
+    /// snakes and the circle pass runs after the ribbon pass. Hazards used to be circle
+    /// instances, which meant they drew OVER every snake body despite the "terrain first"
+    /// comment above `buildHazards` — a rock on top of a snake makes the snake look like it has
+    /// already crashed. Same pipeline as the bodies (CPU-triangulated, one buffer, one call),
+    /// so this costs a draw call and no new shader.
+    private var hazardTris: [RibbonVertex] = []
     private var sprites: [SpriteInstance] = []
     /// Floor quads, drawn before everything else and with their own texture.
     private var floorSprites: [SpriteInstance] = []
@@ -262,6 +271,7 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     // Buffers are grown on demand and then reused, so a steady-state frame allocates nothing.
     private var circleBuffer: [MTLBuffer?] = []
     private var ribbonBuffer: [MTLBuffer?] = []
+    private var hazardBuffer: [MTLBuffer?] = []
     private var spriteBuffer: [MTLBuffer?] = []
     private var floorBuffer: [MTLBuffer?] = []
 
@@ -511,6 +521,7 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         circles.removeAll(keepingCapacity: true)
         ribbon.removeAll(keepingCapacity: true)
         sprites.removeAll(keepingCapacity: true)
+        hazardTris.removeAll(keepingCapacity: true)
         floorSprites.removeAll(keepingCapacity: true)
         bloomCircles.removeAll(keepingCapacity: true)
 
@@ -557,6 +568,15 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
             encoder.setFragmentSamplerState(smp, index: 0)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
                                    instanceCount: floorSprites.count)
+        }
+
+        // TERRAIN FIRST — under the bodies and under the food, which is what the arena's
+        // geography is supposed to be. Same pipeline as the bodies; a separate draw is what
+        // puts it beneath them.
+        if let buf = upload(hazardTris, into: &hazardBuffer), ribbonPipeline != nil {
+            encoder.setRenderPipelineState(ribbonPipeline)
+            encoder.setVertexBuffer(buf, offset: 0, index: 1)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: hazardTris.count)
         }
 
         // Bodies next, then circles over them (heads, food), then labels on top.
@@ -1227,69 +1247,147 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     /// Arena geography: rocks, spikes and slicks.
     ///
     /// DRAWN UNDER THE FOOD AND THE SNAKES, because it is terrain — a rock that occluded a
-    /// snake would make the snake look like it had already crashed.
+    /// snake would make the snake look like it had already crashed. That is why these go into
+    /// `hazardTris` and get their own draw before the bodies, rather than into `circles`, which
+    /// is drawn LAST and was therefore putting every rock on top of every snake.
     ///
-    /// EACH KIND HAS TO READ AS WHAT IT DOES, not merely as different colours. A rock is solid
-    /// and opaque, a spike is only sometimes lethal so its state must be unmistakable at a
-    /// glance, and a slick is passable so it must never look like a wall. Getting that wrong
-    /// costs a player their run for a reason they cannot see, which is the worst kind of death
-    /// in this game.
+    /// EACH KIND HAS TO READ AS WHAT IT DOES, not merely as different colours. This used to be
+    /// three stacked circles per hazard, so a rock, a retracted spike and a slick were the same
+    /// shape three times — see SnakeHazardArt's header. Now:
+    ///
+    ///   ROCK    a faceted, irregular boulder with a hard contact shadow. Opaque, no glow. It
+    ///           kills like the wall so it is drawn like the wall.
+    ///   SPIKE   a ring of teeth that visibly RISE from a socket, plus a warning glow in the
+    ///           quarter-second before they do. Its state is the gameplay.
+    ///   SLICK   a wandering translucent puddle with a moving sheen. Soft everywhere, no rim —
+    ///           a slick that looks like a wall costs the player position for nothing.
     private func buildHazards(state: SnakeState) {
-        for h in state.hazards {
+        for (index, h) in state.hazards.enumerated() {
             let centre = SIMD2(Float(h.x), Float(h.y))
             let r = Float(h.radius)
 
             switch h.kind {
             case "rock":
-                // SOLID AND OPAQUE. It kills like the wall, so it is drawn like the wall — hard
-                // edge, no glow, nothing that suggests you might pass through it.
-                circles.append(CircleInstance(
-                    centre: centre, radius: r, softness: 0,
-                    colour: SIMD4(0.30, 0.30, 0.38, 1)))
-                // A lighter cap, lit from the top-left like every other surface in the app.
-                circles.append(CircleInstance(
-                    centre: centre + SIMD2(-r * 0.16, -r * 0.16), radius: r * 0.72,
-                    softness: 0.25, colour: SIMD4(0.44, 0.44, 0.53, 1)))
-                // A dark rim so it separates from the floor rather than floating on it.
-                circles.append(CircleInstance(
-                    centre: centre, radius: r * 1.06, softness: 0.5,
-                    colour: SIMD4(0.10, 0.09, 0.16, 0.55)))
-
+                buildRock(index: index, centre: centre, radius: r)
             case "spike":
-                // ITS STATE IS THE WHOLE POINT. Extended is bright, hard-edged and larger;
-                // retracted is a dim flat marker that still shows WHERE it is, so the player
-                // can plan a route through rather than being surprised by one that pops up.
-                let out = h.extended(at: state.time)
-                if out {
-                    circles.append(CircleInstance(
-                        centre: centre, radius: r * 1.5, softness: 0.7,
-                        colour: SIMD4(1.0, 0.35, 0.30, 0.30)))
-                    circles.append(CircleInstance(
-                        centre: centre, radius: r, softness: 0,
-                        colour: SIMD4(1.0, 0.42, 0.32, 1)))
-                    circles.append(CircleInstance(
-                        centre: centre, radius: r * 0.45, softness: 0,
-                        colour: SIMD4(1.0, 0.92, 0.80, 1)))
-                } else {
-                    circles.append(CircleInstance(
-                        centre: centre, radius: r * 0.72, softness: 0.35,
-                        colour: SIMD4(0.45, 0.22, 0.24, 0.75)))
-                    circles.append(CircleInstance(
-                        centre: centre, radius: r * 0.28, softness: 0,
-                        colour: SIMD4(0.62, 0.30, 0.30, 0.9)))
-                }
-
+                buildSpike(h, index: index, centre: centre, radius: r, time: state.time)
             default:
-                // SLICK: soft, translucent, no rim. It must not read as a wall — a player who
-                // steers around a slick has paid for nothing.
-                circles.append(CircleInstance(
-                    centre: centre, radius: r, softness: 0.85,
-                    colour: SIMD4(0.35, 0.70, 0.95, 0.16)))
-                circles.append(CircleInstance(
-                    centre: centre, radius: r * 0.62, softness: 0.9,
-                    colour: SIMD4(0.55, 0.85, 1.0, 0.10)))
+                buildSlick(index: index, centre: centre, radius: r, time: state.time)
             }
         }
+    }
+
+    /// Base rock colour, before the per-facet shade.
+    private static let rockBody = SIMD3<Float>(0.34, 0.34, 0.42)
+
+    private func buildRock(index: Int, centre: SIMD2<Float>, radius r: Float) {
+        let variant = ((index % SnakeHazardArt.rockVariants) + SnakeHazardArt.rockVariants)
+            % SnakeHazardArt.rockVariants
+        let outline = SnakeHazardArt.rockOutline(variant: variant)
+
+        // CONTACT SHADOW FIRST, so it sits under the body. A hard ellipse offset down-right
+        // rather than the old concentric soft ring, which made every rock look like it was
+        // floating a few units above the floor.
+        let shadow = SIMD2<Float>(centre.x + r * 0.14, centre.y + r * 0.20)
+        appendFan(centre: shadow, points: outline.map {
+            CGPoint(x: $0.x * 1.15, y: $0.y * 0.45)
+        }, radius: r, colour: SIMD4(0.05, 0.04, 0.10, 0.50))
+
+        // The body, one triangle per edge, each shaded by which facet its midpoint falls in —
+        // hard edges between the three, because faceting is what reads as stone.
+        for i in 0..<outline.count {
+            let a = outline[i]
+            let b = outline[(i + 1) % outline.count]
+            let mid = CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+            let shade = Float(SnakeHazardArt.facetShade(SnakeHazardArt.facet(mid)))
+            let c = Self.rockBody * shade
+            appendTriangle(
+                SIMD2(centre.x, centre.y),
+                SIMD2(centre.x + Float(a.x) * r, centre.y + Float(a.y) * r),
+                SIMD2(centre.x + Float(b.x) * r, centre.y + Float(b.y) * r),
+                colour: SIMD4(c.x, c.y, c.z, 1))
+        }
+    }
+
+    private func buildSpike(
+        _ h: SnakeState.Hazard, index: Int, centre: SIMD2<Float>, radius r: Float, time: Double
+    ) {
+        let period = h.period ?? 3
+        let offset = h.offset ?? 0
+        let out = SnakeHazardArt.extended(
+            period: period, offset: offset, duty: 0.45, time: time)
+        let tell = SnakeHazardArt.tell(
+            period: period, offset: offset, duty: 0.45, time: time)
+
+        // THE SOCKET IS ALWAYS DRAWN, so a player can plan a route through a spike field rather
+        // than being surprised by one that pops up. It brightens as the teeth are about to come.
+        let socketLift = Float(tell) * 0.45
+        appendFan(
+            centre: centre,
+            points: (0..<16).map { i in
+                let a = Double(i) / 16 * 2 * .pi
+                return CGPoint(x: cos(a) * 0.5, y: sin(a) * 0.5)
+            },
+            radius: r,
+            colour: SIMD4(0.30 + socketLift, 0.14 + socketLift * 0.3,
+                          0.16 + socketLift * 0.2, 0.9))
+
+        guard out > 0.001 else { return }
+
+        // The teeth. Bright, hard-edged and unmistakable at full extension; at a partial one
+        // they are visibly on their way, which is the whole point of animating this at all.
+        let hot = SIMD4<Float>(1.0, 0.42 + Float(out) * 0.2, 0.32, 1)
+        for i in 0..<SnakeHazardArt.spikeTeeth {
+            let (a, b, tip) = SnakeHazardArt.spikeTooth(i, extended: out)
+            appendTriangle(
+                SIMD2(centre.x + Float(a.x) * r, centre.y + Float(a.y) * r),
+                SIMD2(centre.x + Float(b.x) * r, centre.y + Float(b.y) * r),
+                SIMD2(centre.x + Float(tip.x) * r, centre.y + Float(tip.y) * r),
+                colour: hot)
+        }
+    }
+
+    private func buildSlick(index: Int, centre: SIMD2<Float>, radius r: Float, time: Double) {
+        let variant = ((index % 4) + 4) % 4
+        let outline = SnakeHazardArt.slickOutline(variant: variant)
+        appendFan(centre: centre, points: outline, radius: r,
+                  colour: SIMD4(0.35, 0.70, 0.95, 0.16))
+
+        // A SHEEN BAND sweeping across on a 4-second cycle, so it reads as WET. Same barely-there
+        // amplitude as the Sea Battle caustics — it must prove the surface is liquid without ever
+        // drawing an edge.
+        let sweep = Float(sin(time * 1.57 + Double(variant) * 2.1)) * 0.45
+        appendFan(
+            centre: SIMD2(centre.x + sweep * r, centre.y),
+            points: outline.map { CGPoint(x: $0.x * 0.5, y: $0.y * 0.62) },
+            radius: r,
+            colour: SIMD4(0.62, 0.88, 1.0, 0.10))
+    }
+
+    // MARK: - Triangle helpers
+
+    /// A closed outline as a triangle fan from its centre.
+    private func appendFan(
+        centre: SIMD2<Float>, points: [CGPoint], radius r: Float, colour: SIMD4<Float>
+    ) {
+        guard points.count >= 3 else { return }
+        for i in 0..<points.count {
+            let a = points[i]
+            let b = points[(i + 1) % points.count]
+            appendTriangle(
+                centre,
+                SIMD2(centre.x + Float(a.x) * r, centre.y + Float(a.y) * r),
+                SIMD2(centre.x + Float(b.x) * r, centre.y + Float(b.y) * r),
+                colour: colour)
+        }
+    }
+
+    private func appendTriangle(
+        _ a: SIMD2<Float>, _ b: SIMD2<Float>, _ c: SIMD2<Float>, colour: SIMD4<Float>
+    ) {
+        hazardTris.append(RibbonVertex(world: a, colour: colour))
+        hazardTris.append(RibbonVertex(world: b, colour: colour))
+        hazardTris.append(RibbonVertex(world: c, colour: colour))
     }
 
     private func buildFood(state: SnakeState) {

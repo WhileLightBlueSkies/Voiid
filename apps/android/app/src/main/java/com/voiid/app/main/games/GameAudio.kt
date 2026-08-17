@@ -2,7 +2,6 @@ package com.voiid.app.main.games
 
 import android.content.Context
 import android.media.AudioAttributes
-import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.SoundPool
 import android.os.Handler
@@ -50,6 +49,26 @@ object GameAudio {
      * around a language keyword.
      */
     const val CATCH = "catch_shared"
+
+    /**
+     * THE RESULT SET — win, defeat and tie, played by every game at the moment a match ends
+     * (docs/games/VISUALS_AUDIO_AND_PARITY.md §9.6).
+     *
+     * In EVERY game's preload list for the same reason [CATCH] is: a result vocabulary that
+     * exists in only some games teaches nothing.
+     *
+     * THEY REPLACE A LIE. Ludo and Sea Battle used to play `winner == me ? rank_up :
+     * match_end`, and `match_end` is a resolving MAJOR triad — so losing sounded like a
+     * pleasant resolution, and a tie had no sound at all outside Tic Tac Toe. The three differ
+     * in DIRECTION: win rises, defeat falls, tie stays unresolved.
+     *
+     * `match_end` keeps its real job — the neutral chord for an ABANDONED match, where nobody
+     * won and nothing should be celebrated.
+     */
+    const val RESULT_WIN = "result_win"
+    const val RESULT_LOSE = "result_lose"
+    const val RESULT_TIE = "result_tie"
+    val RESULT_SET = listOf(RESULT_WIN, RESULT_LOSE, RESULT_TIE)
 
     /** The three X variants — TWO STROKES each, with an audible gap. */
     val CHALK_X = listOf("chalk_x_1", "chalk_x_2", "chalk_x_3")
@@ -138,7 +157,7 @@ object GameAudio {
      * recorded pitch, SoundPool clamps to 0.5-2.0) and [gain] (0-1, on top of the file's own
      * §11 mix trim). */
     fun play(name: String, pitch: Float = 1f, gain: Float = 1f) {
-        if (isMuted || callIsActive() || !ringerAllowsSound()) return
+        if (isMuted || callIsActive()) return
         val id = soundIds[name] ?: return
         if (id !in loadedIds) return
 
@@ -165,7 +184,7 @@ object GameAudio {
      * (docs/games/SOUND_DESIGN.md §4.1), and that delay is what sells it — fired together the
      * three read as one mushy noise and the impact is lost entirely.
      *
-     * The mute/call/ringer checks run when the sound FIRES, not when it is scheduled: a call
+     * The mute/call checks run when the sound FIRES, not when it is scheduled: a call
      * that starts inside the delay window must silence the reaction, and [play] already makes
      * exactly that check.
      */
@@ -205,7 +224,7 @@ object GameAudio {
      * exists for Snake's boost_loop.
      */
     fun startBed(context: Context, name: String, gain: Float) {
-        if (isMuted || callIsActive() || !ringerAllowsSound()) return
+        if (isMuted || callIsActive()) return
         appContext = context.applicationContext
         val ctx = appContext ?: return
 
@@ -254,7 +273,7 @@ object GameAudio {
      * the loop, only adjusts gain — a caller can call it unconditionally every frame rather
      * than tracking its own "did I already start this" edge. */
     fun startLoop(name: String, gain: Float = 1f) {
-        if (isMuted || callIsActive() || !ringerAllowsSound()) return
+        if (isMuted || callIsActive()) return
         val id = soundIds[name] ?: return
         if (id !in loadedIds) return
 
@@ -309,14 +328,24 @@ object GameAudio {
     private fun callIsActive(): Boolean =
         CallManager.state.value != null || GroupCallManager.isActive
 
-    /** Mirrors CallTones' silent/vibrate check — games must respect ringer mode exactly like
-     * every other non-call sound in this app (docs/GAMES_AUDIO.md §5's "mirror CallTones.kt"). */
-    private fun ringerAllowsSound(): Boolean {
-        val ctx = appContext ?: return true
-        val am = ctx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return true
-        return runCatching { am.ringerMode }.getOrDefault(AudioManager.RINGER_MODE_NORMAL) ==
-            AudioManager.RINGER_MODE_NORMAL
-    }
+    /*
+     * THERE IS DELIBERATELY NO RINGER CHECK HERE.
+     *
+     * This used to gate every play/loop/bed call on `ringerMode == RINGER_MODE_NORMAL`,
+     * mirroring CallTones — so a phone on vibrate or silent got no game audio at all. That
+     * mirrors the wrong thing: a ringtone is a NOTIFICATION and a game is MEDIA. Silencing the
+     * ringer silences notifications; it is not a request to mute a game the player just opened.
+     *
+     * The routing is already correct and always was: USAGE_GAME + CONTENT_TYPE_SONIFICATION on
+     * the SoundPool (and CONTENT_TYPE_MUSIC on the crowd bed) puts every one of these on
+     * STREAM_MUSIC, which means the media slider IS the volume control and ringer mode does not
+     * apply to it. The gate was the only thing making games silent.
+     *
+     * [isMuted] — surfaced as the Sound switch in GameSettingsSheet — is the in-app control,
+     * and [callIsActive] is the hard rule. Neither of them is the ringer.
+     *
+     * CallTones.kt keeps its own ringer check. Do not "fix" that one to match this.
+     */
 
     /**
      * File-name groups per game, matching the catalogues in tools/gamesounds/synth.py
@@ -336,24 +365,24 @@ object GameAudio {
             "boost_start", "boost_loop", "boost_end",
             "kill", "death", "spawn", "border_warn", "rank_up", "match_end",
             CATCH,
-        )
+        ) + RESULT_SET
         "tictactoe" -> listOf(
             "chalk_x_1", "chalk_x_2", "chalk_x_3",
             "chalk_o_1", "chalk_o_2", "chalk_o_3",
             "chalk_line", "chalk_stub", "chalk_erase",
             "mark_invalid", "win_line", "draw", CATCH,
-        )
+        ) + RESULT_SET
         "rps" -> listOf(
             "countdown_1", "countdown_2", "countdown_3",
             "hand_pump", "hand_reveal", "reveal",
             "round_win", "round_lose", "round_tie", CATCH,
-        )
+        ) + RESULT_SET
         "cricket" -> listOf(
             "pick", "reveal", "innings",
             "bat_soft", "bat_crack", "bat_block",
             "wicket_timber", CATCH,
             "crowd_cheer", "crowd_roar", "crowd_gasp", "crowd_groan", "crowd_applause",
-        )
+        ) + RESULT_SET
         // Three variants of splash and hit_metal, chosen at random with the existing varispeed:
         // a match contains 40–90 of these, and SOUND_DESIGN.md §4.3 makes exactly this argument
         // for chalk — without variation "it becomes machine-like by move four".
@@ -363,7 +392,7 @@ object GameAudio {
             "hit_metal_1", "hit_metal_2", "hit_metal_3",
             "sink_groan", "your_turn", "place_thud", "error",
             CATCH,
-        )
+        ) + RESULT_SET
         // hop is the most-triggered sound in the game — four variants plus the engine's own
         // pitch jitter, per SOUND_DESIGN.md §4.3's chalk argument.
         "ludo" -> listOf(
@@ -372,7 +401,7 @@ object GameAudio {
             "enter", "capture", "home", "extra_turn", "three_sixes", "pass",
             "your_turn", "rank_up", "match_end",
             CATCH,
-        )
+        ) + RESULT_SET
         "ui" -> listOf("tap", "sheet_open", "sheet_close", "match_found", "invite_arrive", "error")
         else -> emptyList()
     }

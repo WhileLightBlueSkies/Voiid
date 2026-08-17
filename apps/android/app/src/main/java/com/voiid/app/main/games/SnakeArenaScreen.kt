@@ -299,40 +299,31 @@ fun SnakeArenaScreen(
             }
         }
 
+        // THE MATCH IS OVER.
+        //
+        // This used to be a bespoke GameOverPanel — "Match over", a mass, a share button,
+        // Restart and Quit — and it was the BEST end screen in the app; the other five games
+        // showed a line of text (CROSS_CUTTING.md §2). It now goes through the same
+        // MatchEndOverlay as everything else, so a Snake result and a Ludo result are the same
+        // screen with different numbers.
+        //
+        // The DeathPanel below is deliberately NOT routed here: dying is not the end of a match
+        // in Largest Snake, you respawn, and giving a respawn the full result treatment would be
+        // the loudest possible lie about what just happened.
         if (matchOver) {
-            GameOverPanel(
-                title = "Match over",
-                detail = mine?.let { "You finished with ${it.mass.toInt()}" } ?: "",
-                // A bare score gives no reason to tap again; a near-miss does. This is the
-                // single cheapest retention line on the whole screen.
-                note = when {
-                    beatBest -> "New best!"
-                    mine != null && records.best > mine.mass.toInt() ->
-                        "Your best: ${records.best}"
-                    else -> null
-                },
-                noteHighlighted = beatBest,
-                onRestart = onRestart,
-                onQuit = onClose,
-                // BRAG. The whole reason this game sits inside a messaging app: the people you
-                // want to beat are already one tap away, and a score with nobody to show it to
-                // is a score you forget. Rides the ordinary share sheet rather than a bespoke
-                // flow, so it works with any conversation the user already has.
-                onChallenge = mine?.let { m ->
-                    {
-                        val text =
-                            if (beatBest) "New best in Snake: ${m.mass.toInt()}. Beat that."
-                            else "I got ${m.mass.toInt()} in Snake. Beat that."
-                        context.startActivity(
-                            android.content.Intent.createChooser(
-                                android.content.Intent(android.content.Intent.ACTION_SEND)
-                                    .setType("text/plain")
-                                    .putExtra(android.content.Intent.EXTRA_TEXT, text),
-                                "Challenge a friend",
-                            )
-                        )
-                    }
-                },
+            val ordered = (hud?.snakes ?: emptyList()).sortedByDescending { it.mass }
+            val rank = ordered.indexOfFirst { it.id == me }.takeIf { it >= 0 }?.plus(1) ?: 1
+            MatchEndOverlay(
+                result = MatchEndResult.snake(
+                    length = mine?.mass?.toInt() ?: 0,
+                    kills = mine?.kills ?: 0,
+                    rank = rank,
+                    players = maxOf(ordered.size, 1),
+                    best = records.best,
+                    isBest = beatBest,
+                ),
+                onExit = onClose,
+                onPlayAgain = onRestart,
             )
         } else if (mine != null && !mine.alive) {
             DeathPanel(
@@ -409,95 +400,6 @@ private fun BoxScope.DeathPanel(
     }
 }
 
-/** The match itself is over. This one blocks — there is nothing left to play. */
-@Composable
-private fun BoxScope.GameOverPanel(
-    title: String,
-    detail: String,
-    note: String? = null,
-    noteHighlighted: Boolean = false,
-    onRestart: (() -> Unit)?,
-    onQuit: () -> Unit,
-    onChallenge: (() -> Unit)? = null,
-) {
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(Color(0xCC07060F))
-            // Swallow taps so the arena underneath cannot be steered while this is up.
-            .pointerInput(Unit) { detectTapGestures { } },
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(title, color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.Black)
-            if (detail.isNotEmpty()) {
-                Text(detail, color = Color.White.copy(alpha = 0.65f),
-                    fontSize = 14.sp, fontWeight = FontWeight.Medium,
-                    modifier = Modifier.padding(top = 6.dp))
-            }
-            if (note != null) {
-                Text(
-                    note,
-                    color = if (noteHighlighted) Color(0xFFFFD93D)
-                            else Color.White.copy(alpha = 0.5f),
-                    fontSize = if (noteHighlighted) 15.sp else 13.sp,
-                    fontWeight = if (noteHighlighted) FontWeight.ExtraBold
-                                 else FontWeight.SemiBold,
-                    modifier = Modifier.padding(top = 4.dp))
-            }
-
-            if (onRestart != null) {
-                Box(
-                    Modifier
-                        .padding(top = 26.dp)
-                        .background(Color(0xFF22E0F0), RoundedCornerShape(14.dp))
-                        .pointerInput(Unit) { detectTapGestures { onRestart() } }
-                        .padding(horizontal = 46.dp, vertical = 14.dp),
-                ) {
-                    Text("Restart", color = Color(0xFF07060F),
-                        fontSize = 15.sp, fontWeight = FontWeight.Black)
-                }
-            }
-
-            if (onChallenge != null) {
-                Box(
-                    Modifier
-                        .padding(top = 18.dp)
-                        .background(Color.White.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
-                        .pointerInput(Unit) { detectTapGestures { onChallenge() } }
-                        .padding(horizontal = 22.dp, vertical = 11.dp),
-                ) {
-                    Text("Challenge a friend", color = Color.White.copy(alpha = 0.85f),
-                        fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                }
-            }
-
-            if (onChallenge != null) {
-                Box(
-                    Modifier
-                        .padding(top = 18.dp)
-                        .background(Color.White.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
-                        .pointerInput(Unit) { detectTapGestures { onChallenge() } }
-                        .padding(horizontal = 22.dp, vertical = 11.dp),
-                ) {
-                    Text("Challenge a friend", color = Color.White.copy(alpha = 0.85f),
-                        fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                }
-            }
-
-            Box(
-                Modifier
-                    .padding(top = 12.dp)
-                    .background(Color.White.copy(alpha = 0.12f), RoundedCornerShape(14.dp))
-                    .pointerInput(Unit) { detectTapGestures { onQuit() } }
-                    .padding(horizontal = 50.dp, vertical = 13.dp),
-            ) {
-                Text("Quit", color = Color.White.copy(alpha = 0.9f),
-                    fontSize = 15.sp, fontWeight = FontWeight.Bold)
-            }
-        }
-    }
-}
 
 /**
  * Distinct, high-contrast body colours. The index comes from the server so a snake keeps its
@@ -1411,51 +1313,142 @@ private const val BORDER_WIDTH = 14f
 /**
  * Arena geography: rocks, spikes and slicks.
  *
- * EACH KIND HAS TO READ AS WHAT IT DOES, not merely as a different colour. Getting that wrong
- * costs a player their run for a reason they cannot see, which is the worst kind of death in
- * this game.
+ * EACH KIND HAS TO READ AS WHAT IT DOES, not merely as a different colour. This used to be three
+ * stacked circles per hazard, so a rock, a retracted spike and a slick were the same shape three
+ * times — see [SnakeHazardArt]'s header. Now:
  *
- * Ported from iOS `SnakeMetalView.buildHazards`. Keep the colours and radii identical.
+ *   ROCK    a faceted, irregular boulder with a hard contact shadow. Opaque, no glow. It kills
+ *           like the wall so it is drawn like the wall.
+ *   SPIKE   a ring of teeth that visibly RISE from a socket, plus a warning glow in the
+ *           quarter-second before they do. Its state is the gameplay.
+ *   SLICK   a wandering translucent puddle with a moving sheen. Soft everywhere, no rim — a
+ *           slick that looks like a wall costs the player position for nothing.
+ *
+ * Ported from iOS `SnakeMetalView.buildHazards`. Keep every constant identical: a rock with a
+ * different silhouette on two devices is two players seeing different cover (§7.6).
  */
 private fun DrawScope.drawHazards(state: GamesEngine.SnakeState) {
-    for (h in state.hazards) {
+    for ((index, h) in state.hazards.withIndex()) {
         val centre = Offset(h.x.toFloat(), h.y.toFloat())
         val r = h.radius.toFloat()
 
         when (h.kind) {
-            "rock" -> {
-                // SOLID AND OPAQUE. It kills like the wall, so it is drawn like the wall — hard
-                // edge, no glow, nothing that suggests you might pass through it.
-                drawCircle(Color(0xFF1A172A).copy(alpha = 0.55f), radius = r * 1.06f, center = centre)
-                drawCircle(Color(0xFF4D4D61), radius = r, center = centre)
-                // A lighter cap, lit from the top-left like every other surface in the app.
-                drawCircle(
-                    Color(0xFF707087), radius = r * 0.72f,
-                    center = centre + Offset(-r * 0.16f, -r * 0.16f))
-            }
-
-            "spike" -> {
-                // ITS STATE IS THE WHOLE POINT. Extended is bright, hard-edged and larger;
-                // retracted is a dim marker that still shows WHERE it is, so the player can plan
-                // a route through rather than being surprised by one that pops up.
-                if (h.extended(state.time)) {
-                    drawCircle(Color(0xFFFF593D).copy(alpha = 0.30f), radius = r * 1.5f, center = centre)
-                    drawCircle(Color(0xFFFF6B52), radius = r, center = centre)
-                    drawCircle(Color(0xFFFFEACC), radius = r * 0.45f, center = centre)
-                } else {
-                    drawCircle(Color(0xFF733838).copy(alpha = 0.75f), radius = r * 0.72f, center = centre)
-                    drawCircle(Color(0xFF9E4C4C).copy(alpha = 0.9f), radius = r * 0.28f, center = centre)
-                }
-            }
-
-            else -> {
-                // SLICK: soft, translucent, no rim. It must not read as a wall — a player who
-                // steers around a slick has paid for nothing.
-                drawCircle(Color(0xFF59B3F2).copy(alpha = 0.16f), radius = r, center = centre)
-                drawCircle(Color(0xFF8CD9FF).copy(alpha = 0.10f), radius = r * 0.62f, center = centre)
-            }
+            "rock" -> drawRock(index, centre, r)
+            "spike" -> drawSpike(h, centre, r, state.time)
+            else -> drawSlick(index, centre, r, state.time)
         }
     }
+}
+
+/** Base rock colour, before the per-facet shade. */
+private val RockBody = Color(0.34f, 0.34f, 0.42f)
+
+private fun DrawScope.drawRock(index: Int, centre: Offset, r: Float) {
+    val variant = ((index % SnakeHazardArt.ROCK_VARIANTS) + SnakeHazardArt.ROCK_VARIANTS) %
+        SnakeHazardArt.ROCK_VARIANTS
+    val outline = SnakeHazardArt.rockOutline(variant)
+
+    // CONTACT SHADOW FIRST, so it sits under the body. A hard ellipse offset down-right rather
+    // than the old concentric soft ring, which made every rock look like it was floating.
+    val shadowCentre = Offset(centre.x + r * 0.14f, centre.y + r * 0.20f)
+    drawPath(
+        polygonPath(shadowCentre, outline.map { Offset(it.x * 1.15f, it.y * 0.45f) }, r),
+        Color(0.05f, 0.04f, 0.10f, 0.50f),
+    )
+
+    // The body, one triangle per edge, each shaded by which facet its midpoint falls in — hard
+    // edges between the three, because faceting is what reads as stone.
+    for (i in outline.indices) {
+        val a = outline[i]
+        val b = outline[(i + 1) % outline.size]
+        val mid = Offset((a.x + b.x) / 2f, (a.y + b.y) / 2f)
+        val shade = SnakeHazardArt.facetShade(SnakeHazardArt.facet(mid))
+        val tri = Path().apply {
+            moveTo(centre.x, centre.y)
+            lineTo(centre.x + a.x * r, centre.y + a.y * r)
+            lineTo(centre.x + b.x * r, centre.y + b.y * r)
+            close()
+        }
+        drawPath(
+            tri,
+            Color(
+                (RockBody.red * shade).coerceAtMost(1f),
+                (RockBody.green * shade).coerceAtMost(1f),
+                (RockBody.blue * shade).coerceAtMost(1f),
+            ),
+        )
+    }
+}
+
+private fun DrawScope.drawSpike(
+    h: GamesEngine.SnakeState.Hazard,
+    centre: Offset,
+    r: Float,
+    time: Double,
+) {
+    val period = h.period ?: 3.0
+    val offset = h.offset ?: 0.0
+    val out = SnakeHazardArt.extended(period, offset, 0.45, time)
+    val tell = SnakeHazardArt.tell(period, offset, 0.45, time).toFloat()
+
+    // THE SOCKET IS ALWAYS DRAWN, so a player can plan a route through a spike field rather than
+    // being surprised by one that pops up. It brightens as the teeth are about to come.
+    val lift = tell * 0.45f
+    drawCircle(
+        Color(
+            (0.30f + lift).coerceAtMost(1f),
+            (0.14f + lift * 0.3f).coerceAtMost(1f),
+            (0.16f + lift * 0.2f).coerceAtMost(1f),
+            0.9f,
+        ),
+        radius = r * 0.5f,
+        center = centre,
+    )
+
+    if (out <= 0.001) return
+
+    // The teeth. Bright, hard-edged and unmistakable at full extension; at a partial one they are
+    // visibly on their way, which is the whole point of animating this at all.
+    val hot = Color(1.0f, (0.42f + out.toFloat() * 0.2f).coerceAtMost(1f), 0.32f)
+    for (i in 0 until SnakeHazardArt.SPIKE_TEETH) {
+        val (a, b, tip) = SnakeHazardArt.spikeTooth(i, out)
+        val tri = Path().apply {
+            moveTo(centre.x + a.x * r, centre.y + a.y * r)
+            lineTo(centre.x + b.x * r, centre.y + b.y * r)
+            lineTo(centre.x + tip.x * r, centre.y + tip.y * r)
+            close()
+        }
+        drawPath(tri, hot)
+    }
+}
+
+private fun DrawScope.drawSlick(index: Int, centre: Offset, r: Float, time: Double) {
+    val variant = ((index % 4) + 4) % 4
+    val outline = SnakeHazardArt.slickOutline(variant)
+    drawPath(polygonPath(centre, outline, r), Color(0.35f, 0.70f, 0.95f, 0.16f))
+
+    // A SHEEN BAND sweeping across on a 4-second cycle, so it reads as WET. Same barely-there
+    // amplitude as the Sea Battle caustics — it must prove the surface is liquid without ever
+    // drawing an edge.
+    val sweep = kotlin.math.sin(time * 1.57 + variant * 2.1).toFloat() * 0.45f
+    drawPath(
+        polygonPath(
+            Offset(centre.x + sweep * r, centre.y),
+            outline.map { Offset(it.x * 0.5f, it.y * 0.62f) },
+            r,
+        ),
+        Color(0.62f, 0.88f, 1.0f, 0.10f),
+    )
+}
+
+/** A closed outline in unit space, scaled to [r] and placed at [centre]. */
+private fun polygonPath(centre: Offset, points: List<Offset>, r: Float): Path = Path().apply {
+    points.forEachIndexed { i, p ->
+        val x = centre.x + p.x * r
+        val y = centre.y + p.y * r
+        if (i == 0) moveTo(x, y) else lineTo(x, y)
+    }
+    close()
 }
 
 private fun DrawScope.drawFood(state: GamesEngine.SnakeState) {

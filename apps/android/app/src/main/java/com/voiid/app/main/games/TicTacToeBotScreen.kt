@@ -296,37 +296,24 @@ private fun PlayBoard(
                     .scale(statusScale),
             )
 
-            AnimatedVisibility(
-                visible = settled,
-                enter = fadeIn() + scaleIn(initialScale = 0.85f,
-                    animationSpec = spring(dampingRatio = 0.5f)),
-                exit = fadeOut(),
-            ) {
-                Column {
-                    // Your running record at this difficulty — shown after a result,
-                    // which is the moment it means something.
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(top = VoiidSpacing.lg)
-                            .clip(RoundedCornerShape(VoiidRadius.lg))
-                            .background(VoiidColor.surfaceCard)
-                            .padding(VoiidSpacing.md),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
-                    ) {
-                        Stat("Won", record.wins)
-                        Stat("Drawn", record.draws)
-                        Stat("Lost", record.losses)
-                    }
-                    Row(
-                        Modifier.fillMaxWidth().padding(top = VoiidSpacing.sm),
-                        horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.sm),
-                    ) {
-                        PillButton("Play again", filled = true, modifier = Modifier.weight(1f)) { onRestart() }
-                        PillButton("Exit", filled = false, modifier = Modifier.weight(1f)) { onExit() }
-                    }
-                }
-            }
+            // The record card and the buttons moved into MatchEndOverlay (§9.3).
+        }
+
+        // GATED ON `settled`, so the win stroke finishes drawing before the verdict
+        // speaks — the same rule the online screen follows (§9.2).
+        if (settled) {
+            MatchEndOverlay(
+                result = MatchEndResult.ticTacToe(
+                    // A DRAW IS `winnerSeat == null` WITH A FULL BOARD. `settled` only becomes
+                    // true once the game has actually resolved, so a null seat here is a draw
+                    // rather than a match still in progress.
+                    won = winnerSeat?.let { it == HUMAN_SEAT },
+                    moves = board.count { it != null },
+                    record = "${record.wins}W ${record.draws}D ${record.losses}L",
+                ),
+                onExit = onExit,
+                onPlayAgain = onRestart,
+            )
         }
 
         // Pause overlay. A scrim over the board rather than a separate screen, so the game

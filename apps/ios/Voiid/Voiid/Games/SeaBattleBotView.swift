@@ -46,6 +46,19 @@ struct SeaBattleBotView: View {
         .padding(.horizontal, VoiidSpacing.md)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(VoiidColor.background.ignoresSafeArea())
+        .overlay {
+            if s.finished {
+                MatchEndOverlay(
+                    result: botResult(),
+                    onPlayAgain: {
+                        match.restart()
+                        draft = SeaBattleRules.randomFleet()
+                        reticle = nil
+                    },
+                    onExit: { onClose?() })
+                .transition(.opacity)
+            }
+        }
         .navigationTitle("Sea Battle")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(true)
@@ -91,6 +104,30 @@ struct SeaBattleBotView: View {
             guard finished else { return }
             SeaBattleSound.matchEnded(match.state, me: "you")
         }
+    }
+
+    // MARK: - The result
+
+    /// Built from the same state the online screen reads — the bot match produces a frame of
+    /// the same shape, so the two end screens cannot drift.
+    private func botResult() -> MatchEndResult {
+        guard s.winnerUserId != nil else { return .abandoned() }
+        let seat = SeaBattleBotMatch.humanSeat
+        let shots = s.shots[seat]
+        let hits = s.results[seat].filter { $0 > 0 }.count
+        let sunk = s.sunk[SeaBattleBotMatch.botSeat].count
+        let hitCells = Set(
+            s.shots[SeaBattleBotMatch.botSeat].enumerated()
+                .filter { i, _ in s.results[SeaBattleBotMatch.botSeat][safe: i].map { $0 > 0 } ?? false }
+                .map { $0.element })
+        let untouched = s.myFleet.filter { ship in ship.cells.allSatisfy { !hitCells.contains($0) } }
+        return .seaBattle(
+            won: s.winnerUserId == "you",
+            shots: shots.count,
+            hits: hits,
+            sunk: sunk,
+            hiddenShips: untouched.count,
+            endedBy: s.endedBy)
     }
 
     // MARK: - Placement
@@ -187,23 +224,8 @@ struct SeaBattleBotView: View {
 
             fleetStrip
 
-            if s.finished {
-                HStack(spacing: VoiidSpacing.md) {
-                    Button("Play again") {
-                        match.restart()
-                        draft = SeaBattleRules.randomFleet()
-                        reticle = nil
-                    }
-                    .font(VoiidFont.rounded(16, .semibold))
-                    .foregroundStyle(VoiidColor.primary)
-                    Spacer()
-                    Button("Back to games") { onClose?() }
-                        .font(VoiidFont.rounded(15, .medium))
-                        .foregroundStyle(VoiidColor.textSecondary)
-                }
-                .padding(.horizontal, VoiidSpacing.sm)
-                .padding(.top, VoiidSpacing.sm)
-            } else {
+            // The end screen is an OVERLAY over the boards (§9.2).
+            if !s.finished {
                 fireButton
             }
         }
@@ -299,5 +321,13 @@ struct SeaBattleBotView: View {
         }
         .disabled(!canFire)
         .padding(.horizontal, VoiidSpacing.sm)
+    }
+}
+
+/// Bounds-safe subscript. The frame's arrays are built by the match, but indexing them blind
+/// would still crash on a malformed one rather than degrade.
+private extension Array {
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }

@@ -206,217 +206,226 @@ fun CricketMatchScreen(
         lastFinished = finished
     }
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(VoiidColor.background)
-            .statusBarsPadding()
-            .padding(horizontal = VoiidSpacing.lg),
-    ) {
-        Row(
-            Modifier.fillMaxWidth().padding(top = VoiidSpacing.md),
-            verticalAlignment = Alignment.CenterVertically,
+    // A Box, not the bare Column: the end screen is a SIBLING that sits OVER the
+    // board (§9.2). Inside the Column it would be laid out in flow and push the
+    // board up the screen instead of covering it.
+    Box(Modifier.fillMaxSize()) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .background(VoiidColor.background)
+                .statusBarsPadding()
+                .padding(horizontal = VoiidSpacing.lg),
         ) {
-            Icon(
-                Icons.AutoMirrored.Filled.ArrowBack,
-                contentDescription = "Back",
-                tint = VoiidColor.textPrimary,
-                modifier = Modifier.clickable { engine.leave(); onClose() },
-            )
-            Text(
-                "Hand Cricket",
-                color = VoiidColor.textPrimary,
-                fontSize = 17.sp,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.weight(1f),
-                textAlign = TextAlign.Center,
-            )
-            Box(Modifier.size(24.dp))
-        }
-
-        when {
-            s != null && s.phase != "play" -> {
-                // THE TOSS OWNS THE SCREEN UNTIL IT RESOLVES. Not a sheet over the scoreboard:
-                // there is no score yet, and showing 0-0 behind a coin invites a tap on a pick
-                // pad the server would only reject.
-                val mySeat = s.players.indexOf(me).coerceAtLeast(0)
-                CricketToss(
-                    phase = s.phase,
-                    iCall = s.toss.callerSeat == mySeat,
-                    iElect = s.toss.wonSeat == mySeat,
-                    coin = s.toss.coin,
-                    called = s.toss.called,
-                    opponentName = opponentName(s, me),
-                    onCall = { engine.callToss(context, it) },
-                    onElect = { engine.electToss(context, it) },
+            Row(
+                Modifier.fillMaxWidth().padding(top = VoiidSpacing.md),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back",
+                    tint = VoiidColor.textPrimary,
+                    modifier = Modifier.clickable { engine.leave(); onClose() },
                 )
+                Text(
+                    "Hand Cricket",
+                    color = VoiidColor.textPrimary,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                    textAlign = TextAlign.Center,
+                )
+                Box(Modifier.size(24.dp))
             }
 
-            s != null -> {
-                // My seat decides which half of every by-seat array is mine. A wrong seat
-                // would silently swap the whole scoreboard.
-                val mySeat = s.players.indexOf(me).coerceAtLeast(0)
-                val theirSeat = if (mySeat == 0) 1 else 0
-                val iAmBatting = s.battingSeat == mySeat
-                val iPicked = s.hasPicked.getOrElse(mySeat) { false }
-                val theyPicked = s.hasPicked.getOrElse(theirSeat) { false }
-                val last = s.history.lastOrNull()
-                val ballOpen = iPicked || theyPicked
-
-                val battingScore = s.scores.getOrElse(s.battingSeat) { 0 }
-                val battingWickets = s.wickets.getOrElse(s.battingSeat) { 0 }
-
-                val event = last?.let {
-                    BallEvent.of(
-                        runs = it.runs,
-                        wicket = it.wicket,
-                        // Both picks are equal on a wicket, so either index gives the matched
-                        // number the animation choice depends on.
-                        matchedPick = it.picks.firstOrNull() ?: 0,
+            when {
+                s != null && s.phase != "play" -> {
+                    // THE TOSS OWNS THE SCREEN UNTIL IT RESOLVES. Not a sheet over the scoreboard:
+                    // there is no score yet, and showing 0-0 behind a coin invites a tap on a pick
+                    // pad the server would only reject.
+                    val mySeat = s.players.indexOf(me).coerceAtLeast(0)
+                    CricketToss(
+                        phase = s.phase,
+                        iCall = s.toss.callerSeat == mySeat,
+                        iElect = s.toss.wonSeat == mySeat,
+                        coin = s.toss.coin,
+                        called = s.toss.called,
+                        opponentName = opponentName(s, me),
+                        onCall = { engine.callToss(context, it) },
+                        onElect = { engine.electToss(context, it) },
                     )
                 }
 
-                Spacer(Modifier.weight(1f))
+                s != null -> {
+                    // My seat decides which half of every by-seat array is mine. A wrong seat
+                    // would silently swap the whole scoreboard.
+                    val mySeat = s.players.indexOf(me).coerceAtLeast(0)
+                    val theirSeat = if (mySeat == 0) 1 else 0
+                    val iAmBatting = s.battingSeat == mySeat
+                    val iPicked = s.hasPicked.getOrElse(mySeat) { false }
+                    val theyPicked = s.hasPicked.getOrElse(theirSeat) { false }
+                    val last = s.history.lastOrNull()
+                    val ballOpen = iPicked || theyPicked
 
-                Text(
-                    if (iAmBatting) "You're batting" else "You're bowling",
-                    color = VoiidColor.textSecondary,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.fillMaxWidth(),
-                    textAlign = TextAlign.Center,
-                )
-                Text(
-                    "$battingScore-$battingWickets",
-                    color = VoiidColor.textPrimary,
-                    fontSize = 40.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.fillMaxWidth(),
-                    textAlign = TextAlign.Center,
-                )
-                Text(
-                    buildString {
-                        append("${s.ballsBowled / 6}.${s.ballsBowled % 6}")
-                        append(" / ${s.ballsTotal / 6}.0 ov")
-                        s.target?.let { append("  ·  needs $it") }
-                    },
-                    color = VoiidColor.textSecondary,
-                    fontSize = 13.sp,
-                    modifier = Modifier.fillMaxWidth(),
-                    textAlign = TextAlign.Center,
-                )
+                    val battingScore = s.scores.getOrElse(s.battingSeat) { 0 }
+                    val battingWickets = s.wickets.getOrElse(s.battingSeat) { 0 }
 
-                CricketOverStrip(
-                    history = s.history,
-                    innings = s.innings,
-                    ballsBowled = s.ballsBowled,
-                    modifier = Modifier.padding(top = VoiidSpacing.sm),
-                )
+                    val event = last?.let {
+                        BallEvent.of(
+                            runs = it.runs,
+                            wicket = it.wicket,
+                            // Both picks are equal on a wicket, so either index gives the matched
+                            // number the animation choice depends on.
+                            matchedPick = it.picks.firstOrNull() ?: 0,
+                        )
+                    }
 
-                CricketPitch(
-                    event = event,
-                    ballToken = ballToken,
-                    modifier = Modifier.padding(vertical = VoiidSpacing.md),
-                    announcement = announcements.firstOrNull(),
-                )
+                    Spacer(Modifier.weight(1f))
 
-                // Picks. Mine is known to me the moment I tap; theirs is genuinely unavailable
-                // until the ball resolves.
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                ) {
-                    MatchPickFace(
-                        "You",
-                        pick = if (ballOpen && iPicked) null else last?.picks?.getOrNull(mySeat),
-                        covered = iPicked && ballOpen,
+                    Text(
+                        if (iAmBatting) "You're batting" else "You're bowling",
+                        color = VoiidColor.textSecondary,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.fillMaxWidth(),
+                        textAlign = TextAlign.Center,
                     )
-                    MatchPickFace(
-                        "Them",
-                        pick = if (ballOpen && theyPicked) null else last?.picks?.getOrNull(theirSeat),
-                        covered = theyPicked && ballOpen,
+                    Text(
+                        "$battingScore-$battingWickets",
+                        color = VoiidColor.textPrimary,
+                        fontSize = 40.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.fillMaxWidth(),
+                        textAlign = TextAlign.Center,
                     )
-                }
-
-                val status = when {
-                    s.finished && s.winnerUserId == null -> "Tied  ${s.scores.getOrElse(mySeat) { 0 }}–${s.scores.getOrElse(theirSeat) { 0 }}"
-                    s.finished && s.winnerUserId == me -> "You win!  ${s.scores.getOrElse(mySeat) { 0 }}–${s.scores.getOrElse(theirSeat) { 0 }}"
-                    s.finished -> "You lose.  ${s.scores.getOrElse(mySeat) { 0 }}–${s.scores.getOrElse(theirSeat) { 0 }}"
-                    iPicked && !theyPicked -> "Waiting for them…"
-                    !iPicked && theyPicked -> "They've picked — your turn"
-                    iPicked -> "Revealing…"
-                    else -> if (iAmBatting) "Pick your runs" else "Pick to bowl"
-                }
-                Text(
-                    status,
-                    color = if (s.finished) VoiidColor.primary else VoiidColor.textSecondary,
-                    fontSize = if (s.finished) 20.sp else 14.sp,
-                    fontWeight = if (s.finished) FontWeight.Bold else FontWeight.SemiBold,
-                    modifier = Modifier.fillMaxWidth().padding(top = VoiidSpacing.md),
-                    textAlign = TextAlign.Center,
-                )
-
-                // The match is over: offer another rather than leaving the player on a dead
-                // scoreboard whose only exit is the back arrow.
-                if (s.finished && onRematch != null) {
-                    RematchBar(
-                        matchId = matchId,
-                        onRematch = { newId -> engine.leave(); onRematch(newId) },
-                        onExit = { engine.leave(); onClose() },
+                    Text(
+                        buildString {
+                            append("${s.ballsBowled / 6}.${s.ballsBowled % 6}")
+                            append(" / ${s.ballsTotal / 6}.0 ov")
+                            s.target?.let { append("  ·  needs $it") }
+                        },
+                        color = VoiidColor.textSecondary,
+                        fontSize = 13.sp,
+                        modifier = Modifier.fillMaxWidth(),
+                        textAlign = TextAlign.Center,
                     )
-                }
 
-                Spacer(Modifier.weight(1f))
+                    CricketOverStrip(
+                        history = s.history,
+                        innings = s.innings,
+                        ballsBowled = s.ballsBowled,
+                        modifier = Modifier.padding(top = VoiidSpacing.sm),
+                    )
 
-                if (!s.finished) {
-                    // 0-6 in two rows: seven buttons in one row are too narrow to hit.
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(VoiidSpacing.sm),
-                        modifier = Modifier.padding(bottom = VoiidSpacing.xl),
+                    CricketPitch(
+                        event = event,
+                        ballToken = ballToken,
+                        modifier = Modifier.padding(vertical = VoiidSpacing.md),
+                        announcement = announcements.firstOrNull(),
+                    )
+
+                    // Picks. Mine is known to me the moment I tap; theirs is genuinely unavailable
+                    // until the ball resolves.
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
                     ) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.sm)) {
-                            (0..3).forEach { n ->
-                                MatchPickButton(n, enabled = !iPicked, Modifier.weight(1f)) {
-                                    GameAudio.play("pick", gain = 0.45f)
-                                    engine.pickCricket(context, n)
+                        MatchPickFace(
+                            "You",
+                            pick = if (ballOpen && iPicked) null else last?.picks?.getOrNull(mySeat),
+                            covered = iPicked && ballOpen,
+                        )
+                        MatchPickFace(
+                            "Them",
+                            pick = if (ballOpen && theyPicked) null else last?.picks?.getOrNull(theirSeat),
+                            covered = theyPicked && ballOpen,
+                        )
+                    }
+
+                    val status = when {
+                        s.finished && s.winnerUserId == null -> "Tied  ${s.scores.getOrElse(mySeat) { 0 }}–${s.scores.getOrElse(theirSeat) { 0 }}"
+                        s.finished && s.winnerUserId == me -> "You win!  ${s.scores.getOrElse(mySeat) { 0 }}–${s.scores.getOrElse(theirSeat) { 0 }}"
+                        s.finished -> "You lose.  ${s.scores.getOrElse(mySeat) { 0 }}–${s.scores.getOrElse(theirSeat) { 0 }}"
+                        iPicked && !theyPicked -> "Waiting for them…"
+                        !iPicked && theyPicked -> "They've picked — your turn"
+                        iPicked -> "Revealing…"
+                        else -> if (iAmBatting) "Pick your runs" else "Pick to bowl"
+                    }
+                    Text(
+                        status,
+                        color = if (s.finished) VoiidColor.primary else VoiidColor.textSecondary,
+                        fontSize = if (s.finished) 20.sp else 14.sp,
+                        fontWeight = if (s.finished) FontWeight.Bold else FontWeight.SemiBold,
+                        modifier = Modifier.fillMaxWidth().padding(top = VoiidSpacing.md),
+                        textAlign = TextAlign.Center,
+                    )
+
+                    // The end screen is an OVERLAY over the scoreboard (§9.2).
+
+                    Spacer(Modifier.weight(1f))
+
+                    if (!s.finished) {
+                        // 0-6 in two rows: seven buttons in one row are too narrow to hit.
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(VoiidSpacing.sm),
+                            modifier = Modifier.padding(bottom = VoiidSpacing.xl),
+                        ) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.sm)) {
+                                (0..3).forEach { n ->
+                                    MatchPickButton(n, enabled = !iPicked, Modifier.weight(1f)) {
+                                        GameAudio.play("pick", gain = 0.45f)
+                                        engine.pickCricket(context, n)
+                                    }
                                 }
                             }
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.sm)) {
-                            (4..6).forEach { n ->
-                                MatchPickButton(n, enabled = !iPicked, Modifier.weight(1f)) {
-                                    GameAudio.play("pick", gain = 0.45f)
-                                    engine.pickCricket(context, n)
+                            Row(horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.sm)) {
+                                (4..6).forEach { n ->
+                                    MatchPickButton(n, enabled = !iPicked, Modifier.weight(1f)) {
+                                        GameAudio.play("pick", gain = 0.45f)
+                                        engine.pickCricket(context, n)
+                                    }
                                 }
+                                Spacer(Modifier.weight(1f))
                             }
-                            Spacer(Modifier.weight(1f))
                         }
                     }
                 }
-            }
 
-            joinError != null -> Text(
-                joinError ?: "",
-                color = VoiidColor.error,
-                fontSize = 15.sp,
-                modifier = Modifier.fillMaxWidth().padding(top = VoiidSpacing.xl),
-                textAlign = TextAlign.Center,
-            )
-
-            else -> Column(
-                Modifier.fillMaxWidth().padding(top = VoiidSpacing.xl),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                CircularProgressIndicator(color = VoiidColor.primary)
-                Text(
-                    "Setting up the match…",
-                    color = VoiidColor.textSecondary,
-                    fontSize = 14.sp,
-                    modifier = Modifier.padding(top = VoiidSpacing.sm),
+                joinError != null -> Text(
+                    joinError ?: "",
+                    color = VoiidColor.error,
+                    fontSize = 15.sp,
+                    modifier = Modifier.fillMaxWidth().padding(top = VoiidSpacing.xl),
+                    textAlign = TextAlign.Center,
                 )
+
+                else -> Column(
+                    Modifier.fillMaxWidth().padding(top = VoiidSpacing.xl),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    CircularProgressIndicator(color = VoiidColor.primary)
+                    Text(
+                        "Setting up the match…",
+                        color = VoiidColor.textSecondary,
+                        fontSize = 14.sp,
+                        modifier = Modifier.padding(top = VoiidSpacing.sm),
+                    )
+                }
             }
         }
+
+        // THE SCOREBOARD STAYS VISIBLE BEHIND THE VERDICT (§9.2).
+        val done = state
+        if (done != null && done.finished) {
+            MatchEndOverlay(
+                result = cricketResult(done, mySeat),
+                onExit = { engine.leave(); onClose() },
+                matchId = matchId,
+                onRematch = onRematch?.let { cb -> { newId: String -> engine.leave(); cb(newId) } },
+            )
+        }
     }
+
 }
 
 @Composable

@@ -436,6 +436,72 @@ def error_sound(t: float, p: float) -> float:
     return square(t, 180) * beat * decay((p * 2) % 1, 10) * 0.35
 
 
+# --- the result set: win / defeat / tie, shared by every game -------------------------
+#
+# WHY THESE EXIST. There was no defeat sound in the catalogue at all. Ludo and Sea Battle
+# both played `winner == me ? rank_up : match_end`, and `match_end` is the RESOLVING MAJOR
+# TRIAD above — so losing sounded like a pleasant resolution. Tie had no sound outside Tic
+# Tac Toe's `draw`. A result vocabulary that only exists for winning teaches nothing.
+#
+# THE THREE DIFFER IN DIRECTION, not in colour, exactly as the screens they play under do
+# (docs/games/VISUALS_AUDIO_AND_PARITY.md §9.5): a win RISES, a defeat FALLS, a tie goes
+# nowhere. That is what makes the outcome identifiable with the screen turned away.
+#
+# `match_end` keeps its real job — the neutral "this match is over" chord for an abandoned
+# match, where nobody won and nothing should be celebrated. `rank_up` goes back to meaning
+# a rank change, which is what it was written for.
+
+def result_win(t: float, p: float) -> float:
+    """Major arpeggio RISING — root/third/fifth/octave, each entering 90 ms after the
+    last and sustaining into the octave. Same staggered entrance as `match_end` so it
+    reads as arriving rather than switching on, but it climbs instead of landing."""
+    notes = [262.0, 330.0, 392.0, 523.0]
+    out = 0.0
+    for i, f in enumerate(notes):
+        start = i * 0.09 / 1.40          # 90 ms apart across a 1.40 s sound
+        if p < start:
+            continue
+        # Attack in, then hold. The last note is the one left ringing.
+        local = min((p - start) / 0.12, 1.0)
+        sustain = 1.0 if i == len(notes) - 1 else max(0.0, 1.0 - (p - start) * 0.9)
+        out += sine(t, f) * local * sustain
+    return out * 0.32
+
+
+def result_lose(t: float, p: float) -> float:
+    """Minor triad FALLING — 330/262/196, entering 110 ms apart, each 8 cents flat of
+    the last so the whole thing sags, and decaying rather than sustaining so it dies.
+    Deliberately quieter and shorter than result_win: a defeat that is as loud as a win
+    makes winning feel like nothing (§9.5)."""
+    notes = [330.0, 262.0, 196.0]
+    out = 0.0
+    for i, f in enumerate(notes):
+        start = i * 0.11 / 1.15
+        if p < start:
+            continue
+        detuned = f * (2.0 ** (-0.08 * i / 12.0))   # 8 cents flatter per step
+        local = (p - start) / (1.0 - start)
+        out += sine(t, detuned) * decay(local, 6)
+    # Low-passed by construction: no harmonics added, unlike result_win's octave.
+    return out * 0.30
+
+
+def result_tie(t: float, p: float) -> float:
+    """SUSPENDED AND UNRESOLVED — root and fourth only (262 + 349), no third, entering
+    together and holding flat before fading. Having nothing to resolve to is the sound of
+    nothing being decided; a diminished "you lost" chord for a draw misreads the result."""
+    a = ar(min(p * 2.2, 1.0), a=0.14)
+    fade = 1.0 if p < 0.6 else max(0.0, 1.0 - (p - 0.6) / 0.4)
+    return (sine(t, 262.0) + sine(t, 349.0)) * a * fade * 0.34
+
+
+RESULT_SOUNDS: list[Sound] = [
+    Sound("result_win", "result", 1.40, result_win, gain=0.85),
+    Sound("result_lose", "result", 1.15, result_lose, gain=0.70),
+    Sound("result_tie", "result", 1.00, result_tie, gain=0.72),
+]
+
+
 UI_SOUNDS: list[Sound] = [
     Sound("tap", "ui", 0.05, tap, gain=0.4),
     Sound("sheet_open", "ui", 0.18, sheet_open, gain=0.4),
@@ -445,7 +511,9 @@ UI_SOUNDS: list[Sound] = [
     Sound("error", "ui", 0.25, error_sound, gain=0.35),
 ]
 
-ALL_SOUNDS: list[Sound] = SNAKE_SOUNDS + TTT_SOUNDS + RPS_SOUNDS + CRICKET_SOUNDS + UI_SOUNDS
+ALL_SOUNDS: list[Sound] = (
+    SNAKE_SOUNDS + TTT_SOUNDS + RPS_SOUNDS + CRICKET_SOUNDS + RESULT_SOUNDS + UI_SOUNDS
+)
 
 
 # --- driver ---------------------------------------------------------------------------
@@ -458,7 +526,8 @@ def android_res_name(name: str) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--game", choices=["snake", "tictactoe", "rps", "cricket", "ui"],
+    ap.add_argument("--game",
+                 choices=["snake", "tictactoe", "rps", "cricket", "result", "ui"],
                      help="render only this game's set")
     ap.add_argument("--list", action="store_true", help="print what would render and exit")
     ap.add_argument("--seed", type=int, default=7, help="RNG seed, for reproducible noise-based sounds")

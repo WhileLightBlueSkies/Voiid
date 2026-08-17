@@ -67,6 +67,19 @@ struct SeaBattleView: View {
         .padding(.horizontal, VoiidSpacing.md)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(VoiidColor.background.ignoresSafeArea())
+        // THE END SCREEN SITS OVER THE BOARD, and the board stays visible behind it (§9.2). A
+        // player has to be able to see the final fleet while reading the verdict — that is the
+        // difference between a result and a receipt.
+        .overlay {
+            if let s = engine.seaBattle, s.finished {
+                MatchEndOverlay(
+                    result: seaBattleResult(s),
+                    matchId: matchId,
+                    onRematch: { newId in engine.leave(); onRematch?(newId) },
+                    onExit: { engine.leave(); onClose?() })
+                .transition(.opacity)
+            }
+        }
         .navigationTitle("Sea Battle")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(true)
@@ -296,12 +309,9 @@ struct SeaBattleView: View {
 
             fleetStrip(s)
 
-            if s.finished {
-                RematchBar(
-                    matchId: matchId,
-                    onRematch: { newId in engine.leave(); onRematch?(newId) },
-                    onExit: { engine.leave(); onClose?() })
-            } else {
+            // The end screen is an OVERLAY over the board, not a bar under it — see the
+            // `overlay` modifier on the body. Nothing takes the fire button's place here.
+            if !s.finished {
                 fireButton(s)
             }
         }
@@ -348,6 +358,39 @@ struct SeaBattleView: View {
 
     private func ownCells(_ s: SeaBattleState) -> [SeaBattleCell] {
         SeaBattleCells.own(s, mySeat: mySeat, draft: draft)
+    }
+
+    // MARK: - The result
+
+    /// Everything here is already in the frame — no new wire field, no new endpoint (§9.8).
+    private func seaBattleResult(_ s: SeaBattleState) -> MatchEndResult {
+        // An abandoned match has no winner, and nothing should be celebrated (§9.7).
+        guard let winner = s.winnerUserId else { return .abandoned() }
+        let seat = mySeat ?? 0
+        let shots = s.shots.indices.contains(seat) ? s.shots[seat] : []
+        let results = s.results.indices.contains(seat) ? s.results[seat] : []
+        let hits = results.filter { $0 > 0 }.count
+        let sunk = s.sunk.indices.contains(1 - seat) ? s.sunk[1 - seat].count : 0
+
+        // How many of MY ships were never found. The line that turns a number into a story.
+        let myHitCells = Set(
+            (s.shots.indices.contains(1 - seat) ? s.shots[1 - seat] : [])
+                .enumerated()
+                .filter { i, _ in
+                    (s.results.indices.contains(1 - seat)
+                        && s.results[1 - seat].indices.contains(i)
+                        && s.results[1 - seat][i] > 0)
+                }
+                .map { $0.element })
+        let untouched = s.myFleet.filter { ship in ship.cells.allSatisfy { !myHitCells.contains($0) } }
+
+        return .seaBattle(
+            won: winner == me,
+            shots: shots.count,
+            hits: hits,
+            sunk: sunk,
+            hiddenShips: untouched.count,
+            endedBy: s.endedBy)
     }
 
     // MARK: - HUD

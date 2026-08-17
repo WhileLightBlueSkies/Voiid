@@ -58,6 +58,16 @@ struct RpsBotView: View {
 
             if paused { pauseOverlay }
         }
+        // THE HANDS STAY VISIBLE BEHIND THE VERDICT (§9.2).
+        .overlay {
+            if matchOver {
+                MatchEndOverlay(
+                    result: botResult(),
+                    onPlayAgain: { restart() },
+                    onExit: { onClose?() })
+                .transition(.opacity)
+            }
+        }
         .animation(.easeInOut(duration: 0.18), value: paused)
         .onAppear {
             session.hideTabBar = true
@@ -129,22 +139,48 @@ struct RpsBotView: View {
         }
     }
 
+    /// One hand, drawn from the rig rather than as a glyph (§3).
+    ///
+    /// THE POSE IS THE ANIMATION. During the pumps the fingers hold `neutral` and the FOREARM
+    /// swings; on the third downstroke the curls interpolate to the thrown pose over 130 ms,
+    /// so the fingers are visibly seen to form the shape. An emoji could only ever cut.
     private func hand(_ throwIdx: Int?, mirrored: Bool) -> some View {
-        let tilt: Double = revealing ? (shakeUp ? 18 : -18) : 0
+        // The forearm swings; the wrist follows it a beat later. That lag is the single detail
+        // that makes the pump look human (§3.5).
+        let forearm: Double = revealing ? (shakeUp ? HandRig.pumpUp : HandRig.pumpDown) : 0
+        let wrist: Double = forearm * 0.72
+
+        // Fingers stay neutral through the wind-up and tighten slightly on each pump — the hand
+        // gathering itself — then snap to the throw when `revealing` ends.
+        let pose: HandRig.Pose = revealing
+            ? HandRig.Pose.lerp(HandRig.neutral, HandRig.rock, shakeUp ? 0.10 : 0.02)
+            : HandRig.pose(for: throwIdx)
+
+        let popping = !revealing && throwIdx == 0
+
         return ZStack {
             // A lit panel rather than a flat card: the radial fall-off reads as a spotlit arena,
-            // which is what makes two emoji feel like a face-off instead of a list.
+            // which is what makes two hands feel like a face-off instead of a list.
             RoundedRectangle(cornerRadius: VoiidRadius.lg)
                 .fill(RadialGradient(
                     colors: [VoiidColor.primary.opacity(0.20), VoiidColor.surfaceCard],
                     center: .center, startRadius: 4, endRadius: 130))
                 .aspectRatio(1, contentMode: .fit)
-            Text(RpsBot.emoji(revealing ? nil : throwIdx))
-                .font(.system(size: 56))
-                .rotationEffect(.degrees(mirrored ? -tilt : tilt))
-                .scaleEffect(throwIdx != nil && !revealing ? 1 : 0.82)
-                .animation(.spring(response: 0.18, dampingFraction: 0.35), value: shakeUp)
-                .animation(.spring(response: 0.35, dampingFraction: 0.42), value: throwIdx)
+
+            HandView(
+                pose: pose,
+                forearm: forearm,
+                wrist: wrist,
+                mirrored: mirrored,
+                knucklePop: popping ? HandRig.rockKnucklePop : 1)
+                .aspectRatio(1, contentMode: .fit)
+                .padding(VoiidSpacing.sm)
+                // Two springs, deliberately different: the pump is fast and loose so it reads
+                // as a shake, the reveal is a tighter settle so the shape lands.
+                .animation(.spring(response: 0.16, dampingFraction: 0.42), value: shakeUp)
+                .animation(.spring(response: HandRig.revealDuration * 1.4,
+                                   dampingFraction: 0.55), value: throwIdx)
+                .animation(.easeOut(duration: 0.12), value: revealing)
         }
     }
 
@@ -173,27 +209,9 @@ struct RpsBotView: View {
 
     @ViewBuilder
     private var controls: some View {
-        if matchOver {
-            let record = BotScoreStore.record(level)
-            VStack(spacing: VoiidSpacing.sm) {
-                // Running record, shown at the moment it means something.
-                HStack {
-                    stat("Won", record.wins)
-                    Spacer()
-                    stat("Drawn", record.draws)
-                    Spacer()
-                    stat("Lost", record.losses)
-                }
-                .padding(VoiidSpacing.md)
-                .background(RoundedRectangle(cornerRadius: VoiidRadius.lg).fill(VoiidColor.surfaceCard))
-
-                HStack(spacing: VoiidSpacing.sm) {
-                    pill("Play again", filled: true) { restart() }
-                    pill("Exit", filled: false) { onClose?() }
-                }
-            }
-            .transition(.scale(scale: 0.85).combined(with: .opacity))
-        } else {
+        // The record card and the buttons moved into MatchEndOverlay (§9.3) — one end screen
+        // for all six games rather than a bespoke panel per game.
+        if !matchOver {
             HStack(spacing: VoiidSpacing.sm) {
                 ForEach(0..<3, id: \.self) { i in
                     Button {
@@ -278,6 +296,25 @@ struct RpsBotView: View {
             .background(Capsule().fill(filled ? VoiidColor.primary : VoiidColor.fieldFill))
         }
         .buttonStyle(.plain)
+    }
+
+    // MARK: - The result
+
+    /// Built from local match state — a practice match never reaches the backend, so the
+    /// record comes from BotScoreStore exactly as the old inline panel read it.
+    private func botResult() -> MatchEndResult {
+        let record = BotScoreStore.record(level)
+        let counts = history.reduce(into: [Int: Int]()) { acc, throwIdx in
+            acc[throwIdx, default: 0] += 1
+        }
+        let mostThrown = counts.max(by: { $0.value < $1.value }).map { idx, n in
+            "\(RpsBot.emoji(idx)) x\(n)"
+        }
+        return .rps(
+            mine: myWins,
+            theirs: botWins,
+            mostThrown: mostThrown,
+            record: "\(record.wins)W \(record.draws)D \(record.losses)L")
     }
 
     // MARK: - Logic

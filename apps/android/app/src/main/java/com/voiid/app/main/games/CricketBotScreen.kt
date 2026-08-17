@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -528,29 +529,9 @@ fun CricketBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
                 Spacer(Modifier.weight(1f))
 
                 if (finished) {
-                    Text(
-                        when (humanWon) {
-                            true -> "You win!  $humanScore–$botScore"
-                            false -> "You lose.  $humanScore–$botScore"
-                            else -> "Tied.  $humanScore–$botScore"
-                        },
-                        color = VoiidColor.primary,
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.fillMaxWidth().padding(bottom = VoiidSpacing.md),
-                        textAlign = TextAlign.Center,
-                    )
-                    Row(
-                        Modifier.fillMaxWidth().padding(bottom = VoiidSpacing.xl),
-                        horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.sm),
-                    ) {
-                        CricketPill("Play again", filled = true, modifier = Modifier.weight(1f)) {
-                            restart()
-                        }
-                        CricketPill("Exit", filled = false, modifier = Modifier.weight(1f)) {
-                            onClose()
-                        }
-                    }
+                    // The verdict, the scores and the buttons all live in MatchEndOverlay now
+                    // (§9.3), drawn OVER the pitch rather than under it.
+                    Spacer(Modifier.height(1.dp))
                 } else {
                     Text(
                         if (humanBatting) "Pick your runs" else "Pick to bowl",
@@ -583,6 +564,23 @@ fun CricketBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
                     }
                 }
             }
+        }
+
+        // THE PITCH AND SCOREBOARD STAY VISIBLE BEHIND THE VERDICT (§9.2).
+        if (finished) {
+            val margin: String? = if (humanScore > botScore) {
+                "by ${humanScore - botScore} run${if (humanScore - botScore == 1) "" else "s"}"
+            } else null
+            MatchEndOverlay(
+                result = MatchEndResult.cricket(
+                    myScore = humanScore,
+                    theirScore = botScore,
+                    margin = margin,
+                    wickets = botWickets,
+                ),
+                onExit = onClose,
+                onPlayAgain = { restart() },
+            )
         }
 
         AnimatedVisibility(visible = paused, enter = fadeIn(tween(150)), exit = fadeOut(tween(150))) {
