@@ -1,10 +1,20 @@
 <svg width="88" height="80" viewBox="0 0 88 80" fill="none" xmlns="http://www.w3.org/2000/svg">
-<!-- Voiid mark, rebuilt as pure vector.
-     The supplied file was 7.3 MB: one of its three bars was an embedded base64 raster
-     (pattern0), which cannot tint, scales badly, and would have bloated both app bundles.
-     All three bars are the same rounded stroke, so the pattern was replaceable with the
-     brand fill it was already imitating. Geometry is unchanged. -->
-<rect x="58.5586" y="68.9043" width="21.6824" height="79.5639" rx="10.8412" transform="rotate(150 58.5586 68.9043)" fill="#C6FF00"/>
+<!-- Voiid mark.
+     Rebuilt from the supplied SVG, whose back bar was a 1600x1600 embedded PNG (5.3 MB of a
+     7.3 MB file). That bar is SHADED, not flat: sampled along its axis it runs #457512 at the
+     ends to #AAD91E mid-bar, which is what gives the mark its depth and reads as one stroke
+     passing BEHIND the other. Flattening it to #C6FF00 lost that, so it is a linearGradient
+     here — same shading, 1 KB instead of 7.3 MB, and it scales and tints properly. -->
+<defs>
+  <linearGradient id="backBar" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0.00" stop-color="#457512"/>
+    <stop offset="0.26" stop-color="#82A334"/>
+    <stop offset="0.51" stop-color="#AAD91E"/>
+    <stop offset="0.77" stop-color="#A6E00A"/>
+    <stop offset="1.00" stop-color="#70AC05"/>
+  </linearGradient>
+</defs>
+<rect x="58.5586" y="68.9043" width="21.6824" height="79.5639" rx="10.8412" transform="rotate(150 58.5586 68.9043)" fill="url(#backBar)"/>
 <rect x="44.6035" y="42.1816" width="20.2613" height="30.6242" rx="10.1307" transform="rotate(30 44.6035 42.1816)" fill="#C6FF00"/>
 <rect x="68.9043" y="0" width="21.6824" height="79.625" rx="10.8412" transform="rotate(30 68.9043 0)" fill="#C6FF00"/>
 </svg>
