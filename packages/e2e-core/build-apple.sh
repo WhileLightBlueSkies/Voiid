@@ -44,9 +44,32 @@ xcodebuild -create-xcframework \
   -library "$BUILD/sim/lib${CRATE}.a" -headers "$BUILD/headers" \
   -output "$BUILD/Voiid.xcframework"
 
+# INSTALL INTO THE APP, rather than telling a human to drag it.
+#
+# Xcode links apps/ios/Voiid/Frameworks/Voiid.xcframework — a COPY of what this script builds,
+# and the copy is gitignored because it is a build artifact. Leaving the copy as a manual step
+# is how the two drift, and they did: the bindings were regenerated from newer Rust source while
+# the linked library stayed three weeks old, so every checksum symbol the new bindings referenced
+# was missing and the iOS build failed with ~40 "cannot find ... in scope" errors that look like
+# a Swift problem and are not.
+#
+# The bindings and the library are generated together and must be installed together.
+APP_FRAMEWORKS=../../apps/ios/Voiid/Frameworks
+APP_SWIFT=../../apps/ios/Voiid/Voiid/voiid.swift
+if [ -d "$APP_FRAMEWORKS" ]; then
+  echo "==> Installing into the iOS app…"
+  rm -rf "$APP_FRAMEWORKS/Voiid.xcframework"
+  cp -R "$BUILD/Voiid.xcframework" "$APP_FRAMEWORKS/Voiid.xcframework"
+  cp "$OUT/voiid.swift" "$APP_SWIFT"
+  echo "    Framework -> $APP_FRAMEWORKS/Voiid.xcframework"
+  echo "    Bindings  -> $APP_SWIFT"
+else
+  echo "==> Skipping app install: $APP_FRAMEWORKS not found"
+fi
+
 echo "==> Done."
 echo "    XCFramework: $BUILD/Voiid.xcframework"
 echo "    Swift glue : $OUT/voiid.swift"
 echo
-echo "Next: drag Voiid.xcframework into the Xcode project (apps/ios/Voiid) and add"
-echo "      $OUT/voiid.swift to the target. See bindings/swift/README.md."
+echo "The app copy is already updated above — no dragging needed. If you are adding"
+echo "the framework to a NEW target, see bindings/swift/README.md."
