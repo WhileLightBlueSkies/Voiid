@@ -41,6 +41,52 @@ pub struct PqPrekey {
 }
 
 impl PqPrekey {
+    /// Persist this prekey as its 64-byte ML-KEM **seed**, base64.
+    ///
+    /// WHY THIS EXISTS: a PQ prekey that cannot survive an app restart is unusable. The
+    /// sender encapsulates to the published public half and the ciphertext may arrive
+    /// minutes or days later; if the private half died with the process, the recipient
+    /// can never decapsulate it. That is not a degraded session — it is a shared secret
+    /// only one side can compute.
+    ///
+    /// THE SEED, NOT THE EXPANDED KEY. `ml-kem` exports the 64-byte seed a key was
+    /// generated from, and `from_seed` on it is always valid — no validation step, no
+    /// invalid-key state to handle. The expanded form is 2.4 KB, varies by security
+    /// level, and must be validated on load. The crate's own docs call the expanded
+    /// encoding deprecated and problematic; this uses the form it recommends.
+    ///
+    /// NOT ENCRYPTED HERE. Like [`IdentityKeys::to_pickle`](crate::IdentityKeys::to_pickle)'s
+    /// contract, the caller stores this in the platform secure enclave (iOS Keychain /
+    /// Android Keystore). The difference is deliberate: the Olm pickles carry their own
+    /// AES layer because they are large structured state, whereas this is 64 bytes whose
+    /// only safe home is the enclave anyway — wrapping it here would imply a plain-disk
+    /// store is acceptable, and it is not.
+    pub fn to_seed_b64(&self) -> String {
+        use ml_kem::kem::KeyExport;
+        vodozemac::base64_encode(self.decapsulation_key.to_bytes())
+    }
+
+    /// Restore a prekey previously saved with [`to_seed_b64`](Self::to_seed_b64).
+    ///
+    /// Regenerates BOTH halves from the seed, so the restored public key is byte-identical
+    /// to the one already published. Storing the public half separately would invite the
+    /// two to drift, and a bundle advertising a public key whose private half does not
+    /// match is unrecoverable for every sender who fetched it.
+    pub fn from_seed_b64(seed_b64: &str) -> Result<Self, E2eError> {
+        use ml_kem::kem::KeyInit;
+        let bytes = vodozemac::base64_decode(seed_b64).map_err(|_| E2eError::InvalidKey)?;
+        let seed: ml_kem::Seed = bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| E2eError::InvalidKey)?;
+        let dk = Dk::new(&seed);
+        let ek = dk.encapsulation_key().clone();
+        Ok(Self {
+            decapsulation_key: dk,
+            encapsulation_key: ek,
+        })
+    }
+
     /// Generate a fresh ML-KEM-768 prekey pair (system CSPRNG via getrandom).
     pub fn generate() -> Self {
         let (dk, ek) = MlKem768::generate_keypair();
