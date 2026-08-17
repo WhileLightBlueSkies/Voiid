@@ -14,7 +14,12 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import com.voiid.app.net.GamesEngine
@@ -227,6 +232,16 @@ private val SunkRed = Color(0.42f, 0.13f, 0.10f)
 fun SeaBattleGrid(
     cells: List<SeaBattleCell>,
     modifier: Modifier = Modifier,
+    /**
+     * Ships to draw as HULLS rather than as cell fills (§6.3).
+     *
+     * Passed in rather than derived from [cells], because a cell state cannot tell you which
+     * ship it belongs to or which way that ship points — that is the whole reason ships have to
+     * be drawn per ship.
+     */
+    ships: List<SeaBattleShip> = emptyList(),
+    /** Ship type ids that have been sunk, so a wreck can be drawn as a wreck. */
+    sunkTypes: Set<Int> = emptySet(),
     reticle: Int? = null,
     firing: Int? = null,
     /**
@@ -382,6 +397,12 @@ fun SeaBattleGrid(
                 }
             }
 
+            // SHIPS, AS SHIPS. After the cells so a hull sits on the water, before the markers
+            // so a scorch lands ON the hull rather than under it.
+            for (ship in ships) {
+                drawShip(ship, cellSize, ship.type in sunkTypes)
+            }
+
             reticle?.let {
                 drawRoundRect(
                     color = HitRed,
@@ -392,33 +413,73 @@ fun SeaBattleGrid(
                 )
             }
 
-            // THE SHELL (§9). The reticle contracts to a point over 380 ms, accelerating —
-            // because accelerating reads as falling. That window is also where the server's
-            // answer arrives, which is what lets a fully round-tripped game feel instant.
+            // THE BOMB (§6.4). A real projectile lobbed from a cannon at the near edge,
+            // replacing the contracting reticle that used to stand in for one.
+            //
+            // THE 380 ms FLIGHT IS THE SAME BUDGET AS BEFORE — it is the window the server's
+            // answer arrives in, and stretching it would add latency for decoration.
+            //
+            // THREE DETAILS SELL THE ARC, none optional: the bomb SCALES along the flight
+            // (perspective in a top-down view), a SHADOW tracks the straight muzzle->target line
+            // at ground level while the bomb arcs above it, and it TUMBLES 2.5 turns.
             firing?.let {
                 val t = shellProgress.coerceIn(0f, 1f)
-                // easeIn: t^2. Slow away, fast into the water.
-                val eased = t * t
-                val shrink = cellSize * 0.5f * (1f - eased)
-                val inset = 0.6f
-                drawRoundRect(
-                    color = HitRed,
-                    topLeft = Offset(
-                        SeaBattle.cx(it) * cellSize + inset + shrink,
-                        SeaBattle.cy(it) * cellSize + inset + shrink),
-                    size = Size(
-                        (cellSize - inset * 2 - shrink * 2).coerceAtLeast(0f),
-                        (cellSize - inset * 2 - shrink * 2).coerceAtLeast(0f)),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(2f),
-                    style = Stroke(width = 2f * (1f - eased) + 0.5f),
+                val board = cellSize * SeaBattle.SIZE
+                val targetC = Offset(
+                    SeaBattle.cx(it) * cellSize + cellSize / 2,
+                    SeaBattle.cy(it) * cellSize + cellSize / 2)
+                // The muzzle sits at the near edge, centred — the cannon in the reference art.
+                val muzzle = Offset(board / 2f, board + cellSize * 0.35f)
+
+                val ground = Offset(
+                    muzzle.x + (targetC.x - muzzle.x) * t,
+                    muzzle.y + (targetC.y - muzzle.y) * t)
+
+                val distanceCells = kotlin.math.hypot(
+                    targetC.x - muzzle.x, targetC.y - muzzle.y) / cellSize
+                val arc = (distanceCells * 0.28f).coerceIn(0.9f, 3.2f) * cellSize
+                val lift = arc * 4f * t * (1f - t)   // parabola, zero at both ends
+
+                val bomb = Offset(ground.x, ground.y - lift)
+                val bodyScale = 1f + 0.55f * kotlin.math.sin(t * Math.PI).toFloat() - 0.15f * t
+                val radius = cellSize * 0.20f * bodyScale
+
+                // Shadow first, on the water, shrinking as the bomb climbs away from it.
+                val shadowR = cellSize * 0.15f *
+                    (1f - 0.35f * kotlin.math.sin(t * Math.PI).toFloat())
+                drawOval(
+                    color = Ink.copy(alpha = 0.28f),
+                    topLeft = Offset(ground.x - shadowR, ground.y - shadowR * 0.5f),
+                    size = Size(shadowR * 2f, shadowR),
                 )
-                val dot = cellSize * 0.06f + cellSize * 0.10f * eased
-                drawCircle(
-                    color = Ink.copy(alpha = 0.35f + 0.5f * eased),
-                    radius = dot,
-                    center = Offset(
-                        SeaBattle.cx(it) * cellSize + cellSize / 2,
-                        SeaBattle.cy(it) * cellSize + cellSize / 2),
+
+                // The bomb: a dark round body with a lit shoulder and a fuse spark, tumbling.
+                rotate(degrees = t * 2.5f * 360f, pivot = bomb) {
+                    drawCircle(
+                        brush = androidx.compose.ui.graphics.Brush.radialGradient(
+                            listOf(Color(0.42f, 0.44f, 0.48f), Color(0.12f, 0.13f, 0.16f)),
+                            center = Offset(bomb.x - radius * 0.3f, bomb.y - radius * 0.3f),
+                            radius = radius * 1.6f,
+                        ),
+                        radius = radius,
+                        center = bomb,
+                    )
+                    drawCircle(
+                        color = Color(1.0f, 0.74f, 0.28f, 0.9f),
+                        radius = radius * 0.25f,
+                        center = Offset(bomb.x + radius * 0.6f, bomb.y - radius * 0.7f),
+                    )
+                }
+
+                // The reticle stays on the target the whole way, so the player never loses track
+                // of where the bomb is going to land.
+                drawRoundRect(
+                    color = HitRed.copy(alpha = 0.5f),
+                    topLeft = Offset(
+                        SeaBattle.cx(it) * cellSize - 1f, SeaBattle.cy(it) * cellSize - 1f),
+                    size = Size(cellSize + 2f, cellSize + 2f),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(2f),
+                    style = Stroke(width = 1.5f),
                 )
             }
 
@@ -436,6 +497,61 @@ fun SeaBattleGrid(
                     style = Stroke(width = 2f),
                 )
             }
+        }
+    }
+}
+
+/**
+ * One ship, drawn across its whole bounding box.
+ *
+ * A VERTICAL SHIP IS THE HORIZONTAL PATH ROTATED, not a second set of paths: two hand-drawn
+ * orientations is two things to keep in sync, and a hull is symmetric about its keel.
+ */
+private fun DrawScope.drawShip(ship: SeaBattleShip, cellSize: Float, sunk: Boolean) {
+    val (rect, horizontal) = SeaBattleShipArt.frame(ship.cells, cellSize) ?: return
+
+    // Unit space runs along the ship's LENGTH, so a vertical ship is drawn into a rotated box
+    // of the same proportions.
+    val length = if (horizontal) rect.width else rect.height
+    val beam = if (horizontal) rect.height else rect.width
+    val centre = Offset(rect.center.x, rect.center.y)
+
+    // A sunk hull rolls and settles rather than simply turning dark — a state change reads as a
+    // state change, a list reads as a ship going down.
+    val roll = if (sunk) 8f else 0f
+
+    withTransform({
+        rotate(degrees = (if (horizontal) 0f else 90f) + roll, pivot = centre)
+        translate(centre.x, centre.y)
+        scale(length, beam, Offset.Zero)
+        translate(-0.5f, -0.5f)
+    }) {
+        val hull = SeaBattleShipArt.hull(ship.type)
+        drawPath(
+            hull,
+            androidx.compose.ui.graphics.Brush.verticalGradient(
+                if (sunk) {
+                    listOf(SeaBattleShipArt.HullSunk, SeaBattleShipArt.HullSunk.copy(alpha = 0.8f))
+                } else {
+                    listOf(SeaBattleShipArt.HullLit, SeaBattleShipArt.HullBody)
+                },
+                startY = 0f, endY = 1f,
+            ),
+            alpha = if (sunk) 0.85f else 1f,
+        )
+        // The outline is what makes it read at a 33 dp cell. Scaled inversely so it stays one
+        // hairline wide however long the ship is.
+        drawPath(
+            hull, SeaBattleShipArt.HullInk,
+            style = Stroke(width = 1.6f / length.coerceAtLeast(1f)),
+            alpha = if (sunk) 0.85f else 1f,
+        )
+        for (detail in SeaBattleShipArt.details(ship.type)) {
+            drawPath(
+                detail,
+                if (sunk) SeaBattleShipArt.HullSunk else SeaBattleShipArt.HullDeck,
+                alpha = if (sunk) 0.85f else 1f,
+            )
         }
     }
 }
@@ -537,3 +653,42 @@ fun draftCells(draft: List<SeaBattleShip>): List<SeaBattleCell> {
     }
     return cells
 }
+
+/**
+ * MY ships, as hulls. During placement this is the local draft; afterwards it is the server's
+ * own `myFleet`, which is the only fleet the frame ever carries for me.
+ */
+fun myShips(s: GamesEngine.SeaBattleState, draft: List<SeaBattleShip>): List<SeaBattleShip> =
+    if (s.myFleet.isEmpty()) draft
+    else s.myFleet.map { SeaBattleShip(it.type, it.cells, it.hits) }
+
+/**
+ * THEIR ships, and ONLY the ones I am allowed to see.
+ *
+ * A sunk ship's cells are public at the moment of sinking, and the terminal frame reveals both
+ * fleets — those are the only two paths. Drawing prettier ships must never become a way to draw a
+ * ship the server deliberately withheld (§6.1).
+ */
+fun enemyShips(s: GamesEngine.SeaBattleState, mySeat: Int?): List<SeaBattleShip> {
+    val seat = mySeat ?: return emptyList()
+    val enemy = 1 - seat
+    if (s.finished) {
+        s.revealedFleets?.getOrNull(enemy)?.let { fleet ->
+            return fleet.map { SeaBattleShip(it.type, it.cells, it.hits) }
+        }
+    }
+    // Not finished: only wrecks, reconstructed from the public sunk-cell list.
+    val cells = s.sunkCells.getOrElse(enemy) { emptyList() }
+    val out = mutableListOf<SeaBattleShip>()
+    var cursor = 0
+    for (type in s.sunk.getOrElse(enemy) { emptyList() }) {
+        val length = SeaBattle.FLEET_SPEC.getOrElse(type) { 2 }
+        if (cursor + length > cells.size) break
+        out.add(SeaBattleShip(type, cells.subList(cursor, cursor + length).toList()))
+        cursor += length
+    }
+    return out
+}
+
+fun sunkTypesFor(s: GamesEngine.SeaBattleState, seat: Int): Set<Int> =
+    s.sunk.getOrElse(seat) { emptyList() }.toSet()

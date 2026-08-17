@@ -272,6 +272,7 @@ private fun Placement(
 
         SeaBattleGrid(
             cells = draftCells(draft),
+            ships = draft,
             onTap = onTapCell,
             onDrag = onDragCell,
         )
@@ -343,6 +344,8 @@ private fun Battle(
             SeaBattleGrid(
                 cells = enemyCells(s, SeaBattleBotMatch.HUMAN_SEAT),
                 modifier = mod,
+                ships = enemyShips(s, SeaBattleBotMatch.HUMAN_SEAT),
+                sunkTypes = sunkTypesFor(s, SeaBattleBotMatch.BOT_SEAT),
                 reticle = reticle,
                 firing = reticle.takeIf { motion.shellProgress > 0f },
                 shellProgress = motion.shellProgress,
@@ -359,6 +362,8 @@ private fun Battle(
             SeaBattleGrid(
                 cells = ownCells(s, SeaBattleBotMatch.HUMAN_SEAT, draft),
                 modifier = mod.clickable { onToggleBoards() },
+                ships = myShips(s, draft),
+                sunkTypes = sunkTypesFor(s, SeaBattleBotMatch.HUMAN_SEAT),
                 dimmed = match.canFire,
             )
         }

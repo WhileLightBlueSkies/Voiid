@@ -188,7 +188,8 @@ struct SeaBattleView: View {
                         .foregroundStyle(VoiidColor.textSecondary)
                 }
                 .padding(.top, VoiidSpacing.lg)
-                SeaBattleGrid(cells: ownCells(s), dimmed: true)
+                SeaBattleGrid(cells: ownCells(s), ships: myShips(s),
+                              sunkTypes: sunkTypes(s, seat: mySeat ?? 0), dimmed: true)
                     .padding(.horizontal, VoiidSpacing.sm)
             } else {
                 Text("Your ships are placed. Drag to move them, or tap Ready.")
@@ -198,6 +199,7 @@ struct SeaBattleView: View {
 
                 SeaBattleGrid(
                     cells: draftCells(),
+                    ships: draft,
                     onTap: { cell in
                         // Tap while dragging rotates. A separate rotate button is a two-handed
                         // operation and a long-press conflicts with the drag itself (§7.4).
@@ -334,6 +336,8 @@ struct SeaBattleView: View {
     private func enemyBoard(_ s: SeaBattleState) -> some View {
         SeaBattleGrid(
             cells: enemyCells(s),
+            ships: enemyShips(s),
+            sunkTypes: sunkTypes(s, seat: mySeat.map { 1 - $0 } ?? 1),
             reticle: reticle,
             firing: firingCell,
             shellProgress: motion.shellProgress,
@@ -349,7 +353,9 @@ struct SeaBattleView: View {
     }
 
     private func ownBoard(_ s: SeaBattleState) -> some View {
-        SeaBattleGrid(cells: ownCells(s), dimmed: isMyTurn, showLabels: false)
+        SeaBattleGrid(cells: ownCells(s), ships: myShips(s),
+                      sunkTypes: sunkTypes(s, seat: mySeat ?? 0),
+                      dimmed: isMyTurn, showLabels: false)
     }
 
     private func enemyCells(_ s: SeaBattleState) -> [SeaBattleCell] {
@@ -358,6 +364,49 @@ struct SeaBattleView: View {
 
     private func ownCells(_ s: SeaBattleState) -> [SeaBattleCell] {
         SeaBattleCells.own(s, mySeat: mySeat, draft: draft)
+    }
+
+    // MARK: - Fleets to draw
+
+    /// MY ships, as hulls. During placement this is the local draft; afterwards it is the
+    /// server's own `myFleet`, which is the only fleet the frame ever carries for me.
+    private func myShips(_ s: SeaBattleState) -> [SeaBattleShip] {
+        let fleet = s.myFleet.isEmpty
+            ? draft
+            : s.myFleet.map { SeaBattleShip(type: $0.type, cells: $0.cells, hits: $0.hits) }
+        return fleet
+    }
+
+    /// THEIR ships, and ONLY the ones I am allowed to see.
+    ///
+    /// A sunk ship's cells are public at the moment of sinking, and the terminal frame reveals
+    /// both fleets — those are the only two paths. Drawing prettier ships must never become a
+    /// way to draw a ship the server deliberately withheld (§6.1).
+    private func enemyShips(_ s: SeaBattleState) -> [SeaBattleShip] {
+        guard let seat = mySeat else { return [] }
+        let enemy = 1 - seat
+        if s.finished, let revealed = s.revealedFleets, revealed.indices.contains(enemy) {
+            return revealed[enemy].map {
+                SeaBattleShip(type: $0.type, cells: $0.cells, hits: $0.hits)
+            }
+        }
+        // Not finished: only wrecks, reconstructed from the public sunk-cell list.
+        guard s.sunkCells.indices.contains(enemy), s.sunk.indices.contains(enemy) else { return [] }
+        let cells = s.sunkCells[enemy]
+        var out: [SeaBattleShip] = []
+        var cursor = 0
+        for type in s.sunk[enemy] {
+            let length = SeaBattle.fleetSpec.indices.contains(type)
+                ? SeaBattle.fleetSpec[type] : 2
+            guard cursor + length <= cells.count else { break }
+            out.append(SeaBattleShip(type: type, cells: Array(cells[cursor..<(cursor + length)])))
+            cursor += length
+        }
+        return out
+    }
+
+    private func sunkTypes(_ s: SeaBattleState, seat: Int) -> Set<Int> {
+        s.sunk.indices.contains(seat) ? Set(s.sunk[seat]) : []
     }
 
     // MARK: - The result

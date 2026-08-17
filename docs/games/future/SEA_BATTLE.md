@@ -393,10 +393,28 @@ Sea Battle has two boards and a phone has one screen. Every implementation of th
 
 ## 8.2 Art direction
 
+> **Superseded 2026-08-17.** This section used to specify a chart — paper, ink, a plotted grid — and justified it partly on the grounds that "nothing moves", making the stillness an aesthetic rather than a limitation. [`VISUALS_AUDIO_AND_PARITY.md`](../VISUALS_AUDIO_AND_PARITY.md) §6 replaced that with an illustrated naval direction and, in §6.4, made things move. The constraint the chart was solving is gone, so the chart went with it. The original text is kept below the line for the reasoning, which is still worth reading.
+
+**Illustrated, not charted.** Saturated sea, drawn boat hulls, a cannon that lobs a bomb. Two clearly different ground colours divide the two boards so "whose board is this" is never a question.
+
+- **Water:** keeps the caustic shimmer — ~0.04 amplitude, per-cell phase from a positional hash so the surface moves as a field rather than pulsing in unison.
+- **Grid:** unchanged. Column letters and row numbers in a mono face, always visible on both boards — a player calling out "D7" in the chat needs to be able to read D7 off the screen.
+- **Ships:** drawn **per ship, not per cell** — one hull path across the ship's whole bounding box, five silhouettes for the five lengths, rotated for a vertical ship. The two 3-cell ships (Cruiser, Submarine) are deliberately different shapes. See `SeaBattleShipArt`.
+- **Miss:** a small hollow ring with two spreading echoes. Recedes.
+- **Hit:** a scorch with a hot centre and thrown debris, drawn **over** the hull so the silhouette stays readable. Advances.
+- **Sunk:** the hull rolls 8°, desaturates and darkens, and its outline is drawn in cell by cell.
+- **Firing:** a bomb arcs from a cannon at the near edge, scaling along the flight, tumbling, with a shadow tracking the straight ground line beneath it.
+
+**Two rules survive the change unconditionally.** Hit and miss must differ in SHAPE before they differ in colour, so the board still works in greyscale; and the visibility rules in `SeaBattleCells` are untouched — prettier ships must never become a way to draw a ship the server deliberately withheld.
+
+---
+
+*Original (pre-2026-08-17):*
+
 Not naval-realistic, and not the retro-neon of Snake. **A chart.** Paper, ink, and a plotted grid — the fiction is that you are working a problem on a naval chart, which is what the player is actually doing, and it justifies the game's one honest weakness (nothing moves) as a deliberate aesthetic rather than a limitation.
 
 - **Water:** a very slow gradient wash with a barely-perceptible caustic shimmer, ~0.04 amplitude, 8-second period. Just enough to prove the screen is alive during the long pauses of an async match.
-- **Grid:** thin ink rules, heavier every 5 cells. Column letters and row numbers in a mono face, always visible on both boards — a player calling out "D7" in the chat needs to be able to read D7 off the screen.
+- **Grid:** thin ink rules, heavier every 5 cells. Column letters and row numbers in a mono face, always visible on both boards.
 - **Miss:** a small hollow ink ring. Recedes.
 - **Hit:** a filled mark with a short radial scorch. Advances.
 - **Sunk:** the ship's outline drawn in as a solid silhouette across its cells, with its name set beside it.
