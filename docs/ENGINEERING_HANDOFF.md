@@ -215,12 +215,25 @@ export ANDROID_NDK_HOME="$HOME/Library/Android/sdk/ndk/28.0.13004108"
 ./build-android.sh
 ```
 
-Sanity check that the rebuild took (both must be non-zero):
+**The two platforms are gitignored differently, and it matters:**
+
+| | iOS | Android |
+|---|---|---|
+| Generated bindings | **tracked** (`apps/ios/.../voiid.swift`) | **gitignored** (`uniffi/voiid/voiid.kt`) |
+| Native binary | gitignored (`Voiid.xcframework`) | gitignored (`jniLibs/*/*.so`) |
+
+So on iOS a pull brings bindings that may be NEWER than your local framework —
+which fails at link time with `cannot find 'uniffi_...' in scope`. On Android a
+pull brings neither, so a stale local pair keeps compiling happily and simply
+lacks the new methods. Rebuild both after any change to `packages/e2e-core`.
+
+Sanity check that the rebuild took (all must be non-zero):
 
 ```bash
 nm -gU apps/ios/Voiid/Frameworks/Voiid.xcframework/ios-arm64/libvoiid_e2e_core.a \
   | grep -c rotate_fallback_key
 grep -c rotateFallbackKey apps/ios/Voiid/Voiid/voiid.swift
+grep -c rotateFallbackKey apps/android/app/src/main/java/uniffi/voiid/voiid.kt
 ```
 
 **What changed**
@@ -241,8 +254,10 @@ grep -c rotateFallbackKey apps/ios/Voiid/Voiid/voiid.swift
   the two most recent, so a key whose private half has been forgotten is never
   served. The fetch path already preferred one-time keys — it just had nothing to
   fall back to.
-- **iOS — weekly rotation**, wired to bootstrap *and* foreground. Bootstrap alone
-  would let a never-force-quit app go months without rotating.
+- **Weekly rotation on both platforms**, wired into bootstrap (iOS also on
+  foreground, since a never-force-quit app would otherwise go months without
+  rotating). Two phases one interval apart: rotate, then retire the previous key's
+  private half. Rotation without that second phase closes no window at all.
 - **Blocking (043).** Schema, `/blocks` routes, enforcement across messages, calls,
   profile, presence, conversation creation, group invites, stories and typing —
   plus the iOS and Android UI. Stored directionally, **enforced symmetrically**.
@@ -257,7 +272,7 @@ grep -c rotateFallbackKey apps/ios/Voiid/Voiid/voiid.swift
 
 | Item | State | Next step |
 |---|---|---|
-| Android weekly rotation | not written | Mirror `E2EManager.rotateFallbackKeyIfDue()` from iOS; the Kotlin bindings expose the same four methods after a rebuild |
+| Android weekly rotation | **done** | Shipped alongside iOS; both call the same four binding methods |
 | Backend prefer-one-time-key | **already correct** | No work — verify it, do not rewrite it |
 | `cargo-audit` CI gate | committed on `ci/e2e-core-audit-gate`, **cannot push** | Needs a PAT with `workflow` scope; see below |
 | Sesame session lifecycle | not started | No stale-session eviction or device-removal handling in `multidevice.rs`; bites at 3+ devices per user |
