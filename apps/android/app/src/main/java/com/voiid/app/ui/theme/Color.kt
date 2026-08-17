@@ -144,68 +144,91 @@ object VoiidColor {
  * Prefer [VoiidColor] anywhere you are inside a composable.
  */
 object VoiidPalette {
-    // Spine — NOCTURNE (testing). Dark-first: deep aubergine + a single warm amber.
-    val PrimaryLight = Color(0xFF2E2440)     // aubergine
-    val PrimaryDark = Color(0xFFB59BE0)      // lifted so it reads as TEXT on near-black
-    val BackgroundLight = Color(0xFFF1EEF5)
-    val BackgroundDark = Color(0xFF0D0B14)   // the DESIGNED state; light is the variant
+    // Spine — ELECTRIC LIME on Voiid Black. Dark-first: light is the variant.
+    //
+    // THE ONE RULE: the lime is a FILL colour, not a text colour. #C6FF00 measures 16.59:1 on
+    // the near-black ground and 1.19:1 on white — not weak, invisible. So dark mode uses it
+    // freely (text, icons, lines) while LIGHT resolves the spine to near-black ink and keeps
+    // the lime only for filled elements with dark labels on them. Mirrors iOS Theme.swift,
+    // which is the reference when the two disagree.
+    val PrimaryLight = Color(0xFF0B0B0B)     // ink — NOT lime; see the rule above
+    val PrimaryDark = Color(0xFFC6FF00)      // Electric Lime
+    val BackgroundLight = Color(0xFFFFFFFF)
+    val BackgroundDark = Color(0xFF0B0B0B)   // Voiid Black — the DESIGNED state
     val SurfaceLight = Color(0xFFFFFFFF)
-    val SurfaceDark = Color(0xFF1C1826)
+    val SurfaceDark = Color(0xFF1A1A1A)      // Surface — a step ABOVE the ground
 
-    // Bubbles. Dark is #7862A6, NOT the palette study's #4A3B66: that measured 1.96:1 against
-    // the ground and 1.75:1 against THEIR bubble, so consecutive messages had no visible
-    // boundary at all.
-    val BubbleSentLight = Color(0xFF2E2440)
-    val BubbleSentDark = Color(0xFF7862A6)
-    // A touch brighter than the study's #F2ECFA: that measured 4.43:1 on the dark bubble —
-    // just under AA — because lifting the bubble to #7862A6 also lifted what the text must
-    // beat. 4.75:1 now, 13.49:1 on light.
-    val TextOnBubble = Color(0xFFF8F5FC)
+    // Bubbles. Lime in BOTH themes: a filled element is exactly where the lime works, and it
+    // is what makes your own thread trackable down the screen.
+    val BubbleSentLight = Color(0xFFC6FF00)
+    val BubbleSentDark = Color(0xFFC6FF00)
+    // Fixed in both themes: the fill is lime in both, and a light fill needs dark text.
+    // 16.59:1.
+    val TextOnBubble = Color(0xFF0B0B0B)
 
-    /** Label on the amber accent. Fixed in both themes — see [VoiidColor.textOnAccent]. */
-    val TextOnAccent = Color(0xFF14101F)
-    val BubbleRecvLight = Color(0xFFFFFFFF)
-    val BubbleRecvDark = Color(0xFF1C1826)
+    /** Label on the lime accent. Fixed in both themes — see [VoiidColor.textOnAccent]. */
+    val TextOnAccent = Color(0xFF0B0B0B)
+    // Surface-light in dark so THEIR bubble separates from both the ground and the card.
+    val BubbleRecvLight = Color(0xFFF7F7F7)
+    val BubbleRecvDark = Color(0xFF2A2A2A)
 
     // Text
-    val TextPrimaryLight = Color(0xFF241D33)
-    val TextPrimaryDark = Color(0xFFE6E1EF)
-    val TextSecondaryLight = Color(0xFF5F5570)
-    val TextSecondaryDark = Color(0xFFA79CBD)
-    val TextOnPrimaryLight = Color(0xFFEFEAF7)
-    val TextOnPrimaryDark = Color(0xFF14101F)
-    val PlaceholderLight = Color(0xFF8A82A0)
-    val PlaceholderDark = Color(0xFF7A7190)
+    val TextPrimaryLight = Color(0xFF0B0B0B)
+    val TextPrimaryDark = Color(0xFFF5F5F5)
+    // Light is darker than the palette's #A3A3A3, which measured 2.32:1 on white —
+    // unreadable as secondary text. 5.33:1 / 7.80:1.
+    val TextSecondaryLight = Color(0xFF6B6B6B)
+    val TextSecondaryDark = Color(0xFFA3A3A3)
+    // On a filled primary surface. Dark primary is lime so its label is near-black; light
+    // primary is ink so its label is near-white. Both directions correct.
+    val TextOnPrimaryLight = Color(0xFFF5F5F5)
+    val TextOnPrimaryDark = Color(0xFF0B0B0B)
+    val PlaceholderLight = Color(0xFF8A8A8A)
+    val PlaceholderDark = Color(0xFF6B6B6B)
 
     // Lines
-    val DividerLight = Color(0xFFE3DEEC)
-    val DividerDark = Color(0xFF241F2F)
-    val FieldBorderLight = Color(0xFFD6CFE4)
-    val FieldBorderDark = Color(0xFF342D42)
-    val FieldFillLight = Color(0xFFEAE5F2)
-    val FieldFillDark = Color(0xFF171320)
+    val DividerLight = Color(0xFFE8E8E8)
+    val DividerDark = Color(0xFF2A2A2A)
+    val FieldBorderLight = Color(0xFFD4D4D4)
+    val FieldBorderDark = Color(0xFF3A3A3A)
+    val FieldFillLight = Color(0xFFF7F7F7)
+    val FieldFillDark = Color(0xFF121212)
 
-    // Accent — AMBER, theme-split. The bright value measured only 1.88:1 on the light ground
-    // (an unread badge that effectively vanished) and failed white text at 2.16:1, so light
-    // uses a deeper amber. Dark keeps the bright one, already 9.06:1 there.
-    val SparkLight = Color(0xFFB57210)
-    val SparkDark = Color(0xFFE8A33D)
+    // Accent — the lime as a FILL. NOT theme-split, unlike the old amber: a filled lime chip
+    // works on both grounds because what matters is its LABEL's contrast against the fill
+    // (16.59:1), not the fill against the ground.
+    //
+    // CAVEAT on light: lime vs white is 1.19:1, so a lime fill has no visible edge on white.
+    // Anything relying on its boundary needs FieldBorder or an ink outline.
+    val SparkLight = Color(0xFFC6FF00)
+    val SparkDark = Color(0xFFC6FF00)
 
-    // Domain hues
-    val StoriesLight = Color(0xFF7B4B8A)
-    val StoriesDark = Color(0xFFC98BD8)
-    val MapLight = Color(0xFF2A5B8F)
-    val MapDark = Color(0xFF7FB0E0)
-    val CallsLight = Color(0xFF2E7D5B)
-    val CallsDark = Color(0xFF5FBE8D)
-    val PaymentsLight = Color(0xFFA9690C)
-    val PaymentsDark = Color(0xFFE8A33D)
+    // Lime at reading weight, for the rare case where the brand must be TEXT on a LIGHT
+    // ground. The same hue pushed to 4.62:1 on white — olive rather than electric, which is
+    // the honest cost. Prefer a filled accent chip.
+    val AccentInkLight = Color(0xFF5A7A00)
+    val AccentInkDark = Color(0xFFC6FF00)
 
-    // Status
-    val SuccessLight = Color(0xFF1F7A52)
-    val SuccessDark = Color(0xFF63C78D)
-    val ErrorLight = Color(0xFFC0392F)
-    val ErrorDark = Color(0xFFEF7A6B)
-    val WarningLight = Color(0xFFB07818)
-    val WarningDark = Color(0xFFE0A83C)
+    // Domain hues — the palette's feedback colours, theme-split. The brights measured
+    // 1.5-4.0:1 on white (Warning worst at 1.53:1), so light takes darkened variants of the
+    // SAME hue at 4.9-7.0:1.
+    val StoriesLight = Color(0xFF7E22CE)
+    val StoriesDark = Color(0xFFA855F7)
+    val MapLight = Color(0xFF1D4ED8)
+    val MapDark = Color(0xFF3B82F6)
+    val CallsLight = Color(0xFF15803D)
+    val CallsDark = Color(0xFF22C55E)
+    val PaymentsLight = Color(0xFFA16207)
+    val PaymentsDark = Color(0xFFFACC15)
+
+    // Status. Same rule as the domains: light values are darkened variants, because the
+    // palette's brights are designed for near-black.
+    val SuccessLight = Color(0xFF15803D)
+    val SuccessDark = Color(0xFF22C55E)
+    val ErrorLight = Color(0xFFDC2626)
+    val ErrorDark = Color(0xFFEF4444)
+    val WarningLight = Color(0xFFA16207)
+    val WarningDark = Color(0xFFFACC15)
+    val InfoLight = Color(0xFF1D4ED8)
+    val InfoDark = Color(0xFF3B82F6)
 }

@@ -1,11 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!--
-      NOCTURNE brand tokens, DARK. Mirrors ui/theme/Color.kt (VoiidPalette *Dark values).
-      Without this file the launch window paints the LIGHT ground for a frame before Compose
-      takes over — a white flash on every cold start in dark mode.
+      ELECTRIC LIME brand tokens, DARK — the DESIGNED state. Mirrors ui/theme/Color.kt
+      (VoiidPalette *Dark values). Without this file the launch window paints the LIGHT ground
+      for a frame before Compose takes over — a white flash on every cold start in dark mode,
+      which against Voiid Black is the most jarring version of that bug.
     -->
-    <color name="voiid_primary">#B59BE0</color>       <!-- aubergine, lifted for dark -->
-    <color name="voiid_background">#0D0B14</color>    <!-- near-black aubergine -->
-    <color name="voiid_field_fill">#171320</color>
+    <color name="voiid_primary">#C6FF00</color>       <!-- Electric Lime -->
+    <color name="voiid_accent">#C6FF00</color>
+    <color name="voiid_background">#0B0B0B</color>    <!-- Voiid Black -->
+    <color name="voiid_field_fill">#1A1A1A</color>
 </resources>

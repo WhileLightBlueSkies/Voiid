@@ -386,14 +386,28 @@ fun TermsScreen(onContinue: () -> Unit) {
     }
 }
 
-// MARK: - Shared logo mark (Urbanist wordmark + soft halo, one baked image)
+// MARK: - Shared logo mark — PLACEHOLDER until the real art lands
 
+/**
+ * The brand mark.
+ *
+ * PLACEHOLDER: the old baked image was removed for the rebrand. Drawn as type rather than left
+ * as an empty `painterResource`, which would throw at runtime on the FIRST screen a new user
+ * sees. Twin of iOS `BrandWordmark` in DesignSystem/BrandMark.swift.
+ *
+ * WHEN THE REAL LOGO ARRIVES: drop it at `res/drawable-nodpi/voiid_logomark.png` (or as a
+ * vector at `res/drawable/voiid_logomark.xml`) and restore the `Image(painterResource(...))`
+ * body. Every call site goes through this one composable, so nothing else changes.
+ *
+ * The new art must work on BOTH grounds — white and Voiid Black. The old one was near-white
+ * and would vanish on the new light theme.
+ */
 @Composable
 fun LogoMark(size: Dp, modifier: Modifier = Modifier) {
-    Image(
-        painter = painterResource(R.drawable.voiid_logomark),
-        contentDescription = "voiid",
-        modifier = modifier.width(size),
-        contentScale = ContentScale.FillWidth,
+    Text(
+        "voiid",
+        style = VoiidFont.logo((size.value * 0.30f).toInt()),
+        color = VoiidColor.primary,
+        modifier = modifier,
     )
 }

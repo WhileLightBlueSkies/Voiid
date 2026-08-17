@@ -1,13 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!--
-      NOCTURNE brand tokens, LIGHT. Mirrors ui/theme/Color.kt (VoiidPalette) — keep the two in
-      step; these exist because the launch window is drawn by the platform before Compose is
+      ELECTRIC LIME brand tokens, LIGHT. Mirrors ui/theme/Color.kt (VoiidPalette) — keep the two
+      in step; these exist because the launch window is drawn by the platform before Compose is
       alive, so it cannot read the Kotlin tokens.
+
+      NOTE voiid_primary is INK here, not lime, exactly as PrimaryLight is. #C6FF00 measures
+      1.19:1 on white — invisible — so the lime is never the light-mode spine. See Color.kt.
     -->
-    <color name="voiid_primary">#2E2440</color>       <!-- aubergine -->
-    <color name="voiid_background">#F1EEF5</color>    <!-- light variant ground -->
-    <color name="voiid_field_fill">#EAE5F2</color>
+    <color name="voiid_primary">#0B0B0B</color>       <!-- ink; lime is a FILL only on light -->
+    <color name="voiid_accent">#C6FF00</color>        <!-- Electric Lime, for filled elements -->
+    <color name="voiid_background">#FFFFFF</color>    <!-- light variant ground -->
+    <color name="voiid_field_fill">#F7F7F7</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
 </resources>

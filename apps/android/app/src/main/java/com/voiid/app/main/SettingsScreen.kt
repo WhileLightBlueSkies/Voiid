@@ -699,7 +699,7 @@ fun ProfileAvatar(
      * The disc drawn behind the initials when there is no photo.
      *
      * DEFAULTS TO `fieldFill`, which is right on a plain ground — but wrong ON A CARD. In
-     * dark mode `fieldFill` (#171320) is 28% darker than `surfaceCard` (#1C1826), so an
+     * dark mode `fieldFill` (#1A1A1A) is a step darker than `surfaceCard` (#121212)… so an
      * avatar placed on a card punched a visibly darker circle into it, with the hairline
      * border on top making it a third edge. That is the "dual tone" on the profile selector.
      * Callers sitting on a card pass that card's colour and the avatar reads as one surface.
