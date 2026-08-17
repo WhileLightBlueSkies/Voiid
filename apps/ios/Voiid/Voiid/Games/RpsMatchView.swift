@@ -60,15 +60,6 @@ struct RpsMatchView: View {
         ("rock", "✊"), ("paper", "✋"), ("scissors", "✌️"),
     ]
 
-    private static func glyph(for name: String?) -> String {
-        switch name {
-        case "rock":     return "✊"
-        case "paper":    return "✋"
-        case "scissors": return "✌️"
-        default:         return "✊"
-        }
-    }
-
     var body: some View {
         VStack(spacing: 0) {
             if let s = engine.rps {
