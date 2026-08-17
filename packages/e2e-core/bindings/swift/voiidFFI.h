@@ -308,6 +308,11 @@ RustBuffer uniffi_voiid_e2e_core_fn_method_groupsession_add_member(uint64_t ptr,
 RustBuffer uniffi_voiid_e2e_core_fn_method_groupsession_call_keys(uint64_t ptr, uint64_t member, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_GROUPSESSION_CLEAR_PENDING
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_GROUPSESSION_CLEAR_PENDING
+void uniffi_voiid_e2e_core_fn_method_groupsession_clear_pending(uint64_t ptr, uint64_t member, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_GROUPSESSION_DECRYPT
 #define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_GROUPSESSION_DECRYPT
 RustBuffer uniffi_voiid_e2e_core_fn_method_groupsession_decrypt(uint64_t ptr, uint64_t member, RustBuffer message, RustCallStatus *_Nonnull out_status
@@ -316,6 +321,11 @@ RustBuffer uniffi_voiid_e2e_core_fn_method_groupsession_decrypt(uint64_t ptr, ui
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_GROUPSESSION_ENCRYPT
 #define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_GROUPSESSION_ENCRYPT
 RustBuffer uniffi_voiid_e2e_core_fn_method_groupsession_encrypt(uint64_t ptr, uint64_t member, RustBuffer plaintext, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_GROUPSESSION_EPOCH
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_GROUPSESSION_EPOCH
+uint64_t uniffi_voiid_e2e_core_fn_method_groupsession_epoch(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_GROUPSESSION_GROUP_ID
@@ -359,9 +369,19 @@ uint64_t uniffi_voiid_e2e_core_fn_constructor_identity_restore(RustBuffer pickle
 RustBuffer uniffi_voiid_e2e_core_fn_method_identity_accept_session(uint64_t ptr, RustBuffer their_identity_key, RustBuffer first_message, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_IDENTITY_CURRENT_FALLBACK_KEY
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_IDENTITY_CURRENT_FALLBACK_KEY
+RustBuffer uniffi_voiid_e2e_core_fn_method_identity_current_fallback_key(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_IDENTITY_FINGERPRINT
 #define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_IDENTITY_FINGERPRINT
 RustBuffer uniffi_voiid_e2e_core_fn_method_identity_fingerprint(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_IDENTITY_FORGET_PREVIOUS_FALLBACK_KEY
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_IDENTITY_FORGET_PREVIOUS_FALLBACK_KEY
+int8_t uniffi_voiid_e2e_core_fn_method_identity_forget_previous_fallback_key(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_IDENTITY_MAX_ONE_TIME_KEYS
@@ -377,6 +397,16 @@ RustBuffer uniffi_voiid_e2e_core_fn_method_identity_publish_bundle(uint64_t ptr,
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_IDENTITY_REPLENISH_PREKEYS
 #define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_IDENTITY_REPLENISH_PREKEYS
 RustBuffer uniffi_voiid_e2e_core_fn_method_identity_replenish_prekeys(uint64_t ptr, uint32_t count, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_IDENTITY_RESTORE_FALLBACK_KEY
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_IDENTITY_RESTORE_FALLBACK_KEY
+void uniffi_voiid_e2e_core_fn_method_identity_restore_fallback_key(uint64_t ptr, RustBuffer fallback_key, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_IDENTITY_ROTATE_FALLBACK_KEY
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_IDENTITY_ROTATE_FALLBACK_KEY
+RustBuffer uniffi_voiid_e2e_core_fn_method_identity_rotate_fallback_key(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_METHOD_IDENTITY_START_SESSION
@@ -444,9 +474,20 @@ RustBuffer uniffi_voiid_e2e_core_fn_func_encrypt_backup(RustBuffer secret, RustB
 RustBuffer uniffi_voiid_e2e_core_fn_func_encrypt_media(RustBuffer plaintext, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_ENCRYPT_MEDIA_WITH_KEY
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_ENCRYPT_MEDIA_WITH_KEY
+RustBuffer uniffi_voiid_e2e_core_fn_func_encrypt_media_with_key(RustBuffer key_b64, RustBuffer plaintext, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_GENERATE_MASTER_SECRET
 #define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_GENERATE_MASTER_SECRET
 RustBuffer uniffi_voiid_e2e_core_fn_func_generate_master_secret(RustCallStatus *_Nonnull out_status
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_GENERATE_PROFILE_KEY
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_FN_FUNC_GENERATE_PROFILE_KEY
+RustBuffer uniffi_voiid_e2e_core_fn_func_generate_profile_key(RustCallStatus *_Nonnull out_status
     
 );
 #endif
@@ -775,9 +816,21 @@ uint16_t uniffi_voiid_e2e_core_checksum_func_encrypt_media(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_ENCRYPT_MEDIA_WITH_KEY
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_ENCRYPT_MEDIA_WITH_KEY
+uint16_t uniffi_voiid_e2e_core_checksum_func_encrypt_media_with_key(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_GENERATE_MASTER_SECRET
 #define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_GENERATE_MASTER_SECRET
 uint16_t uniffi_voiid_e2e_core_checksum_func_generate_master_secret(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_GENERATE_PROFILE_KEY
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_FUNC_GENERATE_PROFILE_KEY
+uint16_t uniffi_voiid_e2e_core_checksum_func_generate_profile_key(void
     
 );
 #endif
@@ -871,6 +924,12 @@ uint16_t uniffi_voiid_e2e_core_checksum_method_groupsession_call_keys(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_GROUPSESSION_CLEAR_PENDING
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_GROUPSESSION_CLEAR_PENDING
+uint16_t uniffi_voiid_e2e_core_checksum_method_groupsession_clear_pending(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_GROUPSESSION_DECRYPT
 #define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_GROUPSESSION_DECRYPT
 uint16_t uniffi_voiid_e2e_core_checksum_method_groupsession_decrypt(void
@@ -880,6 +939,12 @@ uint16_t uniffi_voiid_e2e_core_checksum_method_groupsession_decrypt(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_GROUPSESSION_ENCRYPT
 #define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_GROUPSESSION_ENCRYPT
 uint16_t uniffi_voiid_e2e_core_checksum_method_groupsession_encrypt(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_GROUPSESSION_EPOCH
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_GROUPSESSION_EPOCH
+uint16_t uniffi_voiid_e2e_core_checksum_method_groupsession_epoch(void
     
 );
 #endif
@@ -907,9 +972,21 @@ uint16_t uniffi_voiid_e2e_core_checksum_method_identity_accept_session(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_IDENTITY_CURRENT_FALLBACK_KEY
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_IDENTITY_CURRENT_FALLBACK_KEY
+uint16_t uniffi_voiid_e2e_core_checksum_method_identity_current_fallback_key(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_IDENTITY_FINGERPRINT
 #define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_IDENTITY_FINGERPRINT
 uint16_t uniffi_voiid_e2e_core_checksum_method_identity_fingerprint(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_IDENTITY_FORGET_PREVIOUS_FALLBACK_KEY
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_IDENTITY_FORGET_PREVIOUS_FALLBACK_KEY
+uint16_t uniffi_voiid_e2e_core_checksum_method_identity_forget_previous_fallback_key(void
     
 );
 #endif
@@ -928,6 +1005,18 @@ uint16_t uniffi_voiid_e2e_core_checksum_method_identity_publish_bundle(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_IDENTITY_REPLENISH_PREKEYS
 #define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_IDENTITY_REPLENISH_PREKEYS
 uint16_t uniffi_voiid_e2e_core_checksum_method_identity_replenish_prekeys(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_IDENTITY_RESTORE_FALLBACK_KEY
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_IDENTITY_RESTORE_FALLBACK_KEY
+uint16_t uniffi_voiid_e2e_core_checksum_method_identity_restore_fallback_key(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_IDENTITY_ROTATE_FALLBACK_KEY
+#define UNIFFI_FFIDEF_UNIFFI_VOIID_E2E_CORE_CHECKSUM_METHOD_IDENTITY_ROTATE_FALLBACK_KEY
+uint16_t uniffi_voiid_e2e_core_checksum_method_identity_rotate_fallback_key(void
     
 );
 #endif

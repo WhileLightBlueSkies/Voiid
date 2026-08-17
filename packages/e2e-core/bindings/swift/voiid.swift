@@ -467,6 +467,30 @@ fileprivate struct FfiConverterUInt64: FfiConverterPrimitive {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterBool : FfiConverter {
+    typealias FfiType = Int8
+    typealias SwiftType = Bool
+
+    public static func lift(_ value: Int8) throws -> Bool {
+        return value != 0
+    }
+
+    public static func lower(_ value: Bool) -> Int8 {
+        return value ? 1 : 0
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Bool {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: Bool, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterString: FfiConverter {
     typealias SwiftType = String
     typealias FfiType = RustBuffer
@@ -479,7 +503,11 @@ fileprivate struct FfiConverterString: FfiConverter {
             return String()
         }
         let bytes = UnsafeBufferPointer<UInt8>(start: value.data!, count: Int(value.len))
-        return String(bytes: bytes, encoding: String.Encoding.utf8)!
+        // Use Swift's native UTF-8 decoder; `String(bytes:encoding:.utf8)` goes
+        // through Foundation's NSString and silently strips a leading U+FEFF BOM.
+        // Invalid UTF-8 substitutes U+FFFD instead of trapping (unreachable
+        // given Rust's `String` invariant).
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     public static func lower(_ value: String) -> RustBuffer {
@@ -495,7 +523,8 @@ fileprivate struct FfiConverterString: FfiConverter {
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> String {
         let len: Int32 = try readInt(&buf)
-        return String(bytes: try readBytes(&buf, count: Int(len)), encoding: String.Encoding.utf8)!
+        // See `lift` above for why we avoid Foundation's NSString-backed decoder here.
+        return String(decoding: try readBytes(&buf, count: Int(len)), as: UTF8.self)
     }
 
     public static func write(_ value: String, into buf: inout [UInt8]) {
@@ -767,12 +796,38 @@ public protocol GroupSessionProtocol: AnyObject, Sendable {
     func callKeys(member: GroupMember) throws  -> SrtpKeys
     
     /**
+     * Discard a pending commit that LOST a concurrency race, so the winning commit can be
+     * processed instead.
+     *
+     * The other half of lost-race reconciliation, and useless without `epoch()` — which is
+     * why both were missing together and neither could be used alone. The sequence an app
+     * implements with these two is: commit, see a foreign commit for the epoch you built
+     * against, call this, then `decrypt` the winner and retry your own change.
+     *
+     * Idempotent in effect: clearing when nothing is pending is not an error.
+     */
+    func clearPending(member: GroupMember) throws 
+    
+    /**
      * Process an incoming group message. Application messages return their
      * plaintext; commits/proposals are applied and return null.
      */
     func decrypt(member: GroupMember, message: Data) throws  -> Data?
     
     func encrypt(member: GroupMember, plaintext: Data) throws  -> Data
+    
+    /**
+     * The current epoch number.
+     *
+     * Two commits built against the SAME epoch are concurrent: the server accepts one and
+     * the losers must discard their pending commit and process the winner instead. Without
+     * this on the FFI surface an app cannot even detect that it lost — it has no way to
+     * compare the epoch it committed against with the one a arriving commit belongs to.
+     *
+     * This matters now rather than theoretically: a group may have up to 50 admins
+     * (036_group_roles.sql), so concurrent adds and removes are expected, not exotic.
+     */
+    func epoch()  -> UInt64
     
     /**
      * This group's stable id — persist it and pass it to `GroupMember.load_group`
@@ -876,6 +931,25 @@ open func callKeys(member: GroupMember)throws  -> SrtpKeys  {
 }
     
     /**
+     * Discard a pending commit that LOST a concurrency race, so the winning commit can be
+     * processed instead.
+     *
+     * The other half of lost-race reconciliation, and useless without `epoch()` — which is
+     * why both were missing together and neither could be used alone. The sequence an app
+     * implements with these two is: commit, see a foreign commit for the epoch you built
+     * against, call this, then `decrypt` the winner and retry your own change.
+     *
+     * Idempotent in effect: clearing when nothing is pending is not an error.
+     */
+open func clearPending(member: GroupMember)throws   {try rustCallWithError(FfiConverterTypeE2eFfiError_lift) {
+    uniffi_voiid_e2e_core_fn_method_groupsession_clear_pending(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeGroupMember_lower(member),$0
+    )
+}
+}
+    
+    /**
      * Process an incoming group message. Application messages return their
      * plaintext; commits/proposals are applied and return null.
      */
@@ -895,6 +969,25 @@ open func encrypt(member: GroupMember, plaintext: Data)throws  -> Data  {
             self.uniffiCloneHandle(),
         FfiConverterTypeGroupMember_lower(member),
         FfiConverterData.lower(plaintext),$0
+    )
+})
+}
+    
+    /**
+     * The current epoch number.
+     *
+     * Two commits built against the SAME epoch are concurrent: the server accepts one and
+     * the losers must discard their pending commit and process the winner instead. Without
+     * this on the FFI surface an app cannot even detect that it lost — it has no way to
+     * compare the epoch it committed against with the one a arriving commit belongs to.
+     *
+     * This matters now rather than theoretically: a group may have up to 50 admins
+     * (036_group_roles.sql), so concurrent adds and removes are expected, not exotic.
+     */
+open func epoch() -> UInt64  {
+    return try!  FfiConverterUInt64.lift(try! rustCall() {
+    uniffi_voiid_e2e_core_fn_method_groupsession_epoch(
+            self.uniffiCloneHandle(),$0
     )
 })
 }
@@ -999,9 +1092,19 @@ public protocol IdentityProtocol: AnyObject, Sendable {
     func acceptSession(theirIdentityKey: String, firstMessage: WireMessage) throws  -> AcceptedSession
     
     /**
+     * The fallback key currently published for this device, if any.
+     */
+    func currentFallbackKey()  -> String?
+    
+    /**
      * Stable Ed25519 fingerprint (base64) for safety-number verification.
      */
     func fingerprint()  -> String
+    
+    /**
+     * Drop the previous fallback key, one rotation after `rotate_fallback_key`.
+     */
+    func forgetPreviousFallbackKey()  -> Bool
     
     /**
      * Maximum one-time keys this device can hold at once.
@@ -1018,6 +1121,17 @@ public protocol IdentityProtocol: AnyObject, Sendable {
      * Returns only the new keys to upload.
      */
     func replenishPrekeys(count: UInt32)  -> PublicBundle
+    
+    /**
+     * Re-attach a published fallback key after restoring from a pickle.
+     */
+    func restoreFallbackKey(fallbackKey: String) 
+    
+    /**
+     * Rotate the fallback key (X3DH "signed prekey"). Call ~weekly. Returns the
+     * bundle to upload; peers use it once our one-time keys run out.
+     */
+    func rotateFallbackKey()  -> PublicBundle
     
     /**
      * Start a 1:1 session as the sender of the first message.
@@ -1123,11 +1237,33 @@ open func acceptSession(theirIdentityKey: String, firstMessage: WireMessage)thro
 }
     
     /**
+     * The fallback key currently published for this device, if any.
+     */
+open func currentFallbackKey() -> String?  {
+    return try!  FfiConverterOptionString.lift(try! rustCall() {
+    uniffi_voiid_e2e_core_fn_method_identity_current_fallback_key(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
      * Stable Ed25519 fingerprint (base64) for safety-number verification.
      */
 open func fingerprint() -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
     uniffi_voiid_e2e_core_fn_method_identity_fingerprint(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * Drop the previous fallback key, one rotation after `rotate_fallback_key`.
+     */
+open func forgetPreviousFallbackKey() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+    uniffi_voiid_e2e_core_fn_method_identity_forget_previous_fallback_key(
             self.uniffiCloneHandle(),$0
     )
 })
@@ -1165,6 +1301,29 @@ open func replenishPrekeys(count: UInt32) -> PublicBundle  {
     uniffi_voiid_e2e_core_fn_method_identity_replenish_prekeys(
             self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(count),$0
+    )
+})
+}
+    
+    /**
+     * Re-attach a published fallback key after restoring from a pickle.
+     */
+open func restoreFallbackKey(fallbackKey: String)  {try! rustCall() {
+    uniffi_voiid_e2e_core_fn_method_identity_restore_fallback_key(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(fallbackKey),$0
+    )
+}
+}
+    
+    /**
+     * Rotate the fallback key (X3DH "signed prekey"). Call ~weekly. Returns the
+     * bundle to upload; peers use it once our one-time keys run out.
+     */
+open func rotateFallbackKey() -> PublicBundle  {
+    return try!  FfiConverterTypePublicBundle_lift(try! rustCall() {
+    uniffi_voiid_e2e_core_fn_method_identity_rotate_fallback_key(
+            self.uniffiCloneHandle(),$0
     )
 })
 }
@@ -1769,13 +1928,23 @@ public struct PublicBundle: Equatable, Hashable {
     public var identityKey: String
     public var signingKey: String
     public var oneTimeKeys: [String]
+    /**
+     * The X3DH "signed prekey" — used when one-time keys are exhausted.
+     * `None` means no NEW fallback key to upload; the published one stands.
+     */
+    public var fallbackKey: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(identityKey: String, signingKey: String, oneTimeKeys: [String]) {
+    public init(identityKey: String, signingKey: String, oneTimeKeys: [String], 
+        /**
+         * The X3DH "signed prekey" — used when one-time keys are exhausted.
+         * `None` means no NEW fallback key to upload; the published one stands.
+         */fallbackKey: String?) {
         self.identityKey = identityKey
         self.signingKey = signingKey
         self.oneTimeKeys = oneTimeKeys
+        self.fallbackKey = fallbackKey
     }
 
     
@@ -1796,7 +1965,8 @@ public struct FfiConverterTypePublicBundle: FfiConverterRustBuffer {
             try PublicBundle(
                 identityKey: FfiConverterString.read(from: &buf), 
                 signingKey: FfiConverterString.read(from: &buf), 
-                oneTimeKeys: FfiConverterSequenceString.read(from: &buf)
+                oneTimeKeys: FfiConverterSequenceString.read(from: &buf), 
+                fallbackKey: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -1804,6 +1974,7 @@ public struct FfiConverterTypePublicBundle: FfiConverterRustBuffer {
         FfiConverterString.write(value.identityKey, into: &buf)
         FfiConverterString.write(value.signingKey, into: &buf)
         FfiConverterSequenceString.write(value.oneTimeKeys, into: &buf)
+        FfiConverterOptionString.write(value.fallbackKey, into: &buf)
     }
 }
 
@@ -2141,11 +2312,45 @@ public func encryptMedia(plaintext: Data)throws  -> EncryptedMedia  {
 })
 }
 /**
+ * Encrypt with a key the caller ALREADY HOLDS, instead of minting a fresh one.
+ *
+ * This is the primitive avatars need and `encrypt_media` cannot provide — that function
+ * always generates a new key, which is right for single-use attachments and useless for
+ * anything long-lived.
+ *
+ * A fresh nonce is still generated internally on every call, which is not optional: AES-GCM
+ * fails catastrophically on nonce reuse under one key, and a profile key is reused on every
+ * re-upload.
+ */
+public func encryptMediaWithKey(keyB64: String, plaintext: Data)throws  -> EncryptedMedia  {
+    return try  FfiConverterTypeEncryptedMedia_lift(try rustCallWithError(FfiConverterTypeE2eFfiError_lift) {
+    uniffi_voiid_e2e_core_fn_func_encrypt_media_with_key(
+        FfiConverterString.lower(keyB64),
+        FfiConverterData.lower(plaintext),$0
+    )
+})
+}
+/**
  * Generate a fresh, random 32-byte master backup secret.
  */
 public func generateMasterSecret() -> Data  {
     return try!  FfiConverterData.lift(try! rustCall() {
     uniffi_voiid_e2e_core_fn_func_generate_master_secret($0
+    )
+})
+}
+/**
+ * A fresh long-lived PROFILE KEY, for encrypting a user's avatar.
+ *
+ * Avatars cannot use `encrypt_media`'s per-attachment key: a chat photo has one known
+ * audience and its key rides the ratchet with the message, but an avatar is shown to anyone
+ * who might contact you — including someone who found your @username and has never had a
+ * session with you. There is no single message to attach a key to, so the key is per-USER,
+ * long-lived, and wrapped to each contact over the ratchet as you talk to them.
+ */
+public func generateProfileKey() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_voiid_e2e_core_fn_func_generate_profile_key($0
     )
 })
 }
@@ -2267,7 +2472,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_voiid_e2e_core_checksum_func_encrypt_media() != 14634) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_voiid_e2e_core_checksum_func_encrypt_media_with_key() != 23834) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_voiid_e2e_core_checksum_func_generate_master_secret() != 59702) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_voiid_e2e_core_checksum_func_generate_profile_key() != 38716) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_voiid_e2e_core_checksum_func_master_secret_to_phrase() != 14495) {
@@ -2315,10 +2526,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_voiid_e2e_core_checksum_method_groupsession_call_keys() != 45542) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_voiid_e2e_core_checksum_method_groupsession_clear_pending() != 39619) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_voiid_e2e_core_checksum_method_groupsession_decrypt() != 37682) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_voiid_e2e_core_checksum_method_groupsession_encrypt() != 61784) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_voiid_e2e_core_checksum_method_groupsession_epoch() != 62075) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_voiid_e2e_core_checksum_method_groupsession_group_id() != 25873) {
@@ -2333,7 +2550,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_voiid_e2e_core_checksum_method_identity_accept_session() != 45680) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_voiid_e2e_core_checksum_method_identity_current_fallback_key() != 10713) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_voiid_e2e_core_checksum_method_identity_fingerprint() != 42725) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_voiid_e2e_core_checksum_method_identity_forget_previous_fallback_key() != 19988) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_voiid_e2e_core_checksum_method_identity_max_one_time_keys() != 39892) {
@@ -2343,6 +2566,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_voiid_e2e_core_checksum_method_identity_replenish_prekeys() != 4485) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_voiid_e2e_core_checksum_method_identity_restore_fallback_key() != 33174) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_voiid_e2e_core_checksum_method_identity_rotate_fallback_key() != 45910) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_voiid_e2e_core_checksum_method_identity_start_session() != 41300) {
