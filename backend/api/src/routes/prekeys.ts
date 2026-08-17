@@ -44,11 +44,36 @@ router.post('/upload', requireAuth, asyncHandler(async (req, res) => {
   }
 
   if (signed_prekey) {
+    // `signature` is nullable as of 044: a vodozemac FALLBACK key is not separately
+    // signed, and its authenticity rests on the TOFU-pinned device identity key plus the
+    // Olm prekey handshake. `b64(undefined)` returns null, so a client that sends no
+    // signature stores null rather than failing the insert.
     await query(
       `insert into signed_prekeys (device_id, key_id, public_key, signature)
          values ($1, $2, $3, $4)
          on conflict (device_id, key_id) do nothing`,
       [device_id, signed_prekey.key_id, b64(signed_prekey.public_key), b64(signed_prekey.signature)]
+    );
+    // PRUNE SUPERSEDED KEYS, keeping the two most recent — the same pair vodozemac itself
+    // retains (current + previous), so a first message already in flight against the
+    // just-replaced key still opens.
+    //
+    // This is not housekeeping. `forget_previous_fallback_key()` on the device drops the
+    // PRIVATE half one rotation after replacement, so a row older than that is a public key
+    // whose private half is gone. Serving it would hand a sender a key that can never open a
+    // session, and the sender would have no way to tell that from the recipient being
+    // offline. Pruning here rather than in a worker keeps the invariant next to the only
+    // write that can break it.
+    await query(
+      `delete from signed_prekeys
+        where device_id = $1
+          and id not in (
+            select id from signed_prekeys
+             where device_id = $1
+             order by created_at desc
+             limit 2
+          )`,
+      [device_id]
     );
   }
 
