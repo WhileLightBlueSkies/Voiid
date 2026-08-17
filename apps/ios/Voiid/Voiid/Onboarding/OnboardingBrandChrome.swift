@@ -117,6 +117,101 @@ struct VMarkShape: Shape {
     }
 }
 
+// MARK: - Top bar
+
+/// The circled back / help pair the design puts above the mark.
+///
+/// Circled outlines rather than bare chevrons: on a near-black ground with a glow behind it, a
+/// bare glyph at the screen edge reads as debris. The ring gives it a hit target you can see.
+struct OnboardingTopBar: View {
+    var onBack: (() -> Void)?
+    var onHelp: (() -> Void)?
+
+    var body: some View {
+        HStack {
+            if let onBack {
+                circleButton("arrow.left", label: "Back", action: onBack)
+            } else {
+                // Holds the row's height so the mark below does not shift between the screens
+                // that have a back button and the ones that do not.
+                Circle().fill(.clear).frame(width: 44, height: 44)
+            }
+            Spacer()
+            if let onHelp {
+                circleButton("questionmark", label: "Help", action: onHelp)
+            }
+        }
+        .padding(.horizontal, 20)
+    }
+
+    private func circleButton(_ system: String, label: String,
+                              action: @escaping () -> Void) -> some View {
+        Button {
+            Haptics.tap()
+            action()
+        } label: {
+            Image(systemName: system)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundColor(VoiidColor.textPrimary)
+                .frame(width: 44, height: 44)
+                .overlay(Circle().strokeBorder(Color.white.opacity(0.18), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+}
+
+// MARK: - Trust strip
+
+/// The four-up reassurance row: a lime glyph over two lines, divided by hairlines.
+///
+/// Four columns of two words each. The copy is deliberately short — this is scanned, not read,
+/// and a third line would turn it into a paragraph nobody finishes.
+struct OnboardingTrustStrip: View {
+    struct Item: Identifiable {
+        let id: String
+        let system: String
+        let line1: String
+        let line2: String
+    }
+
+    let items: [Item]
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                if index > 0 {
+                    Rectangle()
+                        .fill(OnboardingBrand.hairline)
+                        .frame(width: 1, height: 52)
+                }
+                VStack(spacing: 8) {
+                    Image(systemName: item.system)
+                        .font(.system(size: 22, weight: .regular))
+                        .foregroundColor(VoiidColor.accent)
+                    VStack(spacing: 1) {
+                        Text(item.line1)
+                        Text(item.line2)
+                    }
+                    .font(VoiidFont.rounded(13, .regular))
+                    .foregroundColor(VoiidColor.textSecondary)
+                    .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(OnboardingBrand.card)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.06), lineWidth: 1)
+        )
+    }
+}
+
 // MARK: - Title
 
 /// A headline with exactly one lime run — the brand word.

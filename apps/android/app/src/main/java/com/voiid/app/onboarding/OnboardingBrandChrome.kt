@@ -17,7 +17,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowForward
+import androidx.compose.material.icons.outlined.HelpOutline
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -189,6 +191,102 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawVStroke(
     if (brush != null) drawPath(path, brush, style = stroke)
     else if (color != null) drawPath(path, color, style = stroke)
 }
+
+/**
+ * The circled back / help pair the design puts above the mark.
+ *
+ * Circled outlines rather than bare glyphs: on a near-black ground with a glow behind it, a bare
+ * icon at the screen edge reads as debris. The ring gives it a hit target you can see.
+ */
+@Composable
+fun OnboardingTopBar(
+    onBack: (() -> Unit)? = null,
+    onHelp: (() -> Unit)? = null,
+    modifier: Modifier = Modifier,
+) {
+    val haptics = LocalVoiidHaptics.current
+    Row(
+        modifier.fillMaxWidth().padding(horizontal = 20.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (onBack != null) {
+            CircleIconButton(Icons.Default.ArrowBack, "Back") { haptics.tap(); onBack() }
+        } else {
+            // Holds the row height so the mark below does not shift between the screens that
+            // have a back button and the ones that do not.
+            Spacer(Modifier.size(44.dp))
+        }
+        Spacer(Modifier.weight(1f))
+        if (onHelp != null) {
+            CircleIconButton(Icons.Outlined.HelpOutline, "Help") { haptics.tap(); onHelp() }
+        }
+    }
+}
+
+@Composable
+private fun CircleIconButton(icon: ImageVector, label: String, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
+            .softClickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription = label, tint = VoiidColor.textPrimary,
+             modifier = Modifier.size(20.dp))
+    }
+}
+
+/**
+ * The four-up reassurance row: a lime glyph over two lines, divided by hairlines.
+ *
+ * Four columns of two words each. The copy is deliberately short — this is scanned, not read,
+ * and a third line would turn it into a paragraph nobody finishes.
+ */
+@Composable
+fun OnboardingTrustStrip(items: List<TrustItem>, modifier: Modifier = Modifier) {
+    Row(
+        modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(OnboardingBrand.card)
+            .border(1.dp, Color.White.copy(alpha = 0.06f), RoundedCornerShape(20.dp)),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        items.forEachIndexed { index, item ->
+            if (index > 0) {
+                Box(
+                    Modifier
+                        .width(1.dp)
+                        .height(52.dp)
+                        .background(OnboardingBrand.hairline),
+                )
+            }
+            Column(
+                Modifier.weight(1f).padding(vertical = 16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(item.icon, contentDescription = null, tint = OnboardingBrand.lime,
+                     modifier = Modifier.size(22.dp))
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(item.line1, style = VoiidFont.rounded(13),
+                         color = VoiidColor.textSecondary, textAlign = TextAlign.Center)
+                    Text(item.line2, style = VoiidFont.rounded(13),
+                         color = VoiidColor.textSecondary, textAlign = TextAlign.Center)
+                }
+            }
+        }
+    }
+}
+
+data class TrustItem(
+    val id: String,
+    val icon: ImageVector,
+    val line1: String,
+    val line2: String,
+)
 
 /**
  * A headline with exactly one lime run — the brand word.

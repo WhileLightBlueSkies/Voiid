@@ -38,7 +38,8 @@ struct OnboardingFlow: View {
                         .navigationDestination(for: Step.self) { step in
                             switch step {
                             case .permissions: PermissionsScreen(onContinue: { path.append(.phone) })
-                            case .phone:   PhoneScreen(onContinue: { phone, vid in path.append(.otp(phone: phone, verificationID: vid)) })
+                            case .phone:   PhoneScreen(onContinue: { phone, vid in path.append(.otp(phone: phone, verificationID: vid)) },
+                                                       onBack: { path.removeLast() })
                             case .otp(let phone, let vid):
                                 OTPScreen(onContinue: { path.append(.signup(phone: phone)) },
                                           onExistingUser: { session.completeOnboarding() },
