@@ -96,7 +96,7 @@ struct GroupInfoView: View {
             Button { Haptics.tap(); viewPhoto = true } label: {
                 ZStack(alignment: .bottomTrailing) {
                     Circle().fill(VoiidColor.fieldFill).frame(width: 110, height: 110)
-                        .overlay(Image("VoiidWordmark").resizable().scaledToFit().frame(width: 56).opacity(0.25))
+                        .overlay(BrandWordmark(size: 19, color: VoiidColor.textSecondary, opacity: 0.25))
                     Circle().fill(VoiidColor.accent).frame(width: 32, height: 32)
                         .overlay(Image(systemName: "camera.fill").font(.system(size: 13)).foregroundColor(VoiidColor.primary))
                         .overlay(Circle().stroke(VoiidColor.background, lineWidth: 2))

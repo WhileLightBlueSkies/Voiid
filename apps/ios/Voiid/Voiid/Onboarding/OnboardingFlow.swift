@@ -249,12 +249,10 @@ struct LogoMark: View {
     var fontSize: CGFloat   // kept for call-site compatibility; unused (logo is a baked image)
 
     var body: some View {
-        // Full Figma logo mark exported as one image: the "voiid" wordmark + soft halo together.
-        // Asset: Assets.xcassets/VoiidLogoMark (drop voiid-logomark.png into that imageset).
-        Image("VoiidLogoMark")
-            .resizable()
-            .scaledToFit()
-            .frame(width: size)
+        // PLACEHOLDER until the real mark lands — see DesignSystem/BrandMark.swift for what to
+        // swap and where. Drawn rather than an empty `Image("VoiidLogoMark")`, which would
+        // render nothing and read as a broken build on the FIRST screen a new user sees.
+        BrandWordmark(size: size * 0.30, color: VoiidColor.primary)
     }
 }
 

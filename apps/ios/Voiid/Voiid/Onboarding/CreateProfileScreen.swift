@@ -101,10 +101,9 @@ struct CreateProfileScreen: View {
                                 photo.resizable().scaledToFill()
                                     .frame(width: avatar, height: avatar).clipShape(Circle())
                             } else {
-                                Image("VoiidWordmark")   // faint logo mark placeholder
-                                    .resizable().scaledToFit()
-                                    .frame(width: avatar * 0.5)
-                                    .opacity(0.25)
+                                BrandWordmark(size: avatar * 0.17,
+                                              color: VoiidColor.textSecondary,
+                                              opacity: 0.25)
                             }
                         }
                         .frame(width: avatar, height: avatar)

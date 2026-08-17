@@ -39,7 +39,7 @@ struct ProfilePhotoViewer: View {
                     // placeholder avatar (no photo set)
                     ZStack {
                         Circle().fill(VoiidColor.fieldFill)
-                        Image("VoiidWordmark").resizable().scaledToFit().frame(width: 120).opacity(0.3)
+                        BrandWordmark(size: 40, color: VoiidColor.textSecondary, opacity: 0.3)
                     }
                     .frame(width: 280, height: 280)
                 }

@@ -252,11 +252,9 @@ private struct GridPeerImage: View {
                     // Sized RELATIVE to the tile, not a fixed 56pt: the grid is three columns
                     // of whatever the device is wide, so a constant looked oversized on an SE
                     // and lost on a Max.
-                    Image("VoiidWordmark")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: geo.size.width * 0.52)
-                        .opacity(0.22)
+                    BrandWordmark(size: geo.size.width * 0.18,
+                                  color: VoiidColor.textSecondary,
+                                  opacity: 0.22)
                         .frame(width: geo.size.width, height: geo.size.height)
                 }
             }
