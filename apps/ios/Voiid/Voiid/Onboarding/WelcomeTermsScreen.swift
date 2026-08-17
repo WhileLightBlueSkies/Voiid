@@ -49,23 +49,36 @@ struct WelcomeTermsScreen: View {
             // the user has not chosen a theme yet.
             OnboardingBrand.ground.ignoresSafeArea()
 
+            // SCROLLS, and it has to.
+            //
+            // The fixed content is ~900pt: header, title, a four-row card, the privacy note,
+            // the button and two footnotes. That overflows every iPhone except the largest, and
+            // a `Spacer` cannot fix an overflow — it has nothing to give. The first version
+            // relied on one, so on a 667pt screen the card was crushed and the button sat off
+            // the bottom edge.
+            //
+            // The button stays PINNED outside the scroll view: the primary action must never
+            // require scrolling to reach, which is the whole reason it is the brightest thing
+            // on the screen.
             VStack(spacing: 0) {
-                OnboardingBrandHeader(appeared: appeared)
-                    .matchedGeometryEffect(id: "voiidLogo", in: logoNS)
-                    .padding(.top, 52)
+                ScrollView(.vertical, showsIndicators: false) {
+                  VStack(spacing: 0) {
+                    OnboardingBrandHeader(appeared: appeared)
+                        .matchedGeometryEffect(id: "voiidLogo", in: logoNS)
+                        .padding(.top, 8)
 
-                titleBlock
-                    .padding(.top, 4)
+                    titleBlock
 
-                consentCard
-                    .padding(.horizontal, 20)
-                    .padding(.top, 26)
+                    consentCard
+                        .padding(.horizontal, 20)
+                        .padding(.top, 22)
 
-                privacyNote
-                    .padding(.horizontal, 24)
-                    .padding(.top, 22)
-
-                Spacer(minLength: 16)
+                    privacyNote
+                        .padding(.horizontal, 24)
+                        .padding(.top, 18)
+                        .padding(.bottom, 18)
+                  }
+                }
 
                 agreeButton
                     .padding(.horizontal, 20)

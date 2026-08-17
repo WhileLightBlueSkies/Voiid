@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.outlined.CameraAlt
@@ -104,7 +106,14 @@ fun PermissionsScreen(onContinue: () -> Unit) {
             Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Spacer(Modifier.height(20.dp))
+            // Scrolls with the button pinned — see the note in WelcomeTermsScreen. This is
+            // the worst of the three: SIX rows at ~74dp each, so the content clears a small
+            // phone's height before the header is even counted.
+            Column(
+                Modifier.weight(1f).verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+            Spacer(Modifier.height(8.dp))
 
             OnboardingBrandHeader(appeared = appeared)
 
@@ -148,7 +157,8 @@ fun PermissionsScreen(onContinue: () -> Unit) {
                 modifier = Modifier.padding(horizontal = 24.dp),
             )
 
-            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.height(18.dp))
+            }
 
             OnboardingPrimaryButton(
                 title = "Allow Access",

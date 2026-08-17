@@ -14,8 +14,10 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.outlined.Lock
@@ -104,21 +106,33 @@ fun WelcomeTermsScreen(
             Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Spacer(Modifier.height(28.dp))
+            // SCROLLS, and it has to. The fixed content — header, title, a four-row card, the
+            // privacy note, the button and two footnotes — is around 900dp, which overflows
+            // every phone but the largest. A weight(1f) spacer cannot fix an overflow: it has
+            // nothing to give, so the first version crushed the card and pushed the button off
+            // the bottom edge.
+            //
+            // The button stays PINNED outside the scroll: the primary action must never require
+            // scrolling to reach, which is the whole reason it is the brightest thing here.
+            Column(
+                Modifier.weight(1f).verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Spacer(Modifier.height(8.dp))
 
-            OnboardingBrandHeader(appeared = appeared)
+                OnboardingBrandHeader(appeared = appeared)
 
-            OnboardingTitle(leading = "Welcome to ", accented = "Voiid")
-            Spacer(Modifier.height(6.dp))
-            Text(
+                OnboardingTitle(leading = "Welcome to ", accented = "Voiid")
+                Spacer(Modifier.height(6.dp))
+                Text(
                 "One app. Everything you need.",
                 style = VoiidFont.rounded(17),
                 color = VoiidColor.textSecondary,
-            )
+                )
 
-            Spacer(Modifier.height(26.dp))
+                Spacer(Modifier.height(26.dp))
 
-            OnboardingCard(modifier = Modifier.padding(horizontal = 20.dp)) {
+                OnboardingCard(modifier = Modifier.padding(horizontal = 20.dp)) {
                 Text(
                     "Let's get you started.",
                     style = VoiidFont.rounded(20, FontWeight.SemiBold),
@@ -136,11 +150,11 @@ fun WelcomeTermsScreen(
                     ConsentRowView(row) { haptics.tap(); openDocument = row.document }
                     Spacer(Modifier.height(10.dp))
                 }
-            }
+                }
 
-            Spacer(Modifier.height(22.dp))
+                Spacer(Modifier.height(22.dp))
 
-            OnboardingPrivacyNote(
+                OnboardingPrivacyNote(
                 icon = Icons.Outlined.Lock,
                 lines = listOf(
                     "Your privacy is our priority.",
@@ -148,9 +162,10 @@ fun WelcomeTermsScreen(
                 ),
                 accentPhrase = "end-to-end encrypted",
                 modifier = Modifier.padding(horizontal = 24.dp),
-            )
+                )
 
-            Spacer(Modifier.weight(1f))
+                Spacer(Modifier.height(18.dp))
+            }
 
             OnboardingPrimaryButton(
                 title = "I Agree & Continue",

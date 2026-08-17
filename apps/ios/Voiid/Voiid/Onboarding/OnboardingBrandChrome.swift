@@ -42,41 +42,70 @@ enum OnboardingBrand {
 /// simplest. When the real art lands, swap the `VMarkShape` stroke for the asset and keep the
 /// glow layers: they are what make it read as lit rather than pasted.
 struct OnboardingBrandHeader: View {
+    /// The band the mark and horizon occupy. Fixed so the three screens' headers line up.
+    static let height: CGFloat = 190
+    /// How far below the frame's bottom edge the horizon's apex sits. Small positive values
+    /// bring the curve UP into the frame; this is tuned so it passes just under the mark.
+    static let horizonInset: CGFloat = -34
+
     /// Mark height in points.
     var markSize: CGFloat = 132
     /// Drives the settle-in on appear.
     var appeared: Bool = true
 
     var body: some View {
-        ZStack {
-            // HORIZON. A circle far wider than the screen, pushed down so only its top edge
-            // crosses the layout — that is what reads as a planet curve rather than an arc
-            // someone drew. The stroke fades to nothing at both ends, because a hairline that
-            // stops mid-air looks like a clipping bug.
-            Circle()
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [.clear, VoiidColor.accent.opacity(0.5), .clear],
-                        startPoint: .leading, endPoint: .trailing
-                    ),
-                    lineWidth: 1.5
-                )
-                .frame(width: 920, height: 920)
-                .offset(y: 476)
-                // The pool of light where the mark meets the ground.
-                .shadow(color: VoiidColor.accent.opacity(0.32), radius: 28, y: -8)
+        // GeometryReader, and the width claim below, are load-bearing.
+        //
+        // The first version drew the horizon as `Circle().frame(width: 920)` inside a
+        // height-only frame. `.clipped()` clips the DRAWING but not the LAYOUT, so the ZStack
+        // still reported itself 920pt wide, the enclosing VStack grew to match, and every
+        // sibling — title, card, button — got centred against 920pt instead of the screen.
+        // The result was a screen that looked zoomed in with its left edge cut off.
+        //
+        // So: read the real width, size the horizon FROM it, and pin the container to it.
+        GeometryReader { geo in
+            let w = geo.size.width
+            // Diameter as a multiple of the screen width. A wide circle is what makes the top
+            // edge read as a planet curve rather than an arc someone drew; 2.6x is shallow
+            // enough to look like a horizon and steep enough to still be visibly curved.
+            let diameter = w * 2.6
 
-            VMark(size: markSize)
-                .offset(y: -30)
-                .opacity(appeared ? 1 : 0)
-                .scaleEffect(appeared ? 1 : 0.94)
+            ZStack {
+                Circle()
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [.clear, VoiidColor.accent.opacity(0.5), .clear],
+                            startPoint: .leading, endPoint: .trailing
+                        ),
+                        lineWidth: 1.5
+                    )
+                    .frame(width: diameter, height: diameter)
+                    // Push it down so only the top of the curve crosses the frame.
+                    .offset(y: diameter / 2 + Self.horizonInset)
+                    // The pool of light where the mark meets the ground.
+                    .shadow(color: VoiidColor.accent.opacity(0.32), radius: 28, y: -8)
+
+                VMark(size: markSize)
+                    .offset(y: -26)
+                    .opacity(appeared ? 1 : 0)
+                    .scaleEffect(appeared ? 1 : 0.94)
+            }
+            // Centre the ZStack in the reader, then let the circle overflow it visually.
+            .frame(width: w, height: Self.height, alignment: .center)
+            .clipped()
         }
-        .frame(height: 205)
-        .clipped()
+        // The container claims ONLY the screen width and a fixed height, so nothing inside can
+        // push its siblings around.
+        .frame(height: Self.height)
     }
 }
 
-/// The mark itself: a gradient stroke plus three widening bloom passes.
+/// The mark, with its bloom.
+///
+/// The ART IS NOW REAL (Assets.xcassets/VoiidLogoMark) — three rounded bars forming the V. The
+/// bloom passes stay, because the asset is a flat fill and the glow is what makes it read as lit
+/// rather than pasted on. `.blur` on a duplicate of the image is how you bloom an asset you
+/// cannot re-stroke.
 struct VMark: View {
     var size: CGFloat = 132
 
@@ -84,36 +113,20 @@ struct VMark: View {
         ZStack {
             // Three passes at widening radii. ONE pass reads as a drop shadow; three read as
             // light, because real bloom falls off gradually rather than in a single step.
-            ForEach([(0.55, 18.0), (0.34, 42.0), (0.20, 72.0)], id: \.1) { opacity, radius in
-                VMarkShape()
-                    .stroke(VoiidColor.accent,
-                            style: .init(lineWidth: size * 0.185, lineCap: .round, lineJoin: .round))
-                    .frame(width: size * 0.60, height: size * 0.72)
-                    .blur(radius: radius * 0.32)
+            ForEach([(0.55, 14.0), (0.34, 30.0), (0.20, 54.0)], id: \.1) { opacity, radius in
+                Image("VoiidLogoMark")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: size * 0.62)
+                    .blur(radius: radius * 0.4)
                     .opacity(opacity)
-                    .shadow(color: VoiidColor.accent.opacity(opacity), radius: radius)
             }
 
-            VMarkShape()
-                .stroke(
-                    // Brighter at the top so the mark looks lit from above, matching where the
-                    // bloom sits. A flat fill at this scale looks like a swatch.
-                    LinearGradient(colors: [Color(hex: 0xE4FF6B), VoiidColor.accent],
-                                   startPoint: .top, endPoint: .bottom),
-                    style: .init(lineWidth: size * 0.185, lineCap: .round, lineJoin: .round)
-                )
-                .frame(width: size * 0.60, height: size * 0.72)
+            Image("VoiidLogoMark")
+                .resizable()
+                .scaledToFit()
+                .frame(width: size * 0.62)
         }
-    }
-}
-
-struct VMarkShape: Shape {
-    func path(in rect: CGRect) -> Path {
-        var p = Path()
-        p.move(to: CGPoint(x: rect.minX, y: rect.minY))
-        p.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
-        p.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
-        return p
     }
 }
 
@@ -231,6 +244,12 @@ struct OnboardingTitle: View {
             + Text(trailing).foregroundColor(VoiidColor.textPrimary)
         )
         .font(VoiidFont.rounded(30, .bold))
+        // NEGATIVE tracking, because this is display type. Letters read progressively further
+        // apart as they grow, so a value that is right for body copy leaves a 30pt heading
+        // looking spaced out. Proportional to size rather than a fixed -0.6pt, so the same
+        // token holds if the heading ever changes scale.
+        .tracking(-30 * 0.018)
+        .lineSpacing(-1)
         .multilineTextAlignment(.center)
         .fixedSize(horizontal: false, vertical: true)
         .padding(.horizontal, 20)

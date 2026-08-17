@@ -2,6 +2,7 @@ package com.voiid.app.onboarding
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -27,6 +28,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
@@ -40,6 +42,7 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -47,6 +50,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.voiid.app.R
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.softClickable
 import com.voiid.app.ui.theme.VoiidColor
@@ -92,6 +97,9 @@ object OnboardingBrand {
  * simplest. When the real art lands, swap the path for the asset and keep the glow passes:
  * they are what make it read as lit rather than pasted on.
  */
+/** The band the mark and horizon occupy. Fixed so the three screens' headers line up. */
+val OnboardingHeaderHeight = 190.dp
+
 @Composable
 fun OnboardingBrandHeader(
     markSize: Dp = 132.dp,
@@ -104,7 +112,7 @@ fun OnboardingBrandHeader(
     Box(
         modifier
             .fillMaxWidth()
-            .height(205.dp),
+            .height(OnboardingHeaderHeight),
         contentAlignment = Alignment.Center,
     ) {
         // HORIZON. An arc from a circle far wider than the screen, pushed down so only its top
@@ -112,7 +120,7 @@ fun OnboardingBrandHeader(
         // someone drew. The stroke fades to nothing at both ends, because a hairline that
         // stops mid-air looks like a clipping bug.
         Box(
-            Modifier.fillMaxWidth().height(205.dp).drawBehind {
+            Modifier.fillMaxWidth().height(OnboardingHeaderHeight).drawBehind {
                 val w = size.width * 2.6f
                 val left = (size.width - w) / 2f
                 val top = size.height * 0.86f
@@ -145,51 +153,32 @@ fun OnboardingBrandHeader(
     }
 }
 
-/** The mark itself: a gradient stroke plus three widening bloom passes. */
+/**
+ * The mark, with its bloom.
+ *
+ * The ART IS NOW REAL (res/drawable/voiid_logomark) — three rounded bars forming the V. The bloom
+ * passes stay, because the drawable is a flat fill and the glow is what makes it read as lit
+ * rather than pasted on. Blurred copies of the same image is how you bloom an asset you cannot
+ * re-stroke.
+ */
 @Composable
 fun VMark(size: Dp, modifier: Modifier = Modifier) {
     Box(modifier.size(size), contentAlignment = Alignment.Center) {
-        // Three passes at widening blur. ONE pass reads as a drop shadow; three read as light,
+        // Three passes at widening blur. ONE reads as a drop shadow; three read as light,
         // because real bloom falls off gradually rather than in a single step.
-        listOf(0.55f to 6.dp, 0.34f to 14.dp, 0.20f to 24.dp).forEach { (a, blur) ->
-            Box(
-                Modifier
-                    .size(size)
-                    .blur(blur)
-                    .drawBehind { drawVStroke(size.toPx(), OnboardingBrand.lime.copy(alpha = a)) },
+        listOf(0.55f to 5.dp, 0.34f to 12.dp, 0.20f to 22.dp).forEach { (a, blur) ->
+            Image(
+                painter = painterResource(R.drawable.voiid_logomark),
+                contentDescription = null,
+                modifier = Modifier.size(size * 0.62f).blur(blur).alpha(a),
             )
         }
-        Box(
-            Modifier.size(size).drawBehind {
-                drawVStroke(
-                    size.toPx(),
-                    brush = Brush.verticalGradient(
-                        listOf(OnboardingBrand.limeBright, OnboardingBrand.lime),
-                    ),
-                )
-            },
+        Image(
+            painter = painterResource(R.drawable.voiid_logomark),
+            contentDescription = null,
+            modifier = Modifier.size(size * 0.62f),
         )
     }
-}
-
-/** The V path, stroked. Shared so the bloom passes and the mark cannot diverge. */
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawVStroke(
-    boxPx: Float,
-    color: Color? = null,
-    brush: Brush? = null,
-) {
-    val w = boxPx * 0.60f
-    val h = boxPx * 0.72f
-    val left = (size.width - w) / 2f
-    val top = (size.height - h) / 2f
-    val path = Path().apply {
-        moveTo(left, top)
-        lineTo(left + w / 2f, top + h)
-        lineTo(left + w, top)
-    }
-    val stroke = Stroke(width = boxPx * 0.185f, cap = StrokeCap.Round, join = StrokeJoin.Round)
-    if (brush != null) drawPath(path, brush, style = stroke)
-    else if (color != null) drawPath(path, color, style = stroke)
 }
 
 /**
@@ -312,7 +301,10 @@ fun OnboardingTitle(
                 withStyle(SpanStyle(color = VoiidColor.textPrimary)) { append(trailing) }
             }
         },
-        style = VoiidFont.rounded(30, FontWeight.Bold),
+        // NEGATIVE tracking, because this is display type: letters read progressively further
+        // apart as they grow, so body-copy spacing leaves a 30sp heading looking spaced out.
+        // Matches iOS's -0.018em.
+        style = VoiidFont.rounded(30, FontWeight.Bold).copy(letterSpacing = (-0.54).sp),
         textAlign = TextAlign.Center,
         modifier = modifier.padding(horizontal = 20.dp),
     )

@@ -64,44 +64,46 @@ struct PhoneScreen: View {
                 )
                 .padding(.top, 4)
 
-                OnboardingBrandHeader(appeared: appeared)
+                ScrollView(.vertical, showsIndicators: false) {
+                  VStack(spacing: 0) {
+                    OnboardingBrandHeader(appeared: appeared)
 
-                // The WORDMARK sits under the mark on this screen, which the first two do not
-                // have — the design gives phone entry the full lockup.
-                BrandWordmark(size: 40, color: VoiidColor.textPrimary)
-                    .padding(.top, -8)
+                    // The WORDMARK sits under the mark on this screen, which the first two do
+                    // not have — the design gives phone entry the full lockup.
+                    BrandWordmark(size: 38, color: VoiidColor.textPrimary)
 
-                OnboardingTitle(leading: "Enter your ", accented: "phone number")
-                    .padding(.top, 14)
-
-                Text("We will send you a verification code\nto confirm your number.")
-                    .font(VoiidFont.rounded(17, .regular))
-                    .foregroundColor(VoiidColor.textSecondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.top, 8)
-
-                numberField
-                    .padding(.horizontal, 20)
-                    .padding(.top, 26)
-
-                if let errorText {
-                    Text(errorText)
-                        .font(VoiidFont.rounded(13, .regular))
-                        .foregroundColor(VoiidColor.error)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 24)
+                    OnboardingTitle(leading: "Enter your ", accented: "phone number")
                         .padding(.top, 10)
+
+                    Text("We will send you a verification code\nto confirm your number.")
+                        .font(VoiidFont.rounded(17, .regular))
+                        .foregroundColor(VoiidColor.textSecondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.top, 8)
+
+                    numberField
+                        .padding(.horizontal, 20)
+                        .padding(.top, 22)
+
+                    if let errorText {
+                        Text(errorText)
+                            .font(VoiidFont.rounded(13, .regular))
+                            .foregroundColor(VoiidColor.error)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 24)
+                            .padding(.top, 10)
+                    }
+
+                    safetyNote
+                        .padding(.horizontal, 24)
+                        .padding(.top, 18)
+
+                    OnboardingTrustStrip(items: Self.trustItems)
+                        .padding(.horizontal, 20)
+                        .padding(.top, 16)
+                        .padding(.bottom, 16)
+                  }
                 }
-
-                safetyNote
-                    .padding(.horizontal, 24)
-                    .padding(.top, 20)
-
-                OnboardingTrustStrip(items: Self.trustItems)
-                    .padding(.horizontal, 20)
-                    .padding(.top, 18)
-
-                Spacer(minLength: 12)
 
                 OnboardingPrimaryButton(title: "Continue", busy: sending) { sendOtp() }
                     .padding(.horizontal, 20)

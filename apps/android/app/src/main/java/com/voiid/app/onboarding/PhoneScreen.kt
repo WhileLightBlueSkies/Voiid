@@ -20,10 +20,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.CheckCircle
@@ -134,6 +136,10 @@ fun PhoneScreen(
             // than wired to a no-op that looks broken when tapped.
             OnboardingTopBar(onBack = onBack)
 
+            Column(
+                Modifier.weight(1f).verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
             OnboardingBrandHeader(appeared = appeared)
 
             // The WORDMARK sits under the mark on this screen, which the first two do not have —
@@ -259,7 +265,8 @@ fun PhoneScreen(
                 modifier = Modifier.padding(horizontal = 20.dp),
             )
 
-            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.height(16.dp))
+            }
 
             Box(Modifier.padding(horizontal = 20.dp).fillMaxWidth()) {
                 OnboardingPrimaryButton(

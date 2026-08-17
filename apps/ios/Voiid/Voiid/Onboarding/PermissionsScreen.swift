@@ -63,28 +63,33 @@ struct PermissionsScreen: View {
         ZStack {
             OnboardingBrand.ground.ignoresSafeArea()
 
+            // Scrolls, with the button pinned — see the note in WelcomeTermsScreen. This screen
+            // is the worse case of the two: SIX rows at ~72pt each, so the content is well over
+            // a small phone's height before the header is counted.
             VStack(spacing: 0) {
-                OnboardingBrandHeader(appeared: appeared)
-                    .padding(.top, 44)
+                ScrollView(.vertical, showsIndicators: false) {
+                  VStack(spacing: 0) {
+                    OnboardingBrandHeader(appeared: appeared)
+                        .padding(.top, 8)
 
-                titleBlock
-                    .padding(.top, 2)
+                    titleBlock
 
-                permissionsCard
-                    .padding(.horizontal, 20)
-                    .padding(.top, 22)
+                    permissionsCard
+                        .padding(.horizontal, 20)
+                        .padding(.top, 20)
 
-                privacyNote
-                    .padding(.horizontal, 24)
-                    .padding(.top, 20)
-
-                Spacer(minLength: 12)
+                    privacyNote
+                        .padding(.horizontal, 24)
+                        .padding(.top, 18)
+                        .padding(.bottom, 18)
+                  }
+                }
 
                 OnboardingPrimaryButton(title: "Allow Access", busy: requesting) {
                     Task { await requestAll() }
                 }
                 .padding(.horizontal, 20)
-                .padding(.bottom, 8)
+                .padding(.bottom, 10)
             }
         }
         .preferredColorScheme(.dark)
