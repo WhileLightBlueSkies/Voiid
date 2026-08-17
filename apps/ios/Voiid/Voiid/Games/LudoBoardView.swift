@@ -118,11 +118,11 @@ struct LudoBoardView: View {
         let isLegal = isMine && legal.contains(token.index)
 
         ZStack {
-            // A REAL PIECE, NOT A FILLED CIRCLE (§8.1 asks for "rounded pieces that look like
-            // objects that can be picked up"). Contact shadow, lit body, off-centre specular —
-            // three cheap layers in GameSurface that do most of what a sprite would.
+            // A MOULDED PAWN, NOT A DISC (§5.1). §8.1 asks for "rounded pieces that look like
+            // objects that can be picked up", and a lit circle never got there — a pawn's
+            // silhouette (base, waist, collar, head) is what actually says "piece".
             Canvas { ctx, size in
-                GameSurface.token(
+                GameSurface.pawn(
                     in: ctx,
                     centre: CGPoint(x: size.width / 2, y: size.height / 2),
                     radius: min(size.width, size.height) / 2 - 1,
@@ -134,10 +134,18 @@ struct LudoBoardView: View {
             // COLOUR IS NEVER THE ONLY CHANNEL (§8.1). Ludo is traditionally colour-only and
             // that is the trap: with four players it is four times worse than Snake's version of
             // the same problem, which CROSS_CUTTING.md §13 flags for ~8% of men.
+            // COLOUR IS NEVER THE ONLY CHANNEL (§8.1). Ludo is traditionally colour-only and
+            // that is the trap: with four players it is four times worse than Snake's version of
+            // the same problem, which CROSS_CUTTING.md §13 flags for ~8% of men.
+            //
+            // ON THE BASE BAND, not the head: the head now carries a specular highlight, and a
+            // glyph on top of it fights the gloss and loses. The base is flat, wide and always
+            // visible, so the marker stays legible without costing the piece its material.
             Image(systemName: Ludo.seatMarkers[token.seat % Ludo.maxSeats])
-                .font(.system(size: unit * 0.30, weight: .bold))
-                .foregroundStyle(.white.opacity(0.92))
-                .shadow(color: .black.opacity(0.35), radius: 0.5, y: 0.5)
+                .font(.system(size: unit * 0.22, weight: .bold))
+                .foregroundStyle(.white.opacity(0.95))
+                .shadow(color: .black.opacity(0.45), radius: 0.5, y: 0.5)
+                .offset(y: unit * 0.20)
         }
         // A 48pt HIT TARGET REGARDLESS OF VISUAL SIZE (§7.2). A 52-square track on a 390pt board
         // gives ~40pt cells and ~28pt tokens, well under the platform minimum, so the tappable

@@ -34,6 +34,13 @@ struct LudoView: View {
     /// only decides what is drawn during the 700 ms roll (§9).
     @State private var tumbling = false
     @State private var tumbleFace = 1
+    /// 1 while the die is tumbling, 0 once it has settled on the server's face.
+    ///
+    /// THE TUMBLE NEVER PICKS A NUMBER. It runs from the moment the roll is requested and drains
+    /// to zero; `LudoDie` settles to whatever `state.die` says, so the animation can never
+    /// disagree with the frame (§5.3).
+    @State private var dieTumble: Double = 0
+
 
     var body: some View {
         VStack(spacing: VoiidSpacing.sm) {
@@ -283,6 +290,11 @@ struct LudoView: View {
                 guard canRoll else { return }
                 engine.rollLudo()
                 LudoSound.dieRolled()
+            // Spin up immediately, then settle over 700 ms with a bounce — the die is in the
+            // air before the server has answered, which is what makes the roll feel like a roll
+            // rather than a lookup.
+            dieTumble = 1
+            withAnimation(.easeOut(duration: 0.70)) { dieTumble = 0 }
             } label: {
                 ZStack {
                     RoundedRectangle(cornerRadius: 12)
@@ -292,7 +304,7 @@ struct LudoView: View {
                                 .stroke(canRoll ? VoiidColor.primary
                                                : VoiidColor.textSecondary.opacity(0.25),
                                         lineWidth: 1.5))
-                    LudoDiePips(face: s.die ?? tumbleFace)
+                    LudoDie(face: s.die ?? tumbleFace, tumble: dieTumble)
                         .padding(12)
                         .foregroundStyle(canRoll || s.die != nil
                                          ? VoiidColor.textPrimary : VoiidColor.textSecondary)

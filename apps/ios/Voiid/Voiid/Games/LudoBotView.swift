@@ -27,6 +27,13 @@ struct LudoBotView: View {
     @EnvironmentObject var session: AppSession
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var lastDie = 0
+    /// 1 while the die is tumbling, 0 once it has settled on the server's face.
+    ///
+    /// THE TUMBLE NEVER PICKS A NUMBER. It runs from the moment the roll is requested and drains
+    /// to zero; `LudoDie` settles to whatever `state.die` says, so the animation can never
+    /// disagree with the frame (§5.3).
+    @State private var dieTumble: Double = 0
+
 
     private var s: LudoState { match.state }
 
@@ -183,6 +190,8 @@ struct LudoBotView: View {
             Button {
                 match.roll()
                 LudoSound.dieRolled()
+                dieTumble = 1
+                withAnimation(.easeOut(duration: 0.70)) { dieTumble = 0 }
             } label: {
                 ZStack {
                     RoundedRectangle(cornerRadius: 12)
@@ -192,10 +201,8 @@ struct LudoBotView: View {
                                 .stroke(match.canRoll ? VoiidColor.primary
                                                       : VoiidColor.textSecondary.opacity(0.25),
                                         lineWidth: 1.5))
-                    LudoDiePips(face: s.die ?? 1)
-                        .padding(12)
-                        .foregroundStyle(match.canRoll || s.die != nil
-                                         ? VoiidColor.textPrimary : VoiidColor.textSecondary)
+                    LudoDie(face: s.die ?? 1, tumble: dieTumble)
+                        .padding(10)
                 }
                 .frame(width: 64, height: 64)
             }
@@ -228,31 +235,5 @@ struct LudoBotView: View {
             captures: (cap?.count == 2 && s.lastMove?.seat == seat) ? 1 : 0,
             lost: (cap?.count == 2 && cap?[0] == seat) ? 1 : 0,
             won: s.winnerUserId == "you")
-    }
-}
-
-/// A die face as pips. Shared with the online screen's private copy by shape, not by code —
-/// see LudoView. Kept here so the bot screen has no dependency on the online one.
-struct LudoDiePips: View {
-    let face: Int
-
-    private static let layouts: [Int: [(Int, Int)]] = [
-        1: [(1, 1)],
-        2: [(0, 0), (2, 2)],
-        3: [(0, 0), (1, 1), (2, 2)],
-        4: [(0, 0), (2, 0), (0, 2), (2, 2)],
-        5: [(0, 0), (2, 0), (1, 1), (0, 2), (2, 2)],
-        6: [(0, 0), (2, 0), (0, 1), (2, 1), (0, 2), (2, 2)],
-    ]
-
-    var body: some View {
-        GeometryReader { geo in
-            let unit = geo.size.width / 3
-            ForEach(Array((Self.layouts[face] ?? []).enumerated()), id: \.offset) { _, p in
-                Circle()
-                    .frame(width: unit * 0.44, height: unit * 0.44)
-                    .position(x: (CGFloat(p.0) + 0.5) * unit, y: (CGFloat(p.1) + 0.5) * unit)
-            }
-        }
     }
 }
