@@ -220,6 +220,14 @@ enum SeaBattleCell: Equatable {
 /// GAMES.md §4 specifies exactly this split.
 struct SeaBattleGrid: View {
     let cells: [SeaBattleCell]
+    /// Ships to draw as HULLS rather than as cell fills (§6.3).
+    ///
+    /// Passed in rather than derived from `cells`, because a cell state cannot tell you which
+    /// ship it belongs to or which way that ship points — that is the whole reason ships have
+    /// to be drawn per ship. Empty on the enemy board until the terminal frame reveals a fleet.
+    var ships: [SeaBattleShip] = []
+    /// Ship type ids that have been sunk, so a wreck can be drawn as a wreck.
+    var sunkTypes: Set<Int> = []
     /// The aiming reticle, if any.
     var reticle: Int?
     /// Cell the shell is currently falling on, drawn mid-flight.
@@ -424,28 +432,83 @@ struct SeaBattleGrid: View {
             }
         }
 
+        // SHIPS, AS SHIPS. After the cells so a hull sits on the water, before the markers so
+        // a scorch lands ON the hull rather than under it.
+        for ship in ships {
+            drawShip(ship, in: ctx, cellSize: cellSize)
+        }
+
         if let reticle {
             let rect = cellRect(reticle, cellSize: cellSize)
             ctx.stroke(Path(roundedRect: rect.insetBy(dx: -1, dy: -1), cornerRadius: 2),
                        with: .color(Color(red: 0.72, green: 0.22, blue: 0.15)), lineWidth: 2)
         }
 
-        // THE SHELL (§9). The reticle contracts to a point over 380 ms, accelerating — because
-        // accelerating reads as falling. That window is also where the server's answer arrives,
-        // which is what lets a fully round-tripped game feel instant.
+        // THE BOMB (§6.4). A real projectile lobbed from a cannon at the near edge, replacing
+        // the contracting reticle that used to stand in for one.
+        //
+        // THE 380 ms FLIGHT IS THE SAME BUDGET AS BEFORE — it is the window the server's answer
+        // arrives in, and stretching it would add latency for decoration. Only the drawing
+        // changed.
+        //
+        // THREE DETAILS SELL THE ARC, and none of them is optional:
+        //   * the bomb SCALES along the flight (1.0 -> 1.55 -> 0.85), which is perspective in a
+        //     top-down view and the difference between "thrown" and "slid";
+        //   * a SHADOW tracks the straight muzzle->target line at ground level while the bomb
+        //     arcs above it — without it the arc reads as the bomb moving sideways;
+        //   * it TUMBLES, 2.5 turns over the flight.
         if let firing {
             let rect = cellRect(firing, cellSize: cellSize)
             let t = max(0, min(1, shellProgress))
-            // easeIn: t^2. Slow away, fast into the water.
-            let eased = t * t
-            let shrink = cellSize * 0.5 * (1 - eased)
-            ctx.stroke(Path(roundedRect: rect.insetBy(dx: shrink, dy: shrink), cornerRadius: 2),
-                       with: .color(Color(red: 0.72, green: 0.22, blue: 0.15)),
-                       lineWidth: 2 * (1 - eased) + 0.5)
-            let dot = cellSize * 0.06 + cellSize * 0.10 * eased
-            ctx.fill(Path(ellipseIn: CGRect(x: rect.midX - dot, y: rect.midY - dot,
-                                            width: dot * 2, height: dot * 2)),
-                     with: .color(ink.opacity(0.35 + 0.5 * eased)))
+            let board = cellSize * CGFloat(SeaBattle.size)
+
+            // The muzzle sits at the near edge, centred — the cannon in the reference art.
+            let muzzle = CGPoint(x: board / 2, y: board + cellSize * 0.35)
+            let target = CGPoint(x: rect.midX, y: rect.midY)
+
+            // Ground track: the straight line the shadow walks.
+            let ground = CGPoint(x: muzzle.x + (target.x - muzzle.x) * t,
+                                 y: muzzle.y + (target.y - muzzle.y) * t)
+
+            // Arc height scales with distance, clamped so a near shot still lobs and a far one
+            // does not leave the board.
+            let distanceCells = hypot(target.x - muzzle.x, target.y - muzzle.y) / cellSize
+            let arc = min(max(distanceCells * 0.28, 0.9), 3.2) * cellSize
+            let lift = arc * 4 * t * (1 - t)          // parabola, zero at both ends
+
+            let bomb = CGPoint(x: ground.x, y: ground.y - lift)
+            let scale = 1.0 + 0.55 * sin(t * .pi) - 0.15 * t
+            let radius = cellSize * 0.20 * scale
+
+            // Shadow first, on the water, shrinking as the bomb climbs away from it.
+            let shadowR = cellSize * 0.15 * (1 - 0.35 * sin(t * .pi))
+            ctx.fill(
+                Path(ellipseIn: CGRect(x: ground.x - shadowR, y: ground.y - shadowR * 0.5,
+                                       width: shadowR * 2, height: shadowR)),
+                with: .color(ink.opacity(0.28)))
+
+            // The bomb: a dark round body with a lit shoulder and a fuse spark, tumbling.
+            var body = ctx
+            body.translateBy(x: bomb.x, y: bomb.y)
+            body.rotate(by: .radians(t * 2.5 * 2 * .pi))
+            body.fill(
+                Path(ellipseIn: CGRect(x: -radius, y: -radius,
+                                       width: radius * 2, height: radius * 2)),
+                with: .radialGradient(
+                    Gradient(colors: [Color(red: 0.42, green: 0.44, blue: 0.48),
+                                      Color(red: 0.12, green: 0.13, blue: 0.16)]),
+                    center: CGPoint(x: -radius * 0.3, y: -radius * 0.3),
+                    startRadius: 0, endRadius: radius * 1.6))
+            body.fill(
+                Path(ellipseIn: CGRect(x: radius * 0.35, y: -radius * 0.95,
+                                       width: radius * 0.5, height: radius * 0.5)),
+                with: .color(Color(red: 1.0, green: 0.74, blue: 0.28).opacity(0.9)))
+
+            // The reticle stays on the target the whole way, so the player never loses track of
+            // where the bomb is going to land.
+            ctx.stroke(Path(roundedRect: rect.insetBy(dx: -1, dy: -1), cornerRadius: 2),
+                       with: .color(Color(red: 0.72, green: 0.22, blue: 0.15).opacity(0.5)),
+                       lineWidth: 1.5)
         }
 
         // THE SUNK OUTLINE, DRAWN IN CELL BY CELL (§9). A ship that simply turns dark reads as a
@@ -455,6 +518,50 @@ struct SeaBattleGrid: View {
             let rect = cellRect(cell, cellSize: cellSize)
             ctx.stroke(Path(roundedRect: rect.insetBy(dx: -1, dy: -1), cornerRadius: 2),
                        with: .color(Color(red: 0.42, green: 0.13, blue: 0.10)), lineWidth: 2)
+        }
+    }
+
+    /// One ship, drawn across its whole bounding box.
+    ///
+    /// A VERTICAL SHIP IS THE HORIZONTAL PATH ROTATED, not a second set of paths: two hand-drawn
+    /// orientations is two things to keep in sync, and a hull is symmetric about its keel.
+    private func drawShip(_ ship: SeaBattleShip, in ctx: GraphicsContext, cellSize: CGFloat) {
+        guard let (rect, horizontal) = SeaBattleShipArt.frame(
+            cells: ship.cells, cellSize: cellSize) else { return }
+
+        let sunk = sunkTypes.contains(ship.type)
+        // Unit space runs along the ship's LENGTH, so a vertical ship is drawn into a rotated
+        // box of the same proportions.
+        let length = horizontal ? rect.width : rect.height
+        let beam = horizontal ? rect.height : rect.width
+
+        var layer = ctx
+        layer.translateBy(x: rect.midX, y: rect.midY)
+        if !horizontal { layer.rotate(by: .degrees(90)) }
+        // A sunk hull rolls and settles rather than simply turning dark — a state change reads
+        // as a state change, a list reads as a ship going down.
+        if sunk {
+            layer.rotate(by: .degrees(8))
+            layer.opacity = 0.85
+        }
+        layer.scaleBy(x: length, y: beam)
+        layer.translateBy(x: -0.5, y: -0.5)
+
+        let hull = SeaBattleShipArt.hull(type: ship.type)
+        layer.fill(hull, with: .linearGradient(
+            Gradient(colors: sunk
+                     ? [SeaBattleShipArt.hullSunk, SeaBattleShipArt.hullSunk.opacity(0.8)]
+                     : [SeaBattleShipArt.hullLit, SeaBattleShipArt.hullBody]),
+            startPoint: CGPoint(x: 0.5, y: 0),
+            endPoint: CGPoint(x: 0.5, y: 1)))
+        // The outline is what makes it read at a 33 pt cell. Scaled inversely so it stays one
+        // hairline wide however long the ship is.
+        layer.stroke(hull, with: .color(SeaBattleShipArt.hullInk),
+                     lineWidth: 1.6 / max(length, 1))
+
+        for detail in SeaBattleShipArt.details(type: ship.type) {
+            layer.fill(detail, with: .color(
+                sunk ? SeaBattleShipArt.hullSunk : SeaBattleShipArt.hullDeck))
         }
     }
 
@@ -470,8 +577,11 @@ struct SeaBattleGrid: View {
         case .miss:    return sea.opacity(0.35)
         case .hit:     return paper
         case .sunk:    return paper
-        case .ship:    return ink.opacity(0.62)
-        case .shipHit: return ink.opacity(0.45)
+        // WATER, NOT INK. The hull is drawn over these cells by `drawShip`, so a filled square
+        // underneath would show around the bow and stern where the silhouette narrows. A ship
+        // sits ON the sea; the cell's job is now only to be sea.
+        case .ship:    return sea.opacity(0.55)
+        case .shipHit: return sea.opacity(0.55)
         }
     }
 }

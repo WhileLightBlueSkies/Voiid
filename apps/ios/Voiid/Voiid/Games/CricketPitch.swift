@@ -123,6 +123,11 @@ struct CricketPitch: View {
     var announcement: CricketAnnouncement?
 
     @State private var strike: CGFloat = 0
+    /// 0...1 through the bowler's run-up and delivery, ahead of the ball's own flight.
+    @State private var delivery: CGFloat = 0
+    /// A full run-up only on the first ball of an over; after that the bowler is already at the
+    /// crease (§4.4). A full run-up before all six balls gets old by the third one.
+    @State private var fullRunUp = true
     @State private var flight: CGFloat = 0
     @State private var bannerPop: CGFloat = 0
     @State private var shown: BallEvent?
@@ -152,23 +157,20 @@ struct CricketPitch: View {
                                         anchor: .bottom)
                         .position(x: w * 0.11, y: h * 0.52)
 
-                    // The batter: a simple figure that leans into the shot. Reads as a person at
-                    // a glance without needing art.
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color(red: 0.93, green: 0.91, blue: 0.96))
-                        .frame(width: 13, height: 40)
-                        .rotationEffect(.degrees(10 * Double(strike)), anchor: .bottom)
-                        .position(x: w * 0.165, y: h * 0.50)
+                    // THE BATTER, RIGGED (§4). Seven bones driven by the shot table in
+                    // CricketFigures, which is itself driven by the SAME reach/arc/duration
+                    // tables the ball uses — so a six's pose and a six's flight cannot disagree.
+                    Canvas { ctx, size in
+                        drawBatter(ctx: ctx, size: size)
+                    }
+                    .frame(width: w, height: h)
 
-                    // The bat. Swings through on any shot; stays down on a bowled.
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(LinearGradient(
-                            colors: [Color(red: 0.91, green: 0.75, blue: 0.46),
-                                     Color(red: 0.73, green: 0.51, blue: 0.18)],
-                            startPoint: .top, endPoint: .bottom))
-                        .frame(width: 11, height: 56)
-                        .rotationEffect(.degrees(24 - 78 * Double(strike)), anchor: .bottom)
-                        .position(x: w * 0.215, y: h * 0.52)
+                    // THE BOWLER, which did not exist at all. The ball used to appear at
+                    // x = 0.86 with nothing to have bowled it.
+                    Canvas { ctx, size in
+                        drawBowler(ctx: ctx, size: size)
+                    }
+                    .frame(width: w, height: h)
 
                     trail(w: w, h: h)
                     ball(w: w, h: h)
@@ -244,6 +246,133 @@ struct CricketPitch: View {
         }
     }
 
+    // MARK: - Figures
+
+    private func drawBatter(ctx: GraphicsContext, size: CGSize) {
+        guard let e = shown else { return }
+        let pose = CricketFigures.pose(for: e, t: Double(strike))
+        let scale = size.height * 0.30
+        // Feet on the batting crease, which is where the old rectangles stood.
+        let feet = CGPoint(x: size.width * (0.175 + pose.stride * 0.35), y: size.height * 0.62)
+        drawFigure(ctx: ctx, pose: pose, feet: feet, scale: scale, kit: CricketFigures.kit)
+    }
+
+    /// One side-on figure: legs, torso, head, arms and bat, drawn as tapered capsules.
+    private func drawFigure(
+        ctx: GraphicsContext, pose: CricketFigures.BatterPose,
+        feet: CGPoint, scale: CGFloat, kit: Color
+    ) {
+        func limb(_ from: CGPoint, _ angle: Double, _ length: CGFloat,
+                  _ width: CGFloat, _ colour: Color) -> CGPoint {
+            let rad = (angle - 90) * .pi / 180
+            let to = CGPoint(x: from.x + CGFloat(cos(rad)) * length,
+                             y: from.y + CGFloat(sin(rad)) * length)
+            var seg = Path()
+            seg.move(to: from)
+            seg.addLine(to: to)
+            ctx.stroke(seg, with: .color(CricketFigures.ink),
+                       style: StrokeStyle(lineWidth: width + 2.2, lineCap: .round))
+            ctx.stroke(seg, with: .color(colour),
+                       style: StrokeStyle(lineWidth: width, lineCap: .round))
+            return to
+        }
+
+        // Legs first — they sit behind the torso.
+        _ = limb(feet, 180 + pose.backLeg, scale * 0.34, scale * 0.13, kit)
+        let hip = CGPoint(x: feet.x, y: feet.y - scale * 0.34)
+        _ = limb(feet, 180 - pose.frontLeg, scale * 0.34, scale * 0.13, kit)
+
+        // Torso and head.
+        let shoulder = limb(hip, pose.torso, scale * 0.40, scale * 0.19, kit)
+        let headR = scale * 0.11
+        ctx.fill(
+            Path(ellipseIn: CGRect(x: shoulder.x - headR, y: shoulder.y - headR * 2.1,
+                                   width: headR * 2, height: headR * 2)),
+            with: .color(CricketFigures.ink))
+        ctx.fill(
+            Path(ellipseIn: CGRect(x: shoulder.x - headR * 0.82,
+                                   y: shoulder.y - headR * 2.0,
+                                   width: headR * 1.64, height: headR * 1.64)),
+            with: .color(CricketFigures.skin))
+
+        // Arms, then the bat from the hands. The bat is what the eye tracks, so it is drawn last
+        // and widest.
+        let hands = limb(shoulder, 150 + pose.frontArm, scale * 0.30, scale * 0.10,
+                         CricketFigures.skin)
+        _ = limb(shoulder, 160 + pose.backArm, scale * 0.28, scale * 0.10, CricketFigures.skin)
+
+        let batRad = (pose.bat - 90) * .pi / 180
+        let batTip = CGPoint(x: hands.x + CGFloat(cos(batRad)) * scale * 0.52,
+                             y: hands.y + CGFloat(sin(batRad)) * scale * 0.52)
+        var bat = Path()
+        bat.move(to: hands)
+        bat.addLine(to: batTip)
+        ctx.stroke(bat, with: .color(CricketFigures.ink),
+                   style: StrokeStyle(lineWidth: scale * 0.15, lineCap: .round))
+        ctx.stroke(bat, with: .linearGradient(
+            Gradient(colors: [CricketFigures.batFace, CricketFigures.batEdge]),
+            startPoint: hands, endPoint: batTip),
+            style: StrokeStyle(lineWidth: scale * 0.11, lineCap: .round))
+    }
+
+    /// The bowler: a figure running in with a rotating arm. Off-frame until a ball begins.
+    private func drawBowler(ctx: GraphicsContext, size: CGSize) {
+        guard shown != nil, delivery > 0 else { return }
+        let t = Double(delivery)
+        let scale = size.height * 0.28
+        let x = size.width * CGFloat(CricketFigures.bowlerRun(t, full: fullRunUp))
+        let feet = CGPoint(x: x, y: size.height * 0.60)
+
+        // Legs stride as they run — a two-phase alternation, enough at this size.
+        let phase = sin(t * 18) * 14
+        var pose = CricketFigures.BatterPose()
+        pose.frontLeg = phase
+        pose.backLeg = -phase
+        pose.torso = -6
+        // The arm carries the ball over the top and releases at the apex.
+        pose.frontArm = CricketFigures.bowlerArm(t) - 150
+        pose.backArm = CricketFigures.bowlerArm(t) - 330
+        // No bat: the bowler's "bat" bone is collapsed to nothing.
+        pose.bat = 0
+
+        drawBowlerFigure(ctx: ctx, pose: pose, feet: feet, scale: scale)
+    }
+
+    /// Same limb construction as the batter, minus the bat.
+    private func drawBowlerFigure(
+        ctx: GraphicsContext, pose: CricketFigures.BatterPose,
+        feet: CGPoint, scale: CGFloat
+    ) {
+        func limb(_ from: CGPoint, _ angle: Double, _ length: CGFloat,
+                  _ width: CGFloat, _ colour: Color) -> CGPoint {
+            let rad = (angle - 90) * .pi / 180
+            let to = CGPoint(x: from.x + CGFloat(cos(rad)) * length,
+                             y: from.y + CGFloat(sin(rad)) * length)
+            var seg = Path()
+            seg.move(to: from)
+            seg.addLine(to: to)
+            ctx.stroke(seg, with: .color(CricketFigures.ink),
+                       style: StrokeStyle(lineWidth: width + 2.0, lineCap: .round))
+            ctx.stroke(seg, with: .color(colour),
+                       style: StrokeStyle(lineWidth: width, lineCap: .round))
+            return to
+        }
+
+        _ = limb(feet, 180 + pose.backLeg, scale * 0.34, scale * 0.12, CricketFigures.bowlerKit)
+        let hip = CGPoint(x: feet.x, y: feet.y - scale * 0.34)
+        _ = limb(feet, 180 - pose.frontLeg, scale * 0.34, scale * 0.12, CricketFigures.bowlerKit)
+
+        let shoulder = limb(hip, pose.torso, scale * 0.38, scale * 0.18, CricketFigures.bowlerKit)
+        let headR = scale * 0.10
+        ctx.fill(
+            Path(ellipseIn: CGRect(x: shoulder.x - headR, y: shoulder.y - headR * 2.0,
+                                   width: headR * 2, height: headR * 2)),
+            with: .color(CricketFigures.skin))
+
+        _ = limb(shoulder, pose.frontArm, scale * 0.32, scale * 0.09, CricketFigures.skin)
+        _ = limb(shoulder, pose.backArm, scale * 0.30, scale * 0.09, CricketFigures.skin)
+    }
+
     // MARK: - Motion
 
     private func play() {
@@ -253,11 +382,19 @@ struct CricketPitch: View {
         flight = 0
         bannerPop = 0
 
+        // THE BOWLER RUNS IN FIRST. Release is at the top of the arm's arc, and the ball's own
+        // flight starts from there — so the ball is seen to be bowled rather than to appear.
+        delivery = 0
+        let runUp = fullRunUp ? 0.50 : 0.26
+        withAnimation(.easeIn(duration: runUp)) { delivery = 1 }
+
         // Bat first, ball after contact — in that order, or the ball appears to move before it
-        // was hit. A bowled has no connecting swing.
-        if e != .bowled {
-            withAnimation(.easeOut(duration: 0.17)) { strike = 1 }
-        }
+        // was hit.
+        //
+        // A BOWLED SWINGS TOO, and that is a change. The old code skipped the swing entirely on
+        // a bowled, so a player watched their batter stand perfectly still while the stumps fell
+        // over. A batter who is bowled DID play a shot; the miss is the drama (§4.3).
+        withAnimation(.easeOut(duration: 0.17).delay(runUp * 0.7)) { strike = 1 }
 
         // Haptics graded by how big the event is: a mini tick for small runs, a light knock for a
         // four, a rising thump for a six. A wicket gets its own signature so it never feels like
@@ -270,12 +407,24 @@ struct CricketPitch: View {
         case .caught, .bowled:          Haptics.rigid()
         }
 
-        withAnimation(.linear(duration: e.flightDuration).delay(e == .bowled ? 0 : 0.12)) {
+        // Delayed past the bowler's release, so the ball leaves a hand rather than a coordinate.
+        let release = runUp * CricketFigures.releaseAt
+        withAnimation(.linear(duration: e.flightDuration)
+            .delay(release + (e == .bowled ? 0 : 0.12))) {
             flight = 1
         }
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.55).delay(0.1)) {
+        // After the first ball the bowler is already at the crease. A full run-up before all six
+        // balls of an over gets old by the third (§4.4).
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.55).delay(release + 0.1)) {
             bannerPop = 1
         }
+
+        // After the first ball the bowler is already at the crease. A full run-up before all six
+        // balls of an over gets old by the third (§4.4).
+        //
+        // SET LAST, deliberately: `runUp` and `release` above are THIS ball's timings, and
+        // flipping the flag before they are read would give this ball the next one's pacing.
+        fullRunUp = false
     }
 
     /// Where the ball is at progress `p`.

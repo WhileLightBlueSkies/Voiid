@@ -140,6 +140,89 @@ enum GameSurface {
     ///   1. a contact shadow, offset DOWN — the piece sits on the board
     ///   2. a vertical gradient — lit from above, darker underneath
     ///   3. a small off-centre highlight — a hard light source, up and to the left
+    /// A LUDO PAWN — a moulded plastic piece, not a lit disc (§5.1).
+    ///
+    /// `token` above draws a disc, which was right when the board was flat but is the reason the
+    /// pieces never read as objects you could pick up. A pawn is four stacked shapes: base,
+    /// waist, collar, head. Glossy rather than matte, because Ludo King's pieces read as
+    /// polished plastic and that is most of the appeal.
+    ///
+    /// THE PIECE STILL SITS ON `centre`. The shadow moves for the hop, never the body — the
+    /// piece and the square the rules say it occupies must agree.
+    static func pawn(
+        in ctx: GraphicsContext, centre: CGPoint, radius: CGFloat, color: Color,
+        lifted: Bool = false
+    ) {
+        let shadowDrop = radius * (lifted ? 0.72 : 0.52)
+        let shadowScale = lifted ? 0.72 : 0.92
+
+        // 1. Contact shadow, UNDER the piece. Shrinks, drops away and softens as it lifts, which
+        //    is most of what sells a hop as leaving the board.
+        ctx.fill(
+            Path(ellipseIn: CGRect(
+                x: centre.x - radius * shadowScale,
+                y: centre.y + shadowDrop - radius * 0.18,
+                width: radius * 2 * shadowScale,
+                height: radius * 0.46)),
+            with: .color(.black.opacity(lifted ? 0.13 : 0.26)))
+
+        // 2. Base: a squashed ellipse the piece stands on.
+        let baseRY = radius * 0.22
+        let baseY = centre.y + radius * 0.52
+        ctx.fill(
+            Path(ellipseIn: CGRect(x: centre.x - radius * 0.50, y: baseY - baseRY,
+                                   width: radius, height: baseRY * 2)),
+            with: .linearGradient(
+                Gradient(colors: [color, darken(color, 0.34)]),
+                startPoint: CGPoint(x: centre.x, y: baseY - baseRY),
+                endPoint: CGPoint(x: centre.x, y: baseY + baseRY)))
+
+        // 3. Waist: two mirrored curves from the base up to the neck. This is the silhouette
+        //    that says "pawn" — a cylinder would read as a checker.
+        var waist = Path()
+        waist.move(to: CGPoint(x: centre.x - radius * 0.50, y: baseY))
+        waist.addQuadCurve(
+            to: CGPoint(x: centre.x - radius * 0.22, y: centre.y - radius * 0.10),
+            control: CGPoint(x: centre.x - radius * 0.46, y: centre.y + radius * 0.10))
+        waist.addLine(to: CGPoint(x: centre.x + radius * 0.22, y: centre.y - radius * 0.10))
+        waist.addQuadCurve(
+            to: CGPoint(x: centre.x + radius * 0.50, y: baseY),
+            control: CGPoint(x: centre.x + radius * 0.46, y: centre.y + radius * 0.10))
+        waist.closeSubpath()
+        ctx.fill(waist, with: .linearGradient(
+            Gradient(colors: [lighten(color, 0.20), color, darken(color, 0.28)]),
+            startPoint: CGPoint(x: centre.x - radius * 0.5, y: centre.y),
+            endPoint: CGPoint(x: centre.x + radius * 0.5, y: centre.y)))
+
+        // 4. Collar: the thin band between waist and head. The detail that makes it read as
+        //    MOULDED rather than carved.
+        ctx.fill(
+            Path(ellipseIn: CGRect(x: centre.x - radius * 0.30,
+                                   y: centre.y - radius * 0.20,
+                                   width: radius * 0.60, height: radius * 0.16)),
+            with: .color(lighten(color, 0.12)))
+
+        // 5. Head.
+        let head = CGRect(x: centre.x - radius * 0.34, y: centre.y - radius * 0.78,
+                          width: radius * 0.68, height: radius * 0.68)
+        ctx.fill(Path(ellipseIn: head), with: .linearGradient(
+            Gradient(colors: [lighten(color, 0.30), color, darken(color, 0.24)]),
+            startPoint: CGPoint(x: head.minX, y: head.minY),
+            endPoint: CGPoint(x: head.maxX, y: head.maxY)))
+
+        // 6. Specular on the head's upper-left, and a rim light on the lower-right. Two lights
+        //    is what separates gloss from a flat fill.
+        ctx.fill(
+            Path(ellipseIn: CGRect(x: head.minX + head.width * 0.16,
+                                   y: head.minY + head.height * 0.12,
+                                   width: head.width * 0.30, height: head.height * 0.26)),
+            with: .color(.white.opacity(0.72)))
+        ctx.stroke(
+            Path(ellipseIn: head.insetBy(dx: radius * 0.03, dy: radius * 0.03)),
+            with: .color(.white.opacity(0.25)),
+            lineWidth: max(0.6, radius * 0.05))
+    }
+
     static func token(
         in ctx: GraphicsContext, centre: CGPoint, radius: CGFloat, color: Color,
         lifted: Bool = false

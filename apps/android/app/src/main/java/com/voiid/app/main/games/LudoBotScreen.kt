@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.sp
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidSpacing
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * Practice against local bots. No server, no match row, no connection needed.
@@ -59,6 +60,13 @@ fun LudoBotScreen(level: BotDifficulty, skill: Float, onClose: () -> Unit) {
     val haptics = remember { GameHaptics(context) }
     val reduceMotion = remember { ReduceMotion.isEnabled(context) }
     var lastDie by remember { mutableIntStateOf(0) }
+    // 1 while the die is tumbling, 0 once it has settled on the server's face.
+    //
+    // THE TUMBLE NEVER PICKS A NUMBER. It runs from the moment the roll is requested and drains
+    // to zero; LudoDie settles to whatever the state says, so the animation can never disagree
+    // with the frame (§5.3).
+    val dieTumble = remember { androidx.compose.animation.core.Animatable(0f) }
+
 
     // Bumped whenever a bot seat owes a beat. The delay loop lives HERE, scoped to this screen,
     // so a bot move can never land after the player has left the match.

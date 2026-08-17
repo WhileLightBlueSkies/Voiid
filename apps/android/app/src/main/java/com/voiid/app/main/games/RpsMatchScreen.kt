@@ -93,10 +93,8 @@ fun RpsMatchScreen(
         onDispose { GameAudio.release("rps") }
     }
 
-    /**
-     * True while the shared wind-up is running — see the header for the one condition that makes
-     * it honest. Drives the forearm swing on BOTH hands.
-     */
+    // True while the shared wind-up is running — see the header for the one condition that
+    // makes it honest. Drives the forearm swing on BOTH hands.
     var winding by remember { mutableStateOf(false) }
 
     // BOTH PLAYERS HAVE THROWN: the resolved frame is imminent and known to be, so the wind-up
@@ -327,12 +325,6 @@ private val THROWS = listOf(
     "scissors" to "✌️",
 )
 
-private fun glyphFor(throwName: String?): String = when (throwName) {
-    "rock" -> "✊"
-    "paper" -> "✋"
-    "scissors" -> "✌️"
-    else -> "✊"
-}
 
 @Composable
 private fun ScoreBlock(label: String, wins: Int) {

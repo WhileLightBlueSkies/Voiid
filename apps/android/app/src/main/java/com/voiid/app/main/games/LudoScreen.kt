@@ -81,6 +81,13 @@ fun LudoScreen(
     val me = engine.myUserId
     val haptics = remember { GameHaptics(context) }
     val scope = rememberCoroutineScope()
+    // 1 while the die is tumbling, 0 once it has settled on the server's face.
+    //
+    // THE TUMBLE NEVER PICKS A NUMBER. It runs from the moment the roll is requested and drains
+    // to zero; LudoDie settles to whatever the state says, so the animation can never disagree
+    // with the frame (§5.3).
+    val dieTumble = remember { androidx.compose.animation.core.Animatable(0f) }
+
     val hop = remember(scope) { LudoHop(scope) }
     val reduceMotion = remember(context) { ReduceMotion.isEnabled(context) }
     // The die face the CURRENT move was made with: `die` is cleared when the turn passes, so the
@@ -478,7 +485,7 @@ private fun LudoTokenView(
         // layers as iOS, from the same shared GameSurface.
         Canvas(Modifier.fillMaxSize()) {
             with(GameSurface) {
-                token(
+                pawn(
                     centre = Offset(size.width / 2, size.height / 2),
                     radius = min(size.width, size.height) / 2 - 1f,
                     color = Ludo.SEAT_COLORS[seat % Ludo.MAX_SEATS]
@@ -568,7 +575,13 @@ fun Status(
 
 /** The die is the primary target: bottom-centre, large, reachable by either thumb (§7.2). */
 @Composable
-fun DieButton(s: GamesEngine.LudoState, isMyTurn: Boolean, onRoll: () -> Unit) {
+fun DieButton(
+    s: GamesEngine.LudoState,
+    isMyTurn: Boolean,
+    /** 1 while tumbling, 0 once settled. Never picks a number — see [LudoDie]. */
+    tumble: Float = 0f,
+    onRoll: () -> Unit,
+) {
     val canRoll = isMyTurn && s.phase == "awaitingRoll"
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -589,8 +602,11 @@ fun DieButton(s: GamesEngine.LudoState, isMyTurn: Boolean, onRoll: () -> Unit) {
                 .clickable(enabled = canRoll) { onRoll() },
             contentAlignment = Alignment.Center,
         ) {
-            DiePips(s.die ?: 1, if (canRoll || s.die != null) VoiidColor.textPrimary
-                                else VoiidColor.textSecondary)
+            LudoDie(
+                face = s.die ?: 1,
+                modifier = Modifier.padding(6.dp),
+                tumble = tumble,
+            )
         }
 
         // The three-sixes rule is invisible unless it is shown, and a player who does not know
@@ -606,25 +622,3 @@ fun DieButton(s: GamesEngine.LudoState, isMyTurn: Boolean, onRoll: () -> Unit) {
     }
 }
 
-/** A die face as pips rather than a numeral — a numeral reads as a score, pips read as a die. */
-@Composable
-fun DiePips(face: Int, color: Color) {
-    val layouts = mapOf(
-        1 to listOf(1 to 1),
-        2 to listOf(0 to 0, 2 to 2),
-        3 to listOf(0 to 0, 1 to 1, 2 to 2),
-        4 to listOf(0 to 0, 2 to 0, 0 to 2, 2 to 2),
-        5 to listOf(0 to 0, 2 to 0, 1 to 1, 0 to 2, 2 to 2),
-        6 to listOf(0 to 0, 2 to 0, 0 to 1, 2 to 1, 0 to 2, 2 to 2),
-    )
-    Canvas(Modifier.size(40.dp)) {
-        val unit = size.width / 3
-        layouts[face].orEmpty().forEach { (px, py) ->
-            drawCircle(
-                color,
-                radius = unit * 0.22f,
-                center = Offset((px + 0.5f) * unit, (py + 0.5f) * unit),
-            )
-        }
-    }
-}

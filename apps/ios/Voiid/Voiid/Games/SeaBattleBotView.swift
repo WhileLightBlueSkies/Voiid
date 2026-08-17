@@ -106,6 +106,28 @@ struct SeaBattleBotView: View {
         }
     }
 
+    /// THEIR ships, and ONLY the ones I am allowed to see — the identical rule the online screen
+    /// follows. The bot's fleet is not in the state until the terminal frame reveals it.
+    private var enemyShips: [SeaBattleShip] {
+        let enemy = SeaBattleBotMatch.botSeat
+        if s.finished, let revealed = s.revealedFleets, revealed.indices.contains(enemy) {
+            return revealed[enemy].map {
+                SeaBattleShip(type: $0.type, cells: $0.cells, hits: $0.hits)
+            }
+        }
+        let cells = s.sunkCells[enemy]
+        var out: [SeaBattleShip] = []
+        var cursor = 0
+        for type in s.sunk[enemy] {
+            let length = SeaBattle.fleetSpec.indices.contains(type)
+                ? SeaBattle.fleetSpec[type] : 2
+            guard cursor + length <= cells.count else { break }
+            out.append(SeaBattleShip(type: type, cells: Array(cells[cursor..<(cursor + length)])))
+            cursor += length
+        }
+        return out
+    }
+
     // MARK: - The result
 
     /// Built from the same state the online screen reads — the bot match produces a frame of
@@ -142,6 +164,7 @@ struct SeaBattleBotView: View {
 
             SeaBattleGrid(
                 cells: draftCells,
+                ships: draft,
                 onTap: { cell in if let type = shipAt(cell) { rotate(type) } },
                 onDrag: { cell in dragShip(to: cell) })
                 .padding(.horizontal, VoiidSpacing.sm)
@@ -234,6 +257,8 @@ struct SeaBattleBotView: View {
     private var enemyBoard: some View {
         SeaBattleGrid(
             cells: SeaBattleCells.enemy(s, mySeat: SeaBattleBotMatch.humanSeat),
+            ships: enemyShips,
+            sunkTypes: Set(s.sunk[SeaBattleBotMatch.botSeat]),
             reticle: reticle,
             shellProgress: motion.shellProgress,
             sunkReveal: motion.sunkReveal,
@@ -248,6 +273,10 @@ struct SeaBattleBotView: View {
     private var ownBoard: some View {
         SeaBattleGrid(
             cells: SeaBattleCells.own(s, mySeat: SeaBattleBotMatch.humanSeat, draft: draft),
+            ships: s.myFleet.isEmpty
+                ? draft
+                : s.myFleet.map { SeaBattleShip(type: $0.type, cells: $0.cells, hits: $0.hits) },
+            sunkTypes: Set(s.sunk[SeaBattleBotMatch.humanSeat]),
             dimmed: match.canFire,
             showLabels: false)
     }

@@ -240,7 +240,12 @@ fun SeaBattleScreen(
                                 color = VoiidColor.textSecondary,
                                 modifier = Modifier.padding(top = VoiidSpacing.sm),
                             )
-                            SeaBattleGrid(cells = ownCells(s, mySeat, draft), dimmed = true)
+                            SeaBattleGrid(
+                                cells = ownCells(s, mySeat, draft),
+                                ships = myShips(s, draft),
+                                sunkTypes = sunkTypesFor(s, mySeat ?: 0),
+                                dimmed = true,
+                            )
                         }
                     } else {
                         Text(
@@ -252,6 +257,7 @@ fun SeaBattleScreen(
                         )
                         SeaBattleGrid(
                             cells = draftCells(draft),
+                            ships = draft,
                             onTap = { cell ->
                                 // Tap while dragging rotates. A separate rotate button is a
                                 // two-handed operation and a long-press conflicts with the drag.

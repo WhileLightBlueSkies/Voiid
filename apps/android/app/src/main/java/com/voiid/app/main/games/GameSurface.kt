@@ -6,6 +6,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
@@ -140,6 +141,101 @@ object GameSurface {
      * shadow, which drifted every token off the square the rules say it occupies — the piece and
      * its position must agree, so the shadow moves instead.
      */
+    /**
+     * A LUDO PAWN — a moulded plastic piece, not a lit disc (§5.1).
+     *
+     * [token] below draws a disc, which was right when the board was flat but is the reason the
+     * pieces never read as objects you could pick up. A pawn is four stacked shapes: base, waist,
+     * collar, head. Glossy rather than matte, because Ludo King's pieces read as polished plastic
+     * and that is most of the appeal.
+     *
+     * THE PIECE STILL SITS ON [centre]. The shadow moves for the hop, never the body — the piece
+     * and the square the rules say it occupies must agree.
+     */
+    fun DrawScope.pawn(centre: Offset, radius: Float, color: Color, lifted: Boolean = false) {
+        val shadowDrop = radius * if (lifted) 0.72f else 0.52f
+        val shadowScale = if (lifted) 0.72f else 0.92f
+
+        // 1. Contact shadow, UNDER the piece.
+        drawOval(
+            color = Color.Black.copy(alpha = if (lifted) 0.13f else 0.26f),
+            topLeft = Offset(
+                centre.x - radius * shadowScale,
+                centre.y + shadowDrop - radius * 0.18f),
+            size = Size(radius * 2 * shadowScale, radius * 0.46f),
+        )
+
+        // 2. Base: a squashed ellipse the piece stands on.
+        val baseRy = radius * 0.22f
+        val baseY = centre.y + radius * 0.52f
+        drawOval(
+            brush = Brush.verticalGradient(
+                listOf(color, darken(color, 0.34f)),
+                startY = baseY - baseRy, endY = baseY + baseRy,
+            ),
+            topLeft = Offset(centre.x - radius * 0.50f, baseY - baseRy),
+            size = Size(radius, baseRy * 2),
+        )
+
+        // 3. Waist: two mirrored curves from the base up to the neck. This is the silhouette
+        //    that says "pawn" — a cylinder would read as a checker.
+        val waist = Path().apply {
+            moveTo(centre.x - radius * 0.50f, baseY)
+            quadraticTo(
+                centre.x - radius * 0.46f, centre.y + radius * 0.10f,
+                centre.x - radius * 0.22f, centre.y - radius * 0.10f)
+            lineTo(centre.x + radius * 0.22f, centre.y - radius * 0.10f)
+            quadraticTo(
+                centre.x + radius * 0.46f, centre.y + radius * 0.10f,
+                centre.x + radius * 0.50f, baseY)
+            close()
+        }
+        drawPath(
+            waist,
+            Brush.horizontalGradient(
+                listOf(lighten(color, 0.20f), color, darken(color, 0.28f)),
+                startX = centre.x - radius * 0.5f, endX = centre.x + radius * 0.5f,
+            ),
+        )
+
+        // 4. Collar: the thin band between waist and head. The detail that makes it read as
+        //    MOULDED rather than carved.
+        drawOval(
+            color = lighten(color, 0.12f),
+            topLeft = Offset(centre.x - radius * 0.30f, centre.y - radius * 0.20f),
+            size = Size(radius * 0.60f, radius * 0.16f),
+        )
+
+        // 5. Head.
+        val headTopLeft = Offset(centre.x - radius * 0.34f, centre.y - radius * 0.78f)
+        val headSize = Size(radius * 0.68f, radius * 0.68f)
+        drawOval(
+            brush = Brush.linearGradient(
+                listOf(lighten(color, 0.30f), color, darken(color, 0.24f)),
+                start = headTopLeft,
+                end = Offset(headTopLeft.x + headSize.width, headTopLeft.y + headSize.height),
+            ),
+            topLeft = headTopLeft,
+            size = headSize,
+        )
+
+        // 6. Specular on the head's upper-left, and a rim light. Two lights is what separates
+        //    gloss from a flat fill.
+        drawOval(
+            color = Color.White.copy(alpha = 0.72f),
+            topLeft = Offset(
+                headTopLeft.x + headSize.width * 0.16f,
+                headTopLeft.y + headSize.height * 0.12f),
+            size = Size(headSize.width * 0.30f, headSize.height * 0.26f),
+        )
+        drawOval(
+            color = Color.White.copy(alpha = 0.25f),
+            topLeft = Offset(headTopLeft.x + radius * 0.03f, headTopLeft.y + radius * 0.03f),
+            size = Size(headSize.width - radius * 0.06f, headSize.height - radius * 0.06f),
+            style = Stroke(width = maxOf(0.6f, radius * 0.05f)),
+        )
+    }
+
     fun DrawScope.token(centre: Offset, radius: Float, color: Color, lifted: Boolean = false) {
         val shadowDrop = radius * if (lifted) 0.62f else 0.40f
         val shadowScale = if (lifted) 0.80f else 0.94f
