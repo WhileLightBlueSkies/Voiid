@@ -14,6 +14,7 @@
 
 import Foundation
 import Security
+import UIKit
 
 @MainActor
 final class E2EManager {
@@ -51,6 +52,10 @@ final class E2EManager {
     private let deviceIdName = "device_id"
     private let regIdName = "registration_id"
     private let prekeyNextIdName = "prekey_next_id"     // monotonic one-time-key id counter
+    /// When the fallback key was last rotated (unix seconds, as a string).
+    private let fallbackRotatedAtName = "fallback_rotated_at"
+    /// The rotation before last, whose private half is dropped one interval later.
+    private let fallbackPrevPendingName = "fallback_prev_pending"
     private let masterSecretName = "master_backup_secret"   // 32-byte backup/recovery master secret
 
     // MARK: - Backup master secret (recovery)
@@ -73,6 +78,15 @@ final class E2EManager {
     // upgrade never collides with already-stored key ids (server keys on
     // (device_id, key_id) with do-nothing-on-conflict → dupes are silently dropped).
     private static let prekeyIdBase = 100
+
+    /// How often the fallback key rotates.
+    ///
+    /// The fallback key is NOT consumed by use, so unlike a one-time key it cannot be
+    /// replenished — only replaced. Every sender who arrives while it is current shares
+    /// it, so the longer it stands the more sessions rest on one key. A week is Signal's
+    /// own cadence; 003's schema comment says 30 days, and weekly is the tighter of the
+    /// two and the one that governs.
+    private static let fallbackRotationInterval: TimeInterval = 7 * 24 * 60 * 60
 
     /// Ensure this device has a published e2e-core identity. Call after login.
     /// Safe to call repeatedly (restores existing identity, tops up prekeys).
@@ -98,6 +112,14 @@ final class E2EManager {
             NSLog("[VOIID] bootstrap: registered device=\(devId)")
             try await withTransportRetry { try await self.ensurePrekeys(id, devId: devId) }
             NSLog("[VOIID] bootstrap: prekeys ensured")
+            // Fallback key: publish it on first run and rotate it weekly. Runs alongside
+            // the one-time top-up rather than inside it, because `ensurePrekeys` returns
+            // early when the supply is healthy — the case where rotation matters MOST, since
+            // a device with plenty of one-time keys is one nobody has needed a fallback for
+            // yet. Not wrapped in withTransportRetry: it handles its own failure by leaving
+            // the schedule stamp untouched so the next launch retries.
+            await rotateFallbackKeyIfDue()
+            startFallbackRotationWatch()
             // MLS (group messaging): create-or-restore this device's GroupMember and
             // publish KeyPackages. Runs AFTER device registration (needs the device id).
             // Best-effort — a group-key failure must not block 1:1 bootstrap.
@@ -275,7 +297,19 @@ final class E2EManager {
     }
     private struct DeviceResponse: Decodable { let device_id: String }
     private struct OTK: Encodable { let key_id: Int; let public_key: String }
-    private struct PrekeysBody: Encodable { let device_id: String; let one_time_prekeys: [OTK] }
+    /// The fallback key, in the shape POST /prekeys/upload expects for `signed_prekey`.
+    ///
+    /// No `signature` field. A vodozemac fallback key is not separately signed — its
+    /// authenticity rests on the TOFU-pinned device identity key plus the Olm prekey
+    /// handshake, which binds both identities into the derived session. 044 made the
+    /// column nullable rather than have us invent a signature that would look like a
+    /// proof and be none.
+    private struct FallbackKeyBody: Encodable { let key_id: Int; let public_key: String }
+    private struct PrekeysBody: Encodable {
+        let device_id: String
+        let one_time_prekeys: [OTK]
+        let signed_prekey: FallbackKeyBody?
+    }
     private struct CountResponse: Decodable { let available: Int }
 
     /// Register (or refresh) this device server-side; returns the device id.
@@ -300,6 +334,101 @@ final class E2EManager {
         return dev.device_id
     }
 
+    /// Rotate the fallback key if a full interval has passed, and retire the one before it.
+    ///
+    /// THE TWO PHASES, AND WHY BOTH ARE NEEDED
+    /// ---------------------------------------
+    /// `rotateFallbackKey()` issues a new key and vodozemac keeps the PREVIOUS one alive, so
+    /// a first message already in flight against the just-replaced key still opens. That
+    /// grace period is the whole reason rotation does not break delivery — and it is also
+    /// why rotation alone accomplishes nothing for forward secrecy: without the second
+    /// phase the old key stays usable forever and the window never closes.
+    ///
+    /// So this does both, one interval apart: rotate now, and drop the private half of the
+    /// key that was replaced at the PREVIOUS rotation. That ordering means a retired key
+    /// always had a full interval of grace before its private half went away.
+    ///
+    /// Cheap and idempotent: a keychain read and a date comparison on the common path. Safe
+    /// to call on every launch and foreground, which is exactly how it is wired — this app
+    /// has no server-side scheduler for device-held keys, and it could not have one, because
+    /// the private half never leaves the device.
+    /// Start watching for foreground, so a long-lived app still rotates.
+    ///
+    /// Bootstrap runs once per launch. An app that is never force-quit — the normal case on
+    /// iOS — could therefore go months without a rotation while appearing perfectly healthy.
+    /// Foregrounding is the cheapest reliable recurring signal available to a client, and
+    /// there is no server-side alternative: the private half of the fallback key never
+    /// leaves the device, so no cron could rotate it.
+    func startFallbackRotationWatch() {
+        guard fallbackWatchStarted == false else { return }
+        fallbackWatchStarted = true
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
+        ) { _ in
+            Task { await E2EManager.shared.rotateFallbackKeyIfDue() }
+        }
+    }
+
+    private var fallbackWatchStarted = false
+
+    func rotateFallbackKeyIfDue() async {
+        guard let id = identity, let devId = deviceId else { return }
+
+        let now = Date().timeIntervalSince1970
+        let last = Double(kc.string(fallbackRotatedAtName) ?? "") ?? 0
+
+        // First run on a device that already has an identity: publish whatever fallback key
+        // it holds and start the clock. Without this an existing install would never upload
+        // one at all, because `publishBundle` only ran at registration.
+        if last == 0 {
+            let current = id.currentFallbackKey()
+            kc.set(String(now), fallbackRotatedAtName)
+            if let current {
+                do {
+                    try await uploadPrekeys(deviceId: devId, keys: [], fallbackKey: current)
+                    NSLog("[VOIID] fallback key: published existing")
+                } catch {
+                    // Clear the stamp so the next launch retries rather than waiting a week
+                    // to publish a key the server has never seen.
+                    kc.set("0", fallbackRotatedAtName)
+                    NSLog("[VOIID] fallback key: initial publish failed: \(error.localizedDescription)")
+                }
+            }
+            return
+        }
+
+        guard now - last >= Self.fallbackRotationInterval else { return }
+
+        // PHASE 2 FIRST. The key pending retirement was replaced at the previous rotation
+        // and has therefore had a full interval of grace. Doing this before generating the
+        // new one keeps at most two private halves alive at any moment, which is what
+        // vodozemac retains anyway.
+        if kc.string(fallbackPrevPendingName) == "1" {
+            if id.forgetPreviousFallbackKey() {
+                NSLog("[VOIID] fallback key: retired the previous one")
+            }
+            kc.set("0", fallbackPrevPendingName)
+        }
+
+        // PHASE 1: issue the new key. Persist BEFORE upload — a crash between the two must
+        // not lose the private half of a key the server may already be handing out.
+        let bundle = id.rotateFallbackKey()
+        guard let fresh = bundle.fallbackKey else { return }
+        do {
+            try persist(id)
+            try await uploadPrekeys(deviceId: devId, keys: [], fallbackKey: fresh)
+            kc.set(String(now), fallbackRotatedAtName)
+            // The key just replaced now owes a retirement one interval from now.
+            kc.set("1", fallbackPrevPendingName)
+            NSLog("[VOIID] fallback key: rotated")
+        } catch {
+            // The private half is persisted and vodozemac still holds the old key, so the
+            // device stays reachable either way. Leave the stamp untouched so the next
+            // launch retries rather than treating a failed upload as a completed rotation.
+            NSLog("[VOIID] fallback key: rotation upload failed: \(error.localizedDescription)")
+        }
+    }
+
     /// Our remaining unconsumed one-time prekeys on the server — scoped to THIS
     /// device (per-device, so a 2nd device doesn't see the 1st's keys and skip upload).
     private func availableCount(deviceId: String) async throws -> Int {
@@ -310,13 +439,25 @@ final class E2EManager {
     /// Upload public one-time prekeys with MONOTONIC key ids (the server keys on
     /// (device_id, key_id) with do-nothing-on-conflict, so ids must never repeat
     /// across uploads or replenished keys would be silently dropped).
-    private func uploadPrekeys(deviceId: String, keys: [String]) async throws {
-        guard !keys.isEmpty else { return }
+    private func uploadPrekeys(deviceId: String, keys: [String],
+                               fallbackKey: String? = nil) async throws {
+        guard !keys.isEmpty || fallbackKey != nil else { return }
         var nextId = Int(kc.string(prekeyNextIdName) ?? "") ?? Self.prekeyIdBase
         let otks = keys.map { k -> OTK in let o = OTK(key_id: nextId, public_key: k); nextId += 1; return o }
+        // The fallback key shares the SAME monotonic counter as the one-time keys. It is a
+        // different table server-side, but the counter is what guarantees an id never
+        // repeats for this device, and the server's upload is
+        // `on conflict (device_id, key_id) do nothing` — a repeated id would silently
+        // discard the new key and leave the old one serving.
+        var fallback: FallbackKeyBody?
+        if let fallbackKey {
+            fallback = FallbackKeyBody(key_id: nextId, public_key: fallbackKey)
+            nextId += 1
+        }
         kc.set(String(nextId), prekeyNextIdName)
         let _: EmptyResponse = try await api.request(
-            "POST", "prekeys/upload", body: PrekeysBody(device_id: deviceId, one_time_prekeys: otks))
+            "POST", "prekeys/upload",
+            body: PrekeysBody(device_id: deviceId, one_time_prekeys: otks, signed_prekey: fallback))
     }
 }
 

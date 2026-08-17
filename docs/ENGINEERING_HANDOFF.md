@@ -8,7 +8,7 @@
 > For backend/infra (secrets, deploy, provisioning) see [DEPLOY_HANDOFF.md](DEPLOY_HANDOFF.md).
 > For the build plan and gates see [PHASE_PLAN.md](PHASE_PLAN.md) / [CHECKLIST.md](CHECKLIST.md).
 >
-> Last updated: 2026-06-18
+> Last updated: 2026-08-17
 
 ---
 
@@ -169,6 +169,110 @@ Drops `.so`s under `apps/android/.../jniLibs/` + Kotlin glue. Add the JNA aar de
 
 > One entry per push. Newest on top. Format:
 > `### YYYY-MM-DD — <short title>` then **What changed** / **⚠️ Run / do this**.
+
+### 2026-08-17 — E2EE core: fallback key + rotation, PQ prekey persistence, blocking, report, receipts
+
+**⚠️ READ THIS FIRST IF YOU ARE PICKING THE WORK UP**
+
+The Rust core changed, which means **the generated bindings and the native
+binaries are stale on your machine** until you rebuild them. They are gitignored,
+so `git pull` does NOT bring them. Xcode/Gradle will link a library that lacks the
+new symbols and fail with `cannot find 'uniffi_..._fallback_key' in scope`.
+
+**PATH ORDER MATTERS AND WILL WASTE YOUR AFTERNOON.** There are two Rust installs
+on the dev machines: Homebrew's (`/opt/homebrew/bin`, **macOS targets only**) and
+rustup's (`~/.cargo/bin`, has the iOS/Android targets). Homebrew usually wins the
+PATH, so any cross-compile fails with:
+
+```
+error[E0463]: can't find crate for `core`
+  = note: the `aarch64-apple-ios` target may not be installed
+```
+
+That message is a lie — `rustup target add` will tell you the target IS installed,
+because it is, in the toolchain that is not being used. Fix the PATH, not the
+toolchain:
+
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"     # put this in your shell profile
+# or, better: brew uninstall rust        # rustup supersedes it
+```
+
+**Rebuild after pulling:**
+
+```bash
+cd packages/e2e-core
+export PATH="$HOME/.cargo/bin:$PATH"
+
+# iOS — writes target/apple/Voiid.xcframework + bindings/swift/voiid.swift
+./build-apple.sh
+cp bindings/swift/voiid.swift ../../apps/ios/Voiid/Voiid/voiid.swift
+rm -rf ../../apps/ios/Voiid/Frameworks/Voiid.xcframework
+cp -R target/apple/Voiid.xcframework ../../apps/ios/Voiid/Frameworks/
+
+# Android — needs the NDK exported
+export ANDROID_NDK_HOME="$HOME/Library/Android/sdk/ndk/28.0.13004108"
+./build-android.sh
+```
+
+Sanity check that the rebuild took (both must be non-zero):
+
+```bash
+nm -gU apps/ios/Voiid/Frameworks/Voiid.xcframework/ios-arm64/libvoiid_e2e_core.a \
+  | grep -c rotate_fallback_key
+grep -c rotateFallbackKey apps/ios/Voiid/Voiid/voiid.swift
+```
+
+**What changed**
+
+- **e2e-core — fallback key** (the X3DH signed-prekey role). Every bundle now
+  carries one, so a device whose one-time keys are exhausted stays reachable
+  instead of silently becoming unmessageable. `rotate_fallback_key()`,
+  `forget_previous_fallback_key()`, `current_fallback_key()`,
+  `restore_fallback_key()`. **It is not consumed by use**, so many senders share
+  it — weaker forward secrecy than a one-time key, which is why the server must
+  keep preferring one-time keys and why rotation exists.
+- **e2e-core — PQ prekey persistence.** The ML-KEM prekey could be generated and
+  encapsulated to, then lost with the process, leaving a shared secret only the
+  sender could compute. Persisted as its 64-byte seed;
+  `PqPrekey::to_seed_b64()` / `from_seed_b64()`.
+- **Backend — 044_fallback_key.sql.** `signed_prekeys.signature` is nullable (a
+  vodozemac fallback key is not separately signed) and `/prekeys/upload` prunes to
+  the two most recent, so a key whose private half has been forgotten is never
+  served. The fetch path already preferred one-time keys — it just had nothing to
+  fall back to.
+- **iOS — weekly rotation**, wired to bootstrap *and* foreground. Bootstrap alone
+  would let a never-force-quit app go months without rotating.
+- **Blocking (043).** Schema, `/blocks` routes, enforcement across messages, calls,
+  profile, presence, conversation creation, group invites, stories and typing —
+  plus the iOS and Android UI. Stored directionally, **enforced symmetrically**.
+- **Report.** Wired on both clients; the backend (035) had shipped with no caller,
+  and Android had a finished `ReportSheet` reachable from nowhere.
+- **Read receipts.** `markOpenConversationRead` sat inside the `try` in
+  `syncMessages`, so any sync error skipped the receipt *and* left the chat showing
+  unread. Plus `readReported` never cleared on sign-out, no retry for a failed POST,
+  and groups never reported `delivered` at all. All four fixed on both platforms.
+
+**Where to pick it up**
+
+| Item | State | Next step |
+|---|---|---|
+| Android weekly rotation | not written | Mirror `E2EManager.rotateFallbackKeyIfDue()` from iOS; the Kotlin bindings expose the same four methods after a rebuild |
+| Backend prefer-one-time-key | **already correct** | No work — verify it, do not rewrite it |
+| `cargo-audit` CI gate | committed on `ci/e2e-core-audit-gate`, **cannot push** | Needs a PAT with `workflow` scope; see below |
+| Sesame session lifecycle | not started | No stale-session eviction or device-removal handling in `multidevice.rs`; bites at 3+ devices per user |
+| PQXDH combiner | gated, **leave it gated** | Needs a funded cryptographic review. Do not write the combiner — a wrong one still round-trips and every test stays green |
+| 9 libcrux advisories | blocked upstream | libcrux pins its own crates with `=` constraints. Unblocks on a stable `openmls_libcrux_crypto >= 0.4`; re-check on each OpenMLS release |
+
+**The CI gate needs a credential, not code.** The workflow is written and every step
+verified locally, but GitHub refuses to create `.github/workflows/*` with a token
+lacking `workflow` scope. The token here comes from `GH_TOKEN`, and
+`gh auth refresh` declines to touch an env-var token (with it cleared there is no
+stored credential at all). Fix: a new PAT with `repo` + `workflow` exported as
+`GH_TOKEN`, then `git push -u origin ci/e2e-core-audit-gate`.
+
+**Verification at the time of this entry:** 97 e2e-core tests, 185 API tests, iOS
+`BUILD SUCCEEDED`, Android build + tests green.
 
 ### 2026-06-18 — Real E2EE 1:1 messaging wired end-to-end (iOS + Android)
 **What changed**
