@@ -43,89 +43,110 @@ enum VoiidColor {
 
     // MARK: Spine
 
-    /// ELECTRIC LIME — the brand. Every primary action.
+    /// VOIID TIDE #13828C — the brand. Every primary action.
     ///
-    /// THE ONE THING TO UNDERSTAND ABOUT THIS PALETTE: the lime is a FILL colour, not a text
-    /// colour, and that is a hard rule rather than a preference. #C6FF00 measures 16.59:1 on
-    /// the near-black ground and **1.19:1 on white** — not "weak", invisible. So:
+    /// THE ONE THING THAT CHANGED FROM THE PREVIOUS TWO BRANDS: Tide is a MID-TONE, where the
+    /// lime and the bright cyan were both light fills. That inverts the label rule —
+    /// white on Tide is 4.57:1 and black is 4.30:1, so a filled Tide element carries WHITE
+    /// text. See [textOnAccent].
     ///
-    ///   * DARK is the designed state. The lime works everywhere there: text, icons, lines.
-    ///   * LIGHT resolves `primary` to near-black INK, not lime. Lime survives in light mode
-    ///     only as a filled element with dark text on it (16.59:1), which is what
-    ///     [accent] and [textOnAccent] exist for.
+    /// Tide is the same value in both themes, which is what makes the brand recognisable
+    /// across the light/dark switch. What differs is where it may be used:
     ///
-    /// A light-mode call site that wants "the brand colour" wants `accent` as a FILL, or
-    /// `primary` as ink. It does not want lime text on white, and this token will not give it.
-    static let primary      = dyn(0x0B0B0B, 0xC6FF00)
+    ///   * As a FILL — buttons, badges, bubbles — it works on both grounds, because what
+    ///     matters is its label's contrast against the fill, not the fill against the ground.
+    ///   * As TEXT it is marginal: 4.30:1 on the dark ground and 4.28:1 on the light ground.
+    ///     Dark mode therefore uses [accentInk] (#68B8BD, 8.59:1) for teal text, and light
+    ///     mode keeps Tide but only on white (4.57:1), never on the page ground.
+    static let primary      = Color(hex: 0x13828C)
 
-    /// The app ground. Voiid Black in dark — the DESIGNED state; white in light.
-    static let background   = dyn(0xFFFFFF, 0x0B0B0B)
+    /// The app ground.
+    static let background   = dyn(0xF6F8F8, 0x080C0E)
     /// Cards, sheets, raised rows — one step up from the ground.
-    static let surfaceCard  = dyn(0xFFFFFF, 0x1A1A1A)
+    static let surfaceCard  = dyn(0xFFFFFF, 0x111719)
+    /// One step below the card, for a region that must sit UNDER content rather than on it.
+    static let surfaceDeep  = dyn(0xEDF1F1, 0x080C0E)
+    /// One step above the card — a menu over a sheet, a raised control. Palette "Elevated".
+    static let surfaceRaised = dyn(0xEDF1F1, 0x182124)
 
     // MARK: Bubbles
 
-    /// YOUR message. Lime in dark, where black text on it reads at 16.59:1 — the brand's
-    /// loudest legitimate use. Light keeps the lime too: a filled element is exactly where it
-    /// works, and it is what makes your own thread trackable down the screen.
-    static let bubbleSent     = dyn(0xC6FF00, 0xC6FF00)
-    /// Text on your own bubble. FIXED in both themes because the fill is lime in both, and a
-    /// light fill needs dark text either way. 16.59:1.
-    static let textOnBubble   = Color(hex: 0x0B0B0B)
+    /// YOUR message. Tide in both themes — the brand's loudest legitimate use, and what makes
+    /// your own thread trackable down the screen.
+    static let bubbleSent     = Color(hex: 0x13828C)
+    /// Text on your own bubble. WHITE, fixed in both themes, because the fill is a mid-tone
+    /// Tide in both. 4.57:1 — AA for body text.
+    static let textOnBubble   = Color(hex: 0xFFFFFF)
     /// THEIR message — the quiet one, so the eye tracks your own thread down the screen.
-    /// Surface-light in dark so it separates from both the ground (#0B0B0B) and the card.
-    static let bubbleReceived = dyn(0xF7F7F7, 0x2A2A2A)
+    /// "Elevated" in dark so it separates from both the ground and the card.
+    static let bubbleReceived = dyn(0xEDF1F1, 0x182124)
 
     // MARK: Text
 
-    static let textPrimary   = dyn(0x0B0B0B, 0xF5F5F5)
-    /// 5.33:1 on white, 7.80:1 on Voiid Black. The light value is darker than the palette's
-    /// #A3A3A3, which measured only 2.32:1 on white — unreadable as secondary text.
-    static let textSecondary = dyn(0x6B6B6B, 0xA3A3A3)
-    /// On a filled PRIMARY surface. Dark-mode primary is lime, so its label is near-black;
-    /// light-mode primary is ink, so its label is near-white. Both directions correct.
-    static let textOnPrimary = dyn(0xF5F5F5, 0x0B0B0B)
-    static let placeholder   = dyn(0x8A8A8A, 0x6B6B6B)
+    /// 18.42:1 on the dark ground, 17.14:1 on the light one.
+    static let textPrimary   = dyn(0x101617, 0xF6F8F8)
+    /// 8.86:1 dark, 5.32:1 light — AA on every surface in both themes.
+    static let textSecondary = dyn(0x5D696C, 0xA6B0B2)
+    /// On a filled PRIMARY surface. White in both, because primary is Tide in both.
+    static let textOnPrimary = Color(hex: 0xFFFFFF)
+
+    /// The MUTED tier. Deliberately below AA (2.8–4.3:1 depending on surface) — it is for
+    /// placeholders and de-emphasised timestamps, never for text a user has to read. Anything
+    /// load-bearing takes [textSecondary] instead.
+    static let placeholder   = dyn(0x899396, 0x6D787B)
 
     // MARK: Lines
 
     /// A divider must RECEDE — quieter than an accent, or nothing in the UI has hierarchy.
-    static let divider     = dyn(0xE8E8E8, 0x2A2A2A)
-    static let fieldBorder = dyn(0xD4D4D4, 0x3A3A3A)
+    static let divider     = dyn(0xD7DEDF, 0x263236)
+    static let fieldBorder = dyn(0xD7DEDF, 0x263236)
     /// Input backgrounds and inert chips.
-    static let fieldFill   = dyn(0xF7F7F7, 0x1A1A1A)
+    static let fieldFill   = dyn(0xEDF1F1, 0x111719)
 
     // MARK: Accents
 
-    /// The lime as a FILL — unread badges, the send button, the one thing that must be seen.
-    ///
-    /// NOT theme-split, unlike the old amber, and that is the point: a filled lime chip works
-    /// on both grounds because what matters is the contrast of its LABEL against the fill
-    /// (16.59:1, see [textOnAccent]), not the fill against the ground.
-    ///
-    /// ONE CAVEAT, and it matters on light: lime vs white is 1.19:1, so a lime fill has no
-    /// visible edge on a white ground. Anything relying on its boundary — an outlined chip, a
-    /// lime-on-white card — needs [fieldBorder] or an ink outline. A filled shape with dark
-    /// content inside reads fine; an outline in lime does not.
-    static let accent = Color(hex: 0xC6FF00)
+    /// The Tide as a FILL — unread badges, the send button, the one thing that must be seen.
+    /// Identical in both themes; its LABEL is what carries the contrast (see [textOnAccent]).
+    static let accent = Color(hex: 0x13828C)
 
-    /// Text or a glyph ON the lime accent. FIXED in both themes: lime is a light fill in
-    /// light AND dark, so its label is dark in both. 16.59:1.
-    static let textOnAccent = Color(hex: 0x0B0B0B)
+    /// The pressed state. A real darker step rather than an opacity change, so a pressed
+    /// button does not go translucent over whatever is behind it. White on it is 5.97:1.
+    static let accentPressed = Color(hex: 0x0E6E77)
 
-    /// Lime at reading weight, for the rare case where the brand must appear as TEXT on a
-    /// LIGHT ground. #5A7A00 is the same hue pushed down to 4.62:1 on white — it reads as
-    /// olive rather than electric, which is the honest cost of putting this hue on white at
-    /// all. Prefer a filled [accent] chip; reach for this only when a fill is impossible.
-    static let accentInk = dyn(0x5A7A00, 0xC6FF00)
+    /// SOFT ACCENT — and the one token that genuinely differs by theme rather than merely
+    /// being tuned for it.
+    ///
+    ///   * DARK  #68B8BD — a LIGHT teal, for teal TEXT and icons on a dark ground (8.59:1).
+    ///   * LIGHT #D9EFF0 — a PALE teal, for a tinted SURFACE behind dark content.
+    ///
+    /// They are opposite jobs, which is why this is not simply "the same colour, lightened".
+    /// Use [accentInk] when you want teal text and [accentTint] when you want a teal surface;
+    /// both are defined in terms of this pair so the intent is legible at the call site.
+    static let accentSoft = dyn(0xD9EFF0, 0x68B8BD)
+
+    /// A selected row, a highlighted surface, a wash behind an icon. Pale in light; in dark
+    /// the same idea is a low-alpha Tide, because #68B8BD as a large fill would glow.
+    static let accentTint = dyn(0xD9EFF0, 0x123538)
+
+    /// Text or a glyph ON the Tide accent. WHITE in both themes.
+    ///
+    /// This INVERTS the rule the previous two brand colours followed. Lime and bright cyan
+    /// were light fills that needed near-black labels; Tide is a mid-tone, and white beats
+    /// black on it (4.57:1 vs 4.30:1). Every filled button, badge and bubble label flipped.
+    static let textOnAccent = Color(hex: 0xFFFFFF)
+
+    /// The brand at READING weight — teal text, as opposed to a teal fill.
+    ///
+    /// Dark resolves to Soft accent #68B8BD (8.59:1), because Tide itself is only 4.30:1 on
+    /// the dark ground. Light keeps true Tide, which is 4.57:1 on white — so use it on cards
+    /// and sheets; on the light page ground it drops to 4.28:1, just under AA, and
+    /// [textPrimary] is the right choice there instead.
+    static let accentInk = dyn(0x13828C, 0x68B8BD)
 
     // MARK: Domain hues (section identity only — never bubbles or body text)
 
-    /// Chat resolves to the spine, as before.
-    static let domainChat     = dyn(0x0B0B0B, 0xC6FF00)
-    /// The remaining domains take the palette's feedback hues, theme-split: the bright values
-    /// measured 1.5–4.0:1 on white (Warning worst at 1.53:1), so light uses darkened variants
-    /// of the SAME hue at 4.9–7.0:1. Dark keeps the bright ones, all above 4.9:1 there.
+    /// Chat resolves to the spine.
+    static let domainChat     = dyn(0x13828C, 0x68B8BD)
     static let domainStories  = dyn(0x7E22CE, 0xA855F7)
     static let domainMap      = dyn(0x1D4ED8, 0x3B82F6)
     static let domainCalls    = dyn(0x15803D, 0x22C55E)
@@ -136,18 +157,14 @@ enum VoiidColor {
     // Semantic, and deliberately separate from the accent. NOTE: state must never be carried
     // by hue ALONE — roughly 1 in 12 men has a colour-vision deficiency, so a missed call is
     // red AND carries its icon and label.
-    //
-    // Every light value is a darkened variant of the palette's bright one, because the brights
-    // are designed for near-black: Success 2.28:1, Warning 1.53:1, Error 3.76:1, Info 3.68:1
-    // on white. Same hues, pushed to AA.
 
-    static let success = dyn(0x15803D, 0x22C55E)
+    /// 6.15:1 on the dark ground, 4.06:1 on the light one.
+    static let success = dyn(0x238A58, 0x2FA36B)
 
-    /// Online-presence green, used where "Online" is TEXT rather than a fill. Darker than
-    /// [success] on light because the chat toolbar is translucent — the real backdrop is
-    /// whatever is scrolling underneath, not the ground the ratio was measured against.
-    static let onlineText = dyn(0x166534, 0x22C55E)
-    static let error   = dyn(0xDC2626, 0xEF4444)
+    /// Online-presence green, used where "Online" is TEXT rather than a fill.
+    static let onlineText = dyn(0x238A58, 0x2FA36B)
+    /// 5.02:1 dark, 4.28:1 light.
+    static let error   = dyn(0xD83A40, 0xE5484D)
     static let warning = dyn(0xA16207, 0xFACC15)
     static let info    = dyn(0x1D4ED8, 0x3B82F6)
 
