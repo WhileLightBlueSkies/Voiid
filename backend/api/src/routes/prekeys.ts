@@ -181,7 +181,11 @@ router.get('/:user_id', requireAuth, async (req, res) => {
         signed_prekey: signed && {
           key_id: signed.key_id,
           public_key: signed.public_key.toString('base64'),
-          signature: signed.signature.toString('base64'),
+          // Nullable as of 044: a vodozemac FALLBACK key carries no separate signature,
+          // and the upload path stores null for it. Dereferencing unguarded threw a 500
+          // on precisely the devices whose one-time supply is spent — the case the
+          // fallback key exists to serve.
+          signature: signed.signature ? signed.signature.toString('base64') : null,
         },
         one_time_prekey: otpRow && {
           key_id: otpRow.key_id,

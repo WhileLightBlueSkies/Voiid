@@ -740,9 +740,18 @@ class ChatEngine private constructor(context: Context) {
         candidateSessions(t.userId, t.deviceId).firstOrNull()?.let { return it }
         val id = e2e.identity ?: throw ApiError.NotAuthenticated
         val b = bundles[t.deviceId] ?: return null           // no bundle for this device
-        val otk = b.one_time_prekey ?: return null           // no available prekey → skip
+        // A one-time key is PREFERRED (single-use, forward secrecy), but its supply is
+        // finite: the server stamps consumed_at as it hands them out, and once they are
+        // gone the bundle carries only the fallback key. Requiring the one-time key made
+        // that peer permanently unsendable-to — every send skipped the device and parked
+        // at 409 "peer has no available prekeys", retrying forever with nothing shown to
+        // the user. The fallback key exists for exactly this case and X3DH treats it as a
+        // valid initiator key; vodozemac's create_outbound_session takes either, so the
+        // same startSession call serves both. Mirrors iOS ChatEngine.outboundSessionFor.
+        val initiatorKey = (b.one_time_prekey ?: b.signed_prekey)?.public_key
+            ?: return null                                  // genuinely no key material
         verifyAndPinIdentity(b.identity_public_key, t.userId, t.deviceId)  // anti-MITM (TOFU, per device)
-        val s = id.startSession(b.identity_public_key, otk.public_key)
+        val s = id.startSession(b.identity_public_key, initiatorKey)
         candidateSessions(t.userId, t.deviceId).add(s)
         saveSessions(t.userId, t.deviceId)
         return s
@@ -1468,6 +1477,9 @@ class ChatEngine private constructor(context: Context) {
     @Serializable private data class DeviceDTO(val id: String, val identity_public_key: String)
     @Serializable private data class DevicesResponse(val devices: List<DeviceDTO>)
     @Serializable private data class OtkDTO(val public_key: String)
-    @Serializable private data class BundleDTO(val device_id: String? = null, val identity_public_key: String, val one_time_prekey: OtkDTO? = null)
+    // `signed_prekey` is the X3DH FALLBACK key: the server publishes one per device so a
+    // session can still open once the one-time supply is spent. Dropping it here made every
+    // such peer permanently unsendable-to.
+    @Serializable private data class BundleDTO(val device_id: String? = null, val identity_public_key: String, val one_time_prekey: OtkDTO? = null, val signed_prekey: OtkDTO? = null)
     @Serializable private data class PrekeysResponse(val bundles: List<BundleDTO>)
 }

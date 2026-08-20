@@ -1209,9 +1209,19 @@ final class ChatEngine {
         if let s = candidateSessions(t.userId, t.deviceId).first { return s }
         guard let id = E2EManager.shared.identity else { throw APIError.notAuthenticated }
         guard let b = bundles[t.deviceId] else { return nil }        // no bundle for this device
-        guard let otk = b.one_time_prekey else { return nil }        // no available prekey → skip
+        // A one-time key is PREFERRED (single-use, forward secrecy), but its supply is
+        // finite: the server stamps consumed_at as it hands them out, and once they are
+        // gone the bundle carries only the fallback key. Requiring the one-time key made
+        // that peer permanently unsendable-to — every send skipped the device and parked
+        // at 409 "peer has no available prekeys", retrying forever with nothing shown to
+        // the user. The fallback key exists for exactly this case and X3DH treats it as a
+        // valid initiator key; vodozemac's create_outbound_session takes either, so the
+        // same startSession call serves both.
+        guard let initiatorKey = b.one_time_prekey?.public_key ?? b.signed_prekey?.public_key else {
+            return nil   // genuinely no key material — device is unreachable
+        }
         try verifyAndPinIdentity(b.identity_public_key, peerUserId: t.userId, deviceId: t.deviceId)  // anti-MITM (TOFU, per device)
-        let s = try id.startSession(theirIdentityKey: b.identity_public_key, theirOneTimeKey: otk.public_key)
+        let s = try id.startSession(theirIdentityKey: b.identity_public_key, theirOneTimeKey: initiatorKey)
         sessions[sessionKey(t.userId, t.deviceId), default: []].append(s)
         saveSessions(t.userId, t.deviceId)
         return s
@@ -1270,6 +1280,10 @@ final class ChatEngine {
         let device_id: String?
         let identity_public_key: String
         let one_time_prekey: OTKDTO?
+        /// X3DH "signed prekey" — the FALLBACK key. The server publishes one per device
+        /// precisely so a session can still be opened once the one-time supply is spent;
+        /// dropping it here made every such peer permanently unsendable-to.
+        let signed_prekey: OTKDTO?
     }
     private struct OTKDTO: Decodable { let public_key: String }
     private struct PrekeysResponse: Decodable { let bundles: [BundleDTO] }
