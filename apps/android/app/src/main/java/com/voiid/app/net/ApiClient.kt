@@ -1,5 +1,7 @@
 package com.voiid.app.net
 
+import com.voiid.app.BuildConfig
+
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -34,6 +36,7 @@ object UpdateGate {
     fun trigger(url: String?) { storeUrl = url; required.value = true }
 }
 
+
 sealed class ApiError(message: String) : Exception(message) {
     /**
      * [code] is the backend's stable machine-readable discriminator (e.g. "profile_required"),
@@ -42,8 +45,45 @@ sealed class ApiError(message: String) : Exception(message) {
      * off the status alone would fire the handle picker for an unrelated precondition.
      */
     class Http(val status: Int, message: String, val code: String? = null) : ApiError(message)
-    class Transport(cause: Throwable) : ApiError(cause.message ?: "Network error")
+    class Transport(val underlying: Throwable) : ApiError(underlying.message ?: "Network error")
     object NotAuthenticated : ApiError("Please sign in again.")
+
+    /**
+     * What the USER sees. Deliberately not the raw server or transport text.
+     *
+     * A backend message is written for whoever reads the logs: "peer has no available prekeys",
+     * "Request failed (502)." — accurate, and meaningless to the person holding the phone, who
+     * can only act on whether to wait, retry, or check their connection. Shipping the internal
+     * string also leaks the shape of the system to anyone who cares to read it.
+     *
+     * RELEASE builds map to plain language by status class; DEBUG builds keep the raw text,
+     * which is exactly what you want while developing and exactly what you do not want in front
+     * of a user. Mirrors APIError.errorDescription on iOS — keep the two in step.
+     *
+     * A 4xx carrying a server [Http.code] is the one exception: those messages are written FOR
+     * the user (a taken username, an invalid invite), so they pass through in both builds.
+     */
+    val userMessage: String
+        get() {
+            if (BuildConfig.DEBUG) return message ?: "Something went wrong. Please try again."
+            return when (this) {
+                is Http -> when {
+                    code != null && status in 400..499 -> message ?: "Please try again."
+                    status == 401 || status == 403 -> "Please sign in again."
+                    status == 404 -> "That’s not available any more."
+                    status == 408 || status == 429 -> "Too many attempts. Please wait a moment."
+                    status in 400..499 -> "Something didn’t look right. Please try again."
+                    else -> "Voiid is having trouble right now. Please try again."
+                }
+                is Transport -> when (underlying) {
+                    is java.net.UnknownHostException -> "You’re offline. Check your connection."
+                    is java.net.SocketTimeoutException -> "That took too long. Please try again."
+                    is java.net.ConnectException -> "Can’t reach Voiid right now. Please try again."
+                    else -> "Something went wrong. Please try again."
+                }
+                is NotAuthenticated -> "Please sign in again."
+            }
+        }
 }
 
 class ApiClient(

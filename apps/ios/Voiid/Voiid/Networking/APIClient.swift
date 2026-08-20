@@ -35,11 +35,60 @@ enum APIError: Error, LocalizedError {
     case decoding(Error)
     case notAuthenticated
 
+    /// What the USER sees. Deliberately not the raw server or URLSession text.
+    ///
+    /// A backend message is written for whoever reads the logs: "peer has no available prekeys",
+    /// "Request failed (502)." — accurate, and meaningless to the person holding the phone, who
+    /// can only act on whether to wait, retry, or check their connection. Shipping the internal
+    /// string also leaks the shape of the system to anyone who cares to read it.
+    ///
+    /// So RELEASE builds map to plain language by status class, and DEBUG builds keep the raw
+    /// text — the detail is exactly what you want while developing, and exactly what you do not
+    /// want in front of a user.
+    ///
+    /// A 4xx that carries a server `code` is the one exception: those messages are written FOR
+    /// the user (a taken username, an invalid invite) and are already specific and actionable,
+    /// so they pass through in both builds.
     var errorDescription: String? {
         switch self {
-        case .http(_, let m, _): return m
-        case .transport(let e): return e.localizedDescription
-        case .decoding: return "Unexpected server response."
+        case .http(let status, let m, let code):
+            #if DEBUG
+            return m
+            #else
+            // Server-authored, user-facing copy — pass through.
+            if code != nil, (400..<500).contains(status) { return m }
+            switch status {
+            case 401, 403: return "Please sign in again."
+            case 404:      return "That’s not available any more."
+            case 408, 429: return "Too many attempts. Please wait a moment."
+            case 400..<500: return "Something didn’t look right. Please try again."
+            default:        return "Voiid is having trouble right now. Please try again."
+            }
+            #endif
+        case .transport(let e):
+            #if DEBUG
+            return e.localizedDescription
+            #else
+            // URLError's own copy is decent for the cases a user can act on, and vague for the
+            // rest — so name the actionable ones and give everything else one honest sentence.
+            let code = (e as? URLError)?.code
+            switch code {
+            case .some(.notConnectedToInternet), .some(.dataNotAllowed):
+                return "You’re offline. Check your connection."
+            case .some(.timedOut):
+                return "That took too long. Please try again."
+            case .some(.cannotFindHost), .some(.cannotConnectToHost), .some(.networkConnectionLost):
+                return "Can’t reach Voiid right now. Please try again."
+            default:
+                return "Something went wrong. Please try again."
+            }
+            #endif
+        case .decoding:
+            #if DEBUG
+            return "Unexpected server response."
+            #else
+            return "Something went wrong. Please try again."
+            #endif
         case .notAuthenticated: return "Please sign in again."
         }
     }

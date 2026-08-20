@@ -13,22 +13,57 @@ struct OnboardingFlow: View {
     @State private var path: [Step] = []
     @State private var showSplash = true
 
-    enum Step: Hashable { case permissions, phone, otp(phone: String, verificationID: String), signup(phone: String), profile }
+    // `profile` carries the draft from step 1 rather than reading it back out of the session:
+    // the draft holds the username and photo, which are NOT session properties, and threading
+    // them through the route is what lets the save happen once on the second page.
+    enum Step: Hashable {
+        case permissions
+        case phone
+        case otp(phone: String, verificationID: String)
+        /// The success beat between a verified code and whatever follows it. `next` carries the
+        /// destination because verification has TWO exits — a new user goes on to sign up, a
+        /// returning one straight into the app — and the screen itself should not know which.
+        case verified(next: VerifiedNext)
+        case signup(phone: String)
+        case profile(draft: ProfileDraft)
+    }
+
+    /// Where `verified` hands off to once the moment has played.
+    enum VerifiedNext: Hashable {
+        case signup(phone: String)
+        case enterApp
+    }
 
     @Namespace private var logoNS
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack {
             if showSplash {
+                // NO ANIMATION ON THE HANDOFF, deliberately.
+                //
+                // This was a shared-element transition: the wordmark flew from the splash into
+                // the Terms header via `matchedGeometryEffect`. Several rounds of tuning could
+                // not make it clean — `matchedGeometryEffect` INTERPOLATES FRAMES, so the text
+                // was rasterised and resampled for the whole flight. That produced a soft ghost
+                // behind the glyphs and a landing that read as a loading state, and no amount of
+                // curve or duration work addresses it, because the artefact comes from scaling
+                // text rather than from timing.
+                //
+                // A plain cut has none of those problems and costs nothing: the splash is a
+                // 1.2s brand frame, seen once per launch, and what follows it is a screen the
+                // user has to READ. Motion was never doing work here.
+                //
+                // If this is ever revisited, the honest fix is a wordmark rendered at ONE size
+                // on both ends and never scaled — not a better spring.
                 SplashScreen(logoNS: logoNS)
-                    .transition(.opacity)
                     .zIndex(1)
                     .task {
-                        try? await Task.sleep(nanoseconds: 1_900_000_000)
-                        // Elastic, connected move: logo glides from splash center up to Terms.
-                        withAnimation(.spring(response: 0.75, dampingFraction: 0.82)) {
-                            showSplash = false
-                        }
+                        // 1.2s. Long enough for the mark to be read; past that it stops reading
+                        // as a brand moment and starts reading as a load screen.
+                        try? await Task.sleep(nanoseconds: 1_200_000_000)
+                        showSplash = false
                     }
             } else {
                 NavigationStack(path: $path) {
@@ -41,38 +76,65 @@ struct OnboardingFlow: View {
                             case .phone:   PhoneScreen(onContinue: { phone, vid in path.append(.otp(phone: phone, verificationID: vid)) },
                                                        onBack: { path.removeLast() })
                             case .otp(let phone, let vid):
-                                OTPScreen(onContinue: { path.append(.signup(phone: phone)) },
-                                          onExistingUser: { session.completeOnboarding() },
+                                // Both exits route through `.verified` rather than jumping
+                                // straight on: the code being accepted is the moment the account
+                                // becomes real, and it is also when loginWithFirebase and the E2E
+                                // bootstrap are still settling. Showing the confirmation turns
+                                // that unavoidable wait into the honest version of a loading state.
+                                OTPScreen(onContinue: { path.append(.verified(next: .signup(phone: phone))) },
+                                          onExistingUser: { path.append(.verified(next: .enterApp)) },
+                                          // "Change" pops back to the phone step rather than
+                                          // pushing a new one, so the stack does not grow a
+                                          // phone → otp → phone chain each time it is used.
+                                          onChangeNumber: { path.removeLast() },
                                           phoneNumber: phone, e164: phone, verificationID: vid)
+                            case .verified(let next):
+                                VerifiedScreen(onFinished: {
+                                    switch next {
+                                    case .signup(let phone): path.append(.signup(phone: phone))
+                                    case .enterApp:          session.completeOnboarding()
+                                    }
+                                })
                             case .signup(let phone):
-                                SignupScreen(onContinue: { path.append(.profile) }, phone: phone)
-                            case .profile: CreateProfileScreen(onFinish: { session.completeOnboarding() })
+                                SignupScreen(onContinue: { draft in
+                                                 path.append(.profile(draft: draft))
+                                             },
+                                             phone: phone)
+                            case .profile(let draft):
+                                CreateProfileScreen(draft: draft,
+                                                    onFinish: { session.completeOnboarding() })
                             }
                         }
                 }
-                .transition(.opacity)
             }
         }
+        // The ground belongs to the CONTAINER, not to either branch. Both screens sit on the
+        // same near-black, so painting it once here means the splash can be removed without the
+        // ground blinking — which is what would otherwise show through mid-handoff.
+        .background(VoiidBrand.ground.ignoresSafeArea())
     }
 }
 
 // MARK: - Splash (Urbanist logo, embossed on the Voiid ground)
 
 struct SplashScreen: View {
+    /// Unused — the shared-element handoff was removed (see `OnboardingFlow`). Kept on the type
+    /// so the call site does not have to change if it is ever restored.
     var logoNS: Namespace.ID
-    @State private var appear = false
-    // Ellipse scales per device (design ref 325 on 402). Wordmark stays fixed 80 per spec.
+
+    // Ellipse scales per device (design ref 325 on 402).
     private var ellipse: CGFloat { VoiidScreen.width * (325.0 / 402.0) }
+
     var body: some View {
         ZStack {
-            VoiidBackground()
+            // NO GROUND OF ITS OWN. The container paints the near-black behind both branches
+            // (see OnboardingFlow.body), so there is one continuous backdrop and no flash when
+            // the splash is swapped out.
             LogoMark(size: ellipse, fontSize: 80)
-                .matchedGeometryEffect(id: "voiidLogo", in: logoNS)
-                .scaleEffect(appear ? 1 : 0.92)
-                .opacity(appear ? 1 : 0)
-                .animation(.spring(response: 0.8, dampingFraction: 0.7), value: appear)
         }
-        .onAppear { appear = true }
+        // The status bar's glyphs have to read against near-black, and in light mode they would
+        // be drawn dark on dark.
+        .preferredColorScheme(.dark)
     }
 }
 
@@ -102,19 +164,28 @@ struct SplashScreen: View {
 /// handler both touch `ConsentService` (a main-actor singleton) and `@State`, and leaving
 /// them nonisolated would make that a concurrency diagnostic the first time this file is
 /// compiled under stricter checking.
-@MainActor
 // MARK: - The embossed "voiid" logo mark (Urbanist) shared by Splash + Terms
 
 struct LogoMark: View {
-    /// `size` = rendered diameter of the full logo mark (wordmark + halo).
+    /// `size` = the composition's overall extent. The mark takes a fraction of it (see
+    /// `markSize`) so the lockup keeps breathing room rather than filling the frame.
     var size: CGFloat
-    var fontSize: CGFloat   // kept for call-site compatibility; unused (logo is a baked image)
+    var fontSize: CGFloat   // kept for call-site compatibility; unused (the lockup derives it)
+
+    /// 0.42 of the extent: the splash passes its ellipse diameter as `size`, which is the
+    /// composition's extent rather than the mark's. Rendering the mark at full width would have
+    /// it fill that space edge to edge and lose the air the design is built around.
+    private var markSize: CGFloat { size * 0.42 }
 
     var body: some View {
-        // PLACEHOLDER until the real mark lands — see DesignSystem/BrandMark.swift for what to
-        // swap and where. Drawn rather than an empty `Image("VoiidLogoMark")`, which would
-        // render nothing and read as a broken build on the FIRST screen a new user sees.
-        BrandWordmark(size: size * 0.30, color: VoiidColor.primary)
+        // Gap derived from the WORDMARK, not the mark, so the word sits close under the V
+        // rather than a mark-proportional distance below it.
+        VStack(spacing: OnboardingHeader.wordmarkSize * 0.42) {
+            VoiidMark(size: markSize)
+
+            BrandWordmark(size: OnboardingHeader.wordmarkSize,
+                          color: .white,
+                          dotColor: VoiidBrand.lime)
+        }
     }
 }
-
