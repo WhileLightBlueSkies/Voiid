@@ -114,8 +114,12 @@ router.get('/:user_id', requireAuth, asyncHandler(async (req, res) => {
         --
         -- Filtering here rather than at the send path keeps the invariant at the single
         -- point that publishes targets: a device peers cannot reach is not a target.
+        -- UNCONSUMED one-time keys only: prekeys/:user_id stamps consumed_at when it
+        -- hands one out, so counting every row would keep advertising a device whose
+        -- supply is spent — exactly the state this filter exists to exclude.
         and (
-          exists (select 1 from one_time_prekeys otp where otp.device_id = d.id)
+          exists (select 1 from one_time_prekeys otp
+                   where otp.device_id = d.id and otp.consumed_at is null)
           or exists (select 1 from signed_prekeys sp where sp.device_id = d.id)
         )
       order by d.last_seen_at desc nulls last, d.created_at desc`,

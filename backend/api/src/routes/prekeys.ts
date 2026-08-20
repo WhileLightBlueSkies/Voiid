@@ -136,9 +136,20 @@ router.get('/:user_id', requireAuth, async (req, res) => {
   // Freshest device first: a reinstall can leave a stale device row around, and
   // the client takes the first bundle — so hand out the most recently active.
   const devices = await query<{ id: string; registration_id: number; identity_public_key: Buffer }>(
-    `select id, registration_id, identity_public_key from devices
-       where user_id = $1 and revoked_at is null
-       order by last_seen_at desc nulls last, created_at desc`,
+    `select d.id, d.registration_id, d.identity_public_key from devices d
+       where d.user_id = $1
+         and d.revoked_at is null
+         -- Same reachability rule as GET /devices/:user_id. A device with neither an
+         -- unconsumed one-time key nor a fallback key cannot open an Olm session, so a
+         -- bundle for it is unusable: the sender fans out to it, gets nothing it can
+         -- encrypt with, and parks the message at 409 forever. Excluded here too because
+         -- THIS is the endpoint the send path reads to build its targets.
+         and (
+           exists (select 1 from one_time_prekeys otp
+                    where otp.device_id = d.id and otp.consumed_at is null)
+           or exists (select 1 from signed_prekeys sp where sp.device_id = d.id)
+         )
+       order by d.last_seen_at desc nulls last, d.created_at desc`,
     [req.params.user_id]
   );
 
