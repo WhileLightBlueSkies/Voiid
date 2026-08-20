@@ -25,9 +25,19 @@ const router = Router();
  * the one file over where it survived.
  */
 async function ownsDevice(deviceId: string, userId: string): Promise<boolean> {
+  // NOT filtered on `revoked_at is null`, deliberately.
+  //
+  // Registering a device revokes its same-platform siblings (routes/devices.ts). A device
+  // whose prekey upload was still in flight when a sibling registered would then fail this
+  // check, 404, and never land its keys — leaving it listed but unreachable, so every send
+  // to it parked at 409 "peer has no available prekeys" forever.
+  //
+  // Ownership is the question this function actually answers, and revocation does not
+  // change who owns a device. The caller proved possession of the account via requireAuth;
+  // uploading keys for one's own device is exactly how a superseded device recovers.
   const rows = await query<{ one: number }>(
     `select 1 as one from devices
-      where id = $1 and user_id = $2 and revoked_at is null
+      where id = $1 and user_id = $2
       limit 1`,
     [deviceId, userId]
   );
@@ -84,6 +94,17 @@ router.post('/upload', requireAuth, asyncHandler(async (req, res) => {
       [device_id, otp.key_id, b64(otp.public_key)]
     );
   }
+
+  // A device that just published key material is demonstrably live, so un-revoke it —
+  // otherwise a device superseded by a sibling's registration stays hidden from
+  // GET /devices/:user_id and never receives again, despite holding usable keys.
+  // Scoped to the caller's own device (ownership was checked above).
+  await query(
+    `update devices set revoked_at = null, updated_at = now()
+      where id = $1 and user_id = $2 and revoked_at is not null`,
+    [device_id, user_id]
+  );
+
   res.json({ uploaded: true });
 }));
 

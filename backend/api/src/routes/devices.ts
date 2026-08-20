@@ -97,9 +97,28 @@ router.post('/voip-token', requireAuth, asyncHandler(async (req, res) => {
 // on an inbound PreKey message — without it the receive path can't decrypt.
 router.get('/:user_id', requireAuth, asyncHandler(async (req, res) => {
   const rows = await query<{ id: string; identity_public_key: Buffer }>(
-    `select id, platform, device_name, registration_id, last_seen_at, identity_public_key
-       from devices where user_id = $1 and revoked_at is null
-       order by last_seen_at desc nulls last, created_at desc`,
+    `select d.id, d.platform, d.device_name, d.registration_id, d.last_seen_at, d.identity_public_key
+       from devices d
+      where d.user_id = $1
+        and d.revoked_at is null
+        -- A device with NO usable key material can never open a session: Olm needs
+        -- either a one-time prekey or a fallback key to start one. Advertising such a
+        -- device makes every sender fan out to it, fail, and retry forever at
+        -- 409 "peer has no available prekeys" — the message parks at "sending" with no
+        -- error shown, and the user is never told why.
+        --
+        -- This happens for real: registering a device REVOKES its same-platform siblings
+        -- (see the register handler above), and ownsDevice in routes/prekeys.ts rejects
+        -- uploads from a revoked device with a 404. A device whose upload raced a sibling
+        -- registration therefore stays listed with zero keys, permanently unreachable.
+        --
+        -- Filtering here rather than at the send path keeps the invariant at the single
+        -- point that publishes targets: a device peers cannot reach is not a target.
+        and (
+          exists (select 1 from one_time_prekeys otp where otp.device_id = d.id)
+          or exists (select 1 from signed_prekeys sp where sp.device_id = d.id)
+        )
+      order by d.last_seen_at desc nulls last, d.created_at desc`,
     [req.params.user_id]
   );
   const devices = rows.map((d: any) => ({
