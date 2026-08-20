@@ -77,7 +77,7 @@ fun NewChatScreen(
                 matches = result.matches
                 invites = result.invites
             } catch (e: Exception) {
-                error = (e as? ApiError)?.message
+                error = (e as? ApiError)?.userMessage
                     ?: "Couldn’t access contacts. Enable Contacts access in Settings."
             }
             loading = false

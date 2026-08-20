@@ -92,7 +92,7 @@ fun OtpScreen(
                     if (meta != null) restoreMeta = meta else session.completeOnboarding()
                 } else onContinue()
             } catch (e: Exception) {
-                errorText = (e as? com.voiid.app.net.ApiError)?.message ?: "Invalid or expired code."
+                errorText = (e as? com.voiid.app.net.ApiError)?.userMessage ?: "Invalid or expired code."
                 haptics.tap()
             }
             verifying = false

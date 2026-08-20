@@ -830,7 +830,7 @@ class ClipsStore(app: Application) : AndroidViewModel(app) {
     }
 
     private fun message(e: Throwable): String =
-        (e as? ApiError)?.message ?: "Something went wrong. Try again."
+        (e as? ApiError)?.userMessage ?: "Something went wrong. Try again."
 }
 
 /** "4.7M" / "732K" — the grid's view-count style. Mirrors iOS `ClipCount.compact`. */

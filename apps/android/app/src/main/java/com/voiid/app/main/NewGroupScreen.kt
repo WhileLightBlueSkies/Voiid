@@ -85,7 +85,7 @@ fun NewGroupScreen(
             try {
                 matches = ContactsService(context).discover(forceRefresh = force).matches
             } catch (e: Exception) {
-                error = (e as? ApiError)?.message ?: "Couldn’t access contacts."
+                error = (e as? ApiError)?.userMessage ?: "Couldn’t access contacts."
             }
             loading = false
         }

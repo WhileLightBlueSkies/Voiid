@@ -259,7 +259,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
             LocalStore.saveConversations(appContext, convs)   // so the next cold launch renders instantly (preview col preserved by the upsert)
             loadError = null
         } catch (e: Exception) {
-            loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t load chats."
+            loadError = (e as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t load chats."
         } finally {
             // Set on BOTH paths — success and failure. A load that failed is still a load
             // that finished; leaving this false would strand the user on a skeleton forever
@@ -389,7 +389,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                 // Only for the chat ON SCREEN — see `openConversationId`.
                 markOpenConversationRead(conv.id)
             } catch (e: Exception) {
-                loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t load messages."
+                loadError = (e as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t load messages."
             }
             return
         }
@@ -406,7 +406,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
             markOpenConversationRead(conv.id)
             fetchPresence(conv.id, peer)
         } catch (e: Exception) {
-            loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t load messages."
+            loadError = (e as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t load messages."
             // MARK THE READ ANYWAY. Everything above can throw — resolving the peer, the
             // fetch itself — and every one of those throws used to skip the receipt because
             // it sat inside the try. The messages already on screen were still read by a
@@ -513,7 +513,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                 refresh(conversationId)
             } catch (e: Exception) {
                 markStatus(tempId, conversationId, MessageStatus.FAILED)
-                loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t send media."
+                loadError = (e as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t send media."
             }
         }
     }
@@ -551,7 +551,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
             LocalStore.saveConversations(appContext, listOf(conv))   // survives a restart before the first sync
             conv
         } catch (e: Exception) {
-            loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t start chat."
+            loadError = (e as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t start chat."
             null
         }
     }
@@ -571,7 +571,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
             LocalStore.saveConversations(appContext, listOf(conv))
             conv
         } catch (e: Exception) {
-            loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t create the group."
+            loadError = (e as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t create the group."
             null
         }
     }
@@ -580,7 +580,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
     fun addGroupMember(conversationId: String, userId: String, onDone: () -> Unit = {}) {
         viewModelScope.launch {
             runCatching { groupEngine.addMember(conversationId, userId) }
-                .onFailure { loadError = (it as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t add member." }
+                .onFailure { loadError = (it as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t add member." }
             onDone()
         }
     }
@@ -589,7 +589,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
     fun removeGroupMember(conversationId: String, userId: String, onDone: () -> Unit = {}) {
         viewModelScope.launch {
             runCatching { groupEngine.removeMember(conversationId, userId) }
-                .onFailure { loadError = (it as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t remove member." }
+                .onFailure { loadError = (it as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t remove member." }
             onDone()
         }
     }
@@ -605,7 +605,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
     fun setMemberRole(conversationId: String, userId: String, role: MemberRole, onDone: () -> Unit = {}) {
         viewModelScope.launch {
             runCatching { chatService.setMemberRole(conversationId, userId, role.name.lowercase()) }
-                .onFailure { loadError = (it as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t change that role." }
+                .onFailure { loadError = (it as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t change that role." }
             onDone()
         }
     }
@@ -614,7 +614,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
     fun transferOwnership(conversationId: String, userId: String, onDone: () -> Unit = {}) {
         viewModelScope.launch {
             runCatching { chatService.transferOwnership(conversationId, userId) }
-                .onFailure { loadError = (it as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t transfer ownership." }
+                .onFailure { loadError = (it as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t transfer ownership." }
             onDone()
         }
     }
@@ -638,7 +638,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                     refresh(conversationId)
                     bumpPreview(conversationId, text)
                 } catch (e: Exception) {
-                    loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t send group message."
+                    loadError = (e as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t send group message."
                 }
             }
             refresh(conversationId)
@@ -674,7 +674,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                     engine.sendReply(text, quotedId, preview, sender, conversationId, peer)
                     refresh(conversationId)
                 } catch (e: Exception) {
-                    loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t resolve the recipient."
+                    loadError = (e as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t resolve the recipient."
                 }
             }
             return
@@ -691,7 +691,7 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
                 engine.flushPending(conversationId, peer)
                 refresh(conversationId)
             } catch (e: Exception) {
-                loadError = (e as? com.voiid.app.net.ApiError)?.message ?: "Couldn’t resolve the recipient."
+                loadError = (e as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t resolve the recipient."
             }
         }
     }

@@ -207,7 +207,7 @@ object LocationShareEngine {
             provider.startLive { loc -> onFix(loc) }
             null
         } catch (e: Exception) {
-            (e as? ApiError)?.message ?: "Couldn’t start live location."
+            (e as? ApiError)?.userMessage ?: "Couldn’t start live location."
         }
     }
 
