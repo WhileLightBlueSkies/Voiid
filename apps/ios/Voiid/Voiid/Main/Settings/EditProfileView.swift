@@ -87,6 +87,7 @@ struct EditProfileView: View {
 
     var body: some View {
         List {
+            encryptedPill
             photoSection
 
             SettingsSection("Name",
@@ -237,6 +238,37 @@ struct EditProfileView: View {
     }
 
     // MARK: - Photo
+
+    /// Says what happens to what the user is about to type.
+    ///
+    /// This screen collects a name, a username, a photo and an "about" line, and the live app
+    /// said nothing at all about where any of it goes. On a privacy-first messenger that
+    /// silence is the wrong default: the reassurance belongs ON the screen doing the
+    /// collecting, not buried in a settings page nobody opens.
+    ///
+    /// A pill rather than a row — it is a statement, not a control, and nothing happens when
+    /// you tap it.
+    private var encryptedPill: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "checkmark.shield.fill")
+                .font(.system(size: 12))
+            Text("End-to-end encrypted")
+                .font(VoiidFont.rounded(12.5, .medium))
+        }
+        .foregroundColor(VoiidColor.accentInk)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(Capsule().fill(VoiidColor.accent.opacity(0.10)))
+        .overlay(Capsule().stroke(VoiidColor.accent.opacity(0.3), lineWidth: 1))
+        .frame(maxWidth: .infinity)
+        // A List row, so it needs the row chrome removed to read as a floating pill.
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: VoiidSpacing.sm, leading: 0,
+                                  bottom: 0, trailing: 0))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Your profile is end-to-end encrypted")
+    }
 
     private var photoSection: some View {
         SettingsSection {

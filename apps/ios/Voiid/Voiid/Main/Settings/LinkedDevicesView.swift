@@ -70,8 +70,34 @@ struct LinkedDevicesView: View {
 
     // MARK: Body
 
+    /// Stated on the screen that lists WHERE the account is reachable.
+    ///
+    /// Above the phase switch rather than inside it, so it holds while the list is still
+    /// loading or has failed — those are exactly the moments a user wonders what is happening
+    /// to their account, and the answer does not depend on the request succeeding.
+    private var encryptedPill: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "lock.fill")
+                .font(.system(size: 11))
+            Text("End-to-end encrypted")
+                .font(VoiidFont.rounded(13, .medium))
+        }
+        .foregroundColor(VoiidColor.accentInk)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Capsule().fill(VoiidColor.accent.opacity(0.10)))
+        .overlay(Capsule().stroke(VoiidColor.accent.opacity(0.4), lineWidth: 1))
+        .frame(maxWidth: .infinity)
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: VoiidSpacing.sm, leading: 0, bottom: 0, trailing: 0))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Your devices are end-to-end encrypted")
+    }
+
     var body: some View {
         List {
+            encryptedPill
             switch phase {
             case .loading:
                 loadingSection
