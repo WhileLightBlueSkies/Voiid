@@ -177,7 +177,10 @@ struct RootTabView: View {
         // user with a missing bar, or leaks the bar into a chat. Switching tabs always lands
         // on a ROOT screen, so the bar must be visible by definition; forcing it here means a
         // forgotten reset costs one tab tap instead of an app restart.
-        .onChange(of: tab) { _, _ in session.hideTabBar = false }
+        // A tab change always lands on a root screen, so every outstanding hide request is
+        // stale by definition. Clearing the COUNT (rather than assigning a Bool false) is what
+        // stops a screen that failed to release from stranding the user with no navigation.
+        .onChange(of: tab) { _, _ in session.resetChrome() }
         .animation(.easeInOut(duration: 0.2), value: session.hideTabBar)
         // Bring the Map engine to life at shell load so inbound encrypted fixes are received
         // and decrypted even when the Map tab is not the active one — otherwise a contact's

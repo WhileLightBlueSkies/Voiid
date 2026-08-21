@@ -26,7 +26,36 @@ final class AppSession: ObservableObject {
     /// leaks into a chat or vanishes from a tab. `RootTabView` therefore ALSO forces it false
     /// whenever the selected tab changes, so a forgotten reset self-heals on the next tab tap
     /// rather than stranding the user with no navigation.
-    @Published var hideTabBar = false
+    /// ── A COUNT, NOT A BOOL ─────────────────────────────────────────────────────────
+    /// A Bool broke the moment two screens both wanted it. Pushing Contact from Conversation
+    /// runs Contact's appear FIRST and Conversation's disappear SECOND — so the outgoing screen
+    /// set it back to false and the tab bar reappeared over the screen that had just asked to
+    /// hide it. Lifecycle ORDER is not guaranteed, so no amount of moving the call between
+    /// `onAppear` and `task` fixes it reliably; the tab-change self-heal described above is a
+    /// symptom of that, not a cure.
+    ///
+    /// Counting does fix it: each screen adds one on the way in and removes one on the way out,
+    /// and the bar stays hidden while anyone is still asking. Order stops mattering.
+    ///
+    /// `hideTabBar` keeps its Bool shape so all 52 existing call sites still compile and still
+    /// mean what they meant — assigning false is a RESET, which is what a root screen wants.
+    @Published private var hideRequests = 0
+
+    var hideTabBar: Bool {
+        get { hideRequests > 0 }
+        set { hideRequests = newValue ? max(hideRequests, 1) : 0 }
+    }
+
+    /// Called by a screen that wants the bar hidden for its lifetime.
+    func requestHideTabBar() { hideRequests += 1 }
+
+    /// Called when that screen goes away.
+    func releaseHideTabBar() { hideRequests = max(0, hideRequests - 1) }
+
+    /// Clears every request. Used on a tab change, which always lands on a root screen — a
+    /// count left high by a screen that failed to release would strand the user with no
+    /// navigation at all.
+    func resetChrome() { hideRequests = 0 }
     /// The MEASURED height of the custom bottom tab bar, including its home-indicator
     /// padding — published by RootTabView, which is the only view that knows it.
     ///
