@@ -90,12 +90,39 @@ final class CommunityHostThreadService {
         var role: String?
         var member_user_id: String?
         var created_at: String?
+        /// unread | open | resolved (045). Server-side and shared, NOT derived from a
+        /// per-device unread count: a host who resolves a thread on their phone must see it
+        /// resolved on their iPad, and a co-host must see what the owner already handled.
+        var status: String?
+        var status_changed_at: String?
 
         /// SwiftUI identity. The conversation id is unique server-side (it is the host-thread
         /// table's own unique key); the empty fallback only exists so a malformed row cannot
         /// crash a list, and such rows are filtered out before they get there.
         var id: String { conversation_id ?? "" }
         var amHost: Bool { role == "host" }
+
+        /// Defaults to `.unread` for a row written before 045 or by an older client — an
+        /// unclassified thread belongs at the TOP of a moderation queue, not silently
+        /// archived at the bottom.
+        var threadStatus: ThreadStatus { ThreadStatus(rawValue: status ?? "") ?? .unread }
+    }
+
+    /// Unread → Open → Resolved, and back: a host may reopen something they closed early.
+    ///
+    /// Three states rather than an is-read Bool because the middle one is where a message gets
+    /// forgotten — a host opens a thread, means to return to it, and it now looks identical to
+    /// every thread already dealt with.
+    enum ThreadStatus: String, CaseIterable {
+        case unread, open, resolved
+
+        var label: String {
+            switch self {
+            case .unread:   return "Unread"
+            case .open:     return "Open"
+            case .resolved: return "Resolved"
+            }
+        }
     }
 
     private struct ThreadsResp: Decodable { var threads: [HostThreadSummary]? }
@@ -141,6 +168,21 @@ final class CommunityHostThreadService {
     /// /conversations` does not return `opened_via`, so the grouping is keyed on
     /// conversation_id, which a chat row already has. Fetch once per list load and build a
     /// map; do not call this per row.
+    /// Move a thread along the queue. HOST ONLY — the server answers 404 for a caller who is
+    /// not the owner, so a member cannot resolve their own complaint, and cannot learn whether
+    /// a community exists by watching the status code.
+    @discardableResult
+    func setStatus(communityId: String, memberUserId: String,
+                   status: ThreadStatus) async throws -> ThreadStatus {
+        struct Body: Encodable { let status: String }
+        struct Resp: Decodable { let status: String? }
+        let res: Resp = try await api.request(
+            "PATCH",
+            "communities/\(communityId)/host-thread/\(memberUserId)/status",
+            body: Body(status: status.rawValue))
+        return ThreadStatus(rawValue: res.status ?? "") ?? status
+    }
+
     func all() async throws -> [HostThreadSummary] {
         let res: ThreadsResp = try await api.request("GET", "community-host-threads")
         return (res.threads ?? []).filter { !($0.conversation_id ?? "").isEmpty }

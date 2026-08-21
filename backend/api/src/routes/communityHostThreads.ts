@@ -350,6 +350,8 @@ router.get('/community-host-threads', requireAuth, async (req, res) => {
     `select t.conversation_id,
             t.community_id,
             t.created_at,
+            t.status,
+            t.status_changed_at,
             c.handle        as community_handle,
             c.name          as community_name,
             c.avatar_r2_key as community_avatar_r2_key,
@@ -364,5 +366,59 @@ router.get('/community-host-threads', requireAuth, async (req, res) => {
   );
   res.json({ threads: rows });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// PATCH /communities/:id/host-thread/:memberId/status  { status }
+//
+// Move one thread along the queue: unread -> open -> resolved (any order; a host may reopen).
+//
+// HOST ONLY, and checked here rather than inferred from the caller reaching this route. The
+// member owns their side of the conversation but not the QUEUE — a member marking their own
+// complaint resolved is exactly the thing a moderation queue must not permit.
+//
+// Deliberately NOT reusing resolveHostTarget: that answers "may this caller message the
+// owner", which is the members' question and returns 403 for the owner's own community if
+// they are not on their own roster. The question here is "is this caller the owner".
+// ─────────────────────────────────────────────────────────────────────────────────
+const THREAD_STATUSES = new Set(['unread', 'open', 'resolved']);
+
+router.patch(
+  '/communities/:id/host-thread/:memberId/status',
+  requireAuth,
+  rateLimit({ max: 60, windowSeconds: 60, bucket: 'community-host-thread-status' }),
+  async (req, res) => {
+    const { user_id } = (req as any).auth;
+    const communityId = String(req.params.id ?? '');
+    const memberId = String(req.params.memberId ?? '');
+    const status = String((req.body ?? {}).status ?? '');
+
+    if (!UUID_RE.test(communityId)) return res.status(400).json({ error: 'community id must be a uuid' });
+    if (!UUID_RE.test(memberId)) return res.status(400).json({ error: 'member id must be a uuid' });
+    if (!THREAD_STATUSES.has(status)) {
+      return res.status(400).json({ error: 'status must be unread, open or resolved' });
+    }
+
+    const community = (await query<{ owner_id: string }>(
+      `select owner_id from communities where id = $1`,
+      [communityId]
+    ))[0];
+    // 404 for "not the owner" as well as "no such community": a caller who is not the host
+    // must not learn whether a community id exists by watching the status code change.
+    if (!community || community.owner_id !== user_id) {
+      return res.status(404).json({ error: 'no such community' });
+    }
+
+    const updated = await query<{ conversation_id: string }>(
+      `update community_host_threads
+          set status = $3, status_changed_at = now(), status_changed_by = $4
+        where community_id = $1 and member_user_id = $2
+        returning conversation_id`,
+      [communityId, memberId, status, user_id]
+    );
+    if (!updated.length) return res.status(404).json({ error: 'no such thread' });
+
+    res.json({ status, conversation_id: updated[0].conversation_id });
+  }
+);
 
 export default router;

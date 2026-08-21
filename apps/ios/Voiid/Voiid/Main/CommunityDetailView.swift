@@ -19,6 +19,31 @@ struct CommunityDetailView: View {
     @State private var loading = true
     @State private var error: String?
     @State private var busy = false
+    @State private var showInbox = false
+    @State private var openConversation: VConversation?
+
+    @EnvironmentObject private var chat: ChatStore
+
+    /// The card carries `owner_id`, so this needs no extra request.
+    private func isOwner(_ card: CommunityService.CommunityCard) -> Bool {
+        guard let me = TokenStore.shared.userId, let owner = card.owner_id else { return false }
+        return me == owner
+    }
+
+    /// Resolve the host thread's conversation and push the real chat. Same lookup ChatsHome
+    /// uses for a notification deep-link: it may not be in memory yet, so load before failing.
+    private func openHostConversation(_ convId: String) {
+        Task { @MainActor in
+            if !chat.directConversations.contains(where: { $0.id == convId }) {
+                await chat.loadConversations()
+            }
+            if let conv = chat.directConversations.first(where: { $0.id == convId }) {
+                openConversation = conv
+            } else {
+                error = "That conversation isn’t available on this device yet."
+            }
+        }
+    }
 
     var body: some View {
         ScrollView {
@@ -31,6 +56,41 @@ struct CommunityDetailView: View {
                             .foregroundColor(VoiidColor.textPrimary)
                     }
                     joinRow(card)
+
+                    // BOTH ENDS OF THE HOST LINE, which existed in the service layer and were
+                    // reachable from nowhere: `all()` had no caller and `MessageHostButton`
+                    // appeared only inside a comment. A member could not start a thread and a
+                    // host could not read one.
+                    if isOwner(card) {
+                        Button {
+                            Haptics.tap()
+                            showInbox = true
+                        } label: {
+                            HStack(spacing: VoiidSpacing.sm) {
+                                Image(systemName: "tray.full")
+                                Text("Host inbox")
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundColor(VoiidColor.textSecondary)
+                            }
+                            .font(VoiidFont.rounded(15, .semibold))
+                            .foregroundColor(VoiidColor.textPrimary)
+                            .padding(VoiidSpacing.md)
+                            .background(VoiidColor.surfaceCard)
+                            .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg,
+                                                        style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                    } else if card.isMember {
+                        // The button probes first, so it says "Message host" or "Open chat"
+                        // correctly rather than guessing. Non-members never see it: the
+                        // endpoint refuses them, and offering it would promise what it cannot do.
+                        MessageHostButton(communityId: card.id) { conversationId in
+                            openHostConversation(conversationId)
+                        }
+                    }
+
                     // Members only: the endpoint 403s everyone else, and an empty section
                     // would read as "no tournaments" rather than "not visible to you".
                     if card.isMember {
@@ -56,6 +116,8 @@ struct CommunityDetailView: View {
         .navigationTitle("@" + handle)
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
+        .sheet(isPresented: $showInbox) { CommunityInboxView() }
+        .navigationDestination(item: $openConversation) { ChatDetailView(conversation: $0) }
     }
 
     private func header(_ c: CommunityService.CommunityCard) -> some View {
