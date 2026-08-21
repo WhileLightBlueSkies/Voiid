@@ -32,6 +32,7 @@
 // never shows the non-host card state.
 //
 import pg from 'pg';
+import { randomUUID } from 'node:crypto';
 
 const CONFIRM = process.argv.includes('--confirm');
 const REMOVE = process.argv.includes('--remove');
@@ -97,17 +98,31 @@ async function main() {
     console.log(`${CONFIRM ? 'writing' : 'would write'}  @${c.handle.padEnd(13)} ${String(c.member_count).padStart(5)} members  ${c.join_policy.padEnd(11)} ${tag}`);
     if (!CONFIRM) continue;
 
-    const { rows } = await pool.query(
-      `insert into communities (owner_id, handle, name, description, join_policy, discoverable, member_count)
-            values ($1, $2, $3, $4, $5, $6, $7)
-       on conflict (handle) do update
-              set name = excluded.name,
-                  description = excluded.description,
-                  join_policy = excluded.join_policy,
-                  discoverable = excluded.discoverable,
-                  member_count = excluded.member_count
-        returning id`,
-      [ownerId, c.handle, c.name, c.description, c.join_policy, c.discoverable, c.member_count]);
+    // The unique index is on lower(handle) — an EXPRESSION index, which `on conflict
+    // (handle)` cannot use as an arbiter. And `id` is client-supplied (no default), like
+    // clips. So: look it up, then insert or update explicitly.
+    const existing = await pool.query(
+      `select id from communities where lower(handle) = lower($1)`, [c.handle]);
+
+    let id;
+    if (existing.rows.length) {
+      id = existing.rows[0].id;
+      await pool.query(
+        `update communities
+            set owner_id = $2, name = $3, description = $4, join_policy = $5,
+                discoverable = $6, member_count = $7, updated_at = now()
+          where id = $1`,
+        [id, ownerId, c.name, c.description, c.join_policy, c.discoverable, c.member_count]);
+    } else {
+      id = randomUUID();
+      await pool.query(
+        `insert into communities (id, owner_id, handle, name, description,
+                                  join_policy, discoverable, member_count)
+              values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [id, ownerId, c.handle, c.name, c.description,
+         c.join_policy, c.discoverable, c.member_count]);
+    }
+    const rows = [{ id }];
 
     // The owner has to be on the roster: resolveHostTarget checks community_members, so a
     // community whose owner is not a member cannot be messaged even by its own host.
