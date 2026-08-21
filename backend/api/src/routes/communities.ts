@@ -172,7 +172,7 @@ async function publicCard(row: CommunityRow) {
 
 const COMMUNITY_COLUMNS = `id, owner_id, handle, name, description, avatar_r2_key,
                            discoverable, join_policy, member_count, max_members,
-                           suspended_at, created_at`;
+                           suspended_at, created_at, category, members_can_invite`;
 
 /**
  * Resolve a community by uuid OR by handle, in one probe either way.
@@ -351,6 +351,21 @@ router.post(
     }
     const announcementName = trimmed(body.announcement_channel_name, MAX_CHANNEL_NAME) ?? 'Announcements';
     const generalName = trimmed(body.general_channel_name, MAX_CHANNEL_NAME) ?? 'General';
+    // 046. The create wizard's steps 1, 2 and 4 — a category, whether members may invite, and
+    // the rules. All optional: every step but the first is skippable, and a community created
+    // without them is a real community rather than an incomplete one.
+    const category = trimmed(body.category, 40);
+    // Invite-only forces this off. An invite-only community where every member can invite is
+    // not invite-only, and trusting the client to have enforced it means one stale build makes
+    // the setting a lie.
+    const membersCanInvite = joinPolicy === 'invite_only' ? false : body.members_can_invite !== false;
+    const rules = Array.isArray(body.rules) ? body.rules.slice(0, 20) : [];
+    // Spaces BEYOND the two every community gets. Capped, and the cap is silent because the
+    // client offers a fixed list shorter than it.
+    const extraSpaces = (Array.isArray(body.extra_channels) ? body.extra_channels : [])
+      .map((n: unknown) => trimmed(n, MAX_CHANNEL_NAME))
+      .filter((n: string | null): n is string => !!n)
+      .slice(0, 8);
 
     const client = await pool.connect();
     try {
@@ -362,11 +377,12 @@ router.post(
       const created = (
         await client.query<CommunityRow>(
           `insert into communities (id, owner_id, handle, name, description, avatar_r2_key,
-                                    discoverable, join_policy)
-                values ($1, $2, $3, $4, $5, $6, $7, $8)
+                                    discoverable, join_policy, category, members_can_invite)
+                values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
            on conflict (id) do nothing
              returning ${COMMUNITY_COLUMNS}`,
-          [id, user_id, handle, name, description, avatarKey, discoverable, joinPolicy]
+          [id, user_id, handle, name, description, avatarKey, discoverable, joinPolicy,
+           category, membersCanInvite]
         )
       ).rows[0];
 
@@ -408,6 +424,38 @@ router.post(
               values ($1, $3, 'announcement', 0), ($2, $3, 'chat', 1)`,
         [announcement.id, general.id, id]
       );
+
+      // The wizard's Spaces step. Position continues from the two above, so the order the
+      // user picked is the order they see.
+      for (const [i, spaceName] of extraSpaces.entries()) {
+        const conv = (
+          await client.query<{ id: string }>(
+            `insert into conversations (type, name, created_by) values ('group', $1, $2) returning id`,
+            [spaceName, user_id]
+          )
+        ).rows[0];
+        await client.query(
+          `insert into community_channels (conversation_id, community_id, kind, position)
+                values ($1, $2, 'chat', $3)`,
+          [conv.id, id, i + 2]
+        );
+        await client.query(
+          `insert into conversation_members (conversation_id, user_id, role)
+                values ($1, $2, 'admin')`,
+          [conv.id, user_id]
+        );
+      }
+
+      // The rules, in the order they were chosen.
+      for (const [i, rule] of rules.entries()) {
+        const title = trimmed((rule as any)?.title, 120);
+        if (!title) continue;
+        await client.query(
+          `insert into community_rules (community_id, title, detail, position)
+                values ($1, $2, $3, $4)`,
+          [id, title, trimmed((rule as any)?.detail, 400), i]
+        );
+      }
 
       // The creator is 'admin' on the conversations (the role conversations.ts already
       // understands for group management) and 'owner' on the roster (the role this router

@@ -55,12 +55,13 @@ struct CommunitiesHomeView: View {
                     }
                 }
                 .sheet(isPresented: $showCreate) {
-                    // The five-step wizard, replacing a three-field form. UI ONLY for now:
-                    // `onCreate` hands the draft back and nothing calls the API yet, because
-                    // category, rules and members-can-invite have no server-side home — and a
-                    // wizard that silently discards two of its five steps is worse than none.
-                    CommunityCreateFlow { _ in
+                    CommunityCreateFlow { created in
                         showCreate = false
+                        // Straight to the top of the list rather than a refetch: the server
+                        // just told us what it created, and a round trip would leave the list
+                        // briefly missing the thing the user made.
+                        mine.insert(created, at: 0)
+                        openHandle = created.handle
                     }
                 }
                 .navigationDestination(item: $openHandle) { handle in

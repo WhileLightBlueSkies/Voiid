@@ -231,16 +231,39 @@ final class CommunityService {
     /// Create one. `handle` shares the single namespace with usernames and creator handles
     /// (029/030), so the server may refuse it as taken — surfaced rather than pre-checked,
     /// because only the database can settle that race.
-    func create(handle: String, name: String, description: String?) async throws -> CommunityCard {
+    /// Everything the five-step wizard collects (046). All of it past `handle` and `name` is
+    /// optional, because every step but the first is skippable — a community created without
+    /// rules or extra Spaces is a real community, not an incomplete one.
+    struct RuleInput: Encodable { let title: String; let detail: String? }
+
+    func create(handle: String, name: String, description: String?,
+                joinPolicy: String = "open",
+                discoverable: Bool = true,
+                category: String? = nil,
+                membersCanInvite: Bool = true,
+                extraChannels: [String] = [],
+                rules: [RuleInput] = []) async throws -> CommunityCard {
         struct Body: Encodable {
-            let id: String; let handle: String; let name: String; let description: String?
+            let id: String
+            let handle: String
+            let name: String
+            let description: String?
+            let join_policy: String
+            let discoverable: Bool
+            let category: String?
+            let members_can_invite: Bool
+            let extra_channels: [String]
+            let rules: [RuleInput]
         }
         struct Envelope: Decodable { let community: CommunityCard }
         // Client-supplied id makes a retry idempotent — the same reasoning as clips.
         let env: Envelope = try await api.request(
             "POST", "communities",
             body: Body(id: UUID().uuidString.lowercased(), handle: handle,
-                       name: name, description: description))
+                       name: name, description: description,
+                       join_policy: joinPolicy, discoverable: discoverable,
+                       category: category, members_can_invite: membersCanInvite,
+                       extra_channels: extraChannels, rules: rules))
         return env.community
     }
 

@@ -142,8 +142,12 @@ struct CommunityCreateFlow: View {
     @StateObject private var draft = CommunityDraftModel()
     @State private var step: CommunityDraftModel.Step = .identity
 
-    /// Hands the finished draft back. The caller owns what happens next.
-    var onCreate: (CommunityDraftModel) -> Void = { _ in }
+    /// Hands back the community the SERVER created, not the draft — the caller needs the id
+    /// and handle, and only the server knows them.
+    var onCreate: (CommunityService.CommunityCard) -> Void = { _ in }
+
+    @State private var creating = false
+    @State private var createError: String?
 
     private var stepIndex: Int { step.rawValue }
     private var isLast: Bool { step == .invite }
@@ -173,6 +177,16 @@ struct CommunityCreateFlow: View {
                         .padding(.bottom, VoiidSpacing.xl)
                     }
                     .scrollIndicators(.hidden)
+
+                    if let createError {
+                        Text(createError)
+                            .font(VoiidFont.footnote)
+                            .foregroundColor(VoiidColor.error)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: .infinity)
+                            .padding(.horizontal, VoiidSpacing.md)
+                            .padding(.bottom, VoiidSpacing.xs)
+                    }
 
                     footer
                 }
@@ -530,29 +544,72 @@ struct CommunityCreateFlow: View {
             Button {
                 Haptics.tap()
                 if isLast {
-                    onCreate(draft)
+                    Task { await create() }
                 } else {
                     withAnimation(.easeOut(duration: 0.2)) {
                         step = CommunityDraftModel.Step(rawValue: stepIndex + 1) ?? .invite
                     }
                 }
             } label: {
-                Text(isLast ? "Create community" : "Continue")
-                    .font(VoiidFont.rounded(15, .semibold))
-                    .foregroundColor(VoiidColor.textOnAccent)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 46)
-                    .background(Capsule().fill(draft.canContinue ? VoiidColor.accent
-                                                                 : VoiidColor.placeholder))
+                Group {
+                    if creating {
+                        ProgressView().tint(VoiidColor.textOnAccent)
+                    } else {
+                        Text(isLast ? "Create community" : "Continue")
+                            .font(VoiidFont.rounded(15, .semibold))
+                    }
+                }
+                .foregroundColor(VoiidColor.textOnAccent)
+                .frame(maxWidth: .infinity)
+                .frame(height: 46)
+                .background(Capsule().fill(draft.canContinue ? VoiidColor.accent
+                                                             : VoiidColor.placeholder))
             }
             .buttonStyle(.plain)
-            .disabled(!draft.canContinue)
+            .disabled(!draft.canContinue || creating)
         }
         .padding(.horizontal, VoiidSpacing.md)
         .padding(.top, VoiidSpacing.sm)
         .padding(.bottom, VoiidSpacing.sm)
         .background(.ultraThinMaterial)
         .overlay(Divider().background(VoiidColor.divider), alignment: .top)
+    }
+
+    // MARK: Create
+
+    /// The handle is DERIVED from the name, so it can collide with one that already exists —
+    /// two communities called "Design Daily" produce the same handle. The server answers 409,
+    /// and the honest fix is to say so and let the user change the name, rather than silently
+    /// appending a number to a handle they never chose.
+    private func create() async {
+        creating = true
+        defer { creating = false }
+        do {
+            let card = try await CommunityService.shared.create(
+                handle: draft.handle,
+                name: draft.name.trimmingCharacters(in: .whitespaces),
+                description: draft.about.isEmpty ? nil : draft.about,
+                joinPolicy: draft.joinPolicy,
+                discoverable: draft.discoverable,
+                category: draft.category,
+                membersCanInvite: draft.membersCanInvite,
+                // Announcements and General are created by the server for every community, so
+                // sending them again would produce duplicates.
+                extraChannels: SpaceTemplate.all
+                    .filter { draft.spaceIDs.contains($0.id) }
+                    .filter { $0.id != "general" && $0.id != "announcements" }
+                    .map(\.name),
+                rules: RuleTemplate.all
+                    .filter { draft.ruleIDs.contains($0.id) }
+                    .map { CommunityService.RuleInput(title: $0.title, detail: $0.detail) })
+            Haptics.success()
+            onCreate(card)
+            dismiss()
+        } catch {
+            Haptics.error()
+            createError = (error as? APIError)?.errorDescription
+                ?? "Couldn’t create that community."
+        }
     }
 
     // MARK: Pieces
