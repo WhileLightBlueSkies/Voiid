@@ -20,6 +20,7 @@ struct CommunityDetailView: View {
     @State private var error: String?
     @State private var busy = false
     @State private var showInbox = false
+    @State private var tab: CommunityTab = .spaces
     @State private var openConversation: VConversation?
 
     @EnvironmentObject private var chat: ChatStore
@@ -280,16 +281,61 @@ struct CommunityDetailView: View {
     /// as "no events" rather than "not visible to you".
     @ViewBuilder
     private func sections(_ c: CommunityService.CommunityCard) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: VoiidSpacing.md) {
+            // Members only. The Spaces and Members endpoints refuse everyone else, and an
+            // empty tab reads as "nothing here" rather than "not visible to you" — so a
+            // non-member gets About, which is the tab whose content they are entitled to.
             if c.isMember {
-                CommunityTournamentsSection(communityId: c.id)
-                Divider().overlay(VoiidColor.divider)
-                CommunityEventsSection(communityId: c.id)
-                Divider().overlay(VoiidColor.divider)
-            }
-            notice
+                tabBar
+                Group {
+                    switch tab {
+                    case .spaces:
+                        CommunitySpacesTab(communityId: c.id, isAdmin: isOwner(c))
+                    case .events:
+                        VStack(alignment: .leading, spacing: VoiidSpacing.md) {
+                            CommunityEventsSection(communityId: c.id)
+                            CommunityTournamentsSection(communityId: c.id)
+                        }
+                    case .members:
+                        CommunityMembersTab(communityId: c.id, isAdmin: isOwner(c))
+                    case .about:
+                        CommunityAboutTab(card: c)
+                    }
+                }
                 .padding(.horizontal, VoiidSpacing.md)
-                .padding(.vertical, VoiidSpacing.md)
+            } else {
+                CommunityAboutTab(card: c)
+                    .padding(.horizontal, VoiidSpacing.md)
+            }
+        }
+        .padding(.top, VoiidSpacing.md)
+    }
+
+    /// Underlined, not filled. A filled pill here would compete with the Join button directly
+    /// above it, and the tab row is navigation rather than an action.
+    private var tabBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 22) {
+                ForEach(CommunityTab.allCases) { option in
+                    let selected = tab == option
+                    Button {
+                        Haptics.selection()
+                        withAnimation(.easeOut(duration: 0.18)) { tab = option }
+                    } label: {
+                        VStack(spacing: 6) {
+                            Text(option.rawValue)
+                                .font(VoiidFont.rounded(14.5, selected ? .semibold : .regular))
+                                .foregroundColor(selected ? VoiidColor.textPrimary
+                                                          : VoiidColor.textSecondary)
+                            Capsule()
+                                .fill(selected ? VoiidColor.accent : .clear)
+                                .frame(height: 2)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, VoiidSpacing.md)
         }
     }
 

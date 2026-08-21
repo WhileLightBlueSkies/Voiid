@@ -1217,6 +1217,37 @@ router.patch(
   })
 );
 
+// GET /communities/:id/channels — the Spaces list.
+//
+// Channels could be CREATED and never LISTED, so the client had no way to render Spaces at
+// all. The name lives on the conversation (community_channels carries only the link, the kind
+// and the order), which is why this joins rather than selecting one table.
+//
+// Members only. A non-member learning a community's channel names tells them what is
+// discussed inside it, which is exactly what a private community is withholding.
+router.get(
+  '/:id/channels',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id } = (req as any).auth;
+    const communityId = String(req.params.id ?? '');
+    if (!UUID_RE.test(communityId)) return res.status(400).json({ error: 'community id must be a uuid' });
+
+    const me = await membershipOf(communityId, user_id);
+    const community = (
+      await query<{ owner_id: string }>(`select owner_id from communities where id = $1`, [communityId])
+    )[0];
+    if (!community) return res.status(404).json({ error: 'no such community' });
+    const isOwner = community.owner_id === user_id;
+    if (!isOwner && me?.state !== 'active') {
+      return res.status(403).json({ error: 'only members can see this community\u2019s Spaces' });
+    }
+
+    // channelsOf already exists and is used elsewhere — one query, one place to fix.
+    res.json({ channels: await channelsOf(communityId) });
+  })
+);
+
 // POST /communities/:id/channels   { name, kind? }
 //
 // A new channel is a new MLS group that EVERY ACTIVE MEMBER is put into — which is why the

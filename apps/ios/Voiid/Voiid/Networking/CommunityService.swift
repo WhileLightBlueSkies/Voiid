@@ -171,6 +171,46 @@ final class CommunityService {
     /// select-then-update loses the race on the last use of a max_uses link and lets two people
     /// spend it.
     /// Communities this account belongs to. The tab's own list.
+    /// A community's Spaces. The name lives on the conversation, so the server joins for it.
+    struct Channel: Decodable, Identifiable {
+        let conversation_id: String
+        let kind: String?
+        let position: Int?
+        let name: String?
+
+        var id: String { conversation_id }
+        /// Announcement channels are host-writes-everyone-reads; chat is everyone.
+        var isAnnouncement: Bool { kind == "announcement" }
+    }
+
+    func channels(communityId: String) async throws -> [Channel] {
+        struct Envelope: Decodable { let channels: [Channel] }
+        let env: Envelope = try await api.request("GET", "communities/\(communityId)/channels")
+        return env.channels
+    }
+
+    /// One row of the roster. NO display name and no avatar: the server returns ids, and
+    /// resolving them is the directory's job, not this endpoint's.
+    struct Member: Decodable, Identifiable {
+        let user_id: String
+        let role: String?
+        let state: String?
+        let joined_at: String?
+
+        var id: String { user_id }
+        var isOwner: Bool { role == "owner" }
+        var isAdmin: Bool { role == "admin" || role == "owner" }
+    }
+
+    /// `state` filters the roster. Anything but `active` is manager-only — the server refuses
+    /// a plain member asking who is banned, which is moderation state they are not entitled to.
+    func members(communityId: String, state: String = "active") async throws -> [Member] {
+        struct Envelope: Decodable { let members: [Member] }
+        let env: Envelope = try await api.request(
+            "GET", "communities/\(communityId)/members?state=\(state)")
+        return env.members
+    }
+
     func mine() async throws -> [CommunityCard] {
         struct Envelope: Decodable { let communities: [CommunityCard] }
         let env: Envelope = try await api.request("GET", "communities/mine")
