@@ -70,6 +70,12 @@ struct CommunitiesHomeView: View {
         .onAppear { session.hideTabBar = false }
     }
 
+    /// The card already carries `owner_id`, so marking what you host costs no extra request.
+    private func isHost(_ card: CommunityService.CommunityCard) -> Bool {
+        guard let me = TokenStore.shared.userId, let owner = card.owner_id else { return false }
+        return me == owner
+    }
+
     @ViewBuilder private var content: some View {
         // Error beats empty. Rendering "you're not in any communities" for a failed request
         // is a lie the user cannot act on — the same rule the Clips feed follows.
@@ -104,7 +110,7 @@ struct CommunitiesHomeView: View {
                         Haptics.tap()
                         openHandle = card.handle
                     } label: {
-                        CommunityCardRow(card: card)
+                        CommunityCardRow(card: card, isHost: isHost(card))
                     }
                     .buttonStyle(.plain)
                 }
@@ -169,69 +175,129 @@ struct CommunitiesHomeView: View {
 
 private struct CommunityCardRow: View {
     let card: CommunityService.CommunityCard
+    /// Whether the signed-in user owns this community. Drives the HOST badge and the card's
+    /// accent border — the reference marks what you administer, not what you belong to.
+    var isHost: Bool = false
 
     var body: some View {
-        HStack(spacing: VoiidSpacing.md) {
-            ClipThumbnail(url: card.avatar_url)
-                .frame(width: 52, height: 52)
-                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+        // A VERTICAL card, not a flat row. The reference gives the description its own line
+        // rather than squeezing it beside the avatar, so a two-line about does not push the
+        // member count out of the row — and the footer has somewhere to live.
+        VStack(alignment: .leading, spacing: VoiidSpacing.sm + 2) {
+            HStack(alignment: .top, spacing: VoiidSpacing.sm + 2) {
+                mark
 
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(card.name ?? "@\(card.handle)")
-                        .font(VoiidFont.rounded(16, .semibold))
-                        .foregroundColor(VoiidColor.textPrimary)
-                        .lineLimit(1)
-                    if card.isMember {
-                        // textOnAccent, NOT primary. Both `primary` and `accent` resolve to
-                        // Tide since the brand moved off the lime, so this was teal text on a
-                        // 35%-teal wash — legible while primary was near-black on lime, and
-                        // barely readable after the flip. A filled badge carries its contrast
-                        // in the LABEL: the fill is the brand, the label is what you read.
-                        Text("joined")
-                            .font(VoiidFont.rounded(10, .semibold))
-                            .foregroundColor(VoiidColor.textOnAccent)
-                            .padding(.horizontal, 6).padding(.vertical, 2)
-                            .background(VoiidColor.accent)
-                            .clipShape(Capsule())
-                    } else if card.isPending {
-                        Text("requested")
-                            .font(VoiidFont.rounded(10, .semibold))
-                            .foregroundColor(VoiidColor.textSecondary)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 5) {
+                        Text(card.name ?? "@\(card.handle)")
+                            .font(VoiidFont.rounded(15.5, .semibold))
+                            .foregroundColor(VoiidColor.textPrimary)
+                            .lineLimit(1)
+
+                        if isHost {
+                            Text("HOST")
+                                .font(VoiidFont.rounded(9.5, .bold))
+                                .foregroundColor(VoiidColor.textOnAccent)
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(Capsule().fill(VoiidColor.accent))
+                        }
                     }
-                }
-                if let d = card.description, !d.isEmpty {
-                    Text(d)
-                        .font(VoiidFont.footnote)
-                        .foregroundColor(VoiidColor.textSecondary)
-                        .lineLimit(2)
-                }
-                // Membership count AND how you get in. The card already carried `join_policy`
-                // and never showed it, so an invite-only community looked identical to an open
-                // one until the user tapped through and was refused — the reference puts the
-                // globe/lock beside the count for exactly that reason.
-                HStack(spacing: 5) {
-                    Image(systemName: card.policy == "open" ? "globe" : "lock.fill")
-                        .font(.system(size: 10))
-                    Text("\(card.members) member\(card.members == 1 ? "" : "s")")
-                    if card.isSuspended {
-                        Text("· suspended")
-                            .foregroundColor(VoiidColor.error)
+
+                    HStack(spacing: 5) {
+                        Image(systemName: card.policy == "open" ? "globe" : "lock.fill")
+                            .font(.system(size: 9.5))
+                        Text("\(card.members) member\(card.members == 1 ? "" : "s")")
+                        if card.isSuspended {
+                            Text("•")
+                            Text("Suspended").foregroundColor(VoiidColor.error)
+                        }
                     }
+                    .font(VoiidFont.rounded(11.5))
+                    .foregroundColor(VoiidColor.textSecondary)
+                    .lineLimit(1)
                 }
-                .font(VoiidFont.rounded(11, .regular))
-                .foregroundColor(VoiidColor.textSecondary)
+
+                Spacer(minLength: 0)
+
+                // Membership reads at the top-right, where the reference puts its unread count.
+                if card.isMember {
+                    Text("Joined")
+                        .font(VoiidFont.rounded(10, .semibold))
+                        .foregroundColor(VoiidColor.textOnAccent)
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(Capsule().fill(VoiidColor.accent))
+                } else if card.isPending {
+                    Text("Requested")
+                        .font(VoiidFont.rounded(10, .semibold))
+                        .foregroundColor(VoiidColor.accentInk)
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(Capsule().fill(VoiidColor.accentTint))
+                }
             }
-            Spacer(minLength: 0)
-            Image(systemName: "chevron.right")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(VoiidColor.textSecondary)
+
+            if let d = card.description, !d.isEmpty {
+                Text(d)
+                    .font(VoiidFont.rounded(13))
+                    .foregroundColor(VoiidColor.textSecondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: VoiidSpacing.sm) {
+                Text("@\(card.handle)")
+                    .font(VoiidFont.rounded(11.5))
+                    .foregroundColor(VoiidColor.placeholder)
+                Spacer(minLength: 0)
+                if !card.isMember && !card.isPending {
+                    Text(card.policy == "open" ? "Anyone can join" : "Invite only")
+                        .font(VoiidFont.rounded(11, .semibold))
+                        .foregroundColor(VoiidColor.textSecondary)
+                }
+            }
         }
         .padding(VoiidSpacing.md)
         .background(VoiidColor.surfaceCard)
         .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
+        // A community you HOST gets an accent edge, so your own show at a glance in a long list.
+        .overlay(
+            RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
+                .stroke(isHost ? VoiidColor.accent.opacity(0.35) : VoiidColor.divider,
+                        lineWidth: 1)
+        )
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(card.name ?? card.handle), \(card.members) members")
+    }
+
+    /// An avatar when there is one, initials when there is not — never the Voiid mark, which
+    /// would imply Voiid runs the community.
+    @ViewBuilder
+    private var mark: some View {
+        if card.avatar_url != nil {
+            ClipThumbnail(url: card.avatar_url)
+                .frame(width: 46, height: 46)
+                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+        } else {
+            RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
+                .fill(VoiidColor.accentTint)
+                .frame(width: 46, height: 46)
+                .overlay(
+                    Text(initials)
+                        .font(VoiidFont.rounded(16, .bold))
+                        .foregroundColor(VoiidColor.accentInk)
+                )
+        }
+    }
+
+    private var initials: String {
+        let source = card.name ?? card.handle
+        let parts = source.split(separator: " ").prefix(2)
+        let letters = parts.compactMap { $0.first }.map(String.init).joined()
+        return letters.isEmpty ? String(source.prefix(1)).uppercased() : letters.uppercased()
     }
 }
+
 
 // MARK: - Create
 
