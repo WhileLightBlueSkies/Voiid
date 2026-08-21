@@ -114,7 +114,7 @@ async function main() {
     await pool.query(
       `insert into community_members (community_id, user_id, role, state)
             values ($1, $2, 'owner', 'active')
-       on conflict do nothing`,
+       on conflict (community_id, user_id) do nothing`,
       [rows[0].id, ownerId]);
 
     // Join the OTHER user's communities as a member, so the "Joined" pill and the
@@ -123,7 +123,7 @@ async function main() {
       await pool.query(
         `insert into community_members (community_id, user_id, role, state)
               values ($1, $2, 'member', 'active')
-         on conflict do nothing`,
+         on conflict (community_id, user_id) do nothing`,
         [rows[0].id, owner]);
     }
   }
