@@ -40,7 +40,8 @@ struct StoriesHomeView: View {
                         }
                     }
                     .padding(.top, VoiidSpacing.sm)
-                    .padding(.bottom, 120)
+                    // Measured bar height rather than a guess — see AppSession.bottomInset.
+                    .padding(.bottom, session.bottomInset)
                 }
                 composeButton
             }
@@ -155,7 +156,7 @@ struct StoriesHomeView: View {
                 .shadow(color: .black.opacity(0.15), radius: 8, y: 3)
         }
         .padding(.trailing, VoiidSpacing.lg)
-        .padding(.bottom, 96)
+        .padding(.bottom, session.bottomInset)
     }
 
     private var emptyState: some View {

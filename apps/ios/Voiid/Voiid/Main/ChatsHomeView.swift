@@ -132,7 +132,12 @@ struct ChatsHomeView: View {
                         }
                     }
                     .padding(.top, VoiidSpacing.lg)
-                    .padding(.bottom, 110)
+                    // The tab bar is painted OVER this page rather than inserted into its safe
+                    // area, so the grid has to hold its last row clear of it. `bottomInset` is
+                    // the bar's MEASURED height (with a floor for the frame before it has
+                    // measured itself, and 0 when it is hidden) — the 110 it replaces was a
+                    // guess that was wrong on any device whose home-indicator inset differed.
+                    .padding(.bottom, session.bottomInset)
                     .task(id: search) { await loadContactsForSearch() }
                 }
             }

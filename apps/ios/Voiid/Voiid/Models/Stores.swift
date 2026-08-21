@@ -56,6 +56,21 @@ final class AppSession: ObservableObject {
     /// count left high by a screen that failed to release would strand the user with no
     /// navigation at all.
     func resetChrome() { hideRequests = 0 }
+
+    /// What a page has to scroll clear of at the bottom: the tab bar.
+    ///
+    /// ── ONE PROPERTY, NOT PER-SCREEN ARITHMETIC ─────────────────────────────────────
+    /// The bar is painted OVER the page (a ZStack sibling), not inserted into its safe area,
+    /// so every scrolling tab screen has to hold its own content clear of it. Five screens each
+    /// computing `session.tabBarHeight + something` is five chances to get it wrong, and five
+    /// of the seven had already got it wrong by doing nothing at all — their last row sits
+    /// under the bar.
+    ///
+    /// The floor covers the frame before the bar has measured itself, when `tabBarHeight` is
+    /// still 0; hiding the bar collapses it to 0, so a full-screen child inherits no phantom gap.
+    var bottomInset: CGFloat {
+        hideTabBar ? 0 : max(tabBarHeight, 84)
+    }
     /// The MEASURED height of the custom bottom tab bar, including its home-indicator
     /// padding — published by RootTabView, which is the only view that knows it.
     ///

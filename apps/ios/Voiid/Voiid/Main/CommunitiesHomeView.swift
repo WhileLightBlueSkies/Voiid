@@ -118,6 +118,9 @@ struct CommunitiesHomeView: View {
             }
             .padding(.horizontal, VoiidSpacing.md)
             .padding(.top, VoiidSpacing.sm)
+            // Had NO bottom clearance at all, so the last card sat under the tab bar — the bar
+            // is painted over this page, not inserted into its safe area. See bottomInset.
+            .padding(.bottom, session.bottomInset)
         }
     }
 
