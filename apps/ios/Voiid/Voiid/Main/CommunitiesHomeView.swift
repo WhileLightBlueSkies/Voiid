@@ -183,11 +183,16 @@ private struct CommunityCardRow: View {
                         .foregroundColor(VoiidColor.textPrimary)
                         .lineLimit(1)
                     if card.isMember {
+                        // textOnAccent, NOT primary. Both `primary` and `accent` resolve to
+                        // Tide since the brand moved off the lime, so this was teal text on a
+                        // 35%-teal wash — legible while primary was near-black on lime, and
+                        // barely readable after the flip. A filled badge carries its contrast
+                        // in the LABEL: the fill is the brand, the label is what you read.
                         Text("joined")
                             .font(VoiidFont.rounded(10, .semibold))
-                            .foregroundColor(VoiidColor.primary)
+                            .foregroundColor(VoiidColor.textOnAccent)
                             .padding(.horizontal, 6).padding(.vertical, 2)
-                            .background(VoiidColor.accent.opacity(0.35))
+                            .background(VoiidColor.accent)
                             .clipShape(Capsule())
                     } else if card.isPending {
                         Text("requested")
@@ -201,9 +206,21 @@ private struct CommunityCardRow: View {
                         .foregroundColor(VoiidColor.textSecondary)
                         .lineLimit(2)
                 }
-                Text("\(card.members) member\(card.members == 1 ? "" : "s")")
-                    .font(VoiidFont.rounded(11, .regular))
-                    .foregroundColor(VoiidColor.textSecondary)
+                // Membership count AND how you get in. The card already carried `join_policy`
+                // and never showed it, so an invite-only community looked identical to an open
+                // one until the user tapped through and was refused — the reference puts the
+                // globe/lock beside the count for exactly that reason.
+                HStack(spacing: 5) {
+                    Image(systemName: card.policy == "open" ? "globe" : "lock.fill")
+                        .font(.system(size: 10))
+                    Text("\(card.members) member\(card.members == 1 ? "" : "s")")
+                    if card.isSuspended {
+                        Text("· suspended")
+                            .foregroundColor(VoiidColor.error)
+                    }
+                }
+                .font(VoiidFont.rounded(11, .regular))
+                .foregroundColor(VoiidColor.textSecondary)
             }
             Spacer(minLength: 0)
             Image(systemName: "chevron.right")
