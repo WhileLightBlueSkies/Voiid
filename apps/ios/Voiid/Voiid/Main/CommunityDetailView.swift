@@ -23,6 +23,7 @@ struct CommunityDetailView: View {
     @State private var openConversation: VConversation?
 
     @EnvironmentObject private var chat: ChatStore
+    @EnvironmentObject private var session: AppSession
 
     /// The card carries `owner_id`, so this needs no extra request.
     private func isOwner(_ card: CommunityService.CommunityCard) -> Bool {
@@ -46,123 +47,265 @@ struct CommunityDetailView: View {
     }
 
     var body: some View {
-        ScrollView {
+        ZStack(alignment: .bottom) {
+            VoiidColor.background.ignoresSafeArea()
+
             if let card {
-                VStack(alignment: .leading, spacing: VoiidSpacing.md) {
-                    header(card)
-                    if let d = card.description, !d.isEmpty {
-                        Text(d)
-                            .font(VoiidFont.body)
-                            .foregroundColor(VoiidColor.textPrimary)
+                ScrollView {
+                    VStack(spacing: 0) {
+                        hero
+                        identity(card)
+                        actions(card)
+                        Divider().overlay(VoiidColor.divider)
+                            .padding(.top, VoiidSpacing.md)
+                        sections(card)
                     }
-                    joinRow(card)
-
-                    // BOTH ENDS OF THE HOST LINE, which existed in the service layer and were
-                    // reachable from nowhere: `all()` had no caller and `MessageHostButton`
-                    // appeared only inside a comment. A member could not start a thread and a
-                    // host could not read one.
-                    if isOwner(card) {
-                        Button {
-                            Haptics.tap()
-                            showInbox = true
-                        } label: {
-                            HStack(spacing: VoiidSpacing.sm) {
-                                Image(systemName: "tray.full")
-                                Text("Host inbox")
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundColor(VoiidColor.textSecondary)
-                            }
-                            .font(VoiidFont.rounded(15, .semibold))
-                            .foregroundColor(VoiidColor.textPrimary)
-                            .padding(VoiidSpacing.md)
-                            .background(VoiidColor.surfaceCard)
-                            .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg,
-                                                        style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                    } else if card.isMember {
-                        // The button probes first, so it says "Message host" or "Open chat"
-                        // correctly rather than guessing. Non-members never see it: the
-                        // endpoint refuses them, and offering it would promise what it cannot do.
-                        MessageHostButton(communityId: card.id) { conversationId in
-                            openHostConversation(conversationId)
-                        }
-                    }
-
-                    // Members only: the endpoint 403s everyone else, and an empty section
-                    // would read as "no tournaments" rather than "not visible to you".
-                    if card.isMember {
-                        Divider().background(VoiidColor.divider)
-                        CommunityTournamentsSection(communityId: card.id)
-                        Divider().background(VoiidColor.divider)
-                        CommunityEventsSection(communityId: card.id)
-                    }
-                    Divider().background(VoiidColor.divider)
-                    notice
                 }
-                .padding(VoiidSpacing.md)
+                .scrollIndicators(.hidden)
+                .ignoresSafeArea(edges: .top)
+                // Clears the tab bar AND the host bar that floats above it.
+                .contentMargins(.bottom, session.bottomInset + 96, for: .scrollContent)
+
+                hostBar(card)
             } else if loading {
-                ProgressView().tint(VoiidColor.primary).padding(.top, 80)
+                ProgressView().tint(VoiidColor.accent)
             } else {
-                Text(error ?? "That community doesn't exist.")
-                    .font(VoiidFont.subhead)
-                    .foregroundColor(VoiidColor.textSecondary)
-                    .padding(VoiidSpacing.xl)
+                VStack(spacing: VoiidSpacing.sm) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 30)).foregroundColor(VoiidColor.textSecondary)
+                    Text(error ?? "Couldn\u{2019}t load that community.")
+                        .font(VoiidFont.subhead).foregroundColor(VoiidColor.textSecondary)
+                        .multilineTextAlignment(.center)
+                    Button("Try again") { Task { await load() } }
+                        .font(VoiidFont.rounded(15, .semibold))
+                        .foregroundColor(VoiidColor.accentInk)
+                }
+                .padding(VoiidSpacing.xl)
             }
         }
-        .background(VoiidColor.background.ignoresSafeArea())
-        .navigationTitle("@" + handle)
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
         .sheet(isPresented: $showInbox) { CommunityInboxView() }
         .navigationDestination(item: $openConversation) { ChatDetailView(conversation: $0) }
     }
 
-    private func header(_ c: CommunityService.CommunityCard) -> some View {
-        HStack(spacing: VoiidSpacing.md) {
-            ClipThumbnail(url: c.avatar_url)
-                .frame(width: 72, height: 72)
-                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
-            VStack(alignment: .leading, spacing: 3) {
-                Text(c.name ?? "@" + c.handle)
-                    .font(VoiidFont.rounded(22, .semibold))
-                    .foregroundColor(VoiidColor.textPrimary)
-                Text("\(c.members) member\(c.members == 1 ? "" : "s") · \(c.policy)")
-                    .font(VoiidFont.footnote)
-                    .foregroundColor(VoiidColor.textSecondary)
-            }
+    // MARK: Hero
+
+    /// A soft accent wash rather than a photo. The community's identity here is its mark and
+    /// its name, and a stock image behind them would only compete.
+    private var hero: some View {
+        LinearGradient(
+            colors: [
+                VoiidColor.accent.opacity(0.22),
+                VoiidColor.accent.opacity(0.05),
+                VoiidColor.background,
+            ],
+            startPoint: .topTrailing, endPoint: .bottomLeading
+        )
+        .frame(height: 132)
+        .frame(maxWidth: .infinity)
+        .background(VoiidColor.background)
+        .overlay(alignment: .topTrailing) {
+            Circle()
+                .fill(VoiidColor.accent.opacity(0.14))
+                .frame(width: 200, height: 200)
+                .blur(radius: 46)
+                .offset(x: 54, y: -84)
         }
     }
 
-    @ViewBuilder private func joinRow(_ c: CommunityService.CommunityCard) -> some View {
+    // MARK: Identity
+
+    private func identity(_ c: CommunityService.CommunityCard) -> some View {
+        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+            // The mark overlaps the banner, which is what ties the two together.
+            mark(c)
+                .frame(width: 68, height: 68)
+                .background(Circle().fill(VoiidColor.surfaceCard))
+                .overlay(Circle().stroke(VoiidColor.background, lineWidth: 4))
+                .offset(y: -34)
+                .padding(.bottom, -34)
+
+            HStack(spacing: 6) {
+                Text(c.name ?? "@\(c.handle)")
+                    .font(VoiidFont.rounded(24, .bold))
+                    .foregroundColor(VoiidColor.textPrimary)
+                if isOwner(c) {
+                    Text("HOST")
+                        .font(VoiidFont.rounded(9.5, .bold))
+                        .foregroundColor(VoiidColor.textOnAccent)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Capsule().fill(VoiidColor.accent))
+                }
+            }
+
+            HStack(spacing: 6) {
+                Image(systemName: "person.2.fill").font(.system(size: 11))
+                Text("\(c.members) member\(c.members == 1 ? "" : "s")")
+                Text("\u{2022}")
+                Image(systemName: c.policy == "open" ? "globe" : "lock.fill")
+                    .font(.system(size: 10))
+                Text(visibilityText(c))
+            }
+            .font(VoiidFont.rounded(12.5))
+            .foregroundColor(VoiidColor.textSecondary)
+
+            if let d = c.description, !d.isEmpty {
+                Text(d)
+                    .font(VoiidFont.rounded(14))
+                    .foregroundColor(VoiidColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Text("@\(c.handle)")
+                .font(VoiidFont.rounded(12.5))
+                .foregroundColor(VoiidColor.placeholder)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.top, VoiidSpacing.sm)
+    }
+
+    /// NO FACE PILE, deliberately — see the note at the top of this file. Membership grants a
+    /// line to the OWNER and to nobody else, so a row of member avatars would imply a
+    /// reachability this product does not give you. The count says the same thing honestly.
+    @ViewBuilder
+    private func mark(_ c: CommunityService.CommunityCard) -> some View {
+        if c.avatar_url != nil {
+            ClipThumbnail(url: c.avatar_url)
+                .frame(width: 68, height: 68)
+                .clipShape(Circle())
+        } else {
+            Circle()
+                .fill(VoiidColor.accentTint)
+                .overlay(
+                    Text(initials(c))
+                        .font(VoiidFont.rounded(24, .bold))
+                        .foregroundColor(VoiidColor.accentInk)
+                )
+        }
+    }
+
+    private func initials(_ c: CommunityService.CommunityCard) -> String {
+        let source = c.name ?? c.handle
+        let parts = source.split(separator: " ").prefix(2)
+        let letters = parts.compactMap { $0.first }.map(String.init).joined()
+        return letters.isEmpty ? String(source.prefix(1)).uppercased() : letters.uppercased()
+    }
+
+    private func visibilityText(_ c: CommunityService.CommunityCard) -> String {
+        switch c.policy {
+        case "open":     return "Anyone can join"
+        case "approval": return "Approval needed"
+        default:         return "Invite only"
+        }
+    }
+
+    // MARK: Actions
+
+    @ViewBuilder
+    private func actions(_ c: CommunityService.CommunityCard) -> some View {
+        HStack(spacing: VoiidSpacing.sm) {
+            joinButton(c)
+
+            if isOwner(c) {
+                Button {
+                    Haptics.tap()
+                    showInbox = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "tray.full").font(.system(size: 13, weight: .semibold))
+                        Text("Inbox").font(VoiidFont.rounded(15, .semibold))
+                    }
+                    .foregroundColor(VoiidColor.textPrimary)
+                    .frame(maxWidth: .infinity).frame(height: 40)
+                    .background(Capsule().fill(VoiidColor.surfaceCard))
+                    .overlay(Capsule().stroke(VoiidColor.divider, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.top, VoiidSpacing.md)
+    }
+
+    /// Every membership state the server can put you in, said plainly. A banned account is
+    /// told it cannot join rather than being shown a button that will fail, and an
+    /// approval-gated community says "requested" rather than "joined" — the difference between
+    /// an honest state and a lie the next screen would expose.
+    @ViewBuilder
+    private func joinButton(_ c: CommunityService.CommunityCard) -> some View {
         if c.isBanned {
-            Text("You can\u{2019}t join this community.")
-                .font(VoiidFont.subhead).foregroundColor(VoiidColor.textSecondary)
+            pill("You can\u{2019}t join", filled: false, disabled: true)
         } else if c.isMember {
-            Text("You\u{2019}re a member.")
-                .font(VoiidFont.subhead).foregroundColor(VoiidColor.textSecondary)
+            pill("Joined", icon: "checkmark", filled: true, disabled: true)
         } else if c.isPending {
-            // An approval-gated community leaves you pending — saying "requested" rather than
-            // "joined" is the difference between an honest state and a lie the next screen
-            // would expose.
-            Text("Your request is waiting for approval.")
-                .font(VoiidFont.subhead).foregroundColor(VoiidColor.textSecondary)
+            pill("Requested", filled: false, disabled: true)
+        } else if c.isSuspended {
+            pill("Suspended", filled: false, disabled: true)
         } else {
             Button {
                 Haptics.tap()
                 Task { await join(c) }
             } label: {
-                Text(c.policy == "approval" ? "Request to join" : "Join")
-                    .font(VoiidFont.rounded(16, .semibold))
-                    .foregroundColor(VoiidColor.textOnPrimary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .background(VoiidColor.primary)
-                    .clipShape(Capsule())
+                pillLabel(c.policy == "approval" ? "Request to join" : "Join",
+                          icon: "plus", filled: true)
             }
+            .buttonStyle(.plain)
             .disabled(busy)
+        }
+    }
+
+    private func pill(_ text: String, icon: String? = nil,
+                      filled: Bool, disabled: Bool) -> some View {
+        pillLabel(text, icon: icon, filled: filled).opacity(disabled ? 0.75 : 1)
+    }
+
+    private func pillLabel(_ text: String, icon: String? = nil, filled: Bool) -> some View {
+        HStack(spacing: 6) {
+            if let icon {
+                Image(systemName: icon).font(.system(size: 13, weight: .bold))
+            }
+            Text(text).font(VoiidFont.rounded(15, .semibold))
+        }
+        .foregroundColor(filled ? VoiidColor.textOnAccent : VoiidColor.textPrimary)
+        .frame(maxWidth: .infinity).frame(height: 40)
+        .background(Capsule().fill(filled ? VoiidColor.accent : VoiidColor.surfaceCard))
+        .overlay(Capsule().stroke(filled ? .clear : VoiidColor.divider, lineWidth: 1))
+    }
+
+    // MARK: Sections
+
+    /// Members only, because the endpoints 403 everyone else and an empty section would read
+    /// as "no events" rather than "not visible to you".
+    @ViewBuilder
+    private func sections(_ c: CommunityService.CommunityCard) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if c.isMember {
+                CommunityTournamentsSection(communityId: c.id)
+                Divider().overlay(VoiidColor.divider)
+                CommunityEventsSection(communityId: c.id)
+                Divider().overlay(VoiidColor.divider)
+            }
+            notice
+                .padding(.horizontal, VoiidSpacing.md)
+                .padding(.vertical, VoiidSpacing.md)
+        }
+    }
+
+    // MARK: Host bar
+
+    /// Floats above the tab bar, the way the reference's message bar does. Members only: a
+    /// non-member has no line to the host, and offering one would promise what the endpoint
+    /// refuses. The owner sees the Inbox action instead, up in `actions`.
+    @ViewBuilder
+    private func hostBar(_ c: CommunityService.CommunityCard) -> some View {
+        if c.isMember && !isOwner(c) {
+            MessageHostButton(communityId: c.id) { conversationId in
+                openHostConversation(conversationId)
+            }
+            .padding(.horizontal, VoiidSpacing.md)
+            .padding(.bottom, session.bottomInset + VoiidSpacing.sm)
         }
     }
 
