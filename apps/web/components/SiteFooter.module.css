@@ -32,6 +32,13 @@
   align-items: flex-start;
 }
 
+/* Mark + wordmark, side by side. Same optical 7px as the header. */
+.lockup {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
 .tagline {
   color: var(--color-text-dim);
   max-width: 30ch;

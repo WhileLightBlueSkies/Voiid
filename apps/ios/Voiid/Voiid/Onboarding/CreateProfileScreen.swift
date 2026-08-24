@@ -85,7 +85,7 @@ struct CreateProfileScreen: View {
 
                         Text("Used to help you recover your account.")
                             .font(VoiidFont.rounded(12.5))
-                            .foregroundColor(VoiidColor.textSecondary)
+                            .foregroundColor(VoiidBrand.textDim)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.leading, 4)
 
@@ -144,10 +144,10 @@ struct CreateProfileScreen: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("You control what you share")
                     .font(VoiidFont.rounded(15, .semibold))
-                    .foregroundColor(VoiidColor.textPrimary)
+                    .foregroundColor(VoiidBrand.text)
                 Text("Your email is never shown to other people, and you can change any of this in Settings.")
                     .font(VoiidFont.rounded(12.5))
-                    .foregroundColor(VoiidColor.textSecondary)
+                    .foregroundColor(VoiidBrand.textDim)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -180,7 +180,7 @@ struct CreateProfileScreen: View {
                 submit(includeExtras: false)
             }
             .font(VoiidFont.rounded(15))
-            .foregroundColor(VoiidColor.textSecondary)
+            .foregroundColor(VoiidBrand.textDim)
             .buttonStyle(PressableButtonStyle())
             .disabled(saving)
 

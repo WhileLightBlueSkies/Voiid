@@ -52,6 +52,25 @@ enum VoiidBrand {
     /// A pill's lower stop.
     static let limeDeep = Color(hex: 0x0E6E77)
 
+    // ── TEXT ON THE COMMITTED-DARK GROUND ───────────────────────────────────────────
+    // These exist because this palette had NO text token, so every onboarding screen reached
+    // for `VoiidBrand.text` / `.textSecondary` instead — and those are THEME-AWARE:
+    // textPrimary is `dyn(0x101617, 0xF6F8F8)`, i.e. near-BLACK in light mode.
+    //
+    // Onboarding pins its own ground (`VoiidBrand.ground`, a fixed #0B0B0B) in BOTH themes.
+    // So on a phone in light mode those titles rendered near-black on near-black and were,
+    // in practice, invisible. The row SUBTITLES read fine because `textSecondary`'s light
+    // value happens to be mid-grey — which is exactly why the bug survived review: half the
+    // text on the screen looked correct.
+    //
+    // Fixed values, not `dyn`. A screen that pins its own ground must pin its own text, or
+    // it inherits a contrast decision made for a surface it does not have.
+
+    /// Primary text on the committed-dark ground. `VoiidBrand.text`'s DARK value.
+    static let text = Color(hex: 0xF6F8F8)
+    /// Secondary text on the same ground. `VoiidBrand.textDim`'s DARK value.
+    static let textDim = Color(hex: 0xA6B0B2)
+
     /// Text on a Tide fill. WHITE, and this INVERTS what lime required: lime was a light
     /// fill needing a near-black label, Tide is a mid-tone where white wins (4.57:1 vs
     /// 4.30:1). Every filled button, badge and pill label flips with it.
@@ -146,7 +165,7 @@ struct OnboardingHeader: View {
 
             Text(blurb)
                 .font(VoiidFont.subhead)
-                .foregroundColor(VoiidColor.textSecondary)
+                .foregroundColor(VoiidBrand.textDim)
                 .multilineTextAlignment(.center)
                 .lineSpacing(3)
         }
@@ -172,12 +191,12 @@ struct OnboardingHeader: View {
     private var titleText: some View {
         switch title {
         case let .inline(lead, accent):
-            Text(lead).foregroundColor(VoiidColor.textPrimary)
+            Text(lead).foregroundColor(VoiidBrand.text)
                 + Text(accent).foregroundColor(VoiidBrand.lime)
 
         case let .stacked(lead, accent):
             VStack(spacing: 0) {
-                Text(lead).foregroundColor(VoiidColor.textPrimary)
+                Text(lead).foregroundColor(VoiidBrand.text)
                 Text(accent).foregroundColor(VoiidBrand.lime)
             }
         }
@@ -262,7 +281,7 @@ struct OnboardingRow: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title)
                         .font(VoiidFont.rounded(15, .semibold))
-                        .foregroundColor(VoiidColor.textPrimary)
+                        .foregroundColor(VoiidBrand.text)
 
                     subtitleText
                 }
@@ -276,7 +295,7 @@ struct OnboardingRow: View {
                 if showsChevron {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 15, weight: .semibold))
-                        .foregroundColor(VoiidColor.textSecondary.opacity(0.7))
+                        .foregroundColor(VoiidBrand.textDim.opacity(0.7))
                 }
             }
             .padding(.horizontal, VoiidSpacing.md)
@@ -291,7 +310,7 @@ struct OnboardingRow: View {
     private var subtitleText: some View {
         let base = Text(subtitle)
             .font(VoiidFont.rounded(12.5))
-            .foregroundColor(VoiidColor.textSecondary)
+            .foregroundColor(VoiidBrand.textDim)
 
         if subtitleWraps {
             // Tighter leading than the default. A wrapping subtitle is two lines on most rows,
@@ -445,7 +464,7 @@ struct OnboardingField<Trailing: View>: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(label)
                     .font(VoiidFont.rounded(12.5))
-                    .foregroundColor(VoiidColor.textSecondary)
+                    .foregroundColor(VoiidBrand.textDim)
 
                 if let characterLimit {
                     // `axis: .vertical` rather than a TextEditor: a TextEditor brings its own
@@ -455,7 +474,7 @@ struct OnboardingField<Trailing: View>: View {
                         .lineLimit(2...3)
                         .focused($focused)
                         .font(VoiidFont.rounded(16))
-                        .foregroundColor(VoiidColor.textPrimary)
+                        .foregroundColor(VoiidBrand.text)
                         .onChange(of: text) { _, new in
                             if new.count > characterLimit {
                                 text = String(new.prefix(characterLimit))
@@ -465,7 +484,7 @@ struct OnboardingField<Trailing: View>: View {
                     TextField("", text: $text, prompt: promptText)
                         .focused($focused)
                         .font(VoiidFont.rounded(16))
-                        .foregroundColor(VoiidColor.textPrimary)
+                        .foregroundColor(VoiidBrand.text)
                         .keyboardType(keyboard)
                         .textContentType(contentType)
                         .textInputAutocapitalization(autocapitalization)
@@ -485,7 +504,7 @@ struct OnboardingField<Trailing: View>: View {
             if let characterLimit {
                 Text("\(text.count)/\(characterLimit)")
                     .font(VoiidFont.rounded(12))
-                    .foregroundColor(VoiidColor.textSecondary)
+                    .foregroundColor(VoiidBrand.textDim)
                     .padding(.trailing, VoiidSpacing.md)
                     .padding(.bottom, 10)
                     .monospacedDigit()

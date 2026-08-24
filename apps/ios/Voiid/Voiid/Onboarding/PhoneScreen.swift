@@ -193,7 +193,7 @@ struct PhoneScreen: View {
                                               // character-by-character before `normalise` sees them
             .textContentType(.telephoneNumber)
             .font(VoiidFont.rounded(17, .medium))
-            .foregroundColor(VoiidColor.textPrimary)
+            .foregroundColor(VoiidBrand.text)
             .focused($fieldFocused)
             .padding(.horizontal, VoiidSpacing.md)
             // The escape hatch for VARIABLE-length countries. Auto-dismiss fires at maxDigits,
@@ -261,10 +261,10 @@ struct PhoneScreen: View {
                     .font(.system(size: 22))
                 Text(country.dialCode)
                     .font(VoiidFont.rounded(17, .medium))
-                    .foregroundColor(VoiidColor.textPrimary)
+                    .foregroundColor(VoiidBrand.text)
                 Image(systemName: "chevron.down")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(VoiidColor.textSecondary)
+                    .foregroundColor(VoiidBrand.textDim)
             }
             .padding(.horizontal, VoiidSpacing.md)
             .frame(maxHeight: .infinity)
@@ -292,7 +292,7 @@ struct PhoneScreen: View {
 
                 Text("We'll send a verification code by SMS.\nMessage and data rates may apply.")
                     .font(VoiidFont.rounded(12.5))
-                    .foregroundColor(VoiidColor.textSecondary)
+                    .foregroundColor(VoiidBrand.textDim)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -324,11 +324,11 @@ private struct PromiseCard: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(promise.title)
                     .font(VoiidFont.rounded(15, .semibold))
-                    .foregroundColor(VoiidColor.textPrimary)
+                    .foregroundColor(VoiidBrand.text)
 
                 Text(promise.detail)
                     .font(VoiidFont.rounded(12.5))
-                    .foregroundColor(VoiidColor.textSecondary)
+                    .foregroundColor(VoiidBrand.textDim)
                     .fixedSize(horizontal: false, vertical: true)
                     .multilineTextAlignment(.leading)
             }

@@ -110,7 +110,7 @@ struct PermissionsScreen: View {
                     } label: {
                         Text("Not now")
                             .font(VoiidFont.rounded(16, .regular))
-                            .foregroundColor(VoiidColor.textSecondary)
+                            .foregroundColor(VoiidBrand.textDim)
                             .padding(.vertical, 6)
                             .frame(maxWidth: .infinity)
                             .contentShape(Rectangle())

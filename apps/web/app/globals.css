@@ -383,16 +383,36 @@ code {
  * Reduced motion. Honoured globally; individual components additionally freeze
  * their own looping animations in their own module.
  * ========================================================================== */
+/* =============================================================================
+ * Reduced motion.
+ *
+ * NOT a blanket "kill every animation". Reduced motion means no VESTIBULAR
+ * motion — no travel, no parallax, no elastic overshoot — and it explicitly
+ * does not mean removing feedback: a button that stops responding to a press,
+ * or a panel that swaps with no acknowledgement at all, is harder to use, not
+ * gentler. So this kills MOVEMENT and keeps opacity and colour.
+ *
+ * The blanket `animation-duration: 0.001ms !important` that used to live here
+ * did the opposite: it also flattened every cross-fade and every colour
+ * transition, and the !important meant no component could opt back in to a
+ * gentler equivalent. Components now define their own reduced-motion fallbacks
+ * (see ReachabilityDemo, CallPath, SiteHeader) and this is the safety net for
+ * anything that has not.
+ * ========================================================================== */
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
+
   *,
   *::before,
   *::after {
-    animation-duration: 0.001ms !important;
+    /* Looping/decorative motion stops dead. */
     animation-iteration-count: 1 !important;
-    transition-duration: 0.001ms !important;
+    /* Anything still travelling gets there immediately... */
+    transition-property: opacity, background-color, border-color, color, box-shadow;
+    transition-duration: var(--dur-fast);
     scroll-behavior: auto !important;
   }
+
 }
 
 /* Print: the brochure should print as a document, not a dark slab. */

@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { SURFACES, HEADER_NAV } from '../lib/nav';
 import { Wordmark } from './Wordmark';
+import { Logomark } from './Logomark';
 import { Glyph, type GlyphName } from './Glyph';
 import styles from './SiteHeader.module.css';
 
@@ -53,6 +54,7 @@ export function SiteHeader() {
     <header className={styles.header}>
       <div className={styles.bar}>
         <Link href="/" className={styles.brand} aria-label="Voiid — home">
+          <Logomark size={23} className={styles.mark} />
           <Wordmark size={22} />
         </Link>
 

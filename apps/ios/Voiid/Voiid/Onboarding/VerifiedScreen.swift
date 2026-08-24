@@ -74,14 +74,14 @@ struct VerifiedScreen: View {
 
                 Text("Verified")
                     .font(VoiidFont.rounded(30, .bold))
-                    .foregroundColor(VoiidColor.textPrimary)
+                    .foregroundColor(VoiidBrand.text)
                     .padding(.top, VoiidSpacing.xl)
                     .opacity(copyVisible ? 1 : 0)
                     .offset(y: copyVisible ? 0 : (reduceMotion ? 0 : 8))
 
                 Text("Your number is confirmed.")
                     .font(VoiidFont.subhead)
-                    .foregroundColor(VoiidColor.textSecondary)
+                    .foregroundColor(VoiidBrand.textDim)
                     .padding(.top, VoiidSpacing.sm)
                     .opacity(copyVisible ? 1 : 0)
                     .offset(y: copyVisible ? 0 : (reduceMotion ? 0 : 8))

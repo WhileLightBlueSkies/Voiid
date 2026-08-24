@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { FEATURE_NAV } from '../lib/nav';
 import { CONTACT, CONTACT_INCOMPLETE, type ContactField } from '../lib/contact';
 import { Wordmark } from './Wordmark';
+import { Logomark } from './Logomark';
 import { Glyph } from './Glyph';
 import styles from './SiteFooter.module.css';
 
@@ -32,7 +33,12 @@ export function SiteFooter() {
     <footer className={styles.footer}>
       <div className={styles.inner}>
         <div className={styles.brandCol}>
-          <Wordmark size={24} />
+          {/* The lockup: mark + wordmark on one row. brandCol is a column, so
+              the pair needs its own row wrapper or they stack. */}
+          <span className={styles.lockup}>
+            <Logomark size={25} />
+            <Wordmark size={24} />
+          </span>
           <p className={styles.tagline}>
             One app for chat, calls, the map, clips and games. Built in India.
           </p>

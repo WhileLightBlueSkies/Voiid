@@ -152,6 +152,27 @@
   }
 }
 
+/*
+ * Reduced motion: the hero still ARRIVES, it just does not travel.
+ *
+ * Killing the entrance outright would be the easy fix and the wrong one — the
+ * staggered arrival is what tells you the eyebrow, the headline and the buttons
+ * are one group in a reading order. Keeping the stagger on opacity alone
+ * preserves that meaning with no vestibular motion at all.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .copy > *,
+  .aside > * {
+    animation-name: heroFade;
+    animation-timing-function: var(--ease-out);
+    animation-duration: var(--dur-base);
+  }
+
+  @keyframes heroFade {
+    from { opacity: 0; }
+  }
+}
+
 .aside {
   position: relative;
   display: flex;

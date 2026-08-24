@@ -60,6 +60,14 @@
 }
 .brand:active { transform: scale(0.97); }
 
+/* The mark leads the wordmark. Optical spacing, not geometric: the mark's bars
+ * overshoot the letters top and bottom, so a gap that MEASURES equal reads too
+ * wide. 7px is tuned by eye at the header size. */
+.mark {
+  display: block;
+  margin-inline-end: 7px;
+}
+
 /* ---- nav ------------------------------------------------------------------ */
 
 .nav {

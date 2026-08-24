@@ -167,11 +167,11 @@ struct SignupScreen: View {
 
             Text(photo == nil ? "Add profile photo" : "Profile photo added")
                 .font(VoiidFont.rounded(15, .semibold))
-                .foregroundColor(VoiidColor.textPrimary)
+                .foregroundColor(VoiidBrand.text)
 
             Text("PNG, JPG or WEBP. Max 5MB.")
                 .font(VoiidFont.rounded(12.5))
-                .foregroundColor(VoiidColor.textSecondary)
+                .foregroundColor(VoiidBrand.textDim)
         }
         .frame(maxWidth: .infinity)
     }
@@ -246,7 +246,7 @@ struct SignupScreen: View {
                     .foregroundColor(VoiidColor.warning)
             }
         case .checking:
-            ProgressView().controlSize(.small).tint(VoiidColor.textSecondary)
+            ProgressView().controlSize(.small).tint(VoiidBrand.textDim)
         case .available:
             Image(systemName: "checkmark.circle")
                 .font(.system(size: 20, weight: .medium))
@@ -298,11 +298,11 @@ struct SignupScreen: View {
     }
 
     private var usernameHelpColor: Color {
-        if draft.username.isEmpty { return VoiidColor.textSecondary }
+        if draft.username.isEmpty { return VoiidBrand.textDim }
         switch uStatus {
         case .available: return VoiidBrand.lime
         case .taken:     return VoiidColor.warning
-        default:         return usernameWellFormed ? VoiidColor.textSecondary : VoiidColor.warning
+        default:         return usernameWellFormed ? VoiidBrand.textDim : VoiidColor.warning
         }
     }
 
@@ -324,10 +324,10 @@ struct SignupScreen: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Verified number")
                     .font(VoiidFont.rounded(12.5))
-                    .foregroundColor(VoiidColor.textSecondary)
+                    .foregroundColor(VoiidBrand.textDim)
                 Text(phone.isEmpty ? session.profile.phoneNumber : phone)
                     .font(VoiidFont.rounded(16))
-                    .foregroundColor(VoiidColor.textPrimary)
+                    .foregroundColor(VoiidBrand.text)
             }
 
             Spacer(minLength: 0)

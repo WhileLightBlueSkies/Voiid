@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!--
+    The browser-tab and PWA icon.
+
+    The mark's own viewBox is 88x80, so it is centred inside a 128 square with
+    real padding rather than stretched to fill: a favicon that runs to the edge
+    of its box has no breathing room at 16px and reads as a smudge. The 0.86
+    scale plus the translate is what centres it.
+
+    Colour is PEACOCK TEAL #13828C, matching components/Logomark.tsx, the iOS
+    imageset and the Android drawable. Changing the brand colour means changing
+    all four.
+
+    A rounded ground is deliberately NOT drawn here: every platform that shows a
+    favicon masks it differently, and a tile inside a mask reads as a sticker.
+    The mark sits on transparency and lets the browser do the framing.
+  -->
+  <g transform="translate(26.2 25.6) scale(0.86)">
+    <rect x="58.5586" y="68.9043" width="21.6824" height="79.5639" rx="10.8412"
+          transform="rotate(150 58.5586 68.9043)" fill="#13828C"/>
+    <rect x="44.6035" y="42.1816" width="20.2613" height="30.6242" rx="10.1307"
+          transform="rotate(30 44.6035 42.1816)" fill="#13828C"/>
+    <rect x="68.9043" y="0" width="21.6824" height="79.625" rx="10.8412"
+          transform="rotate(30 68.9043 0)" fill="#13828C"/>
+  </g>
+</svg>

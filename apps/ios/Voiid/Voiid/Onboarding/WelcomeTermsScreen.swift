@@ -143,13 +143,13 @@ struct WelcomeTermsScreen: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Your privacy and security are our top priority.")
                     .font(VoiidFont.rounded(14, .semibold))
-                    .foregroundColor(VoiidColor.textPrimary)
+                    .foregroundColor(VoiidBrand.text)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
 
                 Text("We never sell your personal data.")
                     .font(VoiidFont.subhead)
-                    .foregroundColor(VoiidColor.textSecondary)
+                    .foregroundColor(VoiidBrand.textDim)
             }
 
             Spacer(minLength: 0)
@@ -202,11 +202,11 @@ struct WelcomeTermsScreen: View {
 
                 (
                     Text("I have read and agree to the ")
-                        .foregroundColor(VoiidColor.textPrimary)
+                        .foregroundColor(VoiidBrand.text)
                     + Text("Terms of Service").foregroundColor(VoiidBrand.lime)
-                    + Text(" and ").foregroundColor(VoiidColor.textPrimary)
+                    + Text(" and ").foregroundColor(VoiidBrand.text)
                     + Text("Privacy Policy").foregroundColor(VoiidBrand.lime)
-                    + Text(".").foregroundColor(VoiidColor.textPrimary)
+                    + Text(".").foregroundColor(VoiidBrand.text)
                 )
                 .font(VoiidFont.subhead)
                 .multilineTextAlignment(.leading)

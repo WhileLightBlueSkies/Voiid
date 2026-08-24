@@ -157,7 +157,7 @@ struct OTPScreen: View {
         HStack(spacing: VoiidSpacing.sm) {
             Text(phoneNumber)
                 .font(VoiidFont.rounded(17, .semibold))
-                .foregroundColor(VoiidColor.textPrimary)
+                .foregroundColor(VoiidBrand.text)
 
             if let onChangeNumber {
                 Button {
@@ -238,12 +238,12 @@ struct OTPScreen: View {
                 if filled {
                     Text(String(digits[index]))
                         .font(VoiidFont.rounded(26, .semibold))
-                        .foregroundColor(VoiidColor.textPrimary)
+                        .foregroundColor(VoiidBrand.text)
                         .monospacedDigit()
                 } else {
                     // An underscore, not an empty box: it shows a character is expected here.
                     Rectangle()
-                        .fill(VoiidColor.textSecondary.opacity(0.5))
+                        .fill(VoiidBrand.textDim.opacity(0.5))
                         .frame(width: 18, height: 2)
                         .offset(y: 12)
                 }
@@ -271,7 +271,7 @@ struct OTPScreen: View {
             } else {
                 (
                     Text("The code will expire in ")
-                        .foregroundColor(VoiidColor.textSecondary)
+                        .foregroundColor(VoiidBrand.textDim)
                     + Text(formatted(remaining))
                         .foregroundColor(VoiidBrand.lime)
                         .monospacedDigit()
@@ -312,11 +312,11 @@ struct OTPScreen: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Keep your code secure")
                     .font(VoiidFont.rounded(15, .semibold))
-                    .foregroundColor(VoiidColor.textPrimary)
+                    .foregroundColor(VoiidBrand.text)
 
                 Text("Never share your code with anyone.\nVoiid will never ask for it.")
                     .font(VoiidFont.rounded(12.5))
-                    .foregroundColor(VoiidColor.textSecondary)
+                    .foregroundColor(VoiidBrand.textDim)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -343,7 +343,7 @@ struct OTPScreen: View {
 
             Text("Didn't receive the code?")
                 .font(VoiidFont.rounded(15))
-                .foregroundColor(VoiidColor.textSecondary)
+                .foregroundColor(VoiidBrand.textDim)
 
             Button {
                 Haptics.tap()

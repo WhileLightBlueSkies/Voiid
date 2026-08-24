@@ -248,7 +248,7 @@ private struct UnlockPage: View {
                         onSkip()
                     }
                     .font(VoiidFont.rounded(15))
-                    .foregroundColor(VoiidColor.textSecondary)
+                    .foregroundColor(VoiidBrand.textDim)
                     .buttonStyle(PressableButtonStyle())
                 }
             }
@@ -268,7 +268,7 @@ private struct UnlockPage: View {
                 .foregroundColor(VoiidBrand.lime)
             Text("Backup from \(BackupRecoveryView.relative(meta.updatedAtDate)) · \(BackupRecoveryView.size(meta.size_bytes))")
                 .font(VoiidFont.rounded(14))
-                .foregroundColor(VoiidColor.textSecondary)
+                .foregroundColor(VoiidBrand.textDim)
         }
         .frame(maxWidth: .infinity)
     }
@@ -318,11 +318,11 @@ private struct UnlockPage: View {
                 if filled {
                     // MASKED — a dot, never the digit. See the file header.
                     Circle()
-                        .fill(VoiidColor.textPrimary)
+                        .fill(VoiidBrand.text)
                         .frame(width: 12, height: 12)
                 } else {
                     Rectangle()
-                        .fill(VoiidColor.textSecondary.opacity(0.5))
+                        .fill(VoiidBrand.textDim.opacity(0.5))
                         .frame(width: 18, height: 2)
                         .offset(y: 12)
                 }
@@ -350,7 +350,7 @@ private struct UnlockPage: View {
                     .foregroundColor(VoiidBrand.lime)
                 Text("Forgot your PIN?")
                     .font(VoiidFont.rounded(15))
-                    .foregroundColor(VoiidColor.textSecondary)
+                    .foregroundColor(VoiidBrand.textDim)
                 Text("Use recovery phrase")
                     .font(VoiidFont.rounded(15, .semibold))
                     .foregroundColor(VoiidBrand.lime)
@@ -482,7 +482,7 @@ private struct ChoosePage: View {
                         onSetUpAsNew()
                     }
                     .font(VoiidFont.rounded(15))
-                    .foregroundColor(VoiidColor.textSecondary)
+                    .foregroundColor(VoiidBrand.textDim)
                     .buttonStyle(PressableButtonStyle())
                 }
             }
@@ -523,7 +523,7 @@ private struct ChoosePage: View {
                     HStack(spacing: 6) {
                         Text(candidate.destination.title)
                             .font(VoiidFont.rounded(15, .semibold))
-                            .foregroundColor(VoiidColor.textPrimary)
+                            .foregroundColor(VoiidBrand.text)
 
                         if isRecommended {
                             Text("Newest")
@@ -537,14 +537,14 @@ private struct ChoosePage: View {
 
                     Text(detailLine(candidate.snapshot))
                         .font(VoiidFont.rounded(12.5))
-                        .foregroundColor(VoiidColor.textSecondary)
+                        .foregroundColor(VoiidBrand.textDim)
                 }
 
                 Spacer(minLength: 0)
 
                 Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
                     .font(.system(size: 20))
-                    .foregroundColor(isSelected ? VoiidBrand.lime : VoiidColor.textSecondary)
+                    .foregroundColor(isSelected ? VoiidBrand.lime : VoiidBrand.textDim)
             }
             .padding(.horizontal, VoiidSpacing.md)
             .padding(.vertical, 14)
@@ -614,7 +614,7 @@ private struct RestoringPage: View {
 
                     Text(source.title)
                         .font(VoiidFont.rounded(14))
-                        .foregroundColor(VoiidColor.textSecondary)
+                        .foregroundColor(VoiidBrand.textDim)
                         .padding(.top, 2)
 
                     stageList
@@ -651,7 +651,7 @@ private struct RestoringPage: View {
                             onSkip()
                         }
                         .font(VoiidFont.rounded(15))
-                        .foregroundColor(VoiidColor.textSecondary)
+                        .foregroundColor(VoiidBrand.textDim)
                         .buttonStyle(PressableButtonStyle())
                     }
                 }
@@ -698,18 +698,18 @@ private struct RestoringPage: View {
                 } else {
                     Image(systemName: stage.icon)
                         .font(.system(size: 16, weight: .medium))
-                        .foregroundColor(VoiidColor.textSecondary.opacity(0.6))
+                        .foregroundColor(VoiidBrand.textDim.opacity(0.6))
                 }
             }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(stage.title)
                     .font(VoiidFont.rounded(15, .semibold))
-                    .foregroundColor(done || active ? VoiidColor.textPrimary
-                                                    : VoiidColor.textSecondary)
+                    .foregroundColor(done || active ? VoiidBrand.text
+                                                    : VoiidBrand.textDim)
                 Text(done ? "Completed" : (active ? "In progress" : "Waiting"))
                     .font(VoiidFont.rounded(12.5))
-                    .foregroundColor(VoiidColor.textSecondary)
+                    .foregroundColor(VoiidBrand.textDim)
             }
 
             Spacer(minLength: 0)
@@ -744,10 +744,10 @@ private struct RestoreNoteCard: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(VoiidFont.rounded(15, .semibold))
-                    .foregroundColor(VoiidColor.textPrimary)
+                    .foregroundColor(VoiidBrand.text)
                 Text(detail)
                     .font(VoiidFont.rounded(12.5))
-                    .foregroundColor(VoiidColor.textSecondary)
+                    .foregroundColor(VoiidBrand.textDim)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
