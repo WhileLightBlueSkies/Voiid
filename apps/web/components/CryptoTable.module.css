@@ -1,0 +1,102 @@
+/* =============================================================================
+ * The primitives table.
+ *
+ * Six vetted libraries as six equal cards is the wrong form. This is reference
+ * material — the reader is checking a claim, not browsing features — and what a
+ * technical reader does with a list of named primitives is SCAN it: what is it,
+ * what is it for, is it a standard. A table answers that in one pass; six cards
+ * force six separate reads and hide the fact that every row is a real spec.
+ *
+ * It stays a real <table> (not a grid of divs) so it is announced as tabular data
+ * and can be copied into an email intact.
+ * ========================================================================== */
+
+.wrap {
+  /* Wide content scrolls INSIDE itself rather than pushing the page sideways. */
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card);
+}
+
+.table {
+  width: 100%;
+  min-width: 640px;
+  border-collapse: collapse;
+  text-align: start;
+}
+
+.table thead th {
+  padding: var(--space-sm) var(--space-md);
+  background: var(--color-surface-2);
+  color: var(--color-text-dim);
+  font-size: var(--text-micro);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  text-align: start;
+  white-space: nowrap;
+}
+
+.table tbody tr + tr { border-block-start: 1px solid var(--color-divider); }
+
+/* The row header is a <th> but is laid out as a cell — scope="row" is for
+ * assistive tech, not a reason to look different. */
+.table tbody th,
+.table td {
+  padding: var(--space-md);
+  vertical-align: top;
+  font-size: var(--text-small);
+  line-height: var(--leading-body);
+  color: var(--color-text-dim);
+}
+
+/* The name is the thing being checked, so it is set in mono and carries the most
+ * weight in the row. */
+.name {
+  text-align: start;
+  vertical-align: top;
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+  white-space: nowrap;
+}
+
+.role {
+  color: var(--color-text);
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
+}
+
+/* The standard a row implements — RFC number, or the maintaining body. This is
+ * the column that turns "we use good crypto" into something checkable, which is
+ * the entire point of the page. */
+.spec {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: var(--radius-pill);
+  background: var(--hue-wash);
+  color: var(--hue);
+  font-size: var(--text-micro);
+  font-weight: var(--weight-semibold);
+  white-space: nowrap;
+}
+
+.desc { min-width: 22rem; }
+
+/* A hint that the table scrolls, on the viewports where it does. */
+.scrollHint {
+  margin-block-start: var(--space-2xs);
+  font-size: var(--text-caption);
+  color: var(--color-text-mute);
+}
+
+@media (min-width: 760px) {
+  .scrollHint { display: none; }
+}

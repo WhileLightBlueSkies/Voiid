@@ -60,12 +60,18 @@ enum MapShareAPI {
                                                duration_seconds: mapDurationSeconds))
     }
 
-    /// Push the 24-hour ceiling forward — called on foreground while visible, so an actively
-    /// used map presence does not silently auto-ghost mid-use.
+    /// Push the ceiling forward — called on foreground while visible, so an actively used map
+    /// presence does not silently auto-ghost mid-use.
+    ///
+    /// `durationSeconds` is the span from NOW, not an increment: the server writes
+    /// `expires_at = now() + duration_seconds`. It defaults to the full 24-hour ceiling, which
+    /// is what the automatic foreground refresh wants; the "Add time" UI passes its own span
+    /// (already summed with the remaining time by the engine) so a short top-up cannot
+    /// accidentally truncate a long-lived share.
     @discardableResult
-    static func extend(shareId: String) async throws -> ExtendResponse {
+    static func extend(shareId: String, durationSeconds: Int = mapDurationSeconds) async throws -> ExtendResponse {
         try await api.request("POST", "location/shares/\(shareId)/extend",
-                              body: ExtendBody(duration_seconds: mapDurationSeconds))
+                              body: ExtendBody(duration_seconds: durationSeconds))
     }
 
     /// End your map share. Idempotent server-side; the server also publishes a `loc_stop`

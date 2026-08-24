@@ -1,6 +1,9 @@
 import type { Metadata } from 'next';
 import { Hero } from '../../components/Hero';
 import { Section, Grid } from '../../components/Section';
+import { CryptoTable, type PrimitiveRow } from '../../components/CryptoTable';
+import { CryptoStack, type StackLayer } from '../../components/CryptoStack';
+import { Callout } from '../../components/Callout';
 import { Reveal } from '../../components/Reveal';
 import { CTA } from '../../components/CTA';
 import { Button, ButtonRow } from '../../components/Button';
@@ -22,39 +25,38 @@ export const metadata: Metadata = {
  * off pending review — say that, do not imply it ships.
  */
 
-type Primitive = {
-  name: string;
-  role: string;
-  body: string;
-};
-
 type Built = {
   glyph: GlyphName;
   title: string;
   body: string;
 };
 
-/* Vetted, off-the-shelf. If a version bumps in e2e-core/Cargo.toml, bump here. */
-const PRIMITIVES: Primitive[] = [
+/* Vetted, off-the-shelf. If a version bumps in e2e-core/Cargo.toml, bump here.
+ * `spec` names what a reader would actually go and look up — the RFC number where
+ * one exists, the maintaining body otherwise. */
+const PRIMITIVES: PrimitiveRow[] = [
   {
     name: 'vodozemac',
     role: 'One-to-one messages',
+    spec: 'Matrix.org · Apache-2.0',
     body:
       'The Signal-style Double Ratchet implementation maintained by the Matrix.org ' +
-      'foundation, Apache-2.0. Every direct chat advances through it. We evaluated ' +
-      'libsignal and chose this instead, deliberately.',
+      'foundation. Every direct chat advances through it. We evaluated libsignal and ' +
+      'chose this instead, deliberately.',
   },
   {
     name: 'OpenMLS',
     role: 'Group messages',
+    spec: 'RFC 9420',
     body:
-      'Message Layer Security exactly as specified in RFC 9420 — the IETF standard for ' +
-      'encrypted groups. Group membership changes re-derive the group key without any ' +
-      'server involvement.',
+      'Message Layer Security exactly as specified by the IETF standard for encrypted ' +
+      'groups. Group membership changes re-derive the group key without any server ' +
+      'involvement.',
   },
   {
     name: 'X-Wing · ML-KEM-768',
     role: 'Post-quantum groups',
+    spec: 'FIPS 203',
     body:
       'Group keys are hybrid-wrapped with X25519 and ML-KEM-768 together, so a future ' +
       'quantum computer that records today\u2019s group traffic still cannot open it later.',
@@ -62,23 +64,50 @@ const PRIMITIVES: Primitive[] = [
   {
     name: 'AES-256-GCM',
     role: 'Media and attachments',
+    spec: 'NIST SP 800-38D',
     body:
-      'Photos, video and files are sealed per file with AES-256-GCM; the file key ' +
-      'travels inside the encrypted message itself.',
+      'Photos, video and files are sealed per file; the file key travels inside the ' +
+      'encrypted message itself.',
   },
   {
     name: 'Argon2id + BIP39',
     role: 'Account recovery',
+    spec: 'RFC 9106 · BIP-39',
     body:
       'Your recovery phrase is a BIP39 word sequence; your PIN is stretched with ' +
       'Argon2id before it wraps anything. Both are standards, not our own schemes.',
   },
   {
-    name: 'HKDF (RFC 5869)',
+    name: 'HKDF',
     role: 'Call keys',
+    spec: 'RFC 5869',
     body:
-      'The keys your calls are encrypted with are derived by HKDF from the same session ' +
+      'The keys your calls are encrypted with are derived from the same session ' +
       'material as your messages — never transmitted anywhere.',
+  },
+];
+
+/* Where each piece SITS. Ordered top (what you touch) to bottom (what it all
+ * rests on) — see components/CryptoStack.tsx for why this is drawn, not listed. */
+const STACK: StackLayer[] = [
+  {
+    name: 'Voiid app',
+    detail: 'chats, calls, the map. Holds no crypto of its own.',
+  },
+  {
+    name: 'e2e-core',
+    ours: true,
+    detail:
+      'one Rust crate: key lifecycle, multi-device fan-out, safety numbers, the media ' +
+      'envelope, call-key derivation. This band is the entire custom surface.',
+  },
+  {
+    name: 'vodozemac · OpenMLS',
+    detail: 'the ratchet and the group protocol. Published specs, outside implementations.',
+  },
+  {
+    name: 'X-Wing · AES-256-GCM · HKDF · Argon2id',
+    detail: 'the primitives themselves. Standardised, and none of them ours.',
   },
 ];
 
@@ -146,34 +175,51 @@ export default function EncryptionPage() {
         aside={<LockMotif />}
       />
 
+      {/* ---- where it all sits ------------------------------------------- */}
       <Section
         hue="privacy"
+        eyebrow="The shape of it"
+        title="A thin layer of ours, on a deep stack of theirs."
+        lede={
+          <>
+            Before the names: this is how much of the stack we actually wrote. One band —
+            and it is coordination code, not new cryptography.
+          </>
+        }
+      >
+        <CryptoStack
+          layers={STACK}
+          caption={
+            <>
+              Every band except one is a published standard with an outside implementation.{' '}
+              <strong>The tinted band is the whole of what we wrote</strong>, and even there
+              the job is plumbing — deciding which key seals which envelope for which
+              device, not inventing a cipher.
+            </>
+          }
+        />
+      </Section>
+
+      {/* ---- the vetted primitives ---------------------------------------- */}
+      <Section
+        hue="privacy"
+        tone="raised"
         eyebrow="Not ours to invent"
         title="Vetted primitives we build on."
         lede={
           <>
-            Cryptography you write yourself is cryptography you got wrong. Everything
-            below is a published, publicly reviewed specification with a maintained
-            implementation — pinned by exact name and version in our source tree.
+            Cryptography you write yourself is cryptography you got wrong. Every row below
+            is a published, publicly reviewed specification with a maintained
+            implementation — pinned by exact name and version in our source tree, and
+            named here so you can go and read the spec rather than take our word.
           </>
         }
       >
-        <Grid columns={3} gap="md">
-          {PRIMITIVES.map((p, i) => (
-            <Reveal key={p.name} delay={i * 60} className={styles.cell}>
-              <div className={styles.primitive}>
-                <span className={styles.pill}>{p.name}</span>
-                <h3 className={styles.role}>{p.role}</h3>
-                <p className={styles.body}>{p.body}</p>
-              </div>
-            </Reveal>
-          ))}
-        </Grid>
+        <CryptoTable rows={PRIMITIVES} />
       </Section>
 
       <Section
         hue="privacy"
-        tone="raised"
         eyebrow="Ours"
         title="What we wrote ourselves — all of it in one place."
         lede={
@@ -200,10 +246,22 @@ export default function EncryptionPage() {
         </Grid>
       </Section>
 
+      {/* ---- the honest column ---------------------------------------------
+          Deliberately NOT the last thing before the CTA as an afterthought: on a
+          page whose entire posture is "check us", the list of what we have not
+          done is the most credible content on it, so it gets a band of its own
+          and a tone that says caveat rather than footnote. */}
       <Section
         hue="privacy"
+        tone="inset"
         eyebrow="The honest column"
         title="What we have not done yet."
+        lede={
+          <>
+            Every page like this one is a sales page unless it also says where the gaps
+            are. These are ours, stated before anyone has to find them.
+          </>
+        }
         width="narrow"
       >
         <ul className={styles.honestList}>
@@ -220,10 +278,15 @@ export default function EncryptionPage() {
           </li>
           <li>
             <strong>Metadata is not encrypted.</strong> Who talks to whom, and when —
-            same limits described on the{' '}
+            the same limits described on the{' '}
             <a href="/privacy">privacy page</a>. No scheme here changes that.
           </li>
         </ul>
+        <Callout tone="honest" title="Why this list is on the page at all" className={styles.afterHonest}>
+          A gap you publish is a gap someone can hold you to. Keeping this list where the
+          claims are — rather than in a disclosure buried three clicks away — is the only
+          version of &ldquo;check us rather than trust us&rdquo; that means anything.
+        </Callout>
       </Section>
 
       <CTA

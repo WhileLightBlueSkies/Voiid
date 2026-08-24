@@ -5,29 +5,40 @@
   height: 100%;
 }
 
-/* ---- vetted primitives ----------------------------------------------------- */
+/* ---- custom-built ----------------------------------------------------------- */
 
-.primitive {
+/*
+ * The custom-built cards.
+ *
+ * These have to read as OURS at a glance, because the section directly above is
+ * the borrowed stack and the page's whole distinction is between the two. So they
+ * are tinted and carry a hue-weighted edge, where the vetted primitives are a
+ * plain white table. Same rule as CryptoStack's tinted band.
+ */
+.built {
   display: flex;
   flex-direction: column;
   gap: var(--space-2xs);
   height: 100%;
-  padding: var(--space-md);
-  border-radius: var(--radius-lg);
-  background: var(--color-surface);
-  border: 1px solid var(--color-divider);
-  box-shadow: var(--shadow-card);
+  padding: var(--space-lg);
+  border-radius: var(--radius-xl);
+  background: var(--hue-wash);
+  border: 1px solid color-mix(in srgb, var(--hue) 26%, transparent);
 }
 
-.pill {
-  align-self: flex-start;
-  padding: 4px 10px;
-  border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--hue) 12%, transparent);
+.builtGlyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  margin-block-end: var(--space-3xs);
+  border-radius: var(--radius-lg);
+  /* Solid white against the tinted card, so the glyph reads as an object sitting
+   * on the surface rather than a shape cut out of it. */
+  background: var(--color-surface);
   color: var(--hue);
-  font-family: var(--font-mono);
-  font-size: var(--text-caption);
-  font-weight: var(--weight-semibold);
+  box-shadow: var(--shadow-xs);
 }
 
 .role {
@@ -40,32 +51,7 @@
   font-size: var(--text-small);
   line-height: var(--leading-body);
   color: var(--color-text-dim);
-}
-
-/* ---- custom-built ----------------------------------------------------------- */
-
-.built {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2xs);
-  height: 100%;
-  padding: var(--space-md);
-  border-radius: var(--radius-lg);
-  background: var(--color-surface-2);
-  border: 1px solid color-mix(in srgb, var(--hue) 24%, transparent);
-}
-
-.builtGlyph {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  margin-block-end: var(--space-3xs);
-  border-radius: var(--radius-sm);
-  background: var(--color-surface);
-  color: var(--hue);
-  border: 1px solid var(--color-divider);
+  text-wrap: pretty;
 }
 
 /* ---- the honest column ------------------------------------------------------- */
@@ -99,8 +85,8 @@
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background: var(--color-surface-2);
-  border: 1px solid var(--color-divider);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
   color: var(--hue);
   font-size: var(--text-small);
   font-weight: var(--weight-bold);
@@ -109,6 +95,8 @@
 .honestList strong { color: var(--color-text); }
 
 .honestList a {
-  color: var(--color-primary);
+  color: var(--color-primary-ink);
   font-weight: var(--weight-medium);
 }
+
+.afterHonest { margin-block-start: var(--space-xl); }

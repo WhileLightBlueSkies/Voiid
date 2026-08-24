@@ -35,6 +35,20 @@ enum ClipCount {
     }
 }
 
+/// The grid's runtime badge — "0:14", "1:07".
+enum ClipDuration {
+    /// Returns nil rather than "0:00" when the row carries no duration. Rows written before
+    /// `duration_ms` was populated are real and playable; stamping them 0:00 would be a
+    /// visible lie about content that is fine, so the badge simply does not appear.
+    static func label(_ ms: Int?) -> String? {
+        guard let ms, ms > 0 else { return nil }
+        // Rounded, not truncated: a 14.6s clip reading "0:14" makes the badge look short by
+        // a second on every clip that is not exactly on a boundary.
+        let total = Int((Double(ms) / 1000).rounded())
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+}
+
 // MARK: - Thumbnail cache
 
 /// Small memory cache for grid thumbnails. A 3-column infinite grid re-requesting the

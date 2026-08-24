@@ -56,6 +56,10 @@ struct ClipFullscreenView: View {
     /// owned by another engine.
     @State private var injected: [Clip] = []
 
+    /// The clip being reported. Held on the PAGER, not on the page: a sheet raised from
+    /// inside a paging page is torn down the moment the user swipes away from it.
+    @State private var reporting: Clip?
+
     init(startIndex: Int) {
         self.startIndex = startIndex
         self.feed = nil
@@ -103,6 +107,12 @@ struct ClipFullscreenView: View {
             players.releaseAll()
         }
         .task(id: index) { await onPageChanged() }
+        // Reporting a clip. Presented from the PAGER so it survives a swipe, and offered as
+        // a sheet rather than a confirmation dialog because the server wants a reason and an
+        // optional note — see ReportService.
+        .sheet(item: $reporting) { clip in
+            ReportSheet(target: .clip(id: clip.id)) { reporting = nil }
+        }
     }
 
     // MARK: - Injected feed
@@ -155,6 +165,7 @@ struct ClipFullscreenView: View {
                         onToggleLike: { Task { await toggleLike(clip) } },
                         onOpenComments: { openComments(clip) },
                         onFollow: { follow(clip) },
+                        onReport: { reporting = clip },
                         onBack: { showComments ? closeComments() : dismiss() }
                     )
                     .frame(width: size.width, height: size.height)
@@ -372,7 +383,41 @@ struct ClipFullscreenView: View {
                     }
                 }
             }
-            Spacer()
+            Spacer(minLength: 0)
+
+            // DELETE YOUR OWN. `DELETE /clips/:id/comments/:commentId` and
+            // ClipService.deleteComment have both shipped for a while with no way to reach
+            // them: a comment, once posted, could not be taken back from anywhere in the app.
+            //
+            // Shown only on your own rows, and only once the comment actually exists on the
+            // server — a pending row has no id to delete, and a failed one is removed by
+            // retrying or by giving up rather than by this control.
+            //
+            // The hiding is CONVENIENCE, not enforcement: the server checks that the caller
+            // wrote the comment (or owns the clip), and it is the authority.
+            if c.authorId == session.userId, c.sendState == .sent {
+                Menu {
+                    Button("Delete", systemImage: "trash", role: .destructive) {
+                        Haptics.rigid()
+                        Task {
+                            await engine.deleteComment(clipId: clipId, commentId: c.id)
+                            // An injected feed owns its own count — see the composer.
+                            if feed != nil {
+                                mutateInjected(clipId) {
+                                    $0.commentCount = max(0, $0.commentCount - 1)
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(VoiidColor.textSecondary)
+                        .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("Comment options")
+            }
         }
         .opacity(c.sendState == .sending ? 0.55 : 1)
     }
@@ -424,6 +469,10 @@ private struct ClipPlayerPage: View {
     let onToggleLike: () -> Void
     let onOpenComments: () -> Void
     let onFollow: () -> Void
+    /// Report this clip or its creator. A separate callback rather than presenting the sheet
+    /// from here: the pager owns presentation, and a sheet raised from inside a paging page
+    /// dies with the page when the user swipes.
+    let onReport: () -> Void
     let onBack: () -> Void
 
     @State private var muted = true
@@ -604,12 +653,49 @@ private struct ClipPlayerPage: View {
                         }
                         .frame(width: 44, height: 44)
                         .accessibilityLabel("\(clip.viewCount) views")
+
+                        // SHARE AND REPORT. Both were absent, and the second is not
+                        // optional: routes/reports.ts has shipped `clip` and `creator`
+                        // target types since moderation landed, and `ReportTarget.clip`
+                        // existed in ReportService without a single call site — a
+                        // moderation path with no door. A UGC feed that cannot be reported
+                        // from is also an App Review problem.
+                        Menu {
+                            ShareLink(item: shareText) {
+                                Label("Share clip", systemImage: "square.and.arrow.up")
+                            }
+                            Divider()
+                            Button("Report", systemImage: "flag", role: .destructive) {
+                                Haptics.tap()
+                                onReport()
+                            }
+                        } label: {
+                            VStack(spacing: 4) {
+                                Image(systemName: "ellipsis")
+                                    .font(.system(size: 24))
+                                    .foregroundColor(.white)
+                                Text("More")
+                                    .font(VoiidFont.rounded(12, .semibold))
+                                    .foregroundColor(.white)
+                            }
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                        }
+                        .accessibilityLabel("More options")
                     }
                 }
             }
             .padding(.horizontal, VoiidSpacing.md)
             .padding(.bottom, VoiidSpacing.sm)
         }
+    }
+
+    /// Deliberately NOT a per-clip deep link: nothing in the app resolves one yet, and a
+    /// shared link that opens nothing is worse than no link. Same text CreatorProfileView
+    /// shares, so the two cannot drift.
+    private var shareText: String {
+        let who = clip.authorHandle.map { "@\($0)" } ?? clip.authorName
+        return "Watch \(who)'s clip on VOIID — https://voiid.app"
     }
 
     private var followChip: some View {

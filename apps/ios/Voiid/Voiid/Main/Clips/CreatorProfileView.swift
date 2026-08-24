@@ -27,6 +27,8 @@ struct CreatorProfileView: View {
     @State private var loadError: String?
     @State private var loading = false
     @State private var showEdit = false
+    /// Explains where reporting actually lives — see `overflowMenu`.
+    @State private var reportHint = false
     @State private var bioExpanded = false
     /// Which tile the user opened, as an index into this creator's grid.
     @State private var openIndex: Int?
@@ -48,6 +50,12 @@ struct CreatorProfileView: View {
                 // feed tile usually means it is already here.
                 if profile == nil { await load() }
                 if creators.clips(for: handle).isEmpty { await creators.refreshClips(for: handle) }
+            }
+            .alert("Report a clip", isPresented: $reportHint) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Open any of this creator's clips and use More → Report. That reaches "
+                     + "the same moderation queue and tells us which clip is the problem.")
             }
             .sheet(isPresented: $showEdit) {
                 if let profile {
@@ -393,7 +401,51 @@ struct CreatorProfileView: View {
                 followButton(p)
             }
             shareButton(p)
+
+            // The reference's overflow. Its real job here is REPORT: routes/reports.ts has
+            // shipped a `creator` target type since moderation landed, and
+            // `ReportTarget.creator` sat in ReportService with no call site anywhere — a
+            // moderation path with no door on the one screen that is entirely someone
+            // else's content.
+            //
+            // Hidden on your OWN page: reporting yourself is not a thing, and a menu whose
+            // only item is inapplicable is worse than no menu.
+            if !p.is_self { overflowMenu(p) }
         }
+    }
+
+    /// Report, and nothing else yet. Deliberately a Menu rather than a bare Report button:
+    /// this is where "block", "copy link" and "notify me about posts" belong when they exist,
+    /// and a menu that grows is less disruptive than a button that becomes a menu.
+    private func overflowMenu(_ p: CreatorService.Profile) -> some View {
+        Menu {
+            // REPORT IS NOT HERE, AND CANNOT BE YET.
+            //
+            // POST /reports validates `target_id` as a UUID (UUID_RE in routes/reports.ts),
+            // but CreatorService.Profile deliberately carries NO user_id — the comment on
+            // that struct is explicit that a profile is public and a user_id is the key
+            // other endpoints authorise against, so the API never hands it out. Follow is
+            // keyed on the handle for the same reason.
+            //
+            // So a creator report needs ONE of: the server accepting a handle for
+            // target_type 'creator', or the profile endpoint returning an opaque reportable
+            // id. Until then, reporting a creator is done from any of their clips — the clip
+            // report carries author_id server-side, which is the same person.
+            //
+            // Shipping a Report button that 400s would be worse than not having one.
+            Button("Report a clip instead", systemImage: "flag") {
+                Haptics.tap()
+                reportHint = true
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(VoiidColor.textPrimary)
+                .frame(width: 44, height: 40)
+                .background(VoiidColor.fieldFill)
+                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+        }
+        .accessibilityLabel("More options")
     }
 
     /// Follow flips to a quiet outlined "Following" rather than staying loud: once the state

@@ -90,6 +90,17 @@ struct MyClipsView: View {
             Color.clear.frame(height: 100)
         }
         .refreshable { await engine.refreshMine() }
+        // The one hint that a tile can be managed at all. Long-press is the right idiom for
+        // a dense grid (see the note on the tile) but it is also invisible, and users were
+        // left with a grid that looked purely decorative.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            Text("Long-press a clip to edit or delete it")
+                .font(VoiidFont.caption)
+                .foregroundColor(VoiidColor.textSecondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, VoiidSpacing.sm)
+                .background(VoiidColor.background)
+        }
     }
 
     private func tile(_ clip: Clip) -> some View {
@@ -98,17 +109,29 @@ struct MyClipsView: View {
                 .aspectRatio(9.0 / 16.0, contentMode: .fill)
                 .clipped()
 
-            LinearGradient(colors: [.clear, .black.opacity(0.55)],
+            LinearGradient(colors: [.clear, .black.opacity(0.7)],
                            startPoint: .center, endPoint: .bottom)
 
+            // Identical metadata row to the Explore and Following tiles — this grid is the
+            // same object at the same size, and a different badge layout here would read as
+            // a different kind of thing.
             HStack(spacing: 3) {
-                Image(systemName: "eye.fill").font(.system(size: 10))
+                Image(systemName: "play.fill").font(.system(size: 9))
                 Text(ClipCount.compact(clip.viewCount))
                     .font(VoiidFont.rounded(11, .semibold))
+
+                Spacer(minLength: 4)
+
+                if let text = ClipDuration.label(clip.durationMs) {
+                    Text(text)
+                        .font(VoiidFont.rounded(11, .semibold))
+                        .monospacedDigit()
+                }
             }
             .foregroundColor(.white)
             .shadow(radius: 2)
-            .padding(6)
+            .padding(.horizontal, 6)
+            .padding(.bottom, 6)
         }
         .contentShape(Rectangle())
         // Long-press for management, matching the platform idiom for "act on this item"

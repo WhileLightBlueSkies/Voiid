@@ -1,0 +1,98 @@
+/* =============================================================================
+ * The layer stack — where each primitive actually sits.
+ *
+ * The page names its primitives and separates borrowed from built, but never
+ * shows the one thing that makes the list make sense: that they are LAYERS, and
+ * that the custom code is a thin band sitting on top of standards rather than a
+ * parallel pile of homemade crypto. Drawn, that argument lands before the prose
+ * is read; listed, it does not land at all.
+ *
+ * Ordered top (what you touch) to bottom (what everything rests on).
+ * ========================================================================== */
+
+.stack {
+  display: grid;
+  gap: var(--space-2xs);
+}
+
+.layer {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+/* OURS is tinted and carries a solid edge; BORROWED is plain. The whole point of
+ * the graphic is that you can see, at a glance, how little of the stack is ours —
+ * so the two must not look alike. Marked by tint AND edge AND the label, never by
+ * colour alone. */
+.ours {
+  background: var(--hue-wash);
+  border-color: color-mix(in srgb, var(--hue) 32%, transparent);
+}
+
+.label {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: var(--radius-pill);
+  font-size: var(--text-micro);
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.labelOurs {
+  background: var(--hue);
+  color: var(--color-text-on-primary);
+}
+
+.labelStd {
+  background: var(--color-surface-2);
+  color: var(--color-text-dim);
+}
+
+.text { min-width: 0; display: block; }
+
+.name {
+  /* Inline, so name and detail set as one wrapping sentence. */
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+}
+
+.detail {
+  font-size: var(--text-caption);
+  line-height: var(--leading-body);
+  color: var(--color-text-dim);
+  text-wrap: pretty;
+}
+
+.detail code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+
+/* The reading of the diagram, stated once underneath it. */
+.caption {
+  margin-block-start: var(--space-md);
+  font-size: var(--text-small);
+  line-height: var(--leading-body);
+  color: var(--color-text-dim);
+  text-wrap: pretty;
+}
+
+.caption strong { color: var(--color-text); }
+
+@media (max-width: 560px) {
+  .layer {
+    grid-template-columns: 1fr;
+    gap: var(--space-2xs);
+  }
+  .label { justify-self: start; }
+}

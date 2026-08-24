@@ -2,7 +2,14 @@
 //  GamesHomeView.swift
 //  Voiid
 //
-//  The Games tab — a 2-per-row grid of large artwork cards.
+//  The Games tab — a featured carousel over category-grouped grids of large artwork cards.
+//
+//  WHY SECTIONS AND NOT ONE GRID: the catalog already carries a `category` per row ('board',
+//  'arcade', …), so grouping is free information the flat grid was throwing away. A player
+//  looking for something to play with one other person scans "Board" and stops; the same
+//  player facing one undifferentiated grid reads every tile. The featured strip on top is the
+//  same catalog rows at a larger size — an editorial surface with NO editorial data behind it
+//  would be a lie, so it is simply the first few games, big.
 //
 //  WHY THE LIST IS SERVER-DRIVEN: the catalog lives in Postgres (`games`, seeded by
 //  024_games.sql) and carries an `enabled` flag, so a broken game can be pulled without an
@@ -29,6 +36,9 @@ struct GamesHomeView: View {
     @EnvironmentObject var chat: ChatStore
 
     @State private var games: [GamesAPI.CatalogGame] = []
+    /// Which featured card is showing. Purely presentational — the carousel is a bigger view of
+    /// catalog rows that are ALSO in the grid below, so paging it changes nothing but the pixels.
+    @State private var featuredPage = 0
     @State private var loading = true
     @State private var loadFailed = false
 
@@ -44,6 +54,10 @@ struct GamesHomeView: View {
     /// The open online match, as id + slug. The SLUG chooses the renderer.
     @State private var openMatch: OpenMatch?
     @State private var showLeaderboard = false
+    /// Past matches. Separate from the leaderboard because they answer different questions —
+    /// a standing versus what actually happened last night — and folding one into the other
+    /// would bury whichever lost.
+    @State private var showHistory = false
     /// Today's seeded Snake arena. Pushed rather than sheeted: it has a board of its own and a
     /// match launches out of it, which is a place you go, not a thing you glance at.
     @State private var showDaily = false
@@ -111,12 +125,22 @@ struct GamesHomeView: View {
                 } else if loadFailed {
                     // An empty list and a failed fetch look identical to a user; say which.
                     VStack(spacing: VoiidSpacing.sm) {
+                        Image(systemName: "wifi.exclamationmark")
+                            .font(.system(size: 34, weight: .regular))
+                            .foregroundStyle(VoiidColor.textSecondary)
+                            .padding(.bottom, VoiidSpacing.xs)
                         Text("Couldn't load games")
                             .font(VoiidFont.rounded(17, .semibold))
                             .foregroundStyle(VoiidColor.textPrimary)
-                        Button("Try again") { Task { await load() } }
-                            .font(VoiidFont.rounded(15, .semibold))
-                            .foregroundStyle(VoiidColor.primary)
+                        Button { Task { await load() } } label: {
+                            Text("Try again")
+                                .font(VoiidFont.rounded(15, .semibold))
+                                .foregroundStyle(VoiidColor.textOnAccent)
+                                .padding(.horizontal, VoiidSpacing.lg)
+                                .frame(height: 40)
+                                .background(Capsule().fill(VoiidColor.accent))
+                        }
+                        .buttonStyle(PressableButtonStyle())
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
@@ -153,9 +177,15 @@ struct GamesHomeView: View {
                             showDaily = true
                         } label: {
                             HStack(spacing: VoiidSpacing.md) {
+                                // The glyph gets a tinted tile of its own so the row reads as a
+                                // destination rather than as a settings line.
                                 Image(systemName: "calendar.badge.clock")
                                     .font(.system(size: 20, weight: .semibold))
-                                    .foregroundStyle(VoiidColor.primary)
+                                    .foregroundStyle(VoiidColor.accentInk)
+                                    .frame(width: 44, height: 44)
+                                    .background(RoundedRectangle(cornerRadius: VoiidRadius.md,
+                                                                 style: .continuous)
+                                        .fill(VoiidColor.accentTint))
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text("Daily challenge")
                                         .font(VoiidFont.rounded(16, .semibold))
@@ -171,23 +201,103 @@ struct GamesHomeView: View {
                             }
                             .padding(VoiidSpacing.md)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(RoundedRectangle(cornerRadius: VoiidRadius.lg)
+                            .background(RoundedRectangle(cornerRadius: VoiidRadius.lg,
+                                                         style: .continuous)
                                 .fill(VoiidColor.surfaceCard))
+                            .overlay(RoundedRectangle(cornerRadius: VoiidRadius.lg,
+                                                      style: .continuous)
+                                .stroke(VoiidColor.accent.opacity(0.35), lineWidth: 1))
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(BouncyCardStyle())
                         .padding(.horizontal, VoiidSpacing.md)
                         .padding(.top, VoiidSpacing.sm)
 
-                        LazyVGrid(columns: columns, spacing: VoiidSpacing.sm) {
-                            ForEach(games) { game in
-                                GameCard(game: game) { setupGame = game }
+                        // The featured strip. The SAME catalog rows as the grid below, drawn
+                        // large — there is no editorial "featured" flag on the games table, and
+                        // inventing one in the client would be a promotion nobody authored.
+                        // Suppressed below three games: a carousel of two is a worse grid.
+                        if featured.count >= 3 {
+                            VStack(spacing: VoiidSpacing.sm) {
+                                TabView(selection: $featuredPage) {
+                                    ForEach(Array(featured.enumerated()), id: \.element.id) { i, game in
+                                        FeaturedGameCard(game: game) { setupGame = game }
+                                            .padding(.horizontal, VoiidSpacing.md)
+                                            .tag(i)
+                                    }
+                                }
+                                .tabViewStyle(.page(indexDisplayMode: .never))
+                                .frame(height: 190)
+
+                                // Dots outside the TabView so they sit under the card's edge
+                                // rather than floating inside its own padding.
+                                HStack(spacing: 6) {
+                                    ForEach(featured.indices, id: \.self) { i in
+                                        Capsule()
+                                            .fill(i == featuredPage
+                                                  ? VoiidColor.accent
+                                                  : VoiidColor.textSecondary.opacity(0.3))
+                                            .frame(width: i == featuredPage ? 16 : 6, height: 6)
+                                            .animation(.easeOut(duration: 0.2), value: featuredPage)
+                                    }
+                                }
+                            }
+                            .padding(.top, VoiidSpacing.lg)
+                        }
+
+                        // Category sections. Grouped on the catalog's own `category` column, in
+                        // the order the categories first appear in the server's response — so the
+                        // backend still decides what comes first, exactly as it did for the flat
+                        // grid.
+                        LazyVStack(alignment: .leading, spacing: VoiidSpacing.lg) {
+                            // THE THIRD STATE, kept distinct from the failed one above: the fetch
+                            // worked and the server has nothing enabled. It renders INSIDE the
+                            // scroll rather than replacing it, because the invites and the daily
+                            // challenge above do not depend on the catalog and must survive an
+                            // empty one.
+                            if games.isEmpty {
+                                VStack(spacing: VoiidSpacing.xs) {
+                                    Text("No games yet")
+                                        .font(VoiidFont.rounded(17, .semibold))
+                                        .foregroundStyle(VoiidColor.textPrimary)
+                                    Text("New games show up here as they ship.")
+                                        .font(VoiidFont.rounded(13, .regular))
+                                        .foregroundStyle(VoiidColor.textSecondary)
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, VoiidSpacing.xl)
+                            }
+
+                            ForEach(sections, id: \.title) { section in
+                                VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+                                    HStack(spacing: VoiidSpacing.sm) {
+                                        Text(section.title)
+                                            .font(VoiidFont.rounded(19, .bold))
+                                            .foregroundStyle(VoiidColor.textPrimary)
+                                        Spacer(minLength: 0)
+                                        // The count, not a "View All" — everything in the
+                                        // section is already on screen, so a link that scrolls
+                                        // nowhere would be decoration.
+                                        Text("\(section.games.count)")
+                                            .font(VoiidFont.rounded(13, .semibold))
+                                            .foregroundStyle(VoiidColor.textSecondary)
+                                            .monospacedDigit()
+                                    }
+                                    .padding(.horizontal, VoiidSpacing.md)
+
+                                    LazyVGrid(columns: columns, spacing: VoiidSpacing.sm) {
+                                        ForEach(section.games) { game in
+                                            GameCard(game: game) { setupGame = game }
+                                        }
+                                    }
+                                    .padding(.horizontal, VoiidSpacing.md)
+                                }
                             }
                         }
-                        .padding(.horizontal, VoiidSpacing.md)
-                        .padding(.top, VoiidSpacing.sm)
+                        .padding(.top, VoiidSpacing.lg)
                         // Clear the tab bar, painted over the page rather than inset into it.
                         .padding(.bottom, session.tabBarHeight + VoiidSpacing.lg)
                     }
+                    .scrollIndicators(.hidden)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -204,6 +314,15 @@ struct GamesHomeView: View {
                     .accessibilityLabel("Leaderboard")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
+                    // Alongside the trophy, at the same weight: history is the other
+                    // occasionally-checked reference, not something you launch.
+                    Button { showHistory = true } label: {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .foregroundStyle(VoiidColor.primary)
+                    }
+                    .accessibilityLabel("Match history")
+                }
+                ToolbarItem(placement: .topBarTrailing) {
                     // Sound and haptics. On the TAB rather than inside each match: it is a
                     // preference about the games, not a control for the one you happen to be
                     // in, and a player who wants silence wants it before the crowd starts.
@@ -216,6 +335,9 @@ struct GamesHomeView: View {
             }
             .navigationDestination(isPresented: $showLeaderboard) {
                 LeaderboardView { showLeaderboard = false }
+            }
+            .navigationDestination(isPresented: $showHistory) {
+                MatchHistoryView { showHistory = false }
             }
             .navigationDestination(isPresented: $showDaily) {
                 DailyChallengeView(
@@ -444,7 +566,7 @@ struct GamesHomeView: View {
         // covers every exit path (back button, Exit, give up, lobby cancel) without each screen
         // having to remember to restore it.
         .onChange(of: openMatch == nil && botGame == nil && lobby == nil
-                  && !showLeaderboard && !showDaily) { _, atRoot in
+                  && !showLeaderboard && !showDaily && !showHistory) { _, atRoot in
             if atRoot { session.hideTabBar = false }
         }
         // Join tapped on an invite bubble. Joining is authorized server-side (the caller must
@@ -535,11 +657,118 @@ struct GamesHomeView: View {
         }
     }
 
+    /// The first three catalog rows, at carousel size. PURELY a slice of `games` — no ranking, no
+    /// promotion, nothing the server did not already order.
+    private var featured: [GamesAPI.CatalogGame] { Array(games.prefix(3)) }
+
+    private struct Section {
+        let title: String
+        let games: [GamesAPI.CatalogGame]
+    }
+
+    /// `games` grouped by the catalog's `category`, keeping the server's order for both the
+    /// sections and the games inside them. A category the client has never heard of gets its
+    /// raw value capitalised rather than being dropped — a new category should ship as a DB row,
+    /// same as a new game.
+    private var sections: [Section] {
+        var order: [String] = []
+        var buckets: [String: [GamesAPI.CatalogGame]] = [:]
+        for game in games {
+            if buckets[game.category] == nil { order.append(game.category) }
+            buckets[game.category, default: []].append(game)
+        }
+        return order.map { Section(title: Self.categoryTitle($0), games: buckets[$0] ?? []) }
+    }
+
+    private static func categoryTitle(_ raw: String) -> String {
+        switch raw {
+        case "board":  return "Board games"
+        case "arcade": return "Arcade"
+        case "card":   return "Card games"
+        default:       return raw.capitalized
+        }
+    }
+
     private func load() async {
         loading = true
         loadFailed = false
         do { games = try await api.catalog() } catch { loadFailed = true }
         loading = false
+    }
+}
+
+/// A catalog row at carousel size. Same tap target as the grid card — it opens the same setup
+/// sheet — so this is one game shown large, not a second kind of thing.
+///
+/// The artwork fills the card and the copy sits over a LEFT-WEIGHTED scrim: a full-width scrim
+/// would flatten the illustration the card exists to show. The name is drawn here even though
+/// the grid card deliberately omits it (the art letters its own title at that size) — at 190pt
+/// the art is cropped wide and its lettering often falls outside the frame.
+private struct FeaturedGameCard: View {
+    let game: GamesAPI.CatalogGame
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            ZStack(alignment: .bottomLeading) {
+                if let key = game.icon_key, UIImage(named: key) != nil {
+                    Image(key)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    // Art hasn't shipped — the same tinted fallback the grid card uses, so a
+                    // new game looks unfinished rather than broken.
+                    VoiidColor.accentTint
+                        .overlay {
+                            Image(systemName: "gamecontroller.fill")
+                                .font(.system(size: 56))
+                                .foregroundStyle(VoiidColor.accent.opacity(0.35))
+                        }
+                }
+
+                LinearGradient(
+                    colors: [VoiidColor.background.opacity(0.94),
+                             VoiidColor.background.opacity(0.6),
+                             .clear],
+                    startPoint: .leading, endPoint: .trailing)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(game.name)
+                        .font(VoiidFont.rounded(24, .bold))
+                        .foregroundStyle(VoiidColor.textPrimary)
+                        .lineLimit(2)
+                    // The seat count, straight off the catalog row — the one fact about a game
+                    // that changes what you have to arrange before you can play it.
+                    Text(game.max_players > 2
+                         ? "Up to \(game.max_players) players"
+                         : "2 players")
+                        .font(VoiidFont.rounded(13, .regular))
+                        .foregroundStyle(VoiidColor.textSecondary)
+
+                    HStack(spacing: 6) {
+                        Text("Play")
+                            .font(VoiidFont.rounded(15, .semibold))
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 12, weight: .bold))
+                    }
+                    .foregroundStyle(VoiidColor.textOnAccent)
+                    .padding(.horizontal, VoiidSpacing.md)
+                    .frame(height: 38)
+                    .background(Capsule().fill(VoiidColor.accent))
+                    .padding(.top, VoiidSpacing.sm)
+                }
+                .padding(VoiidSpacing.md)
+                .frame(maxWidth: 230, alignment: .leading)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 190)
+            .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
+                .stroke(VoiidColor.divider, lineWidth: 1))
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(game.name)
+        }
+        .buttonStyle(BouncyCardStyle())
     }
 }
 

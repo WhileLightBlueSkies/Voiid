@@ -156,8 +156,14 @@ struct ClipsFeedView: View {
     /// like it belonged to a different app, and the one Android had already replaced with
     /// branded pills. The filled capsule slides between the two labels via
     /// `matchedGeometryEffect` so the switch reads as one object moving, not two redrawing.
+    ///
+    /// The two pills now share ONE recessed track rather than each carrying its own capsule
+    /// fill. Two separately-filled capsules read as two independent toggles that happen to sit
+    /// together; a single track reads as one control with two positions, which is what this is.
+    /// It also gives the sliding capsule something to slide *within* — previously it appeared
+    /// to travel across bare background.
     private var scopePicker: some View {
-        HStack(spacing: VoiidSpacing.sm) {
+        HStack(spacing: 0) {
             ForEach(FeedScope.allCases, id: \.self) { option in
                 Button {
                     Haptics.selection()
@@ -170,22 +176,31 @@ struct ClipsFeedView: View {
                         .foregroundColor(scope == option
                                          ? VoiidColor.textOnPrimary : VoiidColor.textSecondary)
                         .frame(maxWidth: .infinity)
-                        .frame(height: 40)
+                        .frame(height: 36)
                         .background {
                             if scope == option {
                                 Capsule().fill(VoiidColor.primary)
                                     .matchedGeometryEffect(id: "scope", in: scopePill)
-                            } else {
-                                Capsule().fill(VoiidColor.fieldFill)
                             }
                         }
-                        .padding(.vertical, 2)   // 44pt of hit height around a 40pt pill
+                        .padding(.vertical, 4)   // 44pt of hit height around a 36pt pill
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(SoftPressStyle())
                 .accessibilityAddTraits(scope == option ? [.isSelected] : [])
             }
         }
+        .padding(.horizontal, 3)
+        .background(
+            Capsule().fill(VoiidColor.fieldFill)
+                .overlay(Capsule().stroke(VoiidColor.divider, lineWidth: 1))
+        )
+        // Held to the width of a real segmented control rather than the full bleed: at
+        // full width two words float in the middle of an enormous track.
+        .frame(maxWidth: 280)
+        // The second frame is what CENTRES the first: a 280pt box in a full-width parent
+        // sits at the leading edge otherwise.
+        .frame(maxWidth: .infinity, alignment: .center)
         .padding(.horizontal, VoiidSpacing.md)
         .padding(.bottom, VoiidSpacing.sm)
         .onChange(of: scope) { _, new in
@@ -277,23 +292,47 @@ struct ClipsFeedView: View {
         ZStack(alignment: .bottomLeading) {
             ClipThumbnail(url: clip.thumb_url)
                 .scaledToFill()
-            LinearGradient(colors: [.clear, .black.opacity(0.6)],
+            LinearGradient(colors: [.clear, .black.opacity(0.72)],
                            startPoint: .center, endPoint: .bottom)
             VStack(alignment: .leading, spacing: 1) {
                 if let h = clip.author_handle {
-                    Text("@\(h)")
-                        .font(VoiidFont.rounded(10, .semibold))
-                        .lineLimit(1)
+                    HStack(spacing: 2) {
+                        Text("@\(h)")
+                            .font(VoiidFont.rounded(10, .semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                        // Real field on the joined author row — shown only when the server
+                        // says so, never as a default.
+                        if clip.author_verified == true {
+                            Image(systemName: "checkmark.seal.fill")
+                                .font(.system(size: 8.5))
+                                .foregroundColor(VoiidColor.accentSoft)
+                                // The seal must not be the thing that gets compressed when a
+                                // long handle runs out of room — the Text shrinks, the badge
+                                // keeps its size.
+                                .layoutPriority(1)
+                        }
+                        Spacer(minLength: 0)
+                    }
                 }
                 HStack(spacing: 3) {
-                    Image(systemName: "eye.fill").font(.system(size: 9))
+                    Image(systemName: "play.fill").font(.system(size: 8))
                     Text(ClipCount.compact(clip.view_count))
                         .font(VoiidFont.rounded(10, .semibold))
+
+                    Spacer(minLength: 4)
+
+                    if let text = ClipDuration.label(clip.duration_ms) {
+                        Text(text)
+                            .font(VoiidFont.rounded(10, .semibold))
+                            .monospacedDigit()
+                    }
                 }
             }
             .foregroundColor(.white)
             .shadow(radius: 2)
-            .padding(6)
+            .padding(.horizontal, 6)
+            .padding(.bottom, 6)
         }
         .frame(maxWidth: .infinity)
         .aspectRatio(9.0 / 16.0, contentMode: .fit)
@@ -373,7 +412,7 @@ struct ClipsFeedView: View {
 
             // Scrim: the view count sits on arbitrary user video, so it needs its own
             // contrast floor rather than relying on the frame being dark.
-            LinearGradient(colors: [.clear, .black.opacity(0.55)],
+            LinearGradient(colors: [.clear, .black.opacity(0.7)],
                            startPoint: .center, endPoint: .bottom)
 
             switch clip.uploadState {
@@ -382,14 +421,26 @@ struct ClipsFeedView: View {
             case .failed(let message):
                 failedOverlay(clip: clip, message: message)
             case .none:
+                // Views left, runtime right — the two facts you actually scan a grid for.
+                // Duration is real data (`durationMs` on the row), not decoration, and it is
+                // hidden rather than faked when the row predates the column being populated.
                 HStack(spacing: 3) {
-                    Image(systemName: "eye.fill").font(.system(size: 10))
+                    Image(systemName: "play.fill").font(.system(size: 9))
                     Text(ClipCount.compact(clip.viewCount))
                         .font(VoiidFont.rounded(11, .semibold))
+
+                    Spacer(minLength: 4)
+
+                    if let text = ClipDuration.label(clip.durationMs) {
+                        Text(text)
+                            .font(VoiidFont.rounded(11, .semibold))
+                            .monospacedDigit()
+                    }
                 }
                 .foregroundColor(.white)
                 .shadow(radius: 2)
-                .padding(6)
+                .padding(.horizontal, 6)
+                .padding(.bottom, 6)
             }
         }
         .contentShape(Rectangle())
@@ -465,7 +516,7 @@ struct ClipsFeedView: View {
     private var header: some View {
         HStack(spacing: VoiidSpacing.xs) {
             Text("Clips")
-                .font(VoiidFont.display)
+                .font(VoiidFont.rounded(28, .bold))
                 .foregroundColor(VoiidColor.textPrimary)
             Spacer()
             // `square.grid.3x3` because that is literally what the destination is. The old
@@ -495,6 +546,10 @@ struct ClipsFeedView: View {
                     myAvatar(mine)
                         .frame(width: 28, height: 28)
                         .clipShape(Circle())
+                        // The accent ring marks this one avatar as YOURS. Every other avatar
+                        // on the surface (tiles, creator pages) is unringed, so the ring is
+                        // the only thing distinguishing "me" from "someone" at 28pt.
+                        .overlay(Circle().stroke(VoiidColor.accent, lineWidth: 1.5).padding(-2.5))
                         .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
                 }

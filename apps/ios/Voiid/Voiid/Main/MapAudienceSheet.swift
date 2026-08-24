@@ -16,6 +16,7 @@
 //
 
 import SwiftUI
+import Combine   // the countdown's Timer publisher + .autoconnect()
 
 struct MapAudienceSheet: View {
     enum Mode { case choose, manage }
@@ -34,6 +35,16 @@ struct MapAudienceSheet: View {
     @State private var scope: Scope = .contacts
     @State private var selected: Set<String> = []
     @State private var working = false
+    /// Which "Add time" option is in flight, so only that button shows a spinner rather than
+    /// the whole section going inert. nil = idle.
+    @State private var extending: Int?
+    /// Drives the countdown text. `expires_at` is an absolute instant, so nothing changes it
+    /// but the passage of time — without a tick the row would read "expires in 42m" until the
+    /// sheet was reopened, which is the silent-expiry problem this surface exists to fix.
+    @State private var now = Date()
+    /// The audience member whose revoke is in flight, so their row alone shows progress.
+    @State private var removing: String?
+    private let clock = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
     /// Contacts you can be visible to: everyone you have a direct conversation with. Names
     /// resolved through `UserDirectory` — never a raw id.
@@ -77,6 +88,16 @@ struct MapAudienceSheet: View {
             }
         }
         .tint(VoiidColor.primary)
+        // The Map tab already alerts on `lastError`, but that alert is presented BEHIND this
+        // sheet: a failed "Add time" tapped in here would set the flag and the user would see
+        // nothing until they closed the sheet. Same binding, same copy — mirrored so a failure
+        // raised in this surface is answered in this surface.
+        .alert("Map", isPresented: Binding(get: { engine.lastError != nil },
+                                           set: { if !$0 { engine.lastError = nil } })) {
+            Button("OK", role: .cancel) { engine.lastError = nil }
+        } message: {
+            Text(engine.lastError ?? "")
+        }
         // No colour-scheme pin: Peacock tokens resolve per theme, and a sheet that
         // forced light would be the one bright rectangle in a dark app.
         .onAppear {
@@ -220,6 +241,8 @@ struct MapAudienceSheet: View {
 
     private var manager: some View {
         List {
+            activeShareSection
+
             if engine.audience.isEmpty {
                 Section {
                     Text(engine.isVisible ? "You’re visible to no one." : "Ghost Mode is on — you’re hidden from everyone.")
@@ -233,18 +256,33 @@ struct MapAudienceSheet: View {
                                                 name: directory.displayName(m.userId), size: 40)
                             Text(directory.displayName(m.userId)).font(.body).foregroundStyle(VoiidColor.textPrimary)
                             Spacer()
-                            Button {
-                                Haptics.tap()
-                                Task { await engine.removeFromAudience(m.userId) }
-                            } label: {
-                                Text("Remove").font(VoiidFont.rounded(13, .semibold)).foregroundColor(VoiidColor.error)
+                            // Unchanged call — `removeFromAudience` is what already revokes
+                            // this one target server-side and rekeys the rest. Only the
+                            // wording and the in-flight state are new: "Remove" did not say
+                            // that the share continues for everyone else, and the row gave no
+                            // feedback across a rekey + redistribute round trip.
+                            if removing == m.userId {
+                                ProgressView()
+                            } else {
+                                Button {
+                                    Haptics.tap()
+                                    removing = m.userId
+                                    Task {
+                                        await engine.removeFromAudience(m.userId)
+                                        removing = nil
+                                    }
+                                } label: {
+                                    Text("Stop sharing")
+                                        .font(VoiidFont.rounded(13, .semibold)).foregroundColor(VoiidColor.error)
+                                }
+                                .disabled(removing != nil)
                             }
                         }
                     }
                 } header: {
                     Text("These people can see you")
                 } footer: {
-                    Text("Removing someone rotates your Map key and stops sending them new locations. It can’t un-see a location they already saw.")
+                    Text("Stopping one person rotates your Map key and stops sending them new locations — everyone else keeps seeing you. It can’t un-see a location they already saw.")
                 }
             }
 
@@ -273,7 +311,99 @@ struct MapAudienceSheet: View {
             }
         }
         .voiidSettingsList()
+        .onReceive(clock) { now = $0 }
     }
+
+    // MARK: - Active share (expiry + add time)
+
+    /// The live share row: when it lapses, and the two top-up buttons.
+    ///
+    /// SHOWN ONLY WHEN A SERVER SHARE ACTUALLY EXISTS. `outboundShareId` — not `isVisible` —
+    /// is the gate, because extend addresses a share id: while ghosted, or in the brief window
+    /// where the row failed to create, there is nothing to add time to and offering the button
+    /// would promise something the call cannot deliver.
+    @ViewBuilder
+    private var activeShareSection: some View {
+        if engine.outboundShareId != nil {
+            Section {
+                HStack(spacing: VoiidSpacing.md) {
+                    VoiidRowIcon(systemName: "clock")
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Sharing ends")
+                            .font(.body).foregroundStyle(VoiidColor.textPrimary)
+                        Text(expiryDetail)
+                            .font(.footnote).foregroundStyle(expiringSoon ? VoiidColor.error : VoiidColor.textSecondary)
+                    }
+                    Spacer(minLength: VoiidSpacing.sm)
+                }
+
+                addTimeRow(seconds: 15 * 60, label: "Add 15 minutes")
+                addTimeRow(seconds: 60 * 60, label: "Add 1 hour")
+            } header: {
+                Text("Your active share")
+            } footer: {
+                // The 24-hour ceiling is a server rule, so say it here rather than let a tap
+                // land on a smaller number than the button promised.
+                Text("A Map share ends on its own so you can never be left sharing forever. Adding time tops it up, to at most 24 hours from now.")
+            }
+        }
+    }
+
+    /// One "+N" button. Its detail states the resulting expiry BEFORE the tap, because "add
+    /// 1 hour" alone is ambiguous once the 24-hour ceiling starts clamping the result.
+    private func addTimeRow(seconds: Int, label: String) -> some View {
+        let projected = engine.projectedExpiry(adding: seconds)
+        return VoiidSettingsRow(
+            icon: "plus.circle",
+            title: label,
+            detail: projected.map { "Ends \(Self.clockFormatter.string(from: $0))" },
+            action: extending == nil ? {
+                Haptics.tap()
+                extending = seconds
+                Task {
+                    await engine.extendOutboundShare(by: seconds)
+                    // Re-tick so the countdown reflects the new ceiling immediately rather
+                    // than at the next 30s beat.
+                    now = Date()
+                    extending = nil
+                }
+            } : nil
+        ) {
+            if extending == seconds { ProgressView() }
+        }
+        // The other button is disabled while one is in flight, but must not read as broken.
+        .opacity(extending == nil || extending == seconds ? 1 : 0.5)
+    }
+
+    /// Time left, phrased the way the countdown is read: minutes near the end, hours before.
+    private var expiryDetail: String {
+        guard let exp = engine.outboundExpiresAt else {
+            // The row was restored without a ceiling (the "unknown" sentinel). Say so rather
+            // than invent a time.
+            return "Time remaining unknown — add time to set it."
+        }
+        let left = exp.timeIntervalSince(now)
+        guard left > 0 else { return "Expired — add time to keep sharing." }
+        let mins = Int(left / 60)
+        if mins < 60 { return "Expires in \(max(1, mins))m" }
+        let hours = mins / 60
+        let rem = mins % 60
+        return rem == 0 ? "Expires in \(hours)h" : "Expires in \(hours)h \(rem)m"
+    }
+
+    /// Under an hour turns the countdown red — the point at which "it will just stop" stops
+    /// being theoretical.
+    private var expiringSoon: Bool {
+        guard let exp = engine.outboundExpiresAt else { return false }
+        return exp.timeIntervalSince(now) < 3600
+    }
+
+    private static let clockFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .none
+        f.timeStyle = .short
+        return f
+    }()
 }
 
 extension Notification.Name {

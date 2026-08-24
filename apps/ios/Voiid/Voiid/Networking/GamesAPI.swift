@@ -223,5 +223,75 @@ struct GamesAPI {
         try await api.request("POST", "games/matches/\(matchId)/rematch", body: EmptyBody())
     }
 
+    /// One row of `GET /games/matches` — the caller's own recent matches, newest first.
+    ///
+    /// THE SERVER SENDS IDS, NOT NAMES. The route selects `m.id, g.slug, g.name, m.status,
+    /// m.player_ids, m.winner_id, m.created_at, m.started_at, m.ended_at` and joins nothing
+    /// else, so there is no opponent display name in this payload and none is invented here.
+    /// The history screen resolves the other player id against `leaderboard()`, which is the
+    /// one call that does carry `full_name`/`username`, and falls back to nothing rather than
+    /// showing a raw uuid.
+    ///
+    /// DECODED BY HAND for the same reason `PendingInvite` is: Swift's synthesized `Decodable`
+    /// ignores property defaults, so a single omitted key (`winner_id` on an unfinished match,
+    /// `ended_at` on a live one — both routinely null here) would throw `keyNotFound`, fail the
+    /// whole array, and turn a full history into an empty one with nothing to say why.
+    struct MatchRow: Decodable, Identifiable {
+        let id: String
+        let slug: String
+        let name: String
+        /// 'waiting' | 'active' | 'finished' | 'abandoned'. Only 'finished' has a result.
+        var status: String = ""
+        /// Everyone in the match, the caller included. Two entries for the duel games.
+        var player_ids: [String] = []
+        /// Null on a draw AND on anything unfinished — the two are told apart by `status`,
+        /// never by this field alone.
+        var winner_id: String?
+        /// Timestamps arrive as ISO-8601 strings from pg's json encoding, not epoch numbers
+        /// (contrast `PendingInvite.sent_at`, which the invites route computes as millis).
+        var created_at: String?
+        var started_at: String?
+        var ended_at: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case id, slug, name, status, player_ids, winner_id
+            case created_at, started_at, ended_at
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            // Required: without these there is no row to render or identify.
+            id   = try c.decode(String.self, forKey: .id)
+            slug = try c.decode(String.self, forKey: .slug)
+            name = try c.decode(String.self, forKey: .name)
+
+            status     = try c.decodeIfPresent(String.self,   forKey: .status) ?? ""
+            player_ids = try c.decodeIfPresent([String].self, forKey: .player_ids) ?? []
+            winner_id  = try c.decodeIfPresent(String.self,   forKey: .winner_id)
+            created_at = try c.decodeIfPresent(String.self,   forKey: .created_at)
+            started_at = try c.decodeIfPresent(String.self,   forKey: .started_at)
+            ended_at   = try c.decodeIfPresent(String.self,   forKey: .ended_at)
+        }
+
+        /// The other player, from the caller's seat. Nil for a solo run (Snake, the daily),
+        /// which genuinely has no opponent — not a lookup failure.
+        func opponentId(me: String?) -> String? {
+            guard let me else { return nil }
+            return player_ids.first { $0 != me }
+        }
+    }
+
+    private struct MatchesResponse: Decodable { let matches: [MatchRow] }
+
+    /// The caller's recent matches, newest first, capped at 50 by the server.
+    ///
+    /// TAKES NO PARAMETERS, because the route accepts none — no game filter, no paging cursor,
+    /// no limit override. Adding a query string here would be inventing a contract the server
+    /// does not implement, so callers filter client-side over the 50 rows they get.
+    func matches() async throws -> [MatchRow] {
+        let res: MatchesResponse = try await api.request("GET", "games/matches")
+        return res.matches
+    }
+
     private struct EmptyBody: Encodable {}
 }

@@ -59,6 +59,13 @@ final class MapPresenceEngine: ObservableObject {
     /// ceiling) — see `setOutboundShare`; every emitted fix is gated on it, so losing it to a
     /// process kill left the server row live while this device emitted nothing.
     @Published private(set) var outboundShareId: String?
+    /// When the active server share row lapses, or nil while not sharing. The instant was
+    /// ALREADY persisted alongside the share id (`outboundExpiryKey`) and already kept in
+    /// step by `noteOutboundExtended`; it simply had no published mirror, so no view could
+    /// render "expires in 42m" or know whether extending was worth offering. Published here
+    /// so the audience sheet observes it — the persisted value stays the source of truth
+    /// across launches and is what `restoreOutboundShare` reads back.
+    @Published private(set) var outboundExpiresAt: Date?
     /// A human-readable reason the last visibility action could not complete (e.g. location
     /// permission denied, server unreachable). Surfaced honestly; never a silent failure.
     @Published var lastError: String?
@@ -469,6 +476,45 @@ final class MapPresenceEngine: ObservableObject {
         await distributeMapKey(newKey, to: remaining)
     }
 
+    // MARK: - Extending the active share
+
+    /// Push the active share's expiry out by `seconds` at the user's explicit request.
+    /// Returns the new expiry, or nil if there was nothing to extend or the call failed.
+    ///
+    /// THE SERVER'S `extend` IS A RESET, NOT AN INCREMENT: it writes
+    /// `expires_at = now() + duration_seconds`. So "+15 minutes" sent literally would SHORTEN
+    /// a share with 20 hours left down to 15 minutes — the exact opposite of what the button
+    /// says. We therefore compute the desired absolute expiry locally (remaining + seconds)
+    /// and send the whole span from now, which is what makes the label honest.
+    ///
+    /// The span is clamped to the server's 60…24h window (`MAP_MAX_DURATION`); outside it the
+    /// server 400s and the user would see a bare failure for a button we chose to offer.
+    @discardableResult
+    func extendOutboundShare(by seconds: Int) async -> Date? {
+        guard let sid = outboundShareId else { return nil }
+        // Remaining is floored at zero: a lapsed-but-not-yet-cleared row must extend from now,
+        // never from a negative base that would eat into the requested time.
+        let remaining = max(0, outboundExpiresAt?.timeIntervalSinceNow ?? 0)
+        let span = min(MapShareAPI.mapDurationSeconds, max(60, Int(remaining) + seconds))
+        guard let res = try? await MapShareAPI.extend(shareId: sid, durationSeconds: span) else {
+            lastError = "Couldn’t add more time to your Map share. Check your connection and try again."
+            return nil
+        }
+        // Trust the server's echoed `expires_at` over our local arithmetic — clock skew
+        // between device and server is exactly what would make the countdown drift.
+        setOutboundShare(sid, expiresAt: parseISO(res.expires_at))
+        return outboundExpiresAt
+    }
+
+    /// What `extendOutboundShare(by:)` would actually land on, so a button can say the new
+    /// expiry BEFORE it is tapped. Mirrors the clamp above; nil when nothing is shared.
+    func projectedExpiry(adding seconds: Int) -> Date? {
+        guard outboundShareId != nil else { return nil }
+        let remaining = max(0, outboundExpiresAt?.timeIntervalSinceNow ?? 0)
+        let span = min(MapShareAPI.mapDurationSeconds, max(60, Int(remaining) + seconds))
+        return Date().addingTimeInterval(TimeInterval(span))
+    }
+
     // MARK: - Kill switch (§8)
 
     /// Stop all Map sharing: end the outbound share, rotate away the key, clear the
@@ -695,11 +741,13 @@ final class MapPresenceEngine: ObservableObject {
         outboundShareId = shareId
         let d = UserDefaults.standard
         guard let shareId else {
+            outboundExpiresAt = nil
             d.removeObject(forKey: outboundShareKey)
             d.removeObject(forKey: outboundExpiryKey)
             return
         }
         let ceiling = expiresAt ?? Date().addingTimeInterval(TimeInterval(MapShareAPI.mapDurationSeconds))
+        outboundExpiresAt = ceiling
         d.set(shareId, forKey: outboundShareKey)
         d.set(ceiling.timeIntervalSince1970, forKey: outboundExpiryKey)
     }
@@ -717,6 +765,10 @@ final class MapPresenceEngine: ObservableObject {
             return
         }
         outboundShareId = sid
+        // Republish the ceiling a cold launch just validated, so the countdown is correct on
+        // the first render rather than only after the next extend/create writes it again.
+        // `0` is the documented "unknown" sentinel and must stay nil, not become 1970.
+        if ceiling > 0 { outboundExpiresAt = Date(timeIntervalSince1970: ceiling) }
     }
 
     private func noteOutboundExtended(_ expiresAt: String?) {

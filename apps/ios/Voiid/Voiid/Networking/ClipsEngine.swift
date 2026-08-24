@@ -476,6 +476,37 @@ final class ClipsEngine: ObservableObject {
         }
     }
 
+    /// Delete one of YOUR comments.
+    ///
+    /// ── OPTIMISTIC, AND DELIBERATELY SO ─────────────────────────────────────────────
+    /// The row goes at once and is put back if the server refuses. A delete that waits for a
+    /// round trip leaves the comment sitting there while the user wonders whether the tap
+    /// registered, and the failure case — someone deleting their own comment on their own
+    /// device — is rare enough that optimism is the right trade.
+    ///
+    /// AUTHORISATION IS THE SERVER'S: `DELETE /clips/:id/comments/:commentId` checks that the
+    /// caller wrote the comment (or owns the clip). The UI hides the control for everyone
+    /// else, but that is a convenience, not the enforcement — never treat it as such.
+    func deleteComment(clipId: String, commentId: String) async {
+        guard let idx = comments[clipId]?.firstIndex(where: { $0.id == commentId }) else { return }
+        let removed = comments[clipId]![idx]
+        comments[clipId]?.remove(at: idx)
+
+        // Keep the count on the clip in step, or the rail says "3" over a list of two.
+        if let i = clips.firstIndex(where: { $0.id == clipId }) {
+            clips[i].commentCount = max(0, clips[i].commentCount - 1)
+        }
+
+        do {
+            try await svc.deleteComment(clipId: clipId, commentId: commentId)
+        } catch {
+            // Put it back exactly where it was, so the list does not reorder under the user.
+            let i = min(idx, comments[clipId]?.count ?? 0)
+            comments[clipId]?.insert(removed, at: i)
+            if let c = clips.firstIndex(where: { $0.id == clipId }) { clips[c].commentCount += 1 }
+        }
+    }
+
     @discardableResult
     func retryComment(clipId: String, commentId: String, authorId: String,
                       authorName: String) async -> Bool {
