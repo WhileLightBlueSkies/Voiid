@@ -55,3 +55,106 @@ export function rateLimit(opts: { max: number; windowSeconds: number; bucket: st
     next();
   };
 }
+
+/**
+ * The counting core of the pair limit, callable outside middleware chains.
+ * Returns false when the call should be rejected (limit exceeded).
+ */
+export async function checkPairRateLimit(opts: {
+  max: number;
+  windowSeconds: number;
+  bucket: string;
+  callerId: string;
+  targetId: string;
+}): Promise<boolean> {
+  const key = `ratelimit:${opts.bucket}:${opts.callerId}:${opts.targetId}`;
+  try {
+    const count = await redis.incr(key);
+    if (count === 1) await redis.expire(key, opts.windowSeconds);
+    if (count > opts.max) {
+      await logSecurityEvent('api_abuse', {
+        user_id: opts.callerId,
+        metadata: { bucket: opts.bucket, target: opts.targetId, count },
+      });
+      return false;
+    }
+  } catch { /* fail open, same policy as rateLimit above */ }
+  return true;
+}
+
+/**
+ * Sliding-window rate limit keyed by a (caller, target) PAIR rather than an IP.
+ *
+ * Why this exists: GET /prekeys/:user_id and GET /mls/keypackages/:user_id
+ * CONSUME one-time material on every call, so the abuse is not "one IP hammers
+ * the API" (the global limiter already caps that) but "one authenticated caller
+ * drains one specific victim's supply" — trivially spread across IPs. The
+ * bucket has to be the pair.
+ */
+export function pairRateLimit(opts: {
+  max: number;
+  windowSeconds: number;
+  bucket: string;
+  callerId: string;
+  targetId: string;
+}) {
+  return async (_req: Request, res: Response, next: NextFunction) => {
+    if (!(await checkPairRateLimit(opts))) {
+      return res.status(429).json({ error: 'rate limit exceeded' });
+    }
+    next();
+  };
+}
+
+/**
+ * True when the TARGET has blocked the CALLER (043 user_blocks).
+ *
+ * Used by the prekey/KeyPackage fetch endpoints: a blocked caller must not be
+ * able to consume the target's one-time material — or even keep establishing
+ * sessions to it. Callers of this helper decide the response SHAPE; they should
+ * answer with their normal empty result (never a distinct status), so blocking
+ * does not become an oracle for "this user exists and rejected you".
+ */
+export async function blockedBetween(callerId: string, targetId: string): Promise<boolean> {
+  const rows = await query<{ one: number }>(
+    `select 1 as one from user_blocks
+       where blocker_user_id = $1 and blocked_user_id = $2
+       limit 1`,
+    [targetId, callerId]
+  );
+  return rows.length > 0;
+}
+
+/**
+ * Guard for the two one-time-material fetch endpoints — GET /prekeys/:user_id and
+ * GET /mls/keypackages/:user_id. Each call CONSUMES the target's supply, so both
+ * endpoints share this exact policy:
+ *
+ *   self        → always allowed (a device replenishing its own view)
+ *   blocked     → 'empty': the caller gets the endpoint's normal no-material shape,
+ *                 never a distinct status. Blocking must not become an oracle
+ *                 (043_user_blocks.sql: "Silence is the point") and a blocked caller
+ *                 must not keep burning keys.
+ *   everyone    → per-(caller, target) pair throttle. The global limiter caps per-IP
+ *                 traffic; it does nothing against a drain loop spread across IPs,
+ *                 which is exactly how you exhaust a victim's one-time prekeys or
+ *                 KeyPackages and deny all their new inbound sessions and group invites.
+ *
+ * Returns 'ok' to proceed, 'empty' to answer with the route's empty shape, 'limited'
+ * to answer 429. The ROUTE owns its response shape; security.ts only decides which one.
+ */
+export async function guardKeyMaterialFetch(
+  callerId: string,
+  targetUserId: string
+): Promise<'ok' | 'empty' | 'limited'> {
+  if (callerId === targetUserId) return 'ok';
+  if (await blockedBetween(callerId, targetUserId)) return 'empty';
+  const allowed = await checkPairRateLimit({
+    max: 5,
+    windowSeconds: 60,
+    bucket: 'keyfetch',
+    callerId,
+    targetId: targetUserId,
+  });
+  return allowed ? 'ok' : 'limited';
+}

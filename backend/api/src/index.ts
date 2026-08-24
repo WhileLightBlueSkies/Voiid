@@ -240,6 +240,28 @@ process.on('unhandledRejection', (reason) => {
 });
 
 const port = Number(process.env.API_PORT) || 4000;
+
+// ── FAIL-CLOSED BOOT GUARD ────────────────────────────────────────────────────
+// Two misconfigurations are total-compromise class: AUTH_DEV_BYPASS lets anyone
+// mint a session for ANY phone number with one request, and the JWT_SECRET dev
+// default lets anyone forge valid tokens outright. Both are fine on a laptop and
+// catastrophic deployed, so production refuses to boot rather than trusting an
+// operator to have read .env comments. Mirrored in backend/websocket/src/index.ts.
+(function assertProductionSafety() {
+  if (process.env.NODE_ENV !== 'production') return;
+  const fatal: string[] = [];
+  if (process.env.AUTH_DEV_BYPASS === '1') {
+    fatal.push('AUTH_DEV_BYPASS=1 accepts "dev:<phone>" tokens with no Firebase verification');
+  }
+  if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'dev-only-change-me') {
+    fatal.push('JWT_SECRET is missing or set to the known dev default — anyone can forge tokens');
+  }
+  if (fatal.length) {
+    console.error('[voiid:api] REFUSING TO START in production:\n - ' + fatal.join('\n - '));
+    process.exit(1);
+  }
+})();
+
 app.listen(port, () => {
   console.log(`[voiid:api] listening on :${port}`);
   // Say this ONCE at boot rather than making an operator infer it from a settings screen.

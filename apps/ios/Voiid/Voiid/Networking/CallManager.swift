@@ -7,7 +7,7 @@
 //  OS actions (answer / end / mute) back into `CallService` (the WebRTC engine).
 //
 //  It also owns the AVAudioSession handoff that WebRTC needs: when CallKit's
-//  provider activates the audio session we hand it to WebRTC's RTCAudioSession
+//  provider activates the audio session we hand it to WebRTC's LKRTCAudioSession
 //  (manual-audio mode), and disable audio again on deactivate. This is the
 //  standard CallKit + WebRTC pattern.
 //
@@ -20,7 +20,7 @@ import Foundation
 import CallKit
 import AVFoundation
 import Intents
-import WebRTC
+import LiveKitWebRTC
 
 @MainActor
 final class CallManager: NSObject {
@@ -62,7 +62,7 @@ final class CallManager: NSObject {
         super.init()
         provider.setDelegate(self, queue: nil)
         // WebRTC drives the audio session itself, activated by CallKit's callbacks.
-        let rtcSession = RTCAudioSession.sharedInstance()
+        let rtcSession = LKRTCAudioSession.sharedInstance()
         rtcSession.useManualAudio = true
         rtcSession.isAudioEnabled = false
         Self.configureAudioSessionForCalls()
@@ -76,11 +76,11 @@ final class CallManager: NSObject {
     ///   allowBluetooth(A2DP)         – headsets/car kits can take the call.
     /// This is the session WebRTC applies in `audioSessionDidActivate`.
     private static func configureAudioSessionForCalls() {
-        let config = RTCAudioSessionConfiguration.webRTC()
+        let config = LKRTCAudioSessionConfiguration.webRTC()
         config.category = AVAudioSession.Category.playAndRecord.rawValue
         config.mode = AVAudioSession.Mode.voiceChat.rawValue
         config.categoryOptions = [.allowBluetoothHFP, .allowBluetoothA2DP, .duckOthers]
-        RTCAudioSessionConfiguration.setWebRTC(config)
+        LKRTCAudioSessionConfiguration.setWebRTC(config)
     }
 
     func configure(service: CallService) { self.service = service }
@@ -296,8 +296,8 @@ extension CallManager: CXProviderDelegate {
 
     nonisolated func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
         // Hand the CallKit-activated session to WebRTC and enable audio.
-        RTCAudioSession.sharedInstance().audioSessionDidActivate(audioSession)
-        RTCAudioSession.sharedInstance().isAudioEnabled = true
+        LKRTCAudioSession.sharedInstance().audioSessionDidActivate(audioSession)
+        LKRTCAudioSession.sharedInstance().isAudioEnabled = true
         // The ringback tone may have activated this session itself (it plays
         // before the call connects, and didActivate only fires on connect). Now
         // that WebRTC owns it, CallToneService must stop treating it as its own
@@ -312,7 +312,7 @@ extension CallManager: CXProviderDelegate {
     }
 
     nonisolated func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
-        RTCAudioSession.sharedInstance().audioSessionDidDeactivate(audioSession)
-        RTCAudioSession.sharedInstance().isAudioEnabled = false
+        LKRTCAudioSession.sharedInstance().audioSessionDidDeactivate(audioSession)
+        LKRTCAudioSession.sharedInstance().isAudioEnabled = false
     }
 }

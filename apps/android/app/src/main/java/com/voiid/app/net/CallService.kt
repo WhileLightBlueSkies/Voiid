@@ -21,6 +21,8 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import org.webrtc.AudioSource
@@ -102,6 +104,14 @@ object CallManager {
          * which is also when the caller's own ringback starts, so the two devices agree.
          */
         val peerRinging: Boolean = false,
+        /**
+         * This inbound call is an invitation into an AD-HOC CONFERENCE, not a 1:1 ring.
+         * Set from the push/`call_invite` path (`conference: true`, or a frame carrying a
+         * room). It routes accept/decline to [ConferenceManager] — a conference invitee
+         * never receives an SDP offer, so running it through the 1:1 answer path parked
+         * the call in "Connecting…" forever (audit: escalation flow).
+         */
+        val isConferenceInvite: Boolean = false,
     )
 
     /**
@@ -115,6 +125,8 @@ object CallManager {
         val peerName: String,
         val conversationId: String?,
         val kind: CallKind,
+        /** Ad-hoc CONFERENCE invite: answer/decline route via ConferenceManager. */
+        val isConferenceInvite: Boolean = false,
     )
 
     private const val STREAM_ID = "voiid_stream"
@@ -262,6 +274,23 @@ object CallManager {
         // pure OBSERVER of the state machine below — see [TelecomBridge]. Idempotent, never
         // throws, and a failure costs us the system integration and nothing else.
         TelecomBridge.register(appContext)
+        // OUTCOME BRIDGE for accepted conference invites. The conference engine owns
+        // joining; if it reports ENDED with an error while OUR state is still the
+        // CONNECTING leg of that same invite, end here too — otherwise the user stares
+        // at a "Connecting…" screen over a dead join (the exact failure iOS guards).
+        scope.launch {
+            ConferenceManager.state.collect { cs ->
+                val err = cs?.error ?: return@collect
+                if (cs.stage == ConferenceManager.Stage.ENDED) {
+                    val s = _state.value ?: return@collect
+                    if (s.isConferenceInvite && s.callId == cs.callId &&
+                        (s.phase == Phase.CONNECTING || s.phase == Phase.RINGING_IN)
+                    ) {
+                        endInternal(notifyPeer = false, reason = "conference-join-failed")
+                    }
+                }
+            }
+        }
         initialized = true
     }
 
@@ -366,12 +395,25 @@ object CallManager {
                 endInternal(notifyPeer = false, reason = "ring-failed")
                 return@launch
             }
+            // ── E2EE KEYING (caller side). Mint and fan out the call secret over the
+            // ratchet BEFORE the offer, so the callee holds the frame key before any
+            // media can flow (mirrors iOS beginOneToOne). Best-effort per recipient.
+            runCatching {
+                val secret = CallKeyCourier(appContext)
+                    .mintAndDistribute(callId, epoch = 1, recipientUserIds = listOf(peerUserId))
+                applyFrameSecret(secret, epoch = 1)
+            }.onFailure {
+                android.util.Log.e("VOIID", "1:1 call key mint failed — proceeding DTLS-only", it)
+            }
             // Only now is it safe to put an offer on the wire.
             exec.execute {
                 val servers = iceServers()
                 createPeerConnection(servers) ?: return@execute
                 addLocalMedia(kind)
                 applyAudioRoute(kind == CallKind.VIDEO)
+                // Senders exist now; receivers arrive with the answer — that path
+                // re-runs attachment.
+                attachFrameCryptorsIfReady()
                 val p = pc ?: return@execute
                 p.createOffer(object : SdpObserverAdapter() {
                     override fun onCreateSuccess(sdp: SessionDescription) {
@@ -497,7 +539,7 @@ object CallManager {
         // Never a raw user id on screen — resolvePeerName falls back through the directory.
         val name = resolvePeerName(inviterUserId, null)
         if (_state.value != null) {
-            raiseWaiting(WaitingCall(callId, inviterUserId, name, null, kind))
+            raiseWaiting(WaitingCall(callId, inviterUserId, name, null, kind, isConferenceInvite = true))
             return
         }
         callStartedAtMs = System.currentTimeMillis()
@@ -506,6 +548,7 @@ object CallManager {
             conversationId = null, kind = kind, incoming = true,
             phase = Phase.RINGING_IN, videoEnabled = kind == CallKind.VIDEO,
             speaker = kind == CallKind.VIDEO,
+            isConferenceInvite = true,
         )
         // Logged as missed up front for the same reason a 1:1 ring is: an invite ignored until
         // the process dies is exactly the one that must still appear in the log.
@@ -890,6 +933,14 @@ object CallManager {
     /** Reject the waiting call; the call in progress is untouched. */
     fun declineWaiting() {
         val w = _waiting.value ?: return
+        // A declined CONFERENCE waiting-call leaves via the conference path (invite
+        // decline + POST /leave), not the 1:1 decline frame.
+        if (w.isConferenceInvite) {
+            ConferenceManager.declineInvite(appContext, w.callId, w.peerUserId)
+            recordWaiting(w, outcome = "declined")
+            clearWaiting()
+            return
+        }
         runCatching { WebSocketClient.get(appContext).sendCallDecline(w.peerUserId, w.callId) }
         recordWaiting(w, outcome = "declined")
         clearWaiting()
@@ -928,6 +979,33 @@ object CallManager {
     fun acceptWaiting(expectedCallId: String? = null) {
         val w = _waiting.value ?: return
         if (expectedCallId != null && w.callId != expectedCallId) return
+        // CONFERENCE waiting-call: swap to it, then join through the conference engine —
+        // replaying a non-existent SDP offer would park in acceptPending forever.
+        if (w.isConferenceInvite) {
+            _waiting.value = null
+            waitingOfferSdp = null
+            runCatching { CallForegroundService.cancelWaiting(appContext) }
+            if (_state.value != null) endInternal(notifyPeer = true, reason = "swapped")
+            scope.launch {
+                kotlinx.coroutines.delay(250)
+                if (_state.value != null) return@launch   // something else claimed the slot
+                // Build the active state the way onConferenceInvitePush would have.
+                _state.value = CallState(
+                    callId = w.callId, peerUserId = w.peerUserId, peerName = w.peerName,
+                    conversationId = null, kind = w.kind, incoming = true,
+                    phase = Phase.RINGING_IN, videoEnabled = w.kind == CallKind.VIDEO,
+                    speaker = w.kind == CallKind.VIDEO,
+                    isConferenceInvite = true,
+                )
+                startForegroundService()
+                update { it.copy(phase = Phase.CONNECTING) }
+                ConferenceManager.acceptInvite(
+                    context = appContext, callId = w.callId, kind = w.kind,
+                    inviterUserId = w.peerUserId,
+                )
+            }
+            return
+        }
         val sdp = waitingOfferSdp
         _waiting.value = null
         waitingOfferSdp = null
@@ -957,6 +1035,17 @@ object CallManager {
         }
     }
 
+    /**
+     * Retire the leftover leg of a call that BECAME (or joined) a conference, once that
+     * conference has ended. No-ops unless the live state is exactly this call's
+     * conference-invite leg — an unrelated active 1:1 call must never be touched.
+     */
+    fun retireConferenceLeg(callId: String) {
+        val s = _state.value ?: return
+        if (s.callId != callId || !s.isConferenceInvite) return
+        endInternal(notifyPeer = false, reason = "conference-ended")
+    }
+
     // ---- user actions (from the call UI) --------------------------------------
 
     /**
@@ -973,6 +1062,24 @@ object CallManager {
         if (!s.incoming) return
         if (expectedCallId != null && s.callId != expectedCallId) return
         if (s.phase != Phase.RINGING_IN) return
+        // ── CONFERENCE INVITE: the conference engine owns acceptance. ──────────────
+        // An ad-hoc invitee never receives an SDP offer — they join the SFU by fetching an
+        // ad-hoc token — so falling through to the 1:1 answer path set acceptPending and
+        // waited forever for an offer that was never coming (the escalation bug).
+        if (s.isConferenceInvite) {
+            update { it.copy(phase = Phase.CONNECTING) }
+            CallForegroundService.cancelIncoming(appContext)
+            startForegroundService()
+            // Fire-and-forget inside the engine; WE own the outcome bridge: when the
+            // engine reaches CONFERENCE this leg is retired by the cutover watcher, and
+            // if it reports ENDED with an error we end like iOS does — no dead
+            // "Connecting…" screen when joining failed.
+            ConferenceManager.acceptInvite(
+                context = appContext, callId = s.callId, kind = s.kind,
+                inviterUserId = s.peerUserId,
+            )
+            return
+        }
         update { it.copy(phase = Phase.CONNECTING) }
         CallForegroundService.cancelIncoming(appContext)
         startForegroundService()
@@ -996,6 +1103,10 @@ object CallManager {
                 // Media negotiation has begun: from here ICE must reach CONNECTED or we must
                 // say so. See armConnectTimeout — the un-handled third outcome.
                 mainHandler.post { armConnectTimeout(s.callId) }
+                // Receivers came with the offer; senders exist now. If the caller's
+                // `call_key` already landed we cover everything; otherwise the key
+                // arrival re-runs attachment (see onCallKeyReceived).
+                attachFrameCryptorsIfReady()
                 WebSocketClient.get(appContext).sendCallAnswer(s.peerUserId, s.callId, tuned.description)
             }
         }, offerAnswerConstraints(s.kind))
@@ -1004,6 +1115,14 @@ object CallManager {
     /** Reject an incoming call. */
     fun decline() {
         val s = _state.value ?: return
+        // A declined CONFERENCE invite must leave through the conference path — that is
+        // what removes our row server-side and refreshes every roster. The 1:1 decline
+        // frame would land on the inviter as noise and the roster would ring forever.
+        if (s.isConferenceInvite) {
+            ConferenceManager.declineInvite(appContext, s.callId, s.peerUserId)
+            endInternal(notifyPeer = false, reason = "declined")
+            return
+        }
         WebSocketClient.get(appContext).sendCallDecline(s.peerUserId, s.callId)
         endInternal(notifyPeer = false, reason = "declined")
     }
@@ -1543,13 +1662,141 @@ object CallManager {
         }
     }
 
+    /**
+     * A `call_key` frame addressed to the ACTIVE 1:1 call (routed here from
+     * [ConferenceManager.onCallKey] when no conference state matches). Opens via the
+     * same courier the conferences use, then rolls our frame key. Fail-closed: until
+     * this lands, our cryptors simply have no key and frames are dropped.
+     */
+    fun onOneToOneCallKey(ciphertexts: Map<String, String>, senderDeviceId: String?, fromUserId: String, callId: String) {
+        val s = _state.value ?: return
+        if (s.callId != callId || s.isConferenceInvite) return
+        val myDevice = E2EManager.get(appContext).deviceId ?: return
+        val mine = ciphertexts[myDevice] ?: return
+        scope.launch(Dispatchers.IO) {
+            val env = runCatching {
+                ChatEngine.get(appContext).decryptBroadcast(mine, fromUserId, senderDeviceId)
+            }.getOrNull() ?: return@launch
+            // Tolerate BOTH envelope shapes (iOS emits {v,k:"secret",call_id,secret,gen}).
+            val parsed = runCatching {
+                ApiClient.json.decodeFromString(CallKeyEnvelope.serializer(), env)
+            }.getOrNull() ?: parseIosEnvelope(env, callId) ?: return@launch
+            applyFrameSecret(parsed.secret, parsed.epoch)
+        }
+    }
+
+    /** iOS-shaped key envelope ({v,k:"secret",call_id,secret,gen}). */
+    private fun parseIosEnvelope(json: String, expectedCallId: String): CallKeyEnvelope? = runCatching {
+        val obj = ApiClient.json.parseToJsonElement(json).jsonObject
+        if (obj["k"]?.jsonPrimitive?.content != "secret") return@runCatching null
+        val innerCall = obj["call_id"]?.jsonPrimitive?.content
+        if (innerCall != null && innerCall != expectedCallId) return@runCatching null
+        CallKeyEnvelope(
+            call_id = expectedCallId,
+            epoch = obj["gen"]?.jsonPrimitive?.int ?: 1,
+            secret = obj["secret"]?.jsonPrimitive?.content ?: return@runCatching null,
+            srtp_commit = false,
+        )
+    }.getOrNull()
+
     // ---- teardown --------------------------------------------------------------
+
+    // ── FRAME-LEVEL E2EE (parity with iOS CallKeyExchange.frameMediaKey) ─────────
+    //
+    // Every RTP payload is AES-GCM encrypted on-device under a key derived from the
+    // ratchet-delivered call secret. DTLS-SRTP stays as transport; the frame key never
+    // transits anything but the Double Ratchet, so a signaling-colluding MITM reads noise.
+    // Fail-closed: cryptors are created with the provider in shared-key mode and frames
+    // drop until BOTH sides hold the key — silence, never plaintext.
+    private var frameProvider: org.webrtc.FrameCryptorKeyProvider? = null
+    private val frameCryptors = mutableListOf<org.webrtc.FrameCryptor>()
+    private val frameCovered = java.util.Collections.synchronizedSet(mutableSetOf<Int>())
+    @Volatile private var callSecretB64: String? = null
+    @Volatile private var callSecretEpoch = 0
+
+    /**
+     * HKDF-SHA256 (RFC 5869) — byte-for-byte what CryptoKit's `HKDF<SHA256>.deriveKey`
+     * produces on iOS for the same inputs: salt "VoiidFrameKey v1", empty info, 32 bytes.
+     * Changing either side's parameters silently kills cross-platform calls, so treat
+     * this as protocol constant.
+     */
+    private fun frameMediaKey(secretB64: String): ByteArray {
+        val ikm = android.util.Base64.decode(secretB64, android.util.Base64.DEFAULT)
+        val salt = "VoiidFrameKey v1".toByteArray()
+        val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+        // EXTRACT: PRK = HMAC-SHA256(salt, IKM)
+        mac.init(javax.crypto.spec.SecretKeySpec(salt, "HmacSHA256"))
+        val prk = mac.doFinal(ikm)
+        // EXPAND with EMPTY info, L=32: T(1) = HMAC-SHA256(PRK, info || 0x01)
+        mac.init(javax.crypto.spec.SecretKeySpec(prk, "HmacSHA256"))
+        return mac.doFinal(byteArrayOf(0x01))
+    }
+
+    /** Install (or roll) the frame key for the ACTIVE 1:1 call. */
+    fun applyFrameSecret(secretB64: String, epoch: Int) {
+        if (epoch < callSecretEpoch) return   // stale key: never roll backwards
+        callSecretEpoch = epoch
+        callSecretB64 = secretB64
+        val provider = frameProvider ?: org.webrtc.FrameCryptorFactory.createFrameCryptorKeyProvider(
+            /* sharedKeyMode = */ true,
+            /* ratchetSalt = */ "VoiidFrameKey v1".toByteArray(),
+            /* ratchetWindowSize = */ 0,
+            /* uncryptedMagicBytes = */ null,
+            /* failureTolerance = */ -1,
+            /* keyRingSize = */ 16,
+            /* discardFrameWhenCryptorNotReady = */ true,
+        ).also { frameProvider = it }
+        provider.setSharedKey(0, frameMediaKey(secretB64))
+        attachFrameCryptorsIfReady()
+    }
+
+    /** Cover every sender/receiver on the live PeerConnection. Idempotent per track. */
+    private fun attachFrameCryptorsIfReady() {
+        val connection = pc ?: return
+        val provider = frameProvider ?: return
+        val s = _state.value ?: return
+        synchronized(frameCryptors) {
+            for (sender in connection.senders) {
+                if (!frameCovered.add(System.identityHashCode(sender))) continue
+                runCatching {
+                    frameCryptors += org.webrtc.FrameCryptorFactory.createFrameCryptorForRtpSender(
+                        factory, sender, s.peerUserId,
+                        org.webrtc.FrameCryptorAlgorithm.AES_GCM, provider,
+                    ).also { it.setEnabled(true) }
+                }
+            }
+            for (receiver in connection.receivers) {
+                if (!frameCovered.add(System.identityHashCode(receiver))) continue
+                runCatching {
+                    frameCryptors += org.webrtc.FrameCryptorFactory.createFrameCryptorForRtpReceiver(
+                        factory, receiver, s.peerUserId,
+                        org.webrtc.FrameCryptorAlgorithm.AES_GCM, provider,
+                    ).also { it.setEnabled(true) }
+                }
+            }
+        }
+    }
+
+    private fun detachFrameCryptors() {
+        synchronized(frameCryptors) {
+            for (c in frameCryptors) runCatching { c.setEnabled(false); c.dispose() }
+            frameCryptors.clear()
+        }
+        frameCovered.clear()
+        runCatching { frameProvider?.dispose() }
+        frameProvider = null
+        callSecretB64 = null
+        callSecretEpoch = 0
+    }
 
     private fun endInternal(notifyPeer: Boolean, reason: String) {
         val s = _state.value ?: return
         cancelConnectTimeout()
         endReason = endReason ?: reason
         cancelOfferTimeout()
+        // Burn the frame cryptors and the call secret. Every teardown path funnels
+        // through here, so this is the guarantee that keys die with the call.
+        detachFrameCryptors()
         // Ringback must die here no matter which path ended the call — timeout, local hangup,
         // ICE giving up. A tone that outlives its call is the worst version of this feature.
         CallTones.stopRingback()

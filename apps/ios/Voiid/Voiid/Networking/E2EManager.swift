@@ -49,6 +49,17 @@ final class E2EManager {
     private let kc = KeychainData(service: "com.voiid.e2e")
     private let pickleKeyName = "identity_pickle_key"   // 32 random bytes
     private let pickleName = "identity_pickle"          // encrypted identity
+    /// The fallback key PUBLIC half currently believed to be serving on the backend.
+    /// Restored alongside the pickle (see loadOrCreateIdentity): vodozemac's
+    /// from_pickle does NOT restore which fallback key the SERVER has, and without
+    /// this the next bundle silently mints a different one — senders holding the old
+    /// bundle then produce prekey messages this device cannot open (audit §2.6).
+    private let fallbackPublishedName = "fallback_published"
+    /// A freshly rotated fallback key that has been generated+persisted but whose
+    /// upload has not succeeded yet. Rotation retries upload THIS key instead of
+    /// rotating again — otherwise every failed-upload launch burned another
+    /// generation of the two vodozemac retains (audit §2.6b).
+    private let fallbackPendingUploadName = "fallback_pending_upload"
     private let deviceIdName = "device_id"
     private let regIdName = "registration_id"
     private let prekeyNextIdName = "prekey_next_id"     // monotonic one-time-key id counter
@@ -128,7 +139,28 @@ final class E2EManager {
             bootstrapped = true
         } catch {
             NSLog("[VOIID] bootstrap FAILED: \(error)")
+            // DIAGNOSTIC: both call sites use `try?`, so this error is otherwise discarded
+            // and a device that never publishes prekeys looks healthy while being
+            // permanently unreachable. Persisted so it can be read off-device.
+            Self.recordBootstrapFailure(error)
             throw error
+        }
+    }
+
+    /// Last bootstrap failure, persisted for diagnosis. See the catch block above.
+    static func recordBootstrapFailure(_ error: Error) {
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        let line = "[\(stamp)] bootstrap FAILED: \(error)\n"
+        UserDefaults.standard.set(line, forKey: "voiid_last_bootstrap_error")
+        if let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+            let url = dir.appendingPathComponent("bootstrap_errors.txt")
+            if let data = line.data(using: .utf8) {
+                if let h = try? FileHandle(forWritingTo: url) {
+                    h.seekToEndOfFile(); h.write(data); try? h.close()
+                } else {
+                    try? data.write(to: url)
+                }
+            }
         }
     }
 
@@ -150,7 +182,28 @@ final class E2EManager {
         let bundle = id.replenishPrekeys(count: UInt32(need))
         try persist(id)
         NSLog("[VOIID] ensurePrekeys: uploading \(bundle.oneTimeKeys.count) keys (need=\(need) max=\(max))")
-        try await uploadPrekeys(deviceId: devId, keys: bundle.oneTimeKeys)
+        do {
+            // SELF-HEAL. If a replenished bundle carries a fallback key, the identity
+            // believed it had none published — exactly the post-restart state that used
+            // to mint a silent new key every launch (audit §2.6). Uploading it here AND
+            // recording it as the served key keeps server and device converging even
+            // when something upstream goes wrong.
+            if let minted = bundle.fallbackKey {
+                try await uploadPrekeys(deviceId: devId, keys: bundle.oneTimeKeys,
+                                        fallbackKey: minted)
+                kc.set(minted, fallbackPublishedName)
+                NSLog("[VOIID] ensurePrekeys: replenish minted+published a fallback key — recorded as serving")
+            } else {
+                try await uploadPrekeys(deviceId: devId, keys: bundle.oneTimeKeys)
+            }
+            NSLog("[VOIID] ensurePrekeys: upload OK (\(bundle.oneTimeKeys.count) keys)")
+        } catch {
+            // A device that registers but never lands its prekeys is unreachable: peers
+            // fetch an empty bundle and every send parks at 409 "no available prekeys".
+            NSLog("[VOIID] ensurePrekeys: upload FAILED: \(error)")
+            Self.recordBootstrapFailure(error)
+            throw error
+        }
     }
 
     /// Retry a network step a few times on transport errors (timeouts / flaky net)
@@ -173,8 +226,19 @@ final class E2EManager {
     private func loadOrCreateIdentity() throws -> Identity {
         let key = pickleKey()
         if let pickle = kc.string(pickleName) {
-            do { return try Identity.restore(pickle: pickle, pickleKey: key) }
-            catch { /* corrupt/old pickle — fall through and recreate */ }
+            do {
+                let id = try Identity.restore(pickle: pickle, pickleKey: key)
+                // Re-attach the fallback key the backend is serving. The private half
+                // survives inside vodozemac's pickle; this restores only the PUBLIC
+                // marker so currentFallbackKey() and has_fallback_key() tell the truth.
+                // Without it every restart looked like "no fallback key" to publish
+                // logic — the trigger state for audit finding §2.6 (proven by
+                // packages/e2e-core/tests/regress_fallback_restore.rs).
+                if let published = kc.string(fallbackPublishedName) {
+                    id.restoreFallbackKey(fallbackKey: published)
+                }
+                return id
+            } catch { /* corrupt/old pickle — fall through and recreate */ }
         }
         let id = Identity.create()
         try persist(id, key: key)
@@ -386,6 +450,9 @@ final class E2EManager {
             if let current {
                 do {
                     try await uploadPrekeys(deviceId: devId, keys: [], fallbackKey: current)
+                    // This is now the key the server serves; remember it so restarts can
+                    // re-attach it (see loadOrCreateIdentity).
+                    kc.set(current, fallbackPublishedName)
                     NSLog("[VOIID] fallback key: published existing")
                 } catch {
                     // Clear the stamp so the next launch retries rather than waiting a week
@@ -399,6 +466,26 @@ final class E2EManager {
 
         guard now - last >= Self.fallbackRotationInterval else { return }
 
+        // RETRY BEFORE ROTATE. A rotation whose upload failed left its fresh key in
+        // fallbackPendingUploadName. Re-issuing rotateFallbackKey() here would burn one
+        // more of the two generations vodozemac retains on EVERY failed launch until
+        // the server-served key's private half fell out of retention entirely. Upload
+        // the pending key instead; rotate only once the pipeline is clean.
+        if let pending = kc.string(fallbackPendingUploadName) {
+            do {
+                try await uploadPrekeys(deviceId: devId, keys: [], fallbackKey: pending)
+                try persist(id)
+                kc.set(pending, fallbackPublishedName)
+                kc.delete(fallbackPendingUploadName)
+                kc.set(String(now), fallbackRotatedAtName)
+                kc.set("1", fallbackPrevPendingName)
+                NSLog("[VOIID] fallback key: pending rotation upload succeeded")
+            } catch {
+                NSLog("[VOIID] fallback key: retry upload still failing: \(error.localizedDescription)")
+            }
+            return
+        }
+
         // PHASE 2 FIRST. The key pending retirement was replaced at the previous rotation
         // and has therefore had a full interval of grace. Doing this before generating the
         // new one keeps at most two private halves alive at any moment, which is what
@@ -411,20 +498,25 @@ final class E2EManager {
         }
 
         // PHASE 1: issue the new key. Persist BEFORE upload — a crash between the two must
-        // not lose the private half of a key the server may already be handing out.
+        // not lose the private half of a key the server may already be handing out. The
+        // fresh public half is parked as pending-upload in the same breath, so a failed
+        // upload retries IT rather than rotating again (block above).
         let bundle = id.rotateFallbackKey()
         guard let fresh = bundle.fallbackKey else { return }
+        kc.set(fresh, fallbackPendingUploadName)
         do {
             try persist(id)
             try await uploadPrekeys(deviceId: devId, keys: [], fallbackKey: fresh)
+            kc.set(fresh, fallbackPublishedName)
+            kc.delete(fallbackPendingUploadName)
             kc.set(String(now), fallbackRotatedAtName)
             // The key just replaced now owes a retirement one interval from now.
             kc.set("1", fallbackPrevPendingName)
             NSLog("[VOIID] fallback key: rotated")
         } catch {
-            // The private half is persisted and vodozemac still holds the old key, so the
-            // device stays reachable either way. Leave the stamp untouched so the next
-            // launch retries rather than treating a failed upload as a completed rotation.
+            // Private half persisted + pending marker set: the next due launch retries
+            // uploading `fresh` instead of rotating again. Leave the schedule stamp
+            // untouched so the retry happens on the rotation cadence, not never.
             NSLog("[VOIID] fallback key: rotation upload failed: \(error.localizedDescription)")
         }
     }

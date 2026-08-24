@@ -82,12 +82,26 @@ object OnboardingBrand {
     val row = Color(0xFF181818)
     /** Hairlines: white at low alpha, so they stay correct if the surfaces are re-tuned. */
     val hairline = Color.White.copy(alpha = 0.07f)
-    /** Electric Lime. */
-    val lime = Color(0xFFC6FF00)
-    /** The mark's lit top edge, and the pill's highlight. */
-    val limeBright = Color(0xFFE4FF6B)
+    // ── THE BRAND COLOUR, MIGRATED FROM ELECTRIC LIME ───────────────────────────────
+    // These were #C6FF00 / #E4FF6B / #B4EC00. They are Peacock teal now, matching
+    // VoiidPalette and iOS's OnboardingBrandChrome, which uses VoiidColor.accent for the
+    // mark, its glow and the reassurance glyphs.
+    //
+    // The NAMES are kept (`lime`, `limeBright`, `limeDeep`) rather than renamed to `accent`:
+    // 25 call sites across four onboarding screens read them, and a rename is a mechanical
+    // diff that would bury the one change that actually matters — the hex. Read them as
+    // "the brand colour, its highlight, and its deep stop".
+    //
+    // The GROUND stays near-black in both themes. That is not an oversight: onboarding is a
+    // designed dark surface on both platforms (iOS pins the same #0B0B0B), and the glow and
+    // horizon are light bleeding onto near-black, which has no meaning on a white ground.
+
+    /** The brand colour — Peacock teal. */
+    val lime = Color(0xFF13828C)
+    /** The mark's lit top edge, and the pill's highlight. Lifted, so it reads against black. */
+    val limeBright = Color(0xFF68B8BD)
     /** The pill's lower stop. */
-    val limeDeep = Color(0xFFB4EC00)
+    val limeDeep = Color(0xFF0E6E77)
 }
 
 /**

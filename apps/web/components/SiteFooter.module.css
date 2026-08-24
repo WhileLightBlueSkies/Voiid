@@ -1,5 +1,6 @@
 .footer {
-  border-block-start: 1px solid var(--color-divider);
+  /* No top hairline: the footer's own tint is what separates it from the page,
+   * and a rule on top of a tint change is one edge too many. */
   background: var(--color-surface-2);
   padding-block: var(--space-2xl) var(--space-lg);
   padding-inline: var(--container-pad);

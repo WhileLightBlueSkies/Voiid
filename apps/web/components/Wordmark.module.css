@@ -1,41 +1,63 @@
+/* =============================================================================
+ * The "voiid" wordmark. Ported 1:1 from BrandWordmark.swift — the two had
+ * drifted, and the iOS one is the source of truth. Every number below is the
+ * Swift value expressed in `em`, so it holds at any size the way the Swift one
+ * holds at any point size.
+ * ========================================================================== */
+
 .mark {
   display: inline-flex;
   align-items: baseline;
-  color: var(--color-primary);
-  font-weight: var(--weight-black);
-  letter-spacing: -0.045em;
+  /* WHITE / ink letters, NOT the lime primary.
+   *
+   * The wordmark is white letters with two LIME TITTLES — the dots are the only
+   * accent, and that contrast IS the mark. Setting the whole word lime (which is
+   * what --color-primary resolves to on the dark ground) throws it away and the
+   * dots stop reading as dots. Same call BrandWordmark's lockup makes. */
+  color: var(--color-text);
+  /* Rounded face, matching `.system(design: .rounded)`. */
+  font-family: var(--font-sans);
+  /* BOLD, not black: .bold is 700. The 800 here was heavier than the app. */
+  font-weight: var(--weight-bold);
+  /* `.tracking(-size * 0.02)` — was -0.045em, more than twice too tight. */
+  letter-spacing: -0.02em;
   line-height: 1;
   user-select: none;
 }
 
-.muted { color: var(--color-text); }
-
+/* Optical centring, not geometric. `V` is a diagonal that leaves open space at
+ * its lower-left while `d` ends in a hard vertical stem, so the visual mass sits
+ * right of the box's midpoint even when the box is perfectly centred. Corrected
+ * by eye, exactly as `.offset(x: -size * 0.022)` does. */
 .glyphs {
   display: inline-flex;
   align-items: baseline;
+  transform: translateX(-0.022em);
 }
 
-/* Dotless ı, with the dot supplied as a drawn element so it can be styled. */
+.muted { color: var(--color-text); }
+
+/* Dotless ı, with the tittle supplied as a drawn element so it can take the
+ * accent colour — you cannot recolour part of a glyph. */
 .stem {
   position: relative;
   display: inline-block;
 }
 
-.dotFilled,
-.dotHollow {
+.dot {
   position: absolute;
-  inset-block-start: -0.30em;
+  /* Measured from the stem's TOP edge and pushed DOWN, mirroring
+   * `.overlay(alignment: .top)` with `.offset(y: dotRise)`. The old -0.30em
+   * measured from the box top and pushed UP, which floated the dots clear of
+   * the letters instead of sitting them just above the stems. */
+  inset-block-start: 0.10em;
   inset-inline-start: 50%;
   transform: translateX(-50%);
-  width: 0.2em;
-  height: 0.2em;
+  /* `dotSize = size * 0.165`, tuned against the rounded face's own tittle so the
+   * drawn dots read as belonging to the letters. Was 0.2em — bullet-sized. */
+  width: 0.165em;
+  height: 0.165em;
   border-radius: 50%;
-}
-
-.dotFilled { background: currentColor; }
-
-/* The hollow one is the key: same footprint, no fill. */
-.dotHollow {
-  border: 0.055em solid currentColor;
-  background: transparent;
+  /* The dots are ALWAYS the accent — that IS the wordmark. */
+  background: var(--color-accent, var(--color-primary));
 }

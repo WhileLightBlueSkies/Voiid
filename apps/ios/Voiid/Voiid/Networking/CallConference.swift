@@ -561,11 +561,17 @@ final class CallConferenceService: ObservableObject {
     /// transition, one place that rewrites the relay grant.
     func declineInvite() async {
         guard let id = callId else { return }
-        if let inviter = inviterUserId, !inviter.isEmpty {
+        await declineInvite(callId: id, inviterUserId: inviterUserId)
+    }
+
+    /// Explicit-target variant for paths that hold the invite identity themselves
+    /// (the call-waiting decline: the waiting entry is not engine state).
+    func declineInvite(callId id: String, inviterUserId inviter: String?) async {
+        if let inviter, !inviter.isEmpty {
             WebSocketClient.shared.sendCallInviteDecline(toUserId: inviter, callId: id)
         }
         await postLeave(callId: id)
-        resetLocalState()
+        if callId == id { resetLocalState() }
     }
 
     // MARK: - Leaving
@@ -582,6 +588,18 @@ final class CallConferenceService: ObservableObject {
             CallService.shared.finishMigration(callId: id, notifyPeer: true)
         }
         resetLocalState()
+    }
+
+    /// The GROUP call surface ended (GroupCallService.leave) while this engine held an
+    /// ad-hoc conference. Close the books here AND retire the CallService leg the call
+    /// grew out of — otherwise `active` stayed set forever and blocked every later call.
+    func noteGroupLeaveIfAdhoc() async {
+        guard let id = callId,
+              phase == .conference || phase == .escalating else { return }
+        stopRosterPolling()
+        await postLeave(callId: id)
+        resetLocalState()
+        CallService.shared.retireConferenceLeg(callId: id)
     }
 
     /// `POST /calls/:id/leave` — idempotent by contract, so a teardown retry is always safe

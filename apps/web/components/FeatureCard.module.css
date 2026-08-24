@@ -5,21 +5,27 @@
   gap: var(--space-xs);
   padding: var(--space-md);
   padding-block-start: calc(var(--space-md) + 4px);
-  border-radius: var(--radius-xl);
+  border-radius: var(--radius-2xl);
   background: var(--color-surface);
-  /* In dark, the hairline is what separates a card from the ground — shadow barely
-   * registers on #0D0B14. In light, the shadow does the work and the line recedes. */
-  border: 1px solid var(--color-divider);
+  /* On the light ground the shadow does the lifting and the hairline only defines
+   * the edge, so the border stays faint. A card that is BOTH strongly bordered and
+   * strongly shadowed reads as a boxed-in widget rather than a surface. */
+  border: 1px solid var(--color-border);
   box-shadow: var(--shadow-card);
   overflow: hidden;
   transition:
     border-color var(--dur-base) var(--ease-out),
-    transform var(--dur-base) var(--ease-out),
+    transform var(--dur-base) var(--ease-spring),
     box-shadow var(--dur-base) var(--ease-out);
 }
 
 @media (min-width: 640px) {
-  .card { padding: var(--space-lg); padding-block-start: calc(var(--space-lg) + 4px); }
+  /* Cards get real padding at width. Cramped padding is the fastest way to make
+   * an otherwise good layout look cheap. */
+  .card {
+    padding: var(--space-lg);
+    padding-block-start: calc(var(--space-lg) + 4px);
+  }
 }
 
 /* The hue rail across the top: the only place a card states its domain in colour. */
@@ -48,10 +54,11 @@
   justify-content: center;
   width: 44px;
   height: 44px;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   color: var(--hue);
   background: var(--hue-wash);
   margin-block-end: var(--space-3xs);
+  transition: transform var(--dur-base) var(--ease-spring);
 }
 
 .title {
@@ -73,10 +80,16 @@
   z-index: 1;
 }
 
-.linked:hover {
-  transform: translateY(-2px);
-  border-color: color-mix(in srgb, var(--hue) 45%, var(--color-divider));
-  box-shadow: var(--shadow-lift);
+/* Hover motion only where a real pointer can hover — touch fires false hovers
+ * on tap, and a lift-on-tap reads as lag. */
+@media (hover: hover) and (pointer: fine) {
+  .linked:hover {
+    transform: translateY(-3px);
+    border-color: color-mix(in srgb, var(--hue) 45%, var(--color-divider));
+    box-shadow: var(--shadow-lift);
+  }
+  .linked:hover .glyph { transform: scale(1.06); }
+  .linked:hover .ctaArrow { transform: translateX(3px); }
 }
 
 /* The focus ring belongs to the card, not to the invisible stretched span. */
@@ -108,7 +121,6 @@
 }
 
 .ctaArrow { transition: transform var(--dur-fast) var(--ease-out); }
-.linked:hover .ctaArrow { transform: translateX(3px); }
 
 /* ---- StatLine ------------------------------------------------------------ */
 

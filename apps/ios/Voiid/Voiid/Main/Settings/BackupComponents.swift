@@ -12,10 +12,49 @@ import SwiftUI
 // MARK: - PIN rules
 
 enum PinRules {
+    /// ENTRY floor. Deliberately stays at 4 so a backup wrapped under the old policy
+    /// can still be unwrapped — this predicate guards UNLOCKING, and tightening it
+    /// would brick existing restores.
     static let minLen = 4
+    /// CHOICE floor. The wrap is only as strong as the PIN is unguessable offline
+    /// (Argon2id m=19MiB/t=2/p=1 ≈ 300ms/guess/core), and a 4-digit keyspace falls in
+    /// minutes once `recovery_keys.wrapped_key` is in hand (audit finding M9). Six
+    /// digits moves mass cracking from trivial to expensive; the common-PIN blocklist
+    /// below removes the rest of the top of the distribution.
+    static let newMinLen = 6
     static let maxLen = 8
+
+    /// The most-chosen short PINs. Not secrecy — a public denylist of the first keys
+    /// any attacker tries, so they cost a real Argon2 evaluation like everything else.
+    private static let commonPINs: Set<String> = [
+        "000000", "111111", "121212", "123123", "123321", "123456", "112233",
+        "654321", "666666", "696969", "777777", "888888", "999999", "101010",
+        "0000000", "1234567", "1111111", "7777777", "12345678", "87654321",
+        "11111111", "12121212",
+        // Top repeated-digit / pattern 4-digit PINs padded variants are covered by
+        // length; these are the famous 6s.
+        "159753", "112358", "147258", "159357",
+    ]
+
+    /// Entry/unlock: digits within the legacy length bounds. Never tightened.
     static func valid(_ pin: String) -> Bool {
         pin.count >= minLen && pin.count <= maxLen && pin.allSatisfy(\.isNumber)
+    }
+
+    /// Choosing a NEW PIN: the stricter policy. Existing wraps keep unlocking via
+    /// `valid`; the next PIN change migrates the wrap up to this standard.
+    static func validNew(_ pin: String) -> Bool {
+        valid(pin) && pin.count >= newMinLen && !commonPINs.contains(pin)
+    }
+
+    /// Human-readable reason a NEW PIN was refused, for inline field errors.
+    static func rejectionReason(_ pin: String) -> String? {
+        guard pin.count >= minLen && pin.count <= maxLen && pin.allSatisfy(\.isNumber) else {
+            return "Use \(minLen)–\(maxLen) digits."
+        }
+        if pin.count < newMinLen { return "Choose at least \(newMinLen) digits." }
+        if commonPINs.contains(pin) { return "That PIN is too easy to guess." }
+        return nil
     }
 }
 
@@ -61,17 +100,18 @@ struct PinChooseView: View {
     @State private var confirm = ""
     @State private var mismatch = false
 
-    private var canSubmit: Bool { PinRules.valid(pin) && pin == confirm }
+    private var canSubmit: Bool { PinRules.validNew(pin) && pin == confirm }
 
     var body: some View {
         VStack(alignment: .leading, spacing: VoiidSpacing.md) {
             Text(title).font(VoiidFont.title).foregroundColor(VoiidColor.textPrimary)
             Text(subtitle).font(VoiidFont.subhead).foregroundColor(VoiidColor.textSecondary)
 
-            PinField(placeholder: "PIN (\(PinRules.minLen)–\(PinRules.maxLen) digits)", text: $pin)
+            PinField(placeholder: "PIN (\(PinRules.newMinLen)–\(PinRules.maxLen) digits)", text: $pin)
             PinField(placeholder: "Confirm PIN", text: $confirm)
 
             if mismatch { fieldError("PINs don’t match.") }
+            if !pin.isEmpty, let reason = PinRules.rejectionReason(pin) { fieldError(reason) }
             if let errorText { fieldError(errorText) }
 
             Spacer()

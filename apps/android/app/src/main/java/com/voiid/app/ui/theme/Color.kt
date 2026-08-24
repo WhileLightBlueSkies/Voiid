@@ -111,7 +111,7 @@ object VoiidColor {
 
     // ---- Domain hues (section identity only — never bubbles or body text) ---------------
 
-    val domainChat: Color @Composable @ReadOnlyComposable get() = pick(VoiidPalette.PrimaryLight, VoiidPalette.PrimaryDark)
+    val domainChat: Color @Composable @ReadOnlyComposable get() = pick(VoiidPalette.AccentInkLight, VoiidPalette.AccentInkDark)
     val domainStories: Color @Composable @ReadOnlyComposable get() = pick(VoiidPalette.StoriesLight, VoiidPalette.StoriesDark)
     val domainMap: Color @Composable @ReadOnlyComposable get() = pick(VoiidPalette.MapLight, VoiidPalette.MapDark)
     val domainCalls: Color @Composable @ReadOnlyComposable get() = pick(VoiidPalette.CallsLight, VoiidPalette.CallsDark)
@@ -144,70 +144,83 @@ object VoiidColor {
  * Prefer [VoiidColor] anywhere you are inside a composable.
  */
 object VoiidPalette {
-    // Spine — ELECTRIC LIME on Voiid Black. Dark-first: light is the variant.
+    // Spine — PEACOCK TEAL. Mirrors iOS Theme.swift, which is the reference when the two
+    // disagree.
     //
-    // THE ONE RULE: the lime is a FILL colour, not a text colour. #C6FF00 measures 16.59:1 on
-    // the near-black ground and 1.19:1 on white — not weak, invisible. So dark mode uses it
-    // freely (text, icons, lines) while LIGHT resolves the spine to near-black ink and keeps
-    // the lime only for filled elements with dark labels on them. Mirrors iOS Theme.swift,
-    // which is the reference when the two disagree.
-    val PrimaryLight = Color(0xFF0B0B0B)     // ink — NOT lime; see the rule above
-    val PrimaryDark = Color(0xFFC6FF00)      // Electric Lime
-    val BackgroundLight = Color(0xFFFFFFFF)
-    val BackgroundDark = Color(0xFF0B0B0B)   // Voiid Black — the DESIGNED state
+    // ── MIGRATED FROM ELECTRIC LIME ─────────────────────────────────────────────────
+    // This palette was #C6FF00 on #0B0B0B, and it carried a rule that no longer applies: the
+    // lime was a FILL colour and never a text colour, because it measured 1.19:1 on white —
+    // invisible — so light mode had to resolve the spine to near-black ink instead.
+    //
+    // Teal has no such split. #13828C is 4.87:1 on the light ground and its dark lift
+    // (#68B8BD) is 8.9:1 on the dark ground, so the SAME hue is legible as text in both
+    // themes. That is why PrimaryLight below is the brand colour rather than ink, which is
+    // the single biggest behavioural difference from the lime palette: code that assumed
+    // "primary is ink in light mode" is now wrong.
+    val PrimaryLight = Color(0xFF13828C)     // Peacock teal — legible as text on light
+    val PrimaryDark = Color(0xFF68B8BD)      // lifted, so it holds up on the dark ground
+    val BackgroundLight = Color(0xFFF6F8F8)
+    val BackgroundDark = Color(0xFF080C0E)
     val SurfaceLight = Color(0xFFFFFFFF)
-    val SurfaceDark = Color(0xFF1A1A1A)      // Surface — a step ABOVE the ground
+    val SurfaceDark = Color(0xFF111719)      // Surface — a step ABOVE the ground
 
-    // Bubbles. Lime in BOTH themes: a filled element is exactly where the lime works, and it
-    // is what makes your own thread trackable down the screen.
-    val BubbleSentLight = Color(0xFFC6FF00)
-    val BubbleSentDark = Color(0xFFC6FF00)
-    // Fixed in both themes: the fill is lime in both, and a light fill needs dark text.
-    // 16.59:1.
-    val TextOnBubble = Color(0xFF0B0B0B)
+    // Bubbles. Teal in BOTH themes: a filled element is where the brand colour belongs, and
+    // it is what makes your own thread trackable down the screen.
+    val BubbleSentLight = Color(0xFF13828C)
+    val BubbleSentDark = Color(0xFF13828C)
+    // Fixed in both themes. WHITE now, not near-black: the fill is a mid-dark teal, so its
+    // label must be light. This inverted when the palette left lime — a #0B0B0B label on
+    // #13828C measures 2.9:1 and fails.
+    val TextOnBubble = Color(0xFFFFFFFF)
 
-    /** Label on the lime accent. Fixed in both themes — see [VoiidColor.textOnAccent]. */
-    val TextOnAccent = Color(0xFF0B0B0B)
+    /** Label on the teal accent. Fixed in both themes — see [VoiidColor.textOnAccent]. */
+    val TextOnAccent = Color(0xFFFFFFFF)
     // Surface-light in dark so THEIR bubble separates from both the ground and the card.
-    val BubbleRecvLight = Color(0xFFF7F7F7)
-    val BubbleRecvDark = Color(0xFF2A2A2A)
+    val BubbleRecvLight = Color(0xFFEDF1F1)
+    val BubbleRecvDark = Color(0xFF182124)
 
     // Text
-    val TextPrimaryLight = Color(0xFF0B0B0B)
-    val TextPrimaryDark = Color(0xFFF5F5F5)
-    // Light is darker than the palette's #A3A3A3, which measured 2.32:1 on white —
-    // unreadable as secondary text. 5.33:1 / 7.80:1.
-    val TextSecondaryLight = Color(0xFF6B6B6B)
-    val TextSecondaryDark = Color(0xFFA3A3A3)
-    // On a filled primary surface. Dark primary is lime so its label is near-black; light
-    // primary is ink so its label is near-white. Both directions correct.
-    val TextOnPrimaryLight = Color(0xFFF5F5F5)
-    val TextOnPrimaryDark = Color(0xFF0B0B0B)
-    val PlaceholderLight = Color(0xFF8A8A8A)
-    val PlaceholderDark = Color(0xFF6B6B6B)
+    val TextPrimaryLight = Color(0xFF101617)
+    val TextPrimaryDark = Color(0xFFF6F8F8)
+    val TextSecondaryLight = Color(0xFF5D696C)
+    val TextSecondaryDark = Color(0xFFA6B0B2)
+    // On a filled primary surface. Both themes fill with a mid-dark teal, so both labels are
+    // white — unlike the lime palette, where the two directions differed.
+    val TextOnPrimaryLight = Color(0xFFFFFFFF)
+    val TextOnPrimaryDark = Color(0xFFFFFFFF)
+    val PlaceholderLight = Color(0xFF899396)
+    val PlaceholderDark = Color(0xFF6D787B)
 
     // Lines
-    val DividerLight = Color(0xFFE8E8E8)
-    val DividerDark = Color(0xFF2A2A2A)
-    val FieldBorderLight = Color(0xFFD4D4D4)
-    val FieldBorderDark = Color(0xFF3A3A3A)
-    val FieldFillLight = Color(0xFFF7F7F7)
-    val FieldFillDark = Color(0xFF121212)
+    val DividerLight = Color(0xFFD7DEDF)
+    val DividerDark = Color(0xFF263236)
+    val FieldBorderLight = Color(0xFFD7DEDF)
+    val FieldBorderDark = Color(0xFF263236)
+    val FieldFillLight = Color(0xFFEDF1F1)
+    val FieldFillDark = Color(0xFF111719)
 
-    // Accent — the lime as a FILL. NOT theme-split, unlike the old amber: a filled lime chip
-    // works on both grounds because what matters is its LABEL's contrast against the fill
-    // (16.59:1), not the fill against the ground.
+    // Accent — the teal as a FILL. Not theme-split: what matters is its LABEL's contrast
+    // against the fill (white on #13828C, 4.87:1), not the fill against the ground.
     //
-    // CAVEAT on light: lime vs white is 1.19:1, so a lime fill has no visible edge on white.
-    // Anything relying on its boundary needs FieldBorder or an ink outline.
-    val SparkLight = Color(0xFFC6FF00)
-    val SparkDark = Color(0xFFC6FF00)
+    // The lime palette carried a caveat here — lime vs white is 1.19:1, so a lime fill had no
+    // visible edge on white and anything relying on its boundary needed an outline. Teal does
+    // not have that problem: #13828C against #F6F8F8 is a clear edge on its own.
+    val SparkLight = Color(0xFF13828C)
+    val SparkDark = Color(0xFF13828C)
 
-    // Lime at reading weight, for the rare case where the brand must be TEXT on a LIGHT
-    // ground. The same hue pushed to 4.62:1 on white — olive rather than electric, which is
-    // the honest cost. Prefer a filled accent chip.
-    val AccentInkLight = Color(0xFF5A7A00)
-    val AccentInkDark = Color(0xFFC6FF00)
+    // The brand as TEXT. Light uses the brand colour directly (4.87:1 on the light ground);
+    // dark lifts it (#68B8BD) because #13828C on #080C0E is too dark to read.
+    //
+    // The lime palette had to go olive (#5A7A00) here to reach 4.62:1, losing the hue in the
+    // process. Teal keeps its identity in both themes, which is much of why the spine moved.
+    val AccentInkLight = Color(0xFF13828C)
+    val AccentInkDark = Color(0xFF68B8BD)
+
+    /** Pressed state for a filled accent. iOS: VoiidColor.accentPressed. */
+    val AccentPressed = Color(0xFF0E6E77)
+    /** A wash of the accent, for tinted chips and callout grounds. */
+    val AccentTintLight = Color(0xFFD9EFF0)
+    val AccentTintDark = Color(0xFF123538)
 
     // Domain hues — the palette's feedback colours, theme-split. The brights measured
     // 1.5-4.0:1 on white (Warning worst at 1.53:1), so light takes darkened variants of the

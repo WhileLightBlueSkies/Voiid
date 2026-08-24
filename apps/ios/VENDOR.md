@@ -7,7 +7,41 @@ these dependencies is a deliberate, recorded bump of this file.
 
 ---
 
-## WebRTC.xcframework
+## WebRTC — REMOVED as a vendored dependency (2026-08)
+
+The vendored `stasel/WebRTC` M150 build was removed and the call stack now
+compiles against **LiveKit's WebRTC fork**, delivered by the existing
+`client-sdk-swift` SPM dependency as its `LiveKitWebRTC` product.
+
+### Why
+
+1. **True E2EE for 1:1 calls.** The frame-level encryption API
+   (`RTCFrameCryptor` / `RTCFrameCryptorKeyProvider`, AES-GCM over every RTP
+   payload) exists only in LiveKit's fork. Plain Google/stasel builds do not
+   expose it, which is why 1:1 calls were DTLS-SRTP-only (audit finding B1/M5).
+2. **One WebRTC per process.** The app already loaded LiveKit's fork through
+   SPM alongside the vendored one; two libwebrtc runtimes in one process is a
+   class-collision hazard we no longer carry.
+
+### Consequences
+
+- Every call-stack file imports `LiveKitWebRTC` instead of `WebRTC`.
+- LiveKit's fork prefixes its Objective-C classes `LKRTC…` (e.g.
+  `LKRTCPeerConnection`), so call-stack type names gained the prefix.
+- Media stays P2P: direct device-to-device where ICE allows, TURN relay only
+  as a fallback pipe. Frame encryption rides ON TOP of DTLS-SRTP with keys that
+  never touch any server.
+- Upgrades now follow `client-sdk-swift` releases
+  (<https://github.com/livekit/client-sdk-swift/releases>), which bump the
+  pinned `webrtc-xcframework` checksum in their own Package.swift.
+- `apps/ios/vendor/WebRTC.xcframework` can be deleted from disk; nothing
+  references it any more (`Voiid.xcodeproj` has no remaining entry).
+
+---
+
+<!-- The stasel/WebRTC section below is retained for history only. -->
+
+## WebRTC.xcframework (REMOVED)
 
 | | |
 |---|---|

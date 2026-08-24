@@ -9,6 +9,26 @@ import Redis from 'ioredis';
 const JWT_SECRET = process.env.JWT_SECRET ?? 'dev-only-change-me';
 const port = Number(process.env.WS_PORT) || 4001;
 
+// ── FAIL-CLOSED BOOT GUARD ────────────────────────────────────────────────────
+// Mirrors the guard in backend/api/src/index.ts: a forged JWT accepted HERE is
+// as good as one accepted by the API — this service trusts tokens, stamps sender
+// identities from them and relays envelopes on their say-so. Production must not
+// come up with the dev fallback secret or the auth bypass enabled.
+(function assertProductionSafety() {
+  if (process.env.NODE_ENV !== 'production') return;
+  const fatal: string[] = [];
+  if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'dev-only-change-me') {
+    fatal.push('JWT_SECRET is missing or set to the known dev default — anyone can connect as any user');
+  }
+  if (process.env.AUTH_DEV_BYPASS === '1') {
+    fatal.push('AUTH_DEV_BYPASS=1 is an API-side switch but must never be set in a production env');
+  }
+  if (fatal.length) {
+    console.error('[voiid:ws] REFUSING TO START in production:\n - ' + fatal.join('\n - '));
+    process.exit(1);
+  }
+})();
+
 // socket_map: user_id -> set of live sockets on THIS instance.
 const socketMap = new Map<string, Set<WebSocket>>();
 

@@ -51,15 +51,20 @@ struct StorageSettingsView: View {
     }
 
     var body: some View {
-        List {
-            onThisDevice
-            contents
-            caches
-            backupSection
+        ScrollView {
+            VStack(alignment: .leading, spacing: VoiidSpacing.md) {
+                VoiidSettingsHeader("Storage",
+                                    subtitle: "Every number here is measured on this device, "
+                                            + "never estimated.")
+
+                onThisDevice
+                contents
+                caches
+                backupSection
+            }
+            .padding(VoiidSpacing.md)
         }
-        .voiidSettingsList()
-        .background(VoiidColor.background.ignoresSafeArea())
-        .navigationTitle("Storage")
+        .voiidSettingsPage()
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 if isMeasuring && snapshot == nil {
@@ -82,7 +87,7 @@ struct StorageSettingsView: View {
     // MARK: - Section 1 — On this device
 
     private var onThisDevice: some View {
-        SettingsSection(
+        VoiidCardSection(
             "On this device",
             footer: """
                 Your messages are stored on this device so chats open instantly and work \
@@ -90,59 +95,67 @@ struct StorageSettingsView: View {
                 they're downloaded and decrypted only while you're looking at them.
                 """
         ) {
-            metric("Total", bytes(\.containerTotalBytes), emphasised: true)
-            metric("Database", bytes(\.databaseBytes))
-            metric("Message history", bytes(\.messageHistoryBytes))
-            metric("Other", bytes(\.otherBytes))
+            metric("Total", icon: "internaldrive", bytes(\.containerTotalBytes), emphasised: true)
+            VoiidRowDivider()
+            metric("Database", icon: "cylinder.split.1x2", bytes(\.databaseBytes))
+            VoiidRowDivider()
+            metric("Message history", icon: "bubble.left.and.bubble.right", bytes(\.messageHistoryBytes))
+            VoiidRowDivider()
+            metric("Other", icon: "folder", bytes(\.otherBytes))
         }
     }
 
     // MARK: - Section 2 — Contents
 
     private var contents: some View {
-        SettingsSection(
+        VoiidCardSection(
             "Contents",
             footer: "Counted from this device's database. These numbers stay on your phone and aren't reported anywhere."
         ) {
-            metric("Conversations", count(\.conversationCount))
-            metric("Messages", count(\.messageCount))
-            metric("Calls logged", count(\.callCount))
+            metric("Conversations", icon: "text.bubble", count(\.conversationCount))
+            VoiidRowDivider()
+            metric("Messages", icon: "envelope", count(\.messageCount))
+            VoiidRowDivider()
+            metric("Calls logged", icon: "phone", count(\.callCount))
         }
     }
 
     // MARK: - Section 3 — Caches
 
     private var caches: some View {
-        SettingsSection(
+        VoiidCardSection(
             "Caches",
             footer: "Clearing removes only files Voiid can create or download again. Your messages, media and backups aren't affected."
         ) {
-            metric("Web cache", bytes(\.webCacheBytes))
-            metric("Temporary files", bytes(\.temporaryFileBytes))
+            metric("Web cache", icon: "globe", bytes(\.webCacheBytes))
+            VoiidRowDivider()
+            metric("Temporary files", icon: "doc", bytes(\.temporaryFileBytes))
+            VoiidRowDivider()
             clearButton
         }
     }
 
     private var clearButton: some View {
-        Button {
-            Haptics.rigid()
-            Task {
-                isClearing = true
-                await StorageProbe.clearCaches()
-                await measure()
-                isClearing = false
-                Haptics.success()
-            }
-        } label: {
-            HStack {
-                Text("Clear Caches").font(.body)
-                if isClearing {
-                    Spacer()
-                    ProgressView().tint(VoiidColor.primary)
+        // Not `destructive: true`: nothing this removes is unrecoverable, so it stays on the
+        // accent rather than borrowing the red that means "this cannot be undone".
+        VoiidSettingsRow(
+            icon: "trash",
+            title: "Clear Caches",
+            action: {
+                Haptics.rigid()
+                Task {
+                    isClearing = true
+                    await StorageProbe.clearCaches()
+                    await measure()
+                    isClearing = false
+                    Haptics.success()
                 }
             }
+        ) {
+            if isClearing {
+                ProgressView().tint(VoiidColor.primary)
+            }
         }
-        .foregroundStyle(VoiidColor.primary)
         .disabled(isClearing || (snapshot?.clearableBytes ?? 0) == 0)
         .accessibilityLabel("Clear caches")
         .accessibilityHint("Removes the web cache and leftover temporary files")
@@ -151,23 +164,31 @@ struct StorageSettingsView: View {
     // MARK: - Section 4 — Backup
 
     private var backupSection: some View {
-        SettingsSection(
+        VoiidCardSection(
             "Backup",
             footer: "Backups are stored encrypted off this device, so they don't count towards the storage above."
         ) {
-            LabeledContent {
+            VoiidSettingsRow(icon: "icloud", title: "Cloud backup") {
                 backupValue
-            } label: {
-                Text("Cloud backup")
-                    .font(.body)
-                    .foregroundStyle(VoiidColor.textPrimary)
             }
 
+            VoiidRowDivider()
+
             NavigationLink(value: SettingsRoute.backup) {
-                Text("Backup & Recovery")
-                    .font(.body)
-                    .foregroundStyle(VoiidColor.textPrimary)
+                HStack(spacing: VoiidSpacing.md) {
+                    VoiidRowIcon(systemName: "arrow.clockwise.icloud")
+                    Text("Backup & Recovery")
+                        .font(.body)
+                        .foregroundStyle(VoiidColor.textPrimary)
+                        .multilineTextAlignment(.leading)
+                    Spacer(minLength: 0)
+                    VoiidChevron()
+                }
+                .padding(.horizontal, VoiidSpacing.md)
+                .padding(.vertical, 11)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(RowButtonStyle())
         }
     }
 
@@ -200,25 +221,24 @@ struct StorageSettingsView: View {
     // MARK: - Rows
     //
     // Not a styling vocabulary — no card, no divider, no colours this screen invents.
-    // It composes `LabeledContent` and does the two things every numeric row here needs
+    // It composes `VoiidSettingsRow` (it composed `LabeledContent` before the card rebuild;
+    // the shared row now supplies the leading icon and the trailing slot) and does the two
+    // things every numeric row here needs
     // identically: monospaced digits, so a refresh doesn't jitter the layout, and
     // placeholder redaction of the VALUE only, so section headers and footers stay
     // readable while the measurement is still running.
 
     @ViewBuilder
-    private func metric(_ title: String, _ value: String, emphasised: Bool = false) -> some View {
+    private func metric(_ title: String, icon: String, _ value: String,
+                        emphasised: Bool = false) -> some View {
         let measured = snapshot != nil
-        LabeledContent {
+        VoiidSettingsRow(icon: icon, title: title) {
             Text(value)
                 .font(emphasised ? .subheadline.weight(.semibold) : .subheadline)
                 .foregroundStyle(emphasised ? VoiidColor.textPrimary : VoiidColor.textSecondary)
                 .monospacedDigit()
                 .redacted(reason: measured ? [] : .placeholder)
                 .accessibilityLabel(measured ? value : "Measuring")
-        } label: {
-            Text(title)
-                .font(emphasised ? .body.weight(.semibold) : .body)
-                .foregroundStyle(VoiidColor.textPrimary)
         }
     }
 

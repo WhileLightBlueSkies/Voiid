@@ -358,6 +358,13 @@ fileprivate let UNIFFI_HANDLEMAP_INITIAL: UInt64 = 1
 fileprivate let UNIFFI_HANDLEMAP_DELTA: UInt64 = 2
 
 fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
+    // EXPLICIT deinit, added to generated code. swift-frontend 6.3.3 segfaults running
+    // EarlyPerfInliner on the SYNTHESISED deinit of this class at -O, failing every Release
+    // build of both the app and the NSE. Declaring one stops the compiler synthesising the
+    // function it crashes on, and costs nothing: the members it releases are released either
+    // way. Re-apply if the bindings are regenerated, or drop it once the toolchain is fixed.
+    deinit { map.removeAll() }
+
     // All mutation happens with this lock held, which is why we implement @unchecked Sendable.
     private let lock = NSLock()
     private var map: [UInt64: T] = [:]

@@ -13,6 +13,25 @@
 	     camera is presented — not a permission denial, a crash. -->
 	<key>NSCameraUsageDescription</key>
 	<string>Take a photo for your Voiid profile.</string>
+	<!-- Voice notes, and the audio half of a call. Same rule as the camera above: WITHOUT
+	     THIS KEY iOS TERMINATES THE APP the instant the microphone is requested. The
+	     onboarding permissions screen asks for this in sequence, so a missing key does not
+	     fail one row — it kills the app partway through the run. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Record voice notes and talk on Voiid calls. Audio is end-to-end encrypted — Voiid's servers never hear it.</string>
+	<!-- Contact discovery. Same termination rule.
+	     The string says what actually happens, because it is the most sensitive of the six:
+	     matching is done against HASHES and the address book is never uploaded. -->
+	<key>NSContactsUsageDescription</key>
+	<string>Find friends already on Voiid. Your contacts are matched privately on your device and are never uploaded.</string>
+	<!-- Reading from the library, to attach a photo or video to a chat. Same termination rule. -->
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Choose photos and videos to send on Voiid. Everything you send is end-to-end encrypted.</string>
+	<!-- Writing BACK to the library — saving a received photo, or a clip you recorded.
+	     A separate key from the one above: iOS treats read and add as different grants, and
+	     the add-only prompt is what appears when the app saves rather than picks. -->
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Save photos and videos from Voiid to your library.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Voiid uses your location only when you choose to share it in a chat or on the Map. Your location is end-to-end encrypted — Voiid's servers never see it.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
@@ -47,6 +66,16 @@
 		<string>remote-notification</string>
 		<string>location</string>
 	</array>
+	<!-- Firebase Phone Auth's reCAPTCHA fallback returns through this custom URL scheme.
+	     It is GOOGLE_APP_ID from GoogleService-Info.plist with ':' replaced by '-'.
+	
+	     IT MUST MATCH THE PLIST, and FirebaseAuth does not degrade gracefully when it does not:
+	     PhoneAuthProvider.swift:112 calls fatalError, so tapping Continue killed the app outright
+	     whenever silent APNs verification was unavailable and it fell back to reCAPTCHA.
+	
+	     The app briefly shipped GoogleService-Info.plist for the `voiid-prod` project while this
+	     scheme named `voiid-native`. The APNs key is registered against voiid-native, so that is
+	     the project the app uses and both values now name it. -->
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

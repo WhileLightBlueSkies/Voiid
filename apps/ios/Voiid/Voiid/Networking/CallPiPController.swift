@@ -4,12 +4,12 @@
 //
 //  Picture-in-Picture for 1:1 video calls.
 //
-//  WHY THIS EXISTS: `RTCMTLVideoView` (the Metal renderer used everywhere else)
+//  WHY THIS EXISTS: `LKRTCMTLVideoView` (the Metal renderer used everywhere else)
 //  cannot be picture-in-picture'd. iOS only knows how to PiP an
 //  `AVSampleBufferDisplayLayer` driven through
 //  `AVPictureInPictureController.ContentSource(sampleBufferDisplayLayer:playbackDelegate:)`.
-//  So we implement our own `RTCVideoRenderer` that takes the REMOTE track's
-//  `RTCVideoFrame`s, turns each into a `CMSampleBuffer`, and enqueues it into a
+//  So we implement our own `LKRTCVideoRenderer` that takes the REMOTE track's
+//  `LKRTCVideoFrame`s, turns each into a `CMSampleBuffer`, and enqueues it into a
 //  sample-buffer layer. That one layer both fills the in-app call screen and
 //  backs the system PiP window, so backgrounding the app hands the *same*
 //  pixel stream to the PiP window with no re-plumbing.
@@ -28,10 +28,10 @@ import CoreMedia
 import CoreVideo
 import Combine
 import UIKit
-// @preconcurrency: WebRTC's ObjC types (RTCVideoFrame, RTCVideoTrack) predate
+// @preconcurrency: WebRTC's ObjC types (LKRTCVideoFrame, LKRTCVideoTrack) predate
 // Swift concurrency and aren't Sendable-annotated. Frame handoff to the render
 // queue is safe — each frame is owned solely by the queue once handed over.
-@preconcurrency import WebRTC
+@preconcurrency import LiveKitWebRTC
 
 extension Notification.Name {
     /// Posted when the user taps the PiP window to come back to the call.
@@ -62,11 +62,11 @@ final class SampleBufferVideoHostView: UIView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 }
 
-// MARK: - RTCVideoFrame -> CVPixelBuffer
+// MARK: - LKRTCVideoFrame -> CVPixelBuffer
 
 /// Converts WebRTC frames into `CVPixelBuffer`s suitable for an
 /// `AVSampleBufferDisplayLayer`, handling both hardware-decoded
-/// (`RTCCVPixelBuffer`, already NV12) and software/I420 frames, plus rotation.
+/// (`LKRTCCVPixelBuffer`, already NV12) and software/I420 frames, plus rotation.
 ///
 /// Not thread safe on its own — `SampleBufferVideoRenderer` confines it to a
 /// single serial queue.
@@ -84,25 +84,25 @@ private final class PixelBufferConverter {
     private lazy var ciContext = CIContext(options: [.useSoftwareRenderer: false])
 
     /// Returns a displayable pixel buffer with the frame's rotation baked in.
-    func pixelBuffer(from frame: RTCVideoFrame) -> CVPixelBuffer? {
+    func pixelBuffer(from frame: LKRTCVideoFrame) -> CVPixelBuffer? {
         guard let upright = basePixelBuffer(from: frame) else { return nil }
         return applyRotation(frame.rotation, to: upright)
     }
 
     // MARK: base buffer
 
-    private func basePixelBuffer(from frame: RTCVideoFrame) -> CVPixelBuffer? {
+    private func basePixelBuffer(from frame: LKRTCVideoFrame) -> CVPixelBuffer? {
         // Hardware-decoded path: the frame already carries a CVPixelBuffer. Use it
         // as-is unless it needs cropping, in which case fall through to the I420
         // path (which resolves the crop for us) rather than reimplementing it.
-        if let cv = frame.buffer as? RTCCVPixelBuffer, !cv.requiresCropping() {
+        if let cv = frame.buffer as? LKRTCCVPixelBuffer, !cv.requiresCropping() {
             return cv.pixelBuffer
         }
         return nv12Buffer(from: frame.buffer.toI420())
     }
 
     /// I420 (3 planar) -> NV12 (biplanar), the format the display layer likes.
-    private func nv12Buffer(from i420: RTCI420BufferProtocol) -> CVPixelBuffer? {
+    private func nv12Buffer(from i420: LKRTCYUVPlanarBuffer) -> CVPixelBuffer? {
         let width = Int(i420.width)
         let height = Int(i420.height)
         guard width > 0, height > 0 else { return nil }
@@ -163,7 +163,7 @@ private final class PixelBufferConverter {
     /// PiP renders straight from the enqueued sample buffers, so a CALayer
     /// transform would NOT rotate the PiP window — the rotation has to be baked
     /// into the pixels.
-    private func applyRotation(_ rotation: RTCVideoRotation, to source: CVPixelBuffer) -> CVPixelBuffer? {
+    private func applyRotation(_ rotation: LKRTCVideoRotation, to source: CVPixelBuffer) -> CVPixelBuffer? {
         let orientation: CGImagePropertyOrientation
         switch rotation {
         case ._0:   return source
@@ -223,11 +223,11 @@ private final class PixelBufferConverter {
     }
 }
 
-// MARK: - RTCVideoRenderer -> AVSampleBufferDisplayLayer
+// MARK: - LKRTCVideoRenderer -> AVSampleBufferDisplayLayer
 
 /// Receives remote video frames (on WebRTC's decoder thread) and enqueues them
 /// into the sample-buffer layer that powers both the in-app view and PiP.
-final class SampleBufferVideoRenderer: NSObject, RTCVideoRenderer, @unchecked Sendable {
+final class SampleBufferVideoRenderer: NSObject, LKRTCVideoRenderer, @unchecked Sendable {
     /// All conversion + enqueueing is confined to this one serial queue.
     private let queue = DispatchQueue(label: "com.voiid.call.pip.render", qos: .userInteractive)
     private let converter = PixelBufferConverter()
@@ -248,18 +248,18 @@ final class SampleBufferVideoRenderer: NSObject, RTCVideoRenderer, @unchecked Se
         lock.unlock()
     }
 
-    // MARK: RTCVideoRenderer
+    // MARK: LKRTCVideoRenderer
 
     nonisolated func setSize(_ size: CGSize) { /* the layer sizes itself from the buffers */ }
 
-    nonisolated func renderFrame(_ frame: RTCVideoFrame?) {
+    nonisolated func renderFrame(_ frame: LKRTCVideoFrame?) {
         guard let frame else { return }
         queue.async { [weak self] in self?.enqueue(frame) }
     }
 
     // MARK: rendering
 
-    private func enqueue(_ frame: RTCVideoFrame) {
+    private func enqueue(_ frame: LKRTCVideoFrame) {
         guard let renderer else { return }
         guard let pixelBuffer = converter.pixelBuffer(from: frame) else { return }
         guard let sample = Self.makeSampleBuffer(pixelBuffer, timeStampNs: frame.timeStampNs) else { return }
@@ -323,7 +323,7 @@ final class CallPiPController: NSObject, ObservableObject {
 
     private let renderer = SampleBufferVideoRenderer()
     private var pipController: AVPictureInPictureController?
-    private weak var attachedTrack: RTCVideoTrack?
+    private weak var attachedTrack: LKRTCVideoTrack?
     private var cancellables = Set<AnyCancellable>()
 
     private override init() { super.init() }
@@ -350,7 +350,7 @@ final class CallPiPController: NSObject, ObservableObject {
 
     // MARK: attach / detach
 
-    private func attach(track: RTCVideoTrack?) {
+    private func attach(track: LKRTCVideoTrack?) {
         guard track !== attachedTrack else { return }
         detachTrack()
         guard let track else { return }

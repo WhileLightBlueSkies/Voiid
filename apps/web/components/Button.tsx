@@ -43,7 +43,10 @@ export function Button({
   className,
 }: ButtonProps) {
   const showArrow = arrow ?? variant === 'ghost';
-  const cls = [styles.btn, styles[variant], styles[size], className]
+  // A stable, unhashed class travels alongside the module class so a surrounding
+  // component can restyle buttons on a non-standard ground (see CTA's filled
+  // block) without matching against hashed build output.
+  const cls = [styles.btn, styles[variant], styles[size], `btn-${variant}`, className]
     .filter(Boolean)
     .join(' ');
 

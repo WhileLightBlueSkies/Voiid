@@ -29,14 +29,11 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
-  // Both themes are designed; tell the browser so form controls and scrollbars follow.
-  // These two are the ONLY raw hexes outside globals.css that a page may contain: a
-  // <meta name="theme-color"> is read by the browser chrome before any stylesheet is
-  // parsed, so var() is not available. They must stay equal to --color-background.
-  themeColor: [
-    { media: '(prefers-color-scheme: light)', color: '#f1eef5' },
-    { media: '(prefers-color-scheme: dark)', color: '#0d0b14' },
-  ],
+  // The site is LIGHT ONLY (see globals.css). One theme-color, and it must stay
+  // equal to --color-background: <meta name="theme-color"> is read by the browser
+  // chrome before any stylesheet parses, so var() is not available here. This is
+  // the only raw hex permitted outside globals.css.
+  themeColor: '#fbfcfc',
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

@@ -1,0 +1,114 @@
+/* ---- shared cell (Reveal fills the grid row) ------------------------------ */
+
+.cell,
+.cell > * {
+  height: 100%;
+}
+
+/* ---- vetted primitives ----------------------------------------------------- */
+
+.primitive {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  height: 100%;
+  padding: var(--space-md);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+  box-shadow: var(--shadow-card);
+}
+
+.pill {
+  align-self: flex-start;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--hue) 12%, transparent);
+  color: var(--hue);
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+}
+
+.role {
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+}
+
+.body {
+  font-size: var(--text-small);
+  line-height: var(--leading-body);
+  color: var(--color-text-dim);
+}
+
+/* ---- custom-built ----------------------------------------------------------- */
+
+.built {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  height: 100%;
+  padding: var(--space-md);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-2);
+  border: 1px solid color-mix(in srgb, var(--hue) 24%, transparent);
+}
+
+.builtGlyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  margin-block-end: var(--space-3xs);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--hue);
+  border: 1px solid var(--color-divider);
+}
+
+/* ---- the honest column ------------------------------------------------------- */
+
+.honestList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  list-style: none;
+  counter-reset: honest;
+}
+
+.honestList li {
+  position: relative;
+  counter-increment: honest;
+  padding-inline-start: calc(var(--space-xl) + 8px);
+  min-height: 40px;
+  color: var(--color-text-dim);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+}
+
+.honestList li::before {
+  content: counter(honest);
+  position: absolute;
+  inset-inline-start: 0;
+  inset-block-start: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-divider);
+  color: var(--hue);
+  font-size: var(--text-small);
+  font-weight: var(--weight-bold);
+}
+
+.honestList strong { color: var(--color-text); }
+
+.honestList a {
+  color: var(--color-primary);
+  font-weight: var(--weight-medium);
+}

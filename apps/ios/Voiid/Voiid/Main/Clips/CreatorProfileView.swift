@@ -119,43 +119,179 @@ struct CreatorProfileView: View {
     }
 
     // MARK: - Header
+    //
+    // ── THE REFERENCE'S LAYOUT, THIS APP'S DATA ─────────────────────────────────────
+    // Cover band, avatar pulled up onto it, name and bio stacked full-width, counts inline as
+    // a sentence, then the action row. That is the reference's SocialProfileScreen, rebuilt
+    // against CreatorService.Profile rather than its sample struct.
+    //
+    // Two things the reference draws that this screen does NOT, and why:
+    //
+    //   Message button .. ABSENT. A follow is not a messaging right — 020_reachability.sql
+    //                     defines the only three ways to open a conversation and none of them
+    //                     is "followed them". The reference's Message button would promise
+    //                     reachability the server refuses.
+    //   Tagged tab ...... ABSENT. Nothing in this app tags a person in a clip, so the tab
+    //                     would be permanently empty with no path to filling it.
 
     private func header(_ p: CreatorService.Profile) -> some View {
-        VStack(spacing: VoiidSpacing.md) {
-            HStack(alignment: .center, spacing: VoiidSpacing.md) {
-                avatar(p)
-                // Counts sit beside the avatar rather than under the bio so the numbers stay
-                // above the fold on a small phone.
-                HStack(spacing: 0) {
-                    stat(ClipCount.compact(p.clip_count), "Clips")
-                    statDivider
-                    stat(ClipCount.compact(p.follower_count), "Followers")
-                    statDivider
-                    stat(ClipCount.compact(p.following_count), "Following")
-                }
-                .frame(maxWidth: .infinity)
+        VStack(spacing: 0) {
+            cover(p)
+            identity(p)
+            counts(p)
+            actionRow(p)
+                .padding(.horizontal, VoiidSpacing.md)
+                .padding(.top, VoiidSpacing.md)
+            highlights
+        }
+    }
+
+    /// The cover band. A BLURRED, DIMMED copy of the creator's own avatar rather than a stock
+    /// photo or a flat accent wash: it is the only image this screen is guaranteed to have,
+    /// it is unmistakably theirs, and blurred it reads as a colour field rather than as the
+    /// avatar shown twice. The gradient fades it into the page so the band does not end on a
+    /// hard line and read as a banner ad.
+    ///
+    /// A creator with no avatar gets the accent wash instead — see the else branch.
+    @ViewBuilder
+    private func cover(_ p: CreatorService.Profile) -> some View {
+        ZStack {
+            if let url = p.avatar_url {
+                ClipThumbnail(url: url)
+                    .frame(height: 148)
+                    .frame(maxWidth: .infinity)
+                    .clipped()
+                    .blur(radius: 14)
+                    .overlay(VoiidColor.background.opacity(0.35))
+            } else {
+                LinearGradient(
+                    colors: [VoiidColor.accent.opacity(0.22),
+                             VoiidColor.accent.opacity(0.05),
+                             VoiidColor.background],
+                    startPoint: .topTrailing, endPoint: .bottomLeading
+                )
             }
 
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
+            LinearGradient(colors: [.clear, VoiidColor.background.opacity(0.6),
+                                    VoiidColor.background],
+                           startPoint: .top, endPoint: .bottom)
+        }
+        .frame(height: 148)
+        .frame(maxWidth: .infinity)
+        .clipped()
+    }
+
+    /// Avatar, name and bio in ONE left-aligned column.
+    ///
+    /// The previous version put the avatar beside the counts, which left the name competing
+    /// with a 96pt circle and forced the bio into a narrow gutter. Stacking gives the bio the
+    /// full width and lets the name be the largest thing on the screen — which, on a profile,
+    /// it should be.
+    private func identity(_ p: CreatorService.Profile) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            avatar(p)
+                // Pulls the avatar up onto the cover, which is what ties the two into one
+                // header instead of two stacked bands.
+                .offset(y: -38)
+                .padding(.bottom, -38)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 5) {
                     Text(p.display_name ?? "@\(p.handle)")
-                        .font(VoiidFont.rounded(19, .semibold))
+                        .font(VoiidFont.rounded(21, .bold))
                         .foregroundColor(VoiidColor.textPrimary)
                     if p.is_verified { VerifiedSeal() }
                 }
+
                 if p.display_name != nil {
                     Text("@\(p.handle)")
-                        .font(VoiidFont.footnote)
+                        .font(VoiidFont.rounded(13.5))
                         .foregroundColor(VoiidColor.textSecondary)
                 }
-                if let bio = p.bio, !bio.isEmpty { bioBlock(bio) }
-                if let link = p.link_url, !link.isEmpty { linkRow(link) }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
 
-            actionRow(p)
+            if let bio = p.bio, !bio.isEmpty { bioBlock(bio) }
+            if let link = p.link_url, !link.isEmpty { linkRow(link) }
         }
-        .padding(VoiidSpacing.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, VoiidSpacing.md)
+    }
+
+    /// Inline and left-aligned, reading as a sentence: "128 Clips · 52.4K Followers".
+    ///
+    /// The previous version gave each count a full-width third with a stacked label and
+    /// hairline dividers, which made three numbers occupy as much vertical space as the bio.
+    /// Counts are reference data on a profile — worth showing, not worth a band of their own.
+    ///
+    /// STILL NOT BUTTONS. There is no followers list to open, and a control that presses but
+    /// goes nowhere is exactly the dead affordance this screen was fixed for.
+    private func counts(_ p: CreatorService.Profile) -> some View {
+        HStack(spacing: 18) {
+            countItem(ClipCount.compact(p.clip_count), "Clips")
+            countItem(ClipCount.compact(p.follower_count), "Followers")
+            countItem(ClipCount.compact(p.following_count), "Following")
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.top, VoiidSpacing.md)
+    }
+
+    private func countItem(_ value: String, _ label: String) -> some View {
+        HStack(spacing: 4) {
+            Text(value)
+                .font(VoiidFont.rounded(15, .bold))
+                .foregroundColor(VoiidColor.textPrimary)
+                .monospacedDigit()
+            Text(label)
+                .font(VoiidFont.rounded(13))
+                .foregroundColor(VoiidColor.textSecondary)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(value) \(label)")
+    }
+
+    /// The reference's highlights rail.
+    ///
+    /// PREVIEW ONLY, and it says so: there is no highlights table, no endpoint and no way for
+    /// a creator to make one. The rail renders the intended shape with the notice above it
+    /// rather than pretending the circles are real. Migration 048 creates the table; when the
+    /// endpoint lands, the notice and `ProfileHighlight.samples` both go.
+    private var highlights: some View {
+        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+            UnwiredNotice("Highlights have no table or endpoint yet — migration 048 adds one. "
+                          + "These circles are placeholders.")
+                .padding(.horizontal, VoiidSpacing.md)
+
+            ScrollView(.horizontal) {
+                HStack(alignment: .top, spacing: 14) {
+                    ForEach(ProfileHighlight.samples) { highlight in
+                        VStack(spacing: 6) {
+                            Circle()
+                                .fill(VoiidColor.accentTint)
+                                .frame(width: 56, height: 56)
+                                .overlay {
+                                    Image(systemName: highlight.icon)
+                                        .font(.system(size: 20))
+                                        .foregroundColor(VoiidColor.accentInk)
+                                }
+                                .overlay(Circle().stroke(VoiidColor.divider, lineWidth: 1))
+
+                            Text(highlight.title)
+                                .font(VoiidFont.rounded(11.5))
+                                .foregroundColor(VoiidColor.textSecondary)
+                                .lineLimit(1)
+                        }
+                        .frame(width: 64)
+                    }
+                }
+                .padding(.horizontal, VoiidSpacing.md)
+            }
+            .scrollIndicators(.hidden)
+            // Inert, and said so to VoiceOver rather than only in colour.
+            .allowsHitTesting(false)
+            .opacity(0.55)
+        }
+        .padding(.top, VoiidSpacing.lg)
     }
 
     /// 96pt portrait inside a gradient ring, with a 3pt gap of background between the two so
@@ -174,6 +310,8 @@ struct CreatorProfileView: View {
                                    startPoint: .topLeading, endPoint: .bottomTrailing),
                     lineWidth: 2.5)
             )
+            // Separates the avatar from the cover it now overlaps.
+            .overlay(Circle().stroke(VoiidColor.background, lineWidth: 4).padding(-1))
     }
 
     @ViewBuilder
@@ -190,28 +328,6 @@ struct CreatorProfileView: View {
                     .foregroundColor(VoiidColor.textSecondary)
             }
         }
-    }
-
-    /// Hairlines between the counts. Without them three numbers in a row read as one
-    /// sentence; a full-height rule would draw more attention than the numbers do.
-    private var statDivider: some View {
-        Rectangle()
-            .fill(VoiidColor.divider)
-            .frame(width: 1, height: 24)
-    }
-
-    /// Deliberately NOT buttons. There is no followers list to open, and a control that
-    /// presses but goes nowhere is exactly the dead affordance this screen was fixed for.
-    private func stat(_ value: String, _ label: String) -> some View {
-        VStack(spacing: 2) {
-            Text(value)
-                .font(VoiidFont.rounded(20, .bold))
-                .foregroundColor(VoiidColor.textPrimary)
-            Text(label)
-                .font(VoiidFont.caption)
-                .foregroundColor(VoiidColor.textSecondary)
-        }
-        .frame(maxWidth: .infinity)
     }
 
     /// Three lines, then a "more" expander. A creator bio has no length limit worth
@@ -501,4 +617,30 @@ struct CreatorEditSheet: View {
             errorText = error.localizedDescription
         }
     }
+}
+
+// MARK: - Highlights
+
+/// One story highlight on a creator's profile.
+///
+/// ── PREVIEW ONLY ────────────────────────────────────────────────────────────────
+/// There is no `creator_highlights` table, no endpoint and no authoring flow. Migration 048
+/// creates the schema; until a route serves it, `samples` is what the rail renders and the
+/// `UnwiredNotice` above it says so on screen.
+///
+/// When the endpoint lands: add `Decodable`, delete `samples`, and delete the notice in
+/// `CreatorProfileView.highlights`. The view already reads the type rather than the samples.
+struct ProfileHighlight: Identifiable, Hashable {
+    let id: String
+    let title: String
+    /// An SF Symbol standing in for the highlight's cover image until covers exist.
+    let icon: String
+
+    static let samples: [ProfileHighlight] = [
+        .init(id: "travel", title: "Travel", icon: "airplane"),
+        .init(id: "mountains", title: "Mountains", icon: "mountain.2"),
+        .init(id: "photo", title: "Photography", icon: "camera"),
+        .init(id: "music", title: "Music", icon: "music.note"),
+        .init(id: "life", title: "Life", icon: "cup.and.saucer"),
+    ]
 }

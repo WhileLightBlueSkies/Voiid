@@ -26,10 +26,10 @@
 //  SESSION OWNERSHIP. WebRTC runs in manual-audio mode and normally receives an
 //  already-activated session from CallKit's `provider(_:didActivate:)`. But
 //  that only fires when the call CONNECTS, and ringback by definition plays
-//  before that. So we activate the shared RTCAudioSession ourselves if it isn't
+//  before that. So we activate the shared LKRTCAudioSession ourselves if it isn't
 //  live yet, remember that we were the one who did it, and stand down the
 //  moment WebRTC takes over (`noteWebRTCTookOverSession()` from the CallKit
-//  didActivate handler). Because we go through RTCAudioSession's own
+//  didActivate handler). Because we go through LKRTCAudioSession's own
 //  lock/configure API rather than AVAudioSession directly, there is never a
 //  moment where two owners are configuring the session behind each other's
 //  back. Activating the session does NOT start WebRTC's audio unit — that is
@@ -50,7 +50,7 @@
 
 import Foundation
 import AVFoundation
-import WebRTC
+import LiveKitWebRTC
 
 @MainActor
 final class CallToneService: NSObject {
@@ -156,7 +156,7 @@ final class CallToneService: NSObject {
     /// audible; we just can't record — which doesn't matter yet at ringback time.
     @discardableResult
     private func activateCallSession() -> Bool {
-        let rtc = RTCAudioSession.sharedInstance()
+        let rtc = LKRTCAudioSession.sharedInstance()
         rtc.lockForConfiguration()
         defer { rtc.unlockForConfiguration() }
 
@@ -194,7 +194,7 @@ final class CallToneService: NSObject {
     private func releaseSessionIfOwnedAndIdle() {
         guard ownsSessionActivation else { return }
         guard ringbackPlayer == nil, oneShotPlayer == nil else { return }
-        let rtc = RTCAudioSession.sharedInstance()
+        let rtc = LKRTCAudioSession.sharedInstance()
         guard !rtc.isAudioEnabled else {
             // WebRTC is running on this session now — hand it over, don't kill it.
             ownsSessionActivation = false

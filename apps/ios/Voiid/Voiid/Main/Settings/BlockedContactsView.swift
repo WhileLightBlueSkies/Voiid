@@ -29,39 +29,48 @@ struct BlockedContactsView: View {
     @State private var failureMessage: String?
 
     var body: some View {
-        List {
-            SettingsSection(
-                service.blocked.isEmpty ? nil : "Blocked",
-                footer: "Blocked people can't message or call you — and you can't message or "
-                    + "call them. They're never told. Your past messages and any groups you "
-                    + "share stay where they are."
-            ) {
-                if !service.didLoad {
-                    // Distinct from the empty state on purpose: "you have blocked nobody" is a
-                    // claim, and making it before the list has loaded is making it up.
-                    HStack(spacing: 12) {
-                        ProgressView().tint(VoiidColor.textSecondary)
-                        Text("Loading…")
-                            .font(VoiidFont.rounded(15, .regular))
+        ScrollView {
+            VStack(alignment: .leading, spacing: VoiidSpacing.md) {
+                VoiidSettingsHeader("Blocked contacts",
+                                    subtitle: "Everyone you've blocked, and the only place to "
+                                            + "unblock them.")
+
+                VoiidCardSection(
+                    service.blocked.isEmpty ? nil : "Blocked",
+                    footer: "Blocked people can't message or call you — and you can't message or "
+                        + "call them. They're never told. Your past messages and any groups you "
+                        + "share stay where they are."
+                ) {
+                    if !service.didLoad {
+                        // Distinct from the empty state on purpose: "you have blocked nobody" is a
+                        // claim, and making it before the list has loaded is making it up.
+                        HStack(spacing: 12) {
+                            ProgressView().tint(VoiidColor.textSecondary)
+                            Text("Loading…")
+                                .font(.body)
+                                .foregroundColor(VoiidColor.textSecondary)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, VoiidSpacing.md)
+                        .padding(.vertical, 14)
+                    } else if service.blocked.isEmpty {
+                        Text("You haven't blocked anyone.")
+                            .font(.body)
                             .foregroundColor(VoiidColor.textSecondary)
-                    }
-                    .padding(.vertical, 6)
-                } else if service.blocked.isEmpty {
-                    Text("You haven't blocked anyone.")
-                        .font(VoiidFont.rounded(15, .regular))
-                        .foregroundColor(VoiidColor.textSecondary)
-                        .padding(.vertical, 6)
-                } else {
-                    ForEach(service.blocked) { user in
-                        row(for: user)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, VoiidSpacing.md)
+                            .padding(.vertical, 14)
+                    } else {
+                        ForEach(Array(service.blocked.enumerated()), id: \.element.id) { index, user in
+                            row(for: user)
+                            if index < service.blocked.count - 1 { VoiidRowDivider() }
+                        }
                     }
                 }
             }
+            .padding(VoiidSpacing.md)
         }
-        .scrollContentBackground(.hidden)
-        .background(VoiidColor.background.ignoresSafeArea())
-        .navigationTitle("Blocked contacts")
-        .navigationBarTitleDisplayMode(.inline)
+        .voiidSettingsPage()
         .task { await service.loadIfNeeded() }
         .refreshable { await service.refresh() }
         .confirmationDialog(
@@ -93,14 +102,14 @@ struct BlockedContactsView: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(user.displayName)
-                    .font(VoiidFont.rounded(16, .medium))
+                    .font(.body)
                     .foregroundColor(VoiidColor.textPrimary)
                 // Only when it adds something — repeating the display name as "@name"
                 // underneath itself is noise.
                 if let username = user.username, !username.isEmpty,
                    user.displayName != "@\(username)" {
                     Text("@\(username)")
-                        .font(VoiidFont.rounded(13, .regular))
+                        .font(.footnote)
                         .foregroundColor(VoiidColor.textSecondary)
                 }
             }
@@ -115,14 +124,15 @@ struct BlockedContactsView: View {
                     ProgressView().tint(VoiidColor.textSecondary)
                 } else {
                     Text("Unblock")
-                        .font(VoiidFont.rounded(15, .medium))
+                        .font(.subheadline.weight(.medium))
                         .foregroundColor(VoiidColor.primary)
                 }
             }
             .buttonStyle(.plain)
             .disabled(service.pending.contains(user.id))
         }
-        .padding(.vertical, 4)
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.vertical, 11)
     }
 
     /// Remote photo with an initials fallback.
@@ -151,7 +161,7 @@ struct BlockedContactsView: View {
 
     private func initials(for user: BlockedUser) -> some View {
         Text(String(user.displayName.trimmingCharacters(in: .punctuationCharacters).prefix(1)).uppercased())
-            .font(VoiidFont.rounded(16, .semibold))
+            .font(.body.weight(.semibold))
             .foregroundColor(VoiidColor.textSecondary)
     }
 

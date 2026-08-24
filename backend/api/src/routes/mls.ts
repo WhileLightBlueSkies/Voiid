@@ -19,9 +19,45 @@ import { Router } from 'express';
 import { query } from '../db';
 import { publisher } from '../redis';
 import { requireAuth } from '../auth';
+import { guardKeyMaterialFetch } from '../security';
 import { b64, asyncHandler } from '../util';
 
 const router = Router();
+
+/**
+ * A device is only ever writable by the account that owns it.
+ *
+ * POST /keypackages took `device_id` straight from the request BODY and never read the
+ * authenticated caller, so any signed-in user could publish KeyPackages against ANY
+ * device id — and device ids are not secret (GET /devices/:user_id returns them to any
+ * authenticated caller). Because the add-to-group path seals a group's Welcome to
+ * whichever unconsumed KeyPackage it is handed for the target device, planted packages
+ * let an attacker receive the WELCOME — group keys plus ratchet tree — for a victim's
+ * own device id: full read/write membership in every group the victim is next added to,
+ * under the victim's displayed identity.
+ *
+ * This is the same flaw class fixed in routes/prekeys.ts (ownsDevice there); this file
+ * simply never got that fix. Kept as a local helper to match the codebase convention of
+ * single-file route helpers (cf. blockGuardForSend in messages.ts).
+ */
+async function ownsDevice(deviceId: string, userId: string): Promise<boolean> {
+  // NOT filtered on `revoked_at is null`, deliberately — ownership does not change when
+  // a sibling device registration supersedes this one (see the long comment in prekeys.ts).
+  const rows = await query<{ one: number }>(
+    `select 1 as one from devices
+      where id = $1 and user_id = $2
+      limit 1`,
+    [deviceId, userId]
+  );
+  return rows.length > 0;
+}
+
+/**
+ * Fetch-side guard for GET /mls/keypackages/:user_id lives in security.ts
+ * (guardKeyMaterialFetch) — shared verbatim with routes/prekeys.ts, because the
+ * drain threat and the right response to it are identical for both one-time-
+ * material endpoints. This file keeps only what MLS-specific: ownsDevice above.
+ */
 
 // Bounds on a single request, so one client cannot hand us an unbounded parameter list.
 // Postgres accepts at most 65535 bind parameters per statement; both ceilings sit far below
@@ -38,6 +74,13 @@ router.post('/keypackages', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   if (!device_id || !Array.isArray(key_packages) || key_packages.length === 0) {
     return res.status(400).json({ error: 'device_id and key_packages[] required' });
+  }
+  // OWNERSHIP. Without this, any signed-in user can publish attacker-generated
+  // KeyPackages against someone else's device id; the next add-to-group seals its
+  // Welcome to whichever package it is handed, handing the group keys to the
+  // attacker under the victim's identity. See ownsDevice above for why 404.
+  if (!(await ownsDevice(device_id, user_id))) {
+    return res.status(404).json({ error: 'device not found' });
   }
   if (key_packages.length > MAX_KEY_PACKAGES_PER_REQUEST) {
     return res.status(400).json({ error: `at most ${MAX_KEY_PACKAGES_PER_REQUEST} key packages per request` });
@@ -71,6 +114,19 @@ router.post('/keypackages', requireAuth, asyncHandler(async (req, res) => {
 // get DIFFERENT packages instead of blocking on each other or — worse — both consuming the
 // same one. That property is the whole reason this is not a plain UPDATE ... WHERE IN.
 router.get('/keypackages/:user_id', requireAuth, asyncHandler(async (req, res) => {
+  // Fetch guard (see security.ts): blocked callers see the empty shape, everyone
+  // else is pair-throttled so one account cannot drain another's supply.
+  const callerId: string = (req as any).auth.user_id;
+  const verdict = await guardKeyMaterialFetch(callerId, req.params.user_id);
+  if (verdict === 'empty') {
+    // Same shape as "no packages", same 409 the drained case returns: a blocked
+    // caller must not be able to distinguish block from exhaustion.
+    return res.status(409).json({ error: 'no key packages available for user' });
+  }
+  if (verdict === 'limited') {
+    return res.status(429).json({ error: 'rate limit exceeded' });
+  }
+
   const rows = await query<{ device_id: string; key_package: Buffer }>(
     `with picked as (
        select p.id
@@ -78,18 +134,24 @@ router.get('/keypackages/:user_id', requireAuth, asyncHandler(async (req, res) =
          cross join lateral (
            select kp.id
              from mls_key_packages kp
+             -- OWNERSHIP BINDING. The publish route now checks ownsDevice, but rows
+             -- written before that fix (or by any future regression) must never be
+             -- served: this join is what makes a package published by user X against
+             -- device D unservable unless X still owns D. Defence in depth — the
+             -- consumption side does not trust the write side.
             where kp.device_id = d.id and kp.consumed_at is null
-            order by kp.created_at
-            limit 1
-            for update skip locked
-         ) p
-        where d.user_id = $1 and d.revoked_at is null
-     )
-     update mls_key_packages k
-        set consumed_at = now()
-       from picked
-      where k.id = picked.id
-     returning k.device_id, k.key_package`,
+              and kp.user_id = d.user_id
+             order by kp.created_at
+             limit 1
+             for update skip locked
+          ) p
+         where d.user_id = $1 and d.revoked_at is null
+      )
+      update mls_key_packages k
+         set consumed_at = now()
+        from picked
+       where k.id = picked.id
+      returning k.device_id, k.key_package`,
     [req.params.user_id]
   );
   // base64 in JS, not Postgres' encode(): encode(...,'base64') wraps at 76 columns, and a

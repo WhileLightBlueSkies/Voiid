@@ -8,9 +8,9 @@
 //  THREE DECISIONS WORTH READING BEFORE EDITING THIS FILE
 //  -----------------------------------------------------
 //  1. The current device is unrevocable *structurally*, not conditionally. It lives in
-//     its own section, built by its own row, with no `.swipeActions` modifier anywhere in
-//     its ancestry. There is no `if device.isCurrent { }` guarding a shared row builder,
-//     because that guard is one careless refactor away from letting a user sign their own
+//     its own hand-built card, with no removal affordance anywhere in its ancestry — the
+//     card is deliberately NOT a shared row type that could grow one. There is no
+//     `if device.isCurrent { }` guarding a shared row builder, because that guard is one careless refactor away from letting a user sign their own
 //     handset out of an account they are actively using.
 //
 //  2. No device id ever reaches the screen. `DELETE /v1/devices/:device_id` is not
@@ -70,46 +70,31 @@ struct LinkedDevicesView: View {
 
     // MARK: Body
 
-    /// Stated on the screen that lists WHERE the account is reachable.
-    ///
-    /// Above the phase switch rather than inside it, so it holds while the list is still
-    /// loading or has failed — those are exactly the moments a user wonders what is happening
-    /// to their account, and the answer does not depend on the request succeeding.
-    private var encryptedPill: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "lock.fill")
-                .font(.system(size: 11))
-            Text("End-to-end encrypted")
-                .font(VoiidFont.rounded(13, .medium))
-        }
-        .foregroundColor(VoiidColor.accentInk)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(Capsule().fill(VoiidColor.accent.opacity(0.10)))
-        .overlay(Capsule().stroke(VoiidColor.accent.opacity(0.4), lineWidth: 1))
-        .frame(maxWidth: .infinity)
-        .listRowBackground(Color.clear)
-        .listRowSeparator(.hidden)
-        .listRowInsets(EdgeInsets(top: VoiidSpacing.sm, leading: 0, bottom: 0, trailing: 0))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Your devices are end-to-end encrypted")
-    }
-
     var body: some View {
-        List {
-            encryptedPill
-            switch phase {
-            case .loading:
-                loadingSection
-            case .failed(let message):
-                failureSection(message)
-            case .loaded:
-                loadedSections
+        ScrollView {
+            VStack(alignment: .leading, spacing: VoiidSpacing.md) {
+                // The badge states the guarantee above the phase switch rather than inside it,
+                // so it holds while the list is still loading or has failed — those are exactly
+                // the moments a user wonders what is happening to their account, and the answer
+                // does not depend on the request succeeding.
+                VoiidSettingsHeader(
+                    "Linked Devices",
+                    subtitle: "Manage devices connected to your Voiid account.",
+                    badge: (icon: "lock.fill", text: "End-to-end encrypted")
+                )
+
+                switch phase {
+                case .loading:
+                    loadingSection
+                case .failed(let message):
+                    failureSection(message)
+                case .loaded:
+                    loadedSections
+                }
             }
+            .padding(VoiidSpacing.md)
         }
-        .voiidSettingsList()
-        .background(VoiidColor.background.ignoresSafeArea())
-        .navigationTitle("Linked Devices")
+        .voiidSettingsPage()
         .task { await load(showingSpinner: true) }
         .refreshable { await load(showingSpinner: false) }
         .confirmationDialog(
@@ -130,21 +115,21 @@ struct LinkedDevicesView: View {
     // MARK: - Sections
 
     private var loadingSection: some View {
-        SettingsSection {
+        VoiidCardSection {
             HStack {
                 Spacer()
                 ProgressView()
                     .tint(VoiidColor.primary)
                 Spacer()
             }
-            .padding(.vertical, VoiidSpacing.sm)
+            .padding(.vertical, VoiidSpacing.md)
             .accessibilityElement()
             .accessibilityLabel("Loading devices")
         }
     }
 
     private func failureSection(_ message: String) -> some View {
-        SettingsSection {
+        VoiidCardSection {
             VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
                 Text(message)
                     .font(.body)
@@ -156,11 +141,12 @@ struct LinkedDevicesView: View {
                 }
                 .font(.body.weight(.semibold))
                 .foregroundStyle(VoiidColor.primary)
-                // Keeps the tap target on the button rather than letting the List
-                // promote the whole row to one control.
+                // Keeps the tap target on the button rather than letting the row
+                // promote the whole block to one control.
                 .buttonStyle(.borderless)
             }
-            .padding(.vertical, VoiidSpacing.xs)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(VoiidSpacing.md)
         }
     }
 
@@ -171,67 +157,146 @@ struct LinkedDevicesView: View {
         // this device has been revoked server-side; drawing "This device — Signed in"
         // anyway would assert something the server just denied.
         if let thisDevice {
-            SettingsSection(
-                "This device",
-                footer: "Signing in to Voiid on another iPhone signs this one out — Voiid keeps one iPhone per account."
-            ) {
-                DeviceRow(
-                    symbol: "iphone",
-                    name: thisDevice.name,
-                    detail: "Signed in",
-                    label: "\(thisDevice.name), this device, signed in"
-                )
+            VStack(alignment: .leading, spacing: 6) {
+                Text("This device")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(VoiidColor.textSecondary)
+                    .padding(.leading, 4)
+
+                currentCard(thisDevice)
+
+                Text("Signing in to Voiid on another iPhone signs this one out — Voiid keeps one iPhone per account.")
+                    .font(.footnote)
+                    .foregroundStyle(VoiidColor.textSecondary)
+                    .padding(.horizontal, 4)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
 
         if currentDeviceID == nil {
             // We cannot tell which row is the phone in the user's hand, so nothing is
             // removable: a wrong guess here signs the user out of their own account.
-            SettingsSection(
+            VoiidCardSection(
                 "Devices",
                 footer: "Voiid can't tell which of these is the iPhone you're using right now, so devices can't be removed here — removing the wrong one would sign you out. Pull down to refresh."
             ) {
                 if devices.isEmpty {
                     emptyRow("No devices are signed in.")
                 } else {
-                    ForEach(devices) { device in
+                    ForEach(Array(devices.enumerated()), id: \.element.id) { index, device in
                         DeviceRow(
                             symbol: device.symbol,
                             name: device.name,
                             detail: lastActive(device),
                             label: label(for: device)
                         )
+                        if index < devices.count - 1 { VoiidRowDivider() }
                     }
                 }
                 inlineError
             }
         } else {
-            SettingsSection(
+            VoiidCardSection(
                 "Other devices",
                 footer: "Removing a device stops it receiving new messages straight away. Anything already downloaded to that device stays on it. Devices are added when you sign in to Voiid on a new device."
             ) {
                 if otherDevices.isEmpty {
                     emptyRow("No other devices are signed in.")
                 } else {
-                    ForEach(otherDevices) { device in
+                    ForEach(Array(otherDevices.enumerated()), id: \.element.id) { index, device in
                         DeviceRow(
                             symbol: device.symbol,
                             name: device.name,
                             detail: lastActive(device),
                             label: label(for: device)
-                        )
-                        .swipeActions(edge: .trailing) {
-                            Button("Remove", role: .destructive) {
-                                Haptics.rigid()
-                                removalError = nil
-                                deviceToRemove = device
+                        ) {
+                            // The remove affordance is attached by the CALLER, never built into
+                            // DeviceRow — which is what keeps "this device" unrevocable by
+                            // construction rather than by condition. The card design has no
+                            // swipe gesture, so the same intent is expressed as a menu.
+                            Menu {
+                                Button(role: .destructive) {
+                                    Haptics.rigid()
+                                    removalError = nil
+                                    deviceToRemove = device
+                                } label: {
+                                    Label("Remove", systemImage: "trash")
+                                }
+                            } label: {
+                                Image(systemName: "ellipsis")
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .foregroundStyle(VoiidColor.textSecondary)
+                                    .frame(width: 30, height: 40)
+                                    .contentShape(Rectangle())
                             }
+                            .accessibilityLabel("Options for \(device.name)")
                         }
+                        if index < otherDevices.count - 1 { VoiidRowDivider() }
                     }
                 }
                 inlineError
             }
         }
+    }
+
+    /// The device you are holding. Accent-bordered and labelled, because the one mistake this
+    /// screen must prevent is someone signing themselves out. Hand-built rather than a
+    /// `VoiidCardSection` precisely so no removal affordance can ever be attached to it.
+    private func currentCard(_ device: LinkedDevice) -> some View {
+        HStack(spacing: VoiidSpacing.md) {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(VoiidColor.accent.opacity(0.12))
+                .frame(width: 52, height: 52)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(VoiidColor.accent.opacity(0.4), lineWidth: 1)
+                )
+                .overlay {
+                    Image(systemName: device.symbol)
+                        .font(.system(size: 22, weight: .regular))
+                        .foregroundStyle(VoiidColor.accentInk)
+                }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(device.name)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(VoiidColor.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(VoiidColor.accent)
+                        .frame(width: 6, height: 6)
+                    Text("Signed in")
+                        .font(.footnote)
+                        .foregroundStyle(VoiidColor.accentInk)
+                }
+                .padding(.top, 1)
+            }
+
+            Spacer(minLength: VoiidSpacing.sm)
+
+            HStack(spacing: 4) {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 11, weight: .bold))
+                Text("Current device")
+                    .font(.caption.weight(.semibold))
+            }
+            .foregroundStyle(VoiidColor.textOnAccent)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(Capsule().fill(VoiidColor.accent))
+            .fixedSize()
+        }
+        .padding(VoiidSpacing.md)
+        .background(VoiidColor.accent.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(VoiidColor.accent, lineWidth: 1.5)
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(device.name), this device, signed in")
     }
 
     @ViewBuilder
@@ -241,6 +306,9 @@ struct LinkedDevicesView: View {
                 .font(.footnote)
                 .foregroundStyle(VoiidColor.error)
                 .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, VoiidSpacing.md)
+                .padding(.vertical, 11)
         }
     }
 
@@ -251,7 +319,11 @@ struct LinkedDevicesView: View {
             .font(.body)
             .foregroundStyle(VoiidColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, VoiidSpacing.md)
+            .padding(.vertical, 11)
     }
+
 
     // MARK: - Copy helpers
 
@@ -314,33 +386,47 @@ struct LinkedDevicesView: View {
 // MARK: - Row
 
 /// One device. Used by both sections; the *remove* affordance is never part of it —
-/// callers that permit removal attach `.swipeActions` themselves, which is what keeps
+/// callers that permit removal attach their own trailing affordance, which is what keeps
 /// "this device" unrevocable by construction rather than by condition.
-private struct DeviceRow: View {
+private struct DeviceRow<Trailing: View>: View {
     let symbol: String
     let name: String
     let detail: String?
     let label: String
+    /// Whatever the caller puts on the trailing edge — a removal menu, or nothing at all.
+    @ViewBuilder var trailing: Trailing
 
     var body: some View {
-        Label {
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: VoiidSpacing.md) {
+            VoiidRowIcon(systemName: symbol)
+
+            VStack(alignment: .leading, spacing: 1) {
                 Text(name)
                     .font(.body)
                     .foregroundStyle(VoiidColor.textPrimary)
+                    .multilineTextAlignment(.leading)
                 if let detail {
                     Text(detail)
-                        .font(.subheadline)
+                        .font(.footnote)
                         .foregroundStyle(VoiidColor.textSecondary)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .fixedSize(horizontal: false, vertical: true)
-        } icon: {
-            Image(systemName: symbol)
-                .foregroundStyle(VoiidColor.primary)
+
+            Spacer(minLength: VoiidSpacing.sm)
+
+            trailing
         }
-        .padding(.vertical, 2)
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.vertical, 11)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(label)
+    }
+}
+
+extension DeviceRow where Trailing == EmptyView {
+    init(symbol: String, name: String, detail: String?, label: String) {
+        self.init(symbol: symbol, name: name, detail: detail, label: label) { EmptyView() }
     }
 }

@@ -385,6 +385,17 @@ function callerDeviceId(req: any): string | null {
 
 // GET /messages/conversation/:id?before=&limit=&device_id= — paginated history (ciphertext; client decrypts)
 router.get('/conversation/:id', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id } = (req as any).auth;
+  // MEMBERSHIP, before anything else reads a row. This endpoint used to filter only
+  // on conversation_id, so ANY authenticated caller holding a conversation UUID —
+  // and ids travel: they appear in group rosters and shared links — could read the
+  // whole timeline: senders, timestamps, content types, media references, receipt
+  // aggregates, and legacy-path ciphertext. POST /send has required membership since
+  // it shipped (see isConversationMember above); the read path simply never got the
+  // same guard. 403 without saying whether the conversation exists, mirroring :187.
+  if (!(await isConversationMember(req.params.id, user_id))) {
+    return res.status(403).json({ error: 'not found' });
+  }
   const limit = Math.min(Number(req.query.limit) || 50, 100);
   const before = req.query.before as string | undefined;
   const deviceId = callerDeviceId(req);
@@ -455,7 +466,28 @@ router.get('/conversation/:id', requireAuth, asyncHandler(async (req, res) => {
 // Returns ONLY the caller device's ciphertext for fan-out messages, plus legacy pending
 // (single-ciphertext) rows for the user's conversations. Marks fan-out rows delivered.
 router.get('/pending/:user_id', requireAuth, asyncHandler(async (req, res) => {
+  // IDENTITY, before anything reads or mutates a row. The path parameter used to flow
+  // straight into both queries below with no comparison to the authenticated caller,
+  // so any signed-in user could harvest another user's undelivered queue — and the
+  // legacy branch marks nothing delivered, so the harvest was repeatable forever.
+  const callerId: string = (req as any).auth.user_id;
+  if (req.params.user_id !== callerId) {
+    return res.status(403).json({ error: 'forbidden' });
+  }
+  // If a device id arrives (header/normal auth path or query fallback), it must belong
+  // to the caller too — otherwise "scoped to a device that belongs to :user_id" was
+  // only as strong as whatever value the client typed into the query string.
   const deviceId = callerDeviceId(req);
+  const tokenDeviceId: string | null = (req as any).auth.device_id ?? null;
+  if (deviceId && deviceId !== tokenDeviceId) {
+    const owned = await query<{ one: number }>(
+      `select 1 as one from devices where id = $1 and user_id = $2 limit 1`,
+      [deviceId, callerId]
+    );
+    if (owned.length === 0) {
+      return res.status(403).json({ error: 'forbidden' });
+    }
+  }
 
   // Fan-out: the caller device's undelivered blobs. UPDATE…RETURNING both marks
   // delivered_at and returns exactly the rows that were still pending — atomic, no

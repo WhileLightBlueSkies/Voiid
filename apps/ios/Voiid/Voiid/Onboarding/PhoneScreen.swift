@@ -2,11 +2,39 @@
 //  PhoneScreen.swift
 //  Voiid
 //
-//  Onboarding — phone entry, built to the brand reference. Shares its chrome with
-//  WelcomeTermsScreen and PermissionsScreen via OnboardingBrandChrome.
+//  Enter your phone number — the onboarding step after Permissions.
 //
-//  The Firebase send is unchanged from the previous version of this screen: only the
-//  presentation is new.
+//  Built to the design source (`Voiid Ui/Screens/PhoneNumberScreen.swift`) through
+//  `OnboardingKit`, so the sizes, paddings and weights are the reference's own numbers. The
+//  header is the WORDMARK at 34pt, matching Terms and Permissions.
+//
+//  ── THIS SCREEN DOES SEND ───────────────────────────────────────────────────────
+//  The design source sends nothing — its `onContinue` just hands the number up. The real
+//  Firebase send lives here and is UNCHANGED by the restyle: `FirebasePhoneAuth.sendCode`
+//  returns a verificationID which the OTP step needs.
+//
+//  ── THE VALIDATION IS DELIBERATELY SHALLOW ──────────────────────────────────────
+//  Continue enables on a plausible LENGTH for the chosen country, and nothing more. It does not
+//  claim the number exists or that the user owns it — only the SMS can establish that, so
+//  pretending otherwise here would be a lie the next screen has to walk back.
+//
+//  What it DOES prevent is the obvious dead end: tapping Continue on an empty or half-typed
+//  field, waiting for an SMS, and getting nothing.
+//
+//  ── AUTOFILL HANDS BACK A FULL INTERNATIONAL NUMBER ─────────────────────────────
+//  iOS autofill and Contacts supply "+91 98765 43210", not "9876543210". Keeping only the digits
+//  leaves the dial code attached, which overflows the field and silently truncates the REAL
+//  number — a wrong number that looks correctly entered, invisible until the SMS never arrives.
+//  `normalise` strips it, guarded by a length check so a national number beginning with the same
+//  digits survives.
+//
+//  ── THE KEYBOARD GETS OUT OF THE WAY ────────────────────────────────────────────
+//  A number pad has no Return key, so it never dismisses itself — and it covers Continue. The
+//  field drops focus the moment the number reaches its country's maximum length, which is the
+//  one point where there is provably nothing left to type. Variable-length countries never trip
+//  that, so there is also a keyboard-toolbar Done.
+//
+//  Committed to dark, like the rest of onboarding.
 //
 
 import SwiftUI
@@ -17,32 +45,58 @@ struct PhoneScreen: View {
     /// Back to the permissions step. Optional so the screen still works if it is ever the root.
     var onBack: (() -> Void)? = nil
 
-    @State private var phone = ""
     @State private var country = Country.default   // India default
-    @State private var showPicker = false
+    @State private var digits = ""
+    @State private var showingCountries = false
     @State private var sending = false
     @State private var errorText: String?
-    @State private var appeared = false
-    @State private var showHelp = false
-    @FocusState private var focused: Bool
 
-    /// Digits only, so formatting characters a keyboard might insert never reach the wire.
-    private var digits: String { phone.filter(\.isNumber) }
+    /// Drives the field's focused ring. The reference shows the field lit, which reads as "this
+    /// is where you are" — so the screen opens with it focused rather than waiting for a tap.
+    @FocusState private var fieldFocused: Bool
 
-    /// Enough digits to be worth sending. Deliberately loose: national number lengths vary from
-    /// 6 to 12, and a client that enforces a per-country length rejects legitimate numbers in
-    /// places nobody tested. Firebase is the real validator.
-    private var valid: Bool { digits.count >= 6 }
+    /// Digits only, with the country's own dial code stripped, capped at its maximum length.
+    ///
+    /// The guard is the LENGTH check: a bare national number that happens to start with the dial
+    /// digits (a Delhi landline starting "91…") is only stripped if what remains is still a
+    /// plausible length, so a legitimate number is never mangled.
+    private func normalise(_ raw: String) -> String {
+        var d = raw.filter(\.isNumber)
+
+        // The dial code without its "+", e.g. "91".
+        let code = country.dialCode.dropFirst()
+
+        if d.count > country.maxDigits, d.hasPrefix(code) {
+            let stripped = String(d.dropFirst(code.count))
+            if stripped.count >= country.minDigits { d = stripped }
+        }
+
+        // Some regions autofill a trunk "0" prefix ("098765..."). Same guard.
+        if d.count > country.maxDigits, d.hasPrefix("0") {
+            let stripped = String(d.dropFirst())
+            if stripped.count >= country.minDigits { d = stripped }
+        }
+
+        return String(d.prefix(country.maxDigits))
+    }
+
+    /// Plausible length only. See the header on why this is not stricter.
+    private var isPlausible: Bool {
+        digits.count >= country.minDigits && digits.count <= country.maxDigits
+    }
 
     /// Send the OTP via Firebase, then advance to the OTP screen with the verificationID.
     private func sendOtp() {
-        guard !sending, valid else { return }
-        sending = true; errorText = nil
+        guard !sending, isPlausible else { return }
+        sending = true
+        errorText = nil
+        fieldFocused = false
         let e164 = "\(country.dialCode)\(digits)"
         Task {
             do {
                 let verificationID = try await FirebasePhoneAuth.sendCode(to: e164)
-                Haptics.tap(); onContinue(e164, verificationID)
+                Haptics.tap()
+                onContinue(e164, verificationID)
             } catch {
                 errorText = error.localizedDescription
                 Haptics.error()
@@ -53,202 +107,276 @@ struct PhoneScreen: View {
 
     var body: some View {
         ZStack {
-            OnboardingBrand.ground
-                .ignoresSafeArea()
-                .dismissKeyboardOnTap()
+            VoiidBrand.ground.ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                OnboardingTopBar(
-                    onBack: onBack.map { back in { back() } },
-                    onHelp: { showHelp = true }
-                )
-                .padding(.top, 4)
-
-                ScrollView(.vertical, showsIndicators: false) {
-                  VStack(spacing: 0) {
-                    OnboardingBrandHeader(appeared: appeared)
-
-                    // The WORDMARK sits under the mark on this screen, which the first two do
-                    // not have — the design gives phone entry the full lockup.
-                    BrandWordmark(size: 38, color: VoiidColor.textPrimary)
-
-                    OnboardingTitle(leading: "Enter your ", accented: "phone number")
-                        .padding(.top, 10)
-
-                    Text("We will send you a verification code\nto confirm your number.")
-                        .font(VoiidFont.rounded(17, .regular))
-                        .foregroundColor(VoiidColor.textSecondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.top, 8)
+            ScrollView {
+                VStack(spacing: 0) {
+                    OnboardingHeader(
+                        title: .stacked("Enter your", accent: "phone number"),
+                        blurb: "We'll send you a verification code\nto confirm your number."
+                    )
 
                     numberField
-                        .padding(.horizontal, 20)
-                        .padding(.top, 22)
+                        .padding(.top, VoiidSpacing.lg)
 
                     if let errorText {
                         Text(errorText)
                             .font(VoiidFont.rounded(13, .regular))
                             .foregroundColor(VoiidColor.error)
                             .multilineTextAlignment(.center)
-                            .padding(.horizontal, 24)
-                            .padding(.top, 10)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, VoiidSpacing.sm)
                     }
 
-                    safetyNote
-                        .padding(.horizontal, 24)
-                        .padding(.top, 18)
-
-                    OnboardingTrustStrip(items: Self.trustItems)
-                        .padding(.horizontal, 20)
-                        .padding(.top, 16)
-                        .padding(.bottom, 16)
-                  }
+                    VStack(spacing: 10) {
+                        ForEach(PhonePromise.all) { promise in
+                            PromiseCard(promise: promise)
+                        }
+                    }
+                    .padding(.top, VoiidSpacing.lg)
                 }
-
-                OnboardingPrimaryButton(title: "Continue", busy: sending) { sendOtp() }
-                    .padding(.horizontal, 20)
-                    .opacity(valid ? 1 : 0.45)
-                    .disabled(!valid)
-
-                legalLine
-                    .padding(.horizontal, 24)
-                    .padding(.top, 14)
-                    .padding(.bottom, 10)
+                .padding(.horizontal, VoiidSpacing.lg)
+                .padding(.bottom, 240)
             }
+            .scrollIndicators(.hidden)
+            // Tapping the background dismisses the keyboard. Without it the only way out of the
+            // field on a screen with no other tap target is the Return key, which a number pad
+            // does not have.
+            .onTapGesture { fieldFocused = false }
+
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                footer
+            }
+            .ignoresSafeArea(edges: .bottom)
         }
         .preferredColorScheme(.dark)
-        .navigationBarBackButtonHidden(true)
-        .onAppear { withAnimation(.easeOut(duration: 0.5)) { appeared = true } }
-        .sheet(isPresented: $showPicker) {
-            CountryPickerSheet(selected: $country)
-        }
-        .sheet(isPresented: $showHelp) {
-            NavigationStack {
-                LegalDocumentView(document: LegalDocuments.privacy, showsDoneButton: true)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(.hidden, for: .navigationBar)
+        .sheet(isPresented: $showingCountries) {
+            CountryPickerSheet(selected: $country) {
+                // Clear on change: a number valid for one country is rarely valid for another,
+                // and silently keeping it produces a number that looks entered but cannot pass.
+                digits = ""
+                // Straight back to typing — choosing a country is a step ON THE WAY to entering
+                // a number, never the goal, so the field takes focus again without a tap.
+                fieldFocused = true
             }
+        }
+        // Focused after a beat, not immediately: during a navigation PUSH the field is not yet
+        // in the responder chain when `onAppear` fires, so setting focus there silently does
+        // nothing — which leaves the field grey and the keyboard down. A hop to the next runloop
+        // lands after the push completes.
+        .task {
+            try? await Task.sleep(for: .milliseconds(350))
+            fieldFocused = true
         }
     }
 
-    // MARK: Number field
+    // MARK: The field
 
-    /// Dial code and number in ONE pill, split by a hairline.
-    ///
-    /// One field rather than two: they are one value, and two separate pills invite the user to
-    /// type the country code into the number half — which then fails validation for a reason
-    /// the screen never explains.
     private var numberField: some View {
         HStack(spacing: 0) {
-            Button {
-                Haptics.tap()
-                showPicker = true
-            } label: {
-                HStack(spacing: 8) {
-                    Text(country.flag).font(.system(size: 22))
-                    Text(country.dialCode)
-                        .font(VoiidFont.rounded(17, .semibold))
-                        .foregroundColor(VoiidColor.textPrimary)
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(VoiidColor.accent)
-                }
-                .padding(.horizontal, 14)
-                .frame(height: 56)
-                .background(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(Color.white.opacity(0.04))
-                )
-            }
-            .buttonStyle(.plain)
-            .padding(.leading, 8)
-            .accessibilityLabel("Country code, \(country.name), \(country.dialCode)")
+            countryPicker
 
+            // A hairline, not a gap: the dial code and the number are ONE value, and separating
+            // them into two boxes would suggest they are entered independently.
             Rectangle()
-                .fill(OnboardingBrand.hairline)
-                .frame(width: 1, height: 40)
-                .padding(.horizontal, 12)
+                .fill(VoiidBrand.hairline)
+                .frame(width: 1, height: 34)
 
-            TextField("", text: $phone, prompt:
-                Text("Enter phone number").foregroundColor(VoiidColor.placeholder))
-                .keyboardType(.phonePad)
-                .textContentType(.telephoneNumber)
-                .font(VoiidFont.rounded(17, .regular))
-                .foregroundColor(VoiidColor.textPrimary)
-                .focused($focused)
-                .submitLabel(.go)
-                .onSubmit { sendOtp() }
-                .padding(.trailing, 16)
+            TextField("", text: $digits, prompt:
+                Text("Phone number").foregroundColor(VoiidColor.placeholder)
+            )
+            .keyboardType(.phonePad)          // includes +*# , which .numberPad omits — pasted
+                                              // international numbers would otherwise be rejected
+                                              // character-by-character before `normalise` sees them
+            .textContentType(.telephoneNumber)
+            .font(VoiidFont.rounded(17, .medium))
+            .foregroundColor(VoiidColor.textPrimary)
+            .focused($fieldFocused)
+            .padding(.horizontal, VoiidSpacing.md)
+            // The escape hatch for VARIABLE-length countries. Auto-dismiss fires at maxDigits,
+            // which a fixed-length country reaches on its last digit — but Germany's range is
+            // 6–11, so a valid 9-digit number never trips it and the keyboard would stay up
+            // over Continue forever. A toolbar Done is the standard way out of a number pad.
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { fieldFocused = false }
+                        .font(VoiidFont.rounded(16, .semibold))
+                        .foregroundColor(VoiidBrand.lime)
+                }
+            }
+            // Digits only, capped at the country's own maximum. Filtering on change rather than
+            // validating on submit: a keypad can still deliver paste, and a number that silently
+            // exceeds its own format is worse than one that stops accepting characters.
+            .onChange(of: digits) { _, new in
+                let filtered = normalise(new)
+                if filtered != new {
+                    digits = filtered
+                    return          // this fires again with the clean value; act on that pass
+                }
+
+                // ── THE KEYBOARD LEAVES WHEN THE NUMBER IS DONE ─────────────────────────
+                // A number pad has no Return key, so nothing about it says "finished". The
+                // keyboard therefore sat over Continue, and a user who had typed a complete
+                // number had to know to tap the background to reach the button they were being
+                // asked to press.
+                //
+                // Only at MAX, never at min. Countries whose range is wide (Germany is 6–11)
+                // would otherwise have the keyboard yanked away mid-number, which is far worse
+                // than leaving it up.
+                if filtered.count == country.maxDigits {
+                    fieldFocused = false
+                    // Confirms the field took the last digit, on a screen where the keyboard
+                    // vanishing is the only other signal.
+                    Haptics.soft()
+                }
+            }
         }
-        .frame(height: 72)
+        .frame(height: 62)
         .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(OnboardingBrand.card)
+            RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
+                .fill(VoiidColor.fieldFill)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                // The field lights up on focus — the only place the lime outlines something
-                // rather than filling it, and it works here because focus is momentary.
-                .strokeBorder(focused ? VoiidColor.accent.opacity(0.7) : Color.white.opacity(0.08),
-                              lineWidth: focused ? 1.5 : 1)
+            RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
+                .stroke(
+                    fieldFocused ? VoiidBrand.lime : VoiidColor.fieldBorder,
+                    lineWidth: fieldFocused ? 1.5 : 1
+                )
         )
-        .animation(.easeOut(duration: 0.18), value: focused)
+        .animation(.easeOut(duration: 0.18), value: fieldFocused)
     }
 
-    // MARK: Safety note
-
-    private var safetyNote: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: "checkmark.shield")
-                .font(.system(size: 24, weight: .medium))
-                .foregroundColor(VoiidColor.accent)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Your number is safe with us")
-                    .font(VoiidFont.rounded(16, .semibold))
+    private var countryPicker: some View {
+        Button {
+            Haptics.tap()
+            fieldFocused = false      // the keyboard would otherwise fight the sheet
+            showingCountries = true
+        } label: {
+            HStack(spacing: 8) {
+                Text(country.flag)
+                    .font(.system(size: 22))
+                Text(country.dialCode)
+                    .font(VoiidFont.rounded(17, .medium))
                     .foregroundColor(VoiidColor.textPrimary)
-                Text("We never share your number with anyone.")
-                    .font(VoiidFont.rounded(14, .regular))
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(VoiidColor.textSecondary)
             }
+            .padding(.horizontal, VoiidSpacing.md)
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Country code, \(country.name), \(country.dialCode)")
+        .accessibilityHint("Opens the country list")
+    }
+
+    // MARK: Footer
+
+    private var footer: some View {
+        OnboardingFooter {
+            OnboardingKitButton(title: "Continue", enabled: isPlausible && !sending) {
+                sendOtp()
+            }
+
+            // What Continue will actually do. Centred under the button, matching the rest of
+            // the screen's centred type.
+            HStack(spacing: 8) {
+                Image(systemName: "lock")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(VoiidBrand.lime)
+
+                Text("We'll send a verification code by SMS.\nMessage and data rates may apply.")
+                    .font(VoiidFont.rounded(12.5))
+                    .foregroundColor(VoiidColor.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
+}
+
+// MARK: - A promise card
+
+/// One reassurance: icon in a lime disc, copy, and a checkmark holding the right edge.
+///
+/// The trailing check is separated by a hairline rather than floating: without it the tick reads
+/// as an interactive control the user is meant to tap, which is exactly what it is not.
+private struct PromiseCard: View {
+    let promise: PhonePromise
+
+    var body: some View {
+        HStack(spacing: VoiidSpacing.md) {
+            Circle()
+                .fill(VoiidBrand.lime.opacity(0.10))
+                .frame(width: 46, height: 46)
+                .overlay {
+                    Image(systemName: promise.icon)
+                        .font(.system(size: 19, weight: .medium))
+                        .foregroundColor(VoiidBrand.lime)
+                }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(promise.title)
+                    .font(VoiidFont.rounded(15, .semibold))
+                    .foregroundColor(VoiidColor.textPrimary)
+
+                Text(promise.detail)
+                    .font(VoiidFont.rounded(12.5))
+                    .foregroundColor(VoiidColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+            }
+
             Spacer(minLength: 0)
+
+            Rectangle()
+                .fill(VoiidBrand.hairline)
+                .frame(width: 1, height: 40)
+
+            Image(systemName: "checkmark.shield")
+                .font(.system(size: 20, weight: .medium))
+                .foregroundColor(VoiidBrand.lime)
+                .padding(.leading, 4)
         }
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.vertical, 14)
+        .background(VoiidBrand.card)
+        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
+                .stroke(VoiidBrand.hairline, lineWidth: 1)
+        )
+        .accessibilityElement(children: .combine)
     }
+}
 
-    // MARK: Legal line
+// MARK: - Data
 
-    /// Consent was already given on the welcome screen; this is a reminder, not a second gate.
-    /// The two document names are still tappable, because a reminder the user cannot act on is
-    /// decoration.
-    private var legalLine: some View {
-        VStack(spacing: 2) {
-            (
-                Text("By continuing, you agree to Voiid's ")
-                    .foregroundColor(VoiidColor.textSecondary)
-                + Text("Terms of Service")
-                    .foregroundColor(VoiidColor.accent)
-            )
-            (
-                Text("and acknowledge our ")
-                    .foregroundColor(VoiidColor.textSecondary)
-                + Text("Privacy Policy")
-                    .foregroundColor(VoiidColor.accent)
-                + Text(".")
-                    .foregroundColor(VoiidColor.textSecondary)
-            )
-        }
-        .font(VoiidFont.rounded(13, .regular))
-        .multilineTextAlignment(.center)
-        .onTapGesture {
-            Haptics.tap()
-            showHelp = true
-        }
-    }
+/// A reassurance shown under the field.
+struct PhonePromise: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let detail: String
+    let icon: String
 
-    // MARK: Trust strip
-
-    private static let trustItems: [OnboardingTrustStrip.Item] = [
-        .init(id: "e2ee", system: "lock", line1: "End-to-end", line2: "encrypted"),
-        .init(id: "private", system: "checkmark.shield", line1: "Private &", line2: "secure"),
-        .init(id: "nospam", system: "person.2", line1: "No spam", line2: "promises"),
-        .init(id: "control", system: "checkmark.seal", line1: "You're in", line2: "control"),
+    static let all: [PhonePromise] = [
+        .init(id: "secure",
+              title: "Secure & private",
+              detail: "Your number is encrypted and always private.",
+              icon: "lock"),
+        .init(id: "nospam",
+              title: "No spam. Ever.",
+              detail: "We never share your number with anyone.",
+              icon: "ellipsis.bubble"),
+        .init(id: "identity",
+              title: "Used only for you",
+              detail: "To verify your identity and keep your account secure.",
+              icon: "person"),
     ]
 }

@@ -29,8 +29,6 @@
 		AA00000000000000000000F2 /* GroupEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000F1 /* GroupEngine.swift */; };
 		AA00000000000000000000F4 /* MessageActionWire.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000F3 /* MessageActionWire.swift */; };
 		AA00000000000000000000F6 /* GameInvite.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000F5 /* GameInvite.swift */; };
-		BB0000000000000000000001 /* WebRTC.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000000 /* WebRTC.xcframework */; };
-		BB0000000000000000000002 /* WebRTC.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000000 /* WebRTC.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		CC0000000000000000000012 /* LiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = CC0000000000000000000011 /* LiveKit */; };
 		CC0000000000000000000022 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = CC0000000000000000000021 /* GRDB */; };
 		CC0000000000000000000024 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = CC0000000000000000000023 /* GRDB */; };
@@ -65,7 +63,6 @@
 			dstPath = "";
 			dstSubfolderSpec = 10;
 			files = (
-				BB0000000000000000000002 /* WebRTC.xcframework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -86,7 +83,6 @@
 		AA00000000000000000000F1 /* GroupEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = GroupEngine.swift; path = Voiid/Networking/GroupEngine.swift; sourceTree = SOURCE_ROOT; };
 		AA00000000000000000000F3 /* MessageActionWire.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MessageActionWire.swift; path = Voiid/Networking/MessageActionWire.swift; sourceTree = SOURCE_ROOT; };
 		AA00000000000000000000F5 /* GameInvite.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = GameInvite.swift; path = Voiid/Networking/GameInvite.swift; sourceTree = SOURCE_ROOT; };
-		BB0000000000000000000000 /* WebRTC.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = WebRTC.xcframework; path = ../vendor/WebRTC.xcframework; sourceTree = "<group>"; };
 		E2EC04E000000000000000A0 /* Voiid.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Voiid.xcframework; path = Frameworks/Voiid.xcframework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -117,7 +113,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				E2EC04E000000000000000A1 /* Voiid.xcframework in Frameworks */,
-				BB0000000000000000000001 /* WebRTC.xcframework in Frameworks */,
 				CC0000000000000000000022 /* GRDB in Frameworks */,
 				0B1613302FE4070E008FC346 /* FirebaseMessaging in Frameworks */,
 				0B1613322FE4070E008FC346 /* FirebasePerformance in Frameworks */,
@@ -148,7 +143,6 @@
 			isa = PBXGroup;
 			children = (
 				E2EC04E000000000000000A0 /* Voiid.xcframework */,
-				BB0000000000000000000000 /* WebRTC.xcframework */,
 				0B832F212FE005110023F558 /* Voiid */,
 				0B832F202FE005110023F558 /* Products */,
 				0BACDD6F301237F500670D6B /* Recovered References */,
@@ -463,9 +457,11 @@
 				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Voiid/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Voiid uses the camera to take photos and videos for your chats and clips.";
 				INFOPLIST_KEY_NSContactsUsageDescription = "Voiid matches your contacts locally to help you find friends. Your contact book is never uploaded.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Voiid uses the microphone to record voice messages and clips.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Save photos and videos from Voiid to your library.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Voiid needs access to your photos to share images and clips.";
 				INFOPLIST_KEY_UIAppFonts = "Urbanist-Bold.ttf";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
@@ -518,9 +514,11 @@
 				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Voiid/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Voiid uses the camera to take photos and videos for your chats and clips.";
 				INFOPLIST_KEY_NSContactsUsageDescription = "Voiid matches your contacts locally to help you find friends. Your contact book is never uploaded.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Voiid uses the microphone to record voice messages and clips.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Save photos and videos from Voiid to your library.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Voiid needs access to your photos to share images and clips.";
 				INFOPLIST_KEY_UIAppFonts = "Urbanist-Bold.ttf";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
@@ -592,6 +590,18 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = VoiidNSE/VoiidNSE.entitlements;
+				// -Onone, not -Osize. swift-frontend 6.3.3 SEGFAULTS running EarlyPerfInliner
+				// on the synthesised deinit of UniffiHandleMap (voiid.swift:360) — a generic
+				// final class holding an NSLock and a dictionary, generated by UniFFI. -Osize
+				// still runs that pass and crashes identically; only -Onone skips it.
+				//
+				// Scoped to the NSE alone: the main app target optimises normally, and this
+				// extension is a thin push-decrypt path where the cost is irrelevant. NSEs also
+				// run under a hard 24MB cap, so smaller generated code is no loss here.
+				//
+				// Revisit when the toolchain updates or the bindings are regenerated — this is
+				// a compiler bug being routed around, not a setting the code wants.
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = CV7L84G776;

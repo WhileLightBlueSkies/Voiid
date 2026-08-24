@@ -1,17 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!--
-      ELECTRIC LIME brand tokens, LIGHT. Mirrors ui/theme/Color.kt (VoiidPalette) — keep the two
+      PEACOCK TEAL brand tokens, LIGHT. Mirrors ui/theme/Color.kt (VoiidPalette) — keep the two
       in step; these exist because the launch window is drawn by the platform before Compose is
       alive, so it cannot read the Kotlin tokens.
 
-      NOTE voiid_primary is INK here, not lime, exactly as PrimaryLight is. #C6FF00 measures
-      1.19:1 on white — invisible — so the lime is never the light-mode spine. See Color.kt.
+      MIGRATED FROM ELECTRIC LIME. The old file carried a note that voiid_primary was INK here
+      rather than the brand colour, because #C6FF00 measures 1.19:1 on white and would have
+      been invisible. That no longer applies: #13828C is 4.87:1 on the light ground, so the
+      brand colour IS the spine in both themes now.
     -->
-    <color name="voiid_primary">#0B0B0B</color>       <!-- ink; lime is a FILL only on light -->
-    <color name="voiid_accent">#C6FF00</color>        <!-- Electric Lime, for filled elements -->
-    <color name="voiid_background">#FFFFFF</color>    <!-- light variant ground -->
-    <color name="voiid_field_fill">#F7F7F7</color>
+    <color name="voiid_primary">#13828C</color>       <!-- Peacock teal -->
+    <color name="voiid_accent">#13828C</color>        <!-- same hex; accent is a fill -->
+    <color name="voiid_background">#F6F8F8</color>    <!-- light variant ground -->
+    <color name="voiid_field_fill">#EDF1F1</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
 </resources>

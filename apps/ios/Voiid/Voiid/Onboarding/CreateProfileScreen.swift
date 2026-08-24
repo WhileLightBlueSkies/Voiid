@@ -2,219 +2,226 @@
 //  CreateProfileScreen.swift
 //  Voiid
 //
-//  Onboarding — profile photo + about (Figma Screen-5). Native back button.
+//  Profile setup, step 2 of 2 — the optional half, and the page that actually SAVES.
+//
+//  Built to the design source (`Voiid Ui/Screens/ProfileExtrasScreen.swift`) through
+//  `OnboardingKit`.
+//
+//  ── EVERYTHING HERE IS SKIPPABLE, AND THE SCREEN SAYS SO ────────────────────────
+//  Email and bio are both optional, which is precisely why they were split off step 1: mixed in
+//  with the required fields, "optional" is a word in a label that nobody reads. On their own
+//  page with a visible Skip, it is a real choice.
+//
+//  So the primary button is ALWAYS enabled (bar a malformed email). There is nothing to
+//  complete — pressing it with both fields empty is a legitimate outcome, identical to Skip. The
+//  two exist together because they mean different things to the user ("I'm done" vs "not now"),
+//  not because they do different things to the data.
+//
+//  ── THE SAVE HAPPENS ONCE, HERE ─────────────────────────────────────────────────
+//  Step 1 collects identity and hands over a `ProfileDraft` without writing anything, so a user
+//  who backs out has not half-created an account. Both Continue and Skip call `submit()`, which
+//  is the single `ProfileService.updateProfile` for the whole flow. Skip simply submits a draft
+//  with the optional fields empty — it is not a way to avoid saving the required ones.
+//
+//  ── EMAIL IS VALIDATED ONLY IF TYPED ────────────────────────────────────────────
+//  The account is keyed on a verified phone number, so email is a recovery convenience rather
+//  than an identity. An empty field passes. A field with something in it has to look like an
+//  address — catching a typo here is worth it precisely BECAUSE the address is for recovery,
+//  which is the one moment a wrong address cannot be corrected.
 //
 
 import SwiftUI
-import PhotosUI
 
 struct CreateProfileScreen: View {
+    /// Everything collected on step 1.
+    let draft: ProfileDraft
     let onFinish: () -> Void
-    @EnvironmentObject var session: AppSession
-    @Environment(\.dismiss) private var dismiss
-    @State private var username = ""
-    @State private var about = ""
-    @State private var photoItem: PhotosPickerItem?
-    @State private var photo: Image?
 
-    // Username availability (Clips handle). Debounced live check.
-    enum UStatus: Equatable { case idle, checking, available, taken(String) }
-    @State private var uStatus: UStatus = .idle
-    @State private var checkTask: Task<Void, Never>?
+    @EnvironmentObject var session: AppSession
+
+    @State private var email = ""
+    @State private var bio = ""
     @State private var saving = false
     @State private var errorText: String?
 
-    private let pillHeight: CGFloat = 64
-    private let pillRadius: CGFloat = VoiidRadius.pill
-    private let avatar: CGFloat = 110
-
-    // Name was already collected on the Signup screen (session.profile.fullName).
-    private var canSubmit: Bool {
-        !session.profile.fullName.trimmingCharacters(in: .whitespaces).isEmpty
-            && uStatus == .available && !saving
-    }
-
-    /// Debounced availability check as the user types the username.
-    private func onUsernameChange(_ raw: String) {
-        // Normalize to the allowed charset (lowercase, [a-z0-9_]).
-        let v = raw.lowercased().filter { $0.isLetter || $0.isNumber || $0 == "_" }
-        if v != username { username = v }
-        checkTask?.cancel()
-        guard v.count >= 3 else { uStatus = .idle; return }
-        uStatus = .checking
-        checkTask = Task {
-            try? await Task.sleep(nanoseconds: 400_000_000)   // debounce
-            if Task.isCancelled { return }
-            do {
-                let r = try await ProfileService.shared.checkUsername(v)
-                if Task.isCancelled || v != username { return }
-                uStatus = r.available ? .available : .taken(r.reason ?? "Username taken")
-            } catch {
-                uStatus = .taken("Couldn’t check — try again")
-            }
-        }
-    }
-
-    /// Save profile (name + username + about + photo placeholder) then finish.
-    private func submit() {
-        guard canSubmit else { return }
-        saving = true; errorText = nil
-        Task {
-            do {
-                _ = try await ProfileService.shared.updateProfile(
-                    fullName: session.profile.fullName.trimmingCharacters(in: .whitespaces),
-                    email: session.profile.email,
-                    bio: about.isEmpty ? nil : about,
-                    username: username
-                )
-                session.profile.bio = about
-                Haptics.success(); onFinish()
-            } catch let APIError.http(status, _, _) where status == 409 {
-                uStatus = .taken("Just taken — pick another")
-                errorText = "That username was just taken."
-                Haptics.error()
-            } catch {
-                errorText = (error as? APIError)?.errorDescription ?? "Couldn’t save profile."
-                Haptics.error()
-            }
-            saving = false
-        }
+    /// Empty is fine — see the header. A typed value has to look like an address.
+    private var emailValid: Bool {
+        let e = email.trimmingCharacters(in: .whitespaces)
+        if e.isEmpty { return true }
+        // Deliberately loose. Strict RFC-5322 matching rejects valid addresses, and the only
+        // real test is a confirmation mail.
+        let parts = e.split(separator: "@")
+        return parts.count == 2 && !parts[0].isEmpty && parts[1].contains(".")
+            && !parts[1].hasPrefix(".") && !parts[1].hasSuffix(".")
     }
 
     var body: some View {
         ZStack {
-            VoiidBackground().dismissKeyboardOnTap()
-            VStack(alignment: .leading, spacing: 0) {
-                Spacer().frame(height: 8)
-                // Title matches the Phone/OTP screens (22 bold), left-aligned
-                Text("Create profile")
-                    .font(VoiidFont.rounded(22, .bold))
-                    .foregroundColor(VoiidColor.textPrimary)
-                    .padding(.horizontal, VoiidSpacing.lg)
+            VoiidBrand.ground.ignoresSafeArea()
 
-                // Avatar with pink camera badge (centered)
-                PhotosPicker(selection: $photoItem, matching: .images) {
-                    ZStack(alignment: .bottomTrailing) {
-                        ZStack {
-                            Circle().fill(VoiidColor.fieldFill)
-                            if let photo {
-                                photo.resizable().scaledToFill()
-                                    .frame(width: avatar, height: avatar).clipShape(Circle())
-                            } else {
-                                BrandWordmark(size: avatar * 0.17,
-                                              color: VoiidColor.textSecondary,
-                                              opacity: 0.25)
+            ScrollView {
+                VStack(spacing: 0) {
+                    OnboardingHeader(
+                        title: .stacked("A few more", accent: "details"),
+                        blurb: "Both are optional — you can add them later."
+                    )
+
+                    VStack(spacing: 12) {
+                        OnboardingField(
+                            icon: "envelope",
+                            label: "Email address",
+                            prompt: "Enter your email address",
+                            text: $email,
+                            keyboard: .emailAddress,
+                            contentType: .emailAddress,
+                            autocapitalization: .never
+                        ) {
+                            if !email.isEmpty && !emailValid {
+                                Image(systemName: "exclamationmark.circle")
+                                    .font(.system(size: 20, weight: .medium))
+                                    .foregroundColor(VoiidColor.warning)
                             }
                         }
-                        .frame(width: avatar, height: avatar)
 
-                        // pink camera badge
-                        Circle().fill(VoiidColor.accent)
-                            .frame(width: 32, height: 32)
-                            .overlay(Image(systemName: "camera.fill")
-                                .font(.system(size: 14)).foregroundColor(VoiidColor.primary))
-                            .overlay(Circle().stroke(VoiidColor.background, lineWidth: 2))
-                    }
-                }
-                .frame(maxWidth: .infinity)   // center the avatar
-                .padding(.top, VoiidSpacing.xl)
-                .onChange(of: photoItem) { _, item in
-                    Task {
-                        if let data = try? await item?.loadTransferable(type: Data.self),
-                           let ui = UIImage(data: data) { photo = Image(uiImage: ui) }
-                    }
-                }
+                        Text("Used to help you recover your account.")
+                            .font(VoiidFont.rounded(12.5))
+                            .foregroundColor(VoiidColor.textSecondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.leading, 4)
 
-                // Username field (Clips handle) + live availability indicator
-                // (Name was collected on the previous Signup screen.)
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 8) {
-                        Text("@").font(VoiidFont.body).foregroundColor(VoiidColor.placeholder)
-                        TextField("", text: Binding(get: { username }, set: onUsernameChange),
-                                  prompt: Text("username").foregroundColor(VoiidColor.placeholder))
-                            .font(VoiidFont.body)
-                            .foregroundColor(VoiidColor.textPrimary)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                        usernameStatusIcon
+                        OnboardingField(
+                            icon: "pencil.line",
+                            label: "Bio (optional)",
+                            prompt: "Tell the world about yourself",
+                            text: $bio,
+                            characterLimit: 120
+                        )
                     }
-                    .padding(.horizontal, VoiidSpacing.md)
-                    .frame(height: 61)
-                    .background(VoiidColor.fieldFill)
-                    .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.pill, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: VoiidRadius.pill)
-                        .stroke(usernameBorderColor, lineWidth: 1))
+                    .padding(.top, VoiidSpacing.lg)
 
-                    if case .taken(let why) = uStatus {
-                        Text(why).font(VoiidFont.caption).foregroundColor(VoiidColor.error)
-                    } else {
-                        Text("Used only in Clips. Letters, digits, underscore.")
-                            .font(VoiidFont.caption).foregroundColor(VoiidColor.textSecondary)
+                    if let errorText {
+                        Text(errorText)
+                            .font(VoiidFont.rounded(13))
+                            .foregroundColor(VoiidColor.error)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, VoiidSpacing.sm)
                     }
+
+                    privacyNote
+                        .padding(.top, VoiidSpacing.lg)
                 }
                 .padding(.horizontal, VoiidSpacing.lg)
-                .padding(.top, VoiidSpacing.xl)
-
-                // About you pill text area
-                TextField("", text: $about,
-                          prompt: Text("About you").foregroundColor(VoiidColor.placeholder),
-                          axis: .vertical)
-                    .font(VoiidFont.rounded(17, .regular)).lineLimit(3...6)
-                    .foregroundColor(VoiidColor.textPrimary)
-                    .padding(.horizontal, VoiidSpacing.lg)
-                    .padding(.vertical, VoiidSpacing.md)
-                    .frame(maxWidth: .infinity, minHeight: 96, alignment: .topLeading)
-                    .background(VoiidColor.fieldFill)
-                    .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 28).stroke(VoiidColor.fieldBorder, lineWidth: 1))
-                    .padding(.horizontal, VoiidSpacing.lg)
-                    .padding(.top, VoiidSpacing.md)
-
-                if let errorText {
-                    Text(errorText).font(VoiidFont.caption).foregroundColor(VoiidColor.error)
-                        .padding(.horizontal, VoiidSpacing.lg).padding(.top, 6)
-                }
-
-                Spacer()
-
-                Button(action: submit) {
-                    Group {
-                        if saving { ProgressView().tint(VoiidColor.textPrimary) }
-                        else { Text("Sign up").font(VoiidFont.rounded(18, .medium)) }
-                    }
-                    .foregroundColor(VoiidColor.textPrimary)
-                    .frame(maxWidth: .infinity).frame(height: pillHeight)
-                    .background(VoiidColor.accent)
-                    .clipShape(RoundedRectangle(cornerRadius: pillRadius, style: .continuous))
-                    .opacity(canSubmit ? 1 : 0.55)
-                }
-                .buttonStyle(SoftPressStyle())
-                .disabled(!canSubmit)
-                .padding(.horizontal, VoiidSpacing.lg).padding(.bottom, VoiidSpacing.xl)
+                .padding(.bottom, 210)
             }
+            .scrollIndicators(.hidden)
+            .scrollDismissesKeyboard(.interactively)
+
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                footer
+            }
+            .ignoresSafeArea(edges: .bottom)
         }
-        // Native back button (system chevron) — nav bar shown, transparent over our bg.
+        .preferredColorScheme(.dark)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
-        .tint(VoiidColor.primary)   // native back chevron color
     }
 
-    @ViewBuilder private var usernameStatusIcon: some View {
-        switch uStatus {
-        case .idle: EmptyView()
-        case .checking: ProgressView().scaleEffect(0.7)
-        case .available:
-            Image(systemName: "checkmark.circle.fill").foregroundColor(VoiidColor.success)
-        case .taken:
-            Image(systemName: "xmark.circle.fill").foregroundColor(VoiidColor.error)
+    // MARK: Privacy note
+
+    private var privacyNote: some View {
+        HStack(spacing: VoiidSpacing.md) {
+            Circle()
+                .fill(VoiidBrand.lime.opacity(0.10))
+                .frame(width: 46, height: 46)
+                .overlay {
+                    Image(systemName: "lock.shield")
+                        .font(.system(size: 19, weight: .medium))
+                        .foregroundColor(VoiidBrand.lime)
+                }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("You control what you share")
+                    .font(VoiidFont.rounded(15, .semibold))
+                    .foregroundColor(VoiidColor.textPrimary)
+                Text("Your email is never shown to other people, and you can change any of this in Settings.")
+                    .font(VoiidFont.rounded(12.5))
+                    .foregroundColor(VoiidColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.vertical, 14)
+        .background(VoiidBrand.card)
+        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
+                .stroke(VoiidBrand.hairline, lineWidth: 1)
+        )
+        .accessibilityElement(children: .combine)
+    }
+
+    // MARK: Footer
+
+    private var footer: some View {
+        OnboardingFooter {
+            OnboardingKitButton(title: saving ? "Saving…" : "Finish",
+                                enabled: emailValid && !saving) {
+                submit(includeExtras: true)
+            }
+
+            // Skip saves the SAME required fields — it only declines the optional ones. It is
+            // not a way out of creating the profile, and it must not look like one.
+            Button("Skip for now") {
+                Haptics.tap()
+                submit(includeExtras: false)
+            }
+            .font(VoiidFont.rounded(15))
+            .foregroundColor(VoiidColor.textSecondary)
+            .buttonStyle(PressableButtonStyle())
+            .disabled(saving)
+
+            StepDots(current: 1, total: 2)
         }
     }
 
-    private var usernameBorderColor: Color {
-        switch uStatus {
-        case .available: return VoiidColor.success
-        case .taken:     return VoiidColor.error
-        default:         return VoiidColor.fieldBorder
+    // MARK: Save
+
+    /// The single write for the whole profile flow.
+    private func submit(includeExtras: Bool) {
+        guard !saving else { return }
+        saving = true
+        errorText = nil
+
+        let cleanEmail = includeExtras ? email.trimmingCharacters(in: .whitespaces) : ""
+        let cleanBio = includeExtras ? bio.trimmingCharacters(in: .whitespaces) : ""
+
+        Task {
+            do {
+                _ = try await ProfileService.shared.updateProfile(
+                    fullName: draft.fullName,
+                    email: cleanEmail,
+                    bio: cleanBio.isEmpty ? nil : cleanBio,
+                    username: draft.username
+                )
+                session.profile.fullName = draft.fullName
+                session.profile.email = cleanEmail
+                session.profile.bio = cleanBio
+                Haptics.success()
+                onFinish()
+            } catch let APIError.http(status, _, _) where status == 409 {
+                // The name was free on step 1 and was taken in between. Sending the user back is
+                // the only honest fix — the field that has to change is on the other page.
+                errorText = "That username was just taken. Go back and choose another."
+                Haptics.error()
+            } catch {
+                errorText = (error as? APIError)?.errorDescription ?? "Couldn't save profile."
+                Haptics.error()
+            }
+            saving = false
         }
     }
 }

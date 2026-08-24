@@ -357,6 +357,11 @@ final class GroupCallService: NSObject, ObservableObject {
         guard state.isActive || room != nil else { return }
         await teardown()
         state = .idle
+        // If THIS room was an ad-hoc conference (escalated 1:1 / accepted invite), close
+        // the conference books and retire the CallService leg it grew out of. Without
+        // this the retired leg stayed "active" forever, silently blocking new calls and
+        // keeping frame-cryptor keys alive past their call.
+        await CallConferenceService.shared.noteGroupLeaveIfAdhoc()
     }
 
     // MARK: - Ongoing-call presence

@@ -2,7 +2,7 @@
 //  CallService.swift
 //  Voiid
 //
-//  The WebRTC engine for 1:1 voice/video calls. Owns the RTCPeerConnection,
+//  The WebRTC engine for 1:1 voice/video calls. Owns the LKRTCPeerConnection,
 //  drives signaling over the existing WebSocketClient (call_offer/answer/ice/
 //  hangup/busy/decline — the backend relay stamps the authenticated sender), and
 //  pulls ICE servers from GET /calls/turn.
@@ -24,7 +24,7 @@
 import Foundation
 import CallKit
 import Combine
-import WebRTC
+import LiveKitWebRTC
 import AVFoundation
 import UIKit
 import Network
@@ -91,8 +91,8 @@ final class CallService: NSObject, ObservableObject {
     @Published private(set) var videoEnabled = true
     @Published private(set) var connectedSeconds = 0
     /// Remote + local video tracks for the UI to render (nil for voice calls).
-    @Published private(set) var remoteVideoTrack: RTCVideoTrack?
-    @Published private(set) var localVideoTrack: RTCVideoTrack?
+    @Published private(set) var remoteVideoTrack: LKRTCVideoTrack?
+    @Published private(set) var localVideoTrack: LKRTCVideoTrack?
     /// Live connection quality derived from packet loss + RTT. The call UI can
     /// show a weak-connection indicator off this without knowing about stats.
     @Published private(set) var quality: CallQuality = .unknown
@@ -128,8 +128,8 @@ final class CallService: NSObject, ObservableObject {
     // Three things can ask for a restart, in descending order of how much we
     // trust them:
     //   1. NWPathMonitor says the interface changed  — fastest and most reliable.
-    //   2. RTCIceConnectionState == .failed          — terminal, restart now.
-    //   3. RTCIceConnectionState == .disconnected    — usually transient; wait out
+    //   2. LKRTCIceConnectionState == .failed          — terminal, restart now.
+    //   3. LKRTCIceConnectionState == .disconnected    — usually transient; wait out
     //      a grace period first, because most of these self-heal and a needless
     //      renegotiation is itself disruptive.
 
@@ -158,21 +158,21 @@ final class CallService: NSObject, ObservableObject {
     private var everConnected = false
 
     // MARK: WebRTC
-    private static let factory: RTCPeerConnectionFactory = {
-        RTCInitializeSSL()
-        let encoder = RTCDefaultVideoEncoderFactory()
-        let decoder = RTCDefaultVideoDecoderFactory()
-        return RTCPeerConnectionFactory(encoderFactory: encoder, decoderFactory: decoder)
+    private static let factory: LKRTCPeerConnectionFactory = {
+        LKRTCInitializeSSL()
+        let encoder = LKRTCDefaultVideoEncoderFactory()
+        let decoder = LKRTCDefaultVideoDecoderFactory()
+        return LKRTCPeerConnectionFactory(encoderFactory: encoder, decoderFactory: decoder)
     }()
 
-    private var pc: RTCPeerConnection?
-    private var localAudioTrack: RTCAudioTrack?
-    private var videoCapturer: RTCCameraVideoCapturer?
-    private var videoSource: RTCVideoSource?
+    private var pc: LKRTCPeerConnection?
+    private var localAudioTrack: LKRTCAudioTrack?
+    private var videoCapturer: LKRTCCameraVideoCapturer?
+    private var videoSource: LKRTCVideoSource?
     private var usingFrontCamera = true
 
     // Buffer remote ICE that arrives before the remote description is set.
-    private var pendingRemoteCandidates: [RTCIceCandidate] = []
+    private var pendingRemoteCandidates: [LKRTCIceCandidate] = []
     private var hasRemoteDescription = false
     // The offer we received but haven't answered yet (incoming call awaiting accept).
     private var pendingIncomingOfferSDP: String?
@@ -219,6 +219,7 @@ final class CallService: NSObject, ObservableObject {
     // bounded) semantics of accepting it.
 
     /// A second inbound call reported to CallKit and awaiting the user's choice.
+    /// A second inbound call that arrived while we were already on one — "call waiting".
     private struct WaitingCall {
         let id: String
         let uuid: UUID
@@ -228,6 +229,9 @@ final class CallService: NSObject, ObservableObject {
         /// nil while the VoIP push has rung but the SDP offer hasn't landed yet.
         var sdp: String?
         var conversationId: String?
+        /// TRUE for ad-hoc CONFERENCE invites: there is no SDP offer coming, so answering
+        /// must route to the conference engine, not the 1:1 answer path.
+        var isConference: Bool = false
         /// When the second call started alerting — the history row needs a start time
         /// and the primary call's `callStartedAt` belongs to a different call.
         let startedAt: Date
@@ -239,6 +243,63 @@ final class CallService: NSObject, ObservableObject {
 
     private var timer: Timer?
     private let api = APIClient()
+
+    // MARK: Frame-level E2EE
+    //
+    // One RTCFrameCryptor per RTP sender/receiver on OUR peer connection. Media payloads
+    // are AES-GCM encrypted with a key derived from the ratchet-delivered call secret
+    // (see CallKeyExchange.frameMediaKey) — the server never sees it, so DTLS becomes
+    // transport-only and a signaling-colluding MITM reads noise. Cryptors attach the
+    // moment BOTH of these hold: tracks exist AND the shared key provider is ready
+    // (i.e. we hold the call secret). Until then frames are DISCARDED, never sent in
+    // the clear (discardFrameWhenCryptorNotReady).
+    private var frameCryptors: [ObjectIdentifier: LKRTCFrameCryptor] = [:]
+    private var keyRotatedCancellable: AnyCancellable?
+
+    /// Attach (or top-up) frame cryptors for the ACTIVE call. Idempotent: senders and
+    /// receivers already covered are skipped, late-appearing ones get covered.
+    private func attachFrameCryptorsIfReady() {
+        guard let call = active, let pc, !call.isConferenceInvite else { return }
+        let callId = call.id
+        guard let provider = CallKeyExchange.shared.frameKeyProvider(callId: callId) else {
+            // Callee-side before the `call_key` envelope lands. The secretRotated
+            // subscription below retries us the moment it arrives.
+            NSLog("[VOIID] e2ee: key provider not ready for \(callId) — will retry on key arrival")
+            return
+        }
+        var covered = Set(frameCryptors.keys)
+        for sender in pc.senders where !covered.contains(ObjectIdentifier(sender)) {
+            guard let c = LKRTCFrameCryptor(factory: Self.factory, rtpSender: sender,
+                                            participantId: call.peerUserId,
+                                            algorithm: .aesGcm, keyProvider: provider) else { continue }
+            c.enabled = true
+            frameCryptors[ObjectIdentifier(sender)] = c
+            covered.insert(ObjectIdentifier(sender))
+        }
+        for receiver in pc.receivers where !covered.contains(ObjectIdentifier(receiver)) {
+            guard let c = LKRTCFrameCryptor(factory: Self.factory, rtpReceiver: receiver,
+                                            participantId: call.peerUserId,
+                                            algorithm: .aesGcm, keyProvider: provider) else { continue }
+            c.enabled = true
+            frameCryptors[ObjectIdentifier(receiver)] = c
+        }
+        NSLog("[VOIID] e2ee: %d frame cryptor(s) live for %@", frameCryptors.count, callId)
+    }
+
+    /// Detach every cryptor and forget the call's keys. Called from every teardown path.
+    private func detachFrameCryptors(callId: String) {
+        for (_, c) in frameCryptors { c.enabled = false }
+        frameCryptors.removeAll()
+        CallKeyExchange.shared.clear(callId: callId)
+    }
+
+    /// Re-run attachment whenever a fresh secret lands mid-call (rekey / late delivery).
+    private func watchForKeyRotation() {
+        keyRotatedCancellable = CallKeyExchange.shared.secretRotated.sink { [weak self] callId in
+            guard self?.active?.id == callId else { return }
+            self?.attachFrameCryptorsIfReady()
+        }
+    }
 
     // MARK: Lifecycle / background handling
     /// True while the full-screen call UI is on screen. Used to decide whether a
@@ -357,7 +418,7 @@ final class CallService: NSObject, ObservableObject {
         // Only one call may own the audio route at a time; a held call gives it up.
         // CallKit's didActivate/didDeactivate will also drive this, and both
         // paths are idempotent, so they can't fight.
-        RTCAudioSession.sharedInstance().isAudioEnabled = !held
+        LKRTCAudioSession.sharedInstance().isAudioEnabled = !held
         if held, let capturer = videoCapturer { capturer.stopCapture() }
         else if !held, let capturer = videoCapturer, active?.isVideo == true, !captureSuspendedForBackground {
             startCapture(capturer: capturer, front: usingFrontCamera)
@@ -488,7 +549,7 @@ final class CallService: NSObject, ObservableObject {
         CallManager.shared.endCall(uuid: call.uuid)
         videoCapturer?.stopCapture()
         pc?.close()
-        RTCAudioSession.sharedInstance().isAudioEnabled = false
+        LKRTCAudioSession.sharedInstance().isAudioEnabled = false
     }
 
     private func handleAudioInterruption(_ note: Notification) {
@@ -496,7 +557,7 @@ final class CallService: NSObject, ObservableObject {
         guard let info = note.userInfo,
               let raw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
               let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
-        let rtc = RTCAudioSession.sharedInstance()
+        let rtc = LKRTCAudioSession.sharedInstance()
         switch type {
         case .began:
             // Something else (a phone call, Siri) owns audio now.
@@ -543,7 +604,7 @@ final class CallService: NSObject, ObservableObject {
     /// Force the output port. Centralised so route changes and the speaker button
     /// go through the same locked configuration path.
     private func applyOutputOverride(speaker: Bool) {
-        let session = RTCAudioSession.sharedInstance()
+        let session = LKRTCAudioSession.sharedInstance()
         session.lockForConfiguration()
         try? session.overrideOutputAudioPort(speaker ? .speaker : .none)
         session.unlockForConfiguration()
@@ -641,21 +702,32 @@ final class CallService: NSObject, ObservableObject {
                 return
             }
 
+            // ── E2EE KEYING (caller side). The secret is minted and fanned out over the
+            // ratchet BEFORE the offer, so the callee holds the frame key before media
+            // can possibly flow. Failure inside is non-fatal by design: the call then
+            // proceeds as plain DTLS-SRTP with verification .unverified, exactly like
+            // talking to an old client.
+            watchForKeyRotation()
+            await CallKeyExchange.shared.beginOneToOne(callId: callId, peerUserId: peerUserId)
+
             await createAndSendOffer(callId: callId, peerUserId: peerUserId, isVideo: isVideo)
         }
     }
 
     private func createAndSendOffer(callId: String, peerUserId: String, isVideo: Bool) async {
         guard let pc else { return }
-        let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
+        let constraints = LKRTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
         do {
             let offer = try await pc.offer(for: constraints)
             // Turn on Opus FEC/DTX before the SDP becomes our local description.
-            let tuned = RTCSessionDescription(type: .offer,
+            let tuned = LKRTCSessionDescription(type: .offer,
                                               sdp: CallSDPTuning.tuneLocalDescription(offer.sdp))
             try await pc.setLocalDescription(tuned)
             socket.sendCallOffer(toUserId: peerUserId, callId: callId,
                                  callKind: isVideo ? "video" : "voice", sdp: tuned.sdp)
+            // Senders exist now; receivers arrive with the answer. Both are covered —
+            // this call runs again from handleAnswer once the remote description lands.
+            attachFrameCryptorsIfReady()
         } catch {
             NSLog("[VOIID] call offer failed: \(error.localizedDescription)")
             pendingEndReason = .setupFailed
@@ -785,11 +857,11 @@ final class CallService: NSObject, ObservableObject {
         // Rates measured across a reconnect gap are meaningless.
         stats.resetRateBaseline()
 
-        let constraints = RTCMediaConstraints(mandatoryConstraints: ["IceRestart": "true"],
+        let constraints = LKRTCMediaConstraints(mandatoryConstraints: ["IceRestart": "true"],
                                               optionalConstraints: nil)
         do {
             let offer = try await pc.offer(for: constraints)
-            let tuned = RTCSessionDescription(type: .offer,
+            let tuned = LKRTCSessionDescription(type: .offer,
                                               sdp: CallSDPTuning.tuneLocalDescription(offer.sdp))
             try await pc.setLocalDescription(tuned)
             // Same channel, same call_id — the peer treats this as renegotiation,
@@ -922,6 +994,7 @@ final class CallService: NSObject, ObservableObject {
                               title: peerName(callerId, fallback: displayName),
                               isVideo: kind == "video", sdp: nil,
                               conversationId: conversationId,
+                              isConference: isConference,
                               completion: completion)
             // The offer still needs a live socket to reach us.
             WebSocketClient.shared.reconnect()
@@ -1108,12 +1181,12 @@ final class CallService: NSObject, ObservableObject {
         Task {
             guard let pc, let current = active, current.id == call.id, current.state != .ended else { return }
             do {
-                try await pc.setRemoteDescription(RTCSessionDescription(type: .offer, sdp: sdp))
+                try await pc.setRemoteDescription(LKRTCSessionDescription(type: .offer, sdp: sdp))
                 hasRemoteDescription = true
                 drainPendingCandidates()
-                let answer = try await pc.answer(for: RTCMediaConstraints(mandatoryConstraints: nil,
+                let answer = try await pc.answer(for: LKRTCMediaConstraints(mandatoryConstraints: nil,
                                                                          optionalConstraints: nil))
-                let tuned = RTCSessionDescription(type: .answer,
+                let tuned = LKRTCSessionDescription(type: .answer,
                                                   sdp: CallSDPTuning.tuneLocalDescription(answer.sdp))
                 try await pc.setLocalDescription(tuned)
                 socket.sendCallAnswer(toUserId: from.isEmpty ? current.peerUserId : from,
@@ -1137,7 +1210,7 @@ final class CallService: NSObject, ObservableObject {
     /// SCOPE — deliberate and documented. Answering the waiting call ENDS the
     /// first one (see `answerWaitingCall`); it does not park it and let the user
     /// swap back and forth. True two-call hold/swap needs two concurrent
-    /// RTCPeerConnections and a second `ActiveCall`, which is a structural change
+    /// LKRTCPeerConnections and a second `ActiveCall`, which is a structural change
     /// to this class. What's here gets the user the thing that actually mattered:
     /// they find out someone is calling and get to choose. Hold itself is fully
     /// implemented (`applyHold`) and is what CallKit drives on the first call
@@ -1148,6 +1221,7 @@ final class CallService: NSObject, ObservableObject {
     private func reportWaitingCall(callId: String, from: String, title: String,
                                    isVideo: Bool, sdp: String?,
                                    conversationId: String?,
+                                   isConference: Bool = false,
                                    completion: (() -> Void)? = nil) {
         // Offer landing for a waiting call we already reported — just attach it.
         if var waiting = waitingCall, waiting.id == callId {
@@ -1199,6 +1273,7 @@ final class CallService: NSObject, ObservableObject {
                                   title: handle, isVideo: isVideo, sdp: sdp,
                                   conversationId: conversationId
                                       ?? LocalStore.conversationId(forPeer: from),
+                                  isConference: isConference,
                                   startedAt: Date())
         waitingCall = waiting
         hasWaitingCall = true
@@ -1262,7 +1337,16 @@ final class CallService: NSObject, ObservableObject {
         waitingCallTimeoutTask?.cancel(); waitingCallTimeoutTask = nil
         ringingSentCallIds.remove(waiting.id)
         if !waiting.peerUserId.isEmpty, takenElsewhere == nil {
-            if decline { socket.sendCallDecline(toUserId: waiting.peerUserId, callId: waiting.id) }
+            if decline {
+                // A declined CONFERENCE waiting-call leaves via the conference path
+                // (invite-decline frame + POST /leave), not the 1:1 decline frame.
+                if waiting.isConference {
+                    Task { await CallConferenceService.shared.declineInvite(
+                        callId: waiting.id, inviterUserId: waiting.peerUserId) }
+                } else {
+                    socket.sendCallDecline(toUserId: waiting.peerUserId, callId: waiting.id)
+                }
+            }
             else if sendBusy { socket.sendCallBusy(toUserId: waiting.peerUserId, callId: waiting.id) }
         }
         // A second call used to leave NO trace on any exit — five different
@@ -1346,7 +1430,30 @@ final class CallService: NSObject, ObservableObject {
     /// The user chose the waiting call. Ends the first call, then promotes the
     /// second into the single `active` slot and answers it normally.
     private func answerWaitingCall() {
-        guard let waiting = waitingCall else { return }
+        guard var waiting = waitingCall else { return }
+        // CONFERENCE waiting-call: there is no SDP offer coming, ever. Promote it to the
+        // active slot as a conference invite and let callKitAnswer's conference branch
+        // take over — answering this through the 1:1 path waited forever.
+        if waiting.isConference {
+            waitingCall = nil
+            hasWaitingCall = false
+            waitingCallTimeoutTask?.cancel(); waitingCallTimeoutTask = nil
+            MissedCallNotifier.cancel(callId: waiting.id)
+            if let first = active, first.state != .ended {
+                pendingEndReason = .localHangup
+                endActiveCall(notifyPeer: true, fromCallKit: false)
+            }
+            CallToneService.shared.stopAll()
+            active = ActiveCall(id: waiting.id, uuid: waiting.uuid, peerUserId: waiting.peerUserId,
+                                title: waiting.title, isVideo: waiting.isVideo,
+                                isOutgoing: false, state: .incomingRinging,
+                                conversationId: nil, isConferenceInvite: true)
+            videoEnabled = waiting.isVideo
+            callUIMinimized = false
+            beginCallTelemetry()
+            callKitAnswer(uuid: waiting.uuid)
+            return
+        }
         guard let sdp = waiting.sdp else {
             // Answered from the lock screen before the offer landed — remember the
             // intent; reportWaitingCall finishes this when the SDP arrives.
@@ -1390,6 +1497,31 @@ final class CallService: NSObject, ObservableObject {
             return
         }
         guard var call = active, call.uuid == uuid else { return }
+        // ── CONFERENCE INVITE: the conference engine owns acceptance. ──────────────
+        // An ad-hoc invite NEVER receives an SDP offer — the invitee joins the SFU by
+        // fetching an ad-hoc token — so falling through to the 1:1 answer path parked
+        // here forever in "waiting for the offer" limbo (the escalation bug). Route to
+        // the engine that actually knows how to get in, and end the CallKit call if
+        // joining fails rather than leaving a live report over a dead screen.
+        if call.isConferenceInvite {
+            localAnswerGiven = true
+            ringCapTask?.cancel(); ringCapTask = nil
+            MissedCallNotifier.cancel(callId: call.id)
+            call.state = .connecting
+            active = call
+            Task { [weak self] in
+                let joined = await CallConferenceService.shared.acceptInvite()
+                guard joined else {
+                    NSLog("[VOIID] conference accept failed — ending")
+                    pendingEndReason = .setupFailed
+                    guard let self, let current = self.active, current.id == call.id else { return }
+                    CallManager.shared.endCall(uuid: current.uuid)
+                    self.endActiveCall(notifyPeer: false, fromCallKit: false)
+                    return
+                }
+            }
+            return
+        }
         // ANSWERED. Kill the backstop here — before any of the work below, which can
         // fail — and remember it, because a call that fails after being answered is a
         // failed call, never a missed one.
@@ -1409,18 +1541,26 @@ final class CallService: NSObject, ObservableObject {
         }
         call.state = .connecting
         active = call
+        watchForKeyRotation()
         Task {
             await setupPeerConnection(isVideo: call.isVideo)
             guard let pc else { return }
             do {
-                try await pc.setRemoteDescription(RTCSessionDescription(type: .offer, sdp: offerSDP))
+                try await pc.setRemoteDescription(LKRTCSessionDescription(type: .offer, sdp: offerSDP))
                 hasRemoteDescription = true
                 drainPendingCandidates()
-                let answer = try await pc.answer(for: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil))
-                let tuned = RTCSessionDescription(type: .answer,
+                let answer = try await pc.answer(for: LKRTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil))
+                let tuned = LKRTCSessionDescription(type: .answer,
                                                   sdp: CallSDPTuning.tuneLocalDescription(answer.sdp))
                 try await pc.setLocalDescription(tuned)
                 socket.sendCallAnswer(toUserId: call.peerUserId, callId: call.id, sdp: tuned.sdp)
+                // Callee side: receivers came with the offer; senders exist now. If the
+                // caller's `call_key` envelope already landed we cover everything here;
+                // otherwise the secretRotated watcher retries on arrival.
+                attachFrameCryptorsIfReady()
+                CallKeyExchange.shared.sendVerificationTag(
+                    callId: call.id, peerUserId: call.peerUserId,
+                    localSDP: tuned.sdp, remoteSDP: offerSDP)
             } catch {
                 NSLog("[VOIID] call answer failed: \(error.localizedDescription)")
                 pendingEndReason = .setupFailed
@@ -1439,6 +1579,20 @@ final class CallService: NSObject, ObservableObject {
     /// Decline an incoming call.
     func decline() {
         guard let call = active, !call.isOutgoing else { return }
+        // A declined CONFERENCE invite goes through the conference leave path — that is
+        // what flips the server row from 'invited' to gone and refreshes everyone's
+        // roster. The 1:1 decline frame would land on the inviter's engine as noise and
+        // the roster would show a ghost ringer forever.
+        if call.isConferenceInvite {
+            pendingEndReason = .declined
+            Task { [weak self] in
+                await CallConferenceService.shared.declineInvite()
+                guard let self, let current = self.active, current.id == call.id else { return }
+                CallManager.shared.endCall(uuid: current.uuid)
+                self.endActiveCall(notifyPeer: false, fromCallKit: false)
+            }
+            return
+        }
         // peerUserId can still be empty if a VoIP push rang us with no caller_id and
         // the offer hasn't arrived — nothing to send the decline to in that case.
         if !call.peerUserId.isEmpty { socket.sendCallDecline(toUserId: call.peerUserId, callId: call.id) }
@@ -1452,9 +1606,16 @@ final class CallService: NSObject, ObservableObject {
         guard let call = active, call.id == callId, let pc else { return }
         Task {
             do {
-                try await pc.setRemoteDescription(RTCSessionDescription(type: .answer, sdp: sdp))
+                try await pc.setRemoteDescription(LKRTCSessionDescription(type: .answer, sdp: sdp))
                 hasRemoteDescription = true
                 drainPendingCandidates()
+                // Receivers exist now — finish covering the connection.
+                attachFrameCryptorsIfReady()
+                // Both SDPs are known: commit to the fingerprint pair. This is what
+                // flips the call badge to VERIFIED once the peer's tag matches.
+                CallKeyExchange.shared.sendVerificationTag(
+                    callId: callId, peerUserId: call.peerUserId,
+                    localSDP: pc.localDescription?.sdp, remoteSDP: sdp)
                 // If this answered an ICE-restart offer, the exchange is done —
                 // clear the in-flight flag so a later handover can restart again.
                 // The attempt budget is only refunded once ICE actually connects.
@@ -1468,7 +1629,7 @@ final class CallService: NSObject, ObservableObject {
 
     private func handleRemoteIce(callId: String, candidate: String, sdpMLineIndex: Int32, sdpMid: String?) {
         guard let call = active, call.id == callId else { return }
-        let ice = RTCIceCandidate(sdp: candidate, sdpMLineIndex: sdpMLineIndex, sdpMid: sdpMid)
+        let ice = LKRTCIceCandidate(sdp: candidate, sdpMLineIndex: sdpMLineIndex, sdpMid: sdpMid)
         if hasRemoteDescription, let pc {
             pc.add(ice) { err in if let err { NSLog("[VOIID] add ICE failed: \(err.localizedDescription)") } }
         } else {
@@ -1582,6 +1743,18 @@ final class CallService: NSObject, ObservableObject {
         if active?.id == callId { active?.isConferenceInvite = true }
     }
 
+    /// Retire the leftover leg of a call that became (or joined) a conference, once that
+    /// conference has ended. No-ops unless the active leg is exactly this call's
+    /// conference-invite state — an unrelated 1:1 call is never touched. Without this,
+    /// `active` stayed set forever after an escalated call finished: every later
+    /// `startCall` was silently blocked ("one call at a time") and the frame-cryptor
+    /// keys outlived the call they belonged to.
+    func retireConferenceLeg(callId: String) {
+        guard let call = active, call.id == callId, call.isConferenceInvite else { return }
+        pendingEndReason = everConnected ? .localHangup : .unknown
+        endActiveCall(notifyPeer: false, fromCallKit: false)
+    }
+
     func hangUp() {
         guard let call = active else { return }
         CallManager.shared.requestEnd(uuid: call.uuid)   // routes back via callKitEnd
@@ -1593,6 +1766,15 @@ final class CallService: NSObject, ObservableObject {
         // Declining the waiting call must leave the call we're actually on alone.
         if let waiting = waitingCall, waiting.uuid == uuid {
             clearWaitingCall(sendBusy: false, decline: true)
+            return
+        }
+        // Declining a CONFERENCE INVITE from the native UI must go out through the
+        // conference leave path, or the server keeps our row 'invited' and every
+        // participant's roster shows us ringing forever. `decline()` owns that logic;
+        // route through it instead of falling into 1:1 teardown.
+        if let call = active, call.uuid == uuid, call.isConferenceInvite,
+           !call.isOutgoing, !localAnswerGiven {
+            decline()
             return
         }
         // Record WHY. This used to leave `pendingEndReason` at `.unknown`, so tapping
@@ -1617,6 +1799,11 @@ final class CallService: NSObject, ObservableObject {
         awaitingOfferCallIds.remove(call.id)
         ringingSentCallIds.remove(call.id)
         answerWhenOfferArrives = false
+        // Kill the frame cryptors and burn the call secret. Every teardown path
+        // (local hangup, remote end, decline, setup failure) funnels through here,
+        // so this one line is the guarantee that keys die with the call.
+        detachFrameCryptors(callId: call.id)
+        keyRotatedCancellable?.cancel(); keyRotatedCancellable = nil
 
         // Ringback must never outlive the call it belongs to, on ANY teardown
         // path — that's the guarantee this single line buys, regardless of which
@@ -1710,7 +1897,7 @@ final class CallService: NSObject, ObservableObject {
         hasRemoteDescription = false
         pendingRemoteCandidates.removeAll()
         pendingIncomingOfferSDP = nil
-        RTCAudioSession.sharedInstance().isAudioEnabled = false
+        LKRTCAudioSession.sharedInstance().isAudioEnabled = false
 
         var ended = call; ended.state = .ended
         active = ended
@@ -1755,18 +1942,18 @@ final class CallService: NSObject, ObservableObject {
 
     private func setupPeerConnection(isVideo: Bool) async {
         let iceServers = await fetchIceServers()
-        let config = RTCConfiguration()
+        let config = LKRTCConfiguration()
         config.iceServers = iceServers
         config.sdpSemantics = .unifiedPlan
         config.continualGatheringPolicy = .gatherContinually
         config.bundlePolicy = .maxBundle
         config.rtcpMuxPolicy = .require
 
-        let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
+        let constraints = LKRTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
         pc = Self.factory.peerConnection(with: config, constraints: constraints, delegate: self)
 
         // Local audio (always).
-        let audioSource = Self.factory.audioSource(with: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil))
+        let audioSource = Self.factory.audioSource(with: LKRTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil))
         let audio = Self.factory.audioTrack(with: audioSource, trackId: "voiid_audio0")
         localAudioTrack = audio
         pc?.add(audio, streamIds: ["voiid_stream"])
@@ -1775,7 +1962,7 @@ final class CallService: NSObject, ObservableObject {
         if isVideo {
             let source = Self.factory.videoSource()
             videoSource = source
-            let capturer = RTCCameraVideoCapturer(delegate: source)
+            let capturer = LKRTCCameraVideoCapturer(delegate: source)
             videoCapturer = capturer
             let track = Self.factory.videoTrack(with: source, trackId: "voiid_video0")
             track.isEnabled = videoEnabled
@@ -1785,11 +1972,11 @@ final class CallService: NSObject, ObservableObject {
         }
     }
 
-    private func startCapture(capturer: RTCCameraVideoCapturer, front: Bool) {
+    private func startCapture(capturer: LKRTCCameraVideoCapturer, front: Bool) {
         let position: AVCaptureDevice.Position = front ? .front : .back
-        guard let device = RTCCameraVideoCapturer.captureDevices().first(where: { $0.position == position })
-                ?? RTCCameraVideoCapturer.captureDevices().first else { return }
-        let formats = RTCCameraVideoCapturer.supportedFormats(for: device)
+        guard let device = LKRTCCameraVideoCapturer.captureDevices().first(where: { $0.position == position })
+                ?? LKRTCCameraVideoCapturer.captureDevices().first else { return }
+        let formats = LKRTCCameraVideoCapturer.supportedFormats(for: device)
         // Pick a ~720p format with the highest supported fps.
         let target = formats.min(by: { a, b in
             let da = CMVideoFormatDescriptionGetDimensions(a.formatDescription)
@@ -1801,20 +1988,20 @@ final class CallService: NSObject, ObservableObject {
         capturer.startCapture(with: device, format: format, fps: Int(min(fps, 30)))
     }
 
-    private func fetchIceServers() async -> [RTCIceServer] {
+    private func fetchIceServers() async -> [LKRTCIceServer] {
         struct TurnServer: Decodable { let urls: [String]; let username: String?; let credential: String? }
         struct TurnResponse: Decodable { let ice_servers: [TurnServer] }
         do {
             let resp: TurnResponse = try await api.request("GET", "calls/turn", as: TurnResponse.self)
             return resp.ice_servers.map { s in
                 if let u = s.username, let c = s.credential {
-                    return RTCIceServer(urlStrings: s.urls, username: u, credential: c)
+                    return LKRTCIceServer(urlStrings: s.urls, username: u, credential: c)
                 }
-                return RTCIceServer(urlStrings: s.urls)
+                return LKRTCIceServer(urlStrings: s.urls)
             }
         } catch {
             NSLog("[VOIID] /calls/turn failed, using public STUN: \(error.localizedDescription)")
-            return [RTCIceServer(urlStrings: ["stun:stun.l.google.com:19302"])]
+            return [LKRTCIceServer(urlStrings: ["stun:stun.l.google.com:19302"])]
         }
     }
 
@@ -1857,10 +2044,10 @@ final class CallService: NSObject, ObservableObject {
     }
 }
 
-// MARK: - RTCPeerConnectionDelegate (nonisolated; hops to main actor)
+// MARK: - LKRTCPeerConnectionDelegate (nonisolated; hops to main actor)
 
-extension CallService: RTCPeerConnectionDelegate {
-    nonisolated func peerConnection(_ pc: RTCPeerConnection, didGenerate candidate: RTCIceCandidate) {
+extension CallService: LKRTCPeerConnectionDelegate {
+    nonisolated func peerConnection(_ pc: LKRTCPeerConnection, didGenerate candidate: LKRTCIceCandidate) {
         Task { @MainActor in
             guard let call = self.active else { return }
             self.socket.sendCallIce(toUserId: call.peerUserId, callId: call.id,
@@ -1869,7 +2056,7 @@ extension CallService: RTCPeerConnectionDelegate {
         }
     }
 
-    nonisolated func peerConnection(_ pc: RTCPeerConnection, didChange newState: RTCIceConnectionState) {
+    nonisolated func peerConnection(_ pc: LKRTCPeerConnection, didChange newState: LKRTCIceConnectionState) {
         Task { @MainActor in
             switch newState {
             case .connected, .completed:
@@ -1901,19 +2088,19 @@ extension CallService: RTCPeerConnectionDelegate {
         }
     }
 
-    nonisolated func peerConnection(_ pc: RTCPeerConnection, didAdd rtpReceiver: RTCRtpReceiver, streams: [RTCMediaStream]) {
+    nonisolated func peerConnection(_ pc: LKRTCPeerConnection, didAdd rtpReceiver: LKRTCRtpReceiver, streams: [LKRTCMediaStream]) {
         // Unified-plan remote track arrival.
-        if let video = rtpReceiver.track as? RTCVideoTrack {
+        if let video = rtpReceiver.track as? LKRTCVideoTrack {
             Task { @MainActor in self.remoteVideoTrack = video }
         }
     }
 
     // Unused but required by the protocol.
-    nonisolated func peerConnectionShouldNegotiate(_ pc: RTCPeerConnection) {}
-    nonisolated func peerConnection(_ pc: RTCPeerConnection, didChange stateChanged: RTCSignalingState) {}
-    nonisolated func peerConnection(_ pc: RTCPeerConnection, didAdd stream: RTCMediaStream) {}
-    nonisolated func peerConnection(_ pc: RTCPeerConnection, didRemove stream: RTCMediaStream) {}
-    nonisolated func peerConnection(_ pc: RTCPeerConnection, didChange newState: RTCIceGatheringState) {}
-    nonisolated func peerConnection(_ pc: RTCPeerConnection, didRemove candidates: [RTCIceCandidate]) {}
-    nonisolated func peerConnection(_ pc: RTCPeerConnection, didOpen dataChannel: RTCDataChannel) {}
+    nonisolated func peerConnectionShouldNegotiate(_ pc: LKRTCPeerConnection) {}
+    nonisolated func peerConnection(_ pc: LKRTCPeerConnection, didChange stateChanged: LKRTCSignalingState) {}
+    nonisolated func peerConnection(_ pc: LKRTCPeerConnection, didAdd stream: LKRTCMediaStream) {}
+    nonisolated func peerConnection(_ pc: LKRTCPeerConnection, didRemove stream: LKRTCMediaStream) {}
+    nonisolated func peerConnection(_ pc: LKRTCPeerConnection, didChange newState: LKRTCIceGatheringState) {}
+    nonisolated func peerConnection(_ pc: LKRTCPeerConnection, didRemove candidates: [LKRTCIceCandidate]) {}
+    nonisolated func peerConnection(_ pc: LKRTCPeerConnection, didOpen dataChannel: LKRTCDataChannel) {}
 }

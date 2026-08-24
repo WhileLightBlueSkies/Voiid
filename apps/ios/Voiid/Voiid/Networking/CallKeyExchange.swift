@@ -35,22 +35,29 @@
 //  §3.8 — VERIFIED KEYING FOR PLAIN 1:1 CALLS
 //  1:1 media is DTLS-SRTP, and the fingerprints binding that handshake to the peer ride a
 //  server-relayed SDP, so a colluding server can MITM (the header of CallService.swift has
-//  admitted this since the file was written). The vendored WebRTC build exposes no supported
-//  way to inject SRTP master keys, so we use the call secret as a KEY COMMITMENT instead:
-//  both sides hash the derived SRTP keys together with the ORDERED PAIR of DTLS fingerprints
-//  and exchange the tag over the ratchet. A relay that swapped a fingerprint cannot produce a
-//  matching tag, because it never sees the secret. Mismatch is surfaced, never silently
-//  ignored — and never used to drop a call, which would hand any packet-dropping middlebox a
-//  way to kill every call in the network.
+//  admitted this since the file was written). DTLS-SRTP alone is therefore transport
+//  encryption whose endpoint binding rests on the relay's honesty.
 //
-//  VERSION NEGOTIATION IS BY ABSENCE. A peer that never sends `call_key` is an old client:
-//  the call completes exactly as it does today, unverified. Nothing here may become a
-//  precondition for connecting a 1:1 call.
+//  THE FIX (frame-level E2EE): the vendored WebRTC was replaced with LiveKit's fork, which
+//  exposes RTCFrameCryptor — AES-GCM encryption of EVERY RTP payload, applied after the
+//  encoder and removed after the decoder, on our OWN RTCPeerConnection. Both sides derive
+//  an identical 32-byte media key from the ratchet-delivered call secret (HKDF-SHA256,
+//  label below) and feed it to a shared-key provider. A signaling-colluding MITM can now
+//  insert itself into DTLS and receive only ciphertext it cannot open, because the frame
+//  key never transits anything but the Double Ratchet.
 //
+//  FAIL-CLOSED: cryptors are created with discardFrameWhenCryptorNotReady = true — until
+//  BOTH sides hold the key, frames are DROPPED, never sent in the clear. The worst case
+//  is silence, not plaintext.
+//
+//  The commitment tag (below) stays: it proves the two sides agree on the same secret AND
+//  the same DTLS fingerprint pair, which turns "encrypted" into "encrypted WITH THE PEER I
+//  VERIFIED" — the property that makes the UI badge meaningful.
 
 import Combine
 import CryptoKit
 import Foundation
+import LiveKitWebRTC
 
 /// How much we know about the media keying of a call, for the UI and for logs.
 enum CallKeyVerification: Equatable {
@@ -107,6 +114,56 @@ final class CallKeyExchange: ObservableObject {
 
     /// Verified-keying state per call (§3.8). Published so the call screen can show it.
     @Published private(set) var verification: [String: CallKeyVerification] = [:]
+
+    // MARK: Frame-level E2EE state
+
+    /// call_id -> the shared-key provider feeding our frame cryptors. Created lazily on
+    /// first request; when a NEW generation installs, `setSharedKey` re-keys every cryptor
+    /// holding this provider — LiveKit's ratchet handles the transition.
+    private var frameProviders: [String: LKRTCFrameCryptorKeyProvider] = [:]
+    /// call_id -> generation the provider was last keyed with, so an out-of-order
+    /// install cannot roll the key backwards.
+    private var providerGeneration: [String: Int] = [:]
+
+    /// HKDF label. Domain-separated from everything else e2e-core derives; changing it
+    /// invalidates all in-flight calls' keys on BOTH ends simultaneously, so treat it as
+    /// protocol constant, not a setting.
+    private static let frameKeySalt = Data("VoiidFrameKey v1".utf8)
+
+    /// The 32-byte media key both sides derive from the call secret. Deterministic and
+    /// symmetric: same secret in, same key out, on both devices.
+    private func frameMediaKey(_ secret: CallSecret) -> SymmetricKey {
+        let ikm = Data(base64Encoded: secret.secret) ?? Data(secret.secret.utf8)
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: ikm),
+            salt: Self.frameKeySalt,
+            info: Data(),
+            outputByteCount: 32
+        )
+    }
+
+    /// The shared-key provider for `callId`, creating it (keyed to the CURRENT secret)
+    /// if needed. CallService hands this to its RTCFrameCryptors. Returns nil only when
+    /// we hold no secret yet — the caller retries once `secretRotated` fires.
+    func frameKeyProvider(callId: String) -> LKRTCFrameCryptorKeyProvider? {
+        guard let secret = secrets[callId] else { return nil }
+        if let existing = frameProviders[callId] { return existing }
+        let provider = LKRTCFrameCryptorKeyProvider(
+            ratchetSalt: Self.frameKeySalt,
+            ratchetWindowSize: 0,
+            sharedKeyMode: true,
+            uncryptedMagicBytes: nil,
+            failureTolerance: -1,
+            keyRingSize: 16,
+            discardFrameWhenCryptorNotReady: true
+        )
+        let key = frameMediaKey(secret).withUnsafeBytes { Data($0) }
+        provider.setSharedKey(key, with: 0)
+        frameProviders[callId] = provider
+        providerGeneration[callId] = generations[callId]
+        NSLog("[VOIID] call-key: frame key provider ready for \(callId)")
+        return provider
+    }
 
     /// Fires with a call_id whenever that call's media key CHANGED. GroupCallService
     /// subscribes and re-applies it to LiveKit's key provider, debounced exactly like the
@@ -217,7 +274,22 @@ final class CallKeyExchange: ObservableObject {
             NSLog("[VOIID] call-key: could not open envelope from \(fromUserId) for \(callId)")
             return
         }
-        guard let env = try? JSONDecoder().decode(Envelope.self, from: plaintext) else {
+        // TWO SHAPES ON THE WIRE, BOTH ACCEPTED (cross-platform 1:1 calls):
+        //   iOS:    {v, k:"secret"|"verify", call_id, secret?, gen?, tag?}
+        //   Android:{t:"voiid:call_key", call_id, epoch, secret}
+        // A decoder that only knew its own dialect made iOS↔Android key delivery
+        // impossible. `gen` and `epoch` are the same monotonic generation.
+        var env: Envelope
+        if let ios = try? JSONDecoder().decode(Envelope.self, from: plaintext), ios.k != nil {
+            env = ios
+        } else if let obj = try? JSONSerialization.jsonObject(with: plaintext) as? [String: Any],
+                  obj["t"] as? String == "voiid:call_key",
+                  let secret = obj["secret"] as? String {
+            env = Envelope(v: 1, k: "secret", call_id: (obj["call_id"] as? String),
+                           secret: secret,
+                           gen: (obj["epoch"] as? Int) ?? 1,
+                           tag: nil)
+        } else {
             NSLog("[VOIID] call-key: malformed envelope from \(fromUserId) for \(callId)")
             return
         }
@@ -269,6 +341,16 @@ final class CallKeyExchange: ObservableObject {
         localTags[callId] = nil
         remoteTags[callId] = nil
         if verification[callId] != nil { verification[callId] = .pending }
+        // Roll the frame key with the secret. setSharedKey at the same index triggers the
+        // provider's ratchet on every cryptor attached to it; the window size is 0 and
+        // failureTolerance -1, so a frame encrypted under the previous key still decrypts
+        // briefly across the switch instead of shredding live audio.
+        if let provider = frameProviders[callId],
+           providerGeneration[callId] != generation {
+            let key = frameMediaKey(secret).withUnsafeBytes { Data($0) }
+            provider.setSharedKey(key, with: 0)
+            providerGeneration[callId] = generation
+        }
         guard previous != secret.secret else { return }
         NSLog("[VOIID] call-key: installed gen=\(generation) for \(callId)")
         secretRotated.send(callId)
@@ -283,6 +365,8 @@ final class CallKeyExchange: ObservableObject {
         localTags[callId] = nil
         remoteTags[callId] = nil
         verification[callId] = nil
+        frameProviders[callId] = nil
+        providerGeneration[callId] = nil
     }
 
     /// Drop every call secret. Sign-out only.
@@ -293,6 +377,8 @@ final class CallKeyExchange: ObservableObject {
         localTags.removeAll()
         remoteTags.removeAll()
         verification.removeAll()
+        frameProviders.removeAll()
+        providerGeneration.removeAll()
     }
 
     // MARK: - Verified keying for 1:1 (§3.8)

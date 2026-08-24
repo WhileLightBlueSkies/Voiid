@@ -353,6 +353,12 @@ struct OnboardingPrivacyNote: View {
 struct OnboardingPrimaryButton: View {
     let title: String
     var busy: Bool = false
+    /// Gates the button on a precondition the screen owns (Terms' consent tick).
+    ///
+    /// It LOOKS disabled as well as being disabled — the glow drops and the fill dims. A button
+    /// that appears live and then refuses the tap teaches the user that the interface lies; one
+    /// that is visibly inert tells them what to do next.
+    var enabled: Bool = true
     let action: () -> Void
 
     var body: some View {
@@ -380,10 +386,14 @@ struct OnboardingPrimaryButton: View {
                                    startPoint: .top, endPoint: .bottom)
                 )
             )
-            .shadow(color: VoiidColor.accent.opacity(0.42), radius: 22)
-            .shadow(color: VoiidColor.accent.opacity(0.22), radius: 44, y: 8)
+            // The glow is what makes this the brightest thing on the screen, so a disabled
+            // button drops it entirely rather than dimming it — a dim glow still reads as lit.
+            .shadow(color: VoiidColor.accent.opacity(enabled ? 0.42 : 0), radius: 22)
+            .shadow(color: VoiidColor.accent.opacity(enabled ? 0.22 : 0), radius: 44, y: 8)
+            .opacity(enabled ? 1 : 0.38)
         }
         .buttonStyle(.plain)
-        .disabled(busy)
+        .disabled(busy || !enabled)
+        .animation(.easeOut(duration: 0.2), value: enabled)
     }
 }

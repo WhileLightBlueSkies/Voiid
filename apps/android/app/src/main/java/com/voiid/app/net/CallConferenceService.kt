@@ -240,6 +240,19 @@ object ConferenceManager {
      * that everyone else has already rotated to.
      */
     private fun onCallKey(frame: ConferenceRelay.Frame) {
+        // 1:1 FALLBACK. A frame whose call_id matches the live P2P call (not a
+        // conference) belongs to the 1:1 frame-E2EE layer — route it there instead of
+        // dropping it because this engine has no state.
+        val oneToOne = CallManager.state.value
+        if (oneToOne?.callId == frame.callId && !oneToOne.isConferenceInvite) {
+            CallManager.onOneToOneCallKey(
+                ciphertexts = mapOf(frame.deviceId.toString() to (frame.ciphertextB64 ?: "")),
+                senderDeviceId = frame.senderDeviceId,
+                fromUserId = frame.fromUserId,
+                callId = frame.callId,
+            )
+            return
+        }
         val callId = _state.value?.callId ?: pendingKeyCallId ?: return
         if (frame.callId != callId) return
         val c = courier ?: return
@@ -944,6 +957,15 @@ object ConferenceManager {
             }
         }
         teardownRoom()
+
+        // RETIRE THE 1:1 BOOKKEEPING this conference grew out of: an accepted invite (or a
+        // completed escalation) parked a CONNECTING/leg state in [CallManager]. Without this
+        // it stayed forever — blocking every future call ("one call at a time") and keeping
+        // the frame-cryptor keys alive past the call they belong to.
+        val leg = CallManager.state.value
+        if (leg?.callId == s.callId && leg.isConferenceInvite) {
+            CallManager.retireConferenceLeg(callId = s.callId)
+        }
     }
 
     /**

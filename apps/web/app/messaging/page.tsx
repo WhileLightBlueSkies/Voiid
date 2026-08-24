@@ -1,11 +1,15 @@
 import type { Metadata } from 'next';
 import { Hero } from '../../components/Hero';
-import { Section, Grid, Split } from '../../components/Section';
-import { FeatureCard } from '../../components/FeatureCard';
+import { Section, Split } from '../../components/Section';
+import { MessageJourney } from '../../components/MessageJourney';
+import { ReachabilityDemo } from '../../components/ReachabilityDemo';
 import { Callout } from '../../components/Callout';
 import { E2EEBadge } from '../../components/E2EEBadge';
 import { CTA } from '../../components/CTA';
-import { PhoneMockup, PhoneAppBar, ChatBubble } from '../../components/PhoneMockup';
+import { Button, ButtonRow } from '../../components/Button';
+import { Glyph } from '../../components/Glyph';
+import { PhoneMockup, PhoneAppBar, ChatBubble, PhoneAvatar } from '../../components/PhoneMockup';
+import styles from './page.module.css';
 
 export const metadata: Metadata = {
   title: 'Messaging',
@@ -22,6 +26,28 @@ export const metadata: Metadata = {
  *   - Note to Self is a real conversation type — conversations.type = 'self'.
  * Nothing here claims disappearing messages, backups or a desktop app.
  */
+
+const JOURNEY = [
+  {
+    glyph: 'device' as const,
+    title: 'Sealed on your phone',
+    body: 'Your device encrypts the message for each recipient device, with keys that never leave the keychain.',
+  },
+  {
+    glyph: 'broadcast' as const,
+    title: 'Relayed blind',
+    // The one leg where we carry the message and cannot read it. The rail is
+    // drawn dashed across exactly this step.
+    blind: true,
+    body: 'Our server moves opaque ciphertext. It sees which device gets which envelope \u2014 never what is inside one.',
+  },
+  {
+    glyph: 'lock' as const,
+    title: 'Opened on theirs',
+    body: 'Only the recipient\u2019s devices hold the private half. To everyone else, including us, it is noise.',
+  },
+];
+
 export default function MessagingPage() {
   return (
     <>
@@ -39,16 +65,38 @@ export default function MessagingPage() {
         badges={<E2EEBadge state="e2ee" detail="Messages and groups" />}
         aside={
           <PhoneMockup hue="chat" tilt="left" label="A one-to-one chat" decorative>
-            <PhoneAppBar title="Priyanshu" subtitle="online" />
+            <PhoneAppBar
+              title="Priyanshu"
+              subtitle="End-to-end encrypted"
+              trailing={<Glyph name="call" size={16} />}
+            />
             <ChatBubble>Did the build pass?</ChatBubble>
             <ChatBubble side="sent">Green on both platforms.</ChatBubble>
             <ChatBubble side="sent">Pushing now.</ChatBubble>
+            <ChatBubble>Legend. Testing the new build now</ChatBubble>
           </PhoneMockup>
         }
       />
 
+      {/* ---- how a message travels ------------------------------------------- */}
       <Section
         hue="chat"
+        eyebrow="The path of a message"
+        title="Three steps, and we are blind for the middle one."
+        lede={
+          <>
+            End-to-end is a statement about the whole journey, not about either end. Here
+            is the entire trip your message takes — there is no fourth step where anyone
+            reads it.
+          </>
+        }
+      >
+        <MessageJourney steps={JOURNEY} />
+      </Section>
+
+      <Section
+        hue="chat"
+        tone="raised"
         eyebrow="Reachability"
         title="Knowing your number is not the same as being able to message you"
         lede={
@@ -59,40 +107,25 @@ export default function MessagingPage() {
           </>
         }
       >
-        <Grid>
-          <FeatureCard title="You already have each other saved" glyph="check" hue="chat">
-            The chat opens directly. Mutual contacts are the one case where both people have
-            already made the decision, so there is nothing left to ask.
-          </FeatureCard>
-          <FeatureCard title="Only one of you has the other saved" glyph="note" hue="chat">
-            It arrives as a request you can accept or decline. Having someone&rsquo;s number is
-            not consent — treating it as consent is exactly what turns a leaked list into
-            spam everywhere else.
-          </FeatureCard>
-          <FeatureCard title="They found your @username" glyph="key" hue="chat">
-            A username alone gets them nowhere. They also need your six-digit contact PIN,
-            which you give out yourself — out loud, on a card, however you like — and it
-            still only opens a request.
-          </FeatureCard>
-        </Grid>
-        <Callout tone="note" title="The PIN is not a password">
+        <ReachabilityDemo />
+        <Callout tone="note" title="The PIN is not a password" className={styles.afterDemo}>
           It cannot log anyone in and it protects nothing but your inbox. It is a
           proof-of-acquaintance token: six digits are enough to stop someone guessing their
           way to you at scale, and small enough to read out over a phone call.
         </Callout>
       </Section>
 
-      <Section hue="chat" tone="raised" eyebrow="Groups" title="Groups that stay encrypted as they grow">
+      <Section hue="chat" eyebrow="Groups" title="Groups that stay encrypted as they grow">
         <Split
           aside={
             <PhoneMockup hue="chat" size="sm" tilt="right" label="A group conversation" decorative>
-              <PhoneAppBar title="Launch team" subtitle="9 members" />
+              <PhoneAppBar title="Launch team" subtitle="9 members · encrypted" />
               <ChatBubble>Ship it?</ChatBubble>
               <ChatBubble side="sent">Ship it.</ChatBubble>
             </PhoneMockup>
           }
         >
-          <div>
+          <div className={styles.proseFlow}>
             <p>
               Group chats use MLS, the IETF standard for continuous group key agreement. Every
               member holds a share of the group key; adding or removing someone rolls it, so a
@@ -120,9 +153,17 @@ export default function MessagingPage() {
       <CTA
         hue="chat"
         title="Read the encryption story in full"
-        lede="What is end-to-end encrypted, what deliberately is not, and precisely what our servers can see."
-        actions={<></>}
-        note={<>See the <a href="/privacy">privacy page</a>.</>}
+        lede="Every primitive we encrypt with, what deliberately stays public, and precisely what our servers can see."
+        actions={
+          <ButtonRow align="center">
+            <Button href="/encryption" size="lg">
+              See the encryption stack
+            </Button>
+            <Button href="/privacy" variant="secondary" size="lg">
+              What we can see
+            </Button>
+          </ButtonRow>
+        }
       />
     </>
   );

@@ -62,62 +62,67 @@ struct AboutView: View {
     private let deviceID: String = E2EManager.shared.deviceId ?? "—"
 
     var body: some View {
-        List {
-            SettingsSection("App") {
-                LabeledContent {
-                    value(appVersion)
-                } label: {
-                    title("Version")
-                }
-            }
+        ScrollView {
+            VStack(alignment: .leading, spacing: VoiidSpacing.md) {
+                VoiidSettingsHeader("About",
+                                    subtitle: "What you're running, where it points, and who "
+                                            + "this device thinks you are.")
 
-            SettingsSection("Connection") {
-                LabeledContent {
-                    value(APIConfig.baseURL.host ?? "—")
-                } label: {
-                    title("Server")
+                VoiidCardSection("App") {
+                    VoiidSettingsRow(icon: "app.badge", title: "Version") {
+                        value(appVersion)
+                    }
                 }
-                LabeledContent {
-                    value(config.apiVersion)
-                } label: {
-                    title("API version")
-                }
-            }
 
-            SettingsSection("Identifiers",
-                            footer: "Support may ask for these if something goes wrong. They identify your account and this device — nothing else.") {
-                LabeledContent {
-                    identifier(userID)
-                } label: {
-                    title("User ID")
+                VoiidCardSection("Connection") {
+                    VoiidSettingsRow(icon: "server.rack", title: "Server") {
+                        value(APIConfig.baseURL.host ?? "\u{2014}")
+                    }
+                    VoiidRowDivider()
+                    VoiidSettingsRow(icon: "arrow.left.arrow.right", title: "API version") {
+                        value(config.apiVersion)
+                    }
                 }
-                LabeledContent {
-                    identifier(deviceID)
-                } label: {
-                    title("Device ID")
-                }
-            }
 
-            SettingsSection(footer: "Includes only the values shown above. No messages, contacts or keys.") {
-                // Native ShareLink, deliberately in preference to the UIActivityViewController
-                // bridge (`ShareSheet`) that NewChatView still uses: it gets the system
-                // presentation, the correct accessibility traits and the item preview for free.
-                ShareLink(item: diagnosticsText, subject: Text("Voiid diagnostics")) {
-                    Label("Share Diagnostics", systemImage: "square.and.arrow.up")
-                        .font(.body)
-                        .foregroundStyle(VoiidColor.textPrimary)
+                VoiidCardSection("Identifiers",
+                                 footer: "Support may ask for these if something goes wrong. "
+                                       + "They identify your account and this device \u{2014} "
+                                       + "nothing else.") {
+                    VoiidSettingsRow(icon: "person.text.rectangle", title: "User ID") {
+                        identifier(userID)
+                    }
+                    VoiidRowDivider()
+                    VoiidSettingsRow(icon: "iphone", title: "Device ID") {
+                        identifier(deviceID)
+                    }
                 }
-                .accessibilityHint("Shares the version, server and identifier values shown above")
-            }
 
-            legal
+                VoiidCardSection(footer: "Includes only the values shown above. No messages, "
+                                       + "contacts or keys.") {
+                    // Native ShareLink, deliberately in preference to the
+                    // UIActivityViewController bridge (`ShareSheet`) that NewChatView still
+                    // uses: it gets the system presentation, the correct accessibility traits
+                    // and the item preview for free.
+                    ShareLink(item: diagnosticsText, subject: Text("Voiid diagnostics")) {
+                        HStack(spacing: VoiidSpacing.md) {
+                            VoiidRowIcon(systemName: "square.and.arrow.up")
+                            Text("Share Diagnostics")
+                                .font(.body)
+                                .foregroundStyle(VoiidColor.textPrimary)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, VoiidSpacing.md)
+                        .padding(.vertical, 11)
+                        .contentShape(Rectangle())
+                    }
+                    .accessibilityHint("Shares the version, server and identifier values shown above")
+                }
+
+                legal
+            }
+            .padding(VoiidSpacing.md)
         }
-        .voiidSettingsList()
-        .background(VoiidColor.background.ignoresSafeArea())
-        .navigationTitle("About")
-        // No .preferredColorScheme here: this screen is pushed inside SettingsSheet's own
-        // NavigationStack and inherits the sheet's pinned light scheme. Re-declaring it on
-        // a pushed screen is the mistake, not the safeguard.
+        .voiidSettingsPage()
     }
 
     // MARK: - Legal
@@ -126,17 +131,32 @@ struct AboutView: View {
     /// exists, which today it does not.
     @ViewBuilder
     private var legal: some View {
-        SettingsSection("Legal",
-                        footer: "Version \(LegalDocuments.noticeVersion). Stored in the app, so they open without a connection. Settings → Privacy & Legal is where you review or withdraw your consent.") {
-            ForEach(LegalDocuments.all) { doc in
+        VoiidCardSection("Legal",
+                         footer: "Version \(LegalDocuments.noticeVersion). Stored in the app, "
+                               + "so they open without a connection. Settings \u{2192} Privacy "
+                               + "& Legal is where you review or withdraw your consent.") {
+            ForEach(Array(LegalDocuments.all.enumerated()), id: \.element.id) { index, doc in
                 NavigationLink {
                     LegalDocumentView(document: doc)
                 } label: {
-                    Text(doc.title)
-                        .font(.body)
-                        .foregroundStyle(VoiidColor.textPrimary)
+                    HStack(spacing: VoiidSpacing.md) {
+                        VoiidRowIcon(systemName: "doc.text")
+                        Text(doc.title)
+                            .font(.body)
+                            .foregroundStyle(VoiidColor.textPrimary)
+                            .multilineTextAlignment(.leading)
+                        Spacer(minLength: 0)
+                        VoiidChevron()
+                    }
+                    .padding(.horizontal, VoiidSpacing.md)
+                    .padding(.vertical, 11)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(RowButtonStyle())
+
+                if index < LegalDocuments.all.count - 1 || helpURL != nil { VoiidRowDivider() }
             }
+
             if let helpURL { externalLink("Help", to: helpURL) }
         }
     }
@@ -146,32 +166,29 @@ struct AboutView: View {
     /// than decoration. It is hidden from VoiceOver because the hint already says it.
     private func externalLink(_ title: String, to url: URL) -> some View {
         Link(destination: url) {
-            LabeledContent {
+            HStack(spacing: VoiidSpacing.md) {
+                VoiidRowIcon(systemName: "questionmark.circle")
+                Text(title)
+                    .font(.body)
+                    .foregroundStyle(VoiidColor.textPrimary)
+                Spacer(minLength: 0)
                 Image(systemName: "arrow.up.forward.app")
                     .font(.footnote)
                     .foregroundStyle(VoiidColor.placeholder)
                     .accessibilityHidden(true)
-            } label: {
-                Text(title)
-                    .font(.body)
-                    .foregroundStyle(VoiidColor.textPrimary)
             }
+            .padding(.horizontal, VoiidSpacing.md)
+            .padding(.vertical, 11)
+            .contentShape(Rectangle())
         }
         .accessibilityHint("Opens in Safari")
     }
 
     // MARK: - Row parts
     //
-    // Semantic styles only, so the whole screen scales with Dynamic Type; `.fontDesign(.rounded)`
-    // comes from `voiidSettingsList()` via the environment. `LabeledContent` restacks the
-    // value under the title on its own at accessibility sizes, which is why no row here has
-    // a fixed height.
-
-    private func title(_ text: String) -> some View {
-        Text(text)
-            .font(.body)
-            .foregroundStyle(VoiidColor.textPrimary)
-    }
+    // Semantic styles only, so the whole screen scales with Dynamic Type. No row here has a
+    // fixed height: `VoiidSettingsRow` sizes to its content, so a value that wraps at an
+    // accessibility size grows the row instead of being clipped.
 
     private func value(_ text: String) -> some View {
         Text(text)

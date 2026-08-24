@@ -10,9 +10,21 @@
   margin-inline: auto;
   padding: clamp(var(--space-xl), 6vw, var(--space-3xl)) clamp(var(--space-md), 5vw, var(--space-2xl));
   border-radius: var(--radius-2xl);
-  border: 1px solid var(--color-divider);
-  background: var(--color-surface);
-  box-shadow: var(--shadow-card);
+  /*
+   * A FILLED block, not a white panel.
+   *
+   * On the near-white ground a white card with a hairline is almost invisible,
+   * which is the last thing a page's closing call to action should be. Filling it
+   * with the deep brand ink gives the page one dark anchor at the bottom, makes
+   * the primary button inside it read as the brightest thing on screen, and is
+   * the shape every comparable site closes on.
+   */
+  border: none;
+  background:
+    radial-gradient(120% 140% at 50% -20%, #17959f 0%, transparent 60%),
+    linear-gradient(165deg, #0f6f78 0%, #0a4d54 100%);
+  box-shadow: var(--shadow-pop);
+  color: #ffffff;
   text-align: center;
 }
 
@@ -24,7 +36,7 @@
   background: linear-gradient(
     90deg,
     transparent 0%,
-    var(--hue) 50%,
+    rgba(255, 255, 255, 0.35) 50%,
     transparent 100%
   );
 }
@@ -39,7 +51,7 @@
   border-radius: 50%;
   background: radial-gradient(
     closest-side,
-    color-mix(in srgb, var(--hue) 22%, transparent),
+    rgba(255, 255, 255, 0.14),
     transparent 100%
   );
   pointer-events: none;
@@ -54,44 +66,78 @@
   gap: var(--space-md);
 }
 
+/* Everything inside the filled block sets its own light-on-dark colour: the
+ * --color-text-* tokens are dark-on-light by definition and cannot be reused here. */
 .title {
   font-size: var(--text-h2);
-  max-width: 22ch;
+  max-width: 20ch;
+  color: #ffffff;
+  text-wrap: balance;
 }
 
 .lede {
   font-size: var(--text-lede);
-  line-height: var(--leading-body);
-  color: var(--color-text-dim);
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.80);
   max-width: 50ch;
+  text-wrap: pretty;
 }
 
-.actions { margin-block-start: var(--space-2xs); }
+.actions { margin-block-start: var(--space-sm); }
 
 .note {
   font-size: var(--text-caption);
-  color: var(--color-text-dim);
+  line-height: var(--leading-body);
+  color: rgba(255, 255, 255, 0.62);
   max-width: 52ch;
 }
 
-/* ---- the amber variant. Rare by design. ---------------------------------- */
+/* The buttons sit on the brand fill, so they invert. Scoped to `.body` (a local
+ * class, as CSS Modules requires) and targeting the STABLE `btn-*` class the
+ * Button component attaches — never the hashed module class, which is a build
+ * artefact rather than a contract. */
+.body :global(.btn-primary) {
+  background: #ffffff;
+  color: var(--color-primary-ink);
+  box-shadow: 0 2px 12px -4px rgba(0, 0, 0, 0.35);
+}
+.body :global(.btn-primary:hover) { background: rgba(255, 255, 255, 0.9); }
+
+.body :global(.btn-secondary) {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.35);
+  color: #ffffff;
+  box-shadow: none;
+}
+.body :global(.btn-secondary:hover) {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.55);
+}
+
+.body :global(.btn-ghost) { color: #ffffff; }
+
+.body :global([class*='btn-']:focus-visible) {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.6);
+}
+
+/* ---- the amber variant. Rare by design. ---------------------------------- *
+ * Same filled treatment, warmer ground. The text rules above already assume a
+ * dark fill, so only the background changes. */
 .accent .panel {
-  border-color: color-mix(in srgb, var(--color-accent) 40%, transparent);
-  background: linear-gradient(
-    180deg,
-    var(--color-accent-quiet) 0%,
-    var(--color-surface) 60%
-  );
+  background:
+    radial-gradient(120% 140% at 50% -20%, #a8690a 0%, transparent 60%),
+    linear-gradient(165deg, #8a5400 0%, #5c3800 100%);
 }
 
 .accent .edge {
-  background: linear-gradient(90deg, transparent, var(--color-accent) 50%, transparent);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.4) 50%, transparent);
 }
 
 .accent .bloom {
   background: radial-gradient(
     closest-side,
-    color-mix(in srgb, var(--color-accent) 26%, transparent),
+    rgba(255, 255, 255, 0.16),
     transparent 100%
   );
 }

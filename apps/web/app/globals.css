@@ -1,83 +1,115 @@
 /* =============================================================================
  * VOIID marketing site — design tokens.
  *
- * SOURCE OF TRUTH: apps/ios/Voiid/Voiid/DesignSystem/Theme.swift. Every colour here
- * is copied from that file, including the four values that were corrected there for
- * contrast. Do not "improve" a hex on this side — fix Theme.swift and copy it down,
- * or the site and the product drift apart.
+ * COLOUR SOURCE: apps/ios/Voiid/Voiid/DesignSystem/Theme.swift. The brand is VOIID
+ * TIDE #13828C (mid-tone teal — filled elements carry WHITE labels). Do not
+ * "improve" a brand hex on this side; fix Theme.swift and copy it down, or the
+ * site and the product drift apart.
  *
- * DARK IS THE DESIGNED STATE. Light is the variant. :root carries the light values
- * only because that is what a token block conventionally does; the compositions on
- * top of it (glows, meshes, the phone frames) are drawn for dark first and then
- * checked in light.
+ * THE SITE IS LIGHT ONLY. The APP is designed dark; the marketing site is not, and
+ * the two are allowed to differ — a product page has to work on a projector, in a
+ * press screenshot and on a phone in daylight, and the category (WhatsApp, Arattai,
+ * Signal) reads light. There is deliberately no `prefers-color-scheme: dark` block:
+ * a half-maintained second theme is worse than one theme done properly. `color-scheme`
+ * is pinned to `light` so form controls and scrollbars follow rather than inverting.
  *
  * NO PAGE MAY WRITE A RAW HEX. If a page needs a colour that is not here, the token
- * is missing — add it here, in both themes, and say what it is for.
+ * is missing — add it here and say what it is for.
  * ========================================================================== */
 
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
 
   /* ---- Spine -------------------------------------------------------------- */
-  --color-primary: #2e2440;            /* deep aubergine — brand + every primary action */
-  --color-primary-soft: #6b5a8c;       /* primary at reading weight on the ground */
-  --color-background: #f1eef5;
-  --color-surface: #ffffff;            /* cards, one step up from the ground */
-  --color-surface-2: #eae5f2;          /* inset wells, inert chips (fieldFill) */
+  /* VOIID TIDE — the brand (Theme.swift §primary). On a light ground the filled
+   * brand colour stays exactly this; only TEXT set in teal darkens (see -ink). */
+  --color-primary: #13828c;
+  --color-primary-hover: #0f6f78;     /* filled button, hover */
+  --color-primary-active: #0c5c63;    /* filled button, pressed */
+  /* Teal as READING colour on white. #13828C on #FFF is 4.05:1 — under AA for
+   * body text — so teal text uses this darker ink instead. The fill and the ink
+   * are different jobs and therefore different tokens. */
+  --color-primary-ink: #0b5c64;
+
+  /* The ground is a near-white with a trace of the brand's warmth, not pure #FFF.
+   * Pure white next to white cards leaves cards with nothing to sit on; a couple
+   * of points of tint is what lets an elevated surface read as elevated. */
+  --color-background: #fbfcfc;
+  --color-surface: #ffffff;           /* cards, panels — the raised plane */
+  --color-surface-2: #f2f5f6;         /* wells, insets, quiet chips */
+  --color-surface-3: #e9eef0;         /* pressed / deepest well */
 
   /* ---- Text --------------------------------------------------------------- */
-  --color-text: #241d33;
-  --color-text-dim: #5f5570;
-  --color-text-on-primary: #efeaf7;    /* on a filled primary surface */
-  --color-text-on-accent: #17120a;     /* on a filled amber surface */
+  /* 15.8:1 on the ground. Near-black rather than pure black: pure #000 on white
+   * vibrates at large sizes and reads as cheap. */
+  --color-text: #0d1416;
+  --color-text-dim: #55646a;          /* 6.6:1 — body-safe secondary */
+  --color-text-mute: #7d8b90;         /* 3.9:1 — LARGE or non-essential text only */
+  --color-text-on-primary: #ffffff;   /* Tide is mid-tone: WHITE labels */
+  --color-text-on-accent: #ffffff;
 
   /* ---- Lines -------------------------------------------------------------- */
-  --color-divider: #e3deec;            /* must RECEDE */
-  --color-border: #d6cfe4;             /* fieldBorder — a line you are meant to notice */
+  /* Hairlines do the separation work now that the ground is light. Both are
+   * deliberately faint — a visible grey box around everything is the single
+   * most common way a site reads as unprofessional. */
+  --color-divider: #e8edee;           /* between sections; must RECEDE */
+  --color-border: #dbe3e5;            /* card and field edges */
+  --color-border-strong: #c3cfd2;     /* focus rings, pressed edges */
 
-  /* ---- The one warm accent ------------------------------------------------ */
-  /* AMBER. At most ONE amber moment per page. Its power is entirely its rarity. */
-  --color-accent: #b57210;
-  --color-accent-quiet: rgba(181, 114, 16, 0.12);
+  /* ---- The accent IS the brand (Theme.swift §accent). Tints for washes. ---- */
+  --color-accent: #13828c;
+  --color-accent-quiet: rgba(19, 130, 140, 0.10);
 
   /* ---- Status (never carried by hue alone — always paired with icon + word) */
-  --color-success: #1f7a52;
-  --color-error: #c0392f;
-  --color-warning: #b07818;
-  --color-info: #2a5b8f;
+  --color-success: #0f7a4a;
+  --color-error: #c8353b;
+  --color-warning: #8a5400;
+  --color-info: #1d4ed8;
 
   /* ---- Chat bubbles (for PhoneMockup content) ----------------------------- */
-  --color-bubble-sent: #2e2440;
-  --color-bubble-received: #ffffff;
-  --color-text-on-bubble: #f8f5fc;
+  --color-bubble-sent: #13828c;
+  --color-bubble-received: #f2f5f6;
+  --color-text-on-bubble: #ffffff;
 
   /* ---- Domain hues — SECTION IDENTITY ONLY. Never body text, never bubbles. -
-   * One hue per feature page; the page sets --hue once and its components inherit. */
-  --hue-chat: #2e2440;
-  --hue-stories: #7b4b8a;
-  --hue-map: #2a5b8f;
-  --hue-calls: #2e7d5b;
-  --hue-payments: #a9690c;
-  /* Site-only extensions of the app's five. Games borrows the warm hue (and is
-   * therefore the amber moment on any page that uses it); privacy sits on brand. */
-  --hue-games: #a9690c;
-  --hue-clips: #7b4b8a;
-  --hue-privacy: #2e2440;
-  /* Default for anything that does not opt in. */
+   * One hue per feature page; the page sets --hue once and its components inherit.
+   * These are the READING weights: each is dark enough to set small text on white,
+   * because on a light ground a hue is used for labels far more than for fills. */
+  --hue-chat: #0b5c64;
+  --hue-stories: #6b21a8;
+  --hue-map: #1e40af;
+  --hue-calls: #146c3a;
+  --hue-payments: #8a5400;
+  --hue-games: #8a5400;
+  --hue-clips: #6b21a8;
+  --hue-privacy: #0b5c64;
   --hue: var(--hue-chat);
-  /* A wash of the current hue, for card tints and glows. Set alongside --hue. */
-  --hue-wash: rgba(46, 36, 64, 0.08);
+  --hue-wash: rgba(19, 130, 140, 0.07);
 
-  /* ---- Elevation ---------------------------------------------------------- */
-  --shadow-card: 0 1px 2px rgba(36, 29, 51, 0.06), 0 8px 24px -12px rgba(36, 29, 51, 0.18);
-  --shadow-lift: 0 2px 4px rgba(36, 29, 51, 0.08), 0 24px 48px -20px rgba(36, 29, 51, 0.28);
-  --shadow-device: 0 40px 80px -32px rgba(36, 29, 51, 0.4);
+  /* ---- Elevation ---------------------------------------------------------- *
+   * A real elevation ladder, tinted with the ink colour rather than neutral grey
+   * so shadows belong to the palette instead of muddying it. Each level pairs a
+   * tight contact shadow with a wide ambient one — a single blurred drop is a
+   * common tell of an amateur light UI.
+   *
+   * The values are deliberately LOW opacity. On a light ground, separation should
+   * come from the hairline first and the shadow second; a heavy shadow on white
+   * reads as a sticker rather than a surface. */
+  --shadow-xs: 0 1px 2px rgba(13, 20, 22, 0.04);
+  --shadow-card: 0 1px 2px rgba(13, 20, 22, 0.05), 0 4px 12px -4px rgba(13, 20, 22, 0.07);
+  --shadow-lift: 0 2px 4px rgba(13, 20, 22, 0.05), 0 12px 28px -8px rgba(13, 20, 22, 0.10);
+  --shadow-pop: 0 4px 8px rgba(13, 20, 22, 0.06), 0 24px 56px -16px rgba(13, 20, 22, 0.16);
+  --shadow-device: 0 8px 16px rgba(13, 20, 22, 0.06), 0 48px 88px -24px rgba(13, 20, 22, 0.20);
+  --ring: 0 0 0 3px rgba(19, 130, 140, 0.28);
 
-  /* ---- Decorative gradient mesh (hero / CTA grounds) ---------------------- */
-  --mesh-1: rgba(181, 155, 224, 0.35);
-  --mesh-2: rgba(127, 176, 224, 0.28);
-  --mesh-3: rgba(201, 139, 216, 0.24);
-  --grid-line: rgba(36, 29, 51, 0.05);
+  /* ---- Decorative gradient mesh (hero / CTA grounds) ---------------------- *
+   * Far weaker than the dark values: on white, a tinted field at 0.2+ opacity
+   * becomes a visible coloured blob. These read as warmth in the paper, not as
+   * graphics. */
+  --mesh-1: rgba(19, 130, 140, 0.10);
+  --mesh-2: rgba(29, 78, 216, 0.06);
+  --mesh-3: rgba(107, 33, 168, 0.05);
+  --grid-line: rgba(13, 20, 22, 0.035);
 
   /* ---- Type --------------------------------------------------------------- *
    * SF Pro Rounded is the product's face; `ui-rounded` gets it on Apple platforms
@@ -90,11 +122,11 @@
 
   /* Fluid scale. Each clamp is min / preferred / max — the mins are the phone
    * sizes and are deliberately close to the app's own scale. */
-  --text-display: clamp(2.6rem, 1.5rem + 4.6vw, 4.75rem);
-  --text-h1: clamp(2.1rem, 1.5rem + 2.6vw, 3.25rem);
-  --text-h2: clamp(1.65rem, 1.3rem + 1.5vw, 2.35rem);
-  --text-h3: clamp(1.25rem, 1.12rem + 0.6vw, 1.55rem);
-  --text-lede: clamp(1.06rem, 1rem + 0.45vw, 1.3rem);
+  --text-display: clamp(2.75rem, 1.4rem + 5.4vw, 5.25rem);
+  --text-h1: clamp(2.15rem, 1.5rem + 2.8vw, 3.5rem);
+  --text-h2: clamp(1.75rem, 1.3rem + 1.8vw, 2.6rem);
+  --text-h3: clamp(1.3rem, 1.14rem + 0.7vw, 1.65rem);
+  --text-lede: clamp(1.09rem, 1rem + 0.5vw, 1.35rem);
   --text-body: 1.0625rem;   /* 17px — the app's body size */
   --text-small: 0.9375rem;  /* 15px — subhead */
   --text-caption: 0.8125rem;/* 13px — footnote */
@@ -111,9 +143,16 @@
   --leading-body: 1.6;
   --leading-loose: 1.75;
 
-  --tracking-tight: -0.022em;
+  /* Tracking is SIZE-SPECIFIC. Letters read progressively further apart as they
+   * grow, so display type tightens hard and body sits at zero. A single
+   * letter-spacing applied everywhere is wrong at one end of the scale or both. */
+  --tracking-display: -0.035em;
+  --tracking-h1: -0.03em;
+  --tracking-h2: -0.024em;
+  --tracking-h3: -0.018em;
+  --tracking-tight: -0.022em;   /* retained: existing call sites */
   --tracking-normal: 0;
-  --tracking-wide: 0.08em;   /* eyebrows, all-caps labels */
+  --tracking-wide: 0.075em;     /* eyebrows, all-caps labels */
 
   /* ---- Spacing — the app's 4pt scale, extended for page rhythm ------------ */
   --space-3xs: 4px;
@@ -127,7 +166,10 @@
   --space-3xl: 96px;
   --space-4xl: 128px;
   /* Vertical rhythm between page sections. */
-  --section-gap: clamp(var(--space-2xl), 4vw + 2rem, var(--space-3xl));
+  /* The single biggest lever on whether a marketing page reads as professional.
+   * WhatsApp and Arattai both give a section far more air than a typical app UI
+   * would; this is closer to their rhythm than to the app's. */
+  --section-gap: clamp(var(--space-3xl), 6vw + 2rem, 9rem);
 
   /* ---- Radii — the app's, plus two larger ones for page-scale surfaces ---- */
   --radius-sm: 8px;
@@ -145,70 +187,20 @@
   --header-height: 64px;
 
   /* ---- Motion ------------------------------------------------------------- */
-  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --ease-in-out: cubic-bezier(0.6, 0, 0.2, 1);
+  /* A spring-flavoured curve for entrances — the settle an iOS spring gives
+   * without needing a real spring solver in CSS. */
+  --ease-spring: cubic-bezier(0.22, 1.28, 0.36, 1);
   --dur-fast: 120ms;
   --dur-base: 240ms;
   --dur-slow: 560ms;
 
+  /* Scroll-reveal entrances (components/Reveal.tsx). */
+  --reveal-shift: 22px;
+  --reveal-dur: 640ms;
+
   --z-header: 100;
-}
-
-/* =============================================================================
- * DARK — the designed state.
- * ========================================================================== */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --color-primary: #b59be0;
-    --color-primary-soft: #8f78b8;
-    --color-background: #0d0b14;
-    --color-surface: #1c1826;
-    --color-surface-2: #171320;
-
-    --color-text: #e6e1ef;
-    --color-text-dim: #a79cbd;
-    --color-text-on-primary: #14101f;
-    --color-text-on-accent: #241a08;
-
-    --color-divider: #241f2f;
-    --color-border: #342d42;
-
-    --color-accent: #e8a33d;
-    --color-accent-quiet: rgba(232, 163, 61, 0.14);
-
-    --color-success: #63c78d;
-    --color-error: #ef7a6b;
-    --color-warning: #e0a83c;
-    --color-info: #7fb0e0;
-
-    --color-bubble-sent: #7862a6;
-    --color-bubble-received: #1c1826;
-    --color-text-on-bubble: #f8f5fc;
-
-    --hue-chat: #b59be0;
-    --hue-stories: #c98bd8;
-    --hue-map: #7fb0e0;
-    --hue-calls: #5fbe8d;
-    --hue-payments: #e8a33d;
-    --hue-games: #e8a33d;
-    --hue-clips: #c98bd8;
-    --hue-privacy: #b59be0;
-    --hue: var(--hue-chat);
-    --hue-wash: rgba(181, 155, 224, 0.12);
-
-    /* Shadow does almost nothing on a near-black ground; the lift comes from the
-     * hairline border on cards. Keep a deep, wide shadow only for the device. */
-    --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.03) inset,
-      0 12px 32px -20px rgba(0, 0, 0, 0.9);
-    --shadow-lift: 0 1px 0 rgba(255, 255, 255, 0.05) inset,
-      0 32px 64px -28px rgba(0, 0, 0, 1);
-    --shadow-device: 0 48px 96px -32px rgba(0, 0, 0, 0.85);
-
-    --mesh-1: rgba(181, 155, 224, 0.3);
-    --mesh-2: rgba(127, 176, 224, 0.22);
-    --mesh-3: rgba(201, 139, 216, 0.2);
-    --grid-line: rgba(230, 225, 239, 0.055);
-  }
 }
 
 /* =============================================================================
@@ -263,9 +255,10 @@ h4 {
   text-wrap: balance;
 }
 
-h1 { font-size: var(--text-h1); line-height: var(--leading-tight); }
-h2 { font-size: var(--text-h2); }
-h3 { font-size: var(--text-h3); font-weight: var(--weight-semibold); }
+/* Each level takes its OWN tracking — see the note on the tracking tokens. */
+h1 { font-size: var(--text-h1); line-height: var(--leading-tight); letter-spacing: var(--tracking-h1); }
+h2 { font-size: var(--text-h2); letter-spacing: var(--tracking-h2); }
+h3 { font-size: var(--text-h3); font-weight: var(--weight-semibold); letter-spacing: var(--tracking-h3); }
 h4 { font-size: var(--text-body); font-weight: var(--weight-semibold); }
 
 p { margin: 0; text-wrap: pretty; }
@@ -354,15 +347,29 @@ code {
 .prose ol { list-style: decimal; }
 .prose a { color: var(--color-primary); font-weight: var(--weight-medium); }
 
-/* An eyebrow — the small tracked label above a heading. */
+/* An eyebrow — the small tracked label above a heading.
+ *
+ * A PILL rather than bare text. On a light ground, small uppercase text floating
+ * alone above a headline reads as unstyled; giving it a tinted capsule makes it
+ * a deliberate object and gives the section's hue somewhere to live that is not
+ * the heading itself. */
 .eyebrow {
-  display: block;
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 0.5em;
+  padding: 5px 12px;
+  border-radius: var(--radius-pill);
+  background: var(--hue-wash);
   font-size: var(--text-micro);
   font-weight: var(--weight-semibold);
   letter-spacing: var(--tracking-wide);
   text-transform: uppercase;
   color: var(--hue);
 }
+
+/* Centre-aligned sections centre their eyebrow with everything else. */
+.center .eyebrow { align-self: center; }
 
 /* Anything that would otherwise force the page sideways on a phone — a wide
  * table, a code block, a diagram — scrolls inside itself instead. */

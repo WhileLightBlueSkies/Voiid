@@ -1,81 +1,237 @@
+/* =============================================================================
+ * Floating pill header — an iOS-style material layer.
+ *
+ * The whole bar is one translucent capsule that floats over the page: content
+ * scrolls underneath it, the blur separates it from whatever is behind, and the
+ * hairline plus soft shadow give it just enough edge to read as real material.
+ * Links are individual pills; the current page is a filled tint pill, never
+ * colour alone (it is also bold and aria-current).
+ * ========================================================================== */
+
 .header {
   position: sticky;
-  inset-block-start: 0;
+  inset-block-start: var(--space-sm);
   z-index: var(--z-header);
-  /* Translucent over whatever scrolls beneath, with a solid fallback where
-   * backdrop-filter is unavailable — otherwise the nav becomes unreadable. */
-  background: color-mix(in srgb, var(--color-background) 88%, transparent);
-  border-block-end: 1px solid var(--color-divider);
-}
-
-@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
-  .header {
-    background: color-mix(in srgb, var(--color-background) 72%, transparent);
-    -webkit-backdrop-filter: saturate(160%) blur(14px);
-    backdrop-filter: saturate(160%) blur(14px);
-  }
+  /* The capsule floats, so the header element itself carries horizontal padding
+   * instead of a full-width bar — nothing to draw edge to edge. */
+  padding-inline: var(--space-sm);
 }
 
 .bar {
   display: flex;
   align-items: center;
-  gap: var(--space-sm);
+  gap: var(--space-xs);
   flex-wrap: wrap;
   width: 100%;
-  max-width: calc(var(--container-wide) + var(--container-pad) * 2);
+  max-width: 1080px;
   margin-inline: auto;
-  padding-inline: var(--container-pad);
-  min-height: var(--header-height);
+  min-height: 56px;
+  padding: 6px 6px 6px var(--space-md);
+  border-radius: var(--radius-pill);
+  /* The material, retuned for a light ground.
+   *
+   * On white, the dark-mode recipe (62% ground + a bright inset hairline) reads
+   * as a grey smear: there is no dark behind it for the blur to separate from.
+   * Here the capsule is a HIGH-opacity white with a faint border and a real
+   * shadow — the shadow is what lifts it off the page now, and the blur only has
+   * to soften whatever scrolls under it. */
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-card);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+}
+
+/* Reduced transparency: go frostier-solid rather than dropping the design. */
+@media (prefers-reduced-transparency: reduce) {
+  .bar {
+    background: var(--color-surface);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
 }
 
 .brand {
   display: inline-flex;
   align-items: center;
-  padding-block: var(--space-2xs);
-  text-decoration: none;
   margin-inline-end: auto;
+  text-decoration: none;
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+.brand:active { transform: scale(0.97); }
+
+/* ---- nav ------------------------------------------------------------------ */
+
+.nav {
+  display: flex;
+  align-items: center;
 }
 
-/* ---- nav ----------------------------------------------------------------- */
+/* Desktop: the list and the CTA sit on one row. On a phone this becomes the
+ * clipped column that the .nav grid animates open (see the media query). */
+.navInner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
 
 .list {
   display: flex;
   align-items: center;
-  gap: var(--space-3xs);
+  gap: 2px;
   list-style: none;
 }
 
 .link {
   display: inline-flex;
   align-items: center;
-  min-height: 40px;
-  padding: 0 var(--space-xs);
+  min-height: 34px;
+  padding: 0 13px;
   border-radius: var(--radius-pill);
   color: var(--color-text-dim);
-  font-size: var(--text-small);
+  font-size: var(--text-caption);
   font-weight: var(--weight-medium);
   text-decoration: none;
+  /* Feedback begins on pointer-down (§ response): colour instantly, press-scale
+   * with a short ease-out. Release springs back via the overshoot curve. */
   transition:
     color var(--dur-fast) var(--ease-out),
-    background-color var(--dur-fast) var(--ease-out);
+    background-color var(--dur-fast) var(--ease-out),
+    transform 100ms var(--ease-out);
 }
-
 .link:hover {
   color: var(--color-text);
-  background: var(--color-surface-2);
+  background: color-mix(in srgb, var(--color-text) 6%, transparent);
 }
+.link:active { transform: scale(0.95); }
 
-/* The current page is marked by weight AND colour AND a rule under it, never by
- * colour alone. */
+/* Current page: filled tint pill + weight. Weight AND colour AND state attribute,
+ * never colour alone. */
 .link[aria-current='page'] {
-  color: var(--color-primary);
+  color: var(--color-primary-soft);
   font-weight: var(--weight-semibold);
-  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+}
+.link[aria-current='page']:active { transform: none; }
+
+/* `details > summary` for the Features menu. `data-current` mirrors what
+ * aria-current does for a plain link — a summary is not a link and cannot carry
+ * aria-current, but it still has to show that you are inside its section. */
+.link[data-current='true'] {
+  color: var(--color-text);
+  font-weight: var(--weight-semibold);
 }
 
-/* ---- the mobile disclosure ---------------------------------------------- */
+/* ---- the Features menu ---------------------------------------------------- */
 
-/* Visually hidden but still focusable and still hit-testable under its label. */
+.menu { position: relative; }
+
+.menu summary {
+  list-style: none;
+  cursor: pointer;
+}
+.menu summary::-webkit-details-marker { display: none; }
+
+.chevron {
+  transform: rotate(90deg);
+  transition: transform var(--dur-base) var(--ease-out);
+  opacity: 0.5;
+}
+.menu[open] .chevron { transform: rotate(-90deg); }
+
+.menuPanel {
+  position: absolute;
+  inset-block-start: calc(100% + 10px);
+  inset-inline-start: 50%;
+  translate: -50% 0;
+  z-index: 1;
+  width: min(94vw, 380px);
+  padding: var(--space-2xs);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  /* A menu is a bigger surface than a chip, so it reads as thicker: a deeper
+   * shadow than a card carries. */
+  box-shadow: var(--shadow-pop);
+  /* Materialise rather than fade: scale and opacity together, anchored to the
+   * trigger above it, so it reads as arriving FROM the button. */
+  transform-origin: top center;
+  animation: menuIn 180ms var(--ease-out) both;
+}
+
+@keyframes menuIn {
+  from { opacity: 0; transform: translateY(-6px) scale(0.97); }
+  to   { opacity: 1; transform: none; }
+}
+
+.menuList {
+  display: grid;
+  gap: 2px;
+  list-style: none;
+}
+
+.menuItem {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-xs);
+  padding: 10px var(--space-xs);
+  border-radius: var(--radius-lg);
+  text-decoration: none;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+.menuItem:hover { background: var(--color-surface-2); }
+.menuItem[aria-current='page'] { background: var(--hue-wash); }
+
+.menuIcon {
+  flex: none;
+  display: inline-flex;
+  margin-block-start: 1px;
+}
+
+.menuText { display: grid; gap: 1px; min-width: 0; }
+
+.menuLabel {
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+}
+
+.menuBlurb {
+  font-size: var(--text-caption);
+  line-height: 1.45;
+  color: var(--color-text-dim);
+  text-wrap: pretty;
+}
+
+/* ---- the header's one call to action -------------------------------------- */
+
+.cta {
+  display: inline-flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 0 18px;
+  border-radius: var(--radius-pill);
+  background: var(--color-primary);
+  color: var(--color-text-on-primary);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-semibold);
+  text-decoration: none;
+  white-space: nowrap;
+  box-shadow: 0 2px 10px -4px rgba(19, 130, 140, 0.6);
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
+    transform 100ms var(--ease-out);
+}
+.cta:hover {
+  background: var(--color-primary-hover);
+  box-shadow: 0 4px 14px -4px rgba(19, 130, 140, 0.55);
+}
+.cta:active { background: var(--color-primary-active); transform: scale(0.97); }
+.cta:focus-visible { outline: none; box-shadow: var(--ring); }
+
+/* ---- the mobile disclosure ------------------------------------------------ */
+
 .toggleInput {
   position: absolute;
   opacity: 0;
@@ -88,13 +244,16 @@
   display: none;
   align-items: center;
   justify-content: center;
-  width: 44px;
-  height: 44px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--color-divider);
+  width: 38px;
+  height: 38px;
+  margin-inline-end: -4px;
+  border-radius: var(--radius-pill);
   cursor: pointer;
   color: var(--color-text);
+  background: color-mix(in srgb, var(--color-text) 6%, transparent);
+  transition: transform 100ms var(--ease-out);
 }
+.toggle:active { transform: scale(0.94); }
 
 .bars {
   display: flex;
@@ -108,51 +267,85 @@
   height: 2px;
   border-radius: 2px;
   background: currentColor;
-  transition: transform var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out);
+  transition: transform var(--dur-base) var(--ease-spring), opacity var(--dur-fast) var(--ease-out);
 }
 
-/* Focus lives on the input, so paint the ring on the label it controls. */
 .toggleInput:focus-visible + .toggle {
   outline: 2px solid var(--color-primary);
   outline-offset: 3px;
 }
 
-@media (max-width: 860px) {
+@media (max-width: 1020px) {
   .toggle { display: inline-flex; }
 
   .nav {
     /* `grid-template-rows: 0fr → 1fr` animates a height the browser can actually
-     * interpolate, without hardcoding a max-height guess that clips the list. */
+     * interpolate, without a hardcoded max-height guess that clips the list. */
     flex-basis: 100%;
     display: grid;
     grid-template-rows: 0fr;
     transition: grid-template-rows var(--dur-base) var(--ease-out);
   }
 
-  .list {
+  .navInner {
+    display: flex;
     flex-direction: column;
-    align-items: stretch;
-    gap: 2px;
+    gap: var(--space-2xs);
     overflow: hidden;
     min-height: 0;
   }
 
+  .list {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+  }
+
   .link {
+    justify-content: flex-start;
     min-height: 46px;
-    padding-inline: var(--space-sm);
-    border-radius: var(--radius-md);
+    padding-inline: var(--space-md);
+    border-radius: var(--radius-lg);
     font-size: var(--text-body);
   }
 
+  /* On a phone the Features menu is not a popover — it expands in place, because
+   * a floating panel inside an already-floating sheet is two materials stacked
+   * and legibility collapses. */
+  .hasMenu { display: contents; }
+  .menu { position: static; }
+
+  .menuPanel {
+    position: static;
+    translate: none;
+    width: auto;
+    margin-block: var(--space-3xs) var(--space-2xs);
+    box-shadow: none;
+    border-color: var(--color-divider);
+    background: var(--color-surface-2);
+    animation: none;
+  }
+
+  .menuBlurb { display: none; }
+
+  .cta {
+    justify-content: center;
+    min-height: 46px;
+    font-size: var(--text-small);
+  }
+
+  /* The open menu reads as a second material layer under the capsule: a soft
+   * inner well rather than a hard-edged dropdown. */
   .toggleInput:checked ~ .nav {
     grid-template-rows: 1fr;
+    margin-block-start: var(--space-2xs);
   }
 
-  .toggleInput:checked ~ .nav .list {
-    padding-block: var(--space-2xs) var(--space-sm);
+  .link[aria-current='page'] {
+    background: color-mix(in srgb, var(--color-primary) 12%, transparent);
   }
 
-  /* Hamburger → X. */
+  /* Hamburger → X. Spring settle on the rotation. */
   .toggleInput:checked ~ .toggle .bars span:nth-child(1) {
     transform: translateY(6px) rotate(45deg);
   }
@@ -162,4 +355,9 @@
   .toggleInput:checked ~ .toggle .bars span:nth-child(3) {
     transform: translateY(-6px) rotate(-45deg);
   }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .menuPanel { animation: none; }
+  .chevron, .nav { transition: none; }
 }

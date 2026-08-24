@@ -18,7 +18,7 @@
 //  For a `.playAndRecord` VoIP session the OUTPUT follows the INPUT for the built-in and
 //  Bluetooth-HFP routes, so we steer with `setPreferredInput`, and use `overrideOutputAudioPort`
 //  only for the one route that has no input of its own — the loudspeaker. Every mutation goes
-//  through RTCAudioSession's lock, because WebRTC owns this session (manual-audio mode) and an
+//  through LKRTCAudioSession's lock, because WebRTC owns this session (manual-audio mode) and an
 //  unlocked change races its own configuration.
 //
 //  Everything here is best-effort: a failed route change leaves the call on its current route,
@@ -27,7 +27,7 @@
 
 import Foundation
 import AVFoundation
-import WebRTC
+import LiveKitWebRTC
 
 /// A selectable audio output. `id` is stable per route KIND (plus the port uid for external
 /// devices) so SwiftUI can diff the picker and highlight the live one.
@@ -129,7 +129,7 @@ extension CallService {
 
     /// Route the live call to a chosen output. Best-effort and lock-guarded.
     func selectAudioRoute(_ route: CallAudioRoute) {
-        let rtc = RTCAudioSession.sharedInstance()
+        let rtc = LKRTCAudioSession.sharedInstance()
         let session = AVAudioSession.sharedInstance()
         rtc.lockForConfiguration()
         defer { rtc.unlockForConfiguration() }

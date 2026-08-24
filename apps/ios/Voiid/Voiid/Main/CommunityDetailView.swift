@@ -20,7 +20,7 @@ struct CommunityDetailView: View {
     @State private var error: String?
     @State private var busy = false
     @State private var showInbox = false
-    @State private var tab: CommunityTab = .spaces
+    @State private var tab: CommunityTab = .home
     @State private var openConversation: VConversation?
 
     @EnvironmentObject private var chat: ChatStore
@@ -224,10 +224,54 @@ struct CommunityDetailView: View {
                     .overlay(Capsule().stroke(VoiidColor.divider, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
+            } else if c.isMember {
+                // INVITE, not Share. Only a member can hand out a way in, and only for a
+                // community whose policy allows one — see POST /communities/:id/invites.
+                Button {
+                    Haptics.tap()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "person.badge.plus")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("Invite").font(VoiidFont.rounded(15, .semibold))
+                    }
+                    .foregroundColor(VoiidColor.textPrimary)
+                    .frame(maxWidth: .infinity).frame(height: 40)
+                    .background(Capsule().fill(VoiidColor.surfaceCard))
+                    .overlay(Capsule().stroke(VoiidColor.divider, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
             }
+
+            overflowMenu(c)
         }
         .padding(.horizontal, VoiidSpacing.md)
         .padding(.top, VoiidSpacing.md)
+    }
+
+    /// The reference's chevron menu. "Leave" is absent for the owner: an owner leaving would
+    /// orphan the community, and DELETE /communities/:id/members is the route that refuses it.
+    @ViewBuilder
+    private func overflowMenu(_ c: CommunityService.CommunityCard) -> some View {
+        Menu {
+            Button("Share community", systemImage: "square.and.arrow.up") {}
+            Button("Notifications", systemImage: "bell") {}
+            Button("Report", systemImage: "exclamationmark.triangle") {}
+            if c.isMember && !isOwner(c) {
+                Divider()
+                Button("Leave community",
+                       systemImage: "rectangle.portrait.and.arrow.right",
+                       role: .destructive) {}
+            }
+        } label: {
+            Image(systemName: "chevron.down")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(VoiidColor.textPrimary)
+                .frame(width: 46, height: 40)
+                .background(Capsule().fill(VoiidColor.surfaceCard))
+                .overlay(Capsule().stroke(VoiidColor.divider, lineWidth: 1))
+        }
+        .accessibilityLabel("More community options")
     }
 
     /// Every membership state the server can put you in, said plainly. A banned account is
@@ -289,6 +333,8 @@ struct CommunityDetailView: View {
                 tabBar
                 Group {
                     switch tab {
+                    case .home:
+                        CommunityHomeTab(isAdmin: isOwner(c))
                     case .spaces:
                         CommunitySpacesTab(communityId: c.id, isAdmin: isOwner(c))
                     case .events:
@@ -299,12 +345,12 @@ struct CommunityDetailView: View {
                     case .members:
                         CommunityMembersTab(communityId: c.id, isAdmin: isOwner(c))
                     case .about:
-                        CommunityAboutTab(card: c)
+                        CommunityAboutTab(card: c, isAdmin: isOwner(c))
                     }
                 }
                 .padding(.horizontal, VoiidSpacing.md)
             } else {
-                CommunityAboutTab(card: c)
+                CommunityAboutTab(card: c, isAdmin: false)
                     .padding(.horizontal, VoiidSpacing.md)
             }
         }

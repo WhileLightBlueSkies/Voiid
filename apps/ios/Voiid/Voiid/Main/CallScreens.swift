@@ -8,7 +8,7 @@
 //
 
 import SwiftUI
-import WebRTC
+import LiveKitWebRTC
 
 enum CallKind { case voice, video }
 
@@ -31,19 +31,19 @@ struct CallRequest: Identifiable {
 
 // MARK: - WebRTC video renderer (Metal)
 
-/// Renders an `RTCVideoTrack` in SwiftUI via `RTCMTLVideoView`.
-struct RTCVideoView: UIViewRepresentable {
-    let track: RTCVideoTrack?
+/// Renders an `LKRTCVideoTrack` in SwiftUI via `LKRTCMTLVideoView`.
+struct CallVideoView: UIViewRepresentable {
+    let track: LKRTCVideoTrack?
     var mirror: Bool = false
 
-    func makeUIView(context: Context) -> RTCMTLVideoView {
-        let v = RTCMTLVideoView()
+    func makeUIView(context: Context) -> LKRTCMTLVideoView {
+        let v = LKRTCMTLVideoView()
         v.videoContentMode = .scaleAspectFill
         v.transform = mirror ? CGAffineTransform(scaleX: -1, y: 1) : .identity
         return v
     }
 
-    func updateUIView(_ uiView: RTCMTLVideoView, context: Context) {
+    func updateUIView(_ uiView: LKRTCMTLVideoView, context: Context) {
         if context.coordinator.track !== track {
             context.coordinator.track?.remove(uiView)
             track?.add(uiView)
@@ -51,12 +51,12 @@ struct RTCVideoView: UIViewRepresentable {
         }
     }
 
-    static func dismantleUIView(_ uiView: RTCMTLVideoView, coordinator: Coordinator) {
+    static func dismantleUIView(_ uiView: LKRTCMTLVideoView, coordinator: Coordinator) {
         coordinator.track?.remove(uiView)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
-    final class Coordinator { var track: RTCVideoTrack? }
+    final class Coordinator { var track: LKRTCVideoTrack? }
 }
 
 // MARK: - Voice/Video picker (small branded sheet)
@@ -200,9 +200,24 @@ struct CallScreen: View {
         // simulated path below now only serves previews and 1:1 calls.
         if isRealGroup, let cid = request.conversationId {
             GroupCallScreen(conversationId: cid, title: request.title, kind: request.kind)
+        } else if liveConferenceActive {
+            // THIS 1:1 CALL BECAME A CONFERENCE (someone added a third person, or we
+            // accepted an ad-hoc invite). The grid must take over — staying on the 1:1
+            // screen after handover left users staring at a "connected" 1:1 view whose
+            // mute/hold/end buttons drove the retired P2P leg. Keyed on the conference
+            // engine's call id so it flips exactly when media actually moves to the SFU,
+            // and never for an unrelated call.
+            GroupCallScreen(conversationId: "", title: request.title, kind: request.kind)
         } else {
             simulatedOrOneToOneBody
         }
+    }
+
+    /// True while the conference engine owns the leg this screen was showing.
+    private var liveConferenceActive: Bool {
+        guard let c = call.active else { return false }
+        return (conference.phase == .escalating || conference.phase == .conference)
+            && conference.callId == c.id
     }
 
     private var simulatedOrOneToOneBody: some View {
@@ -210,7 +225,7 @@ struct CallScreen: View {
             background
             // Real remote video fills the screen behind the overlay (1:1 video calls).
             // Rendered through the shared sample-buffer layer rather than
-            // RTCMTLVideoView — RTCMTLVideoView cannot be picture-in-picture'd, and
+            // LKRTCMTLVideoView — LKRTCMTLVideoView cannot be picture-in-picture'd, and
             // this is the same layer the system PiP window draws from.
             if isRealOneToOne, request.kind == .video, call.remoteVideoTrack != nil {
                 CallRemoteVideoView().ignoresSafeArea()
@@ -287,6 +302,7 @@ struct CallScreen: View {
                                    value: statusText)
                     if isReconnecting { reconnectingBadge }
                     else if isRealOneToOne, call.isOnHold || call.peerOnHold { holdBadge }
+                    else if isRealOneToOne, isConnected { keyingBadge }
                 }
                 .animation(.easeInOut(duration: 0.2), value: isReconnecting)
 
@@ -364,6 +380,44 @@ struct CallScreen: View {
         .transition(.opacity)
     }
 
+    /// Live media-keying state for the ACTIVE 1:1 call. The badge says what is TRUE —
+    /// including "not verified" when an older client is on the other end — because a
+    /// security indicator that cannot say anything bad is decoration, not a signal.
+    @ObservedObject private var keyExchange = CallKeyExchange.shared
+
+    private var keyingBadge: some View {
+        let state = call.active.flatMap { keyExchange.verificationState(callId: $0.id) } ?? .unverified
+        let (icon, text): (String, String) = {
+            switch state {
+            case .verified:   return ("lock.checkmark", "End-to-end encrypted · verified")
+            case .pending:    return ("lock.badge.clock", "Checking encryption…")
+            case .unverified: return ("exclamationmark.lock", "Not verified")
+            case .mismatch:   return ("exclamationmark.triangle.fill", "Encryption check FAILED")
+            }
+        }()
+        let tint: Color? = {
+            switch state {
+            case .verified, .pending, .unverified: return nil
+            case .mismatch: return VoiidColor.error
+            }
+        }()
+        return HStack(spacing: 6) {
+            Image(systemName: icon).font(.system(size: 11))
+            Text(text).font(VoiidFont.rounded(11, .medium))
+        }
+        .foregroundColor(tint ?? (request.kind == .video ? .white.opacity(0.9) : VoiidColor.textSecondary))
+        .padding(.horizontal, VoiidSpacing.sm)
+        .padding(.vertical, 4)
+        .background(request.kind == .video ? Color.white.opacity(0.18) : VoiidColor.surfaceCard)
+        .clipShape(Capsule())
+        .overlay(
+            // Mismatch is findable by more than colour (never hue alone).
+            state == .mismatch ? Capsule().stroke(VoiidColor.error, lineWidth: 1.5) : nil
+        )
+        .accessibilityLabel(text)
+        .transition(.opacity)
+    }
+
     // MARK: backgrounds
     @ViewBuilder private var background: some View {
         if request.kind == .video {
@@ -417,7 +471,7 @@ struct CallScreen: View {
                     onFlip: { call.switchCamera() }
                 ) {
                     if isRealOneToOne, call.videoEnabled, let localTrack = call.localVideoTrack {
-                        RTCVideoView(track: localTrack, mirror: true)
+                        CallVideoView(track: localTrack, mirror: true)
                     } else {
                         RoundedRectangle(cornerRadius: 18, style: .continuous)
                             .fill(VoiidColor.primary.opacity(0.5))

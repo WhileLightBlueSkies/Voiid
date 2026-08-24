@@ -2,6 +2,7 @@
 import { Router } from 'express';
 import { pool, query } from '../db';
 import { requireAuth } from '../auth';
+import { guardKeyMaterialFetch } from '../security';
 import { b64, asyncHandler } from '../util';
 
 const router = Router();
@@ -133,6 +134,19 @@ router.get('/count', requireAuth, asyncHandler(async (req, res) => {
 
 // GET /prekeys/:user_id — returns a bundle per active device, consuming one one-time prekey transactionally.
 router.get('/:user_id', requireAuth, async (req, res) => {
+  // Fetch guard (see security.ts guardKeyMaterialFetch): every call CONSUMES one
+  // one-time prekey per device, so an unthrottled loop from any authenticated
+  // account could keep a victim permanently unable to receive new-session mail.
+  // Blocked callers get the normal empty shape — never a distinct status.
+  const callerId: string = (req as any).auth.user_id;
+  const verdict = await guardKeyMaterialFetch(callerId, req.params.user_id);
+  if (verdict === 'empty') {
+    return res.json({ bundles: [] });
+  }
+  if (verdict === 'limited') {
+    return res.status(429).json({ error: 'rate limit exceeded' });
+  }
+
   // Freshest device first: a reinstall can leave a stale device row around, and
   // the client takes the first bundle — so hand out the most recently active.
   const devices = await query<{ id: string; registration_id: number; identity_public_key: Buffer }>(

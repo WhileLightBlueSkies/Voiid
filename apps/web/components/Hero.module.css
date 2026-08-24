@@ -8,6 +8,28 @@
   border-block-end: 1px solid var(--color-divider);
 }
 
+/* The hero's ground runs UP BEHIND the floating header.
+ *
+ * The header is a sticky capsule that floats in a gap, so without this the top
+ * ~90px of the page is bare `--color-background` — near-black in dark mode —
+ * terminating in a hard horizontal seam exactly where `.hero` starts. That reads
+ * as a black slab sitting behind and beside the pill.
+ *
+ * The negative top margin pulls the hero up under the header and the matching
+ * padding puts the CONTENT back where it was, so only the backdrop moves. The
+ * mesh is clipped to `.hero`, so extending the box is what extends the mesh.
+ *
+ * `--header-lane` is the header's own footprint: its sticky offset plus the
+ * capsule's min-height. Kept as a variable because the header and the hero have
+ * to agree on it, and a bare magic number in two files drifts. */
+.hero:first-child {
+  --header-lane: calc(var(--space-sm) + 52px);
+  margin-block-start: calc(var(--header-lane) * -1);
+  padding-block-start: calc(
+    clamp(var(--space-2xl), 8vw, var(--space-4xl)) + var(--header-lane)
+  );
+}
+
 .inner {
   position: relative;
   z-index: 1;
@@ -33,9 +55,15 @@
 .copy {
   display: flex;
   flex-direction: column;
-  gap: var(--space-md);
+  /* Uniform gaps make a hero read as a stack of unrelated blocks. The eyebrow
+   * hugs the title, the lede sits a step away, and the actions get real air —
+   * proximity is the grouping. Set per-child below. */
+  gap: var(--space-sm);
   min-width: 0;
 }
+
+.copy > .title { margin-block-start: var(--space-2xs); }
+.copy > .lede { margin-block-start: var(--space-2xs); }
 
 .center .copy {
   align-items: center;
@@ -51,8 +79,9 @@
   gap: 0.5em;
   padding: 6px 14px;
   border-radius: var(--radius-pill);
-  border: 1px solid color-mix(in srgb, var(--hue) 34%, transparent);
-  background: var(--hue-wash);
+  border: 1px solid color-mix(in srgb, var(--hue) 22%, transparent);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-xs);
   color: var(--hue);
   font-size: var(--text-micro);
   font-weight: var(--weight-semibold);
@@ -65,18 +94,22 @@
 .title {
   font-size: var(--text-display);
   font-weight: var(--weight-bold);
-  line-height: var(--leading-tight);
-  letter-spacing: var(--tracking-tight);
-  max-width: 17ch;
+  line-height: 1.02;
+  /* Display type takes the hardest tracking on the scale — at 5rem, default
+   * spacing reads as gappy. */
+  letter-spacing: var(--tracking-display);
+  max-width: 15ch;
+  text-wrap: balance;
 }
 
 .center .title { max-width: 20ch; }
 
 .lede {
   font-size: var(--text-lede);
-  line-height: var(--leading-body);
+  line-height: 1.55;
   color: var(--color-text-dim);
-  max-width: 52ch;
+  max-width: 50ch;
+  text-wrap: pretty;
 }
 
 .badges {
@@ -87,12 +120,36 @@
 
 .center .badges { justify-content: center; }
 
-.actions { margin-block-start: var(--space-2xs); }
+.actions { margin-block-start: var(--space-sm); }
 
 .note {
   font-size: var(--text-caption);
   color: var(--color-text-dim);
   max-width: 46ch;
+}
+
+/* ---- load-in ------------------------------------------------------------- *
+ * The hero is above the fold, so it animates on paint rather than on scroll.
+ * Each direct child of the copy rises in, staggered; the aside follows behind. */
+.copy > * ,
+.aside > * {
+  animation: heroRise var(--reveal-dur) var(--ease-spring) both;
+}
+
+.copy > *:nth-child(1) { animation-delay: 30ms; }
+.copy > *:nth-child(2) { animation-delay: 90ms; }
+.copy > *:nth-child(3) { animation-delay: 150ms; }
+.copy > *:nth-child(4) { animation-delay: 210ms; }
+.copy > *:nth-child(5) { animation-delay: 270ms; }
+.copy > *:nth-child(6) { animation-delay: 330ms; }
+
+.aside > * { animation-delay: 220ms; }
+
+@keyframes heroRise {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
 }
 
 .aside {

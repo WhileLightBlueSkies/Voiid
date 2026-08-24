@@ -61,6 +61,13 @@ export const NAV: NavItem[] = [
     privacy: 'refereed',
   },
   {
+    href: '/encryption',
+    label: 'Encryption',
+    blurb: 'Every primitive we encrypt with — vetted libraries and our own glue, named.',
+    hue: 'privacy',
+    privacy: 'e2ee',
+  },
+  {
     href: '/privacy',
     label: 'Privacy',
     blurb: 'What is encrypted, what is not, and exactly what we can see.',
@@ -71,3 +78,23 @@ export const NAV: NavItem[] = [
 
 /** Everything except Home — the feature grid and the footer's product column. */
 export const FEATURE_NAV = NAV.filter((item) => item.href !== '/');
+
+/**
+ * What the HEADER shows.
+ *
+ * Not all of NAV. Eight top-level links is a sitemap, not a navigation bar — the
+ * eye cannot rank eight peers, so nothing reads as important and the header stops
+ * looking like a product's. WhatsApp and Arattai both run three or four plus one
+ * call to action, which is the shape this follows.
+ *
+ * The five surfaces collapse into a "Features" group; Encryption and Privacy stay
+ * top-level because they are the site's actual argument, not a feature.
+ */
+export const HEADER_NAV: NavItem[] = NAV.filter((item) =>
+  ['/messaging', '/encryption', '/privacy'].includes(item.href),
+);
+
+/** The five product surfaces, for the header's Features menu and the home grid. */
+export const SURFACES: NavItem[] = NAV.filter((item) =>
+  ['/messaging', '/calls', '/map', '/clips', '/games'].includes(item.href),
+);

@@ -26,7 +26,7 @@
 //
 
 import Foundation
-import WebRTC
+import LiveKitWebRTC
 
 /// Live connection quality, derived from loss + RTT. Drives an optional UI badge.
 enum CallQuality: String, Equatable {
@@ -110,12 +110,12 @@ final class CallStatsCollector {
     private var lastSampleAt: Date?
 
     private var timer: Timer?
-    private weak var pc: RTCPeerConnection?
+    private weak var pc: LKRTCPeerConnection?
 
     private static let sampleInterval: TimeInterval = 3.0
 
     /// Begin sampling. Idempotent — restarts cleanly if called again.
-    func start(pc: RTCPeerConnection) {
+    func start(pc: LKRTCPeerConnection) {
         stop()
         self.pc = pc
         timer = Timer.scheduledTimer(withTimeInterval: Self.sampleInterval, repeats: true) { [weak self] _ in
@@ -154,7 +154,7 @@ final class CallStatsCollector {
 
     /// Pull the fields we care about out of the standard stats report. Returns a
     /// raw snapshot of *cumulative* counters; `ingest` converts them to rates.
-    private nonisolated static func parse(_ report: RTCStatisticsReport) -> RawStats {
+    private nonisolated static func parse(_ report: LKRTCStatisticsReport) -> RawStats {
         var raw = RawStats()
         let stats = report.statistics
 
@@ -165,7 +165,7 @@ final class CallStatsCollector {
         for (_, s) in stats where s.type == "transport" {
             if let id = s.values["selectedCandidatePairId"] as? String { selectedPairId = id; break }
         }
-        var selectedPair: RTCStatistics?
+        var selectedPair: LKRTCStatistics?
         if let selectedPairId, let pair = stats[selectedPairId] {
             selectedPair = pair
         } else {

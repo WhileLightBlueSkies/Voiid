@@ -110,21 +110,68 @@ struct GroupCallScreen: View {
 
             Spacer(minLength: 0)
 
-            // End-to-end encrypted badge — the whole point of routing through an SFU we
-            // cannot trust with plaintext. Kept because it is the one claim on this screen
-            // the user cannot verify for themselves.
+            // Keying-state badge. The static lock this replaces asserted "end-to-end
+            // encrypted" unconditionally; the exchange machinery (CallKeyExchange) can
+            // actually FAIL to reach that state — a peer that never sends its commitment
+            // tag, or tags that disagree — and an assertion the UI never checks is a
+            // claim, not a feature (audit finding M5). The badge now reports what the
+            // keying actually settled to for THIS call.
             if call.state == .connected {
-                Label("\(call.participants.count)", systemImage: "lock.fill")
-                    .font(VoiidFont.rounded(12, .medium))
-                    .foregroundColor(fgSecondary)
-                    .padding(.horizontal, VoiidSpacing.sm)
-                    .padding(.vertical, 5)
-                    .background(isVideo ? Color.white.opacity(0.15) : VoiidColor.surfaceCard)
-                    .clipShape(Capsule())
-                    .accessibilityLabel("\(participantSummary), end-to-end encrypted")
+                keyingBadge
             }
         }
         .padding(.horizontal, VoiidSpacing.md)
+    }
+
+    /// Live verification state for THIS call's media keys, straight from the exchange.
+    @ObservedObject private var keyExchange = CallKeyExchange.shared
+    /// Ad-hoc (escalated 1:1) rooms key off the CALL id, which lives on the conference
+    /// service; conversation-backed rooms derive from MLS and report .verified directly.
+    @ObservedObject private var conference = CallConferenceService.shared
+
+    private var keyingState: CallKeyVerification {
+        if let id = conference.callId {
+            return keyExchange.verificationState(callId: id)
+        }
+        // A conversation-backed group call is keyed from the MLS exporter: both sides
+        // hold it by construction, so the honest state is verified.
+        return .verified
+    }
+
+    @ViewBuilder private var keyingBadge: some View {
+        let state = keyingState
+        let (icon, label): (String, String) = {
+            switch state {
+            case .verified:
+                ("lock.fill", "\(participantSummary), end-to-end encrypted, verified")
+            case .pending:
+                ("lock.badge.clock", "\(participantSummary), checking encryption")
+            case .unverified:
+                ("exclamationmark.lock", "\(participantSummary), encryption not verified — an older app version may be on the call")
+            case .mismatch:
+                ("exclamationmark.triangle.fill", "\(participantSummary), encryption check FAILED — verify who is on this call")
+            }
+        }()
+        let tint: Color = {
+            switch state {
+            case .verified: return fgSecondary
+            case .pending: return fgSecondary
+            case .unverified: return .yellow
+            case .mismatch: return VoiidColor.error
+            }
+        }()
+        Label("\(call.participants.count)", systemImage: icon)
+            .font(VoiidFont.rounded(12, .medium))
+            .foregroundColor(state == .verified ? fgSecondary : tint)
+            .padding(.horizontal, VoiidSpacing.sm)
+            .padding(.vertical, 5)
+            .background(isVideo ? Color.white.opacity(0.15) : VoiidColor.surfaceCard)
+            .clipShape(Capsule())
+            .overlay(
+                // A mismatch must be findable by more than colour (never hue alone).
+                state == .mismatch ? Capsule().stroke(VoiidColor.error, lineWidth: 1.5) : nil
+            )
+            .accessibilityLabel(label)
     }
 
     private var participantSummary: String {

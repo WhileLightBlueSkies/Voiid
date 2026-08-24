@@ -1,0 +1,177 @@
+/* =============================================================================
+ * The path of a message — three steps on a single continuous rail.
+ *
+ * The point of the composition: the middle step is the one where WE are blind,
+ * so the rail is drawn as a solid stroke at the ends and a dashed one across the
+ * middle. The blindness is a visual fact you can see before you read a word,
+ * which is Apple's "mapping" principle — the graphic IS the argument, not a
+ * decoration next to it.
+ * ========================================================================== */
+
+.wrap {
+  position: relative;
+}
+
+/* ---- the rail ------------------------------------------------------------ *
+ * Sits behind the steps, spanning centre-to-centre of the first and last node
+ * (hence the inset of half a column). Drawn with a gradient rather than a border
+ * so it can fade at both ends instead of terminating in a hard cap. */
+
+.rail {
+  position: absolute;
+  /* Aligned to the NODE's vertical centre, not the card's — the node is the
+   * thing the rail connects. */
+  inset-block-start: 21px;
+  inset-inline: calc(100% / 6);
+  height: 2px;
+  pointer-events: none;
+}
+
+/* Solid at the ends: the message is legible on your device and on theirs. */
+.railSolid {
+  position: absolute;
+  inset-block: 0;
+  width: 100%;
+  background: linear-gradient(
+    to right,
+    transparent,
+    color-mix(in srgb, var(--hue) 45%, transparent) 8%,
+    color-mix(in srgb, var(--hue) 45%, transparent) 92%,
+    transparent
+  );
+}
+
+/* Dashed across the middle third, masked over the solid stroke. This is the leg
+ * where the server carries ciphertext: the line is still continuous (the message
+ * does arrive) but it is not SOLID (nobody in the middle can read it). */
+.railBlind {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 33.33%;
+  width: 33.34%;
+  background-image: linear-gradient(
+    to right,
+    var(--color-background) 0 6px,
+    transparent 6px 12px
+  );
+  background-size: 12px 100%;
+}
+
+/* ---- steps --------------------------------------------------------------- */
+
+.steps {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-lg);
+}
+
+.step {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  text-align: start;
+}
+
+/* The node: a filled disc on the rail. Solid ground (not translucent) so the
+ * rail visibly passes BEHIND it rather than through it. */
+.node {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  color: var(--hue);
+  background: var(--color-background);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--hue) 30%, transparent);
+}
+
+/* The blind step is marked by MORE than colour: a dashed ring, matching the
+ * dashed rail leg, plus the word "blind" in its label. Never colour alone. */
+.blind .node {
+  color: var(--color-text-dim);
+  background: var(--color-background);
+  box-shadow: none;
+  border: 2px dashed var(--color-border);
+}
+
+.index {
+  position: absolute;
+  inset-block-start: -2px;
+  inset-inline-end: -2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--hue);
+  color: var(--color-text-on-primary);
+  font-size: 10px;
+  font-weight: var(--weight-bold);
+  /* A ring in the page ground punches the counter out of the node cleanly. */
+  box-shadow: 0 0 0 3px var(--color-background);
+}
+
+.blind .index {
+  background: var(--color-text-dim);
+}
+
+.stepTitle {
+  font-size: var(--text-h3);
+  font-weight: var(--weight-semibold);
+  /* Tracking is size-specific (§15): this sits at h3 size, so it tightens. */
+  letter-spacing: var(--tracking-tight);
+  line-height: var(--leading-snug);
+}
+
+.stepBody {
+  color: var(--color-text-dim);
+  line-height: var(--leading-body);
+  text-wrap: pretty;
+}
+
+/* ---- phone ------------------------------------------------------------- */
+
+@media (max-width: 860px) {
+  /* The rail turns vertical: same idea, rotated. Rather than re-draw it, the
+   * horizontal rail is dropped and each step carries its own connector. */
+  .rail { display: none; }
+
+  .steps {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  .step {
+    position: relative;
+    padding-inline-start: calc(44px + var(--space-md));
+    padding-block-end: var(--space-lg);
+  }
+
+  .node { position: absolute; inset-inline-start: 0; inset-block-start: 0; }
+
+  /* The vertical connector between consecutive nodes. */
+  .step:not(:last-child)::before {
+    content: '';
+    position: absolute;
+    inset-inline-start: 21px;
+    inset-block: 44px var(--space-3xs);
+    width: 2px;
+    background: color-mix(in srgb, var(--hue) 45%, transparent);
+  }
+
+  /* Leaving the blind step, the connector goes dashed — same rule as desktop. */
+  .blind::before {
+    background-image: linear-gradient(
+      to bottom,
+      var(--color-border) 0 6px,
+      transparent 6px 12px
+    ) !important;
+    background: none;
+    background-size: 100% 12px;
+  }
+}

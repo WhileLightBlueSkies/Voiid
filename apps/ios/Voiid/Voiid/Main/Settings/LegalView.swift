@@ -34,15 +34,19 @@ struct LegalView: View {
     @State private var withdrew = false
 
     var body: some View {
-        List {
-            summary
-            documents
-            consentStatus
-            if liveConsent != nil { withdrawSection }
+        ScrollView {
+            VStack(alignment: .leading, spacing: VoiidSpacing.md) {
+                VoiidSettingsHeader("Privacy & Legal",
+                                    subtitle: "What Voiid can and cannot see, the documents "
+                                            + "you agreed to, and how to withdraw that.")
+                summary
+                documents
+                consentStatus
+                if liveConsent != nil { withdrawSection }
+            }
+            .padding(VoiidSpacing.md)
         }
-        .voiidSettingsList()
-        .background(VoiidColor.background.ignoresSafeArea())
-        .navigationTitle("Privacy & Legal")
+        .voiidSettingsPage()
         .task { await consent.refreshStatus() }
         .confirmationDialog("Withdraw consent?",
                             isPresented: $confirmWithdraw,
@@ -70,16 +74,18 @@ struct LegalView: View {
     /// The honest summary. Written to be read by someone who will not open the notice —
     /// which is most people — so it leads with the limit rather than the reassurance.
     private var summary: some View {
-        SettingsSection("In short",
-                        footer: "Clips are the exception: a Clip is a public post, stored unencrypted, and Voiid's moderators can see and remove it.") {
+        VoiidCardSection("In short",
+                         footer: "Clips are the exception: a Clip is a public post, stored unencrypted, and Voiid's moderators can see and remove it.") {
             claim(icon: "lock.fill",
                   tint: VoiidColor.success,
                   title: "Voiid cannot read what you send",
                   detail: "Messages, calls, live location and moments are encrypted on your device and decrypted on the other person's. The server holds the encrypted bytes and no key.")
+            VoiidRowDivider()
             claim(icon: "eye.fill",
                   tint: VoiidColor.warning,
                   title: "Voiid can see who and when",
                   detail: "Your phone number, which account a message is addressed to and when it arrived, your device type and app version, and the IP address you connect from.")
+            VoiidRowDivider()
             claim(icon: "nosign",
                   tint: VoiidColor.textSecondary,
                   title: "Voiid does not sell or profile you",
@@ -88,69 +94,79 @@ struct LegalView: View {
     }
 
     private var documents: some View {
-        SettingsSection("Documents",
-                        footer: "Version \(LegalDocuments.noticeVersion). Stored in the app, so they open without a connection.") {
-            ForEach(LegalDocuments.all) { doc in
+        VoiidCardSection("Documents",
+                         footer: "Version \(LegalDocuments.noticeVersion). Stored in the app, so they open without a connection.") {
+            ForEach(Array(LegalDocuments.all.enumerated()), id: \.element.id) { index, doc in
                 // A view-based NavigationLink rather than a `SettingsRoute` value: the
                 // route enum exists so every pushed screen is constructible with no
                 // arguments (see SettingsSheet), and a document screen needs its document.
                 NavigationLink {
                     LegalDocumentView(document: doc)
                 } label: {
-                    Label(doc.title, systemImage: doc.id == "privacy" ? "hand.raised" : "doc.text")
-                        .font(.body)
-                        .foregroundStyle(VoiidColor.textPrimary)
+                    HStack(spacing: VoiidSpacing.md) {
+                        VoiidRowIcon(systemName: doc.id == "privacy" ? "hand.raised" : "doc.text")
+                        Text(doc.title)
+                            .font(.body)
+                            .foregroundStyle(VoiidColor.textPrimary)
+                            .multilineTextAlignment(.leading)
+                        Spacer(minLength: 0)
+                        VoiidChevron()
+                    }
+                    .padding(.horizontal, VoiidSpacing.md)
+                    .padding(.vertical, 11)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(RowButtonStyle())
+
+                if index < LegalDocuments.all.count - 1 { VoiidRowDivider() }
             }
         }
     }
 
     @ViewBuilder
     private var consentStatus: some View {
-        SettingsSection("Your consent", footer: consentFooter) {
+        VoiidCardSection("Your consent", footer: consentFooter) {
             if let live = liveConsent {
-                LabeledContent {
+                VoiidSettingsRow(icon: "calendar", title: "Agreed on") {
                     Text(shortDate(live.given_at))
                         .font(.subheadline)
                         .foregroundStyle(VoiidColor.textSecondary)
-                } label: {
-                    Text("Agreed on")
-                        .font(.body)
-                        .foregroundStyle(VoiidColor.textPrimary)
                 }
-                LabeledContent {
-                    Text(live.notice_version ?? "—")
+                VoiidRowDivider()
+                VoiidSettingsRow(icon: "number", title: "Notice version") {
+                    Text(live.notice_version ?? "\u{2014}")
                         .font(.subheadline)
                         .foregroundStyle(VoiidColor.textSecondary)
-                } label: {
-                    Text("Notice version")
-                        .font(.body)
-                        .foregroundStyle(VoiidColor.textPrimary)
                 }
                 ForEach(LegalDocuments.purposes) { purpose in
+                    VoiidRowDivider()
                     purposeRow(purpose, granted: live.purposes?[purpose.id] ?? false)
                 }
             } else if withdrew {
-                Text("Consent withdrawn.")
-                    .font(.body)
-                    .foregroundStyle(VoiidColor.textPrimary)
+                statusLine("Consent withdrawn.")
             } else {
-                Text("No consent on record for this account.")
-                    .font(.body)
-                    .foregroundStyle(VoiidColor.textPrimary)
+                statusLine("No consent on record for this account.")
             }
         }
     }
 
+    /// A plain sentence inside a card, padded to line up with the rows it replaces.
+    private func statusLine(_ text: String) -> some View {
+        Text(text)
+            .font(.body)
+            .foregroundStyle(VoiidColor.textPrimary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, VoiidSpacing.md)
+            .padding(.vertical, 11)
+    }
+
     private var withdrawSection: some View {
-        SettingsSection {
-            Button(role: .destructive) {
+        VoiidCardSection {
+            VoiidSettingsRow(icon: "hand.raised.slash",
+                             title: "Withdraw Consent",
+                             destructive: true) {
                 Haptics.rigid()
                 confirmWithdraw = true
-            } label: {
-                Label("Withdraw Consent", systemImage: "hand.raised.slash")
-                    .font(.body)
-                    .foregroundStyle(VoiidColor.error)
             }
             .disabled(working)
         }
@@ -158,32 +174,54 @@ struct LegalView: View {
 
     // MARK: - Parts
 
+    /// The icon keeps its OWN tint rather than taking `VoiidRowIcon`'s accent: green, amber
+    /// and grey are carrying the meaning here — can't see / can see / doesn't do — and
+    /// flattening all three to the accent would delete the distinction the section exists on.
     private func claim(icon: String, tint: Color, title: String, detail: String) -> some View {
         HStack(alignment: .top, spacing: VoiidSpacing.md) {
-            Image(systemName: icon)
-                .font(.body)
-                .foregroundStyle(tint)
+            Circle()
+                .stroke(tint.opacity(0.5), lineWidth: 1)
+                .frame(width: 34, height: 34)
+                .overlay {
+                    Image(systemName: icon)
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(tint)
+                }
                 .accessibilityHidden(true)
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.body).foregroundStyle(VoiidColor.textPrimary)
                 Text(detail).font(.footnote).foregroundStyle(VoiidColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+
+            Spacer(minLength: 0)
         }
-        .padding(.vertical, 2)
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.vertical, 11)
+        .accessibilityElement(children: .combine)
     }
 
+    /// Tick or cross, and the WORD in the accessibility label — a granted purpose and a
+    /// refused one must not differ by hue alone.
     private func purposeRow(_ purpose: LegalDocuments.Purpose, granted: Bool) -> some View {
-        LabeledContent {
+        HStack(alignment: .top, spacing: VoiidSpacing.md) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(purpose.title).font(.body).foregroundStyle(VoiidColor.textPrimary)
+                Text(purpose.detail).font(.footnote).foregroundStyle(VoiidColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: VoiidSpacing.sm)
+
             Image(systemName: granted ? "checkmark" : "xmark")
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(granted ? VoiidColor.success : VoiidColor.textSecondary)
                 .accessibilityLabel(granted ? "Agreed" : "Not agreed")
-        } label: {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(purpose.title).font(.body).foregroundStyle(VoiidColor.textPrimary)
-                Text(purpose.detail).font(.footnote).foregroundStyle(VoiidColor.textSecondary)
-            }
         }
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.vertical, 11)
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: - State

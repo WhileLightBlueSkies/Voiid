@@ -17,6 +17,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.FlipCameraAndroid
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material.icons.filled.VideocamOff
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material3.Icon
@@ -35,6 +40,7 @@ import com.voiid.app.model.ConversationType
 import com.voiid.app.net.ConferenceManager
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.VoiidAvatar
+
 import com.voiid.app.ui.components.softClickable
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont

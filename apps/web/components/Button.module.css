@@ -10,11 +10,20 @@
   line-height: 1.2;
   text-decoration: none;
   white-space: nowrap;
+  cursor: pointer;
   transition:
     background-color var(--dur-fast) var(--ease-out),
     border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
     color var(--dur-fast) var(--ease-out),
-    transform var(--dur-fast) var(--ease-out);
+    transform 100ms var(--ease-out);
+}
+
+/* Press feedback is grouped with the other :active rules further down. */
+
+.btn:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
 }
 
 /* 44px minimum target on the small size — this is read on phones. */
@@ -43,31 +52,43 @@
   transform: translateX(3px);
 }
 
-/* ---- primary ------------------------------------------------------------- */
+/* ---- primary ------------------------------------------------------------- *
+ * The one filled brand button. It carries a shadow because on a light ground a
+ * flat filled rectangle reads as a coloured div; the lift is what makes it read
+ * as pressable. Hover and active are explicit tokens rather than a colour-mix,
+ * so the pressed state is a designed value and not an accident of arithmetic. */
 .primary {
   background: var(--color-primary);
   color: var(--color-text-on-primary);
+  box-shadow: var(--shadow-xs), 0 4px 14px -6px rgba(19, 130, 140, 0.55);
 }
 .primary:hover {
-  background: color-mix(in srgb, var(--color-primary) 86%, var(--color-text));
+  background: var(--color-primary-hover);
+  box-shadow: var(--shadow-card), 0 8px 20px -8px rgba(19, 130, 140, 0.5);
 }
+.primary:active { background: var(--color-primary-active); }
 
-/* ---- secondary ----------------------------------------------------------- */
+/* ---- secondary ----------------------------------------------------------- *
+ * White, not transparent: on a tinted or meshed band a transparent button
+ * disappears, and the pair of buttons stops reading as a pair. */
 .secondary {
-  background: transparent;
+  background: var(--color-surface);
   color: var(--color-text);
   border-color: var(--color-border);
+  box-shadow: var(--shadow-xs);
 }
 .secondary:hover {
-  border-color: var(--color-primary);
-  color: var(--color-primary);
-  background: color-mix(in srgb, var(--color-primary) 7%, transparent);
+  border-color: var(--color-border-strong);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card);
 }
+.secondary:active { background: var(--color-surface-2); }
 
 /* ---- ghost --------------------------------------------------------------- */
 .ghost {
   background: transparent;
-  color: var(--hue, var(--color-primary));
+  /* The hue tokens are reading weights on white, so this is legible as text. */
+  color: var(--hue, var(--color-primary-ink));
   padding-inline: 0;
   min-height: 0;
 }
@@ -84,10 +105,20 @@
   background: color-mix(in srgb, var(--color-accent) 88%, #ffffff);
 }
 
-/* Press feedback is a 1px settle, not a bounce; it is suppressed under
- * prefers-reduced-motion by the global rule. */
+/* Press feedback lives on pointer-down: a scale squeeze, not a bounce. */
 .btn:active {
+  transform: scale(0.97);
+}
+/* The accent's own pressed fill, so it darkens like the primary does. */
+.accent:active { background: color-mix(in srgb, var(--color-accent) 88%, var(--color-text)); }
+/* Ghost has no surface to squeeze; a settle reads better on a text button. */
+.ghost:active {
   transform: translateY(1px);
+}
+
+/* Placed AFTER the rules it overrides, or it would lose on specificity order. */
+@media (prefers-reduced-motion: reduce) {
+  .btn:active, .ghost:active { transform: none; }
 }
 
 /* ---- row ----------------------------------------------------------------- */

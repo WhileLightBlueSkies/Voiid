@@ -2,25 +2,38 @@
 //  PermissionsScreen.swift
 //  Voiid
 //
-//  Upfront permissions (spec: requested at first launch, before login). Built to the brand
-//  reference — shares its chrome with WelcomeTermsScreen via OnboardingBrandChrome.
+//  Allow Permissions — the onboarding step after Terms.
 //
-//  iOS shows one native dialog per permission, so "Allow Access" requests them in sequence:
-//  contacts, camera, microphone, photos, notifications. Best-effort — the user may deny any;
-//  we continue regardless and re-ask in-context where a feature needs it.
+//  Built to the design source (`Voiid Ui/Screens/PermissionsScreen.swift`) through
+//  `OnboardingKit`, so the sizes, paddings and weights are the reference's own numbers. The
+//  header is the WORDMARK at 34pt, matching Terms — the two screens sit back to back and a
+//  header that changes between them reads as a different app.
+//
+//  ── UNIFORM WITH TERMS ──────────────────────────────────────────────────────────
+//  ONE card with hairline dividers, not a card per permission. Every shared shape — header,
+//  card, row, footer, primary button — comes from OnboardingKit, so the two screens cannot
+//  drift apart. Only what genuinely differs lives here: the rows WRAP their subtitles
+//  (`subtitleWraps: true`), which is why the scroll clears 210pt rather than Terms' 190.
+//
+//  ── THIS SCREEN DOES REQUEST PERMISSIONS ────────────────────────────────────────
+//  The design source is a UI pass whose closures are empty seams. The real requests live here
+//  and are UNCHANGED by the restyle: contacts, camera, microphone, photos, notifications, in
+//  sequence. iOS shows one modal per permission and each needs its own usage string in
+//  Info.plist or the app traps on the first ask, so "Allow All" means "ask me for all of them"
+//  rather than granting anything at once.
 //
 //  ── LOCATION IS LISTED BUT NOT REQUESTED HERE, AND THAT IS ON PURPOSE ────────────
-//  The design lists Location as a sixth row, so it is shown: hiding it would misrepresent what
-//  the app uses. But `MapLocationProvider.requestWhenInUse()` carries an explicit decision in
-//  its own doc comment — "In-context, at the moment the user chooses to be visible — never at
-//  onboarding" — and asking for someone's location on the first screen, before they have even
-//  signed in, is the request most likely to be denied permanently. iOS gives one chance: a
-//  denial here is a trip to Settings later.
+//  The design lists Location, so it is shown: hiding it would misrepresent what the app uses.
+//  But `MapLocationProvider.requestWhenInUse()` carries an explicit decision in its own doc
+//  comment — "In-context, at the moment the user chooses to be visible — never at onboarding" —
+//  and asking for someone's location on the first screen, before they have even signed in, is
+//  the request most likely to be denied permanently. iOS gives one chance: a denial here is a
+//  trip to Settings later.
 //
-//  So the row explains what Location is for and the Map asks when the user turns visibility
-//  on. If the intent really is to prompt upfront, add the call to `requestAll()` and delete
-//  this paragraph — but that reverses a deliberate call, so it should be a decision rather
-//  than a side effect.
+//  So the row explains what Location is for and the Map asks when the user turns visibility on.
+//  If the intent really is to prompt upfront, add the call to `requestAll()` and delete this
+//  paragraph — but that reverses a deliberate call, so it should be a decision rather than a
+//  side effect.
 //
 
 import SwiftUI
@@ -33,138 +46,92 @@ struct PermissionsScreen: View {
     let onContinue: () -> Void
 
     @State private var requesting = false
-    @State private var appeared = false
-
-    private struct Row: Identifiable {
-        let id: String
-        let glyph: String
-        let title: String
-        let detail: String
-    }
-
-    /// Order matches the reference: the two that find people and capture, then media, then the
-    /// two that reach out to the user.
-    private let rows: [Row] = [
-        Row(id: "contacts", glyph: "person.crop.square", title: "Contacts",
-            detail: "Find and connect with your friends"),
-        Row(id: "camera", glyph: "camera", title: "Camera",
-            detail: "Take photos and record videos"),
-        Row(id: "mic", glyph: "mic", title: "Microphone",
-            detail: "Make voice and video calls"),
-        Row(id: "photos", glyph: "photo", title: "Photos & Media",
-            detail: "Share photos, videos and documents"),
-        Row(id: "notifications", glyph: "bell", title: "Notifications",
-            detail: "Stay updated with important alerts"),
-        Row(id: "location", glyph: "mappin.and.ellipse", title: "Location",
-            detail: "Share your location and discover nearby"),
-    ]
 
     var body: some View {
         ZStack {
-            OnboardingBrand.ground.ignoresSafeArea()
+            VoiidBrand.ground.ignoresSafeArea()
 
-            // Scrolls, with the button pinned — see the note in WelcomeTermsScreen. This screen
-            // is the worse case of the two: SIX rows at ~72pt each, so the content is well over
-            // a small phone's height before the header is counted.
-            VStack(spacing: 0) {
-                ScrollView(.vertical, showsIndicators: false) {
-                  VStack(spacing: 0) {
-                    OnboardingBrandHeader(appeared: appeared)
-                        .padding(.top, 8)
+            ScrollView {
+                VStack(spacing: 0) {
+                    OnboardingHeader(
+                        title: "Allow ",
+                        accent: "Permissions",
+                        // Line-broken to match the reference rather than left to wrap. Free
+                        // wrapping gave three ragged lines and pushed the sixth row under the
+                        // footer; these breaks hold it to three even lines and recover the room.
+                        blurb: "To give you the best experience, Voiid needs\na few permissions. You can change these anytime\nin your device settings."
+                    )
 
-                    titleBlock
+                    OnboardingKitCard {
+                        ForEach(Array(AppPermission.all.enumerated()), id: \.element.id) { index, permission in
+                            OnboardingRow(
+                                icon: permission.icon,
+                                title: permission.title,
+                                subtitle: permission.detail,
+                                // Wraps, unlike Terms' labels — see OnboardingRow.
+                                subtitleWraps: true,
+                                // No chevron: these rows are a LIST OF WHAT WILL BE ASKED, not
+                                // six things to tap. Nothing opens, and firing one system prompt
+                                // out of sequence would spend that permission's single chance —
+                                // the whole run belongs to Allow All.
+                                showsChevron: false
+                            ) {}
 
-                    permissionsCard
-                        .padding(.horizontal, 20)
-                        .padding(.top, 20)
-
-                    privacyNote
-                        .padding(.horizontal, 24)
-                        .padding(.top, 18)
-                        .padding(.bottom, 18)
-                  }
+                            if index < AppPermission.all.count - 1 {
+                                OnboardingRowDivider()
+                            }
+                        }
+                    }
+                    .padding(.top, VoiidSpacing.lg)
                 }
-
-                OnboardingPrimaryButton(title: "Allow Access", busy: requesting) {
-                    Task { await requestAll() }
-                }
-                .padding(.horizontal, 20)
-                .padding(.bottom, 10)
+                .padding(.horizontal, VoiidSpacing.lg)
+                // Larger than Terms' 190 despite a shorter footer: these subtitles WRAP, so
+                // the card is taller and the last row was landing under the fade. Measured
+                // against this screen's own footer, not inherited from the other one.
+                .padding(.bottom, 210)
             }
+            .scrollIndicators(.hidden)
+
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+
+                OnboardingFooter {
+                    OnboardingKitButton(title: "Allow All", enabled: !requesting) {
+                        Task { await requestAll() }
+                    }
+
+                    // "Not now" is a real, reachable choice, not a greyed-out afterthought. A
+                    // priming screen that hides its decline is a dark pattern — and iOS hands the
+                    // user the same refusal in the system prompt anyway, so hiding it buys
+                    // nothing but distrust.
+                    Button {
+                        Haptics.tap()
+                        onContinue()
+                    } label: {
+                        Text("Not now")
+                            .font(VoiidFont.rounded(16, .regular))
+                            .foregroundColor(VoiidColor.textSecondary)
+                            .padding(.vertical, 6)
+                            .frame(maxWidth: .infinity)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(PressableButtonStyle())
+                    .disabled(requesting)
+                }
+            }
+            .ignoresSafeArea(edges: .bottom)
         }
         .preferredColorScheme(.dark)
-        .onAppear { withAnimation(.easeOut(duration: 0.5)) { appeared = true } }
-    }
-
-    // MARK: Title
-
-    private var titleBlock: some View {
-        VStack(spacing: 6) {
-            OnboardingTitle(accented: "Voiid", trailing: " needs a few permissions")
-            Text("These permissions help us give you\nthe best experience.")
-                .font(VoiidFont.rounded(17, .regular))
-                .foregroundColor(VoiidColor.textSecondary)
-                .multilineTextAlignment(.center)
-        }
-    }
-
-    // MARK: Card
-
-    /// Flush rows with hairline dividers, not separate tiles — six tiles at this size would
-    /// fill the screen with gaps and the list would lose its shape.
-    private var permissionsCard: some View {
-        OnboardingCard(flush: true) {
-            ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                if index > 0 {
-                    Rectangle()
-                        .fill(OnboardingBrand.hairline)
-                        .frame(height: 1)
-                }
-                permissionRow(row)
-            }
-        }
-    }
-
-    private func permissionRow(_ row: Row) -> some View {
-        HStack(spacing: 14) {
-            OnboardingGlyphTile(system: row.glyph)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(row.title)
-                    .font(VoiidFont.rounded(17, .semibold))
-                    .foregroundColor(VoiidColor.textPrimary)
-                Text(row.detail)
-                    .font(VoiidFont.rounded(14, .regular))
-                    .foregroundColor(VoiidColor.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer(minLength: 8)
-
-            // Points forward, not a chevron: these rows are not navigable — nothing opens.
-            // The arrow reads as "this will be requested", which is what happens.
-            Image(systemName: "arrow.right")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(VoiidColor.accent)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
-    }
-
-    // MARK: Privacy note
-
-    private var privacyNote: some View {
-        OnboardingPrivacyNote(
-            system: "lock.shield",
-            lines: ["We respect your privacy.",
-                    "You can change these permissions anytime",
-                    "in your device settings."],
-            accentPhrase: "device settings"
-        )
+        // The wordmark is the screen's title, so the bar carries no duplicate — only the back
+        // button. Inline keeps the bar the height of that control alone.
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(.hidden, for: .navigationBar)
     }
 
     // MARK: Requests
 
+    /// Ask for each permission in turn. Best-effort — the user may deny any; we continue
+    /// regardless and re-ask in-context where a feature needs it.
     private func requestAll() async {
         guard !requesting else { return }
         requesting = true
@@ -190,4 +157,48 @@ struct PermissionsScreen: View {
         requesting = false
         onContinue()
     }
+}
+
+// MARK: - The permissions
+
+/// The permissions this app primes for, in the order the reference shows them.
+///
+/// NOT alphabetised, unlike the Terms documents. The order is deliberate: the ones the app leans
+/// on most come first, and Contacts — the most personal ask, and the only one marked optional —
+/// comes last, where a user who is uneasy has already seen the reasonable ones.
+struct AppPermission: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let detail: String
+    let icon: String
+
+    static let all: [AppPermission] = [
+        // `location`, not `mappin.and.ellipse`. The latter stacks a pin ON an ellipse — two
+        // shapes inside a 17pt glyph, which at this size collapses into an unreadable blob.
+        // Every other icon in the column is a single shape; this now matches.
+        .init(id: "location",
+              title: "Location",
+              detail: "Shows you relevant content and nearby features.",
+              icon: "location"),
+        .init(id: "notifications",
+              title: "Notifications",
+              detail: "Keeps you updated on activity and offers.",
+              icon: "bell"),
+        .init(id: "camera",
+              title: "Camera",
+              detail: "Lets you capture and share moments.",
+              icon: "camera"),
+        .init(id: "microphone",
+              title: "Microphone",
+              detail: "Enables voice features and audio notes.",
+              icon: "mic"),
+        .init(id: "photos",
+              title: "Photos & Media",
+              detail: "Lets you save, upload and share photos.",
+              icon: "photo"),
+        .init(id: "contacts",
+              title: "Contacts",
+              detail: "Helps you find and connect with people you know (optional).",
+              icon: "person.crop.circle"),
+    ]
 }

@@ -1,5 +1,6 @@
 import type { ElementType, ReactNode } from 'react';
 import { hueVars, type DomainHue } from '../lib/hues';
+import { Reveal } from './Reveal';
 import styles from './Section.module.css';
 
 /**
@@ -75,18 +76,20 @@ export function Section({
         .join(' ')}
     >
       <div className={[styles.measure, styles[width], bodyClassName].filter(Boolean).join(' ')}>
-        {hasHeader ? (
-          <header className={styles.header}>
-            {eyebrow ? <span className="eyebrow">{eyebrow}</span> : null}
-            {title ? (
-              <Heading id={headingId} className={styles.title}>
-                {title}
-              </Heading>
-            ) : null}
-            {lede ? <p className={styles.lede}>{lede}</p> : null}
-          </header>
-        ) : null}
-        {children}
+        <Reveal>
+          {hasHeader ? (
+            <header className={styles.header}>
+              {eyebrow ? <span className="eyebrow">{eyebrow}</span> : null}
+              {title ? (
+                <Heading id={headingId} className={styles.title}>
+                  {title}
+                </Heading>
+              ) : null}
+              {lede ? <p className={styles.lede}>{lede}</p> : null}
+            </header>
+          ) : null}
+          {children}
+        </Reveal>
       </div>
     </Tag>
   );

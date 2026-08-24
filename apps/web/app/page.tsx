@@ -1,12 +1,12 @@
 import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
 import { Hero } from '../components/Hero';
-import { Section, Grid, Split } from '../components/Section';
+import { Section, Grid } from '../components/Section';
 import { FeatureCard } from '../components/FeatureCard';
 import { CTA } from '../components/CTA';
 import { Button, ButtonRow } from '../components/Button';
 import { E2EEBadge } from '../components/E2EEBadge';
-import { LockMotif } from '../components/LockMotif';
+import { Reveal } from '../components/Reveal';
 import { Callout } from '../components/Callout';
 import { Glyph, type GlyphName } from '../components/Glyph';
 import {
@@ -158,15 +158,57 @@ export default function HomePage() {
         }
         actions={
           <ButtonRow>
-            <Button href="/privacy" size="lg">
-              See exactly what we can&rsquo;t see
+            <Button href="/messaging" size="lg">
+              Explore Voiid
             </Button>
-            <Button href="/messaging" variant="secondary" size="lg">
-              Start with messaging
+            <Button href="/privacy" variant="secondary" size="lg">
+              See what we can&rsquo;t see
             </Button>
           </ButtonRow>
         }
-        aside={<LockMotif size={480} idPrefix="hero-motif" />}
+        /*
+         * The hero leads with the PRODUCT, not with a paragraph.
+         *
+         * This page used to open on centred text alone and hold its only phone
+         * back until the fourth section. Every comparable site — WhatsApp,
+         * Arattai, Signal — shows the app in the first screen, because a
+         * messaging app's strongest argument is what a conversation looks like.
+         * The mockup below is the same one the honesty section used; it has
+         * simply been moved to where it does the most work.
+         */
+        aside={
+          <PhoneMockup
+            hue="chat"
+            size="lg"
+            tilt="left"
+            label="A Voiid chat. The conversation header shows the chat is end-to-end encrypted."
+          >
+            <PhoneAppBar
+              title="Aditi"
+              subtitle="End-to-end encrypted"
+              trailing={<Glyph name="call" size={16} />}
+            />
+            <div className={styles.thread}>
+              <ChatBubble side="received">
+                Landed. Sharing my location for the next hour?
+              </ChatBubble>
+              <ChatBubble side="sent" meta="19:04">
+                Please do — I&rsquo;ll start walking over.
+              </ChatBubble>
+              <ChatBubble side="received">
+                Shared. It stops on its own at 20:04.
+              </ChatBubble>
+              <div className={styles.systemNote}>
+                <Glyph name="lock" size={12} />
+                Messages and calls in this chat are end-to-end encrypted.
+              </div>
+            </div>
+            <div className={styles.composer}>
+              <span className={styles.composerField}>Message</span>
+              <PhoneAvatar initials="A" size={26} seed={2} />
+            </div>
+          </PhoneMockup>
+        }
       />
 
       {/* ---- the feature grid ------------------------------------------------ */}
@@ -183,21 +225,57 @@ export default function HomePage() {
         }
       >
         <Grid columns={3} gap="md">
-          {FEATURES.map((f) => (
-            <FeatureCard
-              key={f.href}
-              href={f.href}
-              title={f.title}
-              hue={f.hue}
-              glyph={f.glyph}
-              meta={f.badge}
-              cta={f.cta}
-              span={f.span}
-            >
-              <p>{f.body}</p>
-            </FeatureCard>
+          {FEATURES.map((f, i) => (
+            <Reveal key={f.href} delay={i * 70} className={styles.cardCell}>
+              <FeatureCard
+                href={f.href}
+                title={f.title}
+                hue={f.hue}
+                glyph={f.glyph}
+                meta={f.badge}
+                cta={f.cta}
+                span={f.span}
+              >
+                <p>{f.body}</p>
+              </FeatureCard>
+            </Reveal>
           ))}
         </Grid>
+      </Section>
+
+      {/* ---- encryption teaser: what's underneath ----------------------------- */}
+      <Section
+        id="under-the-hood"
+        hue="privacy"
+        tone="raised"
+        eyebrow="Under the hood"
+        title="Built on named cryptography — not vibes."
+        lede={
+          <>
+            One Rust core compiled into every platform. The ratchets and group protocol
+            are public standards; the custom glue is small, centralised, and written
+            down on its own page.
+          </>
+        }
+      >
+        <div className={styles.stackRow}>
+          {[
+            { name: 'vodozemac', role: 'Double Ratchet · 1:1 chats' },
+            { name: 'OpenMLS', role: 'RFC 9420 · groups' },
+            { name: 'X-Wing', role: 'ML-KEM-768 · post-quantum' },
+            { name: 'AES-256-GCM', role: 'media & attachments' },
+          ].map((t) => (
+            <div key={t.name} className={styles.stackChip}>
+              <span className={styles.stackName}>{t.name}</span>
+              <span className={styles.stackRole}>{t.role}</span>
+            </div>
+          ))}
+        </div>
+        <ButtonRow className={styles.stackActions}>
+          <Button href="/encryption" variant="ghost">
+            See every primitive we use
+          </Button>
+        </ButtonRow>
       </Section>
 
       {/* ---- the honesty section: the actual differentiator ------------------ */}
@@ -215,41 +293,7 @@ export default function HomePage() {
           </>
         }
       >
-        <Split
-          aside={
-            <PhoneMockup
-              hue="chat"
-              size="md"
-              tilt="right"
-              label="A Voiid chat. The conversation header shows that the chat is end-to-end encrypted."
-            >
-              <PhoneAppBar
-                title="Aditi"
-                subtitle="End-to-end encrypted"
-                trailing={<Glyph name="call" size={16} />}
-              />
-              <div className={styles.thread}>
-                <ChatBubble side="received">
-                  Landed. Sharing my location for the next hour?
-                </ChatBubble>
-                <ChatBubble side="sent" meta="19:04">
-                  Please do — I&rsquo;ll start walking over.
-                </ChatBubble>
-                <ChatBubble side="received">
-                  Shared. It stops on its own at 20:04.
-                </ChatBubble>
-                <div className={styles.systemNote}>
-                  <Glyph name="lock" size={12} />
-                  Messages and calls in this chat are end-to-end encrypted.
-                </div>
-              </div>
-              <div className={styles.composer}>
-                <span className={styles.composerField}>Message</span>
-                <PhoneAvatar initials="A" size={26} seed={2} />
-              </div>
-            </PhoneMockup>
-          }
-        >
+        <>
           <div className={styles.ledger}>
             <div className={styles.ledgerCol}>
               <h3 className={styles.ledgerHead}>
@@ -301,7 +345,7 @@ export default function HomePage() {
               Read the full architecture
             </Button>
           </ButtonRow>
-        </Split>
+        </>
       </Section>
 
       {/* ---- built in India -------------------------------------------------- */}

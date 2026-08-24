@@ -36,40 +36,55 @@ struct BackupRecoveryView: View {
 
     var body: some View {
         ZStack {
-            VoiidBackground()
             ScrollView {
-                VStack(alignment: .leading, spacing: VoiidSpacing.lg) {
+                VStack(alignment: .leading, spacing: VoiidSpacing.md) {
+                    // The badge is truthful: the blob is encrypted on-device before it
+                    // leaves, and the footer below states the consequence.
+                    VoiidSettingsHeader("Backup & Recovery",
+                                        subtitle: "Back up your chats so a new device can "
+                                                + "restore them.",
+                                        badge: (icon: "lock.fill", text: "End-to-end encrypted"))
+
                     statusCard
 
                     if isSetUp {
-                        actionButton(title: backingUp ? "Backing up…" : "Back up now",
-                                     system: "arrow.up.circle", enabled: !backingUp) { backUpNow() }
+                        VoiidCardSection {
+                            actionRow(title: backingUp ? "Backing up…" : "Back up now",
+                                      system: "arrow.up.circle", enabled: !backingUp) { backUpNow() }
+                        }
                         destinationsCard
-                        actionButton(title: "View recovery phrase", system: "key") { showPhrase = true }
-                        actionButton(title: "Change PIN", system: "lock.rotation") { showChangePin = true }
+                        VoiidCardSection {
+                            actionRow(title: "View recovery phrase", system: "key") { showPhrase = true }
+                            VoiidRowDivider()
+                            actionRow(title: "Change PIN", system: "lock.rotation") { showChangePin = true }
+                        }
                     } else {
-                        actionButton(title: "Set up backup", system: "checkmark.shield",
-                                     prominent: true) { showSetup = true }
+                        VoiidCardSection {
+                            actionRow(title: "Set up backup", system: "checkmark.shield") { showSetup = true }
+                        }
                     }
 
                     if let actionError {
                         Text(actionError)
-                            .font(VoiidFont.footnote)
+                            .font(.footnote)
                             .foregroundColor(VoiidColor.error)
+                            .padding(.horizontal, 4)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
 
                     Text("Your messages are encrypted on this device before backup. Only your PIN or recovery phrase can restore them — VOIID can’t read your backup or recover it for you.")
-                        .font(VoiidFont.footnote)
+                        .font(.footnote)
                         .foregroundColor(VoiidColor.textSecondary)
+                        .padding(.horizontal, 4)
                         .padding(.top, VoiidSpacing.sm)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .padding(VoiidSpacing.lg)
+                .padding(VoiidSpacing.md)
             }
+            .voiidSettingsPage()
 
             if let toast { ToastBanner(text: toast) }
         }
-        .navigationTitle("Backup & Recovery")
-        .navigationBarTitleDisplayMode(.inline)
         .task { await refreshStatus() }
         .sheet(isPresented: $showSetup, onDismiss: { Task { await refreshStatus() } }) {
             BackupSetupFlow { showSetup = false; flash("Backup is set up") }
@@ -81,60 +96,70 @@ struct BackupRecoveryView: View {
     // MARK: Status card
 
     private var statusCard: some View {
-        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
-            HStack(spacing: VoiidSpacing.sm) {
-                Image(systemName: isSetUp ? "checkmark.shield.fill" : "shield.slash")
-                    .foregroundColor(isSetUp ? VoiidColor.success : VoiidColor.textSecondary)
-                Text(isSetUp ? "Backup is on" : "Backup is off")
-                    .font(VoiidFont.headline)
-                    .foregroundColor(VoiidColor.textPrimary)
+        VoiidCardSection {
+            HStack(spacing: VoiidSpacing.md) {
+                VoiidRowIcon(systemName: isSetUp ? "checkmark.shield.fill" : "shield.slash")
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(isSetUp ? "Backup is on" : "Backup is off")
+                        .font(.body)
+                        .foregroundColor(VoiidColor.textPrimary)
+
+                    if let meta, !loadingStatus {
+                        Text("Last backup \(Self.relative(meta.updatedAtDate)) · \(Self.size(meta.size_bytes))")
+                            .font(.footnote)
+                            .foregroundColor(VoiidColor.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else if let statusError, !loadingStatus {
+                        Text(statusError)
+                            .font(.footnote)
+                            .foregroundColor(VoiidColor.error)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else if !loadingStatus {
+                        Text(isSetUp ? "No backup uploaded yet." : "Set up backup to protect your chats.")
+                            .font(.footnote)
+                            .foregroundColor(VoiidColor.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                Spacer(minLength: VoiidSpacing.sm)
+
+                if loadingStatus { ProgressView().tint(VoiidColor.primary) }
             }
-            if loadingStatus {
-                ProgressView().tint(VoiidColor.primary)
-            } else if let meta {
-                Text("Last backup \(Self.relative(meta.updatedAtDate)) · \(Self.size(meta.size_bytes))")
-                    .font(VoiidFont.subhead)
-                    .foregroundColor(VoiidColor.textSecondary)
-            } else if let statusError {
-                Text(statusError).font(VoiidFont.subhead).foregroundColor(VoiidColor.error)
-            } else {
-                Text(isSetUp ? "No backup uploaded yet." : "Set up backup to protect your chats.")
-                    .font(VoiidFont.subhead)
-                    .foregroundColor(VoiidColor.textSecondary)
-            }
+            .padding(.horizontal, VoiidSpacing.md)
+            .padding(.vertical, 11)
+            .accessibilityElement(children: .combine)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(VoiidSpacing.md)
-        .background(VoiidColor.surfaceCard)
-        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
     }
 
     // MARK: Additional destinations (iCloud / Google Drive)
 
     private var destinationsCard: some View {
         VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
-            Text("Additional backup locations")
-                .font(VoiidFont.subhead).foregroundColor(VoiidColor.textSecondary)
-
-            destinationRow(.iCloud,
-                           available: ICloudBackupService.shared.isAvailable,
-                           unavailableNote: "Sign in to iCloud in Settings to enable.")
-            Divider().overlay(VoiidColor.textSecondary.opacity(0.15))
-            destinationRow(.googleDrive,
-                           available: GoogleDriveBackupService.shared.isSignedIn,
-                           unavailableNote: "Requires Google sign-in setup.")
+            VoiidCardSection(
+                "Additional backup locations",
+                footer: "The same encrypted backup is copied to each location you turn on. "
+                      + "iCloud and Google only ever store the encrypted file — never your "
+                      + "PIN, phrase, or messages."
+            ) {
+                destinationRow(.iCloud,
+                               available: ICloudBackupService.shared.isAvailable,
+                               unavailableNote: "Sign in to iCloud in Settings to enable.")
+                VoiidRowDivider()
+                destinationRow(.googleDrive,
+                               available: GoogleDriveBackupService.shared.isSignedIn,
+                               unavailableNote: "Requires Google sign-in setup.")
+            }
 
             if let destError {
-                Text(destError).font(VoiidFont.footnote).foregroundColor(VoiidColor.error)
+                Text(destError)
+                    .font(.footnote)
+                    .foregroundColor(VoiidColor.error)
+                    .padding(.horizontal, 4)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Text("The same encrypted backup is copied to each location you turn on. iCloud and Google only ever store the encrypted file — never your PIN, phrase, or messages.")
-                .font(VoiidFont.footnote).foregroundColor(VoiidColor.textSecondary)
-                .padding(.top, VoiidSpacing.xs)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(VoiidSpacing.md)
-        .background(VoiidColor.surfaceCard)
-        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
     }
 
     @ViewBuilder
@@ -142,20 +167,20 @@ struct BackupRecoveryView: View {
                                 unavailableNote: String) -> some View {
         let isOn = manager.isEnabled(destination)
         let busy = togglingDestination == destination
-        HStack(spacing: VoiidSpacing.sm) {
-            Image(systemName: destination.systemImage)
-                .foregroundColor(available ? VoiidColor.primary : VoiidColor.textSecondary)
-                .frame(width: 26)
+        HStack(spacing: VoiidSpacing.md) {
+            VoiidRowIcon(systemName: destination.systemImage)
             VStack(alignment: .leading, spacing: 2) {
-                Text(destination.title).font(VoiidFont.headline).foregroundColor(VoiidColor.textPrimary)
+                Text(destination.title).font(.body).foregroundColor(VoiidColor.textPrimary)
                 if let snap = destSnapshots[destination], isOn {
                     Text("Last backup \(Self.relative(snap.modified)) · \(Self.size(snap.sizeBytes))")
-                        .font(VoiidFont.footnote).foregroundColor(VoiidColor.textSecondary)
+                        .font(.footnote).foregroundColor(VoiidColor.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 } else if !available {
-                    Text(unavailableNote).font(VoiidFont.footnote).foregroundColor(VoiidColor.textSecondary)
+                    Text(unavailableNote).font(.footnote).foregroundColor(VoiidColor.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            Spacer()
+            Spacer(minLength: VoiidSpacing.sm)
             if busy {
                 ProgressView().tint(VoiidColor.primary)
             } else {
@@ -168,6 +193,8 @@ struct BackupRecoveryView: View {
                 .disabled(!available)
             }
         }
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.vertical, 11)
         .opacity(available ? 1 : 0.6)
     }
 
@@ -191,24 +218,21 @@ struct BackupRecoveryView: View {
         destSnapshots = await manager.snapshots()
     }
 
-    private func actionButton(title: String, system: String, prominent: Bool = false,
-                              enabled: Bool = true, action: @escaping () -> Void) -> some View {
-        Button(action: { Haptics.tap(); action() }) {
-            HStack(spacing: VoiidSpacing.sm) {
-                Image(systemName: system)
-                Text(title).font(VoiidFont.headline)
-                Spacer()
-                if !prominent { Image(systemName: "chevron.right").font(.system(size: 13, weight: .semibold)) }
-            }
-            .foregroundColor(prominent ? VoiidColor.textOnPrimary : VoiidColor.textPrimary)
-            .padding(.horizontal, VoiidSpacing.md)
-            .frame(height: 58)
-            .frame(maxWidth: .infinity)
-            .background(prominent ? VoiidColor.primary : VoiidColor.surfaceCard)
-            .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
-            .opacity(enabled ? 1 : 0.55)
+    /// One tappable row inside a card. The old hand-rolled button had a `prominent`
+    /// variant (filled in the accent) for "Set up backup"; the card idiom carries that
+    /// emphasis through the header and the row's own chevron instead, so there is no
+    /// second visual style to keep in sync.
+    ///
+    /// The haptic is fired HERE rather than by `VoiidSettingsRow`: the shared row plays none,
+    /// so that a caller whose action has its own heavier haptic does not get a stutter of two.
+    /// Every row on this screen opens a sheet, so a plain `tap` is the right one for all four.
+    private func actionRow(title: String, system: String,
+                           enabled: Bool = true, action: @escaping () -> Void) -> some View {
+        VoiidSettingsRow(icon: system, title: title,
+                         action: { Haptics.tap(); action() }) {
+            VoiidChevron()
         }
-        .buttonStyle(SoftPressStyle())
+        .opacity(enabled ? 1 : 0.55)
         .disabled(!enabled)
     }
 
