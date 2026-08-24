@@ -38,6 +38,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -49,6 +52,7 @@ import kotlinx.coroutines.launch
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.foundation.Canvas
 
 /**
@@ -154,43 +158,67 @@ fun CricketPitch(
         // Haptics are graded by how big the event is: a mini tick for small runs, a light knock
         // for a four, a rising thump for a six. A wicket gets its own signature so it never
         // feels like a reward.
+        // THE SWING RUNS CONCURRENTLY WITH THE BALL, and it is LINEAR — two changes.
+        //
+        // Linear because `strike` is a clock, not a position. CricketFigures.pose() now shapes
+        // the swing itself: ease out into the backlift, hold at the top, accelerate into
+        // contact, decelerate through the follow-through. A FastOutSlowInEasing tween on TOP of
+        // that curve double-eases it, flattening the differences between shots back into one
+        // generic ramp — exactly the "toy on a key" motion this is meant to stop.
+        //
+        // Concurrent because three of these branches used to AWAIT the full swing before
+        // starting the ball, so the bat finished its follow-through before the ball had left
+        // the middle. The bat still leads (the ball is delayed past contact); it just no longer
+        // blocks. The swing also runs for the ball's OWN duration rather than a fixed 170 ms, so
+        // a six's follow-through takes as long as a six's flight.
+        val flightDurMs = when (e) {
+            is BallEvent.Runs -> flightMs(e.runs)
+            BallEvent.Dot -> 280
+            BallEvent.Caught -> 520
+            BallEvent.Bowled -> 400
+        }
+        val swingMs = 170 + (flightDurMs * 0.75f).toInt()
+        launch { strike.animateTo(1f, tween(swingMs, easing = LinearEasing)) }
+
+        // Haptics are graded by how big the event is: a mini tick for small runs, a light knock
+        // for a four, a rising thump for a six. A wicket gets its own signature so it never
+        // feels like a reward.
         when (e) {
             is BallEvent.Runs -> {
-                // Bat first, ball after contact — in that order, or the ball appears to move
-                // before it was hit.
-                strike.animateTo(1f, tween(170, easing = FastOutSlowInEasing))
                 when {
                     e.runs >= 6 -> haptics.boundary()
                     e.runs == 4 -> haptics.soft()
                     else -> haptics.tap()
                 }
                 banner = bannerFor(e)
-                bannerPop.animateTo(1f, tween(220, easing = LinearOutSlowInEasing))
-                flight.animateTo(1f, tween(flightMs(e.runs), easing = LinearEasing))
+                launch { bannerPop.animateTo(1f, tween(220, easing = LinearOutSlowInEasing)) }
+                // Delayed past contact, so the ball is struck rather than seen to move first.
+                kotlinx.coroutines.delay(120)
+                flight.animateTo(1f, tween(flightDurMs, easing = LinearEasing))
             }
             BallEvent.Dot -> {
-                strike.animateTo(1f, tween(150, easing = FastOutSlowInEasing))
                 haptics.tap()
                 banner = "Dot ball"
-                bannerPop.animateTo(1f, tween(200, easing = LinearOutSlowInEasing))
-                flight.animateTo(1f, tween(280, easing = FastOutSlowInEasing))
+                launch { bannerPop.animateTo(1f, tween(200, easing = LinearOutSlowInEasing)) }
+                kotlinx.coroutines.delay(120)
+                flight.animateTo(1f, tween(flightDurMs, easing = LinearEasing))
             }
             BallEvent.Caught -> {
-                strike.animateTo(1f, tween(160, easing = FastOutSlowInEasing))
-                flight.animateTo(1f, tween(520, easing = FastOutSlowInEasing))
                 haptics.rigid()
                 banner = "Caught!"
-                bannerPop.animateTo(1f, tween(220, easing = LinearOutSlowInEasing))
+                launch { bannerPop.animateTo(1f, tween(220, easing = LinearOutSlowInEasing)) }
+                kotlinx.coroutines.delay(120)
+                flight.animateTo(1f, tween(flightDurMs, easing = LinearEasing))
             }
             BallEvent.Bowled -> {
                 // A BOWLED SWINGS TOO. The old code played no swing at all, so a player watched
                 // their batter stand perfectly still while the stumps fell over. A batter who is
-                // bowled DID play a shot; they missed it, and the miss is the drama (§4.3).
-                launch { strike.animateTo(1f, tween(170, easing = FastOutSlowInEasing)) }
-                flight.animateTo(1f, tween(400, easing = LinearEasing))
+                // bowled DID play a shot; they missed it, and the miss is the drama (§4.3). No
+                // contact delay here — nothing was hit, so the ball never waits on the bat.
                 haptics.rigid()
                 banner = "Bowled!"
-                bannerPop.animateTo(1f, tween(220, easing = LinearOutSlowInEasing))
+                launch { bannerPop.animateTo(1f, tween(220, easing = LinearOutSlowInEasing)) }
+                flight.animateTo(1f, tween(flightDurMs, easing = LinearEasing))
             }
         }
         delay(650)
@@ -256,10 +284,13 @@ fun CricketPitch(
         Box(
             Modifier
                 .align(Alignment.CenterStart)
-                .offset(x = w * 0.06f, y = h * 0.10f)
-                .size(width = w * 0.72f, height = h * 0.26f)
+                // UNDER THE FEET, NOT THROUGH THE WAIST. At +0.10h with 0.55 alpha this rode
+                // up into the batter's body and read as a translucent bar laid over the pitch
+                // rather than as ground the players stand on. It belongs below the figures.
+                .offset(x = w * 0.06f, y = h * 0.17f)
+                .size(width = w * 0.72f, height = h * 0.22f)
                 .clip(RoundedCornerShape(topStartPercent = 12, bottomStartPercent = 30))
-                .background(Color(0xFFC9A97A).copy(alpha = 0.55f))
+                .background(Color(0xFFC9A97A).copy(alpha = 0.32f))
         )
 
         // Boundary rope — the thing a shot travels toward, so the motion has a target.
@@ -306,35 +337,68 @@ fun CricketPitch(
         // Motion trail — a few fading echoes behind the ball. Sells speed on the big hits and
         // is invisible on a push, because it scales with the same distance the ball travels.
         if (e is BallEvent.Runs && e.runs >= 3) {
-            val trailCount = if (e.runs >= 6) 4 else 2
+            // MORE ECHOES, CLOSER TOGETHER. Four widely-spaced dots read as four dots; a denser
+            // tail reads as one blurred streak, which is the point of a trail.
+            val trailCount = if (e.runs >= 6) 7 else 5
             repeat(trailCount) { i ->
-                val lag = (i + 1) * 0.07f
-                val tp = (p - lag).coerceAtLeast(0f)
-                val (tx, ty) = ballPosition(e, tp, w, h)
-                Box(
-                    Modifier
-                        .offset(x = tx, y = ty)
-                        .size((13 - i * 2).dp)
-                        .clip(CircleShape)
-                        .alpha(0.28f * (1f - i / trailCount.toFloat()))
-                        .background(Color(0xFFFF7A5C))
-                )
+                val lag = (i + 1) * 0.035f
+                val tp = p - lag
+                // Nothing until the ball has a past — otherwise the whole tail stacks up on the
+                // bat at the moment of contact.
+                if (tp > 0f) {
+                    val (tx, ty) = ballPosition(e, tp, w, h)
+                    val fade = 1f - i / trailCount.toFloat()
+                    Box(
+                        Modifier
+                            .offset(x = tx, y = ty)
+                            .size((14f * fade).dp)
+                            .clip(CircleShape)
+                            .alpha(0.34f * fade * fade)
+                            .background(Color(0xFFFF7A5C))
+                    )
+                }
             }
         }
 
         if (e != null) {
+            // A ball in the air is FURTHER AWAY, so it reads smaller. Without this the six's
+            // apex looks like the ball is sliding up a wall rather than going over the field.
+            val arcOf = when (e) {
+                is BallEvent.Runs -> when (e.runs) {
+                    6 -> 0.66f; 5 -> 0.44f; 4 -> 0.10f; 3 -> 0.26f; 2 -> 0.20f; else -> 0.14f
+                }
+                BallEvent.Caught -> 0.42f
+                else -> 0f
+            }
+            val baseY = if (e == BallEvent.Dot) h * 0.58f else if (e == BallEvent.Caught) h * 0.44f else h * 0.46f
+            val height = ((baseY - by) / maxOf(h * arcOf, 1.dp)).coerceAtLeast(0f)
+            val depth = 1f - 0.22f * minOf(1f, height)
             Box(
                 Modifier
                     .offset(x = bx, y = by)
                     .size(15.dp)
+                    .scale(depth)
+                    // The seam, which is the only thing that can show the ball SPINNING. A plain
+                    // disc rotating is indistinguishable from a disc standing still.
+                    .rotate(p * 900f)
                     .clip(CircleShape)
                     .background(
                         Brush.radialGradient(
                             0f to Color(0xFFFF8A6B),
                             1f to Color(0xFFC62828),
                         )
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Canvas(Modifier.fillMaxSize()) {
+                    drawOval(
+                        Color.White.copy(alpha = 0.65f),
+                        topLeft = Offset(size.width * 0.07f, size.height * 0.30f),
+                        size = androidx.compose.ui.geometry.Size(size.width * 0.86f, size.height * 0.40f),
+                        style = Stroke(width = 1.2.dp.toPx()),
                     )
-            )
+                }
+            }
         }
 
         // A fielder's hands where a catch ends, so "Caught" has something to be caught by.
@@ -352,11 +416,21 @@ fun CricketPitch(
         banner?.let { text ->
             val isBig = e is BallEvent.Runs && (e.runs >= 4)
             val isWicket = e == BallEvent.Caught || e == BallEvent.Bowled
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            // OUT OF THE FLIGHT CORRIDOR. This used to sit dead centre, which is exactly where
+            // the ball travels (baseY is 0.46h and the arc lifts from there) — so on the two
+            // shots that matter most, a four and a six, the banner covered the entire flight
+            // from the bat to the rope. The animation ran correctly and could not be seen.
+            //
+            // Up here it reads as a scoreboard call over the ground rather than a label pinned
+            // on top of the action, and the whole corridor stays clear.
+            Box(
+                Modifier.fillMaxSize().padding(top = 10.dp),
+                contentAlignment = Alignment.TopCenter,
+            ) {
                 Text(
                     text,
                     color = Color.White,
-                    fontSize = if (isBig) 40.sp else if (isWicket) 26.sp else 22.sp,
+                    fontSize = if (isBig) 34.sp else if (isWicket) 24.sp else 20.sp,
                     fontWeight = FontWeight.Black,
                     modifier = Modifier
                         // Overshoots then settles — the pop is what makes a six feel loud.
@@ -364,10 +438,10 @@ fun CricketPitch(
                         .alpha(bannerPop.value.coerceIn(0f, 1f))
                         .background(
                             if (isWicket) Color(0xFF8E1B1B).copy(alpha = 0.85f)
-                            else Color.Black.copy(alpha = 0.32f),
+                            else Color.Black.copy(alpha = 0.38f),
                             RoundedCornerShape(VoiidRadius.md),
                         )
-                        .padding(horizontal = 16.dp, vertical = 7.dp),
+                        .padding(horizontal = 14.dp, vertical = 6.dp),
                 )
             }
         }
@@ -484,8 +558,15 @@ private fun ballPosition(
             2 -> 0.20f
             else -> 0.14f
         }
-        val x = w * (0.24f + reach * p)
-        val lift = -(h * arc) * (4f * p * (1f - p))
+        // WHY THE EASING LIVES HERE AND NOT IN THE ANIMATION. `flight` is driven linearly on
+        // purpose — it is a clock, not a position. A hit ball does not travel at a constant
+        // rate: it leaves the bat fast and is dragged down by air the whole way, so the
+        // horizontal component decays while the vertical follows a real parabola against it.
+        // Easing the ANIMATION instead eases both axes together, which bends the arc itself and
+        // is what made the flight look like a tweened sprite rather than a struck ball.
+        val ease = 1f - Math.pow((1f - p).toDouble(), 2.2).toFloat()
+        val x = w * (0.24f + reach * ease)
+        val lift = -(h * arc) * (4f * ease * (1f - ease))
         x to (h * 0.46f + lift)
     }
     BallEvent.Dot -> {
@@ -494,8 +575,9 @@ private fun ballPosition(
     }
     BallEvent.Caught -> {
         // Stops around 0.6 of the way out — caught in the deep, short of the rope.
-        val x = w * (0.24f + 0.40f * p)
-        val lift = -(h * 0.42f) * (4f * p * (1f - p))
+        val ease = 1f - Math.pow((1f - p).toDouble(), 2.2).toFloat()
+        val x = w * (0.24f + 0.40f * ease)
+        val lift = -(h * 0.42f) * (4f * ease * (1f - ease))
         x to (h * 0.44f + lift)
     }
     BallEvent.Bowled -> {
@@ -528,41 +610,176 @@ private fun DrawScope.limb(
     return to
 }
 
-/** The batter, posed for [event] at progress [strike] through the shot. */
+/**
+ * The batter, posed for [event] at progress [strike] through the shot.
+ *
+ * JOINTS SHARE COORDINATES, which is what closes the gaps. The previous version drew each bone
+ * from a point it computed independently — the torso rect started at `shoulder.y` while the hip
+ * sat a third of a figure below it, and the arms rooted at a bare `shoulder` point whose covering
+ * ellipse was thinner than the arm strokes themselves. At rest that reads as one body; at a six's
+ * +66° arm and +30° torso the limbs swing clear of the mass they are supposed to grow out of and
+ * the figure comes apart at the neck and shoulder.
+ *
+ * So: the torso is a QUAD between the actual hip and the actual shoulder (it leans with the bone
+ * instead of staying an upright rectangle), the head rides the torso's own direction, and every
+ * joint gets a cap disc sized to the THICKER of the two bones it joins. A cap smaller than its
+ * limb is not a joint, it is a hole.
+ */
 private fun DrawScope.drawBatter(event: BallEvent, strike: Float) {
     val pose = CricketFigures.pose(event, strike.toDouble())
     val scale = size.height * 0.30f
-    // Feet on the batting crease, which is where the old rectangles stood.
     val feet = Offset(size.width * (0.175f + pose.stride.toFloat() * 0.35f), size.height * 0.62f)
+    drawOval(Color.Black.copy(alpha = 0.20f),
+        topLeft = Offset(feet.x - scale * 0.36f, feet.y - scale * 0.035f),
+        size = androidx.compose.ui.geometry.Size(scale * 0.72f, scale * 0.14f))
 
-    // Legs first — they sit behind the torso.
-    limb(feet, 180 + pose.backLeg, scale * 0.34f, scale * 0.13f, CricketFigures.Kit)
+    // The skeleton is solved BEFORE anything is drawn, so every part is placed against the same
+    // joint positions rather than against its own guess at them.
     val hip = Offset(feet.x, feet.y - scale * 0.34f)
-    limb(feet, 180 - pose.frontLeg, scale * 0.34f, scale * 0.13f, CricketFigures.Kit)
-
-    // Torso and head.
-    val shoulder = limb(hip, pose.torso, scale * 0.40f, scale * 0.19f, CricketFigures.Kit)
-    val headR = scale * 0.11f
-    drawCircle(CricketFigures.Ink, headR, Offset(shoulder.x, shoulder.y - headR * 1.1f))
-    drawCircle(CricketFigures.Skin, headR * 0.82f, Offset(shoulder.x, shoulder.y - headR * 1.1f))
-
-    // Arms, then the bat from the hands. The bat is what the eye tracks, so it is drawn last
-    // and widest.
-    val hands = limb(shoulder, 150 + pose.frontArm, scale * 0.30f, scale * 0.10f,
-        CricketFigures.Skin)
-    limb(shoulder, 160 + pose.backArm, scale * 0.28f, scale * 0.10f, CricketFigures.Skin)
-
-    val batRad = Math.toRadians(pose.bat - 90)
-    val batTip = Offset(
-        hands.x + (kotlin.math.cos(batRad) * scale * 0.52f).toFloat(),
-        hands.y + (kotlin.math.sin(batRad) * scale * 0.52f).toFloat(),
+    val torsoRad = Math.toRadians(pose.torso - 90)
+    val torsoLen = scale * 0.40f
+    val shoulder = Offset(
+        hip.x + (kotlin.math.cos(torsoRad) * torsoLen).toFloat(),
+        hip.y + (kotlin.math.sin(torsoRad) * torsoLen).toFloat(),
     )
-    drawLine(CricketFigures.Ink, hands, batTip, strokeWidth = scale * 0.15f, cap = StrokeCap.Round)
+    val upX = (shoulder.x - hip.x) / torsoLen
+    val upY = (shoulder.y - hip.y) / torsoLen
+    val sideX = -upY
+    val sideY = upX
+
+    // Legs first — they sit behind the torso, and both are rooted at the same hip.
+    val legW = scale * 0.13f
+    val backFoot = limb(hip, 180 + pose.backLeg, scale * 0.34f, legW, CricketFigures.Kit)
+    val frontFoot = limb(hip, 180 - pose.frontLeg, scale * 0.34f, legW, CricketFigures.Kit)
+    // Pads along each shin, oriented with the leg rather than as a fixed upright box.
+    for ((f, ang) in listOf(backFoot to 180 + pose.backLeg, frontFoot to 180 - pose.frontLeg)) {
+        val r = Math.toRadians(ang - 90)
+        drawLine(
+            Color.White,
+            Offset(f.x - (kotlin.math.cos(r) * scale * 0.22f).toFloat(),
+                   f.y - (kotlin.math.sin(r) * scale * 0.22f).toFloat()),
+            Offset(f.x - (kotlin.math.cos(r) * scale * 0.02f).toFloat(),
+                   f.y - (kotlin.math.sin(r) * scale * 0.02f).toFloat()),
+            strokeWidth = scale * 0.14f, cap = StrokeCap.Round,
+        )
+    }
+    // Shoes at the ACTUAL foot positions. These used to be pinned to `feet`, so a striding front
+    // leg left its shoe behind at the crease.
+    for (f in listOf(backFoot, frontFoot)) {
+        drawOval(CricketFigures.Shoe, topLeft = Offset(f.x - scale * 0.14f, f.y - scale * 0.05f),
+            size = androidx.compose.ui.geometry.Size(scale * 0.28f, scale * 0.10f))
+    }
+    joint(hip, legW * 1.35f, CricketFigures.Kit)
+
+    // TORSO AS A QUAD between the two real joints. A rectangle pinned to `shoulder.y` (what was
+    // here) cannot lean, so any torso rotation tore it open at the hip.
+    val hipHalf = scale * 0.15f
+    val shHalf = scale * 0.19f
+    fun quad(hh: Float, sh: Float) = Path().apply {
+        moveTo(hip.x + sideX * hh, hip.y + sideY * hh)
+        lineTo(shoulder.x + sideX * sh, shoulder.y + sideY * sh)
+        lineTo(shoulder.x - sideX * sh, shoulder.y - sideY * sh)
+        lineTo(hip.x - sideX * hh, hip.y - sideY * hh)
+        close()
+    }
+    drawPath(quad(hipHalf, shHalf), CricketFigures.Ink)
+    drawPath(
+        quad(hipHalf - 1.6f, shHalf - 1.6f),
+        Brush.linearGradient(listOf(CricketFigures.Jersey, CricketFigures.JerseyShadow),
+            start = shoulder, end = hip),
+    )
+
+    joint(shoulder, shHalf * 2f, CricketFigures.Jersey)
+
+    // Head, riding the torso's own direction so the neck stays closed at any rotation. It used to
+    // hang at a fixed offset below `shoulder`, which opened a gap the moment the body turned.
+    val headR = scale * 0.11f
+    drawLine(CricketFigures.Ink, shoulder,
+        Offset(shoulder.x + upX * headR * 0.9f, shoulder.y + upY * headR * 0.9f),
+        strokeWidth = scale * 0.11f + 2.2f, cap = StrokeCap.Round)
+    drawLine(CricketFigures.Skin, shoulder,
+        Offset(shoulder.x + upX * headR * 0.9f, shoulder.y + upY * headR * 0.9f),
+        strokeWidth = scale * 0.11f, cap = StrokeCap.Round)
+
+    val headC = Offset(shoulder.x + upX * headR * 1.90f, shoulder.y + upY * headR * 1.90f)
+    drawCircle(CricketFigures.Ink, headR + 1.4f, headC)
+    drawCircle(CricketFigures.Skin, headR, headC)
+    // Helmet shell over the top half, rotated with the head so it never floats off.
+    rotate(pose.head.toFloat(), headC) {
+        drawOval(CricketFigures.Helmet,
+            topLeft = Offset(headC.x - headR * 1.14f, headC.y - headR * 1.30f),
+            size = androidx.compose.ui.geometry.Size(headR * 2.28f, headR * 1.70f))
+    }
+    // The grille, which is what makes it read as a batter rather than a bare head.
+    drawLine(CricketFigures.Ink,
+        Offset(headC.x - headR * 1.05f, headC.y + headR * 0.10f),
+        Offset(headC.x - headR * 0.20f, headC.y + headR * 0.62f),
+        strokeWidth = maxOf(1.4f, scale * 0.035f), cap = StrokeCap.Round)
+
+    // ARMS, rooted at the shoulder joint that now has a cap wide enough to cover them. Front arm
+    // last so the hands land on top.
+    // THE HANDS TRAVEL, AND THE ARMS FOLLOW THEM. The arm is no longer a fixed-length spoke
+    // whose tip happens to be the grip — the grip is placed first (shoulder, plus the shot's own
+    // drop/drive along the torso's axes) and the arms are then drawn TO it. That is what moves
+    // the pivot, and a moving pivot is the difference between a swing and a rotation.
+    val armW = scale * 0.10f
+    val frontRad = Math.toRadians(150 + pose.frontArm - 90)
+    val hands = Offset(
+        shoulder.x + sideX * pose.handDrive.toFloat() * scale * 2.2f -
+            upX * pose.handDrop.toFloat() * scale * 2.2f +
+            (kotlin.math.cos(frontRad) * scale * 0.30f).toFloat(),
+        shoulder.y + sideY * pose.handDrive.toFloat() * scale * 2.2f -
+            upY * pose.handDrop.toFloat() * scale * 2.2f +
+            (kotlin.math.sin(frontRad) * scale * 0.30f).toFloat(),
+    )
+    // Back arm reaches the same grip from a slightly different shoulder point, so the two arms
+    // converge on the bat instead of splaying off it.
+    val backShoulder = Offset(shoulder.x - sideX * scale * 0.05f, shoulder.y - sideY * scale * 0.05f)
+    bone(backShoulder, hands, armW, CricketFigures.Skin)
+    bone(shoulder, hands, armW, CricketFigures.Skin)
+    // Gloves, covering the arm ends — the joint the bat grows out of.
+    joint(hands, armW * 1.55f, Color.White)
+
+    // The bat, from inside the gloves so the handle is never seen to start in mid-air. Handle and
+    // blade are two widths: a bat is not a uniform stick, and the taper is most of what reads as
+    // "bat" at this size.
+    val batRad = Math.toRadians(pose.bat - 90)
+    fun along(d: Float) = Offset(
+        hands.x + (kotlin.math.cos(batRad) * d).toFloat(),
+        hands.y + (kotlin.math.sin(batRad) * d).toFloat(),
+    )
+    val grip = along(-scale * 0.05f)
+    val batShoulder = along(scale * 0.20f)
+    val batTip = along(scale * 0.54f)
+    drawLine(CricketFigures.Ink, grip, batShoulder,
+        strokeWidth = scale * 0.075f + 2.2f, cap = StrokeCap.Round)
+    drawLine(CricketFigures.Ink.copy(alpha = 0.85f), grip, batShoulder,
+        strokeWidth = scale * 0.075f, cap = StrokeCap.Round)
+    drawLine(CricketFigures.Ink, batShoulder, batTip,
+        strokeWidth = scale * 0.155f, cap = StrokeCap.Round)
     drawLine(
         Brush.linearGradient(listOf(CricketFigures.BatFace, CricketFigures.BatEdge),
-            start = hands, end = batTip),
-        hands, batTip, strokeWidth = scale * 0.11f, cap = StrokeCap.Round,
+            start = batShoulder, end = batTip),
+        batShoulder, batTip, strokeWidth = scale * 0.115f, cap = StrokeCap.Round,
     )
+}
+
+/**
+ * A joint cap: outline disc under a fill disc, at least as wide as the widest bone meeting here.
+ * This is the piece that was missing, and its absence is every gap in the figure.
+ */
+private fun DrawScope.bone(from: Offset, to: Offset, width: Float, colour: Color) {
+    drawLine(CricketFigures.Ink, from, to, strokeWidth = width + 2.2f, cap = StrokeCap.Round)
+    drawLine(colour, from, to, strokeWidth = width, cap = StrokeCap.Round)
+}
+
+/**
+ * A joint cap: outline disc under a fill disc, at least as wide as the widest bone meeting here.
+ * This is the piece that was missing, and its absence is every gap in the figure.
+ */
+private fun DrawScope.joint(at: Offset, width: Float, colour: Color) {
+    drawCircle(CricketFigures.Ink, width * 0.5f + 1.1f, at)
+    drawCircle(colour, width * 0.5f, at)
 }
 
 /** The bowler: a figure running in with a rotating arm. Off-frame until a ball begins. */
@@ -573,20 +790,73 @@ private fun DrawScope.drawBowler(delivery: Float, full: Boolean) {
         size.width * CricketFigures.bowlerRun(t, full).toFloat(),
         size.height * 0.60f,
     )
+    drawOval(Color.Black.copy(alpha = 0.20f),
+        topLeft = Offset(feet.x - scale * 0.36f, feet.y - scale * 0.035f),
+        size = androidx.compose.ui.geometry.Size(scale * 0.72f, scale * 0.14f))
 
     // Legs stride as they run — a two-phase alternation, enough at this size.
     val phase = kotlin.math.sin(t * 18) * 14
     // The arm carries the ball over the top and releases at the apex.
     val arm = CricketFigures.bowlerArm(t)
 
-    limb(feet, 180 - phase, scale * 0.34f, scale * 0.12f, CricketFigures.BowlerKit)
+    // Same joint-closing skeleton as the batter.
     val hip = Offset(feet.x, feet.y - scale * 0.34f)
-    limb(feet, 180 + phase, scale * 0.34f, scale * 0.12f, CricketFigures.BowlerKit)
+    val torsoRad = Math.toRadians(-6.0 - 90)
+    val torsoLen = scale * 0.38f
+    val shoulder = Offset(
+        hip.x + (kotlin.math.cos(torsoRad) * torsoLen).toFloat(),
+        hip.y + (kotlin.math.sin(torsoRad) * torsoLen).toFloat(),
+    )
+    val upX = (shoulder.x - hip.x) / torsoLen
+    val upY = (shoulder.y - hip.y) / torsoLen
+    val sideX = -upY
+    val sideY = upX
 
-    val shoulder = limb(hip, -6.0, scale * 0.38f, scale * 0.18f, CricketFigures.BowlerKit)
-    drawCircle(CricketFigures.Skin, scale * 0.10f,
-        Offset(shoulder.x, shoulder.y - scale * 0.11f))
+    val legW = scale * 0.12f
+    val backFoot = limb(hip, 180 - phase, scale * 0.34f, legW, CricketFigures.BowlerKit)
+    val frontFoot = limb(hip, 180 + phase, scale * 0.34f, legW, CricketFigures.BowlerKit)
+    for (f in listOf(backFoot, frontFoot)) {
+        drawOval(CricketFigures.Shoe, topLeft = Offset(f.x - scale * 0.14f, f.y - scale * 0.05f),
+            size = androidx.compose.ui.geometry.Size(scale * 0.28f, scale * 0.10f))
+    }
+    joint(hip, legW * 1.35f, CricketFigures.BowlerKit)
 
-    limb(shoulder, arm - 150, scale * 0.32f, scale * 0.09f, CricketFigures.Skin)
-    limb(shoulder, arm - 330, scale * 0.30f, scale * 0.09f, CricketFigures.Skin)
+    val hipHalf = scale * 0.14f
+    val shHalf = scale * 0.18f
+    fun quad(hh: Float, sh: Float) = Path().apply {
+        moveTo(hip.x + sideX * hh, hip.y + sideY * hh)
+        lineTo(shoulder.x + sideX * sh, shoulder.y + sideY * sh)
+        lineTo(shoulder.x - sideX * sh, shoulder.y - sideY * sh)
+        lineTo(hip.x - sideX * hh, hip.y - sideY * hh)
+        close()
+    }
+    drawPath(quad(hipHalf, shHalf), CricketFigures.Ink)
+    drawPath(
+        quad(hipHalf - 1.5f, shHalf - 1.5f),
+        Brush.linearGradient(listOf(CricketFigures.BowlerKit, CricketFigures.JerseyShadow),
+            start = shoulder, end = hip),
+    )
+
+    joint(shoulder, shHalf * 2f, CricketFigures.BowlerKit)
+
+    val headR = scale * 0.10f
+    drawLine(CricketFigures.Ink, shoulder,
+        Offset(shoulder.x + upX * headR * 0.9f, shoulder.y + upY * headR * 0.9f),
+        strokeWidth = scale * 0.10f + 2.0f, cap = StrokeCap.Round)
+    drawLine(CricketFigures.Skin, shoulder,
+        Offset(shoulder.x + upX * headR * 0.9f, shoulder.y + upY * headR * 0.9f),
+        strokeWidth = scale * 0.10f, cap = StrokeCap.Round)
+
+    val headC = Offset(shoulder.x + upX * headR * 1.85f, shoulder.y + upY * headR * 1.85f)
+    drawCircle(CricketFigures.Ink, headR + 1.3f, headC)
+    drawCircle(CricketFigures.Skin, headR, headC)
+    drawOval(CricketFigures.Hair,
+        topLeft = Offset(headC.x - headR * 1.02f, headC.y - headR * 1.20f),
+        size = androidx.compose.ui.geometry.Size(headR * 2.04f, headR * 1.30f))
+
+    val armW = scale * 0.09f
+    val back = limb(shoulder, arm - 330, scale * 0.30f, armW, CricketFigures.Skin)
+    val front = limb(shoulder, arm - 150, scale * 0.32f, armW, CricketFigures.Skin)
+    joint(back, armW * 1.1f, CricketFigures.Skin)
+    joint(front, armW * 1.1f, CricketFigures.Skin)
 }

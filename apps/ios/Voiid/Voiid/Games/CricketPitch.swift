@@ -135,6 +135,7 @@ struct CricketPitch: View {
     @State private var clear: CGFloat = 0
     /// 1 = full time remaining, 0 = about to dismiss. Drives the countdown bar.
     @State private var countdown: CGFloat = 1
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         GeometryReader { geo in
@@ -254,10 +255,31 @@ struct CricketPitch: View {
         let scale = size.height * 0.30
         // Feet on the batting crease, which is where the old rectangles stood.
         let feet = CGPoint(x: size.width * (0.175 + pose.stride * 0.35), y: size.height * 0.62)
+        drawGroundShadow(ctx: ctx, center: feet, width: scale * 0.72)
         drawFigure(ctx: ctx, pose: pose, feet: feet, scale: scale, kit: CricketFigures.kit)
     }
 
+    private func drawGroundShadow(ctx: GraphicsContext, center: CGPoint, width: CGFloat) {
+        let rect = CGRect(x: center.x - width * 0.5, y: center.y - width * 0.07,
+                          width: width, height: width * 0.16)
+        ctx.fill(Path(ellipseIn: rect), with: .radialGradient(
+            Gradient(colors: [Color.black.opacity(0.28), Color.black.opacity(0)]),
+            center: CGPoint(x: rect.midX, y: rect.midY), startRadius: 0, endRadius: width * 0.5))
+    }
+
     /// One side-on figure: legs, torso, head, arms and bat, drawn as tapered capsules.
+    ///
+    /// JOINTS SHARE COORDINATES, which is what closes the gaps. The previous version drew each
+    /// bone from a point it computed independently — the torso fill started at `shoulder.y` while
+    /// the hip sat a third of a figure below it, and the arms rooted at a bare `shoulder` point
+    /// whose covering ellipse was thinner than the arm strokes themselves. At rest that reads as
+    /// one body; at a six's +66° arm and +30° torso the limbs swing clear of the mass they are
+    /// supposed to grow out of and the figure comes apart at the neck and shoulder.
+    ///
+    /// So: the torso is drawn as a QUAD between the actual hip and the actual shoulder (it
+    /// leans with the bone instead of staying an upright rectangle), the head rides the torso's
+    /// own direction, and every joint gets a cap disc sized to the THICKER of the two bones it
+    /// joins. A cap that is smaller than its limb is not a joint, it is a hole.
     private func drawFigure(
         ctx: GraphicsContext, pose: CricketFigures.BatterPose,
         feet: CGPoint, scale: CGFloat, kit: Color
@@ -277,42 +299,180 @@ struct CricketPitch: View {
             return to
         }
 
-        // Legs first — they sit behind the torso.
-        _ = limb(feet, 180 + pose.backLeg, scale * 0.34, scale * 0.13, kit)
+        /// A bone between two KNOWN points, rather than from a point at an angle. The arms need
+        /// this because their far end (the grip) is positioned by the shot, not by the arm.
+        func bone(_ from: CGPoint, _ to: CGPoint, _ width: CGFloat, _ colour: Color) {
+            var seg = Path()
+            seg.move(to: from)
+            seg.addLine(to: to)
+            ctx.stroke(seg, with: .color(CricketFigures.ink),
+                       style: StrokeStyle(lineWidth: width + 2.2, lineCap: .round))
+            ctx.stroke(seg, with: .color(colour),
+                       style: StrokeStyle(lineWidth: width, lineCap: .round))
+        }
+
+        /// A joint cap: outline disc under a fill disc, at least as wide as the widest bone
+        /// meeting here. This is the piece that was missing.
+        func joint(_ at: CGPoint, _ width: CGFloat, _ colour: Color) {
+            let r = width * 0.5
+            ctx.fill(Path(ellipseIn: CGRect(x: at.x - r - 1.1, y: at.y - r - 1.1,
+                                            width: width + 2.2, height: width + 2.2)),
+                     with: .color(CricketFigures.ink))
+            ctx.fill(Path(ellipseIn: CGRect(x: at.x - r, y: at.y - r,
+                                            width: width, height: width)),
+                     with: .color(colour))
+        }
+
+        // The skeleton is solved BEFORE anything is drawn, so every part is placed against the
+        // same joint positions rather than against its own guess at them.
         let hip = CGPoint(x: feet.x, y: feet.y - scale * 0.34)
-        _ = limb(feet, 180 - pose.frontLeg, scale * 0.34, scale * 0.13, kit)
+        let torsoRad = (pose.torso - 90) * .pi / 180
+        let torsoLen = scale * 0.40
+        let shoulder = CGPoint(x: hip.x + CGFloat(cos(torsoRad)) * torsoLen,
+                               y: hip.y + CGFloat(sin(torsoRad)) * torsoLen)
+        // The torso's own axes, so the body and head lean WITH the bone.
+        let up = CGVector(dx: (shoulder.x - hip.x) / torsoLen, dy: (shoulder.y - hip.y) / torsoLen)
+        let side = CGVector(dx: -up.dy, dy: up.dx)
 
-        // Torso and head.
-        let shoulder = limb(hip, pose.torso, scale * 0.40, scale * 0.19, kit)
+        // Legs first — they sit behind the torso, and both are rooted at the same hip.
+        let legW = scale * 0.13
+        let backFoot = limb(hip, 180 + pose.backLeg, scale * 0.34, legW, kit)
+        let frontFoot = limb(hip, 180 - pose.frontLeg, scale * 0.34, legW, kit)
+        // Shoes at the ACTUAL foot positions. These used to be pinned to `feet`, so a striding
+        // front leg left its shoe behind at the crease.
+        for f in [backFoot, frontFoot] {
+            ctx.fill(Path(ellipseIn: CGRect(x: f.x - scale * 0.14, y: f.y - scale * 0.05,
+                                            width: scale * 0.28, height: scale * 0.10)),
+                     with: .color(CricketFigures.shoe))
+        }
+        // Pads over the shins, oriented along each leg rather than as a fixed upright box.
+        for (f, ang) in [(backFoot, 180 + pose.backLeg), (frontFoot, 180 - pose.frontLeg)] {
+            var pad = Path()
+            let r = (ang - 90) * .pi / 180
+            pad.move(to: CGPoint(x: f.x - CGFloat(cos(r)) * scale * 0.22,
+                                 y: f.y - CGFloat(sin(r)) * scale * 0.22))
+            pad.addLine(to: CGPoint(x: f.x - CGFloat(cos(r)) * scale * 0.02,
+                                    y: f.y - CGFloat(sin(r)) * scale * 0.02))
+            ctx.stroke(pad, with: .color(Color.white.opacity(0.96)),
+                       style: StrokeStyle(lineWidth: scale * 0.14, lineCap: .round))
+        }
+        joint(hip, legW * 1.35, kit)
+
+        // TORSO AS A QUAD between the two real joints, tapering from hip to shoulder. A rectangle
+        // pinned to `shoulder.y` (what was here) cannot lean, so any torso rotation tore it open
+        // at the hip.
+        let hipHalf = scale * 0.15
+        let shoulderHalf = scale * 0.19
+        var body = Path()
+        body.move(to: CGPoint(x: hip.x + side.dx * hipHalf, y: hip.y + side.dy * hipHalf))
+        body.addLine(to: CGPoint(x: shoulder.x + side.dx * shoulderHalf,
+                                 y: shoulder.y + side.dy * shoulderHalf))
+        body.addLine(to: CGPoint(x: shoulder.x - side.dx * shoulderHalf,
+                                 y: shoulder.y - side.dy * shoulderHalf))
+        body.addLine(to: CGPoint(x: hip.x - side.dx * hipHalf, y: hip.y - side.dy * hipHalf))
+        body.closeSubpath()
+        ctx.fill(body, with: .color(CricketFigures.ink))
+        ctx.stroke(body, with: .color(CricketFigures.ink),
+                   style: StrokeStyle(lineWidth: 2.2, lineJoin: .round))
+        // Inset fill, so the ink reads as an outline rather than a second body.
+        var inner = Path()
+        let ih = hipHalf - 1.6, ish = shoulderHalf - 1.6
+        inner.move(to: CGPoint(x: hip.x + side.dx * ih, y: hip.y + side.dy * ih))
+        inner.addLine(to: CGPoint(x: shoulder.x + side.dx * ish, y: shoulder.y + side.dy * ish))
+        inner.addLine(to: CGPoint(x: shoulder.x - side.dx * ish, y: shoulder.y - side.dy * ish))
+        inner.addLine(to: CGPoint(x: hip.x - side.dx * ih, y: hip.y - side.dy * ih))
+        inner.closeSubpath()
+        ctx.fill(inner, with: .linearGradient(
+            Gradient(colors: [CricketFigures.jersey, CricketFigures.jerseyShadow]),
+            startPoint: shoulder, endPoint: hip))
+
+        // Head, riding the torso's own direction so the neck stays closed at any rotation. It
+        // used to hang at a fixed offset below `shoulder`, which opened a gap the moment the
+        // body turned.
         let headR = scale * 0.11
-        ctx.fill(
-            Path(ellipseIn: CGRect(x: shoulder.x - headR, y: shoulder.y - headR * 2.1,
-                                   width: headR * 2, height: headR * 2)),
-            with: .color(CricketFigures.ink))
-        ctx.fill(
-            Path(ellipseIn: CGRect(x: shoulder.x - headR * 0.82,
-                                   y: shoulder.y - headR * 2.0,
-                                   width: headR * 1.64, height: headR * 1.64)),
-            with: .color(CricketFigures.skin))
+        let neck = CGPoint(x: shoulder.x + up.dx * headR * 0.35, y: shoulder.y + up.dy * headR * 0.35)
+        joint(shoulder, shoulderHalf * 2, CricketFigures.jersey)
+        // The neck itself — a short bone, so head and shoulders are never two separate objects.
+        var neckPath = Path()
+        neckPath.move(to: shoulder)
+        neckPath.addLine(to: CGPoint(x: shoulder.x + up.dx * headR * 0.9,
+                                     y: shoulder.y + up.dy * headR * 0.9))
+        ctx.stroke(neckPath, with: .color(CricketFigures.ink),
+                   style: StrokeStyle(lineWidth: scale * 0.11 + 2.2, lineCap: .round))
+        ctx.stroke(neckPath, with: .color(CricketFigures.skin),
+                   style: StrokeStyle(lineWidth: scale * 0.11, lineCap: .round))
 
-        // Arms, then the bat from the hands. The bat is what the eye tracks, so it is drawn last
-        // and widest.
-        let hands = limb(shoulder, 150 + pose.frontArm, scale * 0.30, scale * 0.10,
-                         CricketFigures.skin)
-        _ = limb(shoulder, 160 + pose.backArm, scale * 0.28, scale * 0.10, CricketFigures.skin)
+        // The head sits a full radius up the torso axis from the neck, tilted by `head`.
+        let headC = CGPoint(x: neck.x + up.dx * headR * 1.55, y: neck.y + up.dy * headR * 1.55)
+        ctx.fill(Path(ellipseIn: CGRect(x: headC.x - headR - 1.4, y: headC.y - headR - 1.4,
+                                        width: headR * 2 + 2.8, height: headR * 2 + 2.8)),
+                 with: .color(CricketFigures.ink))
+        ctx.fill(Path(ellipseIn: CGRect(x: headC.x - headR, y: headC.y - headR,
+                                        width: headR * 2, height: headR * 2)),
+                 with: .color(CricketFigures.skin))
+        // Helmet shell over the top half, rotated with the head so it never floats off.
+        var helmet = Path(ellipseIn: CGRect(x: headC.x - headR * 1.14, y: headC.y - headR * 1.30,
+                                            width: headR * 2.28, height: headR * 1.70))
+        helmet = helmet.applying(CGAffineTransform(translationX: -headC.x, y: -headC.y)
+            .concatenating(CGAffineTransform(rotationAngle: CGFloat(pose.head) * .pi / 180))
+            .concatenating(CGAffineTransform(translationX: headC.x, y: headC.y)))
+        ctx.fill(helmet, with: .color(CricketFigures.helmet))
+        // The grille, which is what makes it read as a batter rather than a bare head.
+        var grille = Path()
+        grille.move(to: CGPoint(x: headC.x - headR * 1.05, y: headC.y + headR * 0.10))
+        grille.addLine(to: CGPoint(x: headC.x - headR * 0.20, y: headC.y + headR * 0.62))
+        ctx.stroke(grille, with: .color(CricketFigures.ink),
+                   style: StrokeStyle(lineWidth: max(1.4, scale * 0.035), lineCap: .round))
 
+        // ARMS, rooted at the shoulder joint that now has a cap wide enough to cover them. Front
+        // arm last so the hands land on top.
+        // THE HANDS TRAVEL, AND THE ARMS FOLLOW THEM. The arm is no longer a fixed-length spoke
+        // whose tip happens to be the grip — the grip is placed first (shoulder, plus the shot's
+        // own drop/drive along the torso's axes) and the arms are then drawn TO it. That is what
+        // moves the pivot, and a moving pivot is the difference between a swing and a rotation.
+        let armW = scale * 0.10
+        let hands = CGPoint(
+            x: shoulder.x + side.dx * CGFloat(pose.handDrive) * scale * 2.2
+                          - up.dx * CGFloat(pose.handDrop) * scale * 2.2
+                          + CGFloat(cos((150 + pose.frontArm - 90) * .pi / 180)) * scale * 0.30,
+            y: shoulder.y + side.dy * CGFloat(pose.handDrive) * scale * 2.2
+                          - up.dy * CGFloat(pose.handDrop) * scale * 2.2
+                          + CGFloat(sin((150 + pose.frontArm - 90) * .pi / 180)) * scale * 0.30)
+        // Back arm reaches to the same grip from a slightly different shoulder point, so the two
+        // arms converge on the bat instead of splaying off it.
+        let backShoulder = CGPoint(x: shoulder.x - side.dx * scale * 0.05,
+                                   y: shoulder.y - side.dy * scale * 0.05)
+        bone(backShoulder, hands, armW, CricketFigures.skin)
+        bone(shoulder, hands, armW, CricketFigures.skin)
+        // Gloves, at the hands, covering the arm ends — the joint the bat grows out of.
+        joint(hands, armW * 1.55, Color.white.opacity(0.96))
+
+        // The bat, from inside the gloves so the handle is never seen to start in mid-air.
         let batRad = (pose.bat - 90) * .pi / 180
-        let batTip = CGPoint(x: hands.x + CGFloat(cos(batRad)) * scale * 0.52,
-                             y: hands.y + CGFloat(sin(batRad)) * scale * 0.52)
-        var bat = Path()
-        bat.move(to: hands)
-        bat.addLine(to: batTip)
-        ctx.stroke(bat, with: .color(CricketFigures.ink),
-                   style: StrokeStyle(lineWidth: scale * 0.15, lineCap: .round))
-        ctx.stroke(bat, with: .linearGradient(
+        let grip = CGPoint(x: hands.x - CGFloat(cos(batRad)) * scale * 0.05,
+                           y: hands.y - CGFloat(sin(batRad)) * scale * 0.05)
+        let shoulderOfBat = CGPoint(x: hands.x + CGFloat(cos(batRad)) * scale * 0.20,
+                                    y: hands.y + CGFloat(sin(batRad)) * scale * 0.20)
+        let batTip = CGPoint(x: hands.x + CGFloat(cos(batRad)) * scale * 0.54,
+                             y: hands.y + CGFloat(sin(batRad)) * scale * 0.54)
+        // Handle and blade are drawn as two widths — a bat is not a uniform stick, and the
+        // taper is most of what reads as "bat" at this size.
+        var handle = Path()
+        handle.move(to: grip)
+        handle.addLine(to: shoulderOfBat)
+        ctx.stroke(handle, with: .color(CricketFigures.ink),
+                   style: StrokeStyle(lineWidth: scale * 0.075 + 2.2, lineCap: .round))
+        ctx.stroke(handle, with: .color(CricketFigures.ink.opacity(0.85)),
+                   style: StrokeStyle(lineWidth: scale * 0.075, lineCap: .round))
+        var blade = Path()
+        blade.move(to: shoulderOfBat)
+        blade.addLine(to: batTip)
+        ctx.stroke(blade, with: .color(CricketFigures.ink),
+                   style: StrokeStyle(lineWidth: scale * 0.155, lineCap: .round))
+        ctx.stroke(blade, with: .linearGradient(
             Gradient(colors: [CricketFigures.batFace, CricketFigures.batEdge]),
-            startPoint: hands, endPoint: batTip),
-            style: StrokeStyle(lineWidth: scale * 0.11, lineCap: .round))
+            startPoint: shoulderOfBat, endPoint: batTip),
+            style: StrokeStyle(lineWidth: scale * 0.115, lineCap: .round))
     }
 
     /// The bowler: a figure running in with a rotating arm. Off-frame until a ball begins.
@@ -322,6 +482,7 @@ struct CricketPitch: View {
         let scale = size.height * 0.28
         let x = size.width * CGFloat(CricketFigures.bowlerRun(t, full: fullRunUp))
         let feet = CGPoint(x: x, y: size.height * 0.60)
+        drawGroundShadow(ctx: ctx, center: feet, width: scale * 0.72)
 
         // Legs stride as they run — a two-phase alternation, enough at this size.
         let phase = sin(t * 18) * 14
@@ -338,7 +499,7 @@ struct CricketPitch: View {
         drawBowlerFigure(ctx: ctx, pose: pose, feet: feet, scale: scale)
     }
 
-    /// Same limb construction as the batter, minus the bat.
+    /// Same joint-closing construction as the batter, minus the bat.
     private func drawBowlerFigure(
         ctx: GraphicsContext, pose: CricketFigures.BatterPose,
         feet: CGPoint, scale: CGFloat
@@ -358,19 +519,85 @@ struct CricketPitch: View {
             return to
         }
 
-        _ = limb(feet, 180 + pose.backLeg, scale * 0.34, scale * 0.12, CricketFigures.bowlerKit)
+        func joint(_ at: CGPoint, _ width: CGFloat, _ colour: Color) {
+            let r = width * 0.5
+            ctx.fill(Path(ellipseIn: CGRect(x: at.x - r - 1.0, y: at.y - r - 1.0,
+                                            width: width + 2.0, height: width + 2.0)),
+                     with: .color(CricketFigures.ink))
+            ctx.fill(Path(ellipseIn: CGRect(x: at.x - r, y: at.y - r,
+                                            width: width, height: width)),
+                     with: .color(colour))
+        }
+
         let hip = CGPoint(x: feet.x, y: feet.y - scale * 0.34)
-        _ = limb(feet, 180 - pose.frontLeg, scale * 0.34, scale * 0.12, CricketFigures.bowlerKit)
+        let torsoRad = (pose.torso - 90) * .pi / 180
+        let torsoLen = scale * 0.38
+        let shoulder = CGPoint(x: hip.x + CGFloat(cos(torsoRad)) * torsoLen,
+                               y: hip.y + CGFloat(sin(torsoRad)) * torsoLen)
+        let up = CGVector(dx: (shoulder.x - hip.x) / torsoLen, dy: (shoulder.y - hip.y) / torsoLen)
+        let side = CGVector(dx: -up.dy, dy: up.dx)
 
-        let shoulder = limb(hip, pose.torso, scale * 0.38, scale * 0.18, CricketFigures.bowlerKit)
+        let legW = scale * 0.12
+        let backFoot = limb(hip, 180 + pose.backLeg, scale * 0.34, legW, CricketFigures.bowlerKit)
+        let frontFoot = limb(hip, 180 - pose.frontLeg, scale * 0.34, legW, CricketFigures.bowlerKit)
+        for f in [backFoot, frontFoot] {
+            ctx.fill(Path(ellipseIn: CGRect(x: f.x - scale * 0.14, y: f.y - scale * 0.05,
+                                            width: scale * 0.28, height: scale * 0.10)),
+                     with: .color(CricketFigures.shoe))
+        }
+        joint(hip, legW * 1.35, CricketFigures.bowlerKit)
+
+        let hipHalf = scale * 0.14
+        let shoulderHalf = scale * 0.18
+        var body = Path()
+        body.move(to: CGPoint(x: hip.x + side.dx * hipHalf, y: hip.y + side.dy * hipHalf))
+        body.addLine(to: CGPoint(x: shoulder.x + side.dx * shoulderHalf,
+                                 y: shoulder.y + side.dy * shoulderHalf))
+        body.addLine(to: CGPoint(x: shoulder.x - side.dx * shoulderHalf,
+                                 y: shoulder.y - side.dy * shoulderHalf))
+        body.addLine(to: CGPoint(x: hip.x - side.dx * hipHalf, y: hip.y - side.dy * hipHalf))
+        body.closeSubpath()
+        ctx.fill(body, with: .color(CricketFigures.ink))
+        var inner = Path()
+        let ih = hipHalf - 1.5, ish = shoulderHalf - 1.5
+        inner.move(to: CGPoint(x: hip.x + side.dx * ih, y: hip.y + side.dy * ih))
+        inner.addLine(to: CGPoint(x: shoulder.x + side.dx * ish, y: shoulder.y + side.dy * ish))
+        inner.addLine(to: CGPoint(x: shoulder.x - side.dx * ish, y: shoulder.y - side.dy * ish))
+        inner.addLine(to: CGPoint(x: hip.x - side.dx * ih, y: hip.y - side.dy * ih))
+        inner.closeSubpath()
+        ctx.fill(inner, with: .linearGradient(
+            Gradient(colors: [CricketFigures.bowlerKit, CricketFigures.jerseyShadow]),
+            startPoint: shoulder, endPoint: hip))
+
+        joint(shoulder, shoulderHalf * 2, CricketFigures.bowlerKit)
+
         let headR = scale * 0.10
-        ctx.fill(
-            Path(ellipseIn: CGRect(x: shoulder.x - headR, y: shoulder.y - headR * 2.0,
-                                   width: headR * 2, height: headR * 2)),
-            with: .color(CricketFigures.skin))
+        var neckPath = Path()
+        neckPath.move(to: shoulder)
+        neckPath.addLine(to: CGPoint(x: shoulder.x + up.dx * headR * 0.9,
+                                     y: shoulder.y + up.dy * headR * 0.9))
+        ctx.stroke(neckPath, with: .color(CricketFigures.ink),
+                   style: StrokeStyle(lineWidth: scale * 0.10 + 2.0, lineCap: .round))
+        ctx.stroke(neckPath, with: .color(CricketFigures.skin),
+                   style: StrokeStyle(lineWidth: scale * 0.10, lineCap: .round))
 
-        _ = limb(shoulder, pose.frontArm, scale * 0.32, scale * 0.09, CricketFigures.skin)
-        _ = limb(shoulder, pose.backArm, scale * 0.30, scale * 0.09, CricketFigures.skin)
+        let headC = CGPoint(x: shoulder.x + up.dx * headR * 1.85,
+                            y: shoulder.y + up.dy * headR * 1.85)
+        ctx.fill(Path(ellipseIn: CGRect(x: headC.x - headR - 1.3, y: headC.y - headR - 1.3,
+                                        width: headR * 2 + 2.6, height: headR * 2 + 2.6)),
+                 with: .color(CricketFigures.ink))
+        ctx.fill(Path(ellipseIn: CGRect(x: headC.x - headR, y: headC.y - headR,
+                                        width: headR * 2, height: headR * 2)),
+                 with: .color(CricketFigures.skin))
+        ctx.fill(Path(ellipseIn: CGRect(x: headC.x - headR * 1.02, y: headC.y - headR * 1.20,
+                                        width: headR * 2.04, height: headR * 1.30)),
+                 with: .color(CricketFigures.hair))
+
+        let armW = scale * 0.09
+        let back = limb(shoulder, pose.backArm, scale * 0.30, armW, CricketFigures.skin)
+        let front = limb(shoulder, pose.frontArm, scale * 0.32, armW, CricketFigures.skin)
+        joint(back, armW * 1.1, CricketFigures.skin)
+        joint(front, armW * 1.1, CricketFigures.skin)
     }
 
     // MARK: - Motion
@@ -386,7 +613,7 @@ struct CricketPitch: View {
         // flight starts from there — so the ball is seen to be bowled rather than to appear.
         delivery = 0
         let runUp = fullRunUp ? 0.50 : 0.26
-        withAnimation(.easeIn(duration: runUp)) { delivery = 1 }
+        withAnimation(reduceMotion ? .none : .timingCurve(0.23, 1, 0.32, 1, duration: runUp)) { delivery = 1 }
 
         // Bat first, ball after contact — in that order, or the ball appears to move before it
         // was hit.
@@ -394,7 +621,17 @@ struct CricketPitch: View {
         // A BOWLED SWINGS TOO, and that is a change. The old code skipped the swing entirely on
         // a bowled, so a player watched their batter stand perfectly still while the stumps fell
         // over. A batter who is bowled DID play a shot; the miss is the drama (§4.3).
-        withAnimation(.easeOut(duration: 0.17).delay(runUp * 0.7)) { strike = 1 }
+        // LINEAR, because `strike` is a clock and not a position. CricketFigures.pose() now
+        // shapes the swing itself — ease out into the backlift, hold, accelerate into contact,
+        // decelerate through the follow-through. Easing the animation on TOP of that curve
+        // double-eases it, which flattens the differences between shots back into one generic
+        // ramp: exactly the "toy on a key" motion this is meant to stop.
+        //
+        // It also runs for the ball's OWN duration rather than a fixed 170 ms, so a six's
+        // follow-through takes as long as a six's flight instead of snapping to its end pose
+        // while the ball is still climbing.
+        let swing = 0.17 + e.flightDuration * 0.75
+        withAnimation(reduceMotion ? .none : .linear(duration: swing).delay(runUp * 0.7)) { strike = 1 }
 
         // Haptics graded by how big the event is: a mini tick for small runs, a light knock for a
         // four, a rising thump for a six. A wicket gets its own signature so it never feels like
@@ -409,13 +646,13 @@ struct CricketPitch: View {
 
         // Delayed past the bowler's release, so the ball leaves a hand rather than a coordinate.
         let release = runUp * CricketFigures.releaseAt
-        withAnimation(.linear(duration: e.flightDuration)
+        withAnimation(reduceMotion ? .none : .linear(duration: e.flightDuration)
             .delay(release + (e == .bowled ? 0 : 0.12))) {
             flight = 1
         }
         // After the first ball the bowler is already at the crease. A full run-up before all six
         // balls of an over gets old by the third (§4.4).
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.55).delay(release + 0.1)) {
+        withAnimation(reduceMotion ? .none : .spring(response: 0.3, dampingFraction: 0.55).delay(release + 0.1)) {
             bannerPop = 1
         }
 
@@ -431,14 +668,30 @@ struct CricketPitch: View {
     ///
     /// ONE FUNCTION FOR BALL AND TRAIL, deliberately: the trail is the same path sampled slightly
     /// in the past, so computing them separately could let the echoes drift off the ball.
+    ///
+    /// WHY THE EASING LIVES HERE AND NOT IN THE ANIMATION. `flight` is driven linearly on
+    /// purpose — it is a clock, not a position. A hit ball does not travel at a constant rate:
+    /// it leaves the bat fast and is dragged down by air the whole way, so the horizontal
+    /// component decays while the vertical follows a real parabola. Easing the ANIMATION instead
+    /// would ease both axes together, which bends the arc itself and is what made the flight look
+    /// like a tweened sprite rather than a struck ball.
     private func ballPosition(_ e: BallEvent, _ p: CGFloat, w: CGFloat, h: CGFloat) -> CGPoint {
+        let t = max(0, min(1, p))
         if e == .bowled {
-            // Comes from the bowler's end INTO the stumps.
-            let travel: CGFloat = 0.86 - (0.74 * p)
-            return CGPoint(x: w * travel, y: h * 0.50)
+            // A DELIVERY ACCELERATES. It is thrown, so it gains ground into the stumps rather
+            // than covering the pitch at one rate — the old linear travel read as a sliding dot.
+            let speed = t * t * (3 - 2 * t) * 0.35 + t * 0.65
+            let travel: CGFloat = 0.86 - (0.74 * speed)
+            // A pitched ball bounces once, about two thirds of the way down.
+            let bounce = abs(sin(Double(speed) * .pi * 1.15))
+            return CGPoint(x: w * travel, y: h * 0.50 - h * 0.05 * CGFloat(bounce))
         }
-        let x = w * (CGFloat(0.24) + e.reach * p)
-        let lift = -(h * e.arc) * (4 * p * (1 - p))
+        // Horizontal: decaying, because drag never stops acting on it.
+        let ease = 1 - pow(1 - t, 2.2)
+        let x = w * (CGFloat(0.24) + e.reach * ease)
+        // Vertical: a true parabola against the eased horizontal, so the apex sits where the
+        // ball has actually travelled furthest per unit time rather than at the halfway frame.
+        let lift = -(h * e.arc) * (4 * ease * (1 - ease))
         let baseY: CGFloat = (e == .dot) ? 0.58 : (e == .caught ? 0.44 : 0.46)
         return CGPoint(x: x, y: h * baseY + lift)
     }
@@ -467,10 +720,12 @@ struct CricketPitch: View {
                 .frame(height: h * 0.16)
 
             // The pitch strip.
+            // UNDER THE FEET, NOT THROUGH THE WAIST. At 0.55 alpha this read as a translucent
+            // bar laid over the pitch rather than as ground the players stand on.
             RoundedRectangle(cornerRadius: 10)
-                .fill(Color(red: 0.79, green: 0.66, blue: 0.48).opacity(0.55))
-                .frame(width: w * 0.72, height: h * 0.26)
-                .position(x: w * 0.42, y: h * 0.60)
+                .fill(Color(red: 0.79, green: 0.66, blue: 0.48).opacity(0.32))
+                .frame(width: w * 0.72, height: h * 0.22)
+                .position(x: w * 0.42, y: h * 0.66)
 
             // Boundary rope — the thing a shot travels toward, so motion has a target.
             Capsule()
@@ -484,13 +739,26 @@ struct CricketPitch: View {
     private func ball(w: CGFloat, h: CGFloat) -> some View {
         if let e = shown {
             let pos = ballPosition(e, flight, w: w, h: h)
-            Circle()
-                .fill(RadialGradient(
-                    colors: [Color(red: 1.0, green: 0.54, blue: 0.42),
-                             Color(red: 0.78, green: 0.16, blue: 0.16)],
-                    center: .topLeading, startRadius: 1, endRadius: 16))
-                .frame(width: 15, height: 15)
-                .position(pos)
+            // A ball in the air is FURTHER AWAY, so it reads smaller. Without this the six's
+            // apex looks like the ball is sliding up a wall rather than going over the field.
+            let height = max(0, (h * 0.46 - pos.y) / max(h * e.arc, 1))
+            let depth = 1 - 0.22 * min(1, height)
+            ZStack {
+                Circle()
+                    .fill(RadialGradient(
+                        colors: [Color(red: 1.0, green: 0.54, blue: 0.42),
+                                 Color(red: 0.78, green: 0.16, blue: 0.16)],
+                        center: .topLeading, startRadius: 1, endRadius: 16))
+                // The seam, which is the only thing that can show the ball SPINNING. A plain
+                // disc rotating is indistinguishable from a disc standing still.
+                Capsule()
+                    .stroke(Color.white.opacity(0.65), lineWidth: 1.2)
+                    .frame(width: 13, height: 6)
+            }
+            .frame(width: 15, height: 15)
+            .rotationEffect(.degrees(Double(flight) * 900))
+            .scaleEffect(depth)
+            .position(pos)
         }
     }
 
@@ -499,16 +767,23 @@ struct CricketPitch: View {
     @ViewBuilder
     private func trail(w: CGFloat, h: CGFloat) -> some View {
         if case .runs(let r) = shown, r >= 3 {
-            let count = r >= 6 ? 4 : 2
+            // MORE ECHOES, CLOSER TOGETHER. Four widely-spaced dots read as four dots; a denser
+            // tail reads as one blurred streak, which is the point of a trail.
+            let count = r >= 6 ? 7 : 5
             ForEach(0..<count, id: \.self) { i in
-                let lag = CGFloat(i + 1) * 0.07
+                let lag = CGFloat(i + 1) * 0.035
                 let tp = max(0, flight - lag)
-                let pos = ballPosition(.runs(r), tp, w: w, h: h)
-                Circle()
-                    .fill(Color(red: 1.0, green: 0.48, blue: 0.36))
-                    .opacity(0.28 * (1 - Double(i) / Double(count)))
-                    .frame(width: CGFloat(13 - i * 2), height: CGFloat(13 - i * 2))
-                    .position(pos)
+                // Nothing until the ball has actually travelled far enough to have a past —
+                // otherwise the whole tail stacks up on the bat at the moment of contact.
+                if tp > 0 {
+                    let pos = ballPosition(.runs(r), tp, w: w, h: h)
+                    let fade = 1 - Double(i) / Double(count)
+                    Circle()
+                        .fill(Color(red: 1.0, green: 0.48, blue: 0.36))
+                        .opacity(0.34 * fade * fade)
+                        .frame(width: 14 * CGFloat(fade), height: 14 * CGFloat(fade))
+                        .position(pos)
+                }
             }
         }
     }
@@ -532,19 +807,28 @@ struct CricketPitch: View {
                 if case .runs(let r) = e { return r >= 4 }
                 return false
             }()
+            // OUT OF THE FLIGHT CORRIDOR. This used to sit dead centre, which is exactly where
+            // the ball travels (baseY is 0.46h and the arc lifts from there) — so on the two
+            // shots that matter most, a four and a six, the banner covered the entire flight
+            // from the bat to the rope. The animation ran correctly and could not be seen.
+            //
+            // Up here it reads as a scoreboard call over the ground rather than a label pinned
+            // on top of the action, and the whole corridor stays clear.
             Text(e.banner)
-                .font(.system(size: big ? 40 : (e.isWicket ? 26 : 22), weight: .black))
+                .font(.system(size: big ? 34 : (e.isWicket ? 24 : 20), weight: .black))
                 .foregroundStyle(.white)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 7)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
                 .background(
                     RoundedRectangle(cornerRadius: VoiidRadius.md)
                         .fill(e.isWicket
                               ? Color(red: 0.56, green: 0.11, blue: 0.11).opacity(0.85)
-                              : Color.black.opacity(0.32)))
+                              : Color.black.opacity(0.38)))
                 // Overshoots then settles — the pop is what makes a six feel loud.
                 .scaleEffect(0.7 + 0.45 * bannerPop)
                 .opacity(Double(min(1, bannerPop)))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .padding(.top, 10)
         }
     }
 }
