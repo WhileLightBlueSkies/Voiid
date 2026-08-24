@@ -37,9 +37,14 @@ for (const slug of ['tictactoe', 'rps', 'cricket']) {
   const f = factoryFor('ludo')!;
   ok('ludo registered', !!f);
   ok('ludo stays turn-based (no tickHz)', f.tickHz === undefined);
-  const e = f.create(['a', 'b', 'c', 'd'], { tokens: 2 });
-  ok('ludo has NO player projection', e.serializeForPlayer === undefined);
-  ok('ludo has a secret channel', typeof e.serializeSecret === 'function');
+  const e = f.create(['a', 'b', 'c', 'd'], { mode: 'four' });
+  // Schema v2 (LUDO_GAME_SPEC.md §6): Ludo now projects PER RECIPIENT — not for hidden
+  // state, but for the identity projection. A viewer must never RECEIVE an unauthorized
+  // real username, so names are resolved server-side per frame.
+  ok('ludo has a player projection (identity, schema v2)', typeof e.serializeForPlayer === 'function');
+  const frame = JSON.stringify(e.serializeForPlayer!('a'));
+  ok('projection carries no raw user ids', !frame.includes('"a"') && !frame.includes('"players"'));
+  ok('ludo has a secret channel (rng + seat roster)', typeof e.serializeSecret === 'function');
   ok('ludo keeps its seed OFF the wire', !('seed' in e.serialize()));
   ok('ludo has a deadline', typeof e.deadlineAt === 'function');
   ok('ludo has a timeout handler', typeof e.onTimeout === 'function');

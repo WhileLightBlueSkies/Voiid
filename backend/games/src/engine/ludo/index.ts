@@ -1,553 +1,730 @@
-// Ludo — the first game in this catalog with more than two seats (docs/games/future/LUDO.md).
+// Ludo schema-v2 engine adapter (LUDO_GAME_SPEC.md §5, §6, §12–§16).
 //
-// WHY IT IS WORTH BUILDING. Every shipped game is 1:1. Ludo is the game a group of four plays,
-// and a messenger is where groups of four already are: the app has group conversations, a
-// contact graph and a notification pipe, and what it does not have is any reason for four people
-// to open it at the same time.
+// THE SERVER OWNS EVERYTHING THAT MATTERS: the die, rules, legal moves, deadlines, results,
+// and the sequence number. Clients render and submit intent only.
 //
-// THE SECURITY MODEL IS ONE LINE: THE SEED IS SECRET. Ludo has no hidden player information —
-// every token, roll and capture is public to every seat — so there is no per-player projection
-// and nothing to leak sideways. The only hidden thing is the FUTURE, and §4.6 is why that
-// matters more here than anywhere else in the folder: mulberry32's state IS its seed, so a
-// client holding it can compute every future roll of the match in twenty lines. That is not a
-// minor leak. Knowing you will roll 6, 6, 2 next completely determines which token to move now.
-// A client with the seed does not cheat at Ludo, it solves it.
+// WHY THE OLD ENGINE WAS REPLACED IN PLACE: v1 had a 45-second clock, seat-count-dependent
+// pawn counts, creator-fixed colours and no authoritative presentation timeline. v2 keeps the
+// useful shape — durable state, the secret channel, the sweeper-driven clock — and replaces
+// the behaviour this contract forbids. A v1 state found on restore is ABANDONED with a clear
+// version reason rather than converted mid-match (§20 P1).
 //
-// THE DICE ARE NOT WEIGHTED, AND PLAYERS WILL NOT BELIEVE IT. Six-starved streaks are common —
-// the chance of no 6 in six rolls is 33% — and the human pattern-matcher will find them. The
-// answer is not to bias the die back; it is that the sequence is reproducible from the seed, so
-// a match can be audited after the fact. Adding "fairness" adjustments would make that untrue.
+// ACTIONS AND SEQ: every accepted transition produces EXACTLY ONE action and the runtime
+// increments seq once for it. A transition that both moves a pawn and changes the seat packs
+// BOTH facts into that one action (`fromSeat`, `actorSeat`, `roll`, `move`,
+// `presentationEndsAt`) rather than emitting two frames — a client animates an action at most
+// once (§6), so two actions for one transition would double-render it.
+import { randomUUID } from 'node:crypto';
 import type {
-  ApplyResult,
-  GameEngine,
-  GameFactory,
-  GameInput,
-  GameOutcome,
-  GameStatePayload,
+    ApplyResult,
+    GameEngine,
+    GameInput,
+    GameOutcome,
+    GameStatePayload,
 } from '../GameEngine';
-import { Rng } from '../rng';
 import {
-  COLUMN_BASE,
-  HOME,
-  MAX_SEATS,
-  YARD,
-  destination,
-  entrySquare,
-  inColumn,
-  inYard,
-  isHome,
-  isSafe,
-  onTrack,
-  path,
-  relative,
+    destination,
+    FINISHED,
+    HOME_LANE_BASE,
+    MAX_SEATS,
+    SEAT_COLORS,
+    TOKENS_PER_SEAT,
+    TRACK_COUNT,
+    YARD,
+    path,
 } from './board';
+import {
+    activeSeats,
+    finishedPawns,
+    legalMoves,
+    nextActiveSeat,
+    pickAutoMove,
+    resolveCapture,
+} from './rules';
+import { DiceRng } from './rng';
+import {
+    RULES_VERSION,
+    SCHEMA_VERSION,
+    type ActionType,
+    type LastAction,
+    type LudoMode,
+    type LudoPublicState,
+    type LudoStateV2,
+    type SeatView,
+} from './types';
 
-export type Phase = 'awaitingRoll' | 'awaitingMove' | 'done';
+/** Border sweep (360 ms) + die relocation / pip cross-fade (120 ms) (§12.3). */
+export const TRANSITION_MS = 480;
+/** Die roll choreography total (§14.3). */
+export const ROLL_SETTLE_MS = 940;
+/** The per-decision server clock (§13). */
+export const TURN_WINDOW_MS = 30_000;
 
-interface LastMove {
-  seat: number;
-  token: number;
-  from: number;
-  to: number;
-  /** [seat, token] of a token sent home, or null. */
-  captured: [number, number] | null;
+/** Hop chain duration for n cells (§15). */
+export const hopMs = (n: number) => (n === 0 ? 0 : 120 + 92 * (n - 1));
+const CAPTURE_EXTRA_MS = 480;
+const FINISH_EXTRA_MS = 550;
+
+export interface FrameContext {
+    serverNow: number;
+    /** userId -> connection state, maintained by the runtime's presence tracker. */
+    connections: Record<string, 'connected' | 'disconnected'>;
+    /** userId -> projected display name FOR THIS VIEWER's frame. */
+    names: Record<string, string>;
 }
 
-interface State {
-  players: string[];
-  tokensPerPlayer: number;
-  /** [seat][token] -> position encoding (board.ts). */
-  tokens: number[][];
-  turn: number;
-  phase: Phase;
-  die: number | null;
-  /** Token indices legally movable with `die`. Precomputed, not derived (§4.3). */
-  legal: number[];
-  sixStreak: number;
-  extraTurn: boolean;
-  rollsThisTurn: number;
-  finishedOrder: number[];
-  moveCount: number;
-  deadlineAt: number | null;
-  lastMove: LastMove | null;
-  finished: boolean;
-  winnerIdx: number | null;
-  /** THE SECRET. Never in serialize() — see the header and §4.6. */
-  seed: number;
+/** Opaque, match-scoped, non-reversible seat id. Never a raw user id. */
+function opaqueSeatId(matchKey: string, seat: number): string {
+    return `seat-${matchKey.slice(0, 8)}-${seat}`;
 }
 
-/**
- * 45 seconds, not 60 (§13.2). A Ludo action is "tap the die" then "tap one of at most four
- * tokens"; 45 s is generous for a decision that size and it bounds a 60-turn match at a length
- * people will actually finish.
- */
-const TURN_DEADLINE_MS = 45_000;
+class LudoEngineV2 implements GameEngine {
+    private s: LudoStateV2;
+    private rng: DiceRng;
+    private matchKey: string;
+    private ctx: FrameContext | null = null;
 
-/**
- * A hard bound on turn length, independent of the three-sixes rule.
- *
- * Extra turns come from three sources that all compose (§2.3), so a pathological sequence could
- * in principle run long. This is a safety property rather than a game rule — the kind of bound
- * that stops a malfunctioning client being handed an endless sequence of turns.
- */
-const MAX_ROLLS_PER_TURN = 8;
-
-class LudoEngine implements GameEngine {
-  private s: State;
-  private rng: Rng;
-
-  constructor(state: State) {
-    this.s = state;
-    this.rng = new Rng(state.seed);
-  }
-
-  // --- Input ---------------------------------------------------------------------------
-
-  applyInput(playerId: string, input: GameInput): ApplyResult {
-    if (this.s.finished) return { accepted: false };
-
-    const seat = this.s.players.indexOf(playerId);
-    if (seat === -1) return { accepted: false };
-    if (seat !== this.s.turn) return { accepted: false }; // out of turn
-
-    if (input.roll === true) return this.roll(seat);
-    if (typeof input.move === 'number') return this.move(seat, input.move);
-    return { accepted: false };
-  }
-
-  /**
-   * Roll the die. Its own step, deliberately (§3.3).
-   *
-   * Not one frame with the move: the die must be broadcast and visible BEFORE the move is
-   * chosen. It is the drama, it bounds what the client knows (the server would otherwise be
-   * judging a move against a roll the client had not seen), and auto-move is only expressible
-   * if rolling is its own step.
-   */
-  private roll(seat: number): ApplyResult {
-    if (this.s.phase !== 'awaitingRoll') return { accepted: false };
-
-    // Safety bound, checked before the draw so a runaway turn cannot consume the sequence.
-    if (this.s.rollsThisTurn >= MAX_ROLLS_PER_TURN) return this.endTurn();
-
-    const die = 1 + Math.floor(this.rng.next() * 6);
-    this.s.die = die;
-    this.s.rollsThisTurn += 1;
-    this.s.moveCount += 1;
-    this.s.seed = this.rng.seed;
-
-    if (die === 6) {
-      this.s.sixStreak += 1;
-      // THREE CONSECUTIVE 6s FORFEITS THE TURN AND THE THIRD 6 IS NOT USED (§2.3).
-      //
-      // Not decoration: without it a lucky streak is unbounded, and it is the only thing
-      // preventing a modified or malfunctioning client from being handed endless turns. A rule
-      // that also happens to be a safety property.
-      if (this.s.sixStreak >= 3) {
-        this.s.die = null;
-        return this.endTurn();
-      }
-    } else {
-      this.s.sixStreak = 0;
+    constructor(state: LudoStateV2, rng: DiceRng, matchKey: string) {
+        this.s = state;
+        this.rng = rng;
+        this.matchKey = matchKey;
     }
 
-    const legal = this.legalMoves(seat, die);
-    this.s.legal = legal;
+    setFrameContext(ctx: FrameContext): void {
+        this.ctx = ctx;
+    }
 
-    // ZERO LEGAL MOVES -> the turn passes automatically, in the same frame as the roll. A
-    // "you have no moves, tap to continue" prompt is a tap that changes nothing (§3.4).
-    if (legal.length === 0) return this.endTurn();
+    // --- Lifecycle -----------------------------------------------------------------------
 
-    this.s.phase = 'awaitingMove';
-    this.s.deadlineAt = Date.now() + TURN_DEADLINE_MS;
-    return { accepted: true };
-  }
-
-  private move(seat: number, token: number): ApplyResult {
-    if (this.s.phase !== 'awaitingMove') return { accepted: false };
-    if (!Number.isInteger(token)) return { accepted: false };
-    // MEMBERSHIP IN THE SERVER'S OWN SET, not a re-derivation from the client's claim. The
-    // legal set was computed when the roll landed; checking against it is what makes validation,
-    // auto-move, timeout and the bot four consumers of one rule rather than four rule sets.
-    if (!this.s.legal.includes(token)) return { accepted: false };
-
-    const die = this.s.die;
-    if (die === null) return { accepted: false };
-
-    const from = this.s.tokens[seat][token];
-    const to = destination(from, die, seat);
-    if (to === null) return { accepted: false };
-
-    this.s.tokens[seat][token] = to;
-
-    // Capture: landing on a square with EXACTLY ONE opponent token sends it home. Two or more
-    // is a block and was already excluded from the legal set, so multi-capture is impossible by
-    // construction rather than by a check.
-    let captured: [number, number] | null = null;
-    if (onTrack(to) && !isSafe(to)) {
-      for (let s2 = 0; s2 < this.s.tokens.length; s2++) {
-        if (s2 === seat) continue;
-        const idx = this.s.tokens[s2].findIndex((p) => p === to);
-        if (idx !== -1) {
-          this.s.tokens[s2][idx] = YARD;
-          captured = [s2, idx];
-          break;
+    /**
+     * Select the first active seat AFTER all players accept, using the server-secret RNG
+     * (§5.4). Idempotent: the final accept and a racing rejoin converge on one start.
+     */
+    startAll(now: number): void {
+        if (this.s.started || this.s.status !== 'waiting') return;
+        for (let s = 0; s < MAX_SEATS; s++) {
+            if (this.s.players[s] !== null) this.s.participation[s] = 'active';
         }
-      }
+        const eligible = activeSeats(this.s);
+        if (eligible.length === 0) return;
+        const pick = eligible[Math.floor(this.rng.next()) % eligible.length];
+        this.s.started = true;
+        this.s.status = 'active';
+        this.s.activeSeat = pick;
+        this.s.turnSerial = 1;
+        this.s.phase = 'awaitingRoll';
+        this.s.opensAt = now + TRANSITION_MS;
+        this.s.deadlineAt = this.s.opensAt + TURN_WINDOW_MS;
+        this.s.turnHadAutoAction = false;
+        // First authoritative turn: the full border SETS to the first hue without travel
+        // because there is no outgoing player (§12.1). One action, opensAt = +480.
+        this.commitAction('turnChanged', now, {
+            actorSeat: pick,
+            presentationEndsAt: now + TRANSITION_MS,
+        });
     }
 
-    this.s.lastMove = { seat, token, from, to, captured };
-    this.s.moveCount += 1;
-
-    // EXTRA TURNS COMPOSE TO ONE, NOT TWO (§2.3). The flag is boolean, not a counter —
-    // capturing with a 6 grants one extra turn, or a good turn spirals.
-    const grantsExtra = die === 6 || captured !== null || to === HOME;
-
-    // A player finishes when ALL their tokens are home, and the MATCH ends on the first
-    // finisher — not "play on for second place", which would leave two people continuing a game
-    // they cannot win (§2.6).
-    if (this.s.tokens[seat].every(isHome)) {
-      this.s.finishedOrder.push(seat);
-      return this.finish(seat);
+    /** Mark a seat accepted. Returns true when every assigned seat has accepted. */
+    accept(userId: string): boolean {
+        const seat = this.s.players.indexOf(userId);
+        if (seat !== -1) this.s.accepted[seat] = true;
+        for (let s = 0; s < MAX_SEATS; s++) {
+            if (this.s.players[s] !== null && !this.s.accepted[s]) return false;
+        }
+        return true;
     }
 
-    if (grantsExtra) {
-      this.s.extraTurn = true;
-      this.s.phase = 'awaitingRoll';
-      this.s.die = null;
-      this.s.legal = [];
-      this.s.deadlineAt = Date.now() + TURN_DEADLINE_MS;
-      return { accepted: true };
+    /**
+     * Explicit forfeit (§11.5, §16). Duel: the other player wins. Four: the seat drops and
+     * play continues unless one active seat remains. Killing the app is NOT a forfeit — only
+     * this deliberate call reaches here.
+     */
+    forfeit(userId: string, now: number): ApplyResult {
+        const seat = this.s.players.indexOf(userId);
+        if (
+            seat === -1 ||
+            this.s.status === 'finished' ||
+            this.s.status === 'abandoned'
+        ) {
+            return { accepted: false };
+        }
+        if (!this.s.started) {
+            this.s.status = 'abandoned';
+            this.s.endReason = 'lobbyCancelled';
+            this.commitAction('end', now, { actorSeat: seat });
+            return { accepted: true, outcome: { winnerId: null, scores: {} } };
+        }
+        return this.dropSeat(seat, now, 'playerForfeit');
     }
 
-    return this.endTurn();
-  }
+    private dropSeat(
+        seat: number,
+        now: number,
+        _reason: 'timeoutForfeit' | 'playerForfeit',
+    ): ApplyResult {
+        this.s.participation[seat] = 'dropped';
+        // Remove unfinished pawns from track/home lane: they no longer capture or block.
+        // Finished pawns stay finished; yard pawns stay put in the desaturated yard.
+        for (let t = 0; t < this.s.tokens[seat].length; t++) {
+            const p = this.s.tokens[seat][t];
+            if ((p >= 0 && p < TRACK_COUNT) || (p >= HOME_LANE_BASE && p < FINISHED)) {
+                this.s.tokens[seat][t] = YARD;
+            }
+        }
+        this.commitAction('drop', now, { actorSeat: seat });
 
-  /**
-   * Which of this seat's tokens can legally move with this die.
-   *
-   * THE ONE DEFINITION OF "WHAT CAN THIS PLAYER DO" (§4.2). Blocks are applied here, over the
-   * whole board, because they are the only rule that depends on more than the moving token.
-   */
-  private legalMoves(seat: number, die: number): number[] {
-    const blocked = this.blockedSquares(seat);
-    const legal: number[] = [];
-
-    for (let t = 0; t < this.s.tokens[seat].length; t++) {
-      const from = this.s.tokens[seat][t];
-      const to = destination(from, die, seat);
-      if (to === null) continue;
-
-      // An opponent's block can neither be landed on NOR passed (§2.4), so the whole path is
-      // checked rather than just the destination.
-      if (path(from, die, seat).some((sq) => blocked.has(sq))) continue;
-
-      // A token may not land on a square holding two or more of its OWN colour — that would
-      // stack a third onto a block (§2.2).
-      if (onTrack(to)) {
-        const own = this.s.tokens[seat].filter((p, i) => i !== t && p === to).length;
-        if (own >= 2) continue;
-      }
-
-      legal.push(t);
+        const remaining = activeSeats(this.s);
+        if (remaining.length <= 1) {
+            // Duel: the remaining player wins by the reason the seat left. Four-player: a
+            // lone survivor wins by lastActive.
+            const terminalReason =
+                this.s.mode === 'duel' ? _reason : remaining.length === 1 ? 'lastActive' : _reason;
+            return this.finish(remaining[0] ?? null, terminalReason, now, false);
+        }
+        return this.endTurn(now, {});
     }
 
-    return legal;
-  }
+    // --- Input ---------------------------------------------------------------------------
 
-  /**
-   * Squares an opponent has blocked against `seat`: two or more of one other colour.
-   *
-   * BLOCKS CANNOT FORM ON SAFE SQUARES. Tokens may stack there — they are already safe — but
-   * such a stack does not block passage. This bounds the worst case: a permanent block on an
-   * entry square would lock a player out of the game entirely (§2.4).
-   */
-  private blockedSquares(seat: number): Set<number> {
-    const counts = new Map<number, Map<number, number>>();
-    for (let s2 = 0; s2 < this.s.tokens.length; s2++) {
-      if (s2 === seat) continue;
-      for (const p of this.s.tokens[s2]) {
-        if (!onTrack(p) || isSafe(p)) continue;
-        const bySeat = counts.get(p) ?? new Map<number, number>();
-        bySeat.set(s2, (bySeat.get(s2) ?? 0) + 1);
-        counts.set(p, bySeat);
-      }
-    }
-    const blocked = new Set<number>();
-    for (const [square, bySeat] of counts) {
-      for (const n of bySeat.values()) {
-        if (n >= 2) { blocked.add(square); break; }
-      }
-    }
-    return blocked;
-  }
+    applyInput(playerId: string, input: GameInput): ApplyResult {
+        const now = Date.now();
+        if (typeof input.presence === 'boolean') return { accepted: true, silent: true };
+        if (input.forfeit === true) return this.forfeit(playerId, now);
 
-  /** Hand the turn to the next seat that has not already finished. */
-  private endTurn(): ApplyResult {
-    this.s.phase = 'awaitingRoll';
-    this.s.die = null;
-    this.s.legal = [];
-    this.s.sixStreak = 0;
-    this.s.extraTurn = false;
-    this.s.rollsThisTurn = 0;
+        const seat = this.s.players.indexOf(playerId);
+        if (seat === -1) return { accepted: false, rejection: 'NOT_A_PLAYER' };
+        if (this.s.status !== 'active') return { accepted: false, rejection: 'MATCH_NOT_ACTIVE' };
 
-    const n = this.s.players.length;
-    let next = this.s.turn;
-    for (let i = 1; i <= n; i++) {
-      const candidate = (this.s.turn + i) % n;
-      if (!this.s.finishedOrder.includes(candidate)) { next = candidate; break; }
-    }
-    this.s.turn = next;
-    this.s.deadlineAt = Date.now() + TURN_DEADLINE_MS;
-    this.s.moveCount += 1;
-    return { accepted: true };
-  }
+        const serialOk =
+            typeof input.turnSerial === 'number' && input.turnSerial === this.s.turnSerial;
+        if (seat !== this.s.activeSeat || !serialOk) {
+            return { accepted: false, rejection: 'NOT_YOUR_TURN' };
+        }
 
-  private finish(winnerIdx: number | null): ApplyResult {
-    this.s.finished = true;
-    this.s.phase = 'done';
-    this.s.winnerIdx = winnerIdx;
-    this.s.die = null;
-    this.s.legal = [];
-    this.s.deadlineAt = null;
-    return { accepted: true, outcome: this.outcome() };
-  }
-
-  /**
-   * `scores` is TOKENS HOME (0-4), so higher is better and it drops onto the existing
-   * leaderboard unchanged — unlike Sea Battle, whose lower-is-better score cannot (§2.5 there).
-   */
-  private outcome(): GameOutcome {
-    const scores = Object.fromEntries(
-      this.s.players.map((p, i) => [p, this.s.tokens[i].filter(isHome).length])
-    );
-    return {
-      winnerId: this.s.winnerIdx === null ? null : this.s.players[this.s.winnerIdx],
-      scores: this.s.winnerIdx === null ? {} : scores,
-    };
-  }
-
-  // --- Deadlines -----------------------------------------------------------------------
-
-  deadlineAt(): number | null {
-    return this.s.finished ? null : this.s.deadlineAt;
-  }
-
-  /**
-   * AUTO-PLAY, NOT FORFEIT, and this is the key decision (§13.2).
-   *
-   * CROSS_CUTTING.md §6 proposes "60 s -> forfeit" for turn-based games. That is right for a
-   * 2-player game where the absent player only hurts their opponent. It is WRONG for Ludo:
-   * forfeiting one of four players mid-match ruins the game for the other three — the board
-   * changes shape, the remaining odds change, and the match becomes something nobody signed up
-   * for. Auto-play keeps the game intact. The absent player plays badly and probably loses,
-   * which is the correct consequence.
-   */
-  onTimeout(): ApplyResult {
-    if (this.s.finished || this.s.deadlineAt === null) return { accepted: false };
-    if (Date.now() < this.s.deadlineAt) return { accepted: false };
-
-    const seat = this.s.turn;
-    if (this.s.phase === 'awaitingRoll') return this.roll(seat);
-
-    if (this.s.phase === 'awaitingMove' && this.s.legal.length > 0) {
-      // The mid-skill policy, not a random pick: capture > home > enter > furthest. Auto-play
-      // stands in for the player, so it should not be visibly worse than they would have been.
-      return this.move(seat, this.autoPick(seat));
+        if (input.roll === true) return this.roll(seat, now, false);
+        if (typeof input.move === 'number') return this.move(seat, input, now, false);
+        return { accepted: false };
     }
 
-    return { accepted: false };
-  }
-
-  /**
-   * The greedy policy, shared by timeout auto-play and the server's own bot seat.
-   *
-   * Deliberately the MIDDLE band from §11.1 rather than the strongest: an absent player's
-   * tokens being played expertly would be its own unfairness to the three people still there.
-   */
-  private autoPick(seat: number): number {
-    const die = this.s.die ?? 0;
-    let best = this.s.legal[0];
-    let bestScore = -Infinity;
-
-    for (const t of this.s.legal) {
-      const from = this.s.tokens[seat][t];
-      const to = destination(from, die, seat);
-      if (to === null) continue;
-
-      let score = 0;
-      if (to === HOME) score += 100;
-      // A capture is worth more than anything except finishing: it undoes an opponent's whole
-      // journey and grants another turn.
-      if (onTrack(to) && !isSafe(to)) {
-        const captures = this.s.tokens.some(
-          (row, s2) => s2 !== seat && row.includes(to)
-        );
-        if (captures) score += 80;
-      }
-      if (inYard(from)) score += 40;         // getting a token out is nearly always right
-      if (isSafe(to)) score += 15;
-      if (inColumn(to)) score += 10;
-      score += onTrack(to) ? relative(to, seat) * 0.1 : 0;  // else advance the furthest
-
-      if (score > bestScore) { bestScore = score; best = t; }
+    private timingReject(now: number): ApplyResult | null {
+        if (this.s.opensAt !== null && now < this.s.opensAt) {
+            return { accepted: false, rejection: 'TOO_EARLY' };
+        }
+        if (this.s.deadlineAt !== null && now > this.s.deadlineAt) {
+            return { accepted: false, rejection: 'DEADLINE_PASSED' };
+        }
+        return null;
     }
 
-    return best;
-  }
+    private roll(seat: number, now: number, auto: boolean): ApplyResult {
+        if (this.s.phase !== 'awaitingRoll') {
+            return { accepted: false, rejection: 'PHASE_MISMATCH' };
+        }
+        if (!auto) {
+            const gate = this.timingReject(now);
+            if (gate) return gate;
+        }
+        if (auto) this.s.turnHadAutoAction = true;
 
-  // --- Serialization -------------------------------------------------------------------
+        const value = this.rng.next();
+        const rollId = randomUUID();
+        this.s.rollId = rollId;
+        this.s.rollValue = value;
+        this.s.automated = auto;
 
-  serialize(): GameStatePayload {
-    return {
-      players: this.s.players,
-      tokensPerPlayer: this.s.tokensPerPlayer,
-      tokens: this.s.tokens,
-      turn: this.s.turn,
-      turnUserId: this.s.finished ? null : this.s.players[this.s.turn],
-      // THE FIELD A NAIVE DESIGN LOSES, and losing it is a real exploit: a restore defaulting to
-      // `awaitingRoll` lets a player who has already rolled a 2 roll again for a better number.
-      // The serialize/restore round trip happens on EVERY input, so this is not a rare case.
-      phase: this.s.phase,
-      die: this.s.die,
-      // Stored rather than derived so validation, auto-move, timeout and the client's highlight
-      // all read the same answer. Deriving it in three places is how three subtly different rule
-      // sets appear.
-      legal: this.s.legal,
-      // Lose this and the three-sixes rule never fires, removing the only bound on turn length.
-      sixStreak: this.s.sixStreak,
-      // Lose this and every extra turn is silently forfeited — which changes the game's balance
-      // completely and would be nearly invisible in testing.
-      extraTurn: this.s.extraTurn,
-      rollsThisTurn: this.s.rollsThisTurn,
-      finishedOrder: this.s.finishedOrder,
-      moveCount: this.s.moveCount,
-      // Serialized rather than recomputed from "now": recomputing on restore would hand an AFK
-      // player a fresh 45 seconds on every process restart, and with restarts happening on every
-      // input the timer would never fire at all.
-      deadlineAt: this.s.deadlineAt,
-      lastMove: this.s.lastMove,
-      finished: this.s.finished,
-      winnerUserId: this.s.winnerIdx === null ? null : this.s.players[this.s.winnerIdx],
-      // NOT PRESENT, DELIBERATELY: the RNG state. See serializeSecret.
-    };
-  }
+        // THREE CONSECUTIVE SIXES FORFEIT THE THIRD ROLL (§5.2 r6): the value is displayed,
+        // no pawn moves for it, prior moves remain, play passes clockwise. The streak resets
+        // because the seat is handing off regardless.
+        if (value === 6) this.s.sixStreak += 1;
+        if (this.s.sixStreak >= 3) {
+            this.s.sixStreak = 0;
+            return this.passAfterRoll(seat, now, rollId, value, auto);
+        }
 
-  /**
-   * THE MOST IMPORTANT METHOD IN THIS ENGINE, and where Ludo departs from Snake.
-   *
-   * Snake puts its seed straight into serialize(), on the wire, and is right to: its draws are
-   * pellet positions and bot jitter, and knowing where a pellet appears a frame early is worth
-   * nothing. In Ludo the next draw is the dice.
-   *
-   * A lost seed is quieter and worse than a crash: the engine would reseed, so every roll would
-   * come from a fresh sequence seeded identically on every input. In the worst case the die
-   * returns the same face forever; in the best case the sequence is silently non-random.
-   * Neither looks like a failure and both take a long time to diagnose — which is why restore
-   * logs loudly rather than carrying on.
-   */
-  serializeSecret(): GameStatePayload {
-    return { rng: this.s.seed };
-  }
+        const legal = legalMoves(this.s, seat, value);
 
-  isFinished(): boolean {
-    return this.s.finished;
-  }
+        if (legal.length === 0) {
+            // Show the roll, wait for its landing animation, then pass automatically (§5.2 r7).
+            // There is no pass button.
+            this.s.sixStreak = 0;
+            return this.passAfterRoll(seat, now, rollId, value, auto);
+        }
+
+        this.s.legalTokenIds = legal;
+
+        if (auto) {
+            // Atomic timeout auto-turn (§13): commit the roll AND the deterministic move in ONE
+            // accepted transition. An absent player never consumes a second 30-second wait.
+            this.s.phase = 'awaitingMove';
+            this.s.opensAt = now; // the decision window is not reopening; auto skips gates anyway
+            const tokenId = pickAutoMove(this.s, seat, value, legal)!;
+            return this.move(seat, { move: tokenId, rollId }, now, true);
+        }
+
+        this.s.phase = 'awaitingMove';
+        // Awaiting move starts when the mandatory die animation is expected to settle (§13):
+        // moveOpensAt = rollCommittedAt + 940.
+        const moveOpensAt = now + ROLL_SETTLE_MS;
+        this.s.opensAt = moveOpensAt;
+        this.s.deadlineAt = moveOpensAt + TURN_WINDOW_MS;
+        this.commitAction(auto ? 'autoTurn' : 'roll', now, {
+            actorSeat: seat,
+            presentationEndsAt: moveOpensAt,
+            roll: { rollId, value, auto },
+        });
+        return { accepted: true };
+    }
+
+    /** A roll whose value cannot be used: display it, settle the die, pass clockwise. */
+    private passAfterRoll(
+        seat: number,
+        now: number,
+        rollId: string,
+        value: number,
+        auto: boolean,
+    ): ApplyResult {
+        this.s.rollValue = null;
+        this.s.rollId = null;
+        this.s.legalTokenIds = [];
+        return this.endTurn(now, {
+            roll: { rollId, value, auto },
+            // No-legal-move six (or any unusable face): next seat opens at +940 + 480 (§15).
+            opensAt: now + ROLL_SETTLE_MS + TRANSITION_MS,
+            presentationEndsAt: now + ROLL_SETTLE_MS,
+            type: auto ? 'autoTurn' : 'roll',
+            actorSeat: seat,
+        });
+    }
+
+    private move(seat: number, input: GameInput, now: number, auto: boolean): ApplyResult {
+        if (this.s.phase !== 'awaitingMove') {
+            return { accepted: false, rejection: 'PHASE_MISMATCH' };
+        }
+        if (typeof input.rollId !== 'string' || input.rollId !== this.s.rollId) {
+            return { accepted: false, rejection: 'ROLL_MISMATCH' };
+        }
+        if (!auto) {
+            const gate = this.timingReject(now);
+            if (gate) return gate;
+        }
+        const token = input.move as number;
+        if (!Number.isInteger(token) || !this.s.legalTokenIds.includes(token)) {
+            return { accepted: false, rejection: 'ILLEGAL_MOVE' };
+        }
+        const die = this.s.rollValue;
+        if (die === null) return { accepted: false, rejection: 'PHASE_MISMATCH' };
+        if (auto) this.s.turnHadAutoAction = true;
+
+        const from = this.s.tokens[seat][token];
+        const to = destination(from, die, seat);
+        if (to === null) return { accepted: false, rejection: 'ILLEGAL_MOVE' };
+
+        const route = path(from, die, seat);
+        this.s.tokens[seat][token] = to;
+
+        // Capture resolves AFTER movement lands (§5.3). At most one opponent pawn can be
+        // captured, because landing on an opponent block was already illegal.
+        let capturedPayload:
+            | NonNullable<NonNullable<LastAction['move']>['captured']>
+            | null = null;
+        const cap = resolveCapture(this.s, seat, to);
+        if (cap) {
+            const capFrom = this.s.tokens[cap.seat][cap.tokenId];
+            this.s.tokens[cap.seat][cap.tokenId] = YARD; // back to its ORIGINAL yard slot
+            this.s.captures[seat] += 1;
+            capturedPayload = {
+                seat: cap.seat, tokenId: cap.tokenId, from: capFrom, to: YARD,
+            };
+        }
+
+        const finished = finishedPawns(this.s, seat) === TOKENS_PER_SEAT;
+        const extraMs = cap ? CAPTURE_EXTRA_MS : finished ? FINISH_EXTRA_MS : 0;
+        const presentationEndsAt = now + hopMs(route.length) + extraMs;
+
+        const actionType: ActionType = finished ? 'move' : cap ? 'capture' : auto ? 'autoTurn' : 'move';
+        this.commitAction(actionType, now, {
+            actorSeat: seat,
+            presentationEndsAt,
+            roll: this.s.rollId ? { rollId: this.s.rollId, value: die, auto } : undefined,
+            move: { tokenId: token, from, to, path: route, captured: capturedPayload },
+        });
+
+        if (finished) return this.finish(seat, 'win', now, true);
+
+        // A six grants ONE extra roll after the resulting move (§5.2 r5); capturing and
+        // finishing do not grant extra rolls. The extra roll opens 120 ms after the mandatory
+        // presentation ends (§12.3).
+        if (die === 6) {
+            this.s.phase = 'awaitingRoll';
+            this.s.rollValue = null;
+            this.s.rollId = null;
+            this.s.legalTokenIds = [];
+            this.s.opensAt = presentationEndsAt + 120;
+            this.s.deadlineAt = this.s.opensAt + TURN_WINDOW_MS;
+            return { accepted: true };
+        }
+
+        return this.endTurn(now, {
+            preservePresentation: true,
+            opensAt: presentationEndsAt + TRANSITION_MS,
+        });
+    }
+
+    /**
+     * Hand the turn to the next active seat, applying the timeout-streak rule (§13).
+     *
+     * `preservePresentation` keeps the just-committed move/capture action as THE action for
+     * this transition and stamps the seat handoff onto it — one seq step, one action, both
+     * facts. Otherwise a fresh `turnChanged` (optionally embedding the displayed roll) is
+     * committed.
+     */
+    private endTurn(
+        now: number,
+        opts: {
+            preservePresentation?: boolean;
+            opensAt?: number;
+            presentationEndsAt?: number;
+            roll?: { rollId: string; value: number; auto: boolean };
+            type?: ActionType;
+            actorSeat?: number;
+        },
+    ): ApplyResult {
+        const outgoing = this.s.activeSeat;
+        if (this.s.turnHadAutoAction) {
+            this.s.timeoutStreak[outgoing] += 1;
+        } else {
+            this.s.timeoutStreak[outgoing] = 0;
+        }
+        this.s.turnHadAutoAction = false;
+        this.s.automated = false;
+        this.s.rollValue = null;
+        this.s.rollId = null;
+        this.s.legalTokenIds = [];
+        this.s.sixStreak = 0;
+
+        if (this.s.timeoutStreak[outgoing] >= 3) {
+            // At three consecutive timed-out turns, mark the seat dropped BEFORE selecting
+            // the next active seat (§13).
+            return this.dropSeat(outgoing, now, 'timeoutForfeit');
+        }
+
+        const next = nextActiveSeat(this.s, outgoing);
+        const opensAt = Math.max(opts.opensAt ?? now, now + TRANSITION_MS);
+        this.s.activeSeat = next;
+        this.s.turnSerial += 1;
+        this.s.phase = 'awaitingRoll';
+        this.s.opensAt = opensAt;
+        this.s.deadlineAt = opensAt + TURN_WINDOW_MS;
+
+        if (opts.preservePresentation && this.s.lastAction) {
+            this.s.lastAction.fromSeat = outgoing;
+            this.s.lastAction.actorSeat = next;
+            this.s.lastAction.presentationEndsAt = opts.presentationEndsAt
+                ?? this.s.lastAction.presentationEndsAt;
+        } else {
+            this.commitAction(opts.type ?? 'turnChanged', now, {
+                actorSeat: next,
+                fromSeat: outgoing,
+                presentationEndsAt: opts.presentationEndsAt ?? opensAt - TRANSITION_MS,
+                ...(opts.roll ? { roll: opts.roll } : {}),
+            });
+        }
+        return { accepted: true };
+    }
+
+    /**
+     * Terminal transition. `preserveLastAction` keeps the winning move as the frame's action
+     * so every client can finish presenting it before the result sheet; otherwise (drops,
+     * integrity ends) an explicit `end` action is committed.
+     */
+    private finish(
+        winnerSeat: number | null,
+        endReason: string,
+        now: number,
+        preserveLastAction: boolean,
+    ): ApplyResult {
+        if (!preserveLastAction) {
+            this.commitAction('end', now, { actorSeat: winnerSeat ?? -1 });
+        }
+        if (winnerSeat !== null) this.s.participation[winnerSeat] = 'winner';
+        this.s.winnerSeat = winnerSeat;
+        this.s.endReason = endReason;
+        this.s.status = 'finished';
+        this.s.phase = 'none';
+        this.s.deadlineAt = null;
+        this.s.rollValue = null;
+        this.s.rollId = null;
+        this.s.legalTokenIds = [];
+        return { accepted: true, outcome: this.outcome() };
+    }
+
+    private outcome(): GameOutcome {
+        if (this.s.winnerSeat === null) return { winnerId: null, scores: {} };
+        const scores: Record<string, number> = {};
+        for (let s = 0; s < MAX_SEATS; s++) {
+            const uid = this.s.players[s];
+            if (uid === null) continue;
+            scores[uid] = finishedPawns(this.s, s);
+        }
+        return { winnerId: this.s.players[this.s.winnerSeat], scores };
+    }
+
+    private commitAction(
+        type: ActionType,
+        committedAt: number,
+        rest: Partial<LastAction>,
+    ): void {
+        this.s.actionCounter += 1;
+        this.s.lastAction = {
+            id: String(this.s.actionCounter),
+            type,
+            committedAt,
+            presentationEndsAt: committedAt,
+            actorSeat: this.s.activeSeat,
+            ...rest,
+        };
+    }
+
+    // --- Deadlines -----------------------------------------------------------------------
+
+    deadlineAt(): number | null {
+        if (this.s.status !== 'active') return null;
+        return this.s.deadlineAt;
+    }
+
+    /** Server timeout: auto-play, never an instant loss (§13). */
+    onTimeout(): ApplyResult {
+        const now = Date.now();
+        if (this.s.status !== 'active' || this.s.deadlineAt === null) return { accepted: false };
+        if (now < this.s.deadlineAt) return { accepted: false };
+        const seat = this.s.activeSeat;
+        if (this.s.phase === 'awaitingRoll') return this.roll(seat, now, true);
+        if (
+            this.s.phase === 'awaitingMove' &&
+            this.s.legalTokenIds.length > 0 &&
+            this.s.rollId !== null &&
+            this.s.rollValue !== null
+        ) {
+            const tokenId = pickAutoMove(this.s, seat, this.s.rollValue, this.s.legalTokenIds)!;
+            return this.move(seat, { move: tokenId, rollId: this.s.rollId }, now, true);
+        }
+        return { accepted: false };
+    }
+
+    // --- Serialization -------------------------------------------------------------------
+
+    serialize(): GameStatePayload {
+        // Persisted ONLY — Redis/Postgres and restore(). Raw user ids ride along because
+        // sparse duel seats cannot be rebuilt from game_matches.player_ids alone. Clients
+        // NEVER receive this object: Ludo always broadcasts through serializeForPlayer().
+        return { ludo: this.s };
+    }
+
+    serializeSecret(): GameStatePayload {
+        return {
+            ludo: {
+                rng: this.rng.state,
+                players: this.s.players,
+                accepted: this.s.accepted,
+            },
+        };
+    }
+
+    /**
+     * Per-recipient projection (§6, §11.2). displayName comes from the frame context the
+     * runtime supplies; an unauthorized viewer sees neutral labels because the runtime never
+     * puts a real name in the map. Raw ids and the RNG never appear here.
+     */
+    serializeForPlayer(playerId: string): GameStatePayload {
+        const ctx = this.ctx ?? { serverNow: Date.now(), connections: {}, names: {} };
+        const viewerSeat = this.s.players.indexOf(playerId);
+        const seats: SeatView[] = [];
+        for (let seat = 0; seat < MAX_SEATS; seat++) {
+            const uid = this.s.players[seat];
+            if (uid === null) continue;
+            seats.push({
+                seat,
+                seatId: opaqueSeatId(this.matchKey, seat),
+                color: SEAT_COLORS[seat],
+                displayName: ctx.names[uid] ?? `Player ${seat + 1}`,
+                participation: this.s.participation[seat],
+                connection:
+                    this.s.participation[seat] === 'dropped'
+                        ? 'disconnected'
+                        : // Unknown presence projects as disconnected — never invent liveness.
+                        (ctx.connections[uid] ?? 'disconnected'),
+                timeoutStreak: this.s.timeoutStreak[seat],
+                finishedPawns: finishedPawns(this.s, seat),
+                captures: this.s.captures[seat],
+            });
+        }
+
+        const payload: LudoPublicState = {
+            schemaVersion: SCHEMA_VERSION,
+            rulesVersion: RULES_VERSION,
+            mode: this.s.mode,
+            status: this.s.status,
+            serverNow: ctx.serverNow,
+            viewerSeat: viewerSeat === -1 ? null : viewerSeat,
+            seats,
+            tokensPerSeat: TOKENS_PER_SEAT,
+            tokens: this.s.tokens.map((row) => [...row]),
+            turn:
+                this.s.status === 'active'
+                    ? {
+                          seat: this.s.activeSeat,
+                          serial: this.s.turnSerial,
+                          phase: this.s.phase,
+                          opensAt: this.s.opensAt ?? ctx.serverNow,
+                          deadlineAt:
+                              this.s.deadlineAt ?? (this.s.opensAt ?? ctx.serverNow) + TURN_WINDOW_MS,
+                          sixStreak: this.s.sixStreak,
+                          rollId: this.s.rollId,
+                          value: this.s.rollValue,
+                          legalTokenIds: [...this.s.legalTokenIds],
+                          automated: this.s.automated,
+                      }
+                    : null,
+            lastAction: this.s.lastAction,
+            winnerSeat: this.s.winnerSeat,
+            endReason: this.s.endReason,
+            seedCommitment: this.rng.commitment(),
+        };
+        return { ludoV2: payload };
+    }
+
+    isFinished(): boolean {
+        return this.s.status === 'finished' || this.s.status === 'abandoned';
+    }
 }
 
-export const ludo: GameFactory = {
-  slug: 'ludo',
-  // No tickHz: turn-based, so no loop, and (per matches.ts) durably persisted.
-  create(playerIds: string[], options?: Record<string, unknown>): GameEngine {
-    const seats = Math.max(2, Math.min(MAX_SEATS, playerIds.length));
-
-    // TOKEN COUNT IS THE LENGTH DECISION (§2.7), and the most player-visible departure from the
-    // Ludo people think they know.
-    //
-    // A classic four-player game runs 30-45 minutes, which is a bad fit for a game played inside
-    // a chat. Defaults are chosen so no default configuration exceeds ~20 minutes: 4 tokens at
-    // two players, 2 tokens at three or four. The full game stays available to anyone who asks
-    // for it; it is simply not what a player gets by tapping through.
-    //
-    // UNTRUSTED, so clamped exactly as cricket clamps its over count.
-    const raw = options?.tokens;
-    const requested = typeof raw === 'number' && Number.isInteger(raw) ? raw : null;
-    const fallback = seats <= 2 ? 4 : 2;
-    const tokensPerPlayer = requested === null ? fallback : Math.max(2, Math.min(4, requested));
-
-    const seedOpt = options?.seed;
-    const seed =
-      typeof seedOpt === 'number' && Number.isFinite(seedOpt)
-        ? seedOpt >>> 0
-        : (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0;
-
-    return new LudoEngine({
-      players: [...playerIds],
-      tokensPerPlayer,
-      tokens: playerIds.map(() => Array(tokensPerPlayer).fill(YARD)),
-      turn: 0,
-      phase: 'awaitingRoll',
-      die: null,
-      legal: [],
-      sixStreak: 0,
-      extraTurn: false,
-      rollsThisTurn: 0,
-      finishedOrder: [],
-      moveCount: 0,
-      deadlineAt: Date.now() + TURN_DEADLINE_MS,
-      lastMove: null,
-      finished: false,
-      winnerIdx: null,
-      seed,
-    });
-  },
-
-  restore(state: GameStatePayload, secret?: GameStatePayload): GameEngine {
-    const players = state.players as string[];
-
-    // Rebuilt field by field, never cast — the mistake cricket/index.ts documents, where a
-    // blanket cast produced an engine whose fields were undefined and whose next serialize()
-    // threw, taking the service down with every match that outlived a restart.
-    const rawTokens = state.tokens as number[][] | undefined;
-    const tokensPerPlayer = (state.tokensPerPlayer as number | undefined) ?? 4;
-    const tokens: number[][] = Array.isArray(rawTokens)
-      ? rawTokens.map((row) =>
-          Array.isArray(row) ? row.map((p) => (typeof p === 'number' ? p : YARD)) : []
-        )
-      : players.map(() => Array(tokensPerPlayer).fill(YARD));
-
-    // THE SEED COMES FROM THE SECRET, NEVER FROM THE STATE (§4.6) — the same shape cricket uses
-    // for `pending`. A restore with no secret must reseed LOUDLY: a match whose dice sequence
-    // restarted is a match that quietly stopped being fair, and nothing else would report it.
-    const rawSeed = (secret as { rng?: unknown } | undefined)?.rng;
-    let seed: number;
-    if (typeof rawSeed === 'number' && Number.isFinite(rawSeed)) {
-      seed = rawSeed >>> 0;
-    } else {
-      seed = (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0;
-      console.error('[ludo] RNG state lost on restore — dice sequence reseeded');
+/** Tombstone for a pre-v2 state: the match is abandoned with a clear version reason. */
+class LegacyAbandonEngine implements GameEngine {
+    constructor(private reason: string) {}
+    applyInput(): ApplyResult {
+        return { accepted: false };
     }
+    serialize(): GameStatePayload {
+        return { legacyAbandoned: this.reason };
+    }
+    deadlineAt(): number | null {
+        return null;
+    }
+    onTimeout(): ApplyResult {
+        return { accepted: false };
+    }
+    isFinished(): boolean {
+        return true;
+    }
+}
 
-    return new LudoEngine({
-      players,
-      tokensPerPlayer,
-      tokens,
-      turn: (state.turn as number | undefined) ?? 0,
-      phase: (state.phase as Phase | undefined) ?? 'awaitingRoll',
-      die: (state.die as number | null | undefined) ?? null,
-      legal: (state.legal as number[] | undefined) ?? [],
-      sixStreak: (state.sixStreak as number | undefined) ?? 0,
-      extraTurn: (state.extraTurn as boolean | undefined) ?? false,
-      rollsThisTurn: (state.rollsThisTurn as number | undefined) ?? 0,
-      finishedOrder: (state.finishedOrder as number[] | undefined) ?? [],
-      moveCount: (state.moveCount as number | undefined) ?? 0,
-      deadlineAt: (state.deadlineAt as number | null | undefined) ?? null,
-      lastMove: (state.lastMove as LastMove | null | undefined) ?? null,
-      finished: (state.finished as boolean) === true,
-      winnerIdx:
-        state.winnerUserId === null || state.winnerUserId === undefined
-          ? null
-          : players.indexOf(state.winnerUserId as string),
-      seed,
-    });
-  },
+export const ludo = {
+    slug: 'ludo',
+    create(playerIds: string[], options?: Record<string, unknown>): GameEngine {
+        const rawMode = options?.mode;
+        const mode: LudoMode =
+            rawMode === 'duel' || rawMode === 'four'
+                ? rawMode
+                : playerIds.length <= 2
+                    ? 'duel'
+                    : 'four';
+
+        // Test hook: a fixed hex seed makes dice sequences reproducible in CI.
+        const seedOpt = options?.rngSeed;
+        const rng =
+            typeof seedOpt === 'string' && /^[0-9a-f]{64}$/.test(seedOpt)
+                ? DiceRng.fromState({ seed: seedOpt, counter: 0 })!
+                : DiceRng.generate();
+
+        // Seat assignment is SERVER-SHUFFLED so the creator does not always receive red
+        // (§5.4). A duel occupies opposite seats: red (0) and yellow (2).
+        const players: (string | null)[] = [null, null, null, null];
+        const seatsToFill = mode === 'duel' ? [0, 2] : [0, 1, 2, 3];
+        const shuffled = [...seatsToFill];
+        for (let i = shuffled.length - 1; i > 0; i--) {
+            const j = Math.floor(rng.next()) % (i + 1);
+            [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+        }
+        playerIds.slice(0, shuffled.length).forEach((uid, i) => {
+            players[shuffled[i]] = uid;
+        });
+
+        const tokens: number[][] = [];
+        for (let s = 0; s < MAX_SEATS; s++) {
+            tokens.push(players[s] !== null ? Array(TOKENS_PER_SEAT).fill(YARD) : []);
+        }
+
+        const state: LudoStateV2 = {
+            schemaVersion: SCHEMA_VERSION,
+            rulesVersion: RULES_VERSION,
+            mode,
+            status: 'waiting',
+            started: false,
+            players,
+            accepted: [false, false, false, false],
+            participation: Array(MAX_SEATS).fill('waiting') as LudoStateV2['participation'],
+            timeoutStreak: [0, 0, 0, 0],
+            captures: [0, 0, 0, 0],
+            tokens,
+            startedByRng: false,
+            firstSeatChosen: false,
+            activeSeat: 0,
+            turnSerial: 0,
+            phase: 'none',
+            opensAt: null,
+            deadlineAt: null,
+            sixStreak: 0,
+            rollId: null,
+            rollValue: null,
+            legalTokenIds: [],
+            automated: false,
+            turnHadAutoAction: false,
+            actionCounter: 0,
+            lastAction: null,
+            winnerSeat: null,
+            endReason: null,
+        };
+        return new LudoEngineV2(state, rng, randomUUID());
+    },
+
+    restore(state: GameStatePayload, secret?: GameStatePayload): GameEngine {
+        const inner = (state as { ludo?: unknown }).ludo as LudoStateV2 | undefined;
+        if (
+            !inner ||
+            inner.schemaVersion !== SCHEMA_VERSION ||
+            inner.rulesVersion !== RULES_VERSION
+        ) {
+            // Preserve v1 rows only long enough to abandon them with a clear reason (§20 P1);
+            // ambiguous live rules are never converted mid-match.
+            console.error('[ludo] legacy/incompatible state on restore — abandoning match');
+            return new LegacyAbandonEngine('schemaVersionMismatch');
+        }
+
+        const secretInner = (secret as { ludo?: unknown } | undefined)?.ludo as
+            | { rng?: unknown; players?: unknown; accepted?: unknown }
+            | undefined;
+        const rng = DiceRng.fromState(
+            (secretInner?.rng ?? {}) as { seed?: unknown; counter?: unknown },
+        );
+        if (!rng) {
+            // IF RNG SECRET STATE IS MISSING, ABANDON — never reseed and continue silently (§16).
+            console.error('[ludo] RNG secret state missing on restore — abandoning match');
+            inner.status = 'abandoned';
+            inner.endReason = 'serverIntegrityError';
+            inner.phase = 'none';
+            inner.deadlineAt = null;
+            return new LudoEngineV2(inner, DiceRng.generate(), randomUUID());
+        }
+
+        if (Array.isArray(secretInner?.players)) {
+            inner.players = (secretInner.players as (string | null)[]).map((p) =>
+                typeof p === 'string' || p === null ? p : null,
+            );
+        }
+        if (Array.isArray(secretInner?.accepted)) {
+            inner.accepted = (secretInner.accepted as boolean[]).map((b) => b === true);
+        }
+
+        return new LudoEngineV2(inner, rng, randomUUID());
+    },
 };

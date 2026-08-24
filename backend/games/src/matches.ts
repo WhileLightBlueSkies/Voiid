@@ -35,6 +35,22 @@ export interface LiveMatch {
    * broadcast: `broadcast()` sends `state`, and this field is deliberately not part of it.
    */
   secret?: GameStatePayload;
+  /**
+   * Processed WebSocket command ids (LUDO_GAME_SPEC.md §7.1) -> seq they were applied at.
+   * A retry with the same id returns/broadcasts NO second action. Kept to the last 64 and
+   * persisted durably with the state, so a retry that lands after a service restart is still
+   * recognised.
+   */
+  processedCommands?: Record<string, number>;
+  /**
+   * userId -> last-seen epoch ms (§7.1 presence). Server-only; never pauses a clock and never
+   * reaches a frame beyond the derived connected/disconnected bit.
+   */
+  presence?: Record<string, number>;
+  /** The chat conversation this match was created from (049_ludo_game_v2.sql). */
+  sourceConversationId?: string | null;
+  /** Epoch ms the invite clock started (server created_at); client clocks never extend it. */
+  inviteCreatedAtMs?: number;
 }
 
 /**
@@ -102,8 +118,11 @@ export async function loadMatch(matchId: string): Promise<LiveMatch | null> {
     secret: GameStatePayload | null;
     seq: number;
     joined: string[];
+    commands: Record<string, number> | null;
+    source_conversation_id: string | null;
   }>(
-    `select g.slug, m.player_ids, m.status, s.state, s.secret, s.seq, s.joined
+    `select g.slug, m.player_ids, m.status, s.state, s.secret, s.seq, s.joined,
+            s.commands, m.source_conversation_id
        from game_match_state s
        join game_matches m on m.id = s.match_id
        join games g on g.id = m.game_id
@@ -125,6 +144,8 @@ export async function loadMatch(matchId: string): Promise<LiveMatch | null> {
     state: row.state,
     secret: row.secret ?? undefined,
     joined: row.joined ?? [],
+    processedCommands: row.commands ?? {},
+    sourceConversationId: row.source_conversation_id,
   };
   // Rehydrate the hot path so the rest of this turn, and the next few, are served from Redis.
   await state.set(stateKey(matchId), JSON.stringify(m), 'EX', STATE_TTL_SECONDS);
@@ -142,13 +163,14 @@ export async function saveMatch(m: LiveMatch): Promise<void> {
  */
 async function saveDurable(m: LiveMatch): Promise<void> {
   await query(
-    `insert into game_match_state (match_id, state, secret, seq, joined, updated_at)
-     values ($1, $2, $3, $4, $5, now())
+    `insert into game_match_state (match_id, state, secret, seq, joined, commands, updated_at)
+     values ($1, $2, $3, $4, $5, $6::jsonb, now())
      on conflict (match_id) do update
        set state = excluded.state,
            secret = excluded.secret,
            seq = excluded.seq,
            joined = excluded.joined,
+           commands = excluded.commands,
            updated_at = now()`,
     [
       m.matchId,
@@ -156,10 +178,20 @@ async function saveDurable(m: LiveMatch): Promise<void> {
       m.secret === undefined ? null : JSON.stringify(m.secret),
       m.seq,
       JSON.stringify(m.joined ?? []),
+      JSON.stringify(pruneCommands(m.processedCommands)),
     ]
   );
   // Written after the row, so the marker never claims a row that does not exist yet.
   await state.set(durableKey(m.matchId), '1', 'EX', DURABLE_MARKER_TTL_SECONDS);
+}
+
+/**
+ * Keep the last 64 command ids (§7.1). Pruned on write rather than on insert so every path
+ * that records a command converges on the same bound.
+ */
+function pruneCommands(cmds?: Record<string, number>): Record<string, number> {
+  const entries = Object.entries(cmds ?? {});
+  return Object.fromEntries(entries.slice(-64));
 }
 
 /**
@@ -211,13 +243,20 @@ export async function markStarted(matchId: string): Promise<void> {
 export async function finishMatch(
   matchId: string,
   players: string[],
-  outcome: GameOutcome
+  outcome: GameOutcome,
+  /**
+   * Terminal audit (LUDO_GAME_SPEC.md §5.4, §18.3): the RNG seed is revealed here so a
+   * finished match can be proven fair after the fact. Written in the SAME statement as the
+   * status flip so an audit row can never exist for a match still marked active.
+   */
+  audit?: Record<string, unknown>
 ): Promise<void> {
   await query(
     `update game_matches
-        set status = 'finished', ended_at = now(), winner_id = $2
+        set status = 'finished', ended_at = now(), winner_id = $2,
+            terminal_audit = $3::jsonb
       where id = $1 and status <> 'finished'`,
-    [matchId, outcome.winnerId]
+    [matchId, outcome.winnerId, audit ? JSON.stringify(audit) : null]
   );
 
   for (const uid of players) {

@@ -30,6 +30,34 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // knowledge, and it lives in exactly one place.
 const GAMES_INPUT_CHANNEL = 'channel:games:input';
 
+/** Invite lifetime is EXACTLY 10 minutes from server created_at (LUDO_GAME_SPEC.md §8.1). */
+const LUDO_INVITE_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * Publish an invite-card state change to every seat (§7.2). One frame per copy of the card:
+ * waiting/live invite, declined/cancelled, expired and finished states are all driven by
+ * this plus game_ended, so every device renders the same truth.
+ */
+async function publishInviteStatus(
+  matchId: string,
+  playerIds: string[],
+  status: 'waiting' | 'declined' | 'cancelled' | 'active' | 'finished',
+  acceptedSeats = 0,
+  expiresAt?: number
+): Promise<void> {
+  await publisher.publish(
+    GAMES_INPUT_CHANNEL,
+    JSON.stringify({
+      type: 'game_invite_status',
+      match_id: matchId,
+      status,
+      accepted_seats: acceptedSeats,
+      total_seats: playerIds.length,
+      expires_at: expiresAt ?? Date.now() + LUDO_INVITE_TTL_MS,
+    })
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────────
 // REACHABILITY GATE — the same hole that was closed on the call path (POST /calls/ring),
 // closed here for the same reason.
@@ -129,6 +157,77 @@ router.post(
     const game = games[0];
     if (!game) return res.status(404).json({ error: 'unknown game' });
 
+    // ── LUDO SCHEMA-V2 VALIDATION (§7.1, §8.1) ────────────────────────────────────────
+    // Exact counts only: duel needs exactly one opponent, four exactly three. The mode and
+    // the SOURCE CONVERSATION are required — the conversation authorizes identity
+    // projection later, so it must be verified at creation, against the live roster.
+    let ludoMode: 'duel' | 'four' | null = null;
+    let sourceConversationId: string | null = null;
+    let idempotencyKey: string | null = null;
+    if (slug === 'ludo') {
+      const rawMode = (req.body?.mode ?? matchOptions.mode) as unknown;
+      if (rawMode !== 'duel' && rawMode !== 'four') {
+        return res.status(400).json({ error: "ludo requires mode 'duel' or 'four'" });
+      }
+      ludoMode = rawMode;
+      const expectedOpponents = ludoMode === 'duel' ? 1 : 3;
+      if (opponents.length !== expectedOpponents) {
+        return res.status(400).json({ error: `ludo ${ludoMode} requires exactly ${expectedOpponents} opponent(s)` });
+      }
+      const convId = req.body?.conversation_id ?? matchOptions.conversation_id;
+      if (typeof convId !== 'string' || !UUID_RE.test(convId)) {
+        return res.status(400).json({ error: 'ludo requires a valid conversation_id' });
+      }
+      sourceConversationId = convId;
+
+      const idem = req.body?.idempotency_key;
+      if (idem !== undefined && (typeof idem !== 'string' || !UUID_RE.test(idem))) {
+        return res.status(400).json({ error: 'invalid idempotency_key' });
+      }
+      idempotencyKey = typeof idem === 'string' ? idem : null;
+
+      // EVERY participant must be a CURRENT accepted member of the source conversation.
+      // The client list is convenience only; this is the check that matters.
+      const members = await query<{ user_id: string }>(
+        `select user_id from conversation_members
+          where conversation_id = $1::uuid and left_at is null and request_state = 'accepted'`,
+        [sourceConversationId]
+      );
+      const memberSet = new Set(members.map((m) => m.user_id));
+      const everyone = [userId, ...opponents];
+      for (const uid of everyone) {
+        if (!memberSet.has(uid)) {
+          return res.status(403).json({ error: 'all players must be current members of the conversation' });
+        }
+      }
+      // Blocks in either direction between ANY pair kill the invite.
+      const blocks = await query<{ blocker_user_id: string; blocked_user_id: string }>(
+        `select blocker_user_id, blocked_user_id from user_blocks
+          where blocker_user_id = any($1::uuid[]) and blocked_user_id = any($1::uuid[])`,
+        [everyone]
+      );
+      if (blocks.length > 0) {
+        return res.status(403).json({ error: 'not permitted to invite one of these players' });
+      }
+
+      // IDEMPOTENT CREATE: a retried key returns the SAME waiting match instead of minting
+      // a second lobby nobody asked for.
+      if (idempotencyKey) {
+        const existing = await query<{ id: string; status: string; player_ids: string[] }>(
+          `select id, status, player_ids from game_matches
+            where created_by = $1 and idempotency_key = $2 order by created_at desc limit 1`,
+          [userId, idempotencyKey]
+        );
+        if (existing[0]) {
+          return res.status(200).json({
+            match_id: existing[0].id,
+            players: existing[0].player_ids,
+            already_existed: true,
+          });
+        }
+      }
+    }
+
     // Seat order is fixed at creation and never re-sorted: the rules modules use the index
     // in this array to decide who moves first (X before O), so a stable order is a rule,
     // not a detail. Creator sits first.
@@ -150,14 +249,27 @@ router.post(
       }
     }
 
-    const rows = await query<{ id: string }>(
-      `insert into game_matches (game_id, player_ids, created_by, status, options)
-       values ($1, $2::jsonb, $3, 'waiting', $4::jsonb)
+    const insert = await query<{ id: string }>(
+      `insert into game_matches
+         (game_id, player_ids, created_by, status, options,
+          mode, source_conversation_id, rules_version, schema_version, idempotency_key)
+       values ($1, $2::jsonb, $3, 'waiting', $4::jsonb,
+               $5, $6::uuid, coalesce($7::text, 'legacy'), coalesce($8::int, 1), $9)
        returning id`,
-      [game.id, JSON.stringify(players), userId, JSON.stringify(matchOptions)]
+      [
+        game.id,
+        JSON.stringify(players),
+        userId,
+        JSON.stringify(matchOptions),
+        ludoMode,
+        sourceConversationId,
+        ludoMode ? 'ludo-classic-1' : null,
+        ludoMode ? 2 : null,
+        idempotencyKey,
+      ]
     );
 
-    res.status(201).json({ match_id: rows[0].id, players });
+    res.status(201).json({ match_id: insert[0].id, players });
   })
 );
 
@@ -357,8 +469,168 @@ router.post(
         `update game_matches set status = 'abandoned', ended_at = now() where id = $1`,
         [matchId]
       );
+      // FIXED SEATS MAKE DECLINE UNAMBIGUOUS (§8.1): one decline cancels the waiting lobby
+      // for everyone. Every copy of the chat invite card flips to the cancelled state.
+      await publishInviteStatus(matchId, match.player_ids, 'declined');
     }
     res.json({ ok: true });
+  })
+);
+
+/**
+ * POST /games/matches/:id/forfeit — deliberate exit from an ACTIVE match (§7.1, §11.5).
+ *
+ * Distinct from `decline` (a lobby that never started) and from backgrounding the app
+ * (never a forfeit). In a duel the opponent wins; in four-player mode only this seat drops
+ * and play continues. The games service owns what a drop MEANS; this route owns whether the
+ * caller may ask.
+ */
+router.post(
+  '/matches/:id/forfeit',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id: userId } = (req as any).auth as { user_id: string };
+    const matchId = req.params.id;
+    if (!UUID_RE.test(matchId)) return res.status(400).json({ error: 'bad match id' });
+
+    const rows = await query<{ player_ids: string[]; status: string }>(
+      `select player_ids, status from game_matches where id = $1`,
+      [matchId]
+    );
+    const match = rows[0];
+    if (!match) return res.status(404).json({ error: 'no such match' });
+    if (!match.player_ids.includes(userId)) {
+      return res.status(403).json({ error: 'not a player in this match' });
+    }
+    if (match.status !== 'active') {
+      // A waiting lobby uses /decline; a finished match has nothing to forfeit.
+      return res.status(409).json({ error: 'match is not active' });
+    }
+
+    await publisher.publish(
+      GAMES_INPUT_CHANNEL,
+      JSON.stringify({ type: 'game_forfeit', match_id: matchId, from_user_id: userId })
+    );
+    res.json({ ok: true });
+  })
+);
+
+/**
+ * GET /games/matches/:id/snapshot?after_seq=N — the server snapshot is ALWAYS truth (§9).
+ *
+ * Served from the durable Postgres copy (backend/games persists every accepted turn-based
+ * transition before broadcasting), projected per viewer exactly as the live frames are.
+ * `204` when N is current, so a client that only needs confirmation pays no payload.
+ */
+router.get(
+  '/matches/:id/snapshot',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id: userId } = (req as any).auth as { user_id: string };
+    const matchId = req.params.id;
+    if (!UUID_RE.test(matchId)) return res.status(400).json({ error: 'bad match id' });
+
+    const afterSeq = Number(req.query.after_seq ?? -1);
+
+    const rows = await query<{
+      state: Record<string, unknown>;
+      secret: Record<string, unknown> | null;
+      seq: number;
+      player_ids: string[];
+      status: string;
+      source_conversation_id: string | null;
+      slug: string;
+    }>(
+      `select s.state, s.secret, s.seq, m.player_ids, m.status,
+              m.source_conversation_id, g.slug
+         from game_match_state s
+         join game_matches m on m.id = s.match_id
+         join games g on g.id = m.game_id
+        where s.match_id = $1`,
+      [matchId]
+    );
+    const row = rows[0];
+    if (!row || row.slug !== 'ludo') return res.status(404).json({ error: 'no such match' });
+
+    if (Number.isFinite(afterSeq) && afterSeq >= row.seq) {
+      return res.status(204).end();
+    }
+    if (!row.player_ids.includes(userId)) {
+      return res.status(403).json({ error: 'not a player in this match' });
+    }
+
+    // ── Per-viewer identity projection (§11.2), same policy as the games service. ──
+    const inner = row.state as { ludo?: Record<string, unknown> };
+    const ludoState = inner?.ludo;
+    if (!ludoState) return res.status(404).json({ error: 'no such match' });
+    const seatPlayers = (ludoState.players as (string | null)[]) ?? [];
+
+    const ids = seatPlayers.filter((p): p is string => p !== null);
+    let entitled = new Set<string>();
+    try {
+      if (row.source_conversation_id) {
+        const members = await query<{ user_id: string }>(
+          `select user_id from conversation_members
+            where conversation_id = $1::uuid and left_at is null and request_state = 'accepted'`,
+          [row.source_conversation_id]
+        );
+        entitled = new Set(members.map((m) => m.user_id));
+      }
+    } catch {
+      entitled = new Set();
+    }
+    const nameRows = await query<{ id: string; username: string | null; full_name: string | null }>(
+      `select id, username, full_name from users where id = any($1::uuid[])`,
+      [ids]
+    ).catch(() => [] as { id: string; username: string | null; full_name: string | null }[]);
+    const usernames = new Map(nameRows.map((r) => [r.id, r.username ? `@${r.username}` : r.full_name ?? '']));
+    let blockedPairs = new Set<string>();
+    try {
+      const blocks = await query<{ blocker: string; blocked: string }>(
+        `select blocker_user_id as blocker, blocked_user_id as blocked from user_blocks
+          where blocker_user_id = any($1::uuid[]) and blocked_user_id = any($1::uuid[])`,
+        [ids]
+      );
+      blockedPairs = new Set(blocks.flatMap((b) => [`${b.blocker}|${b.blocked}`, `${b.blocked}|${b.blocker}`]));
+    } catch {
+      blockedPairs = new Set();
+    }
+
+    const seats = ((ludoState.seats as Array<Record<string, unknown>>) ?? []).map((seatView) => {
+      const seat = seatView.seat as number;
+      const uid = seatPlayers[seat] ?? null;
+      if (uid === null || uid === userId) return seatView;
+      const maySee =
+        entitled.has(uid) && entitled.has(userId) && !blockedPairs.has(`${userId}|${uid}`);
+      return { ...seatView, displayName: maySee ? usernames.get(uid) ?? `Player ${seat + 1}` : `Player ${seat + 1}` };
+    });
+
+    const payload: Record<string, unknown> = {
+      schemaVersion: 2,
+      rulesVersion: ludoState.rulesVersion ?? 'ludo-classic-1',
+      mode: ludoState.mode,
+      status: row.status === 'finished' ? 'finished' : (ludoState.status ?? 'active'),
+      serverNow: Date.now(),
+      viewerSeat: seatPlayers.indexOf(userId),
+      seats,
+      tokensPerSeat: ludoState.tokensPerSeat ?? 4,
+      tokens: ludoState.tokens ?? [],
+      turn: ludoState.turn ?? null,
+      lastAction: ludoState.lastAction ?? null,
+      winnerSeat: ludoState.winnerSeat ?? null,
+      endReason: ludoState.endReason ?? null,
+      seedCommitment: null, // revealed by live frames; snapshots never re-derive secrets
+    };
+
+    res.json({
+      type: 'game_state',
+      match_id: matchId,
+      game: 'ludo',
+      schema_version: 2,
+      seq: row.seq,
+      server_now: Date.now(),
+      payload,
+    });
   })
 );
 

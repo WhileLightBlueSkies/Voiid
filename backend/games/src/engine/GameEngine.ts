@@ -31,7 +31,13 @@ export interface ApplyResult {
    * rejected input, so a client spamming invalid moves generates no fan-out — the
    * cheapest possible answer to a misbehaving client.
    */
-  accepted: boolean;
+   accepted: boolean;
+   /**
+    * Machine-readable rejection reason (LUDO_GAME_SPEC.md §7.2), relayed to the sender as a
+    * `game_command_rejected` frame. Illegal or adversarial input still broadcasts nothing —
+    * the rejection goes ONLY to the sender.
+    */
+   rejection?: string;
   /** Set once the game has ended; the runtime persists it and stops the match. */
   outcome?: GameOutcome;
   /**

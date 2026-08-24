@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { query } from '../db';
 import { isBlockedEitherWay } from '../blocking';
 import { requireAuth, invalidateAccountState, revokeAccountSessions } from '../auth';
+import { asyncHandler } from '../util';
 
 const router = Router();
 
@@ -29,6 +30,55 @@ router.get('/username-available', requireAuth, async (req, res) => {
   );
   res.json({ available: rows.length === 0 });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// User game preferences — first-run walkthrough markers (LUDO_GAME_SPEC.md §10).
+//
+// The walkthrough seen-state is PERSISTED CROSS-DEVICE here, while the client writes its own
+// local copy immediately without waiting on this call (a subway tunnel must not force a
+// player through seven steps twice). Versioned, so a future rules refresh can raise the bar.
+// ─────────────────────────────────────────────────────────────────────────────────
+
+// GET /users/me/preferences — everything this device should mirror locally.
+router.get('/me/preferences', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id: userId } = (req as any).auth as { user_id: string };
+  const rows = await query<{ preferences: Record<string, number> }>(
+    `select preferences from user_game_preferences where user_id = $1`,
+    [userId]
+  );
+  res.json({ preferences: rows[0]?.preferences ?? {} });
+}));
+
+// PUT /users/me/preferences/ludo-walkthrough — body: { version: 1 }.
+router.put('/me/preferences/ludo-walkthrough', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id: userId } = (req as any).auth as { user_id: string };
+  const version = req.body?.version;
+  if (!Number.isInteger(version) || (version as number) < 1 || (version as number) > 1000) {
+    return res.status(400).json({ error: 'version must be a positive integer' });
+  }
+  await query(
+    `insert into user_game_preferences (user_id, preferences, updated_at)
+     values ($1, jsonb_set('{}'::jsonb, '{ludoWalkthrough}', $2::jsonb), now())
+     on conflict (user_id) do update
+       set preferences = greatest(
+             user_game_preferences.preferences,
+             jsonb_set(user_game_preferences.preferences, '{ludoWalkthrough}', $2::jsonb)
+           ),
+           updated_at = now()`,
+    [userId, JSON.stringify(version)]
+  );
+  res.json({ ok: true });
+}));
+
+// GET /users/me/preferences/ludo-walkthrough — current seen version (0 = never seen).
+router.get('/me/preferences/ludo-walkthrough', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id: userId } = (req as any).auth as { user_id: string };
+  const rows = await query<{ v: number | null }>(
+    `select preferences->'ludoWalkthrough' as v from user_game_preferences where user_id = $1`,
+    [userId]
+  );
+  res.json({ version: rows[0]?.v ?? 0 });
+}));
 
 // GET /users/:id — public profile, with per-field privacy enforced.
 //   photo_privacy / about_privacy ∈ everyone | contacts | nobody. A 'contacts'-scoped
