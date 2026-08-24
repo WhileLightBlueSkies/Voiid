@@ -194,22 +194,55 @@ class CommunityService(context: Context) {
         ).communities
     }
 
+    data class RuleInput(val title: String, val detail: String?)
+
     /**
-     * Create one. The handle shares a single namespace with usernames and creator handles
+     * Create one. `handle` shares a single namespace with usernames and creator handles
      * (029/030), so the server may refuse it as taken — surfaced rather than pre-checked,
      * because only the database can settle that race.
+     * Everything the five-step wizard collects (046) is optional past handle/name, mirroring
+     * iOS: a community created without rules or extra Spaces is a real community.
      */
-    suspend fun create(handle: String, name: String, description: String?): CommunityCard {
+    suspend fun create(
+        handle: String,
+        name: String,
+        description: String?,
+        joinPolicy: String = "open",
+        discoverable: Boolean = true,
+        category: String? = null,
+        membersCanInvite: Boolean = true,
+        extraChannels: List<String> = emptyList(),
+        rules: List<RuleInput> = emptyList(),
+    ): CommunityCard {
         // Client-supplied id makes a retry idempotent, the same reasoning as clips.
         @Serializable
+        data class RuleBody(val title: String, val detail: String?)
+        @Serializable
         data class Body(
-            val id: String, val handle: String, val name: String, val description: String?,
+            val id: String,
+            val handle: String,
+            val name: String,
+            val description: String?,
+            val join_policy: String = "open",
+            val discoverable: Boolean = true,
+            val category: String? = null,
+            val members_can_invite: Boolean = true,
+            val extra_channels: List<String> = emptyList(),
+            val rules: List<RuleBody> = emptyList(),
         )
-        // encodeDefaults is irrelevant here — every field is explicitly supplied, so the
-        // repo's omitted-default hazard cannot apply.
+        // encodeDefaults matters here: the optional fields carry DEFAULTS the server must see
+        // (its own schema defaults differ), so an omitted-default would silently diverge from
+        // the iOS payload.
         val body = ApiClient.json.encodeToString(
             Body.serializer(),
-            Body(java.util.UUID.randomUUID().toString(), handle, name, description),
+            Body(
+                id = java.util.UUID.randomUUID().toString(),
+                handle = handle, name = name, description = description,
+                join_policy = joinPolicy, discoverable = discoverable,
+                category = category, members_can_invite = membersCanInvite,
+                extra_channels = extraChannels,
+                rules = rules.map { RuleBody(it.title, it.detail) },
+            ),
         )
         return api.requestAs<CommunityEnvelope>("POST", "communities", jsonBody = body).community
     }
@@ -217,5 +250,45 @@ class CommunityService(context: Context) {
     suspend fun join(communityId: String, inviteToken: String?): JoinResult {
         val body = ApiClient.json.encodeToString(JoinBody.serializer(), JoinBody(inviteToken))
         return api.requestAs("POST", "communities/$communityId/join", body)
+    }
+
+    /** One Space (channel) of the community. */
+    @Serializable
+    data class Channel(
+        val conversation_id: String,
+        val kind: String? = null,
+        val position: Int? = null,
+        val name: String? = null,
+    ) {
+        /** Announcement channels are host-writes-everyone-reads; chat is everyone. */
+        val isAnnouncement: Boolean get() = kind == "announcement"
+    }
+
+    suspend fun channels(communityId: String): List<Channel> {
+        @Serializable
+        data class Envelope(val channels: List<Channel> = emptyList())
+        return api.requestAs<Envelope>("GET", "communities/$communityId/channels").channels
+    }
+
+    /**
+     * One row of the roster. NO display name and no avatar: the server returns ids, and
+     * resolving them is UserDirectory's job.
+     */
+    @Serializable
+    data class Member(
+        val user_id: String,
+        val role: String? = null,
+        val state: String? = null,
+        val joined_at: String? = null,
+    ) {
+        val isOwner: Boolean get() = role == "owner"
+        val isAdmin: Boolean get() = role == "admin" || role == "owner"
+    }
+
+    /** `state` filters the roster. Anything but `active` is manager-only server-side. */
+    suspend fun members(communityId: String, state: String = "active"): List<Member> {
+        @Serializable
+        data class Envelope(val members: List<Member> = emptyList())
+        return api.requestAs<Envelope>("GET", "communities/$communityId/members?state=$state").members
     }
 }

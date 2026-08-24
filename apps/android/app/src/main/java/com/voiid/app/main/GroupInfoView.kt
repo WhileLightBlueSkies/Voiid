@@ -76,14 +76,36 @@ fun GroupInfoView(conversation: VConversation, chat: com.voiid.app.model.ChatSto
     var showAllMedia by remember { mutableStateOf(false) }
     var viewPhoto by remember { mutableStateOf(false) }
     var showAddMembers by remember { mutableStateOf(false) }
+    /** Server refusal for a member action — surfaced, not swallowed. Mirrors iOS `actionError`. */
+    var actionError by remember { mutableStateOf<String?>(null) }
+    var actionBusy by remember { mutableStateOf(false) }
 
     // Load REAL members from the server (user_id carried in VMember.id so admin ops target it).
     fun reloadMembers() {
         scope.launch {
-            runCatching { com.voiid.app.net.ChatService(context).fetchMembers(conversation.id) }.getOrNull()?.let { list ->
-                members.clear()
-                members.addAll(list.map { VMember(id = it.userId, name = it.name, phone = "", isYou = it.isYou) })
-            }
+            runCatching { com.voiid.app.net.ChatService(context).fetchMembers(conversation.id) }
+                .onSuccess { list ->
+                    members.clear()
+                    members.addAll(
+                        list.map {
+                            VMember(
+                                id = it.userId, name = it.name, phone = "",
+                                photoName = it.photoURL,
+                                role = it.role,
+                                isYou = it.isYou,
+                            )
+                        }
+                    )
+                    // "You" first, then the owner, then admins, then everyone else
+                    // alphabetically. Ranked rather than compared pairwise on `.admin`.
+                    // Mirrors iOS.
+                    fun rank(r: MemberRole): Int =
+                        if (r == MemberRole.OWNER) 0 else if (r == MemberRole.ADMIN) 1 else 2
+                    members.sortWith(
+                        compareBy<VMember> { !it.isYou }.thenBy { rank(it.role) }.thenBy { it.name.lowercase() }
+                    )
+                }
+                .onFailure { actionError = "Couldn't load members." }
         }
     }
     androidx.compose.runtime.LaunchedEffect(conversation.id) { reloadMembers() }
@@ -152,8 +174,13 @@ fun GroupInfoView(conversation: VConversation, chat: com.voiid.app.model.ChatSto
                 ProfileRow(Icons.Default.PersonAddAlt, "Add members", tint = VoiidColor.primary) { haptics.tap(); showAddMembers = true }
                 ProfileRow(Icons.Default.Link, "Invite via link", tint = VoiidColor.primary) { haptics.tap() }
                 HorizontalDivider(color = VoiidColor.divider.copy(alpha = 0.4f))
+                // Server refusals for member actions land here once the dialog has closed.
+                actionError?.let {
+                    Text(it, style = VoiidFont.rounded(13), color = VoiidColor.error)
+                    Spacer(Modifier.height(6.dp))
+                }
                 members.forEach { m ->
-                    MemberRow(m) { if (!m.isYou) { haptics.tap(); memberAction = m } }
+                    MemberRow(m) { if (!m.isYou) { haptics.tap(); actionError = null; memberAction = m } }
                 }
             }
 
@@ -168,52 +195,73 @@ fun GroupInfoView(conversation: VConversation, chat: com.voiid.app.model.ChatSto
     }
 
     memberAction?.let { m ->
-        AlertDialog(
-            onDismissRequest = { memberAction = null },
-            containerColor = VoiidColor.surfaceCard,
-            title = { Text(m.name, style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary) },
-            // AlertDialog gives two buttons; transfer is a third action, so it lives in the
-            // body. It is deliberately not folded into the role menu — handing the group over
-            // has no undo, and should not sit one mis-tap away from "make admin".
-            text = {
-                val myRole = members.firstOrNull { it.isYou }?.role ?: MemberRole.MEMBER
-                if (myRole == MemberRole.OWNER && m.role != MemberRole.OWNER) {
-                    TextButton(onClick = {
-                        chat.transferOwnership(conversation.id, m.id) { reloadMembers() }
-                        memberAction = null
-                    }) {
-                        Text("Transfer ownership to ${m.name}", color = VoiidColor.primary)
-                    }
-                }
-            },
-            confirmButton = {
-                // WIRED. This used to call `memberAction = null` and nothing else: the button
-                // rendered, said the right thing, and did nothing. The owner's role is not
-                // changeable here at all — that is a transfer, not a badge.
-                if (m.role != MemberRole.OWNER) {
-                    TextButton(onClick = {
-                        val next = if (m.role == MemberRole.ADMIN) MemberRole.MEMBER else MemberRole.ADMIN
-                        chat.setMemberRole(conversation.id, m.id, next) { reloadMembers() }
-                        memberAction = null
-                    }) {
-                        Text(
-                            if (m.role == MemberRole.ADMIN) "Dismiss as admin" else "Make group admin",
-                            color = VoiidColor.primary,
-                        )
-                    }
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    // Real MLS remove (rekeys the group so the removed member can't read on).
-                    chat.removeGroupMember(conversation.id, m.id) { reloadMembers() }
-                    members.removeAll { it.id == m.id }
+        val myRole = members.firstOrNull { it.isYou }?.role ?: MemberRole.MEMBER
+        com.voiid.app.ui.components.VoiidDialogCustom(
+            onDismissRequest = { if (!actionBusy) memberAction = null },
+        ) {
+            Spacer(Modifier.height(20.dp))
+            Text(m.name, style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+            // The server decides whether the caller may act — an admin can promote, but only
+            // the OWNER can dismiss an admin — so the action is shown and a refusal is
+            // SURFACED rather than hidden, which would leave an admin wondering why a button
+            // they can see refuses to work. Mirrors iOS. Transfer stays owner-only: handing
+            // the group over has no undo.
+            Spacer(Modifier.height(6.dp))
+            if (myRole == MemberRole.OWNER && m.role != MemberRole.OWNER) {
+                com.voiid.app.ui.components.VoiidDialogAction("Transfer ownership to ${m.name}") {
+                    if (actionBusy) return@VoiidDialogAction
+                    actionBusy = true; actionError = null
+                    chat.transferOwnership(
+                        conversation.id, m.id,
+                        onDone = { actionBusy = false },
+                        onError = { actionError = it; actionBusy = false },
+                    )
+                    reloadMembers()
                     memberAction = null
-                }) {
-                    Text("Remove from group", color = VoiidColor.error)
                 }
-            },
-        )
+            }
+            if (m.role != MemberRole.OWNER) {
+                com.voiid.app.ui.components.VoiidDialogAction(
+                    if (m.role == MemberRole.ADMIN) "Dismiss as admin" else "Make group admin",
+                ) {
+                    if (actionBusy) return@VoiidDialogAction
+                    val next = if (m.role == MemberRole.ADMIN) MemberRole.MEMBER else MemberRole.ADMIN
+                    actionBusy = true; actionError = null
+                    chat.setMemberRole(
+                        conversation.id, m.id, next,
+                        onDone = { actionBusy = false },
+                        onError = { actionError = it; actionBusy = false },
+                    )
+                    // Reload rather than mutate locally: the server may refuse, and a
+                    // local flip would show a role the group does not actually have.
+                    reloadMembers()
+                    memberAction = null
+                }
+            }
+            com.voiid.app.ui.components.VoiidDialogAction(
+                if (actionBusy) "Removing…" else "Remove from group",
+                destructive = true,
+                enabled = !actionBusy,
+            ) {
+                if (actionBusy) return@VoiidDialogAction
+                actionBusy = true; actionError = null
+                // Real MLS remove (rekeys the group so the removed member can't read on).
+                // NOT optimistic: the row leaves only when the removal succeeds.
+                chat.removeGroupMember(
+                    conversation.id, m.id,
+                    onDone = { actionBusy = false; reloadMembers() },
+                    onError = { msg -> actionError = msg; actionBusy = false },
+                )
+                memberAction = null
+            }
+            actionError?.let {
+                Text(it, style = VoiidFont.rounded(13), color = VoiidColor.error)
+            }
+            com.voiid.app.ui.components.VoiidDialogAction("Cancel", enabled = !actionBusy) {
+                memberAction = null
+            }
+            Spacer(Modifier.height(8.dp))
+        }
     }
 
     if (showAddMembers) {

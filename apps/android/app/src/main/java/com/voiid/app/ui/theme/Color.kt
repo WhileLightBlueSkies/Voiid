@@ -126,6 +126,18 @@ object VoiidColor {
     val success: Color @Composable @ReadOnlyComposable get() = pick(VoiidPalette.SuccessLight, VoiidPalette.SuccessDark)
     val error: Color @Composable @ReadOnlyComposable get() = pick(VoiidPalette.ErrorLight, VoiidPalette.ErrorDark)
     val warning: Color @Composable @ReadOnlyComposable get() = pick(VoiidPalette.WarningLight, VoiidPalette.WarningDark)
+
+    // ── SURFACE DEPTH & ACCENT STATES (iOS parity; audit design-system table) ──────────
+    /// One step BELOW the ground — the deepest backdrop, for sheets/dialog chrome.
+    val surfaceDeep: Color @Composable @ReadOnlyComposable get() = pick(VoiidPalette.SurfaceDeepLight, VoiidPalette.SurfaceDeepDark)
+    /// One step ABOVE the card — raised rows and floating chips.
+    val surfaceRaised: Color @Composable @ReadOnlyComposable get() = pick(VoiidPalette.SurfaceRaisedLight, VoiidPalette.SurfaceRaisedDark)
+    /// Pressed fill for primary buttons/chips (iOS `primaryPressed`).
+    val primaryPressed: Color @Composable @ReadOnlyComposable get() = pick(VoiidPalette.PressedLight, VoiidPalette.PressedDark)
+    /// Selected/tinted background wash behind selected rows (iOS `accentTint`).
+    val accentTint: Color @Composable @ReadOnlyComposable get() = pick(VoiidPalette.TintLight, VoiidPalette.TintDark)
+    /// Ink used ON the accent tint (iOS `accentInk`).
+    val accentInk: Color @Composable @ReadOnlyComposable get() = pick(VoiidPalette.InkLight, VoiidPalette.InkDark)
     val info: Color @Composable @ReadOnlyComposable get() = pick(VoiidPalette.MapLight, VoiidPalette.MapDark)
 
     /** Retained for call sites predating theme-aware tokens; now simply the primary text. */
@@ -236,12 +248,163 @@ object VoiidPalette {
 
     // Status. Same rule as the domains: light values are darkened variants, because the
     // palette's brights are designed for near-black.
-    val SuccessLight = Color(0xFF15803D)
-    val SuccessDark = Color(0xFF22C55E)
-    val ErrorLight = Color(0xFFDC2626)
-    val ErrorDark = Color(0xFFEF4444)
+    // Aligned to iOS Theme.swift — the two platforms must state the same status with the
+    // same hues (audit: "Change Android palette to iOS values").
+    // Surface depth + accent states (iOS Theme.swift 68-70 / 110-129).
+    val SurfaceDeepLight = Color(0xFFEDF1F1)
+    val SurfaceDeepDark = Color(0xFF080C0E)
+    val SurfaceRaisedLight = Color(0xFFEDF1F1)
+    val SurfaceRaisedDark = Color(0xFF182124)
+    val PressedLight = Color(0xFF0E6E77)
+    val PressedDark = Color(0xFF0E6E77)
+    val TintLight = Color(0xFFD9EFF0)
+    val TintDark = Color(0xFF123538)
+    val InkLight = Color(0xFF0B4A50)
+    val InkDark = Color(0xFF9AD6DA)
+
+    val SuccessLight = Color(0xFF238A58)
+    val SuccessDark = Color(0xFF2FA36B)
+    val ErrorLight = Color(0xFFD83A40)
+    val ErrorDark = Color(0xFFE5484D)
     val WarningLight = Color(0xFFA16207)
     val WarningDark = Color(0xFFFACC15)
     val InfoLight = Color(0xFF1D4ED8)
     val InfoDark = Color(0xFF3B82F6)
+}
+
+/**
+ * Ludo game tokens (LUDO_GAME_SPEC.md §2). Mirrors packages/design-tokens/tokens.json →
+ * color.game.ludo and iOS `LudoColor` value for value. Graphite board cells; player hues are
+ * lifted/desaturated in dark so pieces stay distinct without glowing. THE DIE HAS ONE NEUTRAL
+ * BODY in every state — only its pips take the active hue.
+ */
+object LudoPalette {
+    @Composable
+    private fun pair(light: Long, dark: Long): Color =
+        if (LocalVoiidDark.current) Color(dark) else Color(light)
+
+    @Composable fun screenBackground() = pair(0xFFF6F8F8, 0xFF080C0E)
+    @Composable fun boardSurface() = pair(0xFFF3F4F6, 0xFF15171C)
+    @Composable fun trackCellFill() = pair(0xFFFFFFFF, 0xFF202229)
+    @Composable fun trackCellBorder() = pair(0xFFC9CDD5, 0xFF444852)
+    @Composable fun trackCellPressed() = pair(0xFFE7EAEE, 0xFF2A2D35)
+    @Composable fun unusedCellFill() = pair(0xFFF3F4F6, 0xFF15171C)
+    @Composable fun safeCellFill() = pair(0xFFE8EBF0, 0xFF2A2D35)
+    @Composable fun safeCellStar() = pair(0xFF626A76, 0xFFC2C7D0)
+
+    // Player hues — pawn, lane, border, pips. Fixed per seat, never derived at runtime.
+    @Composable fun red() = pair(0xFFD94B47, 0xFFF06460)
+    @Composable fun green() = pair(0xFF248A4B, 0xFF56B870)
+    @Composable fun yellow() = pair(0xFFC99A00, 0xFFF1C84B)
+    @Composable fun blue() = pair(0xFF2F6FD6, 0xFF5B8DEF)
+
+    @Composable fun redYard() = pair(0xFFF8E4E3, 0xFF2D2022)
+    @Composable fun greenYard() = pair(0xFFE2F0E7, 0xFF1B2A22)
+    @Composable fun yellowYard() = pair(0xFFF7EFCF, 0xFF2C2819)
+    @Composable fun blueYard() = pair(0xFFE3EBFA, 0xFF1C2431)
+
+    @Composable fun redHomeLane() = pair(0xFFE88C89, 0xFFB84D4C)
+    @Composable fun greenHomeLane() = pair(0xFF72B58B, 0xFF3C7F50)
+    @Composable fun yellowHomeLane() = pair(0xFFE3C558, 0xFFA98F3A)
+    @Composable fun blueHomeLane() = pair(0xFF7FA4E6, 0xFF446CB4)
+
+    @Composable fun yardPocket() = pair(0xFFFFFFFF, 0xFF202229)
+    @Composable fun yardPocketBorder() = pair(0xFFD4D8DF, 0xFF3D414B)
+    @Composable fun inactiveYard() = pair(0xFFE7E9ED, 0xFF202229)
+
+    @Composable fun dieBody() = pair(0xFFF8F8F9, 0xFF1B1D24)
+    @Composable fun dieEdge() = pair(0xFFC6CAD2, 0xFF4A4E58)
+    @Composable fun dieNeutralPip() = pair(0xFF69717D, 0xFFB2B8C3)
+
+    @Composable fun textPrimary() = pair(0xFF101617, 0xFFF6F8F8)
+    @Composable fun textSecondary() = pair(0xFF5D696C, 0xFFA6B0B2)
+    @Composable fun podSurface() = pair(0xFFFFFFFF, 0xFF171C1F)
+    @Composable fun podBorder() = pair(0xFFD7DEDF, 0xFF2D383C)
+    @Composable fun timerTrack() = pair(0xFFD9DDE3, 0xFF3A3E47)
+    @Composable fun timerWarning() = pair(0xFFB07818, 0xFFE0A83C)
+    @Composable fun timerCritical() = pair(0xFFC0392F, 0xFFEF7A6B)
+    @Composable fun focusRing() = pair(0xFF13828C, 0xFF68B8BD)
+    @Composable fun scrim() = pair(0x00000052, 0x00000070)
+    @Composable fun shadow() = pair(0x00000024, 0x00000066)
+
+    /** Seat order helper — the fixed physical seats of §3. */
+    @Composable fun hue(seat: Int): Color = when (seat % 4) {
+        0 -> red(); 1 -> green(); 2 -> yellow(); else -> blue()
+    }
+    @Composable fun yard(seat: Int): Color = when (seat % 4) {
+        0 -> redYard(); 1 -> greenYard(); 2 -> yellowYard(); else -> blueYard()
+    }
+    @Composable fun homeLane(seat: Int): Color = when (seat % 4) {
+        0 -> redHomeLane(); 1 -> greenHomeLane(); 2 -> yellowHomeLane(); else -> blueHomeLane()
+    }
+    @Composable fun centerTriangle(seat: Int): Color = hue(seat)
+
+}
+
+/** Raw resolved palette for NON-composable call sites (canvas painters), like [VoiidPalette]. */
+fun ludoPaletteFor(dark: Boolean): LudoThemeColors =
+    if (dark) LudoThemeColors.dark() else LudoThemeColors.light()
+
+/**
+ * Fully-resolved Ludo palette for one theme. Canvas draw code receives this ONCE from the
+ * composable layer — draw functions never read composition state.
+ */
+data class LudoThemeColors(
+    val screenBackground: Int, val boardSurface: Int,
+    val trackCellFill: Int, val trackCellBorder: Int, val trackCellPressed: Int,
+    val unusedCellFill: Int, val safeCellFill: Int, val safeCellStar: Int,
+    val playerHues: List<Int>,
+    val yards: List<Int>, val homeLanes: List<Int>,
+    val yardPocket: Int, val yardPocketBorder: Int, val inactiveYard: Int,
+    val dieBody: Int, val dieEdge: Int, val dieNeutralPip: Int,
+    val textPrimary: Int, val textSecondary: Int,
+    val podSurface: Int, val podBorder: Int,
+    val timerTrack: Int, val timerWarning: Int, val timerCritical: Int,
+    val focusRing: Int,
+) {
+    fun c(v: Int): Color = Color(v.toULong().toLong().let { if (v > 0xFFFFFF) v else (0xFF000000L or v.toLong()) }.toInt())
+
+    fun hue(seat: Int): Color = c(playerHues[seat % 4])
+    fun yard(seat: Int): Color = c(yards[seat % 4])
+    fun homeLane(seat: Int): Color = c(homeLanes[seat % 4])
+    fun centerTriangle(seat: Int): Color = hue(seat)
+
+    companion object {
+        private const val R = 0
+        fun light(): LudoThemeColors = LudoThemeColors(
+            screenBackground = 0xFFF6F8F8.toInt(), boardSurface = 0xFFF3F4F6.toInt(),
+            trackCellFill = 0xFFFFFFFF.toInt(), trackCellBorder = 0xFFC9CDD5.toInt(),
+            trackCellPressed = 0xFFE7EAEE.toInt(), unusedCellFill = 0xFFF3F4F6.toInt(),
+            safeCellFill = 0xFFE8EBF0.toInt(), safeCellStar = 0xFF626A76.toInt(),
+            playerHues = listOf(0xFFD94B47.toInt(), 0xFF248A4B.toInt(), 0xFFC99A00.toInt(), 0xFF2F6FD6.toInt()),
+            yards = listOf(0xFFF8E4E3.toInt(), 0xFFE2F0E7.toInt(), 0xFFF7EFCF.toInt(), 0xFFE3EBFA.toInt()),
+            homeLanes = listOf(0xFFE88C89.toInt(), 0xFF72B58B.toInt(), 0xFFE3C558.toInt(), 0xFF7FA4E6.toInt()),
+            yardPocket = 0xFFFFFFFF.toInt(), yardPocketBorder = 0xFFD4D8DF.toInt(),
+            inactiveYard = 0xFFE7E9ED.toInt(),
+            dieBody = 0xFFF8F8F9.toInt(), dieEdge = 0xFFC6CAD2.toInt(), dieNeutralPip = 0xFF69717D.toInt(),
+            textPrimary = 0xFF101617.toInt(), textSecondary = 0xFF5D696C.toInt(),
+            podSurface = 0xFFFFFFFF.toInt(), podBorder = 0xFFD7DEDF.toInt(),
+            timerTrack = 0xFFD9DDE3.toInt(), timerWarning = 0xFFB07818.toInt(),
+            timerCritical = 0xFFC0392F.toInt(),
+            focusRing = 0xFF13828C.toInt(),
+        )
+
+        fun dark(): LudoThemeColors = LudoThemeColors(
+            screenBackground = 0xFF080C0E.toInt(), boardSurface = 0xFF15171C.toInt(),
+            trackCellFill = 0xFF202229.toInt(), trackCellBorder = 0xFF444852.toInt(),
+            trackCellPressed = 0xFF2A2D35.toInt(), unusedCellFill = 0xFF15171C.toInt(),
+            safeCellFill = 0xFF2A2D35.toInt(), safeCellStar = 0xFFC2C7D0.toInt(),
+            playerHues = listOf(0xFFF06460.toInt(), 0xFF56B870.toInt(), 0xFFF1C84B.toInt(), 0xFF5B8DEF.toInt()),
+            yards = listOf(0xFF2D2022.toInt(), 0xFF1B2A22.toInt(), 0xFF2C2819.toInt(), 0xFF1C2431.toInt()),
+            homeLanes = listOf(0xFFB84D4C.toInt(), 0xFF3C7F50.toInt(), 0xFFA98F3A.toInt(), 0xFF446CB4.toInt()),
+            yardPocket = 0xFF202229.toInt(), yardPocketBorder = 0xFF3D414B.toInt(),
+            inactiveYard = 0xFF202229.toInt(),
+            dieBody = 0xFF1B1D24.toInt(), dieEdge = 0xFF4A4E58.toInt(), dieNeutralPip = 0xFFB2B8C3.toInt(),
+            textPrimary = 0xFFF6F8F8.toInt(), textSecondary = 0xFFA6B0B2.toInt(),
+            podSurface = 0xFF171C1F.toInt(), podBorder = 0xFF2D383C.toInt(),
+            timerTrack = 0xFF3A3E47.toInt(), timerWarning = 0xFFE0A83C.toInt(),
+            timerCritical = 0xFFEF7A6B.toInt(),
+            focusRing = 0xFF68B8BD.toInt(),
+        )
+    }
 }

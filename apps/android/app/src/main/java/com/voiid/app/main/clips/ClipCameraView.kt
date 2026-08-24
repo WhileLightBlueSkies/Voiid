@@ -138,6 +138,9 @@ fun ClipCameraView(
     // applied at capture — re-timing between takes would mean a transcode mid-shoot and would
     // discard the original footage.
     val segments = remember { mutableStateListOf<ClipTake>() }
+
+    // Library import while takes exist → confirm the discard, naming the count.
+    var showReplaceTakes by remember { mutableStateOf(false) }
     var errorText by remember { mutableStateOf<String?>(null) }
 
     // The rate the NEXT take will be recorded at. Never changes a take already on disk.
@@ -610,7 +613,11 @@ fun ClipCameraView(
                         onPickGallery != null && !isRecording -> {
                             GalleryButton(galleryThumb) {
                                 haptics.tap()
-                                onPickGallery()
+                                // Unmerged takes are one tap away from being THROWN AWAY by a
+                                // library import, so they get a say: iOS asks before
+                                // replacing. With nothing banked, import straight through.
+                                if (segments.isEmpty()) onPickGallery?.invoke()
+                                else showReplaceTakes = true
                             }
                         }
                     }
@@ -650,6 +657,20 @@ fun ClipCameraView(
                 }
             }
         }
+    }
+
+    if (showReplaceTakes) {
+        com.voiid.app.ui.components.VoiidDialog(
+            onDismissRequest = { showReplaceTakes = false },
+            title = "Import from gallery?",
+            body = "This discards your ${segments.size} unmerged ${if (segments.size == 1) "take" else "takes"}.",
+            confirmLabel = "Discard & pick",
+            onConfirm = {
+                showReplaceTakes = false
+                onPickGallery?.invoke()
+            },
+            confirmDestructive = true,
+        )
     }
 }
 

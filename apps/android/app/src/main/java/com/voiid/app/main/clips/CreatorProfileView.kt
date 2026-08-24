@@ -37,9 +37,7 @@ import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -64,6 +62,8 @@ import com.voiid.app.net.CreatorService
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.VoiidStyledField
 import com.voiid.app.ui.components.softClickable
+import com.voiid.app.ui.components.voiidPullRefresh
+import com.voiid.app.ui.components.rememberVoiidPullRefresh
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
@@ -97,6 +97,10 @@ fun CreatorProfileView(
     val rows = creators.clipsFor(handle)
     var showEdit by remember { mutableStateOf(false) }
 
+    val pull = rememberVoiidPullRefresh {
+        creators.loadProfile(handle)
+        creators.refreshClips(handle)
+    }
     LaunchedEffect(handle) {
         // Only fetch if not already cached — arriving from a feed tile usually means it is.
         if (creators.cachedProfile(handle) == null) creators.loadProfile(handle)
@@ -112,7 +116,7 @@ fun CreatorProfileView(
 
     val entrance = rememberGridEntrance(ready = rows.isNotEmpty())
 
-    Column(Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding()) {
+    Column(Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding().voiidPullRefresh(pull, VoiidColor.primary)) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -495,7 +499,6 @@ fun CreatorEditSheet(
 ) {
     val haptics = LocalVoiidHaptics.current
     val scope = rememberCoroutineScope()
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     var displayName by remember { mutableStateOf(profile.display_name ?: "") }
     var bio by remember { mutableStateOf(profile.bio ?: "") }
@@ -503,10 +506,10 @@ fun CreatorEditSheet(
     var saving by remember { mutableStateOf(false) }
     var errorText by remember { mutableStateOf<String?>(null) }
 
-    ModalBottomSheet(
-        onDismissRequest = { if (!saving) onDismiss() },
-        sheetState = sheetState,
-        containerColor = VoiidColor.background,
+    com.voiid.app.ui.components.VoiidSheet(
+        visible = true,
+        onDismiss = { if (!saving) onDismiss() },
+        detents = listOf(com.voiid.app.ui.components.VoiidDetent.Medium),
     ) {
         Column(
             Modifier

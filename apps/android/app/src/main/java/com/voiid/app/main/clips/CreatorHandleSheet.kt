@@ -25,9 +25,7 @@ import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -75,7 +73,6 @@ fun CreatorHandleSheet(
 ) {
     val haptics = LocalVoiidHaptics.current
     val scope = rememberCoroutineScope()
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     var handle by remember { mutableStateOf("") }
     var displayName by remember { mutableStateOf("") }
@@ -95,10 +92,10 @@ fun CreatorHandleSheet(
 
     LaunchedEffect(Unit) { creators.resetHandleState() }
 
-    ModalBottomSheet(
-        onDismissRequest = { if (!submitting) onDismiss() },
-        sheetState = sheetState,
-        containerColor = VoiidColor.background,
+    com.voiid.app.ui.components.VoiidSheet(
+        visible = true,
+        onDismiss = { if (!submitting) onDismiss() },
+        detents = listOf(com.voiid.app.ui.components.VoiidDetent.Medium),
     ) {
         Column(
             Modifier

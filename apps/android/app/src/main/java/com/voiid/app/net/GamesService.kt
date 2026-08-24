@@ -2,6 +2,10 @@ package com.voiid.app.net
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * Match lifecycle only (docs/GAMES.md §3): catalog, create, join, history. The durable,
@@ -32,7 +36,7 @@ class GamesService(private val api: ApiClient) {
     private data class CatalogResponse(val games: List<CatalogGame>)
 
     @Serializable
-    private data class CreateResponse(val match_id: String, val players: List<String>)
+    data class CreateResponse(val match_id: String, val players: List<String>)
 
     /**
      * One opponent's head-to-head record with the caller. Scoped to people actually
@@ -208,5 +212,62 @@ class GamesService(private val api: ApiClient) {
         val skinField = if (skin != null) "\"skin\":\"$skin\"" else ""
         val body = api.request("POST", "games/daily", "{$skinField}")
         return json.decodeFromString<DailyStartResponse>(body).match_id
+    }
+
+    // ── LUDO SCHEMA V2 (LUDO_GAME_SPEC.md §7.1) ─────────────────────────────────────────
+
+    /**
+     * Create a Ludo match from a chat conversation. The SERVER re-verifies membership,
+     * blocks and exact seat counts — the client list is convenience only.
+     *
+     * @param idempotencyKey stable per create attempt; a retry returns the SAME match.
+     */
+    suspend fun createLudo(
+        mode: String,
+        opponentIds: List<String>,
+        conversationId: String,
+        gameName: String,
+        idempotencyKey: String? = null,
+    ): CreateResponse {
+        require(mode == "duel" || mode == "four") { "mode must be duel or four" }
+        val opponents = opponentIds.joinToString(",") { "\"" + it + "\"" }
+        val idem = if (idempotencyKey != null) ",\"idempotency_key\":\"$idempotencyKey\"" else ""
+        val body = api.request(
+            "POST", "games/matches",
+            """{"slug":"ludo","mode":"$mode","opponent_ids":[$opponents],""" +
+                """"conversation_id":"$conversationId","options":{"mode":"$mode"},""" +
+                """"game_name":"$gameName"$idem}""",
+        )
+        return json.decodeFromString<CreateResponse>(body)
+    }
+
+    class LudoSnapshot(val seq: Int, val payload: JsonObject)
+
+    /** Durable truth for one match, projected for THIS viewer (§9). */
+    suspend fun ludoSnapshot(matchId: String): LudoSnapshot {
+        val body = api.request("GET", "games/matches/$matchId/snapshot")
+        val obj = json.parseToJsonElement(body).jsonObject
+        val seq = obj["seq"]?.jsonPrimitive?.intOrNull ?: 0
+        val payload = obj["payload"] as? JsonObject ?: JsonObject(emptyMap())
+        return LudoSnapshot(seq, payload)
+    }
+
+    /** Deliberate exit from an ACTIVE match; backgrounding is never this call (§11.5). */
+    suspend fun forfeit(matchId: String) {
+        api.request("POST", "games/matches/$matchId/forfeit", "{}")
+    }
+
+    /** Persist the first-run walkthrough seen version cross-device (§10). Fire-and-forget upstream. */
+    suspend fun setWalkthroughSeen(version: Int) {
+        api.request(
+            "PUT", "users/me/preferences/ludo-walkthrough",
+            """{"version":$version}""",
+        )
+    }
+
+    suspend fun walkthroughSeen(): Int {
+        val body = api.request("GET", "users/me/preferences/ludo-walkthrough")
+        val v = json.parseToJsonElement(body).jsonObject["version"]?.jsonPrimitive?.intOrNull ?: 0
+        return v
     }
 }

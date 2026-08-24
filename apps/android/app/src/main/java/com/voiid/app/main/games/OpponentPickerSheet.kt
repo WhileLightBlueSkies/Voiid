@@ -13,9 +13,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -48,17 +46,16 @@ fun OpponentPickerSheet(
     onPick: (VConversation) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     // Only direct chats where we actually know the peer's user id — without it there is
     // nobody to name as the opponent.
     val candidates = conversations.filter {
         it.type == ConversationType.DIRECT && !it.peerUserId.isNullOrBlank()
     }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = VoiidColor.background,
+    com.voiid.app.ui.components.VoiidSheet(
+        visible = true,
+        onDismiss = onDismiss,
+        detents = listOf(com.voiid.app.ui.components.VoiidDetent.Medium, com.voiid.app.ui.components.VoiidDetent.Large),
     ) {
         Column(Modifier.fillMaxWidth().padding(horizontal = VoiidSpacing.md)) {
             Text(

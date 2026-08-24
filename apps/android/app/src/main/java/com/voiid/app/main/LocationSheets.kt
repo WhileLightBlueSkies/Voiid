@@ -20,9 +20,7 @@ import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import com.google.maps.android.compose.GoogleMap
 import com.google.maps.android.compose.MapUiSettings
 import com.google.maps.android.compose.rememberCameraPositionState
@@ -73,7 +71,6 @@ fun LocationComposeSheet(conv: VConversation, onDismiss: () -> Unit) {
     val context = LocalContext.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val permissions = rememberLocationPermissions()
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     val isGroup = conv.type == ConversationType.GROUP
     val target = ShareTarget(conversationId = conv.id, isGroup = isGroup, peerUserId = conv.peerUserId)
@@ -131,7 +128,7 @@ fun LocationComposeSheet(conv: VConversation, onDismiss: () -> Unit) {
         }
     }
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState, containerColor = VoiidColor.background) {
+    com.voiid.app.ui.components.VoiidSheet(visible = true, onDismiss = onDismiss, detents = listOf(com.voiid.app.ui.components.VoiidDetent.Medium, com.voiid.app.ui.components.VoiidDetent.Large),) {
         Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 24.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Icon(Icons.Default.LocationOn, null, tint = VoiidColor.primary, modifier = Modifier.size(22.dp))

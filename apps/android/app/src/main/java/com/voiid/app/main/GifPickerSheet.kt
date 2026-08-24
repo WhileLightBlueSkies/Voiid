@@ -26,9 +26,7 @@ import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -83,7 +81,6 @@ fun GifPickerSheet(
     val context = LocalContext.current
     val haptics = LocalVoiidHaptics.current
     val scope = rememberCoroutineScope()
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     var query by remember { mutableStateOf("") }
     var gifs by remember { mutableStateOf<List<GifService.Gif>>(emptyList()) }
@@ -113,10 +110,10 @@ fun GifPickerSheet(
 
     LaunchedEffect(Unit) { load(null) }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = VoiidColor.background,
+    com.voiid.app.ui.components.VoiidSheet(
+        visible = true,
+        onDismiss = onDismiss,
+        detents = listOf(com.voiid.app.ui.components.VoiidDetent.Medium, com.voiid.app.ui.components.VoiidDetent.Large),
     ) {
         Column(Modifier.fillMaxSize().padding(horizontal = 16.dp).padding(bottom = 16.dp)) {
             Row(

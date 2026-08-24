@@ -78,6 +78,7 @@ fun NewGroupScreen(
     var name by remember { mutableStateOf("") }
     val selected = remember { mutableStateListOf<String>() }   // selected user ids
     var atCapacity by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
 
     fun runDiscovery(force: Boolean = false) {
         scope.launch {
@@ -148,6 +149,17 @@ fun NewGroupScreen(
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
         )
 
+        // Filter the picker through search — iOS `.searchable` behaviour.
+        com.voiid.app.ui.components.VoiidSearchField(
+            query = query,
+            onQueryChange = { query = it },
+            placeholder = "Search contacts",
+            modifier = Modifier.padding(horizontal = 20.dp).padding(bottom = 8.dp),
+        )
+        val shownMatches = matches.filter {
+            query.isBlank() || it.displayName.contains(query.trim(), ignoreCase = true)
+        }
+
         when {
             loading -> Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator(color = VoiidColor.primary) }
             error != null -> Box(Modifier.fillMaxSize().padding(32.dp), Alignment.Center) {
@@ -159,7 +171,7 @@ fun NewGroupScreen(
                 }
             }
             else -> LazyColumn(Modifier.fillMaxSize()) {
-                items(matches, key = { it.userId }) { c ->
+                items(shownMatches, key = { it.userId }) { c ->
                     val isSel = selected.contains(c.userId)
                     Row(
                         Modifier.fillMaxWidth().clickable {
@@ -201,21 +213,13 @@ fun NewGroupScreen(
         }
     }
     if (atCapacity) {
-        androidx.compose.material3.AlertDialog(
+        com.voiid.app.ui.components.VoiidDialog(
             onDismissRequest = { atCapacity = false },
-            containerColor = VoiidColor.surfaceCard,
-            title = { Text("That's the limit", color = VoiidColor.textPrimary) },
-            text = {
-                Text(
-                    "A group can have up to ${MAX_GROUP_OTHERS + 1} people, including you.",
-                    color = VoiidColor.textSecondary,
-                )
-            },
-            confirmButton = {
-                androidx.compose.material3.TextButton(onClick = { atCapacity = false }) {
-                    Text("OK", color = VoiidColor.primary)
-                }
-            },
+            title = "That's the limit",
+            body = "A group can have up to ${MAX_GROUP_OTHERS + 1} people, including you.",
+            confirmLabel = "OK",
+            onConfirm = { atCapacity = false },
+            cancelLabel = null,
         )
     }
 

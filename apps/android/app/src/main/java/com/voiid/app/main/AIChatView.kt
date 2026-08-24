@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -36,6 +37,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
@@ -59,12 +61,14 @@ fun AIChatView(ai: AIStore) {
         if (count > 0) listState.animateScrollToItem(count - 1)
     }
 
+    // Shared translucent-chrome alpha with the tab bar (centralised there as
+    // TAB_SURFACE_ALPHA) — iOS renders this header/input in .ultraThinMaterial.
     Column(Modifier.fillMaxSize().background(VoiidColor.background)) {
         // Header
         Row(
             Modifier
                 .fillMaxWidth()
-                .background(VoiidColor.background)
+                .background(VoiidColor.background.copy(alpha = 0.86f))
                 .statusBarsPadding()
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -91,7 +95,7 @@ fun AIChatView(ai: AIStore) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .background(VoiidColor.background)
+                .background(VoiidColor.background.copy(alpha = 0.86f))
                 // iOS pads the input bar bottom by 80 to clear the floating tab bar.
                 .padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 80.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -138,6 +142,11 @@ fun AIChatView(ai: AIStore) {
 
 @Composable
 private fun AiBubble(m: VAIMessage) {
+    // INSERTION: a short scale+fade on first composition — iOS inserts bubbles the same way.
+    // Deliberately small (0.98→1) and non-vestibular: it reads as arrival, not travel, and is
+    // exactly the motion Reduce Motion permits because removing ALL feedback would read as lag.
+    val appeared = remember { androidx.compose.animation.core.Animatable(0f) }
+    LaunchedEffect(Unit) { appeared.animateTo(1f, tween(durationMillis = 140)) }
     Row(Modifier.fillMaxWidth()) {
         if (m.isUser) Spacer(Modifier.weight(1f))
         Text(
@@ -145,6 +154,11 @@ private fun AiBubble(m: VAIMessage) {
             style = VoiidFont.body,
             color = VoiidColor.textPrimary,
             modifier = Modifier
+                .graphicsLayer {
+                    scaleX = 0.98f + 0.02f * appeared.value
+                    scaleY = 0.98f + 0.02f * appeared.value
+                    alpha = appeared.value
+                }
                 .widthIn(max = 300.dp)
                 .clip(bubbleShape(m.isUser))
                 .background(if (m.isUser) VoiidColor.bubbleSent else VoiidColor.bubbleReceived)

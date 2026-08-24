@@ -49,14 +49,22 @@ object VoiidFont {
     fun logo(size: Int): TextStyle =
         TextStyle(fontFamily = Urbanist, fontSize = size.sp, fontWeight = FontWeight.Bold)
 
-    val display  = rounded(34, FontWeight.Bold)
-    val title    = rounded(22, FontWeight.SemiBold)
-    val headline = rounded(17, FontWeight.SemiBold)
-    val body     = rounded(17, FontWeight.Normal)
-    val callout  = rounded(16, FontWeight.Normal)
-    val subhead  = rounded(15, FontWeight.Normal)
-    val footnote = rounded(13, FontWeight.Normal)
-    val caption  = rounded(12, FontWeight.Normal)
+    /**
+     * SEMANTIC styles with explicit line heights and tracking — the audit's P2 ask. Sizes are
+     * the iOS scale (34/22/17/17/16/15/13/12); line height and letter spacing follow iOS
+     * display-type convention: leading tightens as sizes grow, and NEGATIVE tracking applies
+     * from headline upward because letters read progressively further apart as they grow
+     * (-0.018em at 30sp is already used on the onboarding title). Body and below keep default
+     * spacing — tightening small text harms legibility.
+     */
+    val display  = rounded(34, FontWeight.Bold).copy(lineHeight = 38.sp, letterSpacing = (-0.4).sp)
+    val title    = rounded(22, FontWeight.SemiBold).copy(lineHeight = 27.sp, letterSpacing = (-0.3).sp)
+    val headline = rounded(17, FontWeight.SemiBold).copy(lineHeight = 22.sp, letterSpacing = (-0.2).sp)
+    val body     = rounded(17, FontWeight.Normal).copy(lineHeight = 23.sp)
+    val callout  = rounded(16, FontWeight.Normal).copy(lineHeight = 21.sp)
+    val subhead  = rounded(15, FontWeight.Normal).copy(lineHeight = 20.sp)
+    val footnote = rounded(13, FontWeight.Normal).copy(lineHeight = 17.sp)
+    val caption  = rounded(12, FontWeight.Normal).copy(lineHeight = 16.sp)
 }
 
 /** Material3 Typography so any default Text() also renders in Nunito. */

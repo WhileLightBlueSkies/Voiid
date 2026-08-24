@@ -111,8 +111,25 @@ object MediaCache {
     }
 }
 
+/**
+ * Local-first resolve of a media ref to a decoded bitmap — the same cache tiers as
+ * [AsyncMediaImage] (memory → disk → network), shared with the full-screen viewer so opening
+ * an image never re-downloads what the bubble already showed.
+ */
+suspend fun loadMediaBitmap(
+    context: android.content.Context,
+    ref: ChatEngine.MediaRef,
+): androidx.compose.ui.graphics.ImageBitmap? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+    MediaCache.image(context, ref.mediaUrl)?.let { return@withContext it }
+    runCatching {
+        val bytes = ChatEngine.get(context).fetchMedia(ref)
+        MediaCache.putData(context, ref.mediaUrl, bytes)
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+    }.getOrNull()?.also { ib -> MediaCache.putImage(ref.mediaUrl, ib) }
+}
+
 @Composable
-fun AsyncMediaImage(ref: ChatEngine.MediaRef) {
+fun AsyncMediaImage(ref: ChatEngine.MediaRef, onTap: (() -> Unit)? = null) {
     val context = LocalContext.current
     var bitmap by remember(ref.mediaUrl) { mutableStateOf(MediaCache.image(ref.mediaUrl)) }
     var failed by remember(ref.mediaUrl) { mutableStateOf(false) }
@@ -132,7 +149,9 @@ fun AsyncMediaImage(ref: ChatEngine.MediaRef) {
     }
 
     Box(
-        Modifier.size(220.dp).clip(RoundedCornerShape(12.dp)).background(VoiidColor.accent.copy(alpha = 0.3f)),
+        Modifier
+            .size(220.dp).clip(RoundedCornerShape(12.dp)).background(VoiidColor.accent.copy(alpha = 0.3f))
+            .then(if (onTap != null) Modifier.clickable(onClick = onTap) else Modifier),
         Alignment.Center,
     ) {
         val b = bitmap

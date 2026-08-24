@@ -148,6 +148,8 @@ private fun ContextPage(
     var showViewers by remember { mutableStateOf(false) }
     var chromeVisible by remember { mutableStateOf(true) }
     var replyText by remember(index) { mutableStateOf("") }
+    var showReplySheet by remember(index) { mutableStateOf(false) }
+    var sentToast by remember(index) { mutableStateOf(false) }
     var dragY by remember { mutableFloatStateOf(0f) }
     var dragging by remember { mutableStateOf(false) }
 
@@ -361,26 +363,90 @@ private fun ContextPage(
                         }
                     }
                     Spacer(Modifier.size(10.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Box(Modifier.weight(1f)) {
-                            VoiidTextField(
-                                placeholder = "Reply to ${context.authorName}…",
-                                value = replyText, onValueChange = { replyText = it },
-                            )
-                        }
-                        val canSend = replyText.isNotBlank()
-                        Box(
-                            Modifier.size(48.dp).clip(CircleShape)
-                                .background(if (canSend) VoiidColor.primary else VoiidColor.primary.copy(alpha = 0.4f))
-                                .softClickable(enabled = canSend) {
-                                    stories.sendReply(story, replyText.trim(), null); onClose()
-                                },
-                            contentAlignment = Alignment.Center,
-                        ) { Text("↑", style = VoiidFont.rounded(20, FontWeight.Bold), color = Color.White) }
+                    // The written reply opens in a FIXED 260pt sheet (iOS `.height(260)`),
+                    // keeping the story visible behind it — an inline field over the viewer
+                    // fought the progress rail for space and covered the caption.
+                    Box(
+                        Modifier
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.18f))
+                            .softClickable { showReplySheet = true }
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                    ) {
+                        Text(
+                            "Reply to ${context.authorName}…",
+                            style = VoiidFont.rounded(14), color = Color.White,
+                        )
                     }
                 }
             }
         }
+    }
+
+    // Fixed 260pt reply sheet — IME-safe, dismisses after a successful send, and confirms
+    // with a toast. iOS `StoryViewerView` reply presentation.
+    if (showReplySheet) {
+        com.voiid.app.ui.components.VoiidSheet(
+            visible = true,
+            onDismiss = { showReplySheet = false },
+            detents = listOf(com.voiid.app.ui.components.VoiidDetent.Fixed(260.dp)),
+        ) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).navigationBarsPadding()) {
+                Text(
+                    "Reply to ${context.authorName}",
+                    style = VoiidFont.rounded(16, FontWeight.SemiBold),
+                    color = VoiidColor.textPrimary,
+                )
+                Spacer(Modifier.height(12.dp))
+                VoiidTextField(
+                    placeholder = "Say something…",
+                    value = replyText,
+                    onValueChange = { replyText = it },
+                )
+                Spacer(Modifier.height(12.dp))
+                val canSend = replyText.isNotBlank()
+                Box(
+                    Modifier.fillMaxWidth()
+                        .clip(androidx.compose.foundation.shape.RoundedCornerShape(999.dp))
+                        .background(VoiidColor.primary.copy(alpha = if (canSend) 1f else 0.4f))
+                        .softClickable(enabled = canSend) {
+                            stories.sendReply(story, replyText.trim(), null)
+                            showReplySheet = false
+                            sentToast = true
+                            onClose()
+                        }
+                        .padding(vertical = 14.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("Send", style = VoiidFont.rounded(15, FontWeight.SemiBold), color = VoiidColor.textOnPrimary)
+                }
+                Spacer(Modifier.navigationBarsPadding())
+            }
+        }
+    }
+
+    // Sent confirmation — auto-dismisses; the sheet is already gone by the time it shows.
+    androidx.compose.foundation.layout.Box(Modifier.fillMaxSize()) {
+    androidx.compose.animation.AnimatedVisibility(
+        visible = sentToast,
+        enter = androidx.compose.animation.fadeIn(),
+        exit = androidx.compose.animation.fadeOut(),
+        modifier = Modifier.align(Alignment.TopCenter),
+    ) {
+        Text(
+            "Reply sent",
+            style = VoiidFont.rounded(13, FontWeight.SemiBold),
+            color = Color.White,
+            modifier = Modifier
+                .padding(top = 48.dp)
+                .clip(androidx.compose.foundation.shape.RoundedCornerShape(999.dp))
+                .background(Color.Black.copy(alpha = 0.75f))
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+        )
+    }
+    LaunchedEffect(sentToast) {
+        if (sentToast) { kotlinx.coroutines.delay(1800); sentToast = false }
+    }
     }
 
     if (showViewers) {

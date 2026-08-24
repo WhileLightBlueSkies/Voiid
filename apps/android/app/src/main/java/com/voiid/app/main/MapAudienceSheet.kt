@@ -19,13 +19,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PersonAddAlt
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -78,9 +77,11 @@ fun MapAudienceSheet(
     mode: MapAudienceMode = MapAudienceMode.CHOOSE,
     isVisible: Boolean = false,
     onRemove: (String) -> Unit = {},
+    /** Manage-mode "Add people": flips the presenting surface back to CHOOSE so new people
+     *  can be selected, then persisted through [onConfirm]. Mirrors iOS. */
+    onAddPeople: () -> Unit = {},
     onStopAll: () -> Unit = {},
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     // Candidate contacts = direct conversations with a resolvable peer id, name-sorted so the
     // list does not reshuffle between openings (iOS sorts the same way).
@@ -117,10 +118,10 @@ fun MapAudienceSheet(
         MapAudienceScope.SELECTED -> candidates.filter { selected.contains(it.userId) }
     }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = VoiidColor.surfaceCard,
+    com.voiid.app.ui.components.VoiidSheet(
+        visible = true,
+        onDismiss = onDismiss,
+        detents = listOf(com.voiid.app.ui.components.VoiidDetent.Medium, com.voiid.app.ui.components.VoiidDetent.Large),
     ) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 28.dp)) {
             if (mode == MapAudienceMode.MANAGE) {
@@ -128,6 +129,7 @@ fun MapAudienceSheet(
                     current = current,
                     isVisible = isVisible,
                     onRemove = onRemove,
+                    onAddPeople = onAddPeople,
                     onStopAll = onStopAll,
                 )
                 return@Column
@@ -338,6 +340,7 @@ private fun ManageBody(
     current: List<MapContact>,
     isVisible: Boolean,
     onRemove: (String) -> Unit,
+    onAddPeople: () -> Unit,
     onStopAll: () -> Unit,
 ) {
     Text(
@@ -391,6 +394,23 @@ private fun ManageBody(
     }
 
     Spacer(Modifier.size(20.dp))
+    // "Add people" — the missing re-entry into the chooser. Without it the audience could
+    // only ever shrink after the initial share. Mirrors iOS.
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(VoiidRadius.lg))
+            .border(1.dp, VoiidColor.fieldBorder, RoundedCornerShape(VoiidRadius.lg))
+            .clickable(onClick = onAddPeople)
+            .padding(vertical = 14.dp, horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Default.PersonAddAlt, null, tint = VoiidColor.primary, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.size(12.dp))
+        Text("Add people", style = VoiidFont.rounded(16, FontWeight.Medium), color = VoiidColor.primary)
+    }
+
+    Spacer(Modifier.size(12.dp))
     Box(
         Modifier
             .fillMaxWidth()

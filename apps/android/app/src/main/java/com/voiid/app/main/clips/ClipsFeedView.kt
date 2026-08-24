@@ -50,6 +50,8 @@ import com.voiid.app.model.VClip
 import com.voiid.app.net.CreatorService
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.softClickable
+import com.voiid.app.ui.components.voiidPullRefresh
+import com.voiid.app.ui.components.rememberVoiidPullRefresh
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
@@ -85,6 +87,10 @@ fun ClipsFeedView(
         androidx.compose.runtime.mutableStateOf(false)
     }
 
+    val pull = rememberVoiidPullRefresh {
+        clips.refresh()
+        creators.refreshFollowing()
+    }
     LaunchedEffect(Unit) {
         if (!clips.hasLoadedOnce) clips.refresh()
         creators.ensureMeLoaded()
@@ -108,7 +114,7 @@ fun ClipsFeedView(
             .collect { clips.loadMoreIfNeeded(it) }
     }
 
-    Column(Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding()) {
+    Column(Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding().voiidPullRefresh(pull, VoiidColor.primary)) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,

@@ -671,49 +671,43 @@ fun ChatDetailView(
 
     // Dialogs
     deleteMessage?.let { m ->
-        AlertDialog(
-            onDismissRequest = { deleteMessage = null },
-            containerColor = VoiidColor.surfaceCard,
-            title = { Text("Delete message?", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary) },
-            text = null,
-            confirmButton = {
-                Column {
-                    if (m.isMine) {
-                        TextButton(onClick = { chat.deleteMessage(m.id, conversation.id, true); deleteMessage = null }) {
-                            Text("Delete for everyone", color = VoiidColor.error)
-                        }
-                    }
-                    TextButton(onClick = { chat.deleteMessage(m.id, conversation.id, false); deleteMessage = null }) {
-                        Text("Delete for me", color = VoiidColor.error)
-                    }
+        com.voiid.app.ui.components.VoiidDialogCustom(onDismissRequest = { deleteMessage = null }) {
+            Spacer(Modifier.height(20.dp))
+            Text("Delete message?", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+            Spacer(Modifier.height(6.dp))
+            if (m.isMine) {
+                com.voiid.app.ui.components.VoiidDialogAction("Delete for everyone", destructive = true) {
+                    chat.deleteMessage(m.id, conversation.id, true); deleteMessage = null
                 }
-            },
-            dismissButton = { TextButton(onClick = { deleteMessage = null }) { Text("Cancel", color = VoiidColor.primary) } },
-        )
+            }
+            com.voiid.app.ui.components.VoiidDialogAction("Delete for me", destructive = true) {
+                chat.deleteMessage(m.id, conversation.id, false); deleteMessage = null
+            }
+            com.voiid.app.ui.components.VoiidDialogAction("Cancel") { deleteMessage = null }
+            Spacer(Modifier.height(8.dp))
+        }
     }
     if (showClearChat) {
-        AlertDialog(
+        com.voiid.app.ui.components.VoiidDialog(
             onDismissRequest = { showClearChat = false },
-            containerColor = VoiidColor.surfaceCard,
-            title = { Text("Clear this chat?", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary) },
-            text = { Text("All messages will be removed from this chat.", style = VoiidFont.rounded(14), color = VoiidColor.textSecondary) },
-            confirmButton = { TextButton(onClick = { chat.clearChat(conversation.id); showClearChat = false }) { Text("Clear chat", color = VoiidColor.error) } },
-            dismissButton = { TextButton(onClick = { showClearChat = false }) { Text("Cancel", color = VoiidColor.primary) } },
+            title = "Clear this chat?",
+            body = "All messages will be removed from this chat.",
+            confirmLabel = "Clear chat",
+            onConfirm = { chat.clearChat(conversation.id); showClearChat = false },
+            confirmDestructive = true,
         )
     }
     if (showBulkDelete) {
-        AlertDialog(
+        com.voiid.app.ui.components.VoiidDialog(
             onDismissRequest = { showBulkDelete = false },
-            containerColor = VoiidColor.surfaceCard,
-            title = { Text("Delete ${selectedIds.size} message${if (selectedIds.size == 1) "" else "s"}?", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary) },
-            text = { Text("This will delete the selected messages.", style = VoiidFont.rounded(14), color = VoiidColor.textSecondary) },
-            confirmButton = {
-                TextButton(onClick = {
-                    selectedIds.toList().forEach { chat.deleteMessage(it, conversation.id, false) }
-                    showBulkDelete = false; exitSelection()
-                }) { Text("Delete", color = VoiidColor.error) }
+            title = "Delete ${selectedIds.size} message${if (selectedIds.size == 1) "" else "s"}?",
+            body = "This will delete the selected messages.",
+            confirmLabel = "Delete",
+            onConfirm = {
+                selectedIds.toList().forEach { chat.deleteMessage(it, conversation.id, false) }
+                showBulkDelete = false; exitSelection()
             },
-            dismissButton = { TextButton(onClick = { showBulkDelete = false }) { Text("Cancel", color = VoiidColor.primary) } },
+            confirmDestructive = true,
         )
     }
 }

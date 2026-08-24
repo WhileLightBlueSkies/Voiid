@@ -415,6 +415,8 @@ fun OnboardingPrivacyNote(
 fun OnboardingPrimaryButton(
     title: String,
     busy: Boolean = false,
+    /** Disabled gates (e.g. consent not yet given) dim the pill and swallow the tap. */
+    enabled: Boolean = true,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
@@ -423,6 +425,7 @@ fun OnboardingPrimaryButton(
         modifier
             .fillMaxWidth()
             .height(62.dp)
+            .alpha(if (enabled) 1f else 0.55f)
             // The bloom, drawn behind the pill. Compose has no outer shadow with a colour, so
             // this is two blurred capsules rather than an elevation value.
             .drawBehind {
@@ -442,7 +445,7 @@ fun OnboardingPrimaryButton(
                     listOf(Color(0xFFD8FF45), OnboardingBrand.limeDeep),
                 ),
             )
-            .softClickable(enabled = !busy) { haptics.rigid(); onClick() },
+            .softClickable(enabled = enabled && !busy) { haptics.rigid(); onClick() },
         contentAlignment = Alignment.Center,
     ) {
         if (busy) {

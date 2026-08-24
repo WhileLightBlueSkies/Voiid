@@ -89,6 +89,23 @@ class VoiidHaptics(context: Context) {
     fun success() = successPulse()
 
     /**
+     * Error notification — failed verifications, refused actions.
+     *
+     * iOS drives `UINotificationFeedbackGenerator(.error)`. Android has no predefined
+     * equivalent, so this is a harsher double thump than [successPulse]: longer pulses,
+     * higher amplitude, shorter gap — reads as refusal next to success's double-tick.
+     */
+    fun error() {
+        val v = vibrator ?: return
+        if (!hasMotor) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            v.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 35, 70, 35), -1))
+        } else {
+            @Suppress("DEPRECATION") v.vibrate(longArrayOf(0, 35, 70, 35), -1)
+        }
+    }
+
+    /**
      * A rising thump for a big moment — a six clearing the rope, a match won.
      *
      * WHY NOT JUST [rigid]: a single click is over before the ball has left the screen, so the

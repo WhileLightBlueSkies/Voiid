@@ -500,6 +500,43 @@ class WebSocketClient private constructor(context: Context) {
                 val seq = obj["seq"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0
                 GamesRelay.dispatchState(mid, game, seq, payload)
             }
+            // Ludo schema-v2 server-to-client frames (§7.2). Each routes to its own seam so
+            // boards and chat invite cards consume exactly what they render.
+            "game_command_rejected" -> {
+                val mid = obj["match_id"]?.jsonPrimitive?.contentOrNull ?: return
+                GamesRelay.dispatchRejected(
+                    matchId = mid,
+                    commandId = obj["commandId"]?.jsonPrimitive?.contentOrNull,
+                    code = obj["code"]?.jsonPrimitive?.contentOrNull ?: "",
+                    currentSeq = obj["current_seq"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0,
+                )
+            }
+            "game_presence" -> {
+                val mid = obj["match_id"]?.jsonPrimitive?.contentOrNull ?: return
+                GamesRelay.dispatchPresence(
+                    matchId = mid,
+                    seat = obj["seat"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: return,
+                    connection = obj["connection"]?.jsonPrimitive?.contentOrNull ?: "disconnected",
+                )
+            }
+            "game_invite_status" -> {
+                val mid = obj["match_id"]?.jsonPrimitive?.contentOrNull ?: return
+                GamesRelay.dispatchInviteStatus(
+                    matchId = mid,
+                    status = obj["status"]?.jsonPrimitive?.contentOrNull ?: "waiting",
+                    acceptedSeats = obj["accepted_seats"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0,
+                    totalSeats = obj["total_seats"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 0,
+                    expiresAt = obj["expires_at"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L,
+                )
+            }
+            "game_ended" -> {
+                val mid = obj["match_id"]?.jsonPrimitive?.contentOrNull ?: return
+                GamesRelay.dispatchEnded(
+                    matchId = mid,
+                    winnerSeat = obj["winner_seat"]?.jsonPrimitive?.contentOrNull?.toIntOrNull(),
+                    endReason = obj["end_reason"]?.jsonPrimitive?.contentOrNull,
+                )
+            }
             "story", "story_receipt", "story_deleted" -> onStorySignal?.invoke()
             "session_reset" -> obj["conversation_id"]?.jsonPrimitive?.contentOrNull?.let { onSessionReset?.invoke(it) }
             "mls_event" -> onMlsEvent?.invoke(obj["conversation_id"]?.jsonPrimitive?.contentOrNull)

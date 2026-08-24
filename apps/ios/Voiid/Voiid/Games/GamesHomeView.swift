@@ -90,6 +90,8 @@ struct GamesHomeView: View {
     /// The lobby the CREATOR waits in after sending an invite, until the opponent joins or the
     /// invite expires.
     @State private var lobby: LobbyArgs?
+    @State private var showLudoWalkthrough = false
+    @State private var ludoWalkthroughCompletion: (() -> Void)?
 
     /// Which games can be practised against a local bot.
     ///
@@ -375,7 +377,7 @@ struct GamesHomeView: View {
                             onClose: { openMatch = nil },
                             onRematch: { openMatch = OpenMatch(id: $0, slug: "seabattle") })
                     case "ludo":
-                        LudoView(
+                        LudoGameView(
                             matchId: m.id,
                             onClose: { openMatch = nil },
                             onRematch: { openMatch = OpenMatch(id: $0, slug: "ludo") })
@@ -572,7 +574,15 @@ struct GamesHomeView: View {
         // Join tapped on an invite bubble. Joining is authorized server-side (the caller must
         // be in player_ids), so this only has to open the board — the opening `game_state`
         // frame populates it.
-        .onReceive(NotificationCenter.default.publisher(for: .voiidOpenGameMatch)) { note in
+        .sheet(isPresented: $showLudoWalkthrough) {
+            LudoWalkthroughView(mode: .firstRun, clockNote: false, onDismiss: {
+                showLudoWalkthrough = false
+                ludoWalkthroughCompletion?()
+                ludoWalkthroughCompletion = nil
+            })
+            .presentationDetentsCompat(heightFraction: 0.3)
+        }
+                .onReceive(NotificationCenter.default.publisher(for: .voiidOpenGameMatch)) { note in
             guard let id = note.userInfo?["match_id"] as? String else { return }
             let slug = (note.userInfo?["slug"] as? String) ?? "tictactoe"
             openMatch = OpenMatch(id: id, slug: slug)
@@ -587,11 +597,24 @@ struct GamesHomeView: View {
     /// 4-player match is the number of invites sent, not a different lifecycle. The lobby then
     /// shows seats filling one by one, which LUDO.md §12.4 calls the "who else is coming" moment
     /// and asks to be visible rather than hidden behind a spinner.
+    /// §10: experienced players (seen version ≥ 1) proceed without a pause; everyone else sees
+    /// the seven-step walkthrough ONCE before their first create.
+    private static var ludoWalkthroughSeen: Bool {
+        UserDefaults.standard.integer(forKey: "ludo.walkthrough.seen") >= 1
+    }
+
     private func startMultiMatch(
         game: GamesAPI.CatalogGame,
         conversations: [VConversation],
         options: [String: Int] = [:]
     ) async {
+        if game.slug == "ludo" && !Self.ludoWalkthroughSeen {
+            showLudoWalkthrough = true
+            ludoWalkthroughCompletion = {
+                Task { await startMultiMatch(game: game, conversations: conversations, options: options) }
+            }
+            return
+        }
         let opponents: [(userId: String, conversationId: String)] = conversations.compactMap {
             guard let peer = $0.peerUserId, !peer.isEmpty else { return nil }
             return (userId: peer, conversationId: $0.id)

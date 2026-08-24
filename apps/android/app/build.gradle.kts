@@ -127,6 +127,9 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.androidx.material.icons.extended)
     implementation(libs.coil.compose)
+
+    // Vetted QR ENCODER (pure-Java ZXing core, no Play Services) for the safety-number QR.
+    implementation(libs.zxing.core)
     implementation(libs.coil.gif)
 
     // Networking + auth (VOIID backend)

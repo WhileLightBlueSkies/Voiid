@@ -92,32 +92,18 @@ fun CallLogScreen(chat: ChatStore, onBack: () -> Unit, onOpenConversation: (VCon
     val visible = if (missedOnly) entries.filter { it.isMissed() } else entries
 
     if (confirmClear) {
-        androidx.compose.material3.AlertDialog(
+        com.voiid.app.ui.components.VoiidDialog(
             onDismissRequest = { confirmClear = false },
-            containerColor = VoiidColor.surfaceCard,
-            title = {
-                Text("Clear call history?", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+            title = "Clear call history?",
+            // Say what is actually lost. This is device-local, so "on this device" is not
+            // a hedge — it is the whole truth.
+            body = "This removes every call from this device. It doesn't affect the other person's log.",
+            confirmLabel = "Clear",
+            onConfirm = {
+                confirmClear = false
+                scope.launch { LocalStore.clearCallHistory(context); entries = emptyList() }
             },
-            text = {
-                // Say what is actually lost. This is device-local, so "on this device" is not
-                // a hedge — it is the whole truth.
-                Text(
-                    "This removes every call from this device. It doesn't affect the other " +
-                        "person's log.",
-                    style = VoiidFont.rounded(14), color = VoiidColor.textSecondary,
-                )
-            },
-            confirmButton = {
-                androidx.compose.material3.TextButton(onClick = {
-                    confirmClear = false
-                    scope.launch { LocalStore.clearCallHistory(context); entries = emptyList() }
-                }) { Text("Clear", color = VoiidColor.error) }
-            },
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { confirmClear = false }) {
-                    Text("Cancel", color = VoiidColor.textSecondary)
-                }
-            },
+            confirmDestructive = true,
         )
     }
 
@@ -187,23 +173,31 @@ fun CallLogScreen(chat: ChatStore, onBack: () -> Unit, onOpenConversation: (VCon
             // A filter matching nothing is NOT the same as an empty history. Saying "No calls
             // yet" here would be a lie and would read as a broken screen.
             visible.isEmpty() -> NoMissedCalls()
-            else -> LazyColumn(Modifier.fillMaxSize()) {
-                items(visible, key = { it.id }) { row ->
-                    val conv = row.conversationId?.let { cid ->
-                        (chat.directConversations + chat.groupConversations).firstOrNull { it.id == cid }
+            else -> {
+                // Grouped by day with section labels — Today / Yesterday / weekday / date.
+                // Mirrors iOS `CallLogView` grouping; the 76dp inset divider is preserved.
+                val grouped = visible.groupBy { VoiidDate.separator(it.startedAt) }
+                LazyColumn(Modifier.fillMaxSize()) {
+                    grouped.forEach { (dayLabel, rows) ->
+                        item(key = "hdr_$dayLabel") { DayHeader(dayLabel) }
+                        items(rows, key = { it.id }) { row ->
+                            val conv = row.conversationId?.let { cid ->
+                                (chat.directConversations + chat.groupConversations).firstOrNull { it.id == cid }
+                            }
+                            CallLogRow(
+                                row = row,
+                                name = callerName(row, conv),
+                                photoUrl = row.peerUserId?.let { UserDirectory.photoUrl(it) },
+                                onOpen = { conv?.let { haptics.tap(); onOpenConversation(it) } },
+                            )
+                            HorizontalDivider(
+                                color = VoiidColor.divider.copy(alpha = 0.5f),
+                                // Inset to start at the TEXT — the avatar column is a gutter and a
+                                // full-width rule cuts through it.
+                                modifier = Modifier.padding(start = 76.dp),
+                            )
+                        }
                     }
-                    CallLogRow(
-                        row = row,
-                        name = callerName(row, conv),
-                        photoUrl = row.peerUserId?.let { UserDirectory.photoUrl(it) },
-                        onOpen = { conv?.let { haptics.tap(); onOpenConversation(it) } },
-                    )
-                    HorizontalDivider(
-                        color = VoiidColor.divider.copy(alpha = 0.5f),
-                        // Inset to start at the TEXT — the avatar column is a gutter and a
-                        // full-width rule cuts through it.
-                        modifier = Modifier.padding(start = 76.dp),
-                    )
                 }
             }
         }
@@ -315,6 +309,13 @@ private fun callSubtitle(row: CallHistoryRow): String {
     }
     parts += VoiidDate.bubbleTime(row.startedAt)
     return parts.joinToString(" · ")
+}
+
+@Composable
+private fun DayHeader(label: String) {
+    Box(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
+        Text(label, style = VoiidFont.rounded(12, FontWeight.SemiBold), color = VoiidColor.textSecondary)
+    }
 }
 
 @Composable

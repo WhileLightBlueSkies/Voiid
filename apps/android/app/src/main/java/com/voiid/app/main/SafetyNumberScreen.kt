@@ -2,6 +2,10 @@ package com.voiid.app.main
 
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -165,11 +169,9 @@ fun SafetyNumberScreen(
             //
             // Opacity only, so it is safe under Reduce Motion with no gate.
             //
-            // NOTE: iOS also offers a scannable QR here (CIQRCodeGenerator, a system
-            // framework). Android has no QR encoder available without adding ZXing (~500KB),
-            // and a hand-rolled encoder was rejected: a QR that looks right but scans wrong
-            // is worse than none on the anti-MITM screen. Digits-only until that dependency
-            // is a decision someone has actually made.
+            // The scannable QR (iOS CIQRCodeGenerator equivalent) renders inside each
+            // NumberCard below — tap the card to swap digits/QR. Encoded with vetted pure-Java
+            // ZXing core at HIGH error correction and 600px so it stays crisp when scaled.
             androidx.compose.animation.Crossfade(
                 targetState = state,
                 animationSpec = tween(220),
@@ -237,20 +239,74 @@ fun SafetyNumberScreen(
  */
 @Composable
 private fun NumberCard(number: String) {
-    Text(
-        number,
-        color = VoiidColor.textPrimary,
-        fontSize = 19.sp,
-        fontWeight = FontWeight.Medium,
-        fontFamily = FontFamily.Monospace,
-        lineHeight = 30.sp,
-        textAlign = TextAlign.Center,
-        modifier = Modifier
+    var showQr by remember { mutableStateOf(false) }
+    val haptics = com.voiid.app.ui.components.LocalVoiidHaptics.current
+
+    Column(
+        Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(VoiidRadius.lg))
             .background(VoiidColor.surfaceCard)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+            ) { haptics.selection(); showQr = !showQr }
             .padding(vertical = VoiidSpacing.lg, horizontal = VoiidSpacing.md),
-    )
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        androidx.compose.animation.Crossfade(
+            targetState = showQr,
+            animationSpec = tween(180),
+            label = "safetyNumberCard",
+        ) { qr ->
+            if (qr) {
+                // HIGH error correction and a large raster: this card is the anti-MITM
+                // artefact, so it must survive glare, compression and scaling.
+                val bmp = remember(number) {
+                    runCatching {
+                        val hints = mapOf<com.google.zxing.EncodeHintType, Any>(
+                            com.google.zxing.EncodeHintType.ERROR_CORRECTION to com.google.zxing.qrcode.decoder.ErrorCorrectionLevel.H,
+                            com.google.zxing.EncodeHintType.MARGIN to 1,
+                        )
+                        val matrix = com.google.zxing.qrcode.QRCodeWriter().encode(
+                            number, com.google.zxing.BarcodeFormat.QR_CODE, 600, 600, hints,
+                        )
+                        val out = android.graphics.Bitmap.createBitmap(600, 600, android.graphics.Bitmap.Config.ARGB_8888)
+                        for (x in 0 until 600) for (y in 0 until 600) {
+                            out.setPixel(x, y, if (matrix.get(x, y)) android.graphics.Color.BLACK else android.graphics.Color.WHITE)
+                        }
+                        out
+                    }.getOrNull()
+                }
+                if (bmp != null) {
+                    Image(
+                        bitmap = bmp.asImageBitmap(),
+                        contentDescription = "QR code for $number",
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 260.dp),
+                    )
+                } else {
+                    Text("Couldn't build the QR. Compare the digits instead.",
+                         fontSize = 13.sp, color = VoiidColor.error)
+                }
+            } else {
+                Text(
+                    number,
+                    color = VoiidColor.textPrimary,
+                    fontSize = 19.sp,
+                    fontWeight = FontWeight.Medium,
+                    fontFamily = FontFamily.Monospace,
+                    lineHeight = 30.sp,
+                    textAlign = TextAlign.Center,
+                )
+            }
+        }
+        Text(
+            if (showQr) "Tap for digits" else "Tap for QR",
+            fontSize = 11.sp,
+            color = VoiidColor.textSecondary.copy(alpha = 0.7f),
+            modifier = Modifier.padding(top = VoiidSpacing.sm),
+        )
+    }
 }
 
 @Composable

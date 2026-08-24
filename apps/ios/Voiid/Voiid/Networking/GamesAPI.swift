@@ -293,5 +293,97 @@ struct GamesAPI {
         return res.matches
     }
 
+    // ── LUDO SCHEMA V2 (LUDO_GAME_SPEC.md §7.1) ─────────────────────────────────────────
+
+    /// Create a Ludo match from a chat conversation. The SERVER re-verifies membership,
+    /// blocks and exact counts; the client list is convenience only.
+    func createLudo(
+        mode: String,
+        opponentIds: [String],
+        conversationId: String,
+        idempotencyKey: String? = nil,
+    ) async throws -> CreateResponse {
+        try await api.request("POST", "games/matches", body: LudoCreateBody(
+            mode: mode,
+            opponent_ids: opponentIds,
+            conversation_id: conversationId,
+            idempotency_key: idempotencyKey ?? UUID().uuidString,
+            options: ["mode": mode]))
+    }
+
+    struct LudoSnapshot {
+        let seq: Int
+        let payload: [String: Any]
+    }
+
+    /** Durable truth for one match, projected for THIS viewer (§9). */
+    func ludoSnapshot(matchId: String) async throws -> LudoSnapshot {
+        let env = try await api.request("GET", "games/matches/\(matchId)/snapshot",
+                                        as: LudoSnapshotEnvelope.self)
+        return LudoSnapshot(seq: env.seq,
+                            payload: (env.payload.value as? [String: Any]) ?? [:])
+    }
+
+    /** Deliberate exit from an ACTIVE match; backgrounding is never this call (§11.5). */
+    @discardableResult
+    func forfeit(matchId: String) async throws -> JoinResponse {
+        try await api.request("POST", "games/matches/\(matchId)/forfeit", body: EmptyBody())
+    }
+
+    /// Persist the first-run walkthrough seen version cross-device (§10). Fire-and-forget.
+    struct WalkthroughBody: Encodable { let version: Int }
+    @discardableResult
+    func setWalkthroughSeen(version: Int) async throws -> JoinResponse {
+        try await api.request("PUT", "users/me/preferences/ludo-walkthrough",
+                              body: WalkthroughBody(version: version))
+    }
+
+    struct LudoCreateBody: Encodable {
+        let slug = "ludo"
+        let mode: String
+        let opponent_ids: [String]
+        let conversation_id: String
+        let idempotency_key: String?
+        let options: [String: String]
+    }
+
     private struct EmptyBody: Encodable {}
+}
+
+/// Untyped-but-decodable envelope so a game-owned snapshot payload can flow through the
+/// typed pipeline into LudoWireParser.
+struct LudoSnapshotEnvelope: Decodable {
+    let seq: Int
+    let payload: JSONAny
+}
+
+struct JSONAny: Decodable {
+    let value: Any
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if let d = try? c.decode([String: JSONAny].self) {
+            var out: [String: Any] = [:]
+            for (k, v) in d { out[k] = v.value }
+            value = out
+            return
+        }
+        if let arr = try? c.decode([JSONAny].self) {
+            value = arr.map { $0.value }
+            return
+        }
+        if let b = try? c.decode(Bool.self) { value = b; return }
+        if let n = try? c.decode(Double.self) { value = n; return }
+        if let s = try? c.decode(String.self) { value = s; return }
+        value = NSNull()
+    }
+
+    var anyDictionary: [String: Any] {
+        (value as? [String: Any]) ?? [:]
+    }
+
+    var normalized: Any {
+        if let d = value as? Double, d == d.rounded() { return Int(d) }
+        return value
+    }
 }

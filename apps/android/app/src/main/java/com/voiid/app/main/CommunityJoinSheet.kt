@@ -14,9 +14,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -69,7 +67,6 @@ import com.voiid.app.ui.theme.VoiidFont
 fun CommunityJoinSheet(link: CommunityLink, onDismiss: () -> Unit) {
     val context = LocalContext.current
     val haptics = LocalVoiidHaptics.current
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val service = remember { CommunityService(context) }
 
     var card by remember(link) { mutableStateOf<CommunityService.CommunityCard?>(null) }
@@ -88,10 +85,10 @@ fun CommunityJoinSheet(link: CommunityLink, onDismiss: () -> Unit) {
             .onFailure { error = messageFor(it, handle = link.handle) }
     }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = VoiidColor.background,
+    com.voiid.app.ui.components.VoiidSheet(
+        visible = true,
+        onDismiss = onDismiss,
+        detents = listOf(com.voiid.app.ui.components.VoiidDetent.Medium, com.voiid.app.ui.components.VoiidDetent.Large),
     ) {
         Column(
             Modifier

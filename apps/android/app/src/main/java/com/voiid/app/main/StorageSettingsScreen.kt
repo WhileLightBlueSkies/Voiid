@@ -9,7 +9,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -28,6 +31,8 @@ import com.voiid.app.net.BackupManager
 import com.voiid.app.net.StorageProbe
 import com.voiid.app.net.StorageSnapshot
 import com.voiid.app.ui.components.softClickable
+import com.voiid.app.ui.components.rememberVoiidPullRefresh
+import com.voiid.app.ui.components.voiidPullRefresh
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
@@ -48,10 +53,15 @@ import kotlin.math.pow
  *     (message history, database rows, keychain) and why.
  */
 @Composable
-fun StorageSettingsScreen(onBack: () -> Unit) {
+fun StorageSettingsScreen(
+    onBack: () -> Unit,
+    /** The "Cloud backup" row opens Backup & Recovery (where setup/phrase/PIN live). */
+    onOpenBackupRecovery: (() -> Unit)? = null,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val manager = remember { BackupManager(context) }
+    val haptics = com.voiid.app.ui.components.LocalVoiidHaptics.current
 
     var snapshot by remember { mutableStateOf<StorageSnapshot?>(null) }
     var isClearing by remember { mutableStateOf(false) }
@@ -69,9 +79,16 @@ fun StorageSettingsScreen(onBack: () -> Unit) {
         }
     }
 
+    val pull = com.voiid.app.ui.components.rememberVoiidPullRefresh {
+        scope.launch { measure(); loadBackup() }
+    }
     LaunchedEffect(Unit) { measure(); loadBackup() }
 
-    BackupScaffold(title = "Storage", onBack = onBack) {
+    BackupScaffold(
+        title = "Storage",
+        onBack = onBack,
+        modifier = Modifier.voiidPullRefresh(pull, VoiidColor.primary),
+    ) {
         Spacer(Modifier.height(8.dp))
 
         StorageSection(
@@ -114,6 +131,9 @@ fun StorageSettingsScreen(onBack: () -> Unit) {
                             StorageProbe.clearCaches(context)
                             measure()
                             isClearing = false
+                            // The action succeeded — say so, quietly. Mirrors iOS's success
+                            // haptic on the same control.
+                            haptics.success()
                         }
                     }
                     .padding(horizontal = 16.dp, vertical = 14.dp),
@@ -134,13 +154,33 @@ fun StorageSettingsScreen(onBack: () -> Unit) {
             header = "Backup",
             footer = "Backups are stored encrypted off this device, so they don't count towards the storage above.",
         ) {
+            // The row opens Backup & Recovery — setup, phrase and PIN change live there,
+            // not here. Mirrors iOS's route.
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                Modifier.fillMaxWidth()
+                    .softClickable(enabled = onOpenBackupRecovery != null) {
+                        haptics.tap(); onOpenBackupRecovery?.invoke()
+                    }
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Text("Cloud backup", style = VoiidFont.rounded(15), color = VoiidColor.textPrimary)
-                Text(backupValueText(backupState), style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
+                Column {
+                    Text("Cloud backup", style = VoiidFont.rounded(15), color = VoiidColor.textPrimary)
+                    // The backup DATE — the fact people actually want from a storage screen.
+                    if (backupState is BackupRowState.Present) {
+                        Text(
+                            "Last backup ${formatUpdatedAt((backupState as BackupRowState.Present).updatedAt)}",
+                            style = VoiidFont.rounded(12), color = VoiidColor.textSecondary,
+                        )
+                    }
+                }
+                if (onOpenBackupRecovery != null) {
+                    androidx.compose.material3.Icon(
+                        Icons.Default.ChevronRight, null, tint = VoiidColor.placeholder,
+                        modifier = Modifier.height(18.dp),
+                    )
+                }
             }
         }
     }
@@ -158,6 +198,11 @@ private fun backupValueText(state: BackupRowState): String = when (state) {
     is BackupRowState.NotSetUp -> "Not set up"
     is BackupRowState.CouldNotCheck -> "Couldn't check"
     is BackupRowState.Present -> formatBytes(state.bytes)
+}
+
+private fun formatUpdatedAt(raw: String?): String {
+    if (raw.isNullOrBlank()) return "—"
+    return raw.replace('T', ' ').substringBefore('.').substringBefore('+').trim().ifBlank { raw }
 }
 
 @Composable

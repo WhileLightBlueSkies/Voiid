@@ -76,6 +76,23 @@ fun BackupRecoveryScreen(onBack: () -> Unit) {
     var meta by remember { mutableStateOf<BackupService.BackupMeta?>(null) }
     var loadingMeta by remember { mutableStateOf(true) }
     var setUp by remember { mutableStateOf(manager.isSetUp()) }
+    // A failed refresh KEEPS the last good metadata and reports why — converting a network
+    // failure into "no backup" would tell someone their safety net is gone when the truth
+    // is only that we couldn't ask. Mirrors iOS `statusError`.
+    var statusError by remember { mutableStateOf<String?>(null) }
+    // Outcome feedback: errors surface next to the action; successes flash a toast.
+    var actionError by remember { mutableStateOf<String?>(null) }
+    var backingUp by remember { mutableStateOf(false) }
+    var toast by remember { mutableStateOf<String?>(null) }
+    val haptics = LocalVoiidHaptics.current
+
+    fun flash(text: String) {
+        toast = text
+        haptics.success()
+    }
+    LaunchedEffect(toast) {
+        if (toast != null) { kotlinx.coroutines.delay(2500); toast = null }
+    }
 
     // Google Drive (additional, opt-in destination).
     var driveEnabled by remember { mutableStateOf(manager.isDriveEnabled() && manager.isDriveSignedIn()) }
@@ -90,10 +107,15 @@ fun BackupRecoveryScreen(onBack: () -> Unit) {
 
     suspend fun reloadMeta() {
         loadingMeta = true
-        meta = runCatching { manager.fetchMeta() }.getOrNull()
+        val result = runCatching { manager.fetchMeta() }
+            .onSuccess {
+                meta = it
+                statusError = null
+            }
+            .onFailure { statusError = it.message ?: "Couldn't reach the backup service." }
         setUp = manager.isSetUp()
         loadingMeta = false
-        reloadDrive()
+        if (result.isSuccess) reloadDrive()
     }
 
     LaunchedEffect(Unit) { reloadMeta() }
@@ -132,6 +154,10 @@ fun BackupRecoveryScreen(onBack: () -> Unit) {
             setUp = setUp,
             loadingMeta = loadingMeta,
             meta = meta,
+            statusError = statusError,
+            actionError = actionError,
+            toast = toast,
+            backingUp = backingUp,
             driveEnabled = driveEnabled,
             driveMeta = driveMeta,
             driveBusy = driveBusy,
@@ -148,7 +174,23 @@ fun BackupRecoveryScreen(onBack: () -> Unit) {
             onBack = onBack,
             onSetup = { screen = Screen.SETUP },
             onBackupNow = {
-                scope.launch { runCatching { manager.backupNow() }; reloadMeta() }
+                if (!backingUp) {
+                    backingUp = true; actionError = null
+                    scope.launch {
+                        // NOT silent: success flashes a confirmation and refreshes; failure
+                        // surfaces an actionable error with the error haptic. Mirrors iOS.
+                        runCatching { manager.backupNow() }
+                            .onSuccess {
+                                flash("Backed up")
+                                scope.launch { reloadMeta() }
+                            }
+                            .onFailure {
+                                actionError = it.message ?: "Couldn't back up. Check your connection and try again."
+                                haptics.error()
+                            }
+                        backingUp = false
+                    }
+                }
             },
             onViewPhrase = { screen = Screen.VIEW_PHRASE },
             onChangePin = { screen = Screen.CHANGE_PIN },
@@ -156,7 +198,7 @@ fun BackupRecoveryScreen(onBack: () -> Unit) {
         Screen.SETUP -> BackupSetupFlow(
             manager = manager,
             onBack = { screen = Screen.HOME },
-            onDone = { screen = Screen.HOME; scope.launch { reloadMeta() } },
+            onDone = { screen = Screen.HOME; scope.launch { reloadMeta() }; flash("Backup is set up") },
         )
         Screen.VIEW_PHRASE -> ViewPhraseScreen(
             manager = manager,
@@ -165,7 +207,7 @@ fun BackupRecoveryScreen(onBack: () -> Unit) {
         Screen.CHANGE_PIN -> ChangePinScreen(
             manager = manager,
             onBack = { screen = Screen.HOME },
-            onDone = { screen = Screen.HOME },
+            onDone = { screen = Screen.HOME; flash("PIN changed") },
         )
     }
 }
@@ -177,6 +219,10 @@ private fun BackupHome(
     setUp: Boolean,
     loadingMeta: Boolean,
     meta: BackupService.BackupMeta?,
+    statusError: String?,
+    actionError: String?,
+    toast: String?,
+    backingUp: Boolean,
     driveEnabled: Boolean,
     driveMeta: GoogleDriveBackupService.DriveBackupMeta?,
     driveBusy: Boolean,
@@ -190,7 +236,20 @@ private fun BackupHome(
     onChangePin: () -> Unit,
 ) {
     BackupScaffold(title = "Backup & Recovery", onBack = onBack) {
-        Spacer(Modifier.height(8.dp))
+        // Outcome toast — auto-dismisses; sits at the top where it reads as a receipt.
+        if (toast != null) {
+            Text(
+                toast,
+                style = VoiidFont.rounded(13, FontWeight.SemiBold),
+                color = VoiidColor.success,
+                modifier = Modifier.fillMaxWidth()
+                    .clip(RoundedCornerShape(VoiidRadius.md))
+                    .background(VoiidColor.success.copy(alpha = 0.10f))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+            )
+            Spacer(Modifier.height(12.dp))
+        }
+        Spacer(Modifier.height(4.dp))
         Text(
             "Your messages are end-to-end encrypted. A backup lets you restore them on a " +
                 "new device using your PIN or 24-word recovery phrase. Only you can unlock it.",
@@ -210,9 +269,7 @@ private fun BackupHome(
                 setUp && meta != null -> {
                     Text("Backup on", style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.success)
                     Spacer(Modifier.height(4.dp))
-                    Text("Last backup: ${formatUpdatedAt(meta.updated_at)}",
-                        style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
-                    Text("Size: ${formatSize(meta.size_bytes)}",
+                    Text("Last backup: ${formatUpdatedAt(meta.updated_at)} · ${formatSize(meta.size_bytes)}",
                         style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
                 }
                 setUp -> {
@@ -227,6 +284,12 @@ private fun BackupHome(
                         style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
                 }
             }
+            // The refresh itself failing is its own state — shown WITHOUT erasing the last
+            // good metadata above.
+            statusError?.let {
+                Spacer(Modifier.height(6.dp))
+                Text(it, style = VoiidFont.rounded(13), color = VoiidColor.error)
+            }
         }
 
         Spacer(Modifier.height(24.dp))
@@ -234,7 +297,11 @@ private fun BackupHome(
         if (!setUp) {
             BackupButton("Set up backup", enabled = true, onClick = onSetup)
         } else {
-            BackupButton("Back up now", enabled = true, onClick = onBackupNow)
+            BackupButton(if (backingUp) "Backing up…" else "Back up now", enabled = !backingUp, onClick = onBackupNow)
+            actionError?.let {
+                Spacer(Modifier.height(8.dp))
+                Text(it, style = VoiidFont.rounded(13), color = VoiidColor.error)
+            }
             Spacer(Modifier.height(12.dp))
             BackupSecondaryButton("View recovery phrase", onClick = onViewPhrase)
             Spacer(Modifier.height(12.dp))
@@ -315,10 +382,10 @@ private fun BackupSetupFlow(manager: BackupManager, onBack: () -> Unit, onDone: 
     when (step) {
         SetupStep.PIN -> PinEntryScreen(
             title = "Choose a PIN",
-            subtitle = "Pick a 4–8 digit PIN. You'll need it to restore your chats on a new device.",
+            subtitle = "Pick a 6-digit PIN. You'll need it to restore your chats on a new device.",
             value = pin, onValueChange = { pin = it; error = null },
             error = error, busy = false, cta = "Next",
-            ctaEnabled = pin.length in 4..8,
+            ctaEnabled = pin.length == VOIID_PIN_LENGTH,
             onBack = onBack,
             onSubmit = { step = SetupStep.CONFIRM; error = null },
         )
@@ -327,7 +394,7 @@ private fun BackupSetupFlow(manager: BackupManager, onBack: () -> Unit, onDone: 
             subtitle = "Enter the same PIN again.",
             value = confirm, onValueChange = { confirm = it; error = null },
             error = error, busy = busy, cta = "Continue",
-            ctaEnabled = confirm.length in 4..8 && !busy,
+            ctaEnabled = confirm.length == VOIID_PIN_LENGTH && !busy,
             onBack = { step = SetupStep.PIN; confirm = ""; error = null },
             onSubmit = {
                 if (confirm != pin) { error = "PINs don't match."; confirm = ""; return@PinEntryScreen }
@@ -405,10 +472,10 @@ private fun ChangePinScreen(manager: BackupManager, onBack: () -> Unit, onDone: 
     if (!confirming) {
         PinEntryScreen(
             title = "New PIN",
-            subtitle = "Choose a new 4–8 digit PIN.",
+            subtitle = "Choose a new 6-digit PIN.",
             value = newPin, onValueChange = { newPin = it; error = null },
             error = error, busy = false, cta = "Next",
-            ctaEnabled = newPin.length in 4..8,
+            ctaEnabled = newPin.length == VOIID_PIN_LENGTH,
             onBack = onBack,
             onSubmit = { confirming = true; error = null },
         )
@@ -418,7 +485,7 @@ private fun ChangePinScreen(manager: BackupManager, onBack: () -> Unit, onDone: 
             subtitle = "Enter the new PIN again.",
             value = confirm, onValueChange = { confirm = it; error = null },
             error = error, busy = busy, cta = if (busy) "Saving…" else "Save",
-            ctaEnabled = confirm.length in 4..8 && !busy,
+            ctaEnabled = confirm.length == VOIID_PIN_LENGTH && !busy,
             onBack = { confirming = false; confirm = ""; error = null },
             onSubmit = {
                 if (confirm != newPin) { error = "PINs don't match."; confirm = ""; return@PinEntryScreen }
@@ -439,12 +506,20 @@ private fun ChangePinScreen(manager: BackupManager, onBack: () -> Unit, onDone: 
 
 // MARK: - Shared building blocks (internal — reused by the login-restore flow)
 
+/** The backup PIN is EXACTLY SIX digits — setup, confirm, change, and restore all enforce it. */
+internal const val VOIID_PIN_LENGTH = 6
+
 /** Simple full-screen scaffold with a circular back button + title, matching onboarding. */
 @Composable
-internal fun BackupScaffold(title: String, onBack: () -> Unit, content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
+internal fun BackupScaffold(
+    title: String,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
+) {
     val haptics = LocalVoiidHaptics.current
     Column(
-        Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding().navigationBarsPadding(),
+        modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding().navigationBarsPadding(),
     ) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(56.dp),
@@ -517,7 +592,7 @@ internal fun PinEntryScreen(
         Spacer(Modifier.height(8.dp))
         Text(subtitle, style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
         Spacer(Modifier.height(28.dp))
-        PinField(value = value, onValueChange = { onValueChange(it.filter(Char::isDigit).take(8)) })
+        PinField(value = value, onValueChange = { onValueChange(it.filter(Char::isDigit).take(VOIID_PIN_LENGTH)) })
         error?.let {
             Spacer(Modifier.height(10.dp))
             Text(it, style = VoiidFont.rounded(13), color = VoiidColor.error)

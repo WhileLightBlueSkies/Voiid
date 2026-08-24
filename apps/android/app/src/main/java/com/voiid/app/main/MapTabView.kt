@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -65,6 +66,7 @@ import com.voiid.app.model.ShareState
 import com.voiid.app.net.LocationShareEngine
 import com.voiid.app.net.MapPlaceSearch
 import com.voiid.app.store.UserDirectory
+import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.VoiidPrimaryButton
 import com.voiid.app.ui.components.VoiidToggle
 import com.voiid.app.ui.theme.LocalVoiidDark
@@ -89,6 +91,7 @@ import kotlinx.coroutines.delay
 fun MapTabView(map: MapStore, chat: ChatStore, onOpenChatWithUser: ((String) -> Unit)? = null) {
     val context = LocalContext.current
     val visibility by map.visibility.collectAsState()
+    val ghostUntil by map.ghostUntil.collectAsState()
     val audience by map.audience.collectAsState()
     val subjectsMap by map.subjects.collectAsState()
     val onboarded by map.onboarded.collectAsState()
@@ -134,6 +137,9 @@ fun MapTabView(map: MapStore, chat: ChatStore, onOpenChatWithUser: ((String) -> 
     /** Which face the audience sheet opens on. Reset to CHOOSE by every entry point that is
      *  picking an audience, so a previous MANAGE opening can never leak into it. */
     var audienceMode by remember { mutableStateOf(MapAudienceMode.CHOOSE) }
+    // Ghost Mode asks HOW LONG before going dark — one hour, until tomorrow, or until turned
+    // off. Mirrors the iOS confirmationDialog.
+    var showGhostChooser by remember { mutableStateOf(false) }
 
     // ---- place search (Feature 4) -------------------------------------------------------
     var searchQuery by remember { mutableStateOf("") }
@@ -219,18 +225,42 @@ fun MapTabView(map: MapStore, chat: ChatStore, onOpenChatWithUser: ((String) -> 
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text("Map", style = VoiidFont.rounded(24, FontWeight.Bold), color = VoiidColor.textPrimary, modifier = Modifier.weight(1f))
-            // Ghost toggle: ON = ghost (hidden). Turning OFF re-opens the picker if you have no
-            // audience yet; otherwise it re-mints a fresh key and re-appears.
-            Text(
-                if (visibility == MapVisibility.GHOST) "Ghost" else "Visible",
-                style = VoiidFont.rounded(13, FontWeight.Medium),
-                color = VoiidColor.textSecondary,
-            )
+            // Ghost toggle: ON opens the duration chooser (never silently indefinite). Turning
+            // OFF re-opens the picker if you have no audience yet; otherwise it re-mints a
+            // fresh key and re-appears.
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    if (visibility == MapVisibility.GHOST) "Ghost" else "Visible",
+                    style = VoiidFont.rounded(13, FontWeight.Medium),
+                    color = VoiidColor.textSecondary,
+                )
+                // Expiry display for a timed ghost — the user should see when they reappear.
+                if (visibility == MapVisibility.GHOST && ghostUntil > 0L) {
+                    val fmt = remember(ghostUntil) {
+                        android.text.format.DateFormat.getTimeFormat(context).format(java.util.Date(ghostUntil))
+                    }
+                    Text(
+                        "until $fmt",
+                        style = VoiidFont.rounded(11),
+                        color = VoiidColor.primary,
+                    )
+                }
+            }
             Spacer(Modifier.size(10.dp))
             VoiidToggle(checked = visibility == MapVisibility.GHOST) { ghostOn ->
-                if (ghostOn) map.goGhost()
+                if (ghostOn) showGhostChooser = true
                 else if (audience.isEmpty()) requestThenPick() else map.goVisible()
             }
+        }
+
+        if (showGhostChooser) {
+            GhostDurationChooser(
+                onChoose = { durationMs ->
+                    showGhostChooser = false
+                    map.goGhost(durationMs)
+                },
+                onDismiss = { showGhostChooser = false },
+            )
         }
 
         // Going visible can fail (offline / server down). The pill below reflects the CONFIRMED
@@ -315,10 +345,68 @@ fun MapTabView(map: MapStore, chat: ChatStore, onOpenChatWithUser: ((String) -> 
             // setAudience() (which removeFromAudience routes through) revokes and rekeys, so the
             // sheet stays open and simply re-renders the shorter list from the audience flow.
             onRemove = { userId -> map.removeFromAudience(userId) },
+            // Manage → CHOOSE in place: Android's sheet is one composable, so unlike iOS no
+            // dismiss-and-represent round trip is needed — flipping the mode re-renders it
+            // as the scope chooser, and confirming persists the newly selected users.
+            onAddPeople = { audienceMode = MapAudienceMode.CHOOSE },
             onStopAll = { map.killSwitch(); showAudience = false },
             onDismiss = { showAudience = false },
         )
     }
+}
+
+/**
+ * Ghost Mode duration chooser — one hour, until tomorrow (local midnight), or until turned
+ * off. Mirrors the iOS confirmationDialog copy exactly.
+ */
+@Composable
+private fun GhostDurationChooser(
+    onChoose: (Long) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val haptics = LocalVoiidHaptics.current
+    com.voiid.app.ui.components.VoiidDialogCustom(onDismissRequest = onDismiss) {
+        Spacer(Modifier.height(20.dp))
+        Text("Ghost Mode", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+        Text(
+            "While ghosted you're hidden from everyone and your location isn't taken at all.",
+            style = VoiidFont.rounded(14), color = VoiidColor.textPrimary,
+            modifier = Modifier.padding(top = 6.dp),
+        )
+        Spacer(Modifier.height(8.dp))
+        GhostOption("For 1 hour") {
+            haptics.selection()
+            onChoose(System.currentTimeMillis() + 3600_000L)
+        }
+        GhostOption("Until tomorrow") {
+            haptics.selection()
+            val cal = java.util.Calendar.getInstance()
+            cal.set(java.util.Calendar.HOUR_OF_DAY, 0)
+            cal.set(java.util.Calendar.MINUTE, 0)
+            cal.set(java.util.Calendar.SECOND, 0)
+            cal.set(java.util.Calendar.MILLISECOND, 0)
+            cal.add(java.util.Calendar.DAY_OF_YEAR, 1)   // start of tomorrow, local
+            onChoose(cal.timeInMillis)
+        }
+        GhostOption("Until I turn it off") {
+            haptics.selection()
+            onChoose(0L)
+        }
+        com.voiid.app.ui.components.VoiidDialogAction("Cancel") { onDismiss() }
+        Spacer(Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun GhostOption(label: String, onClick: () -> Unit) {
+        Text(
+            label,
+            style = VoiidFont.rounded(15, FontWeight.Medium),
+            color = VoiidColor.primary,
+            modifier = Modifier
+                .padding(vertical = 8.dp)
+                .clickable(onClick = onClick),
+    )
 }
 
 /** The persistent, unmissable visibility indicator (§8). Never absent, never ambiguous. */

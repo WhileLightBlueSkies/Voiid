@@ -213,83 +213,70 @@ fun ContactProfileView(
             "block" -> if (isBlocked) "Unblock" else "Block"
             else -> "Report"
         }
-        androidx.compose.material3.AlertDialog(
+        com.voiid.app.ui.components.VoiidDialog(
             onDismissRequest = { confirm = null },
-            containerColor = VoiidColor.surfaceCard,
-            title = {
-                Text(title, style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
-            },
-            text = {
-                Text(body, style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
-            },
-            confirmButton = {
-                androidx.compose.material3.TextButton(onClick = {
-                    val chosen = which
-                    confirm = null
-                    when (chosen) {
-                        // The only one wired to anything. Clearing dismisses the profile too:
-                        // the chat behind it is now empty, and staying here would leave the
-                        // user two screens deep in a conversation that no longer has content.
-                        "clear" -> { onClearChat(); onBack() }
-                        // Block / unblock, whichever the current state calls for. The
-                        // service rolls its own optimistic change back on failure, so the
-                        // row returns to its previous label by itself; this only has to
-                        // say what happened. A silent failure is the dangerous case —
-                        // someone believing they are protected when they are not.
-                        "block" -> {
-                            val peer = conversation.peerUserId
-                            if (peer == null) {
-                                blockFailure = "This conversation has no contact to block."
-                            } else {
-                                val wasBlocked = isBlocked
-                                scope.launch {
-                                    val ok = if (wasBlocked) {
-                                        BlockService.unblock(context, peer)
-                                    } else {
-                                        BlockService.block(
-                                            context, peer,
-                                            displayName = conversation.title,
-                                            username = username,
-                                            photoUrl = photoUrl,
-                                        )
-                                    }
-                                    if (!ok) {
-                                        blockFailure = if (wasBlocked)
-                                            "Check your connection and try again. " +
-                                            "${conversation.title} is still blocked."
-                                        else
-                                            "Check your connection and try again. " +
-                                            "${conversation.title} has not been blocked."
-                                    }
+            title = title,
+            body = body,
+            confirmLabel = action,
+            onConfirm = {
+                val chosen = which
+                confirm = null
+                when (chosen) {
+                    // The only one wired to anything. Clearing dismisses the profile too:
+                    // the chat behind it is now empty, and staying here would leave the
+                    // user two screens deep in a conversation that no longer has content.
+                    "clear" -> { onClearChat(); onBack() }
+                    // Block / unblock, whichever the current state calls for. The
+                    // service rolls its own optimistic change back on failure, so the
+                    // row returns to its previous label by itself; this only has to
+                    // say what happened. A silent failure is the dangerous case —
+                    // someone believing they are protected when they are not.
+                    "block" -> {
+                        val peer = conversation.peerUserId
+                        if (peer == null) {
+                            blockFailure = "This conversation has no contact to block."
+                        } else {
+                            val wasBlocked = isBlocked
+                            scope.launch {
+                                val ok = if (wasBlocked) {
+                                    BlockService.unblock(context, peer)
+                                } else {
+                                    BlockService.block(
+                                        context, peer,
+                                        displayName = conversation.title,
+                                        username = username,
+                                        photoUrl = photoUrl,
+                                    )
+                                }
+                                if (!ok) {
+                                    blockFailure = if (wasBlocked)
+                                        "Check your connection and try again. " +
+                                        "${conversation.title} is still blocked."
+                                    else
+                                        "Check your connection and try again. " +
+                                        "${conversation.title} has not been blocked."
                                 }
                             }
                         }
-                        // Report opens the SHEET rather than submitting here. The
-                        // confirmation only establishes intent; the reason and the
-                        // reporter's own words are chosen in ReportSheet, which has
-                        // existed and been reachable from nowhere until now.
-                        else -> showReportSheet = true
                     }
-                }) { Text(action, color = VoiidColor.error) }
-            },
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { confirm = null }) {
-                    Text("Cancel", color = VoiidColor.textSecondary)
+                    // Report opens the SHEET rather than submitting here. The
+                    // confirmation only establishes intent; the reason and the
+                    // reporter's own words are chosen in ReportSheet, which has
+                    // existed and been reachable from nowhere until now.
+                    else -> showReportSheet = true
                 }
             },
+            confirmDestructive = true,
         )
     }
     notImplemented?.let { msg ->
-        androidx.compose.material3.AlertDialog(
+        com.voiid.app.ui.components.VoiidDialog(
             onDismissRequest = { notImplemented = null },
-            containerColor = VoiidColor.surfaceCard,
-            title = { Text("Not available yet", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary) },
-            text = { Text(msg, style = VoiidFont.rounded(14), color = VoiidColor.textSecondary) },
-            confirmButton = {
-                androidx.compose.material3.TextButton(onClick = { notImplemented = null }) {
-                    Text("OK", color = VoiidColor.primary)
-                }
-            },
+            title = "Not available yet",
+            body = msg,
+            confirmLabel = "OK",
+            onConfirm = { notImplemented = null },
+            cancelLabel = null,
         )
     }
 
@@ -318,20 +305,13 @@ fun ContactProfileView(
     }
 
     blockFailure?.let { msg ->
-        androidx.compose.material3.AlertDialog(
+        com.voiid.app.ui.components.VoiidDialog(
             onDismissRequest = { blockFailure = null },
-            containerColor = VoiidColor.surfaceCard,
-            title = {
-                Text(if (isBlocked) "Couldn’t unblock" else "Couldn’t block",
-                     style = VoiidFont.rounded(17, FontWeight.SemiBold),
-                     color = VoiidColor.textPrimary)
-            },
-            text = { Text(msg, style = VoiidFont.rounded(14), color = VoiidColor.textSecondary) },
-            confirmButton = {
-                androidx.compose.material3.TextButton(onClick = { blockFailure = null }) {
-                    Text("OK", color = VoiidColor.primary)
-                }
-            },
+            title = if (isBlocked) "Couldn’t unblock" else "Couldn’t block",
+            body = msg,
+            confirmLabel = "OK",
+            onConfirm = { blockFailure = null },
+            cancelLabel = null,
         )
     }
 
@@ -719,7 +699,14 @@ fun ContactProfileView(
         SharedMediaSheet(conversationId = conversation.id, onDismiss = { showAllMedia = false })
     }
     if (viewPhoto) {
-        ProfilePhotoViewer(title = conversation.title, onClose = { viewPhoto = false })
+        val viewerPhoto = photoUrl
+            ?: UserDirectory.photoUrl(conversation.peerUserId ?: "")
+            ?: conversation.photoURL
+        ProfilePhotoViewer(
+            title = conversation.title,
+            photoRef = viewerPhoto?.takeIf { it.isNotBlank() },
+            onClose = { viewPhoto = false },
+        )
     }
     // Safety number, opened from the Encryption card. Full-screen: the digits are read aloud in
     // 5-groups and need the whole width.

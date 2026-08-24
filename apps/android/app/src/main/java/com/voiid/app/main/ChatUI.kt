@@ -112,6 +112,27 @@ fun bubbleShape(isMine: Boolean): Shape = RoundedCornerShape(
     bottomStart = if (isMine) 16.dp else 0.dp,
 )
 
+// MARK: - Bubble-aware colours
+//
+// YOUR bubble is filled peacock teal, so anything drawn on it must invert. Reading the shared
+// text tokens directly would put dark ink on the mid-dark teal fill. Mirrors iOS `bubbleText`,
+// `bubbleTextSecondary`, and `bubbleAccent` in ChatDetailView.swift.
+
+/** Body text on this bubble. */
+@Composable
+internal fun bubbleText(mine: Boolean): Color =
+    if (mine) VoiidColor.textOnBubble else VoiidColor.textPrimary
+
+/** Secondary ink — timestamps, "Forwarded", quoted body — on this bubble. */
+@Composable
+internal fun bubbleTextSecondary(mine: Boolean): Color =
+    if (mine) VoiidColor.textOnBubble.copy(alpha = 0.75f) else VoiidColor.textSecondary
+
+/** Accent for the quoted-reply rail and its author line. */
+@Composable
+internal fun bubbleAccent(mine: Boolean): Color =
+    if (mine) VoiidColor.textOnBubble.copy(alpha = 0.9f) else VoiidColor.primary
+
 /** Stable per-sender accent color for group sender names (WhatsApp-style). */
 fun senderColor(senderId: String): Color {
     val palette = listOf(0xFFC0556B, 0xFF3E9E6E, 0xFF4D7EA8, 0xFFD8A24A, 0xFF8E5BA6, 0xFFBA6B3D, 0xFF2A9D8F)
@@ -236,7 +257,14 @@ fun MessageBubble(
                         Column(
                             modifier = Modifier
                                 .clip(bubbleShape(mine))
-                                .background(if (mine) VoiidColor.bubbleReceived else VoiidColor.surfaceCard)
+                                .background(if (mine) VoiidColor.bubbleSent else VoiidColor.bubbleReceived)
+                                // Their bubble is near-white on a near-white ground in LIGHT
+                                // mode, so it needs a hairline to hold its edge; the filled
+                                // teal needs none. Mirrors iOS.
+                                .then(
+                                    if (!mine) Modifier.border(0.5.dp, VoiidColor.divider, bubbleShape(mine))
+                                    else Modifier
+                                )
                                 // iOS opens the action menu on LONG-PRESS (0.3s) + rigid haptic;
                                 // a plain tap only toggles selection while in selection mode.
                                 .combinedClickable(
@@ -247,7 +275,7 @@ fun MessageBubble(
                                     },
                                     onClick = { if (selectionMode) onSelectTap() },
                                 )
-                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalArrangement = Arrangement.spacedBy(3.dp),
                         ) {
                             BubbleInner(message, isGroup, isLastMine, onVote)
@@ -305,25 +333,26 @@ private fun BubbleInner(message: VMessage, isGroup: Boolean, isLastMine: Boolean
     // "Forwarded" tag
     if (message.forwarded) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-            Icon(Icons.AutoMirrored.Filled.Forward, null, tint = VoiidColor.textSecondary, modifier = Modifier.size(12.dp))
-            Text("Forwarded", style = VoiidFont.rounded(11), color = VoiidColor.textSecondary)
+            Icon(Icons.AutoMirrored.Filled.Forward, null, tint = bubbleTextSecondary(mine), modifier = Modifier.size(12.dp))
+            Text("Forwarded", style = VoiidFont.rounded(11), color = bubbleTextSecondary(mine))
         }
     }
-    // Quoted reply
+    // Quoted reply. A translucent white scrim reads correctly on BOTH the filled teal and the
+    // light card; `fieldFill` is a light token and vanished on teal. Mirrors iOS.
     if (message.replyToText != null) {
         Row(
             Modifier
                 .clip(RoundedCornerShape(8.dp))
-                .background(VoiidColor.fieldFill.copy(alpha = 0.7f))
+                .background(if (mine) Color.White.copy(alpha = 0.16f) else VoiidColor.fieldFill.copy(alpha = 0.7f))
                 .padding(6.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Box(Modifier.width(3.dp).height(32.dp).clip(RoundedCornerShape(2.dp)).background(VoiidColor.primary))
+            Box(Modifier.width(3.dp).height(32.dp).clip(RoundedCornerShape(2.dp)).background(bubbleAccent(mine)))
             Column {
                 if (!message.replyToSender.isNullOrEmpty()) {
-                    Text(message.replyToSender, style = VoiidFont.rounded(11, FontWeight.SemiBold), color = VoiidColor.primary)
+                    Text(message.replyToSender, style = VoiidFont.rounded(11, FontWeight.SemiBold), color = bubbleAccent(mine))
                 }
-                Text(message.replyToText, style = VoiidFont.rounded(12), color = VoiidColor.textSecondary, maxLines = 2)
+                Text(message.replyToText, style = VoiidFont.rounded(12), color = bubbleTextSecondary(mine), maxLines = 2)
             }
         }
     }
@@ -340,8 +369,8 @@ private fun BubbleInner(message: VMessage, isGroup: Boolean, isLastMine: Boolean
 
     if (message.deletedForEveryone) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-            Icon(Icons.Default.Block, null, tint = VoiidColor.textSecondary, modifier = Modifier.size(13.dp))
-            Text("This message was deleted", style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
+            Icon(Icons.Default.Block, null, tint = bubbleTextSecondary(mine), modifier = Modifier.size(13.dp))
+            Text("This message was deleted", style = VoiidFont.rounded(14), color = bubbleTextSecondary(mine))
         }
         return
     }
@@ -363,7 +392,7 @@ private fun BubbleInner(message: VMessage, isGroup: Boolean, isLastMine: Boolean
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Text(
-                styledText(message.text), style = VoiidFont.rounded(15), color = VoiidColor.textPrimary,
+                styledText(message.text, mine), style = VoiidFont.rounded(15), color = bubbleText(mine),
                 modifier = Modifier.weight(1f, fill = false),
             )
             MetaRow(message, isLastMine)
@@ -371,8 +400,18 @@ private fun BubbleInner(message: VMessage, isGroup: Boolean, isLastMine: Boolean
         // Non-text: content, then the meta row beneath it (iOS `content; metaRow.padding(.top, 2)`).
         MessageKind.IMAGE -> {
             val ref = message.mediaRef
+            // iOS taps message media into a full-screen viewer; the bubble exposes the tap.
+            var viewingFull by remember(message.id) { mutableStateOf(false) }
             if (ref != null) {
-                AsyncMediaImage(ref)
+                AsyncMediaImage(ref, onTap = { viewingFull = true })
+                if (viewingFull) {
+                    val ctx = androidx.compose.ui.platform.LocalContext.current
+                    com.voiid.app.ui.components.VoiidPhotoViewer(
+                        title = null,
+                        onClose = { viewingFull = false },
+                        load = { loadMediaBitmap(ctx, ref) },
+                    )
+                }
             } else {
                 Box(
                     modifier = Modifier.size(200.dp).clip(RoundedCornerShape(12.dp)).background(VoiidColor.accent.copy(alpha = 0.4f)),
@@ -398,7 +437,7 @@ private fun BubbleInner(message: VMessage, isGroup: Boolean, isLastMine: Boolean
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Text(
-                styledText(message.text), style = VoiidFont.rounded(15), color = VoiidColor.textPrimary,
+                styledText(message.text, mine), style = VoiidFont.rounded(15), color = bubbleText(mine),
                 modifier = Modifier.weight(1f, fill = false),
             )
             MetaRow(message, isLastMine)
@@ -507,12 +546,14 @@ private fun CallLogBubble(log: VCallLog, onCallBack: () -> Unit) {
 /** Time + delivery-tick row that flows inline after text (or beneath media) — iOS `metaRow`. */
 @Composable
 private fun MetaRow(message: VMessage, isLastMine: Boolean, modifier: Modifier = Modifier) {
+    val mine = message.isMine
+    val metaTint = bubbleTextSecondary(mine)
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Text(VoiidDate.bubbleTime(message.createdAt), style = VoiidFont.rounded(10), color = VoiidColor.textSecondary.copy(alpha = 0.8f))
+        Text(VoiidDate.bubbleTime(message.createdAt), style = VoiidFont.rounded(10), color = metaTint)
         // Clean text status (Sent / Delivered / Seen) under the LAST outgoing message
         // only, so older messages never change.
         if (message.isMine && isLastMine) {
@@ -524,23 +565,38 @@ private fun MetaRow(message: VMessage, isLastMine: Boolean, modifier: Modifier =
                 MessageStatus.FAILED -> "Failed"
             }
             Text(
-                "· $label", style = VoiidFont.rounded(10),
-                color = if (message.status == MessageStatus.READ) VoiidColor.primary else VoiidColor.textSecondary.copy(alpha = 0.8f),
+                "· $label",
+                // Seen steps up in WEIGHT rather than changing colour, so the distinction
+                // survives for a colour-blind user; Failed is the one state that gets the
+                // error hue because it is the only one the user must act on. Mirrors iOS.
+                style = VoiidFont.rounded(10, if (message.status == MessageStatus.READ) FontWeight.Bold else FontWeight.Medium),
+                color = when (message.status) {
+                    MessageStatus.READ -> if (mine) VoiidColor.textOnBubble else VoiidColor.primary
+                    MessageStatus.FAILED -> VoiidColor.error
+                    else -> metaTint
+                },
             )
         }
     }
 }
 
-/** Renders text with @mentions highlighted in the brand primary color. */
+/** Renders text with @mentions highlighted in a BUBBLE-AWARE accent — iOS `styledText`.
+ *
+ * Colours are set per word HERE, not by the caller: a mention on YOUR bubble cannot use
+ * `primary` — that IS the bubble's fill — so it uses the on-bubble ink at full strength,
+ * with weight carrying the emphasis.
+ */
 @Composable
-private fun styledText(text: String) = buildAnnotatedString {
+private fun styledText(text: String, mine: Boolean) = buildAnnotatedString {
+    val base = bubbleText(mine)
+    val mention = if (mine) VoiidColor.textOnBubble else VoiidColor.primary
     text.split(" ").forEachIndexed { i, word ->
         if (i > 0) append(" ")
         val isMention = word.startsWith("@") && word.length > 1
         if (isMention) {
-            withStyle(SpanStyle(color = VoiidColor.primary, fontWeight = FontWeight.SemiBold)) { append(word) }
+            withStyle(SpanStyle(color = mention, fontWeight = FontWeight.SemiBold)) { append(word) }
         } else {
-            append(word)
+            withStyle(SpanStyle(color = base)) { append(word) }
         }
     }
 }

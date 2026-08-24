@@ -36,11 +36,9 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -64,6 +62,8 @@ import com.voiid.app.model.ClipsStore
 import com.voiid.app.model.VClip
 import com.voiid.app.ui.components.LocalVoiidHaptics
 import com.voiid.app.ui.components.softClickable
+import com.voiid.app.ui.components.voiidPullRefresh
+import com.voiid.app.ui.components.rememberVoiidPullRefresh
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import java.io.ByteArrayOutputStream
@@ -88,6 +88,7 @@ fun MyClipsView(
     var editing by remember { mutableStateOf<VClip?>(null) }
     var confirmingDelete by remember { mutableStateOf<VClip?>(null) }
 
+    val pull = rememberVoiidPullRefresh { clips.refreshMine() }
     LaunchedEffect(Unit) {
         if (!clips.myHasLoadedOnce) clips.refreshMine()
     }
@@ -96,7 +97,7 @@ fun MyClipsView(
             .collect { clips.loadMoreMineIfNeeded(it) }
     }
 
-    Column(Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding()) {
+    Column(Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding().voiidPullRefresh(pull, VoiidColor.primary)) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -156,30 +157,17 @@ fun MyClipsView(
     // Destructive and irreversible, so it gets a real confirmation. The message says what
     // delete does NOT do — see the note in routes/clips.ts.
     confirmingDelete?.let { clip ->
-        AlertDialog(
+        com.voiid.app.ui.components.VoiidDialog(
             onDismissRequest = { confirmingDelete = null },
-            title = { Text("Delete this clip?", color = VoiidColor.textPrimary) },
-            text = {
-                Text(
-                    "This removes it from Clips. People who already watched or saved it " +
-                        "may still have a copy.",
-                    style = VoiidFont.rounded(14),
-                    color = VoiidColor.textSecondary,
-                )
+            title = "Delete this clip?",
+            body = "This removes it from Clips. People who already watched or saved it " +
+                "may still have a copy.",
+            confirmLabel = "Delete",
+            onConfirm = {
+                clips.deleteClip(clip.id)
+                confirmingDelete = null
             },
-            confirmButton = {
-                TextButton(onClick = {
-                    haptics.tap()
-                    clips.deleteClip(clip.id)
-                    confirmingDelete = null
-                }) { Text("Delete", color = VoiidColor.error) }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmingDelete = null }) {
-                    Text("Cancel", color = VoiidColor.textSecondary)
-                }
-            },
-            containerColor = VoiidColor.surfaceCard,
+            confirmDestructive = true,
         )
     }
 }
@@ -267,7 +255,6 @@ private fun ClipEditSheet(
 ) {
     val context = LocalContext.current
     val haptics = LocalVoiidHaptics.current
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     var caption by remember { mutableStateOf(clip.caption ?: "") }
     var newCover by remember { mutableStateOf<Bitmap?>(null) }
@@ -288,10 +275,10 @@ private fun ClipEditSheet(
     // cannot mint a pointless PATCH (and a new cover object) for no edit at all.
     val hasChanges = newCover != null || caption != (clip.caption ?: "")
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = VoiidColor.background,
+    com.voiid.app.ui.components.VoiidSheet(
+        visible = true,
+        onDismiss = onDismiss,
+        detents = listOf(com.voiid.app.ui.components.VoiidDetent.Medium),
     ) {
         Column(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 32.dp),

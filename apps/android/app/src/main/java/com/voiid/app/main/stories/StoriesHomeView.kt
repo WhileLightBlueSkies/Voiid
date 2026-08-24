@@ -35,6 +35,8 @@ import com.voiid.app.model.StoriesStore
 import com.voiid.app.model.StoryContext
 import com.voiid.app.model.StoryUploadState
 import com.voiid.app.ui.components.softClickable
+import com.voiid.app.ui.components.voiidPullRefresh
+import com.voiid.app.ui.components.rememberVoiidPullRefresh
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 
@@ -52,9 +54,10 @@ fun StoriesHomeView(
     onOpenContext: (Int) -> Unit,
     onCompose: () -> Unit,
 ) {
+    val pull = rememberVoiidPullRefresh { stories.refresh() }
     LaunchedEffect(Unit) { stories.refresh() }
 
-    Box(Modifier.fillMaxSize().background(VoiidColor.background)) {
+    Box(Modifier.fillMaxSize().background(VoiidColor.background).voiidPullRefresh(pull, VoiidColor.primary)) {
         LazyColumn(
             Modifier.fillMaxSize().padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),

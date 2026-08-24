@@ -152,19 +152,17 @@ fun SeaBattleScreen(
     if (confirmResign) {
         // Confirmation, because the button sits next to the board and a resignation is
         // irreversible and counts as a loss (§2.6).
-        AlertDialog(
+        com.voiid.app.ui.components.VoiidDialog(
             onDismissRequest = { confirmResign = false },
-            title = { Text("Resign this match?") },
-            text = { Text("It counts as a loss.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirmResign = false
-                    engine.resignSeaBattle(context)
-                }) { Text("Resign") }
+            title = "Resign this match?",
+            body = "It counts as a loss.",
+            confirmLabel = "Resign",
+            onConfirm = {
+                confirmResign = false
+                engine.resignSeaBattle(context)
             },
-            dismissButton = {
-                TextButton(onClick = { confirmResign = false }) { Text("Keep playing") }
-            },
+            confirmDestructive = true,
+            cancelLabel = "Keep playing",
         )
     }
 

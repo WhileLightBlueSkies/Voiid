@@ -73,7 +73,7 @@ import kotlinx.coroutines.delay
 
 /** Splash → Terms → Permissions → Phone → OTP → Signup → Create Profile → main app. */
 
-enum class OnbStep { TERMS, PERMISSIONS, PHONE, OTP, SIGNUP, PROFILE }
+enum class OnbStep { TERMS, PERMISSIONS, PHONE, OTP, VERIFIED, SIGNUP, PROFILE }
 
 // Scopes for the splash→Terms shared-element logo glide, provided around the
 // outer (splash) AnimatedContent so the splash + Terms LogoMarks can be matched.
@@ -103,24 +103,36 @@ fun OnboardingFlow(session: AppSession) {
     var stack by remember { mutableStateOf(listOf(OnbStep.TERMS)) }
     var phone by remember { mutableStateOf("") }            // E.164, set by PhoneScreen
     var verificationId by remember { mutableStateOf("") }   // Firebase verificationId from sendCode
+    // Identity half from the Signup step, handed forward; the profile step performs the single
+    // server write. Mirrors iOS `ProfileDraft`.
+    var signupDraft by remember { mutableStateOf(SignupDraft()) }
+    // Which way Verified continues: true = returning user straight into the app,
+    // false = new user continuing to Signup.
+    var verifiedEntersApp by remember { mutableStateOf(false) }
     val current = stack.last()
+    val reduceMotion = com.voiid.app.ui.components.reduceMotionEnabled()
 
     fun push(step: OnbStep) { stack = stack + step }
     fun pop() { if (stack.size > 1) stack = stack.dropLast(1) }
 
-    BackHandler(enabled = stack.size > 1) { pop() }
+    // Verified is excluded: the moment is over — there is nothing to go back TO, because the
+    // number is verified. Mirrors iOS `navigationBarBackButtonHidden`.
+    BackHandler(enabled = stack.size > 1 && current != OnbStep.VERIFIED) { pop() }
 
     LaunchedEffect(Unit) {
-        delay(1900)
+        // 1.2s — long enough to read the mark; past that it reads as a load screen. iOS.
+        delay(1200)
         showSplash = false
     }
 
     SharedTransitionLayout(Modifier.fillMaxSize().background(VoiidColor.background)) {
         // Splash ↔ onboarding cross-fade. The "voiidLogo" shared element glides the
         // wordmark from the splash centre up to the Terms logo across this boundary.
+        // NO ANIMATION ON THE HANDOFF, deliberately — a plain cut. The old shared-element
+        // glide rasterised text mid-flight and read as a loading state (see the iOS note).
         AnimatedContent(
             targetState = showSplash,
-            transitionSpec = { fadeIn(tween(500)) togetherWith fadeOut(tween(500)) },
+            transitionSpec = { fadeIn(tween(1)) togetherWith fadeOut(tween(1)) },
             label = "splashToOnboarding",
         ) { splash ->
             CompositionLocalProvider(
@@ -134,23 +146,54 @@ fun OnboardingFlow(session: AppSession) {
                     AnimatedContent(
                         targetState = current,
                         transitionSpec = {
+                            // Hoisted read: the helper is @Composable; transitionSpec is not.
+                            val rm = reduceMotion
                             val forward = targetState.ordinal > initialState.ordinal
-                            val w = 300
-                            (slideInHorizontally { if (forward) w else -w } + fadeIn()) togetherWith
-                                (slideOutHorizontally { if (forward) -w else w } + fadeOut())
+                            if (rm) {
+                                // Reduce Motion: opacity feedback only — nothing travels.
+                                fadeIn(tween(180)) togetherWith fadeOut(tween(180))
+                            } else {
+                                val w = 300
+                                (slideInHorizontally { if (forward) w else -w } + fadeIn()) togetherWith
+                                    (slideOutHorizontally { if (forward) -w else w } + fadeOut())
+                            }
                         },
                         label = "onboardingStep",
                     ) { step ->
                         when (step) {
                             OnbStep.TERMS -> WelcomeTermsScreen(
                                 onContinue = { push(OnbStep.PERMISSIONS) },
-                                onExistingAccount = { session.completeOnboarding() },
                             )
                             OnbStep.PERMISSIONS -> PermissionsScreen(onContinue = { push(OnbStep.PHONE) })
                             OnbStep.PHONE -> PhoneScreen(onBack = ::pop, onContinue = { e164, vid -> phone = e164; verificationId = vid; push(OnbStep.OTP) })
-                            OnbStep.OTP -> OtpScreen(session = session, phoneE164 = phone, verificationId = verificationId, onBack = ::pop, onContinue = { push(OnbStep.SIGNUP) })
-                            OnbStep.SIGNUP -> SignupScreen(session = session, phone = phone, onBack = ::pop, onContinue = { push(OnbStep.PROFILE) })
-                            OnbStep.PROFILE -> CreateProfileScreen(session = session, onBack = ::pop, onFinish = { session.completeOnboarding() })
+                            OnbStep.OTP -> OtpScreen(
+                                session = session,
+                                phoneE164 = phone,
+                                verificationId = verificationId,
+                                onBack = ::pop,
+                                onContinue = { verifiedEntersApp = false; push(OnbStep.VERIFIED) },
+                                // Both successful OTP exits route through Verified rather than
+                                // jumping straight on: the code being accepted is the moment
+                                // the account becomes real, and login/E2E bootstrap are still
+                                // settling — the confirmation turns that wait into the honest
+                                // version of a loading state. Mirrors iOS.
+                                onVerifiedExistingUser = { verifiedEntersApp = true; push(OnbStep.VERIFIED) },
+                            )
+                            OnbStep.VERIFIED -> VerifiedScreen(onFinished = {
+                                if (verifiedEntersApp) session.completeOnboarding() else push(OnbStep.SIGNUP)
+                            })
+                            OnbStep.SIGNUP -> SignupScreen(
+                                session = session,
+                                phone = phone,
+                                onBack = ::pop,
+                                onContinue = { draft -> signupDraft = draft; push(OnbStep.PROFILE) },
+                            )
+                            OnbStep.PROFILE -> CreateProfileScreen(
+                                session = session,
+                                draft = signupDraft,
+                                onBack = ::pop,
+                                onFinish = { session.completeOnboarding() },
+                            )
                         }
                     }
                 }
@@ -181,9 +224,7 @@ fun SplashScreen() {
     Box(Modifier.fillMaxSize().background(VoiidColor.background), contentAlignment = Alignment.Center) {
         LogoMark(
             size = ellipse,
-            modifier = Modifier
-                .voiidSharedLogo()
-                .graphicsLayer { scaleX = scale; scaleY = scale; alpha = opacity },
+            modifier = Modifier.graphicsLayer { scaleX = scale; scaleY = scale; alpha = opacity },
         )
     }
 }

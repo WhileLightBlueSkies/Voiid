@@ -36,42 +36,51 @@ import com.voiid.app.ui.theme.VoiidRadius
 @Composable
 fun LegalDocumentScreen(document: LegalDocument, onBack: () -> Unit) {
     BackupScaffold(title = document.title, onBack = onBack) {
-        Spacer(Modifier.height(4.dp))
+        LegalDocumentBody(document)
+    }
+}
 
-        // The version is not decoration: consent is recorded against this exact string, so
-        // the screen has to show which string it is showing.
-        Text(
-            "Version ${document.version} · Effective ${document.effectiveDate}",
-            style = VoiidFont.rounded(12),
-            color = VoiidColor.textSecondary,
-        )
-        Spacer(Modifier.height(16.dp))
+/**
+ * The document content itself — version line, summary, sections, pending block — without any
+ * scaffold chrome, so it can render inside a sheet (onboarding terms) as well as full-screen.
+ */
+@Composable
+fun LegalDocumentBody(document: LegalDocument) {
+    Spacer(Modifier.height(4.dp))
 
+    // The version is not decoration: consent is recorded against this exact string, so
+    // the screen has to show which string it is showing.
+    Text(
+        "Version ${document.version} · Effective ${document.effectiveDate}",
+        style = VoiidFont.rounded(12),
+        color = VoiidColor.textSecondary,
+    )
+    Spacer(Modifier.height(16.dp))
+
+    Text(
+        document.summary,
+        style = VoiidFont.rounded(16, FontWeight.Medium),
+        color = VoiidColor.textPrimary,
+    )
+
+    document.sections.forEach { section ->
+        Spacer(Modifier.height(24.dp))
         Text(
-            document.summary,
-            style = VoiidFont.rounded(16, FontWeight.Medium),
+            section.heading,
+            style = VoiidFont.rounded(18, FontWeight.SemiBold),
             color = VoiidColor.textPrimary,
         )
-
-        document.sections.forEach { section ->
-            Spacer(Modifier.height(24.dp))
-            Text(
-                section.heading,
-                style = VoiidFont.rounded(18, FontWeight.SemiBold),
-                color = VoiidColor.textPrimary,
-            )
-            section.body.forEach { para ->
-                Spacer(Modifier.height(8.dp))
-                Paragraph(para)
-            }
+        section.body.forEach { para ->
+            Spacer(Modifier.height(8.dp))
+            Paragraph(para)
         }
-
-        if (document.pendingCounselOrBuild.isNotEmpty()) {
-            Spacer(Modifier.height(28.dp))
-            PendingBlock(document.pendingCounselOrBuild)
-        }
-        Spacer(Modifier.height(24.dp))
     }
+
+    if (document.pendingCounselOrBuild.isNotEmpty()) {
+        Spacer(Modifier.height(28.dp))
+        PendingBlock(document.pendingCounselOrBuild)
+    }
+    Spacer(Modifier.height(24.dp))
 }
 
 /** A bullet keeps its marker but gets a hanging indent, so wrapped lines line up under the

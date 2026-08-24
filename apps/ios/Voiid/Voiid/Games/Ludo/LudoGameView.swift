@@ -1,0 +1,561 @@
+//
+//  LudoGameView.swift
+//  Voiid
+//
+//  The Ludo match screen (§11): responsive portrait chrome — top bar (close / help / network
+//  capsule), two pod rows, the generated board as visual center, ONE global die that rests at
+//  the active player's anchor outside the board, bottom chat/emote tools.
+//
+//  NO TEXTUAL TURN BANNER EXISTS. Ownership is shown only by border hue + die pip color; the
+//  pod ring communicates HOW LONG. Legal-pawn halos and the die affordance teach the next
+//  action (§1, §11.1).
+//
+
+import SwiftUI
+
+struct LudoGameView: View {
+    let matchId: String
+    var conversationId: String?
+    var onClose: () -> Void
+    var onRematch: (String) -> Void
+
+    @StateObject private var engine = GamesEngine.shared
+    @StateObject private var coordinator = LudoPresentationCoordinator()
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    @State private var showExitConfirm = false
+    @State private var showHelp = false
+    @State private var showChat = false
+
+    /// Board square side, set by the layout pass and reused for tap math + animation centers.
+    @State private var boardSide: CGFloat = 0
+
+    var body: some View {
+        let state = engine.ludoV2?.state
+
+        ZStack {
+            LudoColorPaletteBridge.color(scheme).ignoresSafeArea()
+
+            VStack(spacing: 4) {
+                topBar(connected: state != nil)
+
+                if let s = state {
+                    PodRow(state: s, top: true)
+                    boardArea(state: s)
+                        .frame(maxWidth: .infinity)
+                    PodRow(state: s, top: false)
+                    bottomTools
+                } else if let err = engine.joinError {
+                    Spacer()
+                    Text(err).font(VoiidFont.rounded(15)).foregroundStyle(VoiidColor.error)
+                    Spacer()
+                } else {
+                    // Cold start draws the NEUTRAL generated board; never a token flash (§9).
+                    NeutralBoardSkeleton().padding(.horizontal, 12)
+                    Spacer()
+                }
+            }
+            .padding(.horizontal, 12)
+
+            // Exit confirmation ONLY during an active match (§11.5); backgrounding is not this.
+            if showExitConfirm, state?.isActive == true {
+                exitSheet
+            }
+            if showHelp {
+                LudoWalkthroughView(
+                    mode: .sandbox,
+                    clockNote: state?.isActive == true,
+                    onDismiss: { showHelp = false })
+            }
+            if showChat, let convo = engine.ludoConversationId ?? conversationId {
+                LudoChatSheet(matchId: matchId, conversationId: convo, onDismiss: { showChat = false })
+            }
+
+            // Result sheet over scrim; final board stays visible underneath (§11.5).
+            if let s = state, s.isFinished {
+                ResultSheet(
+                    state: s, matchId: matchId,
+                    onRematch: { id in onRematch(id) },
+                    onBack: { onClose() })
+            }
+        }
+        .task { await open() }
+        // Every NEW authoritative action enqueues its presentation beats exactly once;
+        // reconnects reset lastPresentedActionID so stale motion never replays (§9).
+        .onChange(of: engine.ludoV2?.state.lastAction?.id) { _, _ in
+            presentBeatsIfNeeded()
+        }
+        .onChange(of: reduceMotion) { _, enabled in coordinator.setReduceMotion(enabled) }
+        .onDisappear { coordinator.cancelAll() }
+    }
+
+    // MARK: Open / resync (§9)
+
+    private func open() async {
+        LudoBoardGeometry.selfCheck()          // DEBUG parity assertion against the fixture
+        coordinator.setReduceMotion(reduceMotion)
+        await engine.openLudo(matchId: matchId)
+        presentBeatsIfNeeded()
+    }
+
+    // MARK: Chrome
+
+    private func topBar(connected: Bool) -> some View {
+        let colors = LudoColors.resolve(scheme)
+        return HStack {
+            Button(action: { stateIsActive ? (showExitConfirm = true) : onClose() }) {
+                Text("×").font(.system(size: 26, weight: .regular))
+            }
+            .accessibilityLabel("Close")
+            .foregroundStyle(colors.textPrimary)
+
+            Spacer()
+
+            if !connected || engine.joinError != nil {
+                HStack(spacing: 4) {
+                    Circle().fill(VoiidColor.error).frame(width: 6, height: 6)
+                    Text("reconnecting")
+                        .font(VoiidFont.rounded(11))
+                        .foregroundStyle(VoiidColor.error)
+                }
+                .padding(.horizontal, 10).padding(.vertical, 3)
+                .background(Capsule().fill(VoiidColor.error.opacity(0.12)))
+                .accessibilityLabel("Reconnecting to the game server")
+            }
+
+            Spacer()
+
+            Button { showHelp = true } label: {
+                Text("?").font(VoiidFont.rounded(18, .semibold))
+            }
+            .accessibilityLabel("How to play")
+            .foregroundStyle(colors.textPrimary)
+        }
+        .frame(height: 44)
+    }
+
+    private var stateIsActive: Bool { engine.ludoV2?.state.isActive == true }
+
+    /// Fixed seats around the board (§11.2): green+yellow above, red+blue below. A duel has NO
+    /// pod for unassigned seats.
+    @ViewBuilder
+    private func PodRow(state: LudoGameStateV2, top: Bool) -> some View {
+        let seats = top ? [1, 2] : [0, 3]
+        HStack {
+            ForEach(seats, id: \.self) { seat in
+                if let sv = state.seat(bySeat: seat) {
+                    LudoPlayerPod(
+                        seatView: sv,
+                        active: !state.isFinished && state.turn?.seat == seat,
+                        ringFraction: ringFraction(state, seat),
+                        ringColorOverride: timerOverride(state, seat),
+                        accessibilityLabel: podAccessibility(sv, state))
+                    Spacer(minLength: 0)
+                } else {
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+    }
+
+    private func ringFraction(_ state: LudoGameStateV2, _ seat: Int) -> Double? {
+        guard !state.isFinished, let turn = state.turn, turn.seat == seat else { return nil }
+        return LudoTimerRing.state(opensAt: turn.opensAt, deadlineAt: turn.deadlineAt,
+                                   estimatedNowMs: engine.estimatedServerNowMs())?
+            .fractionRemaining
+    }
+
+    private func timerOverride(_ state: LudoGameStateV2, _ seat: Int) -> Color? {
+        guard !state.isFinished, let turn = state.turn, turn.seat == seat else { return nil }
+        let colors = LudoColors.resolve(scheme)
+        let remaining = turn.deadlineAt - engine.estimatedServerNowMs()
+        if remaining <= 2_000 { return colors.timerCritical }
+        if remaining <= 5_000 { return colors.timerWarning }
+        return nil
+    }
+
+    private func podAccessibility(_ sv: LudoSeatViewV2, _ state: LudoGameStateV2) -> String {
+        var s = "\(sv.displayName), \(sv.color.name)"
+        if !state.isFinished && state.turn?.seat == sv.seat { s += ", action" }
+        s += ", \(sv.finishedPawns) of 4 pawns home"
+        if sv.isDropped { s += ", left game" }
+        else if sv.connection == "disconnected" { s += ", disconnected" }
+        return s
+    }
+
+    // MARK: Board + die
+
+    @ViewBuilder
+    private func boardArea(state: LudoGameStateV2) -> some View {
+        GeometryReader { geo in
+            let side = min(geo.size.width, geo.size.height)
+            ZStack {
+                Canvas { ctx, size in
+                    let colors = LudoColors.resolve(scheme)
+                    drawBoard(&ctx, size: size, colors: colors, state: state)
+                }
+                .frame(width: side, height: side)
+                .contentShape(Rectangle())
+                .gesture(
+                    TapGesture().onEnded { handleBoardTap(in: side) }
+                )
+                .onAppear { if boardSide == 0 { boardSide = side } }
+                .onChange(of: side) { _, new in boardSide = new }
+
+                dieAnchorView(state: state)
+            }
+            .frame(width: geo.size.width, height: geo.size.height)
+        }
+        .aspectRatio(1, contentMode: .fit)
+    }
+
+    private func drawBoard(
+        _ ctx: inout GraphicsContext,
+        size: CGSize,
+        colors: LudoColors,
+        state: LudoGameStateV2,
+    ) {
+        let layout = LudoBoardGeometry.Layout(sideLength: size.width)
+        let dropped = Set(state.seats.filter { $0.isDropped }.map { $0.seat })
+
+        // Display-pawn override from the coordinator: mid-hop or capture-return; authoritative
+        // state already holds every destination and is never fed back by animation.
+        var override: (seat: Int, pawn: Int, center: CGPoint)?
+        if let h = coordinator.hopOverride {
+            override = (h.seat == -1 ? (state.turn?.seat ?? 0) : h.seat, h.pawn, h.center)
+        }
+        if let c = coordinator.captureReturn {
+            override = (c.seat, c.pawn, c.center)
+        }
+
+        LudoBoardCanvas.draw(
+            &ctx,
+            size: size,
+            colors: colors,
+            state: state,
+            sweep: sweepVisual,
+            displayOverride: override)
+    }
+
+    private var sweepVisual: LudoBoardSweep? { coordinator.sweep }
+
+    /// One global die resting at the ACTIVE player's anchor OUTSIDE the board (§11.3). It
+    /// never flies across the board during a roll — it tumbles in place at its anchor. The §12.3
+    /// sequence relocates it only after the border sweep completes (coordinator-ordered).
+    @ViewBuilder
+    private func dieAnchorView(state: LudoGameStateV2) -> some View {
+        let canRoll = state.isActive &&
+            state.turn?.phase == "awaitingRoll" &&
+            state.viewerSeat == state.turn?.seat
+
+        GeometryReader { geo in
+            // Anchors sit just outside each board edge, beside the owning pod's inner corner.
+            let inset: CGFloat = -LudoDimens.dieHitTarget / 2 + 6
+            let point: CGPoint = {
+                switch state.turn?.seat ?? 0 {
+                case 1: return CGPoint(x: inset, y: inset)                    // green top-left
+                case 2: return CGPoint(x: geo.size.width - inset, y: inset)   // yellow top-right
+                case 3: return CGPoint(x: geo.size.width - inset,
+                                       y: geo.size.height - inset)            // blue bottom-right
+                default: return CGPoint(x: inset, y: geo.size.height - inset) // red bottom-left
+                }
+            }()
+
+            dieView(state: state, canRoll: canRoll)
+                .frame(width: LudoDimens.dieHitTarget, height: LudoDimens.dieHitTarget)
+                .position(point)
+        }
+        .allowsHitTesting(true)
+    }
+
+    private func dieView(state: LudoGameStateV2, canRoll: Bool) -> some View {
+        let value = rollDisplayValue(state)
+        let pipsNeutral = state.isFinished || state.turn == nil
+        let pose = coordinator.rollPose.map { rp in
+            LudoDiePose(rotationXDeg: rp.rotationXDeg, rotationYDeg: rp.rotationYDeg,
+                        liftPx: rp.liftPx, scaleX: rp.scaleX, scaleY: rp.scaleY)
+        } ?? LudoDiePose.resting(value: value)
+
+        return ZStack {
+            Circle().fill(Color.clear).contentShape(Circle())
+            LudoDieCanvas(value: value, pose: pose, pipsNeutral: pipsNeutral,
+                          activeSeat: state.turn?.seat, side: dieSide)
+        }
+        .onTapGesture {
+            guard canRoll else { return }   // second tap while animating fast-forwards upstream
+            if coordinator.isAnimating { coordinator.cancelAll(); return }
+            engine.rollLudoV2()
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(LudoAccessibility.dieLabel(state: state, displayedValue: value))
+        .accessibilityAddTraits(canRoll ? [.isButton] : [])
+        .accessibilityHint(canRoll ? "Rolls the die" : "")
+    }
+
+    private var dieSide: CGFloat {
+        if UIDevice.current.userInterfaceIdiom == .pad { return LudoDimens.dieSizeTablet }
+        return compactLayout ? LudoDimens.dieSizeCompact : LudoDimens.dieSizeStandard
+    }
+
+    private var compactLayout: Bool { UIScreen.main.bounds.height < 700 }
+
+    private func rollDisplayValue(_ state: LudoGameStateV2) -> Int {
+        state.turn?.value ?? 1
+    }
+
+    // MARK: Taps on the board
+
+    private func handleBoardTap(in side: CGFloat) {
+        guard let state = engine.ludoV2?.state else { return }
+
+        // A tap during a hop chain fast-forwards the moving pawn (§15); sends NO input.
+        if coordinator.isAnimating {
+            coordinator.cancelAll()
+            return
+        }
+
+        // Resolve ONLY among server-legal tokens (§17).
+        guard let turn = state.turn, turn.phase == "awaitingMove",
+              state.viewerSeat == turn.seat,
+              let lastLocation = lastTapPoint else { return }
+
+        let layout = LudoBoardGeometry.Layout(sideLength: side)
+        let dropped = Set(state.seats.filter { $0.isDropped }.map { $0.seat })
+        let placed = LudoPawnLayer.layout(state: state, layout: layout, droppedSeats: dropped)
+        var legalBySeat: [Int: Set<Int>] = [turn.seat: Set(turn.legalTokenIds)]
+        legalBySeat[turn.seat] = Set(turn.legalTokenIds)
+
+        if let hit = LudoPawnLayer.hitTest(placed: placed, unit: layout.unit,
+                                           point: lastTapPoint ?? .zero,
+                                           legalTokensBySeat: legalBySeat) {
+            engine.moveLudoV2(token: hit.pawn)
+        }
+        self.lastTapPoint = nil
+    }
+
+    @State private var lastTapPoint: CGPoint?
+
+    // MARK: Beats wiring (§12.3, §15)
+
+    /// Called whenever a NEW authoritative action lands. Animates an action AT MOST ONCE via
+    /// `lastRenderedActionId`, and never replays stale motion after reconnect (§9).
+    private func presentBeatsIfNeeded() {
+        guard let frame = engine.ludoV2 else { return }
+        let s = frame.state
+        let actionID = s.lastAction?.id
+        guard actionID != lastPresentedActionID else { return }
+        lastPresentedActionID = actionID
+        coordinator.setReduceMotion(reduceMotion)
+
+        guard let action = s.lastAction else { return }
+        // §9: animate only when ≥200 ms of the intended window remains; else final positions.
+        let windowRemaining = action.presentationEndsAt - engine.estimatedServerNowMs()
+        guard windowRemaining >= 200 || action.type == "turnChanged" || action.type == "roll" else { return }
+
+        switch action.type {
+        case "turnChanged":
+            coordinator.enqueueTurnChange(fromSeat: action.fromSeat ?? action.actorSeat,
+                                          toSeat: action.actorSeat)
+        case "roll":
+            if let r = action.roll {
+                coordinator.enqueueRoll(rollId: r.rollId, value: r.value, matchId: matchId)
+            }
+        case "move", "capture", "autoTurn":
+            if let m = action.move {
+                enqueueMoveBeat(m, actorSeat: action.actorSeat)
+            }
+        default:
+            break   // drop/end carry no mandatory motion beyond final positions
+        }
+    }
+
+    private func enqueueMoveBeat(_ m: LudoActionMove, actorSeat: Int) {
+        guard boardSide > 0 else { return }
+        let layout = LudoBoardGeometry.Layout(sideLength: boardSide)
+
+        func center(of pos: Int) -> CGPoint? {
+            if pos >= 0 && pos < LudoRules.trackCount {
+                let c = LudoBoardGeometry.trackCoords[pos]
+                return layout.rect(of: LudoBoardGeometry.cell(c.0, c.1)).midPoint
+            }
+            if pos >= LudoRules.homeLaneBase,
+               pos < LudoRules.homeLaneBase + LudoRules.homeLaneCount {
+                let c = LudoBoardGeometry.homeLaneCoords[actorSeat][pos - LudoRules.homeLaneBase]
+                return layout.rect(of: LudoBoardGeometry.cell(c.0, c.1)).midPoint
+            }
+            return nil
+        }
+
+        var centers: [CGPoint] = []
+        if let start = center(of: m.from) { centers.append(start) }
+        centers.append(contentsOf: m.path.compactMap { center(of: $0) })
+
+        var yardSlot: CGPoint?
+        if let cap = m.captured {
+            yardSlot = layout.yardSlotCenter(seat: cap.seat, pawn: cap.tokenId)
+            if let fromC = center(of: cap.from), let slot = yardSlot {
+                coordinator.arcFrom = fromC
+                coordinator.arcMidpoint = CGPoint(x: (fromC.x + slot.x) / 2,
+                                                  y: min(fromC.y, slot.y) - layout.unit)
+            }
+        }
+        coordinator.enqueueMove(tokenId: m.tokenId, actorSeat: actorSeat, centers: centers,
+                                captured: m.captured, yardSlotCenter: yardSlot)
+    }
+
+    @State private var lastPresentedActionID: String?
+
+    // MARK: Bottom tools (§11.4)
+
+    private var bottomTools: some View {
+        HStack {
+            Button { showChat = true } label: {
+                Image(systemName: "bubble.left")
+                    .font(.system(size: 20))
+            }
+            .frame(height: 44)
+            .accessibilityLabel("Game chat")
+
+            Spacer()
+        }
+        .foregroundStyle(VoiidColor.textPrimary)
+    }
+
+    // MARK: Sheets
+
+    private var exitSheet: some View {
+        let colors = LudoColors.resolve(scheme)
+        return ZStack {
+            colors.scrim.ignoresSafeArea()
+            VStack(spacing: 12) {
+                Text("Leave this game?")
+                    .font(VoiidFont.rounded(18, .semibold))
+                Text("You will forfeit this match.")
+                    .font(VoiidFont.rounded(13))
+                    .foregroundStyle(colors.textSecondary)
+                Button { showExitConfirm = false } label: { Text("Keep playing") }
+                    .buttonStyle(.borderedProminent)
+                    .frame(maxWidth: .infinity)
+                Button(role: .destructive) {
+                    showExitConfirm = false
+                    Task {
+                        await engine.forfeitLudo()
+                        onClose()
+                    }
+                } label: { Text("Forfeit and leave") }
+                    .frame(maxWidth: .infinity)
+            }
+            .padding(20)
+            .background(RoundedRectangle(cornerRadius: 20).fill(VoiidColor.surfaceCard))
+            .padding(.horizontal, 24)
+        }
+    }
+}
+
+/// Bridge so the screen's root background uses the ludo screen ground without leaking the
+/// whole palette into VoiidColor.
+enum LudoColorPaletteBridge {
+    static func color(_ scheme: ColorScheme) -> Color {
+        LudoColors.resolve(scheme).screenBackground
+    }
+}
+
+#if DEBUG
+/// Cold-start skeleton: neutral generated board until the snapshot arrives (§9).
+struct NeutralBoardSkeleton: View {
+    @Environment(\.colorScheme) private var scheme
+    var body: some View {
+        let colors = LudoColors.resolve(scheme)
+        Canvas { ctx, size in
+            ctx.fill(Path(roundedRect: CGRect(origin: .zero, size: size),
+                           cornerRadius: LudoDimens.boardCornerRadius),
+                     with: .color(colors.boardSurface))
+            let unit = size.width / CGFloat(LudoBoardGeometry.side)
+            for node in LudoBoardGeometry.cells {
+                switch node.role {
+                case .unused, .yard, .yardPocket:
+                    continue
+                default:
+                    let r = CGRect(x: CGFloat(node.x) * unit + 1,
+                                   y: CGFloat(node.y) * unit + 1,
+                                   width: unit - 2, height: unit - 2)
+                    ctx.fill(RoundedRectangle(cornerRadius: 3).path(in: r),
+                             with: .color(colors.trackCellFill.opacity(0.4)))
+                }
+            }
+        }
+        .aspectRatio(1, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: LudoDimens.boardCornerRadius))
+    }
+}
+#endif
+
+/// Terminal sheet over scrim (§11.5): winner name, completion count, captures, restrained
+/// code-drawn ripple in the winner hue, Rematch + Back to chat. No avatars/coins/confetti.
+struct ResultSheet: View {
+    let state: LudoGameStateV2
+    let matchId: String
+    let onRematch: (String) -> Void
+    let onBack: () -> Void
+
+    @Environment(\.colorScheme) private var scheme
+    @State private var firedRematch = false
+
+    var body: some View {
+        let colors = LudoColors.resolve(scheme)
+        let winner = state.seats.first { $0.seat == state.winnerSeat }
+        ZStack(alignment: .bottom) {
+            colors.scrim.ignoresSafeArea()
+            VStack(spacing: 10) {
+                Text(winner?.displayName ?? "")
+                    .font(VoiidFont.rounded(24, .bold))
+                    .foregroundStyle(colors.textPrimary)
+                Text("\(winner?.finishedPawns ?? 0)/4 home · \(winner?.captures ?? 0) captures")
+                    .font(VoiidFont.rounded(14, .semibold))
+                    .foregroundStyle(colors.textSecondary)
+
+                // Restrained code-drawn ripple in the winner hue, 420 ms equivalent.
+                RippleCircle(hue: colors.centerTriangle(state.winnerSeat ?? 0))
+                    .frame(width: 56, height: 56)
+                    .padding(.vertical, 8)
+
+                HStack(spacing: 12) {
+                    Button("Back to chat") { onBack() }
+                        .buttonStyle(.bordered)
+                        .frame(maxWidth: .infinity)
+                    Button("Rematch") {
+                        guard !firedRematch else { return }
+                        firedRematch = true
+                        Task {
+                            if let id = try? await GamesAPI().rematch(matchId: matchId).match_id {
+                                onRematch(id)
+                            }
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .frame(maxWidth: .infinity)
+                }
+            }
+            .padding(20)
+            .background(RoundedRectangle(cornerRadius: 20).fill(VoiidColor.surfaceCard))
+        }
+    }
+}
+
+/// The §11.5 ripple: one expanding ring + fading fill, drawn in code, runs once.
+struct RippleCircle: View {
+    let hue: Color
+    @State private var animate = false
+    var body: some View {
+        ZStack {
+            Circle().fill(hue.opacity(animate ? 0 : 0.25))
+            Circle().stroke(hue, lineWidth: animate ? 1 : 3)
+        }
+        .scaleEffect(animate ? 1.15 : 0.9)
+        .onAppear {
+            withAnimation(.easeOut(duration: 0.42)) { animate = true }
+        }
+        .accessibilityHidden(true)
+    }
+}

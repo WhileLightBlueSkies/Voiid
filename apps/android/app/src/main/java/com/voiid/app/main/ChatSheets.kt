@@ -27,9 +27,7 @@ import androidx.compose.material.icons.outlined.Circle
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -107,14 +105,13 @@ private fun PillSearchField(query: String, placeholder: String, onChange: (Strin
 @Composable
 fun ForwardSheet(chat: ChatStore, onForward: (List<String>) -> Unit, onDismiss: () -> Unit) {
     val haptics = LocalVoiidHaptics.current
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val selected = remember { mutableStateListOf<String>() }
     var query by remember { mutableStateOf("") }
 
     val all = chat.directConversations + chat.groupConversations
     val results = if (query.isBlank()) all else all.filter { it.title.contains(query, ignoreCase = true) }
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState, containerColor = VoiidColor.background, dragHandle = null) {
+    com.voiid.app.ui.components.VoiidSheet(visible = true, onDismiss = onDismiss, detents = listOf(com.voiid.app.ui.components.VoiidDetent.Medium, com.voiid.app.ui.components.VoiidDetent.Large),) {
         Column(Modifier.fillMaxHeight(0.9f)) {
             SheetHeader(
                 title = "Forward to", leading = "Cancel", trailing = "Send",
@@ -156,8 +153,7 @@ fun ForwardSheet(chat: ChatStore, onForward: (List<String>) -> Unit, onDismiss: 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MessageInfoSheet(message: VMessage, isGroup: Boolean, onDismiss: () -> Unit) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState, containerColor = VoiidColor.background, dragHandle = null) {
+    com.voiid.app.ui.components.VoiidSheet(visible = true, onDismiss = onDismiss, detents = listOf(com.voiid.app.ui.components.VoiidDetent.Medium)) {
         Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(24.dp)) {
             Text("Message info", style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.textPrimary, modifier = Modifier.align(Alignment.CenterHorizontally))
             // Message preview bubble (right-aligned, sent style)
@@ -210,12 +206,11 @@ private fun InfoRow(icon: androidx.compose.ui.graphics.vector.ImageVector, color
 @Composable
 fun PollComposeSheet(onSend: (String, List<String>) -> Unit, onDismiss: () -> Unit) {
     val haptics = LocalVoiidHaptics.current
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var question by remember { mutableStateOf("") }
     val options = remember { mutableStateListOf("", "") }
     val valid = question.trim().isNotEmpty() && options.count { it.trim().isNotEmpty() } >= 2
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState, containerColor = VoiidColor.background, dragHandle = null) {
+    com.voiid.app.ui.components.VoiidSheet(visible = true, onDismiss = onDismiss, detents = listOf(com.voiid.app.ui.components.VoiidDetent.Medium, com.voiid.app.ui.components.VoiidDetent.Large),) {
         Column(Modifier.fillMaxWidth()) {
             SheetHeader(
                 title = "New Poll", leading = "Cancel", trailing = "Send", trailingEnabled = valid,

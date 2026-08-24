@@ -1,7 +1,12 @@
 package com.voiid.app.onboarding
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,13 +20,17 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.outlined.Lock
-import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.outlined.CreditCard
+import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Group
+import androidx.compose.material.icons.outlined.GppGood
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.PanTool
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -33,60 +42,60 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import com.voiid.app.legal.LegalDocument
 import com.voiid.app.legal.LegalDocuments
-import com.voiid.app.main.LegalDocumentScreen
+import com.voiid.app.main.LegalDocumentBody
 import com.voiid.app.net.ConsentService
 import com.voiid.app.ui.components.LocalVoiidHaptics
+import com.voiid.app.ui.components.VoiidDetent
+import com.voiid.app.ui.components.VoiidSheet
+import com.voiid.app.ui.components.reduceMotionEnabled
 import com.voiid.app.ui.components.softClickable
+import com.voiid.app.ui.theme.LocalVoiidDark
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
+import com.voiid.app.ui.theme.VoiidRadius
 
 /**
  * Onboarding step 1 — the first screen a new user ever sees. Twin of iOS
  * `Onboarding/WelcomeTermsScreen.swift`; the two must stay identical.
  *
- * ── THIS SCREEN IS THE CONSENT MOMENT, NOT JUST A SPLASH ─────────────────────────
+ * ── THE CONSENT MOMENT ───────────────────────────────────────────────────────────
  * DPDP s.5 wants notice "at or before" processing, so the affirmative action happens HERE —
  * before a phone number, before an OTP, before a JWT exists. There is no account to attach
- * consent to yet, which is the sequencing problem ConsentService solves: the record is written
- * LOCALLY and posted once an account exists.
+ * consent to yet, so the record is written LOCALLY (ConsentService) and posted once an account
+ * exists.
  *
- * CONSENT IS NOW RECORDED ON THE BUTTON, not on a tick. The old screen recorded it the moment a
- * checkbox was ticked, which was right for that design — a tick IS the affirmative act. This
- * design has no checkbox: the single button is the act, so that is where the record is written.
+ * CONSENT IS THE CHECKBOX, not the button: an explicit 26dp tick gates a disabled Continue,
+ * so nobody can agree by accident and nobody can continue without agreeing. Mirrors iOS.
  *
- * ── WHY THE ROWS ARE NOT CHECKBOXES ──────────────────────────────────────────────
- * Every purpose in this version is required, so a box the user cannot untick misrepresents the
- * choice on offer. The rows show what is being agreed to and each opens the real document; the
- * button is the consent. The check marks are state — "this is included" — not controls.
+ * The document rows are READ affordances — each opens its legal document in a sheet. Several
+ * rows share one underlying document until the rest are written, exactly as on iOS.
  */
 @Composable
 fun WelcomeTermsScreen(
     onContinue: () -> Unit,
-    /** Someone returning on a new device skips the funnel. They still consent: the notice was
-     *  shown, and an existing user has the same DPDP footing as a new one. */
-    onExistingAccount: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val haptics = LocalVoiidHaptics.current
+    val reduceMotion = reduceMotionEnabled()
     var appeared by remember { mutableStateOf(false) }
-    /** Rendered IN PLACE of this screen rather than over it: the onboarding host is a single
-     *  AnimatedContent with no dialog layer, and a legal document is a full read, not a peek. */
+    var accepted by remember { mutableStateOf(false) }
+    /** The document to render inside the sheet; non-null while the sheet flow is live. */
     var openDocument by remember { mutableStateOf<LegalDocument?>(null) }
+    var sheetVisible by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { appeared = true }
-
-    val document = openDocument
-    if (document != null) {
-        LegalDocumentScreen(document = document, onBack = { openDocument = null })
-        return
-    }
 
     fun recordConsent() {
         ConsentService.recordLocalConsent(
@@ -106,14 +115,9 @@ fun WelcomeTermsScreen(
             Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            // SCROLLS, and it has to. The fixed content — header, title, a four-row card, the
-            // privacy note, the button and two footnotes — is around 900dp, which overflows
-            // every phone but the largest. A weight(1f) spacer cannot fix an overflow: it has
-            // nothing to give, so the first version crushed the card and pushed the button off
-            // the bottom edge.
-            //
-            // The button stays PINNED outside the scroll: the primary action must never require
-            // scrolling to reach, which is the whole reason it is the brightest thing here.
+            // SCROLLS, because the fixed content overflows every phone but the largest. The
+            // footer below is PINNED outside it: the consent control must never require
+            // scrolling to reach.
             Column(
                 Modifier.weight(1f).verticalScroll(rememberScrollState()),
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -122,71 +126,66 @@ fun WelcomeTermsScreen(
 
                 OnboardingBrandHeader(appeared = appeared)
 
-                OnboardingTitle(leading = "Welcome to ", accented = "Voiid")
+                OnboardingTitle(leading = "Terms & ", accented = "Conditions")
                 Spacer(Modifier.height(6.dp))
                 Text(
-                "One app. Everything you need.",
-                style = VoiidFont.rounded(17),
-                color = VoiidColor.textSecondary,
-                )
-
-                Spacer(Modifier.height(26.dp))
-
-                OnboardingCard(modifier = Modifier.padding(horizontal = 20.dp)) {
-                Text(
-                    "Let's get you started.",
-                    style = VoiidFont.rounded(20, FontWeight.SemiBold),
-                    color = VoiidColor.textPrimary,
-                )
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "Please review and accept the following to continue.",
+                    "Please read these important documents carefully.\nBy continuing, you agree to our policies.",
                     style = VoiidFont.rounded(15),
                     color = VoiidColor.textSecondary,
+                    modifier = Modifier.padding(horizontal = 24.dp),
                 )
-                Spacer(Modifier.height(18.dp))
 
-                consentRows().forEach { row ->
-                    ConsentRowView(row) { haptics.tap(); openDocument = row.document }
-                    Spacer(Modifier.height(10.dp))
-                }
+                Spacer(Modifier.height(24.dp))
+
+                // ALPHABETICAL BY TITLE, ascending — six items are past the point where a
+                // reader scans the whole list, so a predictable order lets them find one by
+                // name. Terms of Service and Privacy Policy sit last while the checkbox names
+                // exactly those two — which is why both are also linked in the consent line.
+                OnboardingCard(flush = true, modifier = Modifier.padding(horizontal = 20.dp)) {
+                    documentRows().forEachIndexed { index, row ->
+                        DocumentRowView(row) {
+                            haptics.tap()
+                            openDocument = row.document
+                            sheetVisible = true
+                        }
+                        if (index < documentRows().size - 1) DocumentRowDivider()
+                    }
                 }
 
                 Spacer(Modifier.height(22.dp))
 
                 OnboardingPrivacyNote(
-                icon = Icons.Outlined.Lock,
-                lines = listOf(
-                    "Your privacy is our priority.",
-                    "All communications are end-to-end encrypted.",
-                ),
-                accentPhrase = "end-to-end encrypted",
-                modifier = Modifier.padding(horizontal = 24.dp),
+                    icon = Icons.Outlined.Shield,
+                    lines = listOf(
+                        "Your privacy and security are our top priority.",
+                        "We never sell your personal data.",
+                    ),
+                    accentPhrase = null,
+                    modifier = Modifier.padding(horizontal = 24.dp),
                 )
 
                 Spacer(Modifier.height(18.dp))
             }
 
+            // PINNED footer: the explicit consent control + the gated primary action.
+            ConsentRow(
+                accepted = accepted,
+                reduceMotion = reduceMotion,
+                onToggle = {
+                    haptics.selection()
+                    accepted = it
+                },
+                modifier = Modifier.padding(horizontal = 24.dp),
+            )
+            Spacer(Modifier.height(14.dp))
             OnboardingPrimaryButton(
-                title = "I Agree & Continue",
+                title = "Continue",
+                enabled = accepted,
                 modifier = Modifier.padding(horizontal = 20.dp),
             ) {
                 recordConsent()
                 onContinue()
             }
-
-            if (onExistingAccount != null) {
-                Spacer(Modifier.height(14.dp))
-                Text(
-                    "I already have an account",
-                    style = VoiidFont.rounded(14),
-                    color = VoiidColor.textSecondary,
-                    modifier = Modifier.softClickable {
-                        haptics.tap(); recordConsent(); onExistingAccount()
-                    },
-                )
-            }
-
             Spacer(Modifier.height(10.dp))
             Text(
                 buildString(context),
@@ -196,6 +195,184 @@ fun WelcomeTermsScreen(
             Spacer(Modifier.height(10.dp))
         }
     }
+
+    // Legal documents present in a SHEET over this screen — committed dark to match the
+    // onboarding visual system. Dismissal is async-safe: the doc state clears only after the
+    // exit finishes, so there is no flash of an empty sheet.
+    CompositionLocalDarkOnboarding {
+        VoiidSheet(
+            visible = sheetVisible,
+            onDismiss = { openDocument = null },
+            detents = listOf(VoiidDetent.Medium, VoiidDetent.Large),
+            initialDetentIndex = 0,
+        ) {
+            val doc = openDocument ?: return@VoiidSheet
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    doc.title,
+                    style = VoiidFont.rounded(17, FontWeight.SemiBold),
+                    color = VoiidColor.textPrimary,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    "Done",
+                    style = VoiidFont.rounded(15, FontWeight.Medium),
+                    color = VoiidColor.primary,
+                    modifier = Modifier.clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) { haptics.tap(); sheetVisible = false },
+                )
+            }
+            Column(
+                Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp),
+            ) {
+                LegalDocumentBody(doc)
+            }
+        }
+    }
+}
+
+/** Forces the committed-dark token resolution inside the sheet. */
+@Composable
+private fun CompositionLocalDarkOnboarding(content: @Composable () -> Unit) =
+    androidx.compose.runtime.CompositionLocalProvider(LocalVoiidDark provides true) { content() }
+
+// MARK: - Documents
+
+private data class DocumentRow(
+    val id: String,
+    val title: String,
+    val subtitle: String,
+    val document: LegalDocument,
+    val glyph: ImageVector,
+)
+
+/**
+ * The six things a new user can read, mapped onto the bundled documents. Order and copy mirror
+ * iOS `WelcomeTermsScreen.rows`; several rows share one document until the remaining legal text
+ * is written (identical to iOS).
+ */
+private fun documentRows(): List<DocumentRow> = listOf(
+    DocumentRow("additional", "Additional Information", "Disclaimers and other legal information.", LegalDocuments.terms, Icons.Outlined.Info),
+    DocumentRow("community", "Community Guidelines", "Standards for a safe and respectful community.", LegalDocuments.terms, Icons.Outlined.Group),
+    DocumentRow("data", "Data Protection", "Your data rights and security information.", LegalDocuments.privacy, Icons.Outlined.GppGood),
+    DocumentRow("payments", "Payments Terms", "Important information about payments.", LegalDocuments.terms, Icons.Outlined.CreditCard),
+    DocumentRow("privacy", "Privacy Policy", "How we collect, use and protect your data.", LegalDocuments.privacy, Icons.Outlined.PanTool),
+    DocumentRow("tos", "Terms of Service", "Rules for using Voiid and our services.", LegalDocuments.terms, Icons.Outlined.Description),
+)
+
+/** A tappable document row — a read affordance, so the disclosure chevron, not a checkmark. */
+@Composable
+private fun DocumentRowView(row: DocumentRow, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .softClickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        OnboardingGlyphTile(row.glyph, size = 38.dp)
+        Column(Modifier.weight(1f)) {
+            Text(row.title, style = VoiidFont.rounded(16, FontWeight.SemiBold),
+                 color = VoiidColor.textPrimary)
+            Text(row.subtitle, style = VoiidFont.rounded(14),
+                 color = VoiidColor.textSecondary)
+        }
+        Icon(
+            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = null,
+            tint = VoiidColor.textSecondary,
+            modifier = Modifier.size(22.dp),
+        )
+    }
+}
+
+@Composable
+private fun DocumentRowDivider() {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(1.dp)
+            .background(OnboardingBrand.hairline),
+    )
+}
+
+// MARK: - Consent
+
+/**
+ * The consent control. The WHOLE ROW is the hit target — a 26dp checkbox alone is well under
+ * the minimum touch size and this is the single most important control on the screen.
+ */
+@Composable
+private fun ConsentRow(
+    accepted: Boolean,
+    reduceMotion: Boolean,
+    onToggle: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier
+            .clip(RoundedCornerShape(12.dp))
+            .softClickable { onToggle(!accepted) }
+            .padding(vertical = 10.dp, horizontal = 4.dp),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        CheckboxMark(accepted, reduceMotion)
+        Text(
+            buildAnnotatedString {
+                append("I have read and agree to the ")
+                withStyle(SpanStyle(color = OnboardingBrand.lime)) { append("Terms of Service") }
+                append(" and ")
+                withStyle(SpanStyle(color = OnboardingBrand.lime)) { append("Privacy Policy") }
+                append(".")
+            },
+            style = VoiidFont.rounded(15),
+            color = VoiidColor.textPrimary,
+        )
+    }
+}
+
+/**
+ * 26dp box, 8dp radius, 2dp stroke — filled lime with a white tick when agreed. The tick scales
+ * in from 0.6 rather than appearing: it confirms a deliberate choice, so it should feel like it
+ * landed. Values are the iOS ones exactly.
+ */
+@Composable
+private fun CheckboxMark(accepted: Boolean, reduceMotion: Boolean) {
+    val shape = RoundedCornerShape(8.dp)
+    val tickScale by animateFloatAsState(
+        targetValue = if (accepted || reduceMotion) 1f else 0.6f,
+        animationSpec = spring(dampingRatio = 0.9f, stiffness = Spring.StiffnessMediumLow),
+        label = "consentTickScale",
+    )
+    val tickAlpha by animateFloatAsState(
+        targetValue = if (accepted) 1f else 0f,
+        animationSpec = spring(dampingRatio = 0.9f, stiffness = Spring.StiffnessMediumLow),
+        label = "consentTickAlpha",
+    )
+    Box(
+        Modifier
+            .size(26.dp)
+            .border(2.dp, if (accepted) OnboardingBrand.lime else VoiidColor.fieldBorder, shape)
+            .background(if (accepted) OnboardingBrand.lime else androidx.compose.ui.graphics.Color.Transparent, shape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            Icons.Default.Check,
+            contentDescription = if (accepted) "Agreed" else "Not agreed",
+            tint = androidx.compose.ui.graphics.Color.White,
+            modifier = Modifier.size(15.dp).scale(tickScale).alpha(tickAlpha),
+        )
+    }
 }
 
 /** Version + build from the package manager, rather than a literal someone must remember to bump. */
@@ -204,74 +381,3 @@ private fun buildString(context: android.content.Context): String = runCatching 
     @Suppress("DEPRECATION")
     "v${pm.versionName} (${pm.versionCode})"
 }.getOrDefault("")
-
-private data class ConsentRow(
-    val id: String,
-    val title: String,
-    val subtitle: String,
-    val document: LegalDocument,
-    val glyph: androidx.compose.ui.graphics.vector.ImageVector? = null,
-    val ageBadge: Boolean = false,
-)
-
-/**
- * The four things being agreed to. Order matches the design and reads terms → privacy → data
- * → age: what the deal is, then what happens to your data, then who you say you are.
- */
-private fun consentRows(): List<ConsentRow> = listOf(
-    ConsentRow("terms", "Terms of Service", "Read our Terms of Service",
-               LegalDocuments.terms, glyph = Icons.Outlined.Shield),
-    ConsentRow("privacy", "Privacy Policy", "Read our Privacy Policy",
-               LegalDocuments.privacy, glyph = Icons.Outlined.Lock),
-    ConsentRow("data", "Data Protection", "Read about how we protect your data",
-               LegalDocuments.privacy, glyph = Icons.Outlined.Person),
-    ConsentRow("age", "Age Confirmation", "I confirm that I am 14 years or older",
-               LegalDocuments.terms, ageBadge = true),
-)
-
-@Composable
-private fun ConsentRowView(row: ConsentRow, onClick: () -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(OnboardingBrand.row)
-            .border(1.dp, OnboardingBrand.hairline, RoundedCornerShape(16.dp))
-            .softClickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 13.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        if (row.ageBadge) {
-            // "14+" in a ring. No icon set carries an age, and drawing it keeps the number
-            // honest — if the threshold changes the label changes with it, rather than an icon
-            // name quietly lying.
-            Box(
-                Modifier
-                    .size(38.dp)
-                    .border(1.5.dp, OnboardingBrand.lime, CircleShape),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("14+", style = VoiidFont.rounded(12, FontWeight.Bold),
-                     color = OnboardingBrand.lime)
-            }
-        } else if (row.glyph != null) {
-            OnboardingGlyphTile(row.glyph, size = 38.dp)
-        }
-
-        Column(Modifier.weight(1f)) {
-            Text(row.title, style = VoiidFont.rounded(16, FontWeight.SemiBold),
-                 color = VoiidColor.textPrimary)
-            Text(row.subtitle, style = VoiidFont.rounded(14),
-                 color = VoiidColor.textSecondary)
-        }
-
-        // STATE, not a control — see the header note on why these are not checkboxes.
-        Icon(
-            Icons.Default.CheckCircle,
-            contentDescription = null,
-            tint = OnboardingBrand.lime,
-            modifier = Modifier.size(24.dp),
-        )
-    }
-}

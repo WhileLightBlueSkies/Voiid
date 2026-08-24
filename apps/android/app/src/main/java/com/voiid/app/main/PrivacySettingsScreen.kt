@@ -108,26 +108,13 @@ fun PrivacySettingsScreen(onBack: () -> Unit, onBlockedContacts: () -> Unit = {}
     }
 
     if (confirmRotate) {
-        androidx.compose.material3.AlertDialog(
+        com.voiid.app.ui.components.VoiidDialog(
             onDismissRequest = { confirmRotate = false },
-            containerColor = VoiidColor.surfaceCard,
-            title = { Text("Generate a new PIN?", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary) },
-            text = {
-                Text(
-                    "Anyone who has your current PIN will no longer be able to reach you with it.",
-                    style = VoiidFont.rounded(14), color = VoiidColor.textSecondary,
-                )
-            },
-            confirmButton = {
-                androidx.compose.material3.TextButton(onClick = { confirmRotate = false; rotatePin() }) {
-                    Text("Generate", color = VoiidColor.error)
-                }
-            },
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { confirmRotate = false }) {
-                    Text("Cancel", color = VoiidColor.textSecondary)
-                }
-            },
+            title = "Generate a new PIN?",
+            body = "Anyone who has your current PIN will no longer be able to reach you with it.",
+            confirmLabel = "Generate",
+            onConfirm = { confirmRotate = false; rotatePin() },
+            confirmDestructive = true,
         )
     }
 

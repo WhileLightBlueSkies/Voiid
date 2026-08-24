@@ -110,11 +110,28 @@ fun StoryComposerSheet(
 
         when {
             showCamera -> StoryCameraView(
-                onCaptured = { bytes ->
-                    showCamera = false; busy = true
-                    scope.launch {
-                        val m = withContext(Dispatchers.IO) { prepareImage(bytes) }
-                        media = m; busy = false
+                onCaptured = { photo, video ->
+                    showCamera = false
+                    when {
+                        // A camera take arrives as a file URI and runs through the SAME
+                        // preparation as a gallery pick (duration/size caps enforced).
+                        video != null -> {
+                            busy = true
+                            scope.launch {
+                                val (m, err) = withContext(Dispatchers.IO) { prepareFromUri(context, video) }
+                                media = m; error = err; busy = false
+                            }
+                        }
+                        photo != null -> {
+                            busy = true
+                            scope.launch {
+                                val m = withContext(Dispatchers.IO) { prepareImage(photo) }
+                                media = m; error = if (m.bytes.size > MAX_IMAGE_BYTES)
+                                    "That photo is too large to share." else null
+                                busy = false
+                            }
+                        }
+                        else -> {}
                     }
                 },
                 onClose = { showCamera = false },
@@ -242,7 +259,9 @@ private fun prepareFromUri(context: Context, uri: Uri): Pair<ComposerMedia?, Str
     }
 }
 
-/** Re-encode an image to JPEG, long edge ≤1920, quality 0.8, ≤10 MB. */
+/** Re-encode an image to JPEG, long edge ≤1920, quality 0.8, and RE-CHECK the 10MB cap after
+ *  encoding — stepping quality down until the encoded bytes fit (or giving up at q0.3, where
+ *  the caller reports the size honestly instead of uploading an oversized blob). */
 private fun prepareImage(input: ByteArray): ComposerMedia {
     val src = BitmapFactory.decodeByteArray(input, 0, input.size)
         ?: return ComposerMedia(input, "image/jpeg", null, null, null, null)
@@ -251,8 +270,12 @@ private fun prepareImage(input: ByteArray): ComposerMedia {
     val scaled = if (scale < 1f) {
         Bitmap.createScaledBitmap(src, (src.width * scale).toInt(), (src.height * scale).toInt(), true)
     } else src
-    val out = ByteArrayOutputStream().also { scaled.compress(Bitmap.CompressFormat.JPEG, 80, it) }
-    val bytes = out.toByteArray()
+    var bytes = ByteArrayOutputStream().also { scaled.compress(Bitmap.CompressFormat.JPEG, 80, it) }.toByteArray()
+    var quality = 80
+    while (bytes.size > MAX_IMAGE_BYTES && quality > 30) {
+        quality -= 10
+        bytes = ByteArrayOutputStream().also { scaled.compress(Bitmap.CompressFormat.JPEG, quality, it) }.toByteArray()
+    }
     return ComposerMedia(bytes, "image/jpeg", scaled.width, scaled.height, null, scaled.asImageBitmap())
 }
 

@@ -53,6 +53,7 @@ import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Groups
@@ -61,6 +62,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -167,16 +169,9 @@ fun ChatsHomeView(
         pendingRequestCount = runCatching { ContactPinService(context).pending().size }.getOrDefault(0)
     }
     androidx.compose.runtime.LaunchedEffect(Unit) { refreshRequestCount() }
-    var showBackup by remember { mutableStateOf(false) }
-    var showPrivacy by remember { mutableStateOf(false) }
-    // Blocked contacts, reached from inside Privacy. Hosted here because this is the only
-    // place sub-screens are hosted; see the Dialog block below.
-    var showBlocked by remember { mutableStateOf(false) }
-    var showStorage by remember { mutableStateOf(false) }
-    var showLinkedDevices by remember { mutableStateOf(false) }
-    var showAbout by remember { mutableStateOf(false) }
-    var showLegal by remember { mutableStateOf(false) }
-    var showSettings by remember { mutableStateOf(false) }
+    // Settings + its children live in ONE modal stack, so Back from Backup/Privacy/Storage/
+    // Devices/About/Legal returns to the screen underneath — never straight to this list.
+    val settingsNav = com.voiid.app.ui.components.rememberVoiidModalNavigator()
     var allContacts by remember { mutableStateOf<List<VContact>>(emptyList()) }
     val scope = rememberCoroutineScope()
 
@@ -211,7 +206,7 @@ fun ChatsHomeView(
             onNewGroup = { forceGroup = true; showNewChat = true },
             onFindByUsername = { showFindByUsername = true },
             onOpenCallLog = { showCallLog = true },
-            onOpenSettings = { showSettings = true },
+            onOpenSettings = { settingsNav.push("settings") },
         )
         Tabs(tab) { haptics.selection(); tab = it }
         // "N message requests" — the ONLY surface for them. GET /conversations filters pending
@@ -252,24 +247,42 @@ fun ChatsHomeView(
             // isEmpty check would never fire and a brand-new user would see one lonely tile
             // with no explanation of what to do next. Mirrors iOS.
             val realItems = list.filter { it.type != ConversationType.SELF }
-            if (!chat.didLoadConversations && realItems.isEmpty()) {
-                ChatsLoadingState(Modifier.fillMaxWidth().weight(1f))
-            } else if (realItems.isEmpty()) {
-                ChatsEmptyState(
+            // A sync that FAILED with nothing cached must not read as "No chats yet" — that
+            // claims the inbox is empty when the truth is we don't know. Full retry state.
+            val loadFailedWithNoCache =
+                chat.loadError != null && chat.didLoadConversations && realItems.isEmpty()
+            // A failure WITH cache shows a non-destructive banner ABOVE the cached content,
+            // so the user keeps their list and learns the refresh didn't land. Mirrors iOS.
+            if (chat.loadError != null && !loadFailedWithNoCache) {
+                ChatsErrorBanner(
+                    message = chat.loadError!!,
+                    onRetry = { haptics.tap(); chat.loadConversations() },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 8.dp),
+                )
+            }
+            when {
+                loadFailedWithNoCache -> ChatsRetryState(
+                    message = chat.loadError ?: "Couldn't load chats.",
+                    onRetry = { haptics.tap(); chat.loadConversations() },
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                )
+                !chat.didLoadConversations && realItems.isEmpty() -> {
+                    ChatsLoadingState(Modifier.fillMaxWidth().weight(1f))
+                }
+                realItems.isEmpty() -> ChatsEmptyState(
                     isGroups = tab == ChatTab.GROUPS,
                     onNewChat = { haptics.tap(); showNewChat = true },
                     onFindByUsername = { haptics.tap(); showFindByUsername = true },
                     modifier = Modifier.fillMaxWidth().weight(1f),
                 )
-            } else if (ChatLayoutPreference.layout == ChatLayout.GRID) {
-                DraggableChatGrid(
+                ChatLayoutPreference.layout == ChatLayout.GRID -> DraggableChatGrid(
                     items = list,
                     onOpen = { haptics.tap(); onOpenConversation(it) },
                     onCall = { callTarget = it },
                     onDelete = { deleteTarget = it },
                     modifier = Modifier.fillMaxWidth().weight(1f),
                 )
-            } else {
+                else ->
                 // The classic list. See ChatLayoutPreference for why this exists alongside
                 // the grid, and ChatListRows for the per-row design decisions.
                 LazyColumn(
@@ -320,10 +333,10 @@ fun ChatsHomeView(
                         )
                         // Inset to start at the TEXT, not the screen edge — the avatar column
                         // reads as a gutter and a full-width rule cuts through it.
-                        HorizontalDivider(
-                            color = VoiidColor.divider.copy(alpha = 0.5f),
-                            modifier = Modifier.padding(start = 86.dp),
-                        )
+                         HorizontalDivider(
+                             color = VoiidColor.divider.copy(alpha = 0.5f),
+                             modifier = Modifier.padding(start = 86.dp),
+                         )
                         }
                     }
                 }
@@ -382,98 +395,35 @@ fun ChatsHomeView(
         }
     }
 
-    // Settings (tap your avatar) — fullscreen dialog, same pattern as the others below.
-    if (showSettings) {
-        androidx.compose.ui.window.Dialog(
-            onDismissRequest = { showSettings = false },
-            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
-        ) {
-            SettingsScreen(
+    // ONE window for the whole settings cluster: pushes preserve hierarchy (Storage can
+    // open Backup ON TOP of itself and Back returns to Storage), and Back from the root
+    // route is what closes back to Chats.
+    com.voiid.app.ui.components.VoiidModalHost(navigator = settingsNav) { route ->
+        when (route) {
+            "settings" -> SettingsScreen(
                 session = session,
-                onClose = { showSettings = false },
-                onBackupRecovery = { showBackup = true },
-                onPrivacy = { showPrivacy = true },
-                onStorage = { showStorage = true },
-                onLinkedDevices = { showLinkedDevices = true },
-                onAbout = { showAbout = true },
-                onLegal = { showLegal = true },
+                onClose = settingsNav::closeAll,
+                onBackupRecovery = { settingsNav.push("backup") },
+                onPrivacy = { settingsNav.push("privacy") },
+                onStorage = { settingsNav.push("storage") },
+                onLinkedDevices = { settingsNav.push("devices") },
+                onAbout = { settingsNav.push("about") },
+                onLegal = { settingsNav.push("legal") },
             )
-        }
-    }
-
-    // Backup & Recovery — fullscreen dialog
-    if (showBackup) {
-        androidx.compose.ui.window.Dialog(
-            onDismissRequest = { showBackup = false },
-            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
-        ) {
-            BackupRecoveryScreen(onBack = { showBackup = false })
-        }
-    }
-
-    // Privacy — fullscreen dialog
-    // Blocked contacts — stacked ON TOP of Privacy rather than replacing it, so dismissing
-    // it returns to the Privacy screen the user opened it from rather than to the chat list.
-    if (showBlocked) {
-        androidx.compose.ui.window.Dialog(
-            onDismissRequest = { showBlocked = false },
-            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
-        ) {
-            BlockedContactsScreen(onBack = { showBlocked = false })
-        }
-    }
-
-    if (showPrivacy) {
-        androidx.compose.ui.window.Dialog(
-            onDismissRequest = { showPrivacy = false },
-            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
-        ) {
-            PrivacySettingsScreen(
-                onBack = { showPrivacy = false },
-                onBlockedContacts = { showBlocked = true },
+            "backup" -> BackupRecoveryScreen(onBack = settingsNav::pop)
+            "blocked" -> BlockedContactsScreen(onBack = settingsNav::pop)
+            "privacy" -> PrivacySettingsScreen(
+                onBack = settingsNav::pop,
+                onBlockedContacts = { settingsNav.push("blocked") },
             )
-        }
-    }
-
-    // Storage — fullscreen dialog
-    if (showStorage) {
-        androidx.compose.ui.window.Dialog(
-            onDismissRequest = { showStorage = false },
-            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
-        ) {
-            StorageSettingsScreen(onBack = { showStorage = false })
-        }
-    }
-
-    // Linked Devices — fullscreen dialog
-    if (showLinkedDevices) {
-        androidx.compose.ui.window.Dialog(
-            onDismissRequest = { showLinkedDevices = false },
-            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
-        ) {
-            LinkedDevicesScreen(onBack = { showLinkedDevices = false })
-        }
-    }
-
-    // About — fullscreen dialog
-    if (showAbout) {
-        androidx.compose.ui.window.Dialog(
-            onDismissRequest = { showAbout = false },
-            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
-        ) {
-            AboutScreen(onBack = { showAbout = false })
-        }
-    }
-
-    // Privacy & Legal — fullscreen dialog. Hosted here beside About rather than nested
-    // inside it: this is also where consent is WITHDRAWN, and DPDP s.6(4) wants that at
-    // the same depth as the tick that gave it, not one screen further in.
-    if (showLegal) {
-        androidx.compose.ui.window.Dialog(
-            onDismissRequest = { showLegal = false },
-            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
-        ) {
-            LegalScreen(onBack = { showLegal = false })
+            "storage" -> StorageSettingsScreen(
+                onBack = settingsNav::pop,
+                // Backup opens ON TOP of Storage now — Back returns here, not to Chats.
+                onOpenBackupRecovery = { settingsNav.push("backup") },
+            )
+            "devices" -> LinkedDevicesScreen(onBack = settingsNav::pop)
+            "about" -> AboutScreen(onBack = settingsNav::pop)
+            "legal" -> LegalScreen(onBack = settingsNav::pop)
         }
     }
 
@@ -546,13 +496,13 @@ fun ChatsHomeView(
 
     // Delete confirmation
     deleteTarget?.let { c ->
-        AlertDialog(
+        com.voiid.app.ui.components.VoiidDialog(
             onDismissRequest = { deleteTarget = null },
-            containerColor = VoiidColor.surfaceCard,
-            title = { Text("Delete chat?", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary) },
-            text = { Text("This chat will be deleted from your list.", style = VoiidFont.rounded(14), color = VoiidColor.textSecondary) },
-            confirmButton = { TextButton(onClick = { chat.deleteConversation(c.id); deleteTarget = null }) { Text("Delete", color = VoiidColor.error) } },
-            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("Cancel", color = VoiidColor.primary) } },
+            title = "Delete chat?",
+            body = "This chat will be deleted from your list.",
+            confirmLabel = "Delete",
+            onConfirm = { chat.deleteConversation(c.id); deleteTarget = null },
+            confirmDestructive = true,
         )
     }
 
@@ -1120,6 +1070,77 @@ private fun GridCard(conv: VConversation, modifier: Modifier) {
 }
 
 // MARK: - Empty / loading states
+
+/**
+ * A failed refresh WITH cached content still on screen: a quiet banner above the list, not a
+ * takeover. The cache is good — the user keeps their chats and learns the sync didn't land.
+ * Mirrors iOS `loadError` banner.
+ */
+@Composable
+private fun ChatsErrorBanner(message: String, onRetry: () -> Unit, modifier: Modifier = Modifier) {
+    Row(
+        modifier
+            .clip(RoundedCornerShape(VoiidRadius.md))
+            .background(VoiidColor.fieldFill)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(Icons.Default.Wifi, null, tint = VoiidColor.error, modifier = Modifier.size(16.dp))
+        Text(
+            message,
+            style = VoiidFont.rounded(13), color = VoiidColor.textSecondary,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            "Retry",
+            style = VoiidFont.rounded(13, FontWeight.SemiBold), color = VoiidColor.primary,
+            modifier = Modifier.clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+            ) { onRetry() },
+        )
+    }
+}
+
+/**
+ * A failed FIRST load with nothing cached: the honest full state. "No chats yet" would be a
+ * claim we cannot make — the truth is that loading failed.
+ */
+@Composable
+private fun ChatsRetryState(message: String, onRetry: () -> Unit, modifier: Modifier = Modifier) {
+    val haptics = LocalVoiidHaptics.current
+    Column(
+        modifier.padding(horizontal = 32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(
+            Icons.Default.CloudOff, null,
+            tint = VoiidColor.textSecondary, modifier = Modifier.size(44.dp),
+        )
+        Spacer(Modifier.height(14.dp))
+        Text("Couldn't load your chats", style = VoiidFont.rounded(17, FontWeight.SemiBold),
+             color = VoiidColor.textPrimary)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            message,
+            style = VoiidFont.rounded(13), color = VoiidColor.textSecondary,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(18.dp))
+        Box(
+            Modifier
+                .clip(RoundedCornerShape(999.dp))
+                .background(VoiidColor.primary)
+                .clickable { haptics.tap(); onRetry() }
+                .padding(horizontal = 24.dp, vertical = 10.dp),
+        ) {
+            Text("Try again", style = VoiidFont.rounded(15, FontWeight.SemiBold),
+                 color = VoiidColor.textOnPrimary)
+        }
+    }
+}
 
 /**
  * Shown while the FIRST load is still in flight and nothing is cached.

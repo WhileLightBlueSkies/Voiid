@@ -20,7 +20,6 @@ import androidx.compose.material.icons.filled.VideocamOff
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -69,7 +68,7 @@ fun GroupCallRosterSheet(
             .thenBy { it.name.lowercase() },
     )
 
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = VoiidColor.background) {
+    com.voiid.app.ui.components.VoiidSheet(visible = true, onDismiss = onDismiss, detents = listOf(com.voiid.app.ui.components.VoiidDetent.Medium, com.voiid.app.ui.components.VoiidDetent.Large),) {
         Text(
             "On this call",
             fontSize = 17.sp,

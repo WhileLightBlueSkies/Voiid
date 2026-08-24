@@ -42,6 +42,9 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         /** ~3 degrees. Below this the thumb is jittering, not turning. */
         private const val HEADING_EPSILON = 0.05
 
+        /** First-run walkthrough version (§10). */
+        const val LUDO_WALKTHROUGH_VERSION = 1
+
         /**
          * How many server frames the jitter buffer holds.
          *
@@ -466,7 +469,15 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
             "rps" -> _rps.value = parseRps(payload)
             "cricket" -> _cricket.value = parseCricket(payload)
             "seabattle" -> _seaBattle.value = parseSeaBattle(payload)
-            "ludo" -> _ludo.value = parseLudo(payload)
+            "ludo" -> {
+                if (payload.containsKey("ludoV2")) {
+                    // Schema v2 per-recipient frame (§7.2). One ingest path for live frames
+                    // and snapshots keeps apply-ordering in exactly one place.
+                    applyLudoFrame(seq, payload, snapshot = false)
+                } else {
+                    _ludo.value = parseLudo(payload)
+                }
+            }
             "snake" -> {
                 // Parse against the NEWEST frame, because food deltas are relative to it,
                 // then append to the jitter buffer the renderer interpolates across.
@@ -793,6 +804,7 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         _cricket.value = null
         _seaBattle.value = null
         _ludo.value = null
+        clearLudoLocalState()
         _snakeFrames.value = emptyList()
         desiredHeading = null
         desiredBoost = false
@@ -801,6 +813,14 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         lastSeq = -1
         runCatching { service.join(matchId) }
             .onFailure { _joinError.value = "Couldn't join this match." }
+        // §9: subscribe → join → snapshot. If the live frame has not landed within a beat,
+        // pull the durable truth rather than leaving a cold client on a skeleton board.
+        if (_ludoV2.value == null) {
+            kotlinx.coroutines.withTimeoutOrNull(700) {
+                while (_ludoV2.value == null) kotlinx.coroutines.delay(50)
+                true
+            } ?: fetchLudoSnapshot()
+        }
     }
 
     /**
@@ -845,7 +865,20 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
     ): String? {
         if (opponents.isEmpty()) return null
         return runCatching {
-            val id = service.create(slug, opponents.map { it.first }, options, null)
+            // LUDO SCHEMA V2 (§8.1): four-player setup requires exactly three other current
+            // members of the source conversation; the server re-verifies everything.
+            val id = if (slug == "ludo") {
+                require(opponents.size == 3) { "Four-player Ludo needs exactly three opponents" }
+                service.createLudo(
+                    mode = "four",
+                    opponentIds = opponents.map { it.first },
+                    conversationId = opponents[0].second,
+                    gameName = gameName,
+                    idempotencyKey = java.util.UUID.randomUUID().toString(),
+                ).match_id
+            } else {
+                service.create(slug, opponents.map { it.first }, options, null)
+            }
             val meta = GameInvite.Meta(
                 game = gameName,
                 from = myUserId
@@ -891,7 +924,17 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
     ): String? {
         return runCatching {
             android.util.Log.i(TAG, "create: slug=$slug peer=$opponentId convo=$conversationId opts=$options")
-            val id = service.create(slug, listOf(opponentId), options, skin)
+            val id = if (slug == "ludo") {
+                service.createLudo(
+                    mode = "duel",
+                    opponentIds = listOf(opponentId),
+                    conversationId = conversationId,
+                    gameName = gameName,
+                    idempotencyKey = java.util.UUID.randomUUID().toString(),
+                ).match_id
+            } else {
+                service.create(slug, listOf(opponentId), options, skin)
+            }
             android.util.Log.i(TAG, "create: match minted id=$id — sending invite")
             // Everything the poster bubble and the rich notification need travels INSIDE the
             // encrypted body — which is what lets the recipient's banner name the game while the
@@ -1130,6 +1173,202 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
     fun requestRespawn(context: Context) {
         val id = matchId ?: return
         WebSocketClient.get(context).sendGameInput(id, """{"respawn":true}""")
+    }
+
+    // ── LUDO SCHEMA V2 (LUDO_GAME_SPEC.md §6–§9, §16) ───────────────────────────────────
+    //
+    // The authoritative frame is per-recipient (`ludoV2` payload): seats carry projected
+    // display names and connection bits; the turn carries opensAt/deadlineAt/rollId/legal.
+    // THE CLIENT IS A RENDERER: it sends {commandId, expectedSeq, turnSerial, roll|move}
+    // intent frames and draws what comes back — it never predicts a move or re-derives
+    // legality. A smoothed server-clock offset from `server_now` drives the timer ring;
+    // device time changes cannot extend a deadline.
+
+    private val _ludoV2 = MutableStateFlow<LudoGameStateV2?>(null)
+    val ludoV2: StateFlow<LudoGameStateV2?> = _ludoV2.asStateFlow()
+
+    data class LudoGameStateV2(
+        val state: com.voiid.app.main.games.ludo.LudoGameState,
+        val receivedAtMs: Long,
+    )
+
+    /** Latest rejection for THIS match (STALE_SEQ triggers a snapshot refetch upstream). */
+    private val _ludoRejection = MutableStateFlow<GamesRelay.Rejection?>(null)
+    val ludoRejection: StateFlow<GamesRelay.Rejection?> = _ludoRejection.asStateFlow()
+
+    /** Presence bits by seat, from game_presence flips between full frames. */
+    private val _ludoPresence = MutableStateFlow<Map<Int, String>>(emptyMap())
+    val ludoPresence: StateFlow<Map<Int, String>> = _ludoPresence.asStateFlow()
+
+    /** Smoothed server-clock offset: estimatedServerNow() = elapsedRealtime + offset. */
+    @Volatile var serverClockOffsetMs: Long = 0L
+        private set
+
+    fun estimatedServerNow(): Long = android.os.SystemClock.elapsedRealtime() + serverClockOffsetMs
+
+    private fun observeClock(serverNow: Long) {
+        val localNow = System.currentTimeMillis()
+        val rttGuess = 60L   // conservative half-RTT allowance on the shared socket
+        serverClockOffsetMs = (serverNow + rttGuess) - localNow
+    }
+
+    private var lastRenderedActionId: String? = null
+    private var commandCounter = 0
+
+    private fun nextCommandId(): String =
+        "cmd-${android.os.SystemClock.elapsedRealtime()}-${commandCounter++}-${java.util.UUID.randomUUID().toString().take(8)}"
+
+    private val rejectionSink = GamesRelay.RejectionSink { r ->
+        if (r.matchId == matchId) {
+            _ludoRejection.value = r
+            if (r.code == "STALE_SEQ") {
+                // §7.3: the stale client fetches the winner's state and never predicts.
+                CoroutineScope(Dispatchers.IO).launch {
+                    runCatching { fetchLudoSnapshot(force = true) }
+                }
+            }
+        }
+    }
+    private val presenceSink = GamesRelay.PresenceSink { p ->
+        if (p.matchId == matchId) {
+            _ludoPresence.value = _ludoPresence.value + (p.seat to p.connection)
+        }
+    }
+    private val endedSink = GamesRelay.EndedSink { e ->
+        if (e.matchId == matchId) LudoEndedNotifier.notify(e.winnerSeat, e.endReason)
+    }
+
+    /** Tiny indirection so the engine stays free of UI concerns for terminal endings. */
+    object LudoEndedNotifier {
+        @Volatile var notify: (winnerSeat: Int?, endReason: String?) -> Unit = { _, _ -> }
+    }
+
+    init {
+        GamesRelay.subscribeRejections(rejectionSink)
+        GamesRelay.subscribePresence(presenceSink)
+        GamesRelay.subscribeEnded(endedSink)
+    }
+
+    /**
+     * Send a roll intent (§7.1). `turnSerial`/`expectedSeq` come from the LAST applied frame;
+     * a mismatch is answered by exactly one `game_command_rejected`.
+     */
+    fun rollLudoV2(context: Context) {
+        val s = _ludoV2.value?.state ?: return
+        val turn = s.turn ?: return
+        sendGameInputJson(
+            context,
+            """{"commandId":"${nextCommandId()}","expectedSeq":${s.seq},""" +
+                """"turnSerial":${turn.serial},"roll":true}""",
+        )
+    }
+
+    /** Send a move intent for one of MY tokens listed in the server's legalTokenIds. */
+    fun moveLudoV2(context: Context, token: Int) {
+        val s = _ludoV2.value?.state ?: return
+        val turn = s.turn ?: return
+        val rollId = turn.rollId ?: return
+        sendGameInputJson(
+            context,
+            """{"commandId":"${nextCommandId()}","expectedSeq":${s.seq},""" +
+                """"turnSerial":${turn.serial},"rollId":"$rollId","move":$token}""",
+        )
+    }
+
+    private fun sendGameInputJson(context: Context, json: String) {
+        val id = matchId ?: return
+        WebSocketClient.get(context).sendGameInput(id, json)
+        pingPresence(context)
+    }
+
+    /** Authenticated heartbeat that refreshes server-side last-seen; never pauses a clock. */
+    fun pingPresence(context: Context) {
+        val id = matchId ?: return
+        WebSocketClient.get(context).sendGameInput(id, """{"commandId":"${nextCommandId()}","presence":true}""")
+    }
+
+    /**
+     * Fetch the durable snapshot (§9). Called on open after join, on foreground after >5 s,
+     * after any socket reconnect, and whenever STALE_SEQ arrives. Applies the frame through
+     * the same ingest path as live frames so there is exactly ONE apply path.
+     */
+    suspend fun fetchLudoSnapshot(force: Boolean = false): Boolean {
+        if (!force && _ludoV2.value != null) return true
+        return runCatching {
+            val snap = service.ludoSnapshot(matchId ?: return false)
+            applyLudoFrame(snap.seq, snap.payload, snapshot = true)
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun applyLudoFrame(seq: Int, payload: JsonObject, snapshot: Boolean) {
+        val parsed = com.voiid.app.main.games.ludo.LudoWire.parseState(seq, payload) ?: return
+        // Drop frames with seq <= lastSeq (§9); snapshots bypass only when forced empty.
+        if (!snapshot || _ludoV2.value != null) {
+            if (seq < (_ludoV2.value?.state?.seq ?: -1)) return
+            if (seq == (_ludoV2.value?.state?.seq ?: -1) && !snapshot) return
+        }
+        observeClock(parsed.serverNow)
+        // Applied in one transaction — never an empty intermediate model (§9).
+        _ludoV2.value = LudoGameStateV2(parsed, android.os.SystemClock.elapsedRealtime())
+        if (parsed.lastAction != null && !snapshot) {
+            lastRenderedActionId = parsed.lastAction.id
+        }
+        persistCache(parsed)
+    }
+
+    /** Force-quit restore cache (§9): encrypted {matchId,lastSeq,lastRenderedActionId}. */
+    fun persistCache(state: com.voiid.app.main.games.ludo.LudoGameState) {
+        runCatching {
+            val prefs = SecurePrefs.open(appContext, "ludo_cache")
+            prefs.edit()
+                .putString("matchId", matchId)
+                .putInt("lastSeq", state.seq)
+                .putString("lastAction", state.lastAction?.id)
+                .putLong("at", System.currentTimeMillis())
+                .apply()
+        }
+    }
+
+    fun readCachedMatchId(): String? = runCatching {
+        SecurePrefs.open(appContext, "ludo_cache").getString("matchId", null)
+    }.getOrNull()
+
+    /** The chat this match came from — drives the in-game E2EE chat sheet (§11.4). */
+    @Volatile private var ludoConversationId: String? = null
+    fun setLudoConversationId(id: String?) { ludoConversationId = id }
+    fun currentLudoConversationId(): String? = ludoConversationId ?: snapshotConversation
+    @Volatile private var snapshotConversation: String? = null
+
+    fun currentLudoMatchId(): String? = _ludoV2.value?.state?.let { matchId } ?: matchId
+
+    /** Walkthrough seen marker: local write is immediate; server sync is fire-and-forget (§10). */
+    fun markLudoWalkthroughSeen(context: Context) {
+        runCatching {
+            com.voiid.app.net.SecurePrefs.open(appContext, "ludo_cache")
+                .edit().putInt("ludoWalkthrough", LUDO_WALKTHROUGH_VERSION).apply()
+        }
+        CoroutineScope(Dispatchers.IO).launch {
+            runCatching { service.setWalkthroughSeen(LUDO_WALKTHROUGH_VERSION) }
+        }
+    }
+
+    fun ludoWalkthroughSeen(context: Context): Boolean = runCatching {
+        SecurePrefs.open(context.applicationContext, "ludo_cache")
+            .getInt("ludoWalkthrough", 0) >= LUDO_WALKTHROUGH_VERSION
+    }.getOrDefault(false)
+
+    fun clearLudoLocalState() {
+        _ludoV2.value = null
+        _ludoRejection.value = null
+        _ludoPresence.value = emptyMap()
+        lastRenderedActionId = null
+    }
+
+    /** Explicit forfeit via REST (§11.5). Backgrounding or navigating away is NOT this. */
+    suspend fun forfeitLudo() {
+        val id = matchId ?: return
+        runCatching { service.forfeit(id) }
     }
 
     private var lastSteerSentAt = 0L

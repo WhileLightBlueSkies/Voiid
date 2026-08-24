@@ -38,6 +38,11 @@ extension Notification.Name {
     /// deep in a different tab, so this crosses that gap the same way the group-call and
     /// story deep links do.
     static let voiidOpenGameMatch = Notification.Name("voiidOpenGameMatch")
+    /// Ludo schema-v2 server-to-client frames (§7.2).
+    static let voiidGameRejected = Notification.Name("voiidGameRejected")
+    static let voiidGamePresence = Notification.Name("voiidGamePresence")
+    static let voiidGameInviteStatus = Notification.Name("voiidGameInviteStatus")
+    static let voiidGameEnded = Notification.Name("voiidGameEnded")
 }
 
 /// Authoritative Tic Tac Toe state as broadcast by backend/games.
@@ -535,83 +540,6 @@ struct SeaBattleState {
     }
 }
 
-/// Authoritative Ludo state (backend/games/src/engine/ludo, docs/games/future/LUDO.md).
-///
-/// NOTE WHAT IS ABSENT, AND WHY IT IS THE OPPOSITE OF SEA BATTLE: there is no per-player
-/// projection and no hidden field, because Ludo has no hidden player information — every token,
-/// roll and capture is public to every seat. The instinct after Sea Battle is that more seats
-/// implies per-seat views, and here that would be wrong.
-///
-/// The only hidden thing is the FUTURE, and it is protected server-side: the RNG seed rides the
-/// secret channel and never reaches a client, because mulberry32's state IS its seed and a
-/// client holding it could compute every future roll. That is why there is no `seed` here to
-/// parse — not an omission, a design property.
-struct LudoState {
-    /// What just happened, for the animation. Explicit rather than diffed, because a client that
-    /// just cold-started has no previous state to diff against.
-    struct LastMove {
-        let seat: Int
-        let token: Int
-        let from: Int
-        let to: Int
-        /// [seat, token] of a token sent home, or nil.
-        let captured: [Int]?
-    }
-
-    let players: [String]
-    let tokensPerPlayer: Int
-    /// [seat][token] -> position encoding (see `Ludo` in LudoBoard.swift).
-    let tokens: [[Int]]
-    let turn: Int
-    let turnUserId: String?
-    /// "awaitingRoll" | "awaitingMove" | "done".
-    let phase: String
-    /// The rolled face, once rolled. Nil before the roll and after the turn passes.
-    let die: Int?
-    /// Token indices legally movable with `die`, as computed by the SERVER.
-    ///
-    /// The client highlights exactly this set and never re-derives it. Deriving legality here
-    /// would put a second copy of the block/exact-entry rules on the phone, and LUDO.md §4.2 is
-    /// explicit that one function answers "what can this player do" for all four consumers.
-    let legal: [Int]
-    let sixStreak: Int
-    let extraTurn: Bool
-    /// Seats in finishing order.
-    let finishedOrder: [Int]
-    let deadlineAt: Double?
-    let lastMove: LastMove?
-    let finished: Bool
-    let winnerUserId: String?
-
-    static func parse(_ payload: [String: Any]) -> LudoState? {
-        guard let players = payload["players"] as? [String],
-              let tokens = payload["tokens"] as? [[Int]] else { return nil }
-        var last: LastMove?
-        if let m = payload["lastMove"] as? [String: Any],
-           let seat = m["seat"] as? Int, let token = m["token"] as? Int,
-           let from = m["from"] as? Int, let to = m["to"] as? Int {
-            last = LastMove(seat: seat, token: token, from: from, to: to,
-                            captured: m["captured"] as? [Int])
-        }
-        return LudoState(
-            players: players,
-            tokensPerPlayer: (payload["tokensPerPlayer"] as? Int) ?? tokens.first?.count ?? 4,
-            tokens: tokens,
-            turn: (payload["turn"] as? Int) ?? 0,
-            turnUserId: payload["turnUserId"] as? String,
-            phase: (payload["phase"] as? String) ?? "awaitingRoll",
-            die: payload["die"] as? Int,
-            legal: (payload["legal"] as? [Int]) ?? [],
-            sixStreak: (payload["sixStreak"] as? Int) ?? 0,
-            extraTurn: (payload["extraTurn"] as? Bool) ?? false,
-            finishedOrder: (payload["finishedOrder"] as? [Int]) ?? [],
-            deadlineAt: payload["deadlineAt"] as? Double,
-            lastMove: last,
-            finished: (payload["finished"] as? Bool) ?? false,
-            winnerUserId: payload["winnerUserId"] as? String)
-    }
-}
-
 @MainActor
 final class GamesEngine: ObservableObject {
     static let shared = GamesEngine()
@@ -627,7 +555,9 @@ final class GamesEngine: ObservableObject {
     @Published private(set) var rps: RpsState?
     @Published private(set) var cricket: CricketState?
     @Published private(set) var seaBattle: SeaBattleState?
-    @Published private(set) var ludo: LudoState?
+    /// Ludo schema-v2 frame (§7.2): per-recipient envelope + payload, one apply path for
+    /// live frames and snapshots.
+    @Published private(set) var ludoV2: LudoFrameV2?
     /// One received snake frame plus when it landed, on the monotonic host clock.
     struct SnakeFrame {
         let state: SnakeState
@@ -686,6 +616,7 @@ final class GamesEngine: ObservableObject {
     /// is rare, but a late frame would otherwise resurrect a stale board.
     private var lastSeq: Int = -1
     private var observer: NSObjectProtocol?
+    private var observers: [NSObjectProtocol] = []
     private let api = GamesAPI()
 
     private init() {
@@ -695,10 +626,52 @@ final class GamesEngine: ObservableObject {
             guard let self else { return }
             Task { @MainActor in self.ingest(note.userInfo ?? [:]) }
         }
+
+        let rejected = NotificationCenter.default.addObserver(
+            forName: .voiidGameRejected, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self, (note.userInfo?["match_id"] as? String) == self.matchId else { return }
+            Task { @MainActor in
+                self.ludoRejection = (
+                    commandId: note.userInfo?["commandId"] as? String,
+                    code: note.userInfo?["code"] as? String ?? "",
+                    currentSeq: note.userInfo?["current_seq"] as? Int ?? 0)
+                // §7.3: a stale client fetches the winner's state; it never predicts.
+                if self.ludoRejection?.code == "STALE_SEQ" {
+                    await self.fetchLudoSnapshot(force: true)
+                }
+            }
+        }
+        observers.append(rejected)
+
+        let presence = NotificationCenter.default.addObserver(
+            forName: .voiidGamePresence, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self, (note.userInfo?["match_id"] as? String) == self.matchId,
+                  let seat = note.userInfo?["seat"] as? Int else { return }
+            Task { @MainActor in
+                self.ludoPresence[seat] = note.userInfo?["connection"] as? String ?? "disconnected"
+            }
+        }
+        observers.append(presence)
+
+        let ended = NotificationCenter.default.addObserver(
+            forName: .voiidGameEnded, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self, (note.userInfo?["match_id"] as? String) == self.matchId else { return }
+            Task { @MainActor in
+                let seat = note.userInfo?["winner_seat"] as? Int ?? -1
+                self.ludoEnded = (
+                    winnerSeat: seat >= 0 ? seat : nil,
+                    endReason: note.userInfo?["end_reason"] as? String)
+            }
+        }
+        observers.append(ended)
     }
 
     deinit {
         if let observer { NotificationCenter.default.removeObserver(observer) }
+        for o in observers { NotificationCenter.default.removeObserver(o) }
     }
 
     private func ingest(_ info: [AnyHashable: Any]) {
@@ -715,7 +688,11 @@ final class GamesEngine: ObservableObject {
         case "rps":     rps = RpsState.parse(payload)
         case "cricket": cricket = CricketState.parse(payload)
         case "seabattle": seaBattle = SeaBattleState.parse(payload)
-        case "ludo":      ludo = LudoState.parse(payload)
+        case "ludo":
+            // Schema v2 per-recipient frame (§6/§7.2).
+            if let parsed = LudoWireParser.parse(seq: seq, payload: payload) {
+                applyLudoFrame(parsed)
+            }
         case "snake":
             // Parse against the NEWEST frame, because food deltas are relative to it, then
             // append to the jitter buffer the renderer interpolates across.
@@ -729,6 +706,115 @@ final class GamesEngine: ObservableObject {
         }
     }
 
+    // ── LUDO SCHEMA V2 (LUDO_GAME_SPEC.md §6–§9, §16) ───────────────────────────────
+
+    struct LudoFrameV2 {
+        let state: LudoGameStateV2
+        let receivedAtMs: Double
+    }
+
+    /** Latest rejection for THIS match; STALE_SEQ triggers a snapshot refetch upstream. */
+    @Published private(set) var ludoRejection: (commandId: String?, code: String, currentSeq: Int)?
+    @Published private(set) var ludoPresence: [Int: String] = [:]
+    @Published private(set) var ludoEnded: (winnerSeat: Int?, endReason: String?)?
+
+    /// Smoothed server-clock offset from `server_now` (§9): estimatedServerNowMs() never
+    /// trusts a raw device counter, so a modified clock cannot extend a deadline display.
+    private(set) var serverClockOffsetMs: Double = 0
+    func estimatedServerNowMs() -> Double {
+        Date().timeIntervalSince1970 * 1000 + serverClockOffsetMs
+    }
+
+    private var lastRenderedActionId: String?
+    private var commandCounter = 0
+    private func nextCommandId() -> String {
+        commandCounter += 1
+        return "cmd-\(UUID().uuidString)"
+    }
+
+    /// The chat this match came from — drives the in-game E2EE chat sheet (§11.4).
+    public var ludoConversationId: String?
+    public func setLudoConversationId(_ id: String?) { ludoConversationId = id }
+
+    private func observeClock(_ serverNow: Double) {
+        serverClockOffsetMs = serverNow + 60 - Date().timeIntervalSince1970 * 1000  // 60 ms RTT allowance
+    }
+
+    private func applyLudoFrame(_ parsed: LudoGameStateV2) {
+        if let prev = ludoV2?.state, parsed.seq <= prev.seq { return }   // drop seq <= lastSeq (§9)
+        observeClock(parsed.serverNow)
+        // ONE transaction — never an empty intermediate model (§9).
+        ludoV2 = LudoFrameV2(state: parsed, receivedAtMs: CACurrentMediaTime() * 1000)
+        persistLudoCache(parsed)
+    }
+
+    /** Force-quit restore cache (§9): encrypted local {matchId,lastSeq,lastRenderedActionId}. */
+    private func persistLudoCache(_ state: LudoGameStateV2) {
+        var q = [String: Any]()
+        q["lastSeq"] = state.seq
+        q["lastAction"] = state.lastAction?.id ?? ""
+        KeychainLudoCache.shared.save(matchId: matchId ?? "", dict: q)
+    }
+    func readCachedLudoMatchId() -> String? { KeychainLudoCache.shared.readMatchId() }
+
+    func clearLudoLocalState() {
+        ludoV2 = nil
+        ludoRejection = nil
+        ludoPresence = [:]
+        ludoEnded = nil
+        lastRenderedActionId = nil
+    }
+
+    func rollLudoV2() {
+        guard let s = ludoV2?.state, let turn = s.turn else { return }
+        WebSocketClient.shared.sendGameInput(matchId: matchId ?? "", payload: [
+            "commandId": nextCommandId(),
+            "expectedSeq": s.seq,
+            "turnSerial": turn.serial,
+            "roll": true,
+        ])
+    }
+
+    func moveLudoV2(token: Int) {
+        guard let s = ludoV2?.state, let turn = s.turn, let rollId = turn.rollId else { return }
+        WebSocketClient.shared.sendGameInput(matchId: matchId ?? "", payload: [
+            "commandId": nextCommandId(),
+            "expectedSeq": s.seq,
+            "turnSerial": turn.serial,
+            "rollId": rollId,
+            "move": token,
+        ])
+    }
+
+    /// Authenticated presence ping refreshing server-side last-seen; never pauses a clock.
+    func pingLudoPresence() {
+        guard let matchId else { return }
+        WebSocketClient.shared.sendGameInput(matchId: matchId, payload: [
+            "commandId": nextCommandId(), "presence": true,
+        ])
+    }
+
+    /** Durable truth via GET snapshot (§9); returns false when the server has nothing. */
+    @discardableResult
+    func fetchLudoSnapshot(force: Bool = false) async -> Bool {
+        if !force && ludoV2 != nil { return true }
+        guard let id = matchId else { return false }
+        do {
+            let snap = try await GamesAPI().ludoSnapshot(matchId: id)
+            if let parsed = LudoWireParser.parse(seq: snap.seq, payload: snap.payload) {
+                applyLudoFrame(parsed)
+                return true
+            }
+            return false
+        } catch { return false }
+    }
+
+    /** Explicit forfeit via REST (§11.5); backgrounding is NEVER this call. */
+    func forfeitLudo() async {
+        guard let id = matchId else { return }
+        _ = try? await GamesAPI().forfeit(matchId: id)
+    }
+
     /// Enter a match. The opening board arrives as a `game_state` frame, not in this
     /// response — the server builds it, which is why there is nothing to render until the
     /// frame lands (wake-then-fetch, same as Stories).
@@ -738,7 +824,7 @@ final class GamesEngine: ObservableObject {
         self.rps = nil
         self.cricket = nil
         self.seaBattle = nil
-        self.ludo = nil
+        clearLudoLocalState()
         self.snakeFrames = []
         self.snakeFramesSnapshot = []
         self.joinError = nil
@@ -750,6 +836,22 @@ final class GamesEngine: ObservableObject {
             try await api.join(matchId: matchId)
         } catch {
             joinError = "Couldn't join this match."
+        }
+    }
+
+    /**
+     * Enter a LUDO match (§9): subscribe the existing socket → accept/join → snapshot. If the
+     * live frame has not landed within a beat, pull the durable truth rather than leaving a
+     * cold client on a skeleton board.
+     */
+    func openLudo(matchId: String) async {
+        await open(matchId: matchId)
+        if ludoV2 == nil {
+            let deadline = Date().addingTimeInterval(0.7)
+            while ludoV2 == nil && Date() < deadline {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            if ludoV2 == nil { _ = await fetchLudoSnapshot(force: true) }
         }
     }
 
@@ -781,8 +883,19 @@ final class GamesEngine: ObservableObject {
         skin: String? = nil
     ) async -> String? {
         do {
-            let id = try await api.create(
-                slug: slug, opponentIds: [opponentId], options: options, skin: skin)
+            let id: String
+            if slug == "ludo" {
+                // Schema v2 (§8.1): a direct chat offers 1 vs 1; the conversation authorizes
+                // identity projection server-side.
+                id = try await api.createLudo(
+                    mode: "duel",
+                    opponentIds: [opponentId],
+                    conversationId: conversationId,
+                    idempotencyKey: UUID().uuidString).match_id
+            } else {
+                id = try await api.create(
+                    slug: slug, opponentIds: [opponentId], options: options, skin: skin)
+            }
             // Everything the poster bubble and the rich notification need travels INSIDE the
             // encrypted body — which is what lets the recipient's banner name the game while the
             // push that woke their device said only "New message".
@@ -880,24 +993,6 @@ final class GamesEngine: ObservableObject {
         WebSocketClient.shared.sendGameInput(matchId: matchId, payload: ["resign": true])
     }
 
-    /// Roll the Ludo die.
-    ///
-    /// ITS OWN STEP, deliberately (LUDO.md §3.3). The die must be broadcast and visible BEFORE
-    /// the move is chosen: it is the drama, it bounds what this client knows, and auto-move —
-    /// where the server plays the only legal move for you — is only expressible if rolling is
-    /// separate. Fire-and-forget: the face is whatever the server rolled.
-    func rollLudo() {
-        guard let matchId, let ludo, !ludo.finished else { return }
-        WebSocketClient.shared.sendGameInput(matchId: matchId, payload: ["roll": true])
-    }
-
-    /// Move one of my tokens. `token` indexes only MY OWN tokens — there is no frame shape that
-    /// expresses moving someone else's.
-    func moveLudo(token: Int) {
-        guard let matchId, let ludo, !ludo.finished else { return }
-        WebSocketClient.shared.sendGameInput(matchId: matchId, payload: ["move": token])
-    }
-
     /// Create a match with SEVERAL opponents and invite all of them.
     ///
     /// The multi-seat half of `create` (docs/games/future/README.md §2.4). The server side has
@@ -923,8 +1018,22 @@ final class GamesEngine: ObservableObject {
     ) async -> String? {
         guard !opponents.isEmpty else { return nil }
         do {
-            let id = try await api.create(
-                slug: slug, opponentIds: opponents.map(\.userId), options: options, skin: nil)
+            let id: String
+            if slug == "ludo" {
+                // §8.1: four-player setup requires exactly three other current members.
+                guard opponents.count == 3 else {
+                    joinError = "Four-player Ludo needs exactly three opponents."
+                    return nil
+                }
+                id = try await api.createLudo(
+                    mode: "four",
+                    opponentIds: opponents.map(\.userId),
+                    conversationId: opponents[0].conversationId,
+                    idempotencyKey: UUID().uuidString).match_id
+            } else {
+                id = try await api.create(
+                    slug: slug, opponentIds: opponents.map(\.userId), options: options, skin: nil)
+            }
             let ownName = TokenStore.shared.userId
                 .map { UserDirectory.shared.displayName($0, fallback: "") } ?? ""
             let meta = GameInvite.Meta(

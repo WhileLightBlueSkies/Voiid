@@ -220,6 +220,115 @@ enum VoiidFont {
     }
 }
 
+// MARK: - Ludo game tokens (LUDO_GAME_SPEC.md §2)
+//
+// Mirrors packages/design-tokens/tokens.json → color.game.ludo / dimension.game.ludo /
+// motion.game.ludo. The board takes the dark reference's graphite cells and lifted,
+// desaturated player hues so pieces stay distinct without glowing; the screen stays part of
+// Voiid — flat surfaces, rounded type, restrained shadows, no casino gradients.
+
+enum LudoColor {
+    private static func dyn(_ light: UInt32, _ dark: UInt32) -> Color {
+        let l = UIColor(red: CGFloat((light >> 16) & 0xff) / 255,
+                        green: CGFloat((light >> 8) & 0xff) / 255,
+                        blue: CGFloat(light & 0xff) / 255,
+                        alpha: CGFloat((light >> 24) & 0xff) / 255)
+        let d = UIColor(red: CGFloat((dark >> 16) & 0xff) / 255,
+                        green: CGFloat((dark >> 8) & 0xff) / 255,
+                        blue: CGFloat(dark & 0xff) / 255,
+                        alpha: CGFloat((dark >> 24) & 0xff) / 255)
+        return Color(UIColor { $0.userInterfaceStyle == .dark ? d : l })
+    }
+
+    static let screenBackground = dyn(0xF6F8F8, 0x080C0E)
+    static let boardSurface     = dyn(0xF3F4F6, 0x15171C)
+    static let trackCellFill    = dyn(0xFFFFFF, 0x202229)
+    static let trackCellBorder  = dyn(0xC9CDD5, 0x444852)
+    static let trackCellPressed = dyn(0xE7EAEE, 0x2A2D35)
+    static let unusedCellFill   = dyn(0xF3F4F6, 0x15171C)
+    static let safeCellFill     = dyn(0xE8EBF0, 0x2A2D35)
+    static let safeCellStar     = dyn(0x626A76, 0xC2C7D0)
+
+    // Player hues — pawn, lane, border, pips. Fixed per seat, never derived at runtime.
+    static let red    = dyn(0xD94B47, 0xF06460)
+    static let green  = dyn(0x248A4B, 0x56B870)
+    static let yellow = dyn(0xC99A00, 0xF1C84B)
+    static let blue   = dyn(0x2F6FD6, 0x5B8DEF)
+
+    static let redYard    = dyn(0xF8E4E3, 0x2D2022)
+    static let greenYard  = dyn(0xE2F0E7, 0x1B2A22)
+    static let yellowYard = dyn(0xF7EFCF, 0x2C2819)
+    static let blueYard   = dyn(0xE3EBFA, 0x1C2431)
+
+    static let redHomeLane    = dyn(0xE88C89, 0xB84D4C)
+    static let greenHomeLane  = dyn(0x72B58B, 0x3C7F50)
+    static let yellowHomeLane = dyn(0xE3C558, 0xA98F3A)
+    static let blueHomeLane   = dyn(0x7FA4E6, 0x446CB4)
+
+    static let centerRed    = red
+    static let centerGreen  = green
+    static let centerYellow = yellow
+    static let centerBlue   = blue
+
+    static let yardPocket       = dyn(0xFFFFFF, 0x202229)
+    static let yardPocketBorder = dyn(0xD4D8DF, 0x3D414B)
+    static let inactiveYard     = dyn(0xE7E9ED, 0x202229)
+
+    // THE DIE HAS ONE NEUTRAL BODY in every state (§1). Only its pips take the active hue.
+    static let dieBody       = dyn(0xF8F8F9, 0x1B1D24)
+    static let dieEdge       = dyn(0xC6CAD2, 0x4A4E58)
+    static let dieNeutralPip = dyn(0x69717D, 0xB2B8C3)
+
+    static let textPrimary   = dyn(0x101617, 0xF6F8F8)
+    static let textSecondary = dyn(0x5D696C, 0xA6B0B2)
+    static let podSurface    = dyn(0xFFFFFF, 0x171C1F)
+    static let podBorder     = dyn(0xD7DEDF, 0x2D383C)
+    static let timerTrack    = dyn(0xD9DDE3, 0x3A3E47)
+    static let timerWarning  = dyn(0xB07818, 0xE0A83C)
+    static let timerCritical = dyn(0xC0392F, 0xEF7A6B)
+    static let focusRing     = dyn(0x13828C, 0x68B8BD)
+    static let scrim         = dyn(0x00000052, 0x00000070)
+    static let shadow        = dyn(0x00000024, 0x00000066)
+
+    /// Seat order helper — the fixed physical seats of §3.
+    static func hue(for seat: Int) -> Color {
+        switch seat % 4 {
+        case 0: return red
+        case 1: return green
+        case 2: return yellow
+        default: return blue
+        }
+    }
+
+    static func yard(for seat: Int) -> Color {
+        switch seat % 4 {
+        case 0: return redYard
+        case 1: return greenYard
+        case 2: return yellowYard
+        default: return blueYard
+        }
+    }
+
+    static func homeLane(for seat: Int) -> Color {
+        switch seat % 4 {
+        case 0: return redHomeLane
+        case 1: return greenHomeLane
+        case 2: return yellowHomeLane
+        default: return blueHomeLane
+        }
+    }
+
+    static func centerTriangle(for seat: Int) -> Color {
+        switch seat % 4 {
+        case 0: return centerRed
+        case 1: return centerGreen
+        case 2: return centerYellow
+        default: return centerBlue
+        }
+    }
+}
+
+/// Geometry + motion constants (§2.2, §12–§15).
 // MARK: - Screen width (non-deprecated; avoids UIScreen.main)
 
 enum VoiidScreen {

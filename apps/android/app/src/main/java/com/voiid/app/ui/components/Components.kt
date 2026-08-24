@@ -63,6 +63,17 @@ import com.voiid.app.ui.theme.VoiidSpacing
  * Apple-grade tactile feedback (scale + dim + soft haptic on press) — the Compose port of
  * iOS `SoftPressStyle`. Apply to any tappable element.
  */
+/**
+ * THE shared press springs, calibrated to the iOS specs (audit design-system table):
+ * soft press = response 0.30s / damping 0.6; tab press = response 0.22s / damping 0.7.
+ * Spring stiffness from a SwiftUI response R is (2π/R)² — 440 and 815 here — so every
+ * platform draws the same press curve instead of each site guessing a Material constant.
+ */
+object VoiidMotion {
+    val softPress = spring<Float>(dampingRatio = 0.6f, stiffness = 440f)
+    val tabPress = spring<Float>(dampingRatio = 0.7f, stiffness = 815f)
+}
+
 @Composable
 fun Modifier.softClickable(
     scale: Float = 0.96f,
@@ -74,7 +85,7 @@ fun Modifier.softClickable(
     val pressed by interaction.collectIsPressedAsState()
     val s by animateFloatAsState(
         targetValue = if (pressed) scale else 1f,
-        animationSpec = spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMediumLow),
+        animationSpec = VoiidMotion.softPress,
         label = "softPressScale",
     )
     LaunchedEffect(pressed) { if (pressed) haptics.soft() }
@@ -314,11 +325,25 @@ fun Modifier.bouncyClickable(onClick: () -> Unit): Modifier {
 }
 
 /**
- * Zoomable fullscreen profile-photo viewer (iOS `ProfilePhotoViewer`): tap a name/avatar to open;
- * double-tap to zoom 2.5×, tap the ✕ to close. Placeholder shows the faint "voiid" wordmark.
+ * Zoomable fullscreen profile-photo viewer (iOS `ProfilePhotoViewer`).
+ *
+ * With a [photoRef] the REAL image renders through [VoiidPhotoViewer] — pinch + pan with
+ * bounds, 2.5× double-tap, drag-to-dismiss, cached loading/failure states — resolved through
+ * the same local-first avatar cache every face in the app uses, so opening it never
+ * re-downloads what the profile already showed. Without one, the faint wordmark placeholder
+ * remains (groups have no photo to show).
  */
 @Composable
-fun ProfilePhotoViewer(title: String, onClose: () -> Unit) {
+fun ProfilePhotoViewer(title: String, onClose: () -> Unit, photoRef: String? = null) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    if (photoRef != null) {
+        com.voiid.app.ui.components.VoiidPhotoViewer(
+            title = title,
+            load = { com.voiid.app.net.AvatarCache.resolve(context, photoRef) },
+            onClose = onClose,
+        )
+        return
+    }
     var scale by remember { mutableFloatStateOf(1f) }
     val animScale by animateFloatAsState(scale, spring(dampingRatio = 0.7f), label = "photoZoom")
     Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {

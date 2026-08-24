@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import com.voiid.app.net.DeviceDirectoryService
 import com.voiid.app.net.E2EManager
 import com.voiid.app.ui.components.softClickable
+import com.voiid.app.ui.components.rememberVoiidPullRefresh
 import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
@@ -53,7 +54,10 @@ import kotlinx.coroutines.launch
  *  3. No "Link a Device" button: that would pair a web companion via QR (routes/linking.ts),
  *     which needs camera capture + a scanner screen that does not exist yet. A button here
  *     with no scanner behind it would open nothing.
- */
+*/
+import com.voiid.app.ui.components.voiidPullRefresh
+import com.voiid.app.ui.components.rememberVoiidPullRefresh
+
 @Composable
 fun LinkedDevicesScreen(onBack: () -> Unit) {
     val context = LocalContext.current
@@ -79,12 +83,18 @@ fun LinkedDevicesScreen(onBack: () -> Unit) {
         loading = false
     }
 
+    val pull = rememberVoiidPullRefresh { scope.launch { load(showSpinner = false) } }
+
     LaunchedEffect(Unit) { load(showSpinner = true) }
 
     val thisDevice = devices.firstOrNull { it.id == currentDeviceId }
     val otherDevices = devices.filter { it.id != currentDeviceId }
 
-    BackupScaffold(title = "Linked Devices", onBack = onBack) {
+    BackupScaffold(
+        title = "Linked Devices",
+        onBack = onBack,
+        modifier = Modifier.voiidPullRefresh(pull, VoiidColor.primary),
+    ) {
         Spacer(Modifier.height(8.dp))
 
         when {
@@ -176,26 +186,24 @@ fun LinkedDevicesScreen(onBack: () -> Unit) {
     }
 
     deviceToRemove?.let { device ->
-        AlertDialog(
+        com.voiid.app.ui.components.VoiidDialog(
             onDismissRequest = { deviceToRemove = null },
-            containerColor = VoiidColor.surfaceCard,
-            title = { Text("Remove this device?", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary) },
-            text = { Text("It will stop receiving new messages.", style = VoiidFont.rounded(14), color = VoiidColor.textSecondary) },
-            confirmButton = {
-                TextButton(onClick = {
-                    scope.launch {
-                        try {
-                            service.revoke(device.id)
-                            deviceToRemove = null
-                            load(showSpinner = false)
-                        } catch (e: Exception) {
-                            removalError = e.message ?: "Couldn't remove device."
-                            deviceToRemove = null
-                        }
+            title = "Remove this device?",
+            body = "It will stop receiving new messages.",
+            confirmLabel = "Remove",
+            onConfirm = {
+                scope.launch {
+                    try {
+                        service.revoke(device.id)
+                        deviceToRemove = null
+                        load(showSpinner = false)
+                    } catch (e: Exception) {
+                        removalError = e.message ?: "Couldn't remove device."
+                        deviceToRemove = null
                     }
-                }) { Text("Remove", color = VoiidColor.error) }
+                }
             },
-            dismissButton = { TextButton(onClick = { deviceToRemove = null }) { Text("Cancel", color = VoiidColor.primary) } },
+            confirmDestructive = true,
         )
     }
 }

@@ -24,9 +24,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -61,7 +59,6 @@ fun CountryPickerSheet(
     onDismiss: () -> Unit,
 ) {
     val haptics = LocalVoiidHaptics.current
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
     var query by remember { mutableStateOf("") }
     val results = remember(query) {
@@ -74,14 +71,15 @@ fun CountryPickerSheet(
     fun choose(c: Country) {
         haptics.selection()
         onSelect(c)
-        scope.launch { sheetState.hide() }.invokeOnCompletion { onDismiss() }
+        onDismiss()
     }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = VoiidColor.background,
-        dragHandle = null,   // iOS `.sheet` shows no grabber — match it
+    // Near-full presentation, no grabber — matches the iOS country sheet.
+    com.voiid.app.ui.components.VoiidSheet(
+        visible = true,
+        onDismiss = onDismiss,
+        detents = listOf(com.voiid.app.ui.components.VoiidDetent.Large),
+        showHandle = false,
     ) {
         Column(Modifier.fillMaxHeight(0.92f)) {
             // Header
@@ -97,7 +95,7 @@ fun CountryPickerSheet(
                     modifier = Modifier
                         .size(26.dp)
                         .clip(RoundedCornerShape(VoiidRadius.pill))
-                        .noRippleClickable { scope.launch { sheetState.hide() }.invokeOnCompletion { onDismiss() } },
+                        .noRippleClickable { onDismiss() },
                 )
             }
 

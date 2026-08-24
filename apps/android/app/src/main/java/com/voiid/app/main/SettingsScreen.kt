@@ -30,12 +30,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.RemoveRedEye
 import androidx.compose.material.icons.filled.Storage
@@ -111,6 +114,38 @@ fun SettingsScreen(
     var uploading by remember { mutableStateOf(false) }
     var errorText by remember { mutableStateOf<String?>(null) }
 
+    // Account erasure flow state.
+    var confirmDeleteAccount by remember { mutableStateOf(false) }
+    var deletingAccount by remember { mutableStateOf(false) }
+    var erasureOutcome by remember { mutableStateOf<String?>(null) }
+    var erasureError by remember { mutableStateOf<String?>(null) }
+
+    // Logout confirmation state. backupExists: true = a server backup exists (restorable with
+    // the recovery phrase), false = definitively none, null = couldn't tell.
+    var confirmLogout by remember { mutableStateOf(false) }
+    var backupExists by remember { mutableStateOf<Boolean?>(null) }
+    if (confirmLogout) {
+        com.voiid.app.ui.components.VoiidDialog(
+            onDismissRequest = { confirmLogout = false },
+            title = "Log out of Voiid?",
+            // Two real variants plus an honest unknown. Telling someone their keys are
+            // recoverable when no backup exists is exactly the lie this confirmation
+            // exists to prevent.
+            body = when (backupExists) {
+                true -> "Your messages and encryption keys will be removed from this phone. You can restore them with your recovery phrase."
+                false -> "Your messages and encryption keys will be removed from this phone. You haven't backed them up, so they can't be recovered."
+                null -> "Your messages and encryption keys will be removed from this phone. They can only be restored if you have a backup and your recovery phrase."
+            },
+            confirmLabel = "Log out",
+            onConfirm = {
+                confirmLogout = false
+                session.signOut()
+                onClose()
+            },
+            confirmDestructive = true,
+        )
+    }
+
     /** Camera or gallery — asked before either opens, so the user picks the SOURCE rather
      *  than being dropped into whichever one we guessed. Mirrors iOS. */
     var showPhotoSource by remember { mutableStateOf(false) }
@@ -178,34 +213,29 @@ fun SettingsScreen(
         // TWO SOURCES, asked explicitly. Tapping the avatar opened the gallery directly, so
         // taking a NEW photo meant leaving the app, using the camera, coming back and
         // picking it — for what is overwhelmingly a selfie.
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { showPhotoSource = false },
-            containerColor = VoiidColor.surfaceCard,
-            title = {
-                Text("Profile photo", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
-            },
-            text = {
-                Text(
-                    "Take a new photo, or choose one you already have.",
-                    style = VoiidFont.rounded(14), color = VoiidColor.textSecondary,
-                )
-            },
-            confirmButton = {
-                androidx.compose.material3.TextButton(onClick = {
-                    showPhotoSource = false
-                    haptics.tap()
-                    // Ask for permission first — launching without it fails silently.
-                    cameraPermission.launch(android.Manifest.permission.CAMERA)
-                }) { Text("Take Photo", color = VoiidColor.primary) }
-            },
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = {
-                    showPhotoSource = false
-                    haptics.tap()
-                    picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                }) { Text("Choose from Gallery", color = VoiidColor.primary) }
-            },
-        )
+        com.voiid.app.ui.components.VoiidDialogCustom(onDismissRequest = { showPhotoSource = false }) {
+            Spacer(Modifier.height(20.dp))
+            Text("Profile photo", style = VoiidFont.rounded(17, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+            Text(
+                "Take a new photo, or choose one you already have.",
+                style = VoiidFont.rounded(13), color = VoiidColor.textSecondary,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            Spacer(Modifier.height(6.dp))
+            com.voiid.app.ui.components.VoiidDialogAction("Take Photo") {
+                showPhotoSource = false
+                haptics.tap()
+                // Ask for permission first — launching without it fails silently.
+                cameraPermission.launch(android.Manifest.permission.CAMERA)
+            }
+            com.voiid.app.ui.components.VoiidDialogAction("Choose from Gallery") {
+                showPhotoSource = false
+                haptics.tap()
+                picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            }
+            com.voiid.app.ui.components.VoiidDialogAction("Cancel") { showPhotoSource = false }
+            Spacer(Modifier.height(8.dp))
+        }
     }
 
     fun saveName() {
@@ -516,20 +546,121 @@ fun SettingsScreen(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(VoiidRadius.lg))
                     .background(VoiidColor.surfaceCard),
             ) {
+                // NOT immediate: logging out wipes this device's messages and keys, so it is
+                // confirmed — and the warning says the truth about recoverability, which has
+                // THREE states (backed up / never backed up / unknown). Mirrors iOS.
                 SettingsRow(Icons.AutoMirrored.Filled.Logout, "Log out", tint = VoiidColor.error) {
-                    session.signOut(); onClose()
+                    haptics.rigid()
+                    backupExists = null          // re-probe each time the dialog opens
+                    confirmLogout = true
                 }
+                SettingsDivider()
+                // Account erasure — the route the legal copy promises. Filing opens a REQUEST
+                // (server SLA); it does not delete anything by itself. The request is filed
+                // FIRST and the local teardown only after it succeeds: wipeLocalAccountState
+                // clears the JWT, and an unauthenticated client cannot open a request.
+                SettingsRow(
+                    Icons.Default.Delete, "Delete my account",
+                    tint = VoiidColor.error,
+                    enabled = !deletingAccount,
+                    trailing = {
+                        if (deletingAccount) {
+                            androidx.compose.material3.CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp), strokeWidth = 2.dp,
+                                color = VoiidColor.textSecondary)
+                        }
+                    },
+                ) { haptics.rigid(); confirmDeleteAccount = true }
             }
         }
+    }
+
+    if (confirmLogout) {
+        com.voiid.app.ui.components.VoiidDialog(
+            onDismissRequest = { confirmLogout = false },
+            title = "Log out of Voiid?",
+            // Two real variants plus an honest unknown. Telling someone their keys are
+            // recoverable when no backup exists is exactly the lie this confirmation
+            // exists to prevent.
+            body = when (backupExists) {
+                true -> "Your messages and encryption keys will be removed from this phone. You can restore them with your recovery phrase."
+                false -> "Your messages and encryption keys will be removed from this phone. You haven't backed them up, so they can't be recovered."
+                null -> "Your messages and encryption keys will be removed from this phone. They can only be restored if you have a backup and your recovery phrase."
+            },
+            confirmLabel = "Log out",
+            onConfirm = {
+                confirmLogout = false
+                session.signOut()
+                onClose()
+            },
+            confirmDestructive = true,
+        )
+    }
+
+    if (confirmDeleteAccount) {
+        com.voiid.app.ui.components.VoiidDialog(
+            onDismissRequest = { if (!deletingAccount) confirmDeleteAccount = false },
+            title = "Delete your Voiid account?",
+            body = "This opens an erasure request and signs you out of this phone immediately, " +
+                "wiping its messages and keys. Your account itself is erased once the request " +
+                "is actioned — until then you can still sign in and cancel by contacting support.",
+            confirmLabel = "Delete my account",
+            onConfirm = {
+                deletingAccount = true; erasureError = null
+                scope.launch {
+                    try {
+                        val outcome = com.voiid.app.net.DpdpService(context).requestErasure()
+                        haptics.success()
+                        confirmDeleteAccount = false
+                        erasureOutcome = outcome.note ?: "Your erasure request has been recorded."
+                    } catch (e: Exception) {
+                        erasureError = e.message ?: "Couldn't open the request."
+                        haptics.error()
+                    }
+                    deletingAccount = false
+                }
+            },
+            confirmDestructive = true,
+            busy = deletingAccount,
+        )
+    }
+
+    erasureOutcome?.let { note ->
+        com.voiid.app.ui.components.VoiidDialog(
+            onDismissRequest = { erasureOutcome = null; session.signOut(); onClose() },
+            title = "Erasure request recorded",
+            body = note,
+            confirmLabel = "Sign out of this phone",
+            onConfirm = { erasureOutcome = null; session.signOut(); onClose() },
+            cancelLabel = null,
+        )
+    }
+
+    erasureError?.let {
+        com.voiid.app.ui.components.VoiidDialog(
+            onDismissRequest = { erasureError = null },
+            title = "Couldn't open the request",
+            body = it,
+            confirmLabel = "OK",
+            onConfirm = { erasureError = null },
+            cancelLabel = null,
+        )
     }
 }
 
 @Composable
-private fun SettingsRow(icon: ImageVector, title: String, tint: Color = VoiidColor.textPrimary, onClick: () -> Unit) {
+private fun SettingsRow(
+    icon: ImageVector,
+    title: String,
+    tint: Color = VoiidColor.textPrimary,
+    enabled: Boolean = true,
+    trailing: (@Composable () -> Unit)? = null,
+    onClick: () -> Unit,
+) {
     val haptics = LocalVoiidHaptics.current
     Row(
         Modifier.fillMaxWidth().height(52.dp)
-            .softClickable { haptics.tap(); onClick() }
+            .softClickable(enabled = enabled) { haptics.tap(); onClick() }
             .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(16.dp),
@@ -540,7 +671,7 @@ private fun SettingsRow(icon: ImageVector, title: String, tint: Color = VoiidCol
             modifier = Modifier.size(22.dp),
         )
         Text(title, style = VoiidFont.rounded(16), color = tint, modifier = Modifier.weight(1f))
-        Icon(Icons.Default.ChevronRight, null, tint = VoiidColor.placeholder, modifier = Modifier.size(18.dp))
+        if (trailing != null) trailing() else Icon(Icons.Default.ChevronRight, null, tint = VoiidColor.placeholder, modifier = Modifier.size(18.dp))
     }
 }
 

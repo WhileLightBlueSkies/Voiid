@@ -30,11 +30,9 @@ import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -95,15 +93,16 @@ fun GameSetupSheet(
     onCustomise: (() -> Unit)? = null,
     onDismiss: () -> Unit,
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var botExpanded by remember { mutableStateOf(false) }
     var level by remember { mutableStateOf(BotDifficulty.MODERATE) }
     var skill by remember { mutableStateOf(BotDifficulty.MODERATE.skill) }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = VoiidColor.background,
+    // Computed-height first stop, draggable to large — the iOS [.custom, .large] pair.
+    com.voiid.app.ui.components.VoiidSheet(
+        visible = true,
+        onDismiss = onDismiss,
+        detents = listOf(com.voiid.app.ui.components.VoiidDetent.Content, com.voiid.app.ui.components.VoiidDetent.Large),
+        showHandle = true,
     ) {
         Column(
             Modifier

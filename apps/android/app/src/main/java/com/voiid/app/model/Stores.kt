@@ -577,19 +577,19 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
     }
 
     /** Admin: add a user to an existing MLS group, then refresh members. */
-    fun addGroupMember(conversationId: String, userId: String, onDone: () -> Unit = {}) {
+    fun addGroupMember(conversationId: String, userId: String, onDone: () -> Unit = {}, onError: (String) -> Unit = {}) {
         viewModelScope.launch {
             runCatching { groupEngine.addMember(conversationId, userId) }
-                .onFailure { loadError = (it as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t add member." }
+                .onFailure { val m = (it as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t add member."; loadError = m; onError(m) }
             onDone()
         }
     }
 
     /** Admin: remove a user from an MLS group (rekeys), then refresh members. */
-    fun removeGroupMember(conversationId: String, userId: String, onDone: () -> Unit = {}) {
+    fun removeGroupMember(conversationId: String, userId: String, onDone: () -> Unit = {}, onError: (String) -> Unit = {}) {
         viewModelScope.launch {
             runCatching { groupEngine.removeMember(conversationId, userId) }
-                .onFailure { loadError = (it as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t remove member." }
+                .onFailure { val m = (it as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t remove member."; loadError = m; onError(m) }
             onDone()
         }
     }
@@ -602,19 +602,19 @@ class ChatStore(app: Application) : AndroidViewModel(app) {
      * message and is surfaced verbatim — a generic "couldn't do that" would leave an admin
      * puzzling over a button they can see but cannot use.
      */
-    fun setMemberRole(conversationId: String, userId: String, role: MemberRole, onDone: () -> Unit = {}) {
+    fun setMemberRole(conversationId: String, userId: String, role: MemberRole, onDone: () -> Unit = {}, onError: (String) -> Unit = {}) {
         viewModelScope.launch {
             runCatching { chatService.setMemberRole(conversationId, userId, role.name.lowercase()) }
-                .onFailure { loadError = (it as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t change that role." }
+                .onFailure { val m = (it as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t change that role."; loadError = m; onError(m) }
             onDone()
         }
     }
 
     /** Hand the group over. Owner-only; the server does both halves in one transaction. */
-    fun transferOwnership(conversationId: String, userId: String, onDone: () -> Unit = {}) {
+    fun transferOwnership(conversationId: String, userId: String, onDone: () -> Unit = {}, onError: (String) -> Unit = {}) {
         viewModelScope.launch {
             runCatching { chatService.transferOwnership(conversationId, userId) }
-                .onFailure { loadError = (it as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t transfer ownership." }
+                .onFailure { val m = (it as? com.voiid.app.net.ApiError)?.userMessage ?: "Couldn’t transfer ownership."; loadError = m; onError(m) }
             onDone()
         }
     }

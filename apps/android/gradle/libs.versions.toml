@@ -4,10 +4,11 @@ kotlin = "2.0.21"
 coreKtx = "1.15.0"
 junit = "4.13.2"
 junitVersion = "1.2.1"
+zxing = "3.5.3"
 espressoCore = "3.6.1"
 lifecycle = "2.8.7"
 activityCompose = "1.9.3"
-composeBom = "2024.12.01"
+composeBom = "2025.05.01"
 coil = "2.7.0"
 okhttp = "4.12.0"
 serialization = "1.7.3"
@@ -90,6 +91,7 @@ androidx-camera-video = { group = "androidx.camera", name = "camera-video", vers
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
+zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

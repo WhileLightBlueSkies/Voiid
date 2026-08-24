@@ -60,7 +60,9 @@ import kotlinx.coroutines.launch
  *
  * Rows use `forEach` inside [BackupScaffold]'s already-scrollable column rather than a
  * LazyColumn, which would crash on an infinite-height constraint. Blocked lists are short.
- */
+ */import com.voiid.app.ui.components.voiidPullRefresh
+import com.voiid.app.ui.components.rememberVoiidPullRefresh
+
 @Composable
 fun BlockedContactsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
@@ -73,9 +75,14 @@ fun BlockedContactsScreen(onBack: () -> Unit) {
     var confirmUnblock by remember { mutableStateOf<BlockedUser?>(null) }
     var failure by remember { mutableStateOf<String?>(null) }
 
+    val pull = com.voiid.app.ui.components.rememberVoiidPullRefresh { scope.launch { BlockService.refresh(context) } }
     LaunchedEffect(Unit) { BlockService.loadIfNeeded(context) }
 
-    BackupScaffold(title = "Blocked Contacts", onBack = onBack) {
+    BackupScaffold(
+        title = "Blocked Contacts",
+        onBack = onBack,
+        modifier = Modifier.voiidPullRefresh(pull, VoiidColor.primary),
+    ) {
         when {
             // Distinct from the empty state on purpose: "you have blocked nobody" is a
             // claim, and making it before the list has loaded is making it up.
@@ -129,55 +136,32 @@ fun BlockedContactsScreen(onBack: () -> Unit) {
     }
 
     confirmUnblock?.let { user ->
-        AlertDialog(
+        com.voiid.app.ui.components.VoiidDialog(
             onDismissRequest = { confirmUnblock = null },
-            containerColor = VoiidColor.surfaceCard,
-            title = {
-                Text("Unblock ${user.displayName}?",
-                     style = VoiidFont.rounded(17, FontWeight.SemiBold),
-                     color = VoiidColor.textPrimary)
-            },
-            text = {
-                Text("They'll be able to message and call you again.",
-                     style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirmUnblock = null
-                    scope.launch {
-                        val ok = BlockService.unblock(context, user.id)
-                        if (!ok) {
-                            failure = "Check your connection and try again. " +
-                                "${user.displayName} is still blocked."
-                        }
+            title = "Unblock ${user.displayName}?",
+            body = "They'll be able to message and call you again.",
+            confirmLabel = "Unblock",
+            onConfirm = {
+                confirmUnblock = null
+                scope.launch {
+                    val ok = BlockService.unblock(context, user.id)
+                    if (!ok) {
+                        failure = "Check your connection and try again. " +
+                            "${user.displayName} is still blocked."
                     }
-                }) { Text("Unblock", color = VoiidColor.primary) }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmUnblock = null }) {
-                    Text("Cancel", color = VoiidColor.textSecondary)
                 }
             },
         )
     }
 
     failure?.let { message ->
-        AlertDialog(
+        com.voiid.app.ui.components.VoiidDialog(
             onDismissRequest = { failure = null },
-            containerColor = VoiidColor.surfaceCard,
-            title = {
-                Text("Couldn't unblock",
-                     style = VoiidFont.rounded(17, FontWeight.SemiBold),
-                     color = VoiidColor.textPrimary)
-            },
-            text = {
-                Text(message, style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
-            },
-            confirmButton = {
-                TextButton(onClick = { failure = null }) {
-                    Text("OK", color = VoiidColor.primary)
-                }
-            },
+            title = "Couldn't unblock",
+            body = message,
+            confirmLabel = "OK",
+            onConfirm = { failure = null },
+            cancelLabel = null,
         )
     }
 }

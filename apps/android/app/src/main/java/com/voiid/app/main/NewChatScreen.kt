@@ -68,6 +68,7 @@ fun NewChatScreen(
     var matches by remember { mutableStateOf<List<VContact>>(emptyList()) }
     var invites by remember { mutableStateOf<List<InviteContact>>(emptyList()) }
     var starting by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
 
     fun runDiscovery(force: Boolean = false) {
         scope.launch {
@@ -111,6 +112,22 @@ fun NewChatScreen(
             Text("New chat", style = VoiidFont.rounded(20, FontWeight.Bold), color = VoiidColor.textPrimary)
         }
 
+        // Filter names AND numbers through search — iOS `.searchable` behaviour.
+        com.voiid.app.ui.components.VoiidSearchField(
+            query = query,
+            onQueryChange = { query = it },
+            placeholder = "Search name or number",
+            modifier = Modifier.padding(horizontal = 16.dp).padding(bottom = 8.dp),
+        )
+
+        val shownMatches = matches.filter {
+            query.isBlank() || it.displayName.contains(query.trim(), ignoreCase = true)
+        }
+        val shownInvites = invites.filter {
+            query.isBlank() || it.name.contains(query.trim(), ignoreCase = true) ||
+                it.number.contains(query.trim(), ignoreCase = true)
+        }
+
         when {
             loading -> Box(Modifier.fillMaxSize(), Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -129,9 +146,9 @@ fun NewChatScreen(
                 }
             }
             else -> LazyColumn(Modifier.fillMaxSize()) {
-                if (matches.isNotEmpty()) {
+                if (shownMatches.isNotEmpty()) {
                     item { SectionHeader("On VOIID") }
-                    items(matches, key = { it.userId }) { c ->
+                    items(shownMatches, key = { it.userId }) { c ->
                         ContactRow(c.displayName, "Tap to chat", onVoiid = true, enabled = !starting) {
                             starting = true
                             scope.launch {
@@ -142,9 +159,9 @@ fun NewChatScreen(
                         }
                     }
                 }
-                if (invites.isNotEmpty()) {
+                if (shownInvites.isNotEmpty()) {
                     item { SectionHeader("Invite to VOIID") }
-                    items(invites, key = { it.number }) { c ->
+                    items(shownInvites, key = { it.number }) { c ->
                         ContactRow(c.name, c.number, onVoiid = false, enabled = true) {
                             val text = "Hey ${c.name}, let's chat privately on VOIID — end-to-end encrypted messaging. https://voiid.app"
                             val send = Intent(Intent.ACTION_SEND).apply {
@@ -154,10 +171,14 @@ fun NewChatScreen(
                         }
                     }
                 }
-                if (matches.isEmpty() && invites.isEmpty()) {
+                if (shownMatches.isEmpty() && shownInvites.isEmpty()) {
                     item {
                         Box(Modifier.fillMaxWidth().padding(32.dp), Alignment.Center) {
-                            Text("No contacts found.", style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
+                            Text(
+                                if (query.isBlank()) "No contacts found."
+                                else "No one matches \"${query.trim()}\".",
+                                style = VoiidFont.rounded(14), color = VoiidColor.textSecondary,
+                            )
                         }
                     }
                 }

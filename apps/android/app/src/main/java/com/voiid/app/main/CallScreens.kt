@@ -44,9 +44,7 @@ import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.VideocamOff
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -116,9 +114,8 @@ data class CallRequest(
 @Composable
 fun CallTypeSheet(title: String, onPick: (CallKind) -> Unit, onDismiss: () -> Unit) {
     val haptics = LocalVoiidHaptics.current
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState, containerColor = VoiidColor.background) {
+    com.voiid.app.ui.components.VoiidSheet(visible = true, onDismiss = onDismiss, detents = listOf(com.voiid.app.ui.components.VoiidDetent.Fixed(240.dp))) {
         Column(
             Modifier.fillMaxWidth().padding(bottom = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -129,8 +126,8 @@ fun CallTypeSheet(title: String, onPick: (CallKind) -> Unit, onDismiss: () -> Un
                 Modifier.fillMaxWidth().padding(horizontal = 24.dp),
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                CallTypeCard("Voice", Icons.Default.Call, Modifier.weight(1f)) { haptics.tap(); onPick(CallKind.VOICE) }
-                CallTypeCard("Video", Icons.Default.Videocam, Modifier.weight(1f)) { haptics.tap(); onPick(CallKind.VIDEO) }
+                CallTypeCard("Voice", Icons.Default.Call, Modifier.weight(1f)) { onPick(CallKind.VOICE) }
+                CallTypeCard("Video", Icons.Default.Videocam, Modifier.weight(1f)) { onPick(CallKind.VIDEO) }
             }
             Text(
                 "Cancel", style = VoiidFont.rounded(15), color = VoiidColor.textSecondary,

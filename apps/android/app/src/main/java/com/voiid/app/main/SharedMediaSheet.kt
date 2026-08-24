@@ -35,9 +35,7 @@ import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -73,7 +71,6 @@ private enum class MediaTab(val label: String) { PHOTOS("Photos"), VIDEOS("Video
 fun SharedMediaSheet(conversationId: String, onDismiss: () -> Unit) {
     val haptics = LocalVoiidHaptics.current
     val context = LocalContext.current
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var tab by remember { mutableStateOf(MediaTab.PHOTOS) }
 
     // REAL shared media from the decrypted message store, newest first — never DummyData.
@@ -85,7 +82,7 @@ fun SharedMediaSheet(conversationId: String, onDismiss: () -> Unit) {
     val voice = refs.filter { it.mime.startsWith("audio/") }
     val docs = refs.filter { !it.mime.startsWith("image/") && !it.mime.startsWith("video/") && !it.mime.startsWith("audio/") }
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState, containerColor = VoiidColor.background, dragHandle = null) {
+    com.voiid.app.ui.components.VoiidSheet(visible = true, onDismiss = onDismiss, detents = listOf(com.voiid.app.ui.components.VoiidDetent.Large)) {
         Column(Modifier.fillMaxHeight(0.92f)) {
             Text(
                 "Shared media", style = VoiidFont.rounded(16, FontWeight.SemiBold), color = VoiidColor.textPrimary,

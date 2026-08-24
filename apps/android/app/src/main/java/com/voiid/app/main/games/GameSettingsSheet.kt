@@ -15,11 +15,7 @@ import androidx.compose.material.icons.outlined.Vibration
 import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -63,17 +59,16 @@ import com.voiid.app.ui.theme.VoiidSpacing
 fun GameSettingsSheet(onDismiss: () -> Unit) {
     val context = LocalContext.current
     val haptics = remember(context) { VoiidHaptics(context) }
-    val sheetState = rememberModalBottomSheetState()
 
     var soundOn by remember { mutableStateOf(GameSettings.soundEnabled(context)) }
     var hapticsOn by remember { mutableStateOf(GameSettings.hapticsEnabled(context)) }
     val choices = remember(context) { SnakeChoiceStore(context) }
     var control by remember { mutableStateOf(choices.controlScheme) }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = VoiidColor.background,
+    com.voiid.app.ui.components.VoiidSheet(
+        visible = true,
+        onDismiss = onDismiss,
+        detents = listOf(com.voiid.app.ui.components.VoiidDetent.Medium),
     ) {
         Column(
             Modifier
@@ -236,13 +231,6 @@ private fun SettingRow(
                 color = VoiidColor.textSecondary,
             )
         }
-        Switch(
-            checked = checked,
-            onCheckedChange = onChange,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = VoiidColor.textOnPrimary,
-                checkedTrackColor = VoiidColor.primary,
-            ),
-        )
+        com.voiid.app.ui.components.VoiidToggle(checked = checked, onCheckedChange = onChange)
     }
 }

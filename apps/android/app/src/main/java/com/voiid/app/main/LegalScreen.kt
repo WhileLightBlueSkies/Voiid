@@ -184,7 +184,7 @@ fun LegalScreen(onBack: () -> Unit) {
         Spacer(Modifier.height(8.dp))
         Text(
             if (live != null) {
-                "You can withdraw this at any time, in one tap. Withdrawing does not delete your account — Delete My Account, in Edit Profile, does that."
+                "You can withdraw this at any time, in one tap. Withdrawing does not delete your account — Delete My Account, in Settings, does that."
             } else {
                 "Voiid asks for consent before it processes your phone number. If nothing is recorded here, you will be asked on next launch."
             },
@@ -219,38 +219,31 @@ fun LegalScreen(onBack: () -> Unit) {
     }
 
     if (confirmWithdraw) {
-        AlertDialog(
-            onDismissRequest = { confirmWithdraw = false },
-            title = { Text("Withdraw consent?", style = VoiidFont.rounded(17, FontWeight.SemiBold)) },
-            text = {
-                Text(
-                    "Voiid needs your phone number to run your account and needs to know where to " +
-                        "deliver messages, so it cannot keep working without this consent. Withdrawing " +
-                        "records that you have withdrawn it — it does not delete your account. To have " +
-                        "your data erased, use Delete My Account in Edit Profile.",
-                    style = VoiidFont.rounded(14),
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirmWithdraw = false
-                    scope.launch {
-                        working = true
-                        errorText = try {
-                            ConsentService.withdraw(context)
-                            withdrew = true
-                            haptics.tap()
-                            null
-                        } catch (e: Exception) {
-                            e.message ?: "Couldn't update consent."
-                        }
-                        working = false
+        com.voiid.app.ui.components.VoiidDialog(
+            onDismissRequest = { if (!working) confirmWithdraw = false },
+            title = "Withdraw consent?",
+            body = "Voiid needs your phone number to run your account and needs to know where to " +
+                "deliver messages, so it cannot keep working without this consent. Withdrawing " +
+                "records that you have withdrawn it — it does not delete your account. To have " +
+                "your data erased, use Delete My Account in Settings.",
+            confirmLabel = "Withdraw",
+            onConfirm = {
+                confirmWithdraw = false
+                scope.launch {
+                    working = true
+                    errorText = try {
+                        ConsentService.withdraw(context)
+                        withdrew = true
+                        haptics.tap()
+                        null
+                    } catch (e: Exception) {
+                        e.message ?: "Couldn't update consent."
                     }
-                }) { Text("Withdraw", color = VoiidColor.error) }
+                    working = false
+                }
             },
-            dismissButton = {
-                TextButton(onClick = { confirmWithdraw = false }) { Text("Cancel") }
-            },
+            busy = working,
+            confirmDestructive = true,
         )
     }
 }

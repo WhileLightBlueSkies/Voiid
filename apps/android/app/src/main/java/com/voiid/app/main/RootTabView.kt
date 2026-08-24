@@ -71,6 +71,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.foundation.border
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
@@ -297,7 +299,17 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                     // reassignment of the immutable lambda parameter.
                 ) { shownTab ->
                 when (shownTab) {
-                    Tab.COMMUNITIES -> CommunitiesHomeView()
+                    Tab.COMMUNITIES -> CommunitiesHomeView(
+                        onOpenConversation = { conversationId ->
+                            // Host-inbox taps land in the Chats tab like any other
+                            // conversation — the inbox only ever hands back an id.
+                            gamesScope.launch {
+                                chat.conversationById(conversationId)?.let {
+                                    tab = Tab.CHAT; openConversation = it
+                                }
+                            }
+                        },
+                    )
                     Tab.GAMES -> com.voiid.app.main.games.GamesHomeScreen(
                         onPickGame = { setupGame = it },
                         onLeaderboard = { showLeaderboard = true },
@@ -343,6 +355,9 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
             TabBar(
                 selected = tab,
                 mapVisible = mapVisibility == com.voiid.app.model.MapVisibility.VISIBLE,
+                // Ghosted shows a PERSISTENT hollow badge on the Map tab — the state must
+                // never disappear from view just because the dot's condition ended.
+                mapGhosted = mapVisibility == com.voiid.app.model.MapVisibility.GHOST,
                 storiesUnread = stories.hasUnread,
                 onLongPressMap = { map.killSwitch() },
                 onSelect = { tab = it },
@@ -424,6 +439,15 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                             c.peerUserId?.takeIf { it.isNotBlank() }?.let { it to c.id }
                         }
                         if (opponents.isNotEmpty()) {
+                            // §10: the FIRST ludo create shows the seven-step walkthrough once;
+                            // experienced players proceed without a pause.
+                            if (game.slug == "ludo" &&
+                                !com.voiid.app.net.GamesEngine.get(appContext)
+                                    .ludoWalkthroughSeen(appContext)
+                            ) {
+                                com.voiid.app.net.GamesEngine.get(appContext)
+                                    .markLudoWalkthroughSeen(appContext)
+                            }
                             gamesScope.launch {
                                 com.voiid.app.net.GamesEngine.get(appContext)
                                     .createMulti(game.slug, opponents, game.name)
@@ -732,8 +756,9 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                         onClose = { openGameMatch = null },
                         onRematch = { openGameMatch = it to "seabattle" },
                     )
-                    "ludo" -> com.voiid.app.main.games.LudoScreen(
+                    "ludo" -> com.voiid.app.main.games.ludo.LudoScreen(
                         matchId = matchId,
+                        conversationId = null,   // deep link: chat sheet hidden until opened from chat
                         onClose = { openGameMatch = null },
                         onRematch = { openGameMatch = it to "ludo" },
                     )
@@ -847,6 +872,7 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
 private fun TabBar(
     selected: Tab,
     mapVisible: Boolean,
+    mapGhosted: Boolean,
     storiesUnread: Boolean,
     onLongPressMap: () -> Unit,
     onSelect: (Tab) -> Unit,
@@ -858,7 +884,12 @@ private fun TabBar(
     Column(
         Modifier
             .fillMaxWidth()
-            .background(VoiidColor.background.copy(alpha = 0.98f))
+            // TRANSLUCENT custom surface — the iOS bar is a `.bar` material blur, which
+            // specifies no number to copy and has no direct Compose equivalent without a
+            // window-level backdrop effect. A translucent scrim of the ground colour is the
+            // honest fallback; NAV_SURFACE_ALPHA is centralised so it can be tuned once
+            // against device captures.
+            .background(VoiidColor.background.copy(alpha = TAB_SURFACE_ALPHA))
             .navigationBarsPadding(),
     ) {
         Box(Modifier.fillMaxWidth().height(0.5.dp).background(VoiidColor.divider.copy(alpha = 0.6f)))
@@ -914,7 +945,7 @@ private fun TabBar(
                     //
                     // It lives INSIDE the scrolling content, so it tracks the row rather than
                     // detaching from its tab when the bar is scrolled.
-                    val barW = 20.dp
+                    val barW = 22.dp
                     val leftTarget = slotW * selected.ordinal + (slotW - barW) / 2
                     val rightTarget = leftTarget + barW
 
@@ -943,9 +974,10 @@ private fun TabBar(
                                 // Labels always show now: a fixed slot is wide enough for
                                 // them, which is the point of scrolling rather than squeezing.
                                 showLabel = true,
-                                // Reuse the generic dot: you are visible on the Map, or an
-                                // unviewed story exists (one home, one unread truth).
-                                showVisibleDot = (t == Tab.MAP && mapVisible) || (t == Tab.STORIES && storiesUnread),
+                                showBadge = (t == Tab.MAP && mapVisible) ||
+                                    (t == Tab.MAP && mapGhosted) ||
+                                    (t == Tab.STORIES && storiesUnread),
+                                badgeHollow = t == Tab.MAP && mapGhosted,
                                 onLongPress = if (t == Tab.MAP) onLongPressMap else null,
                                 modifier = Modifier.width(slotW),
                             ) { haptics.selection(); onSelect(t) }
@@ -960,13 +992,22 @@ private fun TabBar(
 /** How many tabs are visible at once; the rest scroll. */
 private const val VISIBLE_TABS = 5
 
+/**
+ * The tab bar's translucent scrim over the content it covers. iOS uses a `.bar` material
+ * blur, which specifies no number — this is a centralised, calibration-required constant,
+ * NOT claimed numeric parity.
+ */
+private const val TAB_SURFACE_ALPHA = 0.86f
+
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun TabItem(
     t: Tab,
     active: Boolean,
     showLabel: Boolean,
-    showVisibleDot: Boolean,
+    showBadge: Boolean,
+    /** Hollow badge (ghosted state) instead of the filled dot. */
+    badgeHollow: Boolean,
     onLongPress: (() -> Unit)?,
     modifier: Modifier,
     onClick: () -> Unit,
@@ -980,20 +1021,24 @@ private fun TabItem(
     val pressed by interaction.collectIsPressedAsState()
     val pressScale by animateFloatAsState(
         targetValue = if (pressed) 0.92f else 1f,
-        animationSpec = spring(dampingRatio = 0.7f, stiffness = Spring.StiffnessMediumLow),
+        animationSpec = com.voiid.app.ui.components.VoiidMotion.tabPress,
         label = "tabPress",
     )
 
-    // A SMALL overshoot when a tab BECOMES active — 1.10, critically damped.
-    //
-    // An earlier version had a 1.12 pop that was removed for wobbling on every tap (the note
-    // below is still right). This stays under it: damped at 0.85 so it settles rather than
-    // oscillates, and driven off `active` so it fires on selection, not on every recomposition.
-    val activeScale by animateFloatAsState(
-        targetValue = if (active) 1f else 0.94f,
-        animationSpec = spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMedium),
-        label = "tabActive",
-    )
+    // A SMALL overshoot when a tab BECOMES active — a transient 1.10 phase, then settle to
+    // 1.0. iOS drives the glyph UP to 1.10 while the indicator is sliding and lets it land;
+    // the previous Android code animated inactive icons DOWN to 0.94 and active to 1.0 with
+    // no 1.10 phase at all, so the "pop" the comment promised never happened.
+    val scale = remember { androidx.compose.animation.core.Animatable(0.94f) }
+    LaunchedEffect(active) {
+        if (active) {
+            // Snap up, then settle — the landing reads as the tab accepting the tap.
+            scale.snapTo(1.10f)
+            scale.animateTo(1f, spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMedium))
+        } else {
+            scale.animateTo(0.94f, spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMedium))
+        }
+    }
 
     Column(
         modifier = modifier
@@ -1028,23 +1073,35 @@ private fun TabItem(
                     imageVector = if (isActive) t.iconFilled else t.icon,
                     contentDescription = t.label,
                     modifier = Modifier
-                        .size(24.dp)
-                        .graphicsLayer { scaleX = activeScale; scaleY = activeScale },
+                        .size(22.dp)
+                        .graphicsLayer { scaleX = scale.value; scaleY = scale.value },
                     tint = if (isActive) VoiidColor.primary else VoiidColor.textSecondary,
                 )
             }
-            // Persistent indicator: you are visible on the Map, or an unviewed story exists.
-            // SPARK, not the brand teal — teal is the "selected tab" colour, and using it here
-            // read as a second, contradictory selection state.
-            if (showVisibleDot) {
-                Box(
-                    Modifier
-                        .align(Alignment.TopEnd)
-                        .offset(x = 5.dp, y = (-2).dp)
-                        .size(8.dp)
-                        .clip(androidx.compose.foundation.shape.CircleShape)
-                        .background(VoiidColor.accent),
-                )
+            // Persistent badge: filled dot when VISIBLE on the Map (or an unviewed story),
+            // HOLLOW ring while ghosted — the ghost state must stay visible somewhere, and a
+            // hollow badge is the iOS convention for "this is on, but suppressed".
+            if (showBadge) {
+                if (badgeHollow) {
+                    Box(
+                        Modifier
+                            .align(Alignment.TopEnd)
+                            .offset(x = 5.dp, y = (-2).dp)
+                            .size(9.dp)
+                            .clip(androidx.compose.foundation.shape.CircleShape)
+                            .background(Color.Transparent)
+                            .border(1.5.dp, VoiidColor.accent, androidx.compose.foundation.shape.CircleShape),
+                    )
+                } else {
+                    Box(
+                        Modifier
+                            .align(Alignment.TopEnd)
+                            .offset(x = 5.dp, y = (-2).dp)
+                            .size(8.dp)
+                            .clip(androidx.compose.foundation.shape.CircleShape)
+                            .background(VoiidColor.accent),
+                    )
+                }
             }
         }
         if (showLabel) {

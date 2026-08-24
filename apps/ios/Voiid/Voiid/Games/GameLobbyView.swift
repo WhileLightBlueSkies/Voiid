@@ -187,7 +187,7 @@ struct GameLobbyView: View {
         // a game left out never leaves the lobby, because the frame that means "we are live"
         // lands in a property nothing is watching. Adding a game is one more term.
         .onChange(of: engine.state == nil && engine.rps == nil && engine.cricket == nil
-                  && engine.seaBattle == nil && engine.ludo == nil
+                  && engine.seaBattle == nil && engine.ludoV2 == nil
                   && engine.snakeFrames.isEmpty) { _, empty in
             if !empty { onStart() }
         }
