@@ -612,7 +612,12 @@ private fun BoardArea(
             // there the moment the frame lands and only animate back once this effect gets going —
             // a captured token appeared to teleport home, reappear out on the track, and walk back.
             // Holding them at their starting points keeps the board honest until the motion runs.
-            centerOfPosSync(move.from)?.let { hopOverride = Triple(seat, move.tokenId, it) }
+            val pinFrom = if (move.from == LudoRules.YARD) {
+                layout.yardSlotCenter(seat, move.tokenId).let { Offset(it.first, it.second) }
+            } else {
+                centerOfPosSync(move.from)
+            }
+            pinFrom?.let { hopOverride = Triple(seat, move.tokenId, it) }
             move.captured?.let { cap ->
                 centerOfPosSync(cap.from)?.let {
                     captureOverride = (cap.seat to cap.tokenId) to it
@@ -632,7 +637,15 @@ private fun BoardArea(
             }
 
             val easing = androidx.compose.animation.core.CubicBezierEasing(0.22f, 0f, 0.20f, 1f)
-            val start = centerOfPos(move.from)
+            // A pawn LEAVING THE YARD starts from its resting circle, not from nowhere. `from`
+            // is the YARD sentinel, which is neither a track index nor a home-lane step, so it
+            // resolved to null and the whole hop chain was skipped — the pawn simply appeared on
+            // its start square with no motion at all.
+            val start = if (move.from == LudoRules.YARD) {
+                layout.yardSlotCenter(seat, move.tokenId).let { Offset(it.first, it.second) }
+            } else {
+                centerOfPos(move.from)
+            }
             val stops = move.path.mapNotNull { centerOfPos(it) }
             if (start != null && stops.isNotEmpty()) {
                 var prev: Offset = start

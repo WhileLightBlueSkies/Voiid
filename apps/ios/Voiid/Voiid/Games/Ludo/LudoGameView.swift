@@ -543,7 +543,16 @@ struct LudoGameView: View {
         }
 
         var centers: [CGPoint] = []
-        if let start = center(of: m.from) { centers.append(start) }
+        // A pawn LEAVING THE YARD starts from its resting circle, not from nowhere. `from` is
+        // the YARD sentinel, which is neither a track index nor a home-lane step, so it used to
+        // resolve to nil and the chain was left with a single point — below the two needed to
+        // animate. The move then played no motion at all and the pawn simply appeared on its
+        // start square.
+        if m.from == LudoRules.yard {
+            centers.append(layout.yardSlotCenter(seat: actorSeat, pawn: m.tokenId))
+        } else if let start = center(of: m.from) {
+            centers.append(start)
+        }
         centers.append(contentsOf: m.path.compactMap { center(of: $0) })
 
         // A captured pawn walks HOME THE WAY IT CAME: backward along the exact track cells it

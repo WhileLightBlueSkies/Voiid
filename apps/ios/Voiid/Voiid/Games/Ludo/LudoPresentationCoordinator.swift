@@ -133,6 +133,16 @@ final class LudoPresentationCoordinator: ObservableObject {
         captured: LudoActionMove.CapturedPawn?,
         captureRoute: [CGPoint],
     ) async {
+        // RELEASE THE PINS ON EVERY EXIT. enqueueMove holds both pawns at their pre-move
+        // positions the instant the action lands, and the two guards below return early on
+        // perfectly ordinary moves — a pawn leaving the yard has only one usable centre. Those
+        // returns used to skip the cleanup, so the pin stayed forever: another player's pawn
+        // sat frozen at a stale cell through later turns and then jumped when something finally
+        // cleared it, which looked like a second token moving on its own.
+        defer {
+            hopOverride = nil
+            captureReturn = nil
+        }
         let hopEasing = CubicBezierEasing(x1: 0.22, y1: 0, x2: 0.20, y2: 1)
         guard centers.count >= 2 else { return }
         for i in 1..<centers.count {

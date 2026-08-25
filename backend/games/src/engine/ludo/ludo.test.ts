@@ -1,12 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { ludo, FIRST_TURN_MS, TRANSITION_MS, TURN_WINDOW_MS } from './index';
+import { ludo, FIRST_TURN_MS, ROLL_SETTLE_MS, TRANSITION_MS, TURN_WINDOW_MS } from './index';
 import { buildBoardCells } from './cells';
 import { destination, FINISHED, HOME_LANE_BASE, isSafe, path, START_INDICES, YARD } from './board';
 import { blockedSquares, legalMoves, pickAutoMove, resolveCapture } from './rules';
 import { pickTimeoutMove } from './autoplay';
 import { selectBotMove } from './bot/policy';
-import { botDelay } from './bot/scheduler';
+import { botDelay, BOT_TURN_BUDGET_MS } from './bot/scheduler';
 import { botName } from './bot/names';
 import { DiceRng } from './rng';
 import type { GameEngine } from '../GameEngine';
@@ -86,7 +86,23 @@ check('deterministic auto-pick ties remain stable', pickAutoMove(auto,0,1,legal)
 // home and every turn is roll-and-pass.
 check('bot names are deterministic', botName(seed,2,new Set())===botName(seed,2,new Set()));
 check('bot roll pacing is short and bounded', botDelay(seed,3,'balanced','awaitingRoll')>=300&&botDelay(seed,3,'balanced','awaitingRoll')<=520);
-check('bot move pacing stays longer than roll pacing', botDelay(seed,3,'balanced','awaitingMove')>botDelay(seed,3,'balanced','awaitingRoll'));
+// The move delay is measured from the OPEN of the move window, which is already ROLL_SETTLE_MS
+// past the roll — so it is a short beat, not a second pause. A whole bot turn, both legs plus
+// the roll animation between them, has to fit the budget; otherwise a table of bots eats the
+// time between two of your own turns.
+check('a whole bot turn fits the budget', (() => {
+    const tiers = ['relaxed','balanced','sharp'] as const;
+    return tiers.every((tier) => {
+        let worst = 0;
+        for (let c = 0; c < 200; c++) {
+            const turn = botDelay(seed, c, tier, 'awaitingRoll')
+                + ROLL_SETTLE_MS
+                + botDelay(seed, c, tier, 'awaitingMove');
+            if (turn > worst) worst = turn;
+        }
+        return worst <= BOT_TURN_BUDGET_MS;
+    });
+})());
 
 console.log('\nLudo v3 lifecycle, projection, recovery');
 const e=ludo.create(['u0'],{mode:'duel',rngSeed:seed,roster:[{kind:'human',userId:'u0'},{kind:'bot',difficulty:'sharp'}]}) as GameEngine&{accept(id:string):boolean;startAll(now:number):void;setFrameContext(c:unknown):void};

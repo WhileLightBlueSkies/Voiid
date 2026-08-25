@@ -8,10 +8,14 @@ import type { BotDifficulty } from '../types';
 const ROLL_BOUNDS: Record<BotDifficulty, readonly [number, number]> = {
     relaxed: [380, 620], balanced: [300, 520], sharp: [420, 700],
 };
-// Choosing a token IS a decision, so it reads better with a beat of thought behind it — but it
-// is still bounded well inside BOT_TURN_BUDGET_MS so a bot's whole turn stays predictable.
+// The move delay is measured from the moment the move window OPENS, which is already
+// ROLL_SETTLE_MS after the roll — the whole roll animation has played by then and the player
+// has had their beat to read the number. Charging another 500-1000ms of "thinking" on top made
+// every bot turn cost the pause twice, and with three bots that is most of the time between two
+// of your own turns. What is left here is a short beat so the move does not land on the same
+// frame the die settles.
 const MOVE_BOUNDS: Record<BotDifficulty, readonly [number, number]> = {
-    relaxed: [500, 780], balanced: [560, 860], sharp: [700, 1000],
+    relaxed: [140, 260], balanced: [160, 300], sharp: [220, 380],
 };
 
 /**
