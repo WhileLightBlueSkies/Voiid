@@ -408,7 +408,9 @@ class LegacyAbandonEngine implements GameEngine {
 
 function normalizedRoster(playerIds: string[], options?: Record<string, unknown>): RosterEntry[] {
     const raw = Array.isArray(options?.roster) ? options!.roster as Array<Record<string, unknown>> : [];
-    if (raw.length === 2 || raw.length === 4) {
+    // Any table from 2 to MAX_SEATS is valid, 3 included. This used to accept only 2 or 4 and
+    // silently fell back to playerIds for a 3-player roster, dropping both bots.
+    if (raw.length >= 2 && raw.length <= MAX_SEATS) {
         return raw.map((entry) => entry.kind === 'bot'
             ? { kind: 'bot', difficulty: difficulty(entry.difficulty) }
             : { kind: 'human', userId: String(entry.userId ?? entry.user_id ?? '') });
@@ -420,11 +422,17 @@ export const ludo = {
     slug: 'ludo',
     create(playerIds: string[], options?: Record<string, unknown>): GameEngine {
         const roster = normalizedRoster(playerIds, options);
-        const mode: LudoMode = options?.mode === 'four' || roster.length === 4 ? 'four' : 'duel';
+        // Seat count follows the ROSTER, not a two-way mode flag. A 3-player table is a real
+        // configuration (one human + two bots, or a 3-friend game) and used to lose its third
+        // player to the slice below, which silently truncated to the mode's seat count.
+        const seatCount = Math.min(MAX_SEATS, Math.max(2, roster.length));
+        const mode: LudoMode = options?.mode === 'four' || seatCount >= 3 ? 'four' : 'duel';
         const seed = options?.rngSeed;
         const rng = typeof seed === 'string' && /^[0-9a-f]{64}$/.test(seed)
             ? DiceRng.fromState({ seed, counter: 0 })! : DiceRng.generate();
-        const physical = mode === 'duel' ? [0, 2] : [0, 1, 2, 3];
+        // A duel takes opposing seats so the two players face each other; 3+ seats fill
+        // clockwise from the full ring.
+        const physical = seatCount === 2 ? [0, 2] : [0, 1, 2, 3].slice(0, seatCount);
         for (let i = physical.length - 1; i > 0; i--) {
             const j = (rng.next() - 1) % (i + 1); [physical[i], physical[j]] = [physical[j], physical[i]];
         }

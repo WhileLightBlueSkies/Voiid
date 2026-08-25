@@ -699,7 +699,7 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                     "tictactoe" -> com.voiid.app.main.games.TicTacToeBotScreen(
                         level = level, skill = skill, onClose = { botGame = null })
                     "ludo" -> com.voiid.app.main.games.LudoServerBotSetup(
-                        onStart = { fourSeats ->
+                        onStart = { players ->
                             val difficulty = when (level) {
                                 com.voiid.app.main.games.BotDifficulty.EASY -> "relaxed"
                                 com.voiid.app.main.games.BotDifficulty.MODERATE -> "balanced"
@@ -707,7 +707,7 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                             }
                             gamesScope.launch {
                                 val id = com.voiid.app.net.GamesEngine.get(context)
-                                    .createLudoBot(difficulty, fourSeats)
+                                    .createLudoBot(difficulty, players)
                                 botGame = null
                                 id?.let { openGameMatch = it to "ludo" }
                             }

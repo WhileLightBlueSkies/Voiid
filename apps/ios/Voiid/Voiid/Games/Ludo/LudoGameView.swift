@@ -3,8 +3,8 @@
 //  Voiid
 //
 //  The Ludo match screen (§11): responsive portrait chrome — top bar (close / help / network
-//  capsule), two pod rows, the generated board as visual center, ONE global die that rests at
-//  the active player's anchor outside the board, bottom chat/emote tools.
+//  capsule), two pod rows, the generated board as the vertically-centred visual anchor, and ONE
+//  global die resting inside the active player's home quadrant.
 //
 //  NO TEXTUAL TURN BANNER EXISTS. Ownership is shown only by border hue + die pip color; the
 //  pod ring communicates HOW LONG. Legal-pawn halos and the die affordance teach the next
@@ -27,7 +27,6 @@ struct LudoGameView: View {
 
     @State private var showExitConfirm = false
     @State private var showHelp = false
-    @State private var showChat = false
 
     /// Board square side, set by the layout pass and reused for tap math + animation centers.
     @State private var boardSide: CGFloat = 0
@@ -38,23 +37,30 @@ struct LudoGameView: View {
         ZStack {
             LudoColorPaletteBridge.color(scheme).ignoresSafeArea()
 
-            VStack(spacing: 4) {
+            VStack(spacing: 0) {
                 topBar(connected: state != nil)
 
                 if let s = state {
-                    PodRow(state: s, top: true)
-                    boardArea(state: s)
-                        .frame(maxWidth: .infinity)
-                    PodRow(state: s, top: false)
-                    bottomTools
+                    // The board is the screen's optical centre: equal Spacers above and below
+                    // the pod/board/pod block centre it vertically, and the board's own
+                    // aspectRatio(1) centres it horizontally.
+                    Spacer(minLength: 0)
+                    VStack(spacing: 8) {
+                        PodRow(state: s, top: true)
+                        boardArea(state: s)
+                            .frame(maxWidth: .infinity)
+                        PodRow(state: s, top: false)
+                    }
+                    Spacer(minLength: 0)
                 } else if let err = engine.joinError {
                     Spacer()
                     Text(err).font(VoiidFont.rounded(15)).foregroundStyle(VoiidColor.error)
                     Spacer()
                 } else {
                     // Cold start draws the NEUTRAL generated board; never a token flash (§9).
-                    NeutralBoardSkeleton().padding(.horizontal, 12)
-                    Spacer()
+                    Spacer(minLength: 0)
+                    NeutralBoardSkeleton()
+                    Spacer(minLength: 0)
                 }
             }
             .padding(.horizontal, 12)
@@ -68,9 +74,6 @@ struct LudoGameView: View {
                     mode: .sandbox,
                     clockNote: state?.isActive == true,
                     onDismiss: { showHelp = false })
-            }
-            if showChat, let convo = engine.ludoConversationId ?? conversationId {
-                LudoChatSheet(matchId: matchId, conversationId: convo, onDismiss: { showChat = false })
             }
             if engine.ludoRequiresUpdate {
                 VStack(spacing: 16) {
@@ -90,6 +93,8 @@ struct LudoGameView: View {
                     onBack: { onClose() })
             }
         }
+        .navigationBarBackButtonHidden(true)
+        .toolbar(.hidden, for: .navigationBar)
         .task { await open() }
         // Every NEW authoritative action enqueues its presentation beats exactly once;
         // reconnects reset lastPresentedActionID so stale motion never replays (§9).
@@ -154,25 +159,33 @@ struct LudoGameView: View {
 
     private var stateIsActive: Bool { engine.ludoV2?.state.isActive == true }
 
-    /// Fixed seats around the board (§11.2): green+yellow above, red+blue below. A duel has NO
-    /// pod for unassigned seats.
+    /// Fixed seats around the board (§11.2): green+yellow above, red+blue below. A pod sits at
+    /// the board corner of the seat it belongs to — left pod hard left, right pod hard right —
+    /// so each name reads as a label ON its own quadrant. A duel has NO pod for unassigned seats.
     @ViewBuilder
     private func PodRow(state: LudoGameStateV2, top: Bool) -> some View {
         let seats = top ? [1, 2] : [0, 3]
-        HStack {
-            ForEach(seats, id: \.self) { seat in
-                if let sv = state.seat(bySeat: seat) {
-                    LudoPlayerPod(
-                        seatView: sv,
-                        active: !state.isFinished && state.turn?.seat == seat,
-                        ringFraction: ringFraction(state, seat),
-                        ringColorOverride: timerOverride(state, seat),
-                        accessibilityLabel: podAccessibility(sv, state))
-                    Spacer(minLength: 0)
-                } else {
-                    Spacer(minLength: 0)
-                }
-            }
+        HStack(spacing: 0) {
+            pod(state: state, seat: seats[0])
+            Spacer(minLength: 8)
+            pod(state: state, seat: seats[1])
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private func pod(state: LudoGameStateV2, seat: Int) -> some View {
+        if let sv = state.seat(bySeat: seat) {
+            LudoPlayerPod(
+                seatView: sv,
+                active: !state.isFinished && state.turn?.seat == seat,
+                ringFraction: ringFraction(state, seat),
+                ringColorOverride: timerOverride(state, seat),
+                compact: compactLayout,
+                accessibilityLabel: podAccessibility(sv, state))
+        } else {
+            // Keeps the opposite pod pinned to its own corner in a duel.
+            Color.clear.frame(width: 0, height: LudoDimens.podSizeCompact.height)
         }
     }
 
@@ -288,15 +301,24 @@ struct LudoGameView: View {
             state.viewerRole == "controller" && state.viewerSeat == state.turn?.seat
 
         GeometryReader { geo in
-            // Anchors sit just outside each board edge, beside the owning pod's inner corner.
-            let inset: CGFloat = -LudoDimens.dieHitTarget / 2 + 6
+            // The die rests INSIDE the active seat's home quadrant, the way Ludo King does. The
+            // anchors used to sit at a negative inset outside the board rect, which put the die
+            // beyond the layout bounds and clipped it away entirely — the die was never visible.
+            // The yard pocket is empty space by construction, so nothing is occluded.
+            let side = min(geo.size.width, geo.size.height)
+            let quadrant = side * 0.235          // centre of a 6x6 home yard on the 15x15 grid
+            let originX = (geo.size.width - side) / 2
+            let originY = (geo.size.height - side) / 2
             let point: CGPoint = {
                 switch state.turn?.seat ?? 0 {
-                case 1: return CGPoint(x: inset, y: inset)                    // green top-left
-                case 2: return CGPoint(x: geo.size.width - inset, y: inset)   // yellow top-right
-                case 3: return CGPoint(x: geo.size.width - inset,
-                                       y: geo.size.height - inset)            // blue bottom-right
-                default: return CGPoint(x: inset, y: geo.size.height - inset) // red bottom-left
+                case 1: return CGPoint(x: originX + quadrant,
+                                       y: originY + quadrant)                 // green top-left
+                case 2: return CGPoint(x: originX + side - quadrant,
+                                       y: originY + quadrant)                 // yellow top-right
+                case 3: return CGPoint(x: originX + side - quadrant,
+                                       y: originY + side - quadrant)          // blue bottom-right
+                default: return CGPoint(x: originX + quadrant,
+                                        y: originY + side - quadrant)         // red bottom-left
                 }
             }()
 
@@ -443,22 +465,6 @@ struct LudoGameView: View {
     }
 
     @State private var lastPresentedActionID: String?
-
-    // MARK: Bottom tools (§11.4)
-
-    private var bottomTools: some View {
-        HStack {
-            Button { showChat = true } label: {
-                Image(systemName: "bubble.left")
-                    .font(.system(size: 20))
-            }
-            .frame(height: 44)
-            .accessibilityLabel("Game chat")
-
-            Spacer()
-        }
-        .foregroundStyle(VoiidColor.textPrimary)
-    }
 
     // MARK: Sheets
 

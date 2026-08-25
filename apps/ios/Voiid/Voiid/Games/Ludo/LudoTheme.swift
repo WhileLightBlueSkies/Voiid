@@ -139,14 +139,16 @@ enum LudoDimens {
     static let safeStarOuterRadiusFactor: CGFloat = 0.34
     static let safeStarInnerRadiusFactor: CGFloat = 0.15
 
-    static let podSizeStandard = CGSize(width: 156, height: 52)
-    static let podSizeCompact = CGSize(width: 144, height: 44)
-    static let podCornerRadius: CGFloat = 14
-    static let chipStandard: CGFloat = 24
-    static let chipCompact: CGFloat = 20
-    static let ringStandard: CGFloat = 32
-    static let ringCompact: CGFloat = 28
-    static let ringStroke: CGFloat = 2.5
+    // Pods carry only a chip and a username, so they stay small and let the board dominate —
+    // the name is a label beside the board, never a headline.
+    static let podSizeStandard = CGSize(width: 120, height: 36)
+    static let podSizeCompact = CGSize(width: 108, height: 32)
+    static let podCornerRadius: CGFloat = 10
+    static let chipStandard: CGFloat = 16
+    static let chipCompact: CGFloat = 14
+    static let ringStandard: CGFloat = 24
+    static let ringCompact: CGFloat = 21
+    static let ringStroke: CGFloat = 2
 
     static let dieSizeStandard: CGFloat = 64
     static let dieSizeCompact: CGFloat = 44

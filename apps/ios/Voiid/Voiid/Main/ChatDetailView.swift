@@ -181,7 +181,11 @@ struct ChatDetailView: View {
             .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $showLudoSetup) {
-            LudoChatSetupView(hasHumanPeer: conversation.type != .self) { mode, difficulty in
+            LudoChatSetupView(
+                hasHumanPeer: conversation.type != .self,
+                availablePeers: conversation.type == .group
+                    ? max(1, conversation.memberCount - 1) : 1
+            ) { mode, difficulty in
                 startLudo(mode: mode, difficulty: difficulty)
             }
             .presentationDetents([.medium])

@@ -32,7 +32,7 @@ struct LudoPlayerPod: View {
         let ring = compact ? LudoDimens.ringCompact : LudoDimens.ringStandard
         let chip = compact ? LudoDimens.chipCompact : LudoDimens.chipStandard
 
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             ZStack {
                 // Ring surrounds the color chip — never a third ornament (§11.2).
                 LudoTimerRing.drawView(
@@ -50,12 +50,12 @@ struct LudoPlayerPod: View {
             .padding(.leading, (size.height - ring) / 2)
 
             Text(usernameLine)
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .foregroundStyle(colors.textPrimary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.trailing, 8)
+                .padding(.trailing, 6)
         }
         .frame(width: size.width, height: size.height)
         .background(

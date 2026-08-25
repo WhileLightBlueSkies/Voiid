@@ -35,16 +35,18 @@ object LudoDimens {
     const val yardPocketRadiusFactor = 0f
     const val safeStarRadiusFactor = 0.27f
 
-    val podWidthStandard = 156.dp
-    val podHeightStandard = 52.dp
-    val podWidthCompact = 144.dp
-    val podHeightCompact = 44.dp
-    val podCornerRadius = 14.dp
-    val podChipStandard = 24.dp
-    val podChipCompact = 20.dp
-    val timerRingStandard = 32.dp
-    val timerRingCompact = 28.dp
-    val timerRingStroke = 2.5.dp
+    // Pods carry only a chip and a username, so they stay small and let the board dominate —
+    // the name is a label beside the board, never a headline.
+    val podWidthStandard = 120.dp
+    val podHeightStandard = 36.dp
+    val podWidthCompact = 108.dp
+    val podHeightCompact = 32.dp
+    val podCornerRadius = 10.dp
+    val podChipStandard = 16.dp
+    val podChipCompact = 14.dp
+    val timerRingStandard = 24.dp
+    val timerRingCompact = 21.dp
+    val timerRingStroke = 2.dp
 
     val dieSizeStandard = 64.dp
     val dieSizeCompact = 44.dp

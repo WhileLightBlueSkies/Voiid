@@ -80,6 +80,16 @@ const e=ludo.create(['u0'],{mode:'duel',rngSeed:seed,roster:[{kind:'human',userI
 e.accept('u0'); const start=Date.now(); e.startAll(start); let s=serialized(e);
 check('duel assigns opposite physical seats and four pawns each', s.assigned.filter(Boolean).length===2&&s.assigned[0]===s.assigned[2]&&s.tokens.filter(r=>r.length===4).length===2);
 check('first decision opens at +120ms', s.opensAt===start+FIRST_TURN_MS);
+
+// A 3-player table is a real configuration; the roster used to be truncated to the mode's
+// seat count, silently dropping the third player.
+const three=ludo.create(['u0'],{rngSeed:seed,roster:[{kind:'human',userId:'u0'},{kind:'bot',difficulty:'balanced'},{kind:'bot',difficulty:'relaxed'}]}) as GameEngine&{accept(id:string):boolean;startAll(now:number):void};
+three.accept('u0'); three.startAll(Date.now()); const s3=serialized(three);
+check('three-player table seats all three players', s3.assigned.filter(Boolean).length===3&&s3.tokens.filter(r=>r.length===4).length===3);
+check('three-player table is not duel mode', s3.mode==='four');
+const four=ludo.create(['u0'],{rngSeed:seed,roster:[{kind:'human',userId:'u0'},{kind:'bot',difficulty:'balanced'},{kind:'bot',difficulty:'relaxed'},{kind:'bot',difficulty:'sharp'}]}) as GameEngine&{accept(id:string):boolean;startAll(now:number):void};
+four.accept('u0'); four.startAll(Date.now());
+check('four-player table still seats four', serialized(four).assigned.filter(Boolean).length===4);
 check('human gets deadline; bot gets botActionAt only', s.controller[s.activeSeat]==='human'?s.deadlineAt===s.opensAt!+TURN_WINDOW_MS&&s.botActionAt===null:s.deadlineAt===null&&s.botActionAt!==null);
 e.setFrameContext({serverNow:start,seq:9,connections:{u0:'connected'},names:{u0:'Alice'}});
 const projected=e.serializeForPlayer!('u0') as any;

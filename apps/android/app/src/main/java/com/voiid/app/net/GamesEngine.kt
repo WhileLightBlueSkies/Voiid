@@ -1427,16 +1427,20 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         }
     }
 
-    /** Ludo practice is authoritative: a duel or one human plus three server bots. */
-    suspend fun createLudoBot(difficulty: String, fourSeats: Boolean = false): String? = runCatching {
+    /**
+     * Ludo practice is authoritative: [players] seats total, one the viewer and the rest
+     * server-owned bots. 2, 3 and 4 are all valid tables.
+     */
+    suspend fun createLudoBot(difficulty: String, players: Int = 4): String? = runCatching {
+        val seats = players.coerceIn(2, 4)
         val id = service.createLudo(
-            mode = if (fourSeats) "four" else "duel",
+            mode = if (seats == 2) "duel" else "four",
             creatorId = myUserId ?: error("not authenticated"),
             opponentIds = emptyList(),
             conversationId = null,
             gameName = "Ludo",
             idempotencyKey = java.util.UUID.randomUUID().toString(),
-            bots = if (fourSeats) 3 else 1,
+            bots = seats - 1,
             difficulty = difficulty,
         ).match_id
         open(id)

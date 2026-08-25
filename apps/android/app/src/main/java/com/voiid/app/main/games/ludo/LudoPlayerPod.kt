@@ -85,7 +85,7 @@ fun LudoPlayerPod(
             style = TextStyle(
                 fontFamily = androidx.compose.ui.text.font.FontFamily.SansSerif,
                 fontWeight = FontWeight.SemiBold,
-                fontSize = 13.sp,
+                fontSize = 12.sp,
             ),
             color = LudoPalette.textPrimary(),
             modifier = Modifier

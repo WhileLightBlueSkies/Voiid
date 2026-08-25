@@ -1106,12 +1106,14 @@ final class GamesEngine: ObservableObject {
         }
     }
 
-    /// Ludo practice uses the authoritative match path with one or three server-owned seats.
-    func createLudoBot(difficulty: String, fourSeats: Bool = false) async -> String? {
+    /// Ludo practice uses the authoritative match path: `players` seats total, one of which is
+    /// the viewer and the rest server-owned bots. 2, 3 and 4 are all valid tables.
+    func createLudoBot(difficulty: String, players: Int = 4) async -> String? {
+        let seats = min(4, max(2, players))
         do {
             let response = try await api.createLudo(
-                mode: fourSeats ? "four" : "duel", opponentIds: [], conversationId: nil,
-                idempotencyKey: UUID().uuidString, bots: fourSeats ? 3 : 1,
+                mode: seats == 2 ? "duel" : "four", opponentIds: [], conversationId: nil,
+                idempotencyKey: UUID().uuidString, bots: seats - 1,
                 difficulty: difficulty)
             await open(matchId: response.match_id)
             return response.match_id

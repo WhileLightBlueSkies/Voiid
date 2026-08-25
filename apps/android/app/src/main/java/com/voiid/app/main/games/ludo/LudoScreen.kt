@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -68,7 +69,7 @@ import kotlin.math.roundToInt
 /**
  * The Ludo match screen (§11): responsive portrait chrome — top bar (close / help / network),
  * two pod rows, the generated board as visual center, ONE global die that rests at the active
- * player's anchor outside the board, bottom chat/emote tools.
+ * player's home quadrant, the board vertically centred as the screen's visual anchor.
  *
  * NO TEXTUAL TURN BANNER EXISTS. Ownership is shown only by border hue + die pip color; the
  * pod ring communicates HOW LONG. The board is the visual center — no rules text or score card
@@ -89,8 +90,10 @@ fun LudoScreen(
 
     var showExitConfirm by remember { mutableStateOf(false) }
     var showHelp by remember { mutableStateOf(false) }
-    var showChat by remember { mutableStateOf(false) }
-    var exploreBoard by remember { mutableStateOf(false) }
+    // Per-cell TalkBack labels (§17). This used to hang off a debug toggle in the bottom row;
+    // with that row gone it follows the screen-reader state directly, so the 225 cell labels
+    // exist exactly when something can read them and never clutter normal navigation.
+    val exploreBoard = remember { isScreenReaderOn(context) }
 
     LaunchedEffect(matchId) {
         engine.setLudoConversationId(conversationId)
@@ -172,6 +175,10 @@ fun LudoScreen(
             if (state == null) {
                 SkeletonBody(engine.joinError.value, Modifier.weight(1f))
             } else {
+                // The board is the screen's optical centre: equal weighted spacers above and
+                // below the pod/board/pod block centre it vertically, while the board's own
+                // aspectRatio(1) centres it horizontally.
+                Spacer(Modifier.weight(1f))
                 PodRow(state, presence, top = true)
                 BoardArea(
                     state = state,
@@ -182,24 +189,10 @@ fun LudoScreen(
                     exploreBoard = exploreBoard,
                     reduceMotionEnabled = reduceMotion.read(context) || lowPower,
                     highContrast = highContrast,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.fillMaxWidth(),
                 )
                 PodRow(state, presence, top = false)
-            }
-
-            Row(Modifier.fillMaxWidth().height(44.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically) {
-                Text("💬", fontSize = 20.sp,
-                    modifier = Modifier
-                        .clickable(enabled = engine.currentLudoConversationId() != null,
-                            onClick = { showChat = true })
-                        .semantics { contentDescription = "Game chat" })
-                Text(
-                    if (exploreBoard) "Board labels on" else "Board labels off",
-                    fontSize = 11.sp, color = LudoPalette.textSecondary(),
-                    modifier = Modifier.clickable { exploreBoard = !exploreBoard },
-                )
+                Spacer(Modifier.weight(1f))
             }
         }
 
@@ -220,13 +213,6 @@ fun LudoScreen(
                 demoMode = DemoMode.Sandbox,
                 clockNote = state?.isActive == true,
                 onDismiss = { showHelp = false },
-            )
-        }
-        if (showChat && engine.currentLudoConversationId() != null) {
-            LudoChatSheet(
-                matchId = matchId,
-                conversationId = engine.currentLudoConversationId(),
-                onDismiss = { showChat = false },
             )
         }
         if (state?.isFinished == true) {
@@ -603,6 +589,13 @@ private fun BoardArea(
     }
 }
 
+/** True when TalkBack (or another touch-exploration service) is driving the UI. */
+private fun isScreenReaderOn(context: android.content.Context): Boolean {
+    val am = context.getSystemService(android.content.Context.ACCESSIBILITY_SERVICE)
+        as? android.view.accessibility.AccessibilityManager ?: return false
+    return am.isEnabled && am.isTouchExplorationEnabled
+}
+
 private fun cellKeyFromTrack(i: Int): String =
     LudoBoardGeometry.TRACK_COORDS[i].let { "cell-${it.first}-${it.second}" }
 
@@ -676,12 +669,19 @@ private fun DieAtAnchor(
 ) {
     val darkNow = !com.voiid.app.ui.theme.isLightTheme()
     val dColors = ludoPaletteFor(darkNow)
+    // The die rests INSIDE the active seat's home quadrant, the way Ludo King does. It used to
+    // live in a fixed 76dp-tall Box pinned to the top of the board, so the two bottom anchors
+    // resolved outside that box and the die was never visible. Aligning within the full board
+    // square and insetting to the yard centre keeps every anchor on screen; the yard pocket is
+    // empty by construction, so nothing is occluded.
     val alignment = when (anchor) {
         DieAnchor.TopLeft -> Alignment.TopStart
         DieAnchor.TopRight -> Alignment.TopEnd
         DieAnchor.BottomRight -> Alignment.BottomEnd
         DieAnchor.BottomLeft -> Alignment.BottomStart
     }
+    // Centre of a 6x6 home yard on the 15x15 grid, less half the die, as a fraction of the side.
+    val quadrantInset = 0.235f
     val canRoll = state.isActive &&
         state.turn?.phase == "awaitingRoll" &&
         state.viewerRole == "controller" &&
@@ -690,30 +690,35 @@ private fun DieAtAnchor(
     val value = state.turn?.value ?: 1
     val pipsNeutral = state.turn == null || state.isFinished
 
-    Box(Modifier.fillMaxWidth().height(76.dp), alignment) {
-        Canvas(
-            Modifier
-                .size(LudoDimens.dieHitTarget)
-                .clickable(enabled = canRoll, onClick = onTap)
-                .semantics { contentDescription = LudoSemantics.dieLabel(state, value) },
-        ) {
-            val rest = LudoDie.restAngles(value)
-            val rv = rollVisual
-            val pipColor = if (pipsNeutral) dColors.c(dColors.dieNeutralPip)
-                           else dColors.hue(state.turn.seat)
-            with(LudoDie) {
-                drawDie(
-                sidePx = size.width * 0.9f,
-                value = value,
-                rotationXDeg = rv?.rotationX ?: rest.first,
-                rotationYDeg = rv?.rotationY ?: rest.second,
-                translationYPx = rv?.liftPx ?: 0f,
-                scaleX = rv?.scaleX ?: 1f,
-                scaleY = rv?.scaleY ?: 1f,
-                pipColor = pipColor,
-                edgeStrokePx = 1.25f,
-                colors = dColors,
-            )
+    BoxWithConstraints(Modifier.fillMaxWidth().aspectRatio(1f)) {
+        val inset = (maxWidth * quadrantInset - LudoDimens.dieHitTarget / 2)
+            .coerceAtLeast(0.dp)
+        Box(Modifier.fillMaxSize(), alignment) {
+            Canvas(
+                Modifier
+                    .padding(inset)
+                    .size(LudoDimens.dieHitTarget)
+                    .clickable(enabled = canRoll, onClick = onTap)
+                    .semantics { contentDescription = LudoSemantics.dieLabel(state, value) },
+            ) {
+                val rest = LudoDie.restAngles(value)
+                val rv = rollVisual
+                val pipColor = if (pipsNeutral) dColors.c(dColors.dieNeutralPip)
+                               else dColors.hue(state.turn.seat)
+                with(LudoDie) {
+                    drawDie(
+                        sidePx = size.width * 0.9f,
+                        value = value,
+                        rotationXDeg = rv?.rotationX ?: rest.first,
+                        rotationYDeg = rv?.rotationY ?: rest.second,
+                        translationYPx = rv?.liftPx ?: 0f,
+                        scaleX = rv?.scaleX ?: 1f,
+                        scaleY = rv?.scaleY ?: 1f,
+                        pipColor = pipColor,
+                        edgeStrokePx = 1.25f,
+                        colors = dColors,
+                    )
+                }
             }
         }
     }
