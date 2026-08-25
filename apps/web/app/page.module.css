@@ -189,3 +189,233 @@
   color: var(--color-text-dim);
   max-width: 54ch;
 }
+
+/* ---- proof screens inside the surface tour --------------------------------
+ * These are pictures of the REAL app, so every value below is taken from the
+ * corresponding SwiftUI view rather than eyeballed — a mockup that is merely
+ * plausible is a wrong picture, and these screens are the page's main proof.
+ * Sizes are in `em` so they scale with the mockup's own size prop.
+ *
+ * Sources: CallScreens.swift · Map/MapHeader.swift · Clips/ClipsFeedView.swift
+ *          ChatDetailView.swift (GameInviteBubble)
+ * Scale:   VoiidSpacing xs4 sm8 md16 lg24 · VoiidRadius sm8 md12 lg16
+ */
+
+/* ---- calls (CallScreens.swift) ---- */
+
+.callProof {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4em;
+  padding: 1.4em 1.06em 1.06em;
+  text-align: center;
+}
+
+/* 24pt bold. */
+.callName {
+  font-size: 1.6em;
+  font-weight: var(--weight-bold);
+  color: var(--color-text);
+  letter-spacing: var(--tracking-tight);
+}
+
+/* 14pt, and the ONE thing that ticks gets tabular digits — in a proportional
+ * face a 1 is narrower than a 0, so a centred timer shifts sideways every
+ * second for the whole call. */
+.callStatus {
+  font-size: 0.93em;
+  color: var(--color-text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The keying badge: 11pt medium, textSecondary on a surfaceCard capsule.
+ * Deliberately NOT green — the badge has four states (verified / checking /
+ * unverified / FAILED) and a green default would make it decoration. */
+.callBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  margin-block-start: 0.15em;
+  padding: 0.27em 0.53em;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  border: 0.5px solid var(--color-divider);
+  color: var(--color-text-dim);
+  font-size: 0.73em;
+  font-weight: var(--weight-medium);
+  line-height: 1.35;
+  text-wrap: balance;
+}
+
+/* The control row: evenly distributed, 60pt end button. */
+.callControls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6em;
+  margin-block-start: 1.06em;
+}
+
+.ctl {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.6em;
+  height: 2.6em;
+  border-radius: 50%;
+  background: var(--color-surface-2);
+  color: var(--color-text);
+}
+
+.ctlEnd {
+  background: var(--color-error);
+  color: var(--color-text-on-primary);
+}
+
+/* ---- map (Map/MapHeader.swift) ---- */
+
+.mapProof {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0.8em 1.06em 1.4em;
+}
+
+/* 11pt in accentInk, with the radiowaves glyph at 9pt. The always-visible
+ * answer to "can anyone see me?". */
+.mapStatus {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 0.27em;
+  color: var(--color-primary-ink);
+  font-size: 0.73em;
+  font-weight: var(--weight-medium);
+}
+
+.mapPin {
+  position: relative;
+  width: 0.85em;
+  height: 0.85em;
+  margin-block: 1.6em 0.6em;
+  border-radius: 50%;
+  background: var(--hue);
+  box-shadow: 0 0 0 0.28em color-mix(in srgb, var(--hue) 22%, transparent);
+}
+
+/* The 38pt ghost toggle: surfaceCard circle with a divider hairline. */
+.mapGhost {
+  position: absolute;
+  inset-block-start: 0.7em;
+  inset-inline-end: 1.06em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5em;
+  height: 2.5em;
+  border-radius: 50%;
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+  color: var(--color-text-dim);
+}
+
+/* ---- clips (Clips/ClipsFeedView.swift) ---- */
+
+.clipProof {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.8em;
+  padding: 0.8em 0 0;
+}
+
+/* The segmented scope control: a fieldFill capsule, filled primary on the
+ * selected half, held to 280pt rather than full bleed. */
+.clipScope {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2em;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-divider);
+  font-size: 0.72em;
+  font-weight: var(--weight-semibold);
+}
+
+.clipScopeOn,
+.clipScopeOff {
+  padding: 0.35em 0.9em;
+  border-radius: var(--radius-pill);
+  line-height: 1;
+}
+
+.clipScopeOn {
+  background: var(--color-primary);
+  color: var(--color-text-on-primary);
+}
+
+.clipScopeOff { color: var(--color-text-dim); }
+
+/* 3 columns, 9:16 tiles, 2pt gutters. */
+.clipGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px;
+  width: 100%;
+}
+
+.clipTile {
+  aspect-ratio: 9 / 16;
+  background:
+    radial-gradient(60% 40% at 50% 32%, color-mix(in srgb, var(--hue) 34%, transparent), transparent 72%),
+    linear-gradient(180deg, var(--color-surface-2), var(--color-surface));
+}
+
+/* ---- games (ChatDetailView.swift · GameInviteBubble) ---- */
+
+.gameCard {
+  align-self: flex-start;
+  width: 68%;
+  margin: 0.45em 1.06em 0;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--color-bubble-received);
+  border: 0.5px solid var(--color-divider);
+}
+
+/* The 16:9 artwork panel — primary at 10% behind a tinted controller glyph,
+ * which is exactly the no-art fallback the Swift view degrades to. */
+.gameArt {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 16 / 9;
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+  color: var(--color-primary);
+}
+
+.gameBody {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25em;
+  padding: 0.53em 0.7em 0.7em;
+}
+
+/* 10pt bold in primary. */
+.gameKicker {
+  color: var(--color-primary-ink);
+  font-size: 0.66em;
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+}
+
+/* 16pt bold. */
+.gameName {
+  font-size: 1.06em;
+  font-weight: var(--weight-bold);
+  color: var(--color-text);
+  line-height: 1.2;
+}

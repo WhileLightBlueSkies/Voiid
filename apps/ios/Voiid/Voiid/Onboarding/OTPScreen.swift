@@ -225,11 +225,11 @@ struct OTPScreen: View {
         let isCursor = focused && (index == min(digits.count, codeLength - 1))
 
         return RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .fill(VoiidColor.fieldFill)
+            .fill(VoiidBrand.field)
             .overlay(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .stroke(
-                        isCursor ? VoiidBrand.lime : VoiidColor.fieldBorder,
+                        isCursor ? VoiidBrand.lime : VoiidBrand.fieldEdge,
                         lineWidth: isCursor ? 2 : 1
                     )
             )

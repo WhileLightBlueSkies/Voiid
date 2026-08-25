@@ -1,0 +1,13 @@
+[
+  {
+    "date": "2026-08-25",
+    "macrostructure": "Split Studio",
+    "theme": "preserved (Voiid Tide \u2014 project-locked, not a catalog theme)",
+    "theme_axes": "light / rounded-sans / cool-teal",
+    "enrichment": "none \u2014 PhoneMockup proofs rebuilt from the iOS SwiftUI views",
+    "nav": "N5 floating pill (existing, preserved)",
+    "footer": "Ft5 statement",
+    "brief": "Voiid \u00b7 encrypted messenger landing \u2014 tour the five surfaces",
+    "notes": "Proof screens are transcribed from CallScreens.swift, Map/MapHeader.swift, Clips/ClipsFeedView.swift and ChatDetailView.swift (MessageBubble/BubbleShape, GameInviteBubble). Re-check them when those views change."
+  }
+]

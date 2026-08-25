@@ -1,26 +1,37 @@
-<svg width="88" height="80" viewBox="0 0 88 80" fill="none" xmlns="http://www.w3.org/2000/svg">
-<!-- Voiid mark — PEACOCK TEAL, FLAT.
-     Three rounded bars forming the V, all one colour: VoiidColor.accent / primary (#13828C).
+<svg width="88" height="80" viewBox="0 0 88 80" xmlns="http://www.w3.org/2000/svg">
+<!-- Voiid mark — PEACOCK TEAL, back bar SHADED.
+     Three rounded bars forming the V, matched to the shipping app icon
+     (AppIcon.appiconset/AppIcon-1024.png).
 
-     ── WHY FLAT, AND WHAT WAS LOST ─────────────────────────────────────────────────
-     The lime original shaded the back bar with a five-stop gradient (#457512 at the ends to
-     #AAD91E mid-bar), which is what made that bar read as one stroke passing BEHIND the other
-     two rather than as three bars crossing. Flattening drops that depth cue deliberately: the
-     mark is now unmistakably on-theme at every size, and at the sizes it is actually drawn —
-     20-68pt in-app, and a 1024px icon that gets scaled down — the gradient was doing very
-     little that survived the downscale anyway.
+     ── WHY THE BACK BAR IS A GRADIENT ────────────────────────────────────────────
+     The shading is the depth cue, not decoration. Ramping the back bar from #0F464A at
+     its far end to full brand #13828C where the bars meet is what makes it read as ONE
+     STROKE PASSING BEHIND the other, rather than three flat bars crossing at a point.
+     Stops are sampled directly off AppIcon-1024.png along the bar's axis.
 
-     If the depth is ever wanted back, it is a linearGradient on the first rect with
-     gradientUnits="userSpaceOnUse" (NOT objectBoundingBox — the rect carries rotate(150) and
-     the bounding box is measured before the rotation, which put the dark stop into a corner as
-     a hard-edged slab). Teal stops that mirror the old ramp: #0A4A50, #0E6970, #17A3B0,
-     #13929E, #0C5A62.
+     gradientUnits="userSpaceOnUse" is load-bearing. With the default objectBoundingBox
+     the gradient maps to the bounding box of the PATH DATA — and because this rect is
+     tall, thin and carries rotate(150), that box is measured BEFORE the rotation, which
+     drops the darkest stop into a corner as a hard-edged slab. That was the "black thing
+     behind the logo" in the original Figma export. userSpaceOnUse resolves in the rect's
+     own rotated space, so the ramp runs along the bar's long axis.
 
-     ── ONE COLOUR, ONE PLACE ───────────────────────────────────────────────────────
-     #13828C is VoiidColor.primary and VoiidColor.accent (they are the same hex). Changing the
-     brand colour means changing it here, in ios Assets.xcassets/VoiidLogoMark.imageset, and in
-     android res/drawable/voiid_logomark.xml — three files, kept byte-identical in shape. -->
-<rect x="58.5586" y="68.9043" width="21.6824" height="79.5639" rx="10.8412" transform="rotate(150 58.5586 68.9043)" fill="#13828C"/>
+     ── ONE COLOUR, ONE PLACE ─────────────────────────────────────────────────────
+     #13828C is VoiidColor.primary and VoiidColor.accent (same hex). Changing the brand
+     colour means changing it here, in ios Assets.xcassets/VoiidLogoMark.imageset, in
+     android res/drawable/voiid_logomark.xml, and in apps/web/components/Logomark.tsx —
+     kept identical in shape.
+
+     The app icon's near-black #0B0B0B ground is deliberately NOT here: that ground
+     belongs to the ICON, not to the mark. -->
+<defs>
+  <linearGradient id="voiidBackBar" gradientUnits="userSpaceOnUse"
+                  x1="10.8412" y1="0" x2="10.8412" y2="79.5639">
+    <stop offset="0" stop-color="#0F464A"/>
+    <stop offset="1" stop-color="#13828C"/>
+  </linearGradient>
+</defs>
+<rect x="58.5586" y="68.9043" width="21.6824" height="79.5639" rx="10.8412" transform="rotate(150 58.5586 68.9043)" fill="url(#voiidBackBar)"/>
 <rect x="44.6035" y="42.1816" width="20.2613" height="30.6242" rx="10.1307" transform="rotate(30 44.6035 42.1816)" fill="#13828C"/>
 <rect x="68.9043" y="0" width="21.6824" height="79.625" rx="10.8412" transform="rotate(30 68.9043 0)" fill="#13828C"/>
 </svg>

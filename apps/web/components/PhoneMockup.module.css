@@ -208,13 +208,25 @@
 
 /* ---- in-screen furniture ------------------------------------------------- */
 
+/*
+ * The in-app nav bar. In the real app this is a TRANSLUCENT material the
+ * transcript scrolls under (ChatDetailView keeps 32pt of headroom at the top of
+ * the scroll so the first bubble does not start beneath it), not an opaque strip
+ * with a hard rule under it.
+ */
 .appBar {
   display: flex;
   align-items: center;
   gap: 0.6em;
-  padding: 0.7em 0.9em;
-  border-block-end: 1px solid var(--color-divider);
+  /* 16pt horizontal, matching VoiidSpacing.md. */
+  padding: 0.7em 1.06em;
+  background: color-mix(in srgb, var(--color-surface) 78%, transparent);
+  -webkit-backdrop-filter: saturate(160%) blur(12px);
+  backdrop-filter: saturate(160%) blur(12px);
+  border-block-end: 0.5px solid var(--color-divider);
   flex: none;
+  position: relative;
+  z-index: 1;
 }
 
 .back {
@@ -260,33 +272,52 @@
 
 /* ---- bubbles ------------------------------------------------------------- */
 
+/* 16pt gutters (VoiidSpacing.md), matching the real transcript. */
 .bubbleRow {
   display: flex;
-  padding-inline: 0.7em;
+  padding-inline: 1.06em;
   margin-block-start: 0.45em;
 }
 
 .row-sent { justify-content: flex-end; }
 .row-received { justify-content: flex-start; }
 
+/*
+ * Matched to BubbleShape in ChatDetailView.swift — this is a picture of the real
+ * app, so a bubble that is merely bubble-shaped is a wrong picture.
+ *
+ * iOS: r = 16 on three corners, square on the FOURTH, and the square corner is
+ * the one nearest the other speaker — bottomLeft when it is mine, bottomRight
+ * when it is theirs. The web had both tails on the OUTER edge, which is the
+ * mirror image of the app.
+ *
+ * Padding is 12 horizontal / 8 vertical (VoiidSpacing), not an eyeballed
+ * asymmetric value.
+ */
 .bubble {
   max-width: 78%;
-  padding: 0.5em 0.7em 0.42em;
-  border-radius: 1.1em;
+  /* 12/8 at the mockup's ~15px base ≈ 0.8em / 0.53em. */
+  padding: 0.53em 0.8em;
+  border-radius: 1.06em;   /* 16pt */
   font-size: 0.95em;
+  line-height: 1.35;
 }
 
 .sent {
   background: var(--color-bubble-sent);
   color: var(--color-text-on-bubble);
-  border-end-end-radius: 0.35em;
+  /* bottomLeft square — the corner facing the other speaker. */
+  border-end-start-radius: 0.27em;
 }
 
 .received {
   background: var(--color-bubble-received);
   color: var(--color-text);
-  border: 1px solid var(--color-divider);
-  border-end-start-radius: 0.35em;
+  /* 0.5pt divider hairline: theirs is near-white on a near-white ground and
+   * needs an edge. Mine is filled and gets none. */
+  border: 0.5px solid var(--color-divider);
+  /* bottomRight square. */
+  border-end-end-radius: 0.27em;
 }
 
 .bubbleMeta {

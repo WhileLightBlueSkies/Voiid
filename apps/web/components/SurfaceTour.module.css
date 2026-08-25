@@ -1,0 +1,176 @@
+/* Hallmark · macrostructure: Split Studio · genre: editorial
+ * tone: editorial · nav: N5 floating pill (existing) · footer: Ft5 statement
+ * theme: preserved — Voiid Tide #13828C from DesignSystem/Theme.swift (NOT a
+ *   catalog theme: this project forbids raw hex and sources colour from the iOS
+ *   app, so Hallmark supplies structure only)
+ * enrichment: none new — existing PhoneMockup becomes the proof column
+ * pre-emit critique: P5 H5 E4 S5 R4 V5
+ */
+/* =============================================================================
+ * Split Studio — the five surfaces as alternating diptychs.
+ *
+ * Replaces a <Grid columns={3}> of icon-above-heading-above-body cards. That
+ * shape — three equal columns, uniform card heights, icon on top — is the most
+ * emitted layout in generated UI, and it was carrying the most important content
+ * on the page: the actual product.
+ *
+ * The diptych earns its place on content grounds, not novelty. Every surface
+ * here has a real visual proof already built (PhoneMockup), and a claim paired
+ * with its proof argues better than a claim with a 3-line blurb. Alternating the
+ * direction is what stops five bands reading as a list.
+ * ========================================================================== */
+
+.tour {
+  display: grid;
+  /* The band gap IS the section rhythm — no rules, no dividers. Split Studio's
+   * divider language is negative space. */
+  gap: clamp(var(--space-3xl), 7vw, 7.5rem);
+}
+
+.band {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-xl);
+  align-items: center;
+}
+
+/* The claim column. */
+.copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.index {
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  color: var(--color-text-mute);
+  font-variant-numeric: tabular-nums;
+}
+
+.title {
+  font-size: var(--text-h2);
+  font-weight: var(--weight-bold);
+  letter-spacing: var(--tracking-h2);
+  line-height: var(--leading-snug);
+  color: var(--color-text);
+  /* Split Studio gives the heading half a screen — it must not run past its
+   * column and start reading as body copy. */
+  max-width: 14ch;
+  text-wrap: balance;
+  /* Long single words (URLs, compounds) break rather than force a scrollbar. */
+  overflow-wrap: anywhere;
+}
+
+.body {
+  font-size: var(--text-lede);
+  line-height: 1.55;
+  color: var(--color-text-dim);
+  max-width: 44ch;
+  text-wrap: pretty;
+}
+
+/* The privacy label. Every surface states what the server can see, in the same
+ * position, in the same voice — that consistency IS the honesty argument. */
+.stance {
+  margin-block-start: var(--space-3xs);
+}
+
+/* Split Studio's button voice: an outlined chip below the text half. */
+.action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5em;
+  min-height: 44px;
+  margin-block-start: var(--space-2xs);
+  padding: 0 var(--space-md);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-xs);
+  color: var(--color-text);
+  font-size: var(--text-small);
+  font-weight: var(--weight-semibold);
+  text-decoration: none;
+  /* Single-line always — a two-line chip is a mobile tell (gate 49). */
+  white-space: nowrap;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
+    transform 100ms var(--ease-out);
+}
+
+.action:hover {
+  border-color: var(--color-border-strong);
+  box-shadow: var(--shadow-card);
+}
+.action:active { transform: scale(0.97); background: var(--color-surface-2); }
+.action:focus-visible { outline: none; box-shadow: var(--ring); }
+
+.arrow { transition: transform var(--dur-fast) var(--ease-out); }
+.action:hover .arrow { transform: translateX(3px); }
+
+/* The proof column. */
+.proof {
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+}
+
+/* ---- the diptych, at width ------------------------------------------------ */
+
+@media (min-width: 900px) {
+  .band {
+    /* Deliberately NOT 1fr 1fr. A true half-and-half split reads as a template;
+     * the claim carries more weight than the device, so it takes more width.
+     * minmax(0,…) rather than bare fr — an image track on bare 1fr can refuse to
+     * shrink and force a horizontal scrollbar (gate 50). */
+    grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr);
+    gap: clamp(var(--space-2xl), 5vw, var(--space-3xl));
+  }
+
+  /* The alternation. Visual order only — DOM order stays claim-then-proof, so
+   * a screen reader and the tab sequence read every band the same way. */
+  .flip .copy { order: 2; }
+  .flip .proof { order: 1; }
+}
+
+/* ---- reveal ---------------------------------------------------------------
+ * Split Studio's native reveal: opposite halves cross-fade in, slightly
+ * staggered, so the pairing reads as a pairing. */
+
+.band .copy,
+.band .proof {
+  animation: bandIn var(--dur-slow) var(--ease-out) both;
+  animation-timeline: view();
+  animation-range: entry 8% cover 26%;
+}
+
+.band .proof { animation-delay: 60ms; }
+
+@keyframes bandIn {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* Browsers without scroll-driven animations get the content, not a blank band. */
+@supports not (animation-timeline: view()) {
+  .band .copy,
+  .band .proof { animation: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Gentler equivalent, not absent: the halves still arrive, they just do not
+   * travel. */
+  .band .copy,
+  .band .proof {
+    animation-name: bandFade;
+    animation-duration: var(--dur-base);
+  }
+  @keyframes bandFade { from { opacity: 0; } to { opacity: 1; } }
+}

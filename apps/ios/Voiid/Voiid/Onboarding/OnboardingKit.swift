@@ -66,6 +66,21 @@ enum VoiidBrand {
     // Fixed values, not `dyn`. A screen that pins its own ground must pin its own text, or
     // it inherits a contrast decision made for a surface it does not have.
 
+    // ── FIELDS AND LINES ON THE SAME GROUND ─────────────────────────────────────────
+    // Same trap as the text tokens below, and the same fix. `VoiidBrand.field` is
+    // #EDF1F1 in light mode — a near-WHITE box, which on this near-black ground reads as a
+    // glaring slab rather than a recessed input. `fieldBorder` (#D7DEDF) is the same problem
+    // as a hairline, and `placeholder` (#899396) is tuned for contrast against white.
+    //
+    // Pinned to their dark values, so an input on a committed-dark screen looks like an input.
+
+    /// A text field's fill on this ground. `VoiidBrand.field`'s DARK value.
+    static let field = Color(hex: 0x111719)
+    /// A field's border, and any hairline that must read as a line rather than a glare.
+    static let fieldEdge = Color(hex: 0x263236)
+    /// Placeholder text inside a field on this ground.
+    static let placeholder = Color(hex: 0x6D787B)
+
     /// Primary text on the committed-dark ground. `VoiidBrand.text`'s DARK value.
     static let text = Color(hex: 0xF6F8F8)
     /// Secondary text on the same ground. `VoiidBrand.textDim`'s DARK value.
@@ -521,7 +536,7 @@ struct OnboardingField<Trailing: View>: View {
     }
 
     private var promptText: Text {
-        Text(prompt).foregroundColor(VoiidColor.placeholder)
+        Text(prompt).foregroundColor(VoiidBrand.placeholder)
     }
 }
 
@@ -559,7 +574,7 @@ struct StepDots: View {
         HStack(spacing: 6) {
             ForEach(0..<total, id: \.self) { index in
                 Capsule()
-                    .fill(index == current ? VoiidBrand.lime : VoiidColor.fieldBorder)
+                    .fill(index == current ? VoiidBrand.lime : VoiidBrand.fieldEdge)
                     .frame(width: index == current ? 20 : 6, height: 6)
             }
         }

@@ -31,12 +31,28 @@ export function SiteFooter() {
 
   return (
     <footer className={styles.footer}>
+      {/*
+        The closing statement (Ft5). A footer's first job is to CLOSE the page,
+        not to restate its sitemap — the nav already did that. This is the one
+        line the site is actually arguing, set large enough to be read as a
+        parting thought rather than as small print.
+
+        The reference-and-legal columns still follow it. A Statement footer
+        normally REPLACES a link sitemap, but this one carries the DPDP
+        grievance block, which is a statutory disclosure (Act s.13, IT Rules
+        Rule 3(2)) — dropping it to satisfy a layout would be a bad trade. So
+        the statement leads and the obligations sit beneath it.
+      */}
+      <p className={styles.statement}>
+        We would rather tell you what we can see than promise you we are blind.
+      </p>
+
       <div className={styles.inner}>
         <div className={styles.brandCol}>
           {/* The lockup: mark + wordmark on one row. brandCol is a column, so
               the pair needs its own row wrapper or they stack. */}
           <span className={styles.lockup}>
-            <Logomark size={25} />
+            <Logomark size={25} idPrefix="footer" />
             <Wordmark size={24} />
           </span>
           <p className={styles.tagline}>

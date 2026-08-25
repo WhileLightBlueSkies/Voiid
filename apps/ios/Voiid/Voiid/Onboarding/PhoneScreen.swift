@@ -186,7 +186,7 @@ struct PhoneScreen: View {
                 .frame(width: 1, height: 34)
 
             TextField("", text: $digits, prompt:
-                Text("Phone number").foregroundColor(VoiidColor.placeholder)
+                Text("Phone number").foregroundColor(VoiidBrand.placeholder)
             )
             .keyboardType(.phonePad)          // includes +*# , which .numberPad omits — pasted
                                               // international numbers would otherwise be rejected
@@ -238,12 +238,12 @@ struct PhoneScreen: View {
         .frame(height: 62)
         .background(
             RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
-                .fill(VoiidColor.fieldFill)
+                .fill(VoiidBrand.field)
         )
         .overlay(
             RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
                 .stroke(
-                    fieldFocused ? VoiidBrand.lime : VoiidColor.fieldBorder,
+                    fieldFocused ? VoiidBrand.lime : VoiidBrand.fieldEdge,
                     lineWidth: fieldFocused ? 1.5 : 1
                 )
         )

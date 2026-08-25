@@ -54,7 +54,7 @@ export function SiteHeader() {
     <header className={styles.header}>
       <div className={styles.bar}>
         <Link href="/" className={styles.brand} aria-label="Voiid — home">
-          <Logomark size={23} className={styles.mark} />
+          <Logomark size={23} idPrefix="header" className={styles.mark} />
           <Wordmark size={22} />
         </Link>
 

@@ -413,66 +413,9 @@ extension Notification.Name {
 }
 
 // MARK: - First-open explainer
-
-/// The full-screen door the Map shows on first open. Two choices only: stay hidden and just
-/// look around, or deliberately choose who can see you. No "share with everyone" exists.
-struct MapExplainerView: View {
-    var onBrowseOnly: () -> Void
-    var onChoose: () -> Void
-
-    var body: some View {
-        VStack(spacing: VoiidSpacing.lg) {
-            Spacer()
-            Image(systemName: "map.fill")
-                .font(.system(size: 52)).foregroundColor(VoiidColor.primary)
-            Text("The Map")
-                .font(VoiidFont.rounded(28, .bold)).foregroundColor(VoiidColor.textPrimary)
-            VStack(spacing: VoiidSpacing.md) {
-                explainerRow("eye.slash.fill", "You’re hidden by default",
-                             "No one sees you until you choose a scope — Everyone you’ve chatted with, just My Contacts, or only people you pick.")
-                explainerRow("lock.fill", "Your location is end-to-end encrypted",
-                             "Voiid’s servers never see where you are — only that a share exists and when it ends.")
-                explainerRow("mappin.and.ellipse", "Approximate, and you can stop anytime",
-                             "The Map shows a coarse position. Ghost Mode hides you instantly and stops your location being taken at all.")
-            }
-            .padding(.horizontal, VoiidSpacing.lg)
-            Spacer()
-            VStack(spacing: VoiidSpacing.sm) {
-                Button {
-                    Haptics.rigid(); onChoose()
-                } label: {
-                    Text("Choose who can see me")
-                        .font(VoiidFont.rounded(16, .semibold))
-                        .frame(maxWidth: .infinity).padding(.vertical, 14)
-                        .background(Capsule().fill(VoiidColor.primary))
-                        .foregroundColor(VoiidColor.textOnPrimary)
-                }
-                Button {
-                    Haptics.tap(); onBrowseOnly()
-                } label: {
-                    Text("Browse only")
-                        .font(VoiidFont.rounded(16, .semibold))
-                        .foregroundColor(VoiidColor.textPrimary)
-                        .frame(maxWidth: .infinity).padding(.vertical, 12)
-                }
-            }
-            .padding(.horizontal, VoiidSpacing.lg)
-            .padding(.bottom, VoiidSpacing.lg)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(VoiidColor.background.ignoresSafeArea())
-    }
-
-    private func explainerRow(_ icon: String, _ title: String, _ body: String) -> some View {
-        HStack(alignment: .top, spacing: VoiidSpacing.md) {
-            Image(systemName: icon)
-                .font(.system(size: 20)).foregroundColor(VoiidColor.primary)
-                .frame(width: 28)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(VoiidFont.rounded(15, .semibold)).foregroundColor(VoiidColor.textPrimary)
-                Text(body).font(VoiidFont.rounded(13, .regular)).foregroundColor(VoiidColor.textSecondary)
-            }
-            Spacer(minLength: 0)
-        }
-    }
-}
+//
+// REPLACED by the four-step flow. `MapExplainerView` was one plain screen — an SF Symbol, a
+// title and two buttons — that did the intro and the audience choice at once and jumped
+// straight to the iOS location prompt with no explanation. It now lives as two proper
+// screens, Main/MapIntroScreen.swift and Main/MapPrivacyScreen.swift, orchestrated by
+// Main/MapOnboardingFlow.swift. Nothing here replaces it, so the type is simply gone.

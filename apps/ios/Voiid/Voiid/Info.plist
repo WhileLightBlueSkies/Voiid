@@ -2,6 +2,32 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- ── THE LAUNCH SCREEN ────────────────────────────────────────────────────────
+	     There was NO launch screen configured at all, so iOS painted a blank frame
+	     between tap and first render — white in light mode, against a splash that is
+	     near-black. That flash was the ugliest moment in the app.
+
+	     UILaunchScreen (not a storyboard): the ground is LaunchBackground, pinned to
+	     #0B0B0B in BOTH appearances so it matches SplashScreen's ground exactly and the
+	     handoff is invisible.
+
+	     The mark is LaunchMark — the APP ICON's V, lifted off its black square into
+	     transparency so it composites onto the launch colour instead of showing a second
+	     black rectangle with its own edges. It is NOT VoiidLogoMark: that asset is the
+	     three-bar wordmark lockup, a different shape from the icon the user just tapped,
+	     and seeing one become the other reads as the wrong app opening.
+
+	     Keep this in step with SplashScreen. If its ground ever moves off #0B0B0B, this
+	     colorset moves with it or the flash comes back. -->
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
+		<key>UIImageName</key>
+		<string>LaunchMark</string>
+		<key>UIImageRespectsSafeAreaInsets</key>
+		<false/>
+	</dict>
 	<!-- Location. Feature (B) — the Map — is FOREGROUND-ONLY and needs only When-In-Use.
 	     In-conversation live sharing (Feature A) has now landed and adds the Always string
 	     below plus the `location` background mode (in UIBackgroundModes), so a user-started,

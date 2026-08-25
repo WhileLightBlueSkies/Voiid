@@ -2,22 +2,33 @@
   <!--
     The browser-tab and PWA icon.
 
-    The mark's own viewBox is 88x80, so it is centred inside a 128 square with
-    real padding rather than stretched to fill: a favicon that runs to the edge
-    of its box has no breathing room at 16px and reads as a smudge. The 0.86
-    scale plus the translate is what centres it.
+    This mirrors the SHIPPING APP ICON (AppIcon.appiconset/AppIcon-1024.png):
+    the mark on the same near-black #0B0B0B ground, with the same shaded back
+    bar. A tab icon's job is recognition — someone who has the app installed
+    should see the same thing in their tab strip that they see on their home
+    screen, so this is the one place the dark ground DOES come across to the
+    web. (The inline mark in the header sits bare on the light page; the ground
+    belongs to the icon, not to the mark.)
 
-    Colour is PEACOCK TEAL #13828C, matching components/Logomark.tsx, the iOS
-    imageset and the Android drawable. Changing the brand colour means changing
-    all four.
+    Rounded corners are drawn here rather than left square: at 16px a hard-edged
+    black square reads as a bug, and every platform that adds its own mask
+    tolerates a radius smaller than its own.
 
-    A rounded ground is deliberately NOT drawn here: every platform that shows a
-    favicon masks it differently, and a tile inside a mask reads as a sticker.
-    The mark sits on transparency and lets the browser do the framing.
+    The transform is COMPUTED, not eyeballed: the artwork's true bounds are
+    87.68 x 79.80, and scale/translate centre that inside the 128 box at 66%
+    coverage. An icon that runs to the edge has no breathing room at 16px.
   -->
-  <g transform="translate(26.2 25.6) scale(0.86)">
+  <rect width="128" height="128" rx="28" fill="#0B0B0B"/>
+  <defs>
+    <linearGradient id="favBackBar" gradientUnits="userSpaceOnUse"
+                    x1="10.8412" y1="0" x2="10.8412" y2="79.5639">
+      <stop offset="0" stop-color="#0F464A"/>
+      <stop offset="1" stop-color="#13828C"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(21.76 25.56) scale(0.9635)">
     <rect x="58.5586" y="68.9043" width="21.6824" height="79.5639" rx="10.8412"
-          transform="rotate(150 58.5586 68.9043)" fill="#13828C"/>
+          transform="rotate(150 58.5586 68.9043)" fill="url(#favBackBar)"/>
     <rect x="44.6035" y="42.1816" width="20.2613" height="30.6242" rx="10.1307"
           transform="rotate(30 44.6035 42.1816)" fill="#13828C"/>
     <rect x="68.9043" y="0" width="21.6824" height="79.625" rx="10.8412"

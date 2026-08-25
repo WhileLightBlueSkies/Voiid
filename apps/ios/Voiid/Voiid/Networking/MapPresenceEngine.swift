@@ -393,6 +393,10 @@ final class MapPresenceEngine: ObservableObject {
         // Hard gate first — no fix may be taken from this instant.
         visibility.markGhost(duration)
         stopEmitting()
+        // Going dark ends the journey too. Leaving it armed would mean the destination
+        // silently resumed being broadcast the moment the ghost lifted, which is a share the
+        // user never re-consented to. Ghost means ghost, including where I was heading.
+        MapMoveEngine.shared.endMove()
 
         let audienceIds = audience.map(\.userId)
         let sid = outboundShareId
@@ -537,8 +541,16 @@ final class MapPresenceEngine: ObservableObject {
         guard !audienceIds.isEmpty else { return }
 
         emitSeq += 1
-        let env = MapEnvelope.presenceFix(shareId: sid, seq: emitSeq,
-                                          coord: loc.coordinate, accuracy: loc.horizontalAccuracy)
+        // MOVE RIDES THE FIX THAT WAS ALREADY GOING OUT. When a journey is active the same
+        // frame gains the destination + absolute arrival time; when it is not, this is bit-for
+        // -bit the fix it always was. Nothing about cadence, key, share id or size class
+        // changes, and a viewer too old to know about Move decodes it as a plain fix.
+        let move = MapMoveEngine.shared.outbound
+        let env = move.map {
+            MapEnvelope.moveFix(shareId: sid, seq: emitSeq, coord: loc.coordinate,
+                                accuracy: loc.horizontalAccuracy, move: $0)
+        } ?? MapEnvelope.presenceFix(shareId: sid, seq: emitSeq,
+                                     coord: loc.coordinate, accuracy: loc.horizontalAccuracy)
         guard let plaintext = try? JSONEncoder().encode(env),
               let ciphertext = try? encryptBackup(secret: key, plaintext: plaintext) else { return }
         WebSocketClient.shared.sendLocationUpdate(shareId: sid, recipientIds: audienceIds,
@@ -602,6 +614,11 @@ final class MapPresenceEngine: ObservableObject {
         // on an authenticated fix is the same ownership proof a `map_key` carries, and it is
         // how a contact who was already sharing before this build gets one at all.
         noteInboundSender(fromUserId, shareId: shareId)
+        // MOVE, from the same authenticated plaintext. Recorded even when the presence upsert
+        // was a no-op: a duplicate seq still carries a fresher ETA, and the ETA is absolute so
+        // a later frame is always the better one. Passing an envelope with no Move fields
+        // CLEARS the journey — absence is how "arrived / cancelled" reaches the viewer.
+        MapMoveEngine.shared.ingest(env, fromUserId: fromUserId, shareId: shareId)
         if changed { reloadFromStore() }
     }
 
@@ -649,6 +666,9 @@ final class MapPresenceEngine: ObservableObject {
         // age-out, which keeps it) and rotates the sender out of our view.
         MapKeyStore.clearInboundKey(forSender: fromUserId)
         MapPresenceStore.erasePresence(senderUserId: fromUserId)
+        // A journey can never outlive the presence it was attached to: an erased position with
+        // a surviving destination would still be telling us where they are going.
+        MapMoveEngine.shared.forget(senderUserId: fromUserId)
         forgetInboundSender(fromUserId)
         reloadFromStore()
     }
@@ -793,5 +813,9 @@ final class MapPresenceEngine: ObservableObject {
         persistInboundShareIds()
         presences = []
         audience = []
+        // Moves are memory-only, but sign-out must not leave one visible to the next account
+        // on this device — and my own outbound journey must stop annotating fixes at once.
+        MapMoveEngine.shared.forgetAll()
+        MapMoveEngine.shared.endMove()
     }
 }

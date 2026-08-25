@@ -307,10 +307,10 @@ private struct UnlockPage: View {
         let isCursor = focused && index == min(pin.count, pinLength - 1)
 
         return RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .fill(VoiidColor.fieldFill)
+            .fill(VoiidBrand.field)
             .overlay(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(isCursor ? VoiidBrand.lime : VoiidColor.fieldBorder,
+                    .stroke(isCursor ? VoiidBrand.lime : VoiidBrand.fieldEdge,
                             lineWidth: isCursor ? 2 : 1)
             )
             .frame(height: 62)

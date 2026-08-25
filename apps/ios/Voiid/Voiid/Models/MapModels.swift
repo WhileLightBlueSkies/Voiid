@@ -60,9 +60,60 @@ struct MapEnvelope: Codable {
     var key: String? = nil        // map_key only — base64 of the 32-byte shareKey
     var cadence: Int? = nil       // seconds; map_key only
 
+    // MARK: Move (journey / ETA) — rides the SAME `fix` frame, under the SAME shareKey.
+    //
+    // WHY HERE AND NOT A NEW SHARE KIND: a destination and an arrival time are at least as
+    // sensitive as the position itself — "where they will be, and when" is the one thing a
+    // position trail cannot give you. Putting them on a server-visible surface would recreate
+    // exactly the leak `location.ts` refuses to build (there is DELIBERATELY no
+    // POST /location/update), and `018_location_shares.sql` constrains `kind` to
+    // ('conversation','map') on purpose. So Move is carried entirely inside the authenticated
+    // plaintext of a fix the server already relays as an opaque blob. Zero server surface.
+    //
+    // EVERY FIELD BELOW IS OPTIONAL WITH AN EXPLICIT `= nil`, and each is absent from the wire
+    // for an ordinary (non-Move) fix. That is not tidiness — it is the fix for the two
+    // documented decode bugs above: a non-optional property makes Swift's synthesized decoder
+    // THROW on a missing key rather than fall back to its default, and `receiveFix` treats a
+    // decode throw as "drop the frame". A required Move field would therefore have silently
+    // dropped EVERY fix from every peer that isn't moving, and every fix from Android and from
+    // any client older than this change.
+
+    /// Destination latitude. Rounded to presence precision (3 dp, ~110 m) by `moveFix`, for the
+    /// same reason the live coordinate is: a destination pinned to 6 dp is a doorstep.
+    var dlat: Double? = nil
+    /// Destination longitude. Same rounding.
+    var dlon: Double? = nil
+    /// Human-readable destination name ("Central Market"). Chosen by the TRAVELLER and shown
+    /// verbatim to the viewer — we never reverse-geocode a coordinate on the receiving side
+    /// (docs/LOCATION.md §10), so if this is absent the viewer shows no name rather than
+    /// inventing one.
+    var dname: String? = nil
+    /// Optional street address for the destination. Optional twice over: a peer may omit it,
+    /// and MapKit may not have supplied one for the place the traveller picked.
+    var daddr: String? = nil
+    /// ABSOLUTE epoch millis of predicted arrival — NOT a relative countdown.
+    ///
+    /// A "12 minutes" sent over a relay is already wrong by the time it renders, and gets more
+    /// wrong the longer the frame sits; the viewer would count down from a number that stopped
+    /// being true. An absolute instant is self-correcting: the viewer subtracts its own clock
+    /// and is right at every frame, and a stale frame visibly decays toward zero instead of
+    /// lying at a constant.
+    ///
+    /// Int64, NOT Int, to match Android's `Long` exactly — the same width mismatch documented
+    /// on `n` and `t` above, which drops frames invisibly.
+    var eta: Int64? = nil
+    /// Epoch millis the journey STARTED, i.e. when the traveller began this Move. The arrival
+    /// progress bar is (now - start) / (eta - start), which is why this must be on the wire:
+    /// derived from the viewer's first-seen frame instead, the bar would restart at 0% every
+    /// time the viewer reopened the screen. Int64 for Android's `Long`.
+    var mstart: Int64? = nil
+
     enum CodingKeys: String, CodingKey {
         case vloc = "_vloc"
         case k, s, t, lat, lon, acc, n, expiresAt, key, cadence
+        // Move fields. Present here so they encode/decode at all — a CodingKeys enum that
+        // omits a property silently drops it from BOTH directions.
+        case dlat, dlon, dname, daddr, eta, mstart
     }
 
     enum Kind: String { case mapKey = "map_key", mapOff = "map_off", fix }
@@ -91,6 +142,106 @@ extension MapEnvelope {
             acc: max(accuracy, 100).rounded(),
             n: Int64(seq)
         )
+    }
+
+    /// Build a `fix` envelope that ALSO carries an active Move. Identical to `presenceFix` in
+    /// every existing respect — same kind, same rounding, same sequence — with the journey
+    /// fields appended, so a receiver that predates Move decodes it as an ordinary fix and
+    /// draws the pin exactly as before.
+    static func moveFix(shareId: String, seq: Int, coord: CLLocationCoordinate2D,
+                        accuracy: CLLocationAccuracy, move: MapMoveOutbound) -> MapEnvelope {
+        var env = presenceFix(shareId: shareId, seq: seq, coord: coord, accuracy: accuracy)
+        env.dlat = roundedForPresence(move.destination.latitude)
+        env.dlon = roundedForPresence(move.destination.longitude)
+        env.dname = move.name
+        env.daddr = move.address
+        // nil when MKDirections has not answered yet — the viewer then renders "Calculating
+        // ETA" rather than a fabricated number. See MapMoveEngine.
+        env.eta = move.arrivalAt.map { Int64($0.timeIntervalSince1970 * 1000) }
+        env.mstart = Int64(move.startedAt.timeIntervalSince1970 * 1000)
+        return env
+    }
+}
+
+// MARK: - Move (a journey toward someone)
+
+/// The traveller's own active journey — the state that turns each outgoing fix into a Move
+/// frame. Local only: it is never persisted and never leaves the device except inside the
+/// encrypted `fix` plaintext above, so ending the app ends the Move.
+struct MapMoveOutbound: Equatable {
+    let destination: CLLocationCoordinate2D
+    let name: String
+    let address: String?
+    let startedAt: Date
+    /// Absolute predicted arrival, or nil until the first MKDirections route resolves. NEVER
+    /// guessed from straight-line distance — an ETA the user did not measure is a lie told
+    /// with a straight face, and a wrong "5 min" is worse than no number at all.
+    var arrivalAt: Date?
+    /// Remaining route distance in metres, from the same MKDirections response as `arrivalAt`.
+    /// Not sent on the wire: the viewer holds the traveller's live position AND the
+    /// destination, so a receiver-side straight-line remainder would be the only derivable
+    /// figure — and we choose to show the honest route figure only on the sender's own screen.
+    var remainingMetres: CLLocationDistance?
+
+    static func == (l: MapMoveOutbound, r: MapMoveOutbound) -> Bool {
+        l.destination.latitude == r.destination.latitude &&
+        l.destination.longitude == r.destination.longitude &&
+        l.name == r.name && l.address == r.address &&
+        l.startedAt == r.startedAt && l.arrivalAt == r.arrivalAt
+    }
+}
+
+/// A Move as the VIEWER sees it: everything the traveller put on the wire, plus the viewer's
+/// own live `MapPresence` for that person. Assembled per-frame in `MapPresenceEngine`.
+///
+/// Held in memory only, for the same §8/§10 reason presence keeps exactly one fix: a Move is a
+/// live thing, and a persisted destination history is precisely the trail the whole feature is
+/// built to not have.
+struct MapMoveInbound: Equatable {
+    let senderUserId: String
+    let shareId: String
+    let destination: CLLocationCoordinate2D
+    let name: String?
+    let address: String?
+    /// Absolute arrival instant, or nil while the traveller's device is still computing it.
+    let arrivalAt: Date?
+    let startedAt: Date
+    /// When this Move payload arrived — drives the "ETA is going stale" read, distinct from
+    /// the presence pin's own freshness.
+    let receivedAt: Date
+
+    /// Whole minutes until arrival from `now`, or nil if no ETA has been received. Clamped at
+    /// zero: a negative countdown means overdue, which reads as "Arriving now", never "-3 min".
+    func minutesRemaining(now: Date = Date()) -> Int? {
+        guard let arrivalAt else { return nil }
+        return max(0, Int((arrivalAt.timeIntervalSince(now) / 60).rounded()))
+    }
+
+    /// 0…1 along the journey, or nil without an ETA. Time-based, not distance-based, because
+    /// time is what both endpoints of the bar are expressed in — and a distance-based bar
+    /// crawls then leaps on a route that ends with a motorway.
+    func progress(now: Date = Date()) -> Double? {
+        guard let arrivalAt else { return nil }
+        let total = arrivalAt.timeIntervalSince(startedAt)
+        guard total > 0 else { return 1 }
+        return min(1, max(0, now.timeIntervalSince(startedAt) / total))
+    }
+
+    /// Straight-line metres from a live position to the destination. The viewer holds no route,
+    /// so this is labelled "as the crow flies" in the UI rather than passed off as road
+    /// distance.
+    func directMetres(from coordinate: CLLocationCoordinate2D) -> CLLocationDistance {
+        CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+            .distance(from: CLLocation(latitude: destination.latitude,
+                                       longitude: destination.longitude))
+    }
+
+    static func == (l: MapMoveInbound, r: MapMoveInbound) -> Bool {
+        l.senderUserId == r.senderUserId && l.shareId == r.shareId &&
+        l.arrivalAt == r.arrivalAt && l.startedAt == r.startedAt &&
+        l.destination.latitude == r.destination.latitude &&
+        l.destination.longitude == r.destination.longitude &&
+        l.name == r.name && l.address == r.address && l.receivedAt == r.receivedAt
     }
 }
 

@@ -224,7 +224,7 @@ struct WelcomeTermsScreen: View {
     private var checkbox: some View {
         RoundedRectangle(cornerRadius: VoiidRadius.sm, style: .continuous)
             .strokeBorder(
-                accepted ? VoiidBrand.lime : VoiidColor.fieldBorder,
+                accepted ? VoiidBrand.lime : VoiidBrand.fieldEdge,
                 lineWidth: 2
             )
             .background(

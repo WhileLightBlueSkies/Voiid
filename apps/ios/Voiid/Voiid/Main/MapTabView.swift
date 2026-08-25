@@ -21,6 +21,12 @@
 //  location for the Map ever — so no blue system pill is expected here; if one appears, it
 //  is a bug (§8).
 //
+//  THIS FILE IS THE SHELL. It owns the state, the engines, the sheets, the dialogs and the
+//  composition — and nothing that can be drawn on its own. The pieces live in Main/Map/:
+//  MapCanvas (the map + pins), MapHeader, MapSearchField + MapSuggestionList, MapPlaceCard,
+//  MapContactCard, MapChrome (the visibility pill + away strip), MapFormatters (age/distance).
+//  Each takes explicit inputs so it can be reasoned about and previewed without an engine.
+//
 
 import SwiftUI
 import MapKit
@@ -35,6 +41,17 @@ struct MapTabView: View {
     /// Conversation live shares (A) surfaced on the Map too — see `liveContacts`. Observed so
     /// each decrypted fix (which ticks the engine's `version`) redraws the moving pin.
     @ObservedObject private var shareEngine = LocationShareEngine.shared
+    /// Move (journey / ETA). Observed so a contact who starts travelling grows a badge on
+    /// their pin and a "See their route" row on their card without any other change here.
+    @ObservedObject private var moves = MapMoveEngine.shared
+    /// MY own last coarse fix. Read only to compute the "about N km away" line on a contact
+    /// card — never emitted from here, and nil while ghosted (the provider is stopped), which
+    /// is exactly why that line is optional rather than assumed.
+    @ObservedObject private var myLocation = MapLocationProvider.shared
+    /// Direct conversations, so the card's Message action can open an EXISTING 1:1 rather
+    /// than minting one. No conversation → no button, because a Map card is not the place to
+    /// create a first contact with someone.
+    @EnvironmentObject private var chat: ChatStore
 
     @State private var camera: MapCameraPosition = .automatic
     @State private var showAudiencePicker = false
@@ -43,6 +60,23 @@ struct MapTabView: View {
     @State private var showExplainer = false
     /// userId whose card is open — set by tapping a face, cleared by the card's close button.
     @State private var selectedContact: String?
+    /// The contact whose Move screen is open, if any — a navigation destination rather than a
+    /// sheet, because a journey is a place you go and come back from.
+    /// Your own profile / settings, from the header avatar.
+    @State private var showSettings = false
+    @State private var openMoveFor: String?
+    /// The bell's destination, and the search row's. Both are PUSHED rather than presented:
+    /// they are built from the Settings card vocabulary, which is a page idiom (a 32pt header
+    /// that scrolls away), and the Map's own audience sheet is still a sheet presented from
+    /// inside Map settings — a page pushing a sheet reads correctly, a sheet over a sheet
+    /// does not.
+    @State private var showMapNotifications = false
+    @State private var showMapSettings = false
+    /// The traveller-side sheet for starting / ending my own Move.
+    @State private var showStartMove = false
+    /// Last camera region, handed to the Move sheet so its place search is biased to what the
+    /// user is looking at — the same bias the Map's own search uses.
+    @State private var lastRegion: MKCoordinateRegion?
 
     // Place search (Feature 4). Native MKLocalSearch — no key, no billing, no proxy.
     @StateObject private var search = MapSearchModel()
@@ -51,126 +85,99 @@ struct MapTabView: View {
 
     @AppStorage("voiid.map.seenExplainer") private var seenExplainer = false
 
+    // ── THE MAP TAB IS THE REFERENCE SCREEN, ON THE REAL ENGINE ─────────────────────
+    //
+    // The tab renders `FriendsMapScreen` (Main/Map/Reference/) — the ported design reference,
+    // its layout untouched. It is no longer running on mock data: `MapStore`
+    // (ReferenceMapModels.swift) is now a live adapter over `MapPresenceEngine` and friends,
+    // so the pins are the real people who chose to be visible to us.
+    //
+    // THIS FILE REMAINS THE SHELL, and that is the whole reason it survived the port: the
+    // NavigationStack, the audience sheets, the ghost dialogs, the Move destination and the
+    // explainer all live here, and the screen reaches them through the three closures below
+    // rather than owning any engine itself. A screen that is a faithful copy of a design can
+    // stay faithful precisely because none of this is inside it.
+    //
+    // See docs/MAP_STATUS.md for what is engine (untouchable) and what is UI.
     var body: some View {
         NavigationStack {
-            map
-                .ignoresSafeArea(edges: .bottom)
-                // A frosted top "wrapper" that HOLDS the visibility bar. Using safeAreaInset (not
-                // a ZStack overlay) means MapKit's own controls — the zoom / user-location button
-                // and compass — are placed BELOW it, so the bar and the recenter button no longer
-                // overlap. The material keeps the pill readable over any map content.
-                .safeAreaInset(edge: .top, spacing: 0) {
-                    VStack(spacing: VoiidSpacing.sm) {
-                        searchField
-                        // Suggestions replace the away-strip while searching: one list at a
-                        // time, so the top chrome never stacks into a wall.
-                        if !search.suggestions.isEmpty {
-                            suggestionList
-                        } else {
-                            visibilityPill
-                            if !awayContacts.isEmpty || !waitingContacts.isEmpty {
-                                awayStrip
-                            }
-                        }
-                    }
-                    .padding(.horizontal, VoiidSpacing.md)
-                    .padding(.top, VoiidSpacing.sm)
-                    .padding(.bottom, VoiidSpacing.sm)
-                    .background(.ultraThinMaterial)
-                }
-                // Tapping a face opens a small card: who, how fresh, and one way to reach them.
-                //
-                // safeAreaInset, NOT overlay(alignment: .bottom): the map above deliberately
-                // ignores the bottom safe area so tiles run under the chrome, which means a
-                // bottom-aligned overlay anchors to the SCREEN edge.
-                //
-                // The inset alone is NOT enough. Unlike a TabView, the app's bar is drawn by
-                // RootTabView as a ZStack sibling painted OVER this page — it is absent from
-                // our safe area entirely, so an inset flush to the screen bottom still lands
-                // behind it. `session.tabBarHeight` is that bar's measured height (0 while it
-                // is hidden), so adding it is what actually holds the card clear. Measured
-                // rather than a constant: the home-indicator inset differs per device.
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    // A searched place takes precedence over a contact card — it is the thing
-                    // the user just explicitly asked for.
-                    Group {
-                        if let place = search.selected {
-                            placeCard(place)
-                                .transition(.move(edge: .bottom).combined(with: .opacity))
-                        } else if let uid = selectedContact,
-                                  let p = liveContacts.first(where: { $0.senderUserId == uid }) {
-                            contactCard(p)
-                                .transition(.move(edge: .bottom).combined(with: .opacity))
-                        }
-                    }
-                    .padding(.horizontal, VoiidSpacing.md)
-                    .padding(.bottom, VoiidSpacing.sm + session.tabBarHeight)
-                }
-                .animation(.easeOut(duration: 0.2), value: selectedContact)
-                .animation(.easeOut(duration: 0.2), value: search.selected)
-                // Move the camera to a place the moment it resolves.
-                .onChange(of: search.selected) { _, place in
-                    guard let place else { return }
-                    selectedContact = nil
-                    withAnimation(.easeInOut(duration: 0.6)) {
-                        camera = .region(MKCoordinateRegion(center: place.coordinate,
-                                                            latitudinalMeters: 900,
-                                                            longitudinalMeters: 900))
-                    }
-                }
-                .navigationTitle("Map")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        Haptics.tap()
-                        if visibility.isVisible { showGhostOptions = true }
-                        else { Task { await engine.leaveGhost() } }
-                    } label: {
-                        Image(systemName: visibility.isVisible ? "eye.fill" : "eye.slash.fill")
-                            .foregroundStyle(visibility.isVisible ? VoiidColor.primary : VoiidColor.textSecondary)
-                    }
-                    .accessibilityLabel(visibility.isVisible ? "You are visible on the Map" : "Ghost Mode is on")
-                }
+            FriendsMapScreen(
+                onOpenMove: { friend in openMoveFor = friend.id },
+                // Opening an EXISTING conversation, never minting one — the lookup below
+                // returns nil when there is none, and the screen disables the button.
+                onMessage: { friend in openChatWith = directConversation(with: friend.id) },
+                hasConversation: { friend in directConversation(with: friend.id) != nil },
+                // The header's status line IS the ghost control. `toggleGhost` is the single
+                // rule both this and any other surface goes through.
+                onToggleVisibility: toggleGhost,
+                // Your own avatar opens Settings — the same sheet the Chats header opens, so
+                // there is ONE place your profile lives rather than a second half-copy of it.
+                onOpenProfile: { showSettings = true },
+                // WAS the audience list, as a stopgap. The bell now opens Map activity —
+                // a page that states what the engine actually holds (who is sharing, who is
+                // waiting on a first fix, when my own share lapses). There is still no event
+                // feed anywhere in this app to point it at; see MapNotificationsView's file
+                // note for what was searched for and what exists. The reference's hardcoded
+                // "3" badge is gone from the screen in the same change.
+                onOpenNotifications: { showMapNotifications = true },
+                // The control beside the search field. It was empty; it is now the Map's only
+                // door to its own settings — see the note at its call site for why that
+                // rather than a filter panel.
+                onOpenSettings: { showMapSettings = true })
+            .navigationDestination(isPresented: $showMapNotifications) {
+                MapNotificationsView()
+            }
+            .navigationDestination(isPresented: $showMapSettings) {
+                MapSettingsView()
+            }
+            .navigationDestination(item: $openMoveFor) { userId in
+                MapMoveScreen(senderUserId: userId)
+            }
+            .navigationDestination(item: $openChatWith) { conv in
+                ChatDetailView(conversation: conv)
             }
         }
-        .tint(VoiidColor.primary)
+        .sheet(isPresented: $showAudiencePicker) { MapAudienceSheet(mode: .choose) }
+        .sheet(isPresented: $showSettings) { SettingsSheet() }
+        .sheet(isPresented: $showAudienceList) { MapAudienceSheet(mode: .manage) }
+        .sheet(isPresented: $showStartMove) { MapStartMoveSheet(region: lastRegion) }
+        .fullScreenCover(isPresented: $showExplainer) {
+            // Onboarding is marked seen on EVERY exit path, and only the explicit
+            // "choose who can see me" door opens the audience picker. "Browse only" lands on
+            // the map still ghosted, which is the default state anyway — nothing is emitted.
+            MapOnboardingFlow { outcome in
+                seenExplainer = true
+                showExplainer = false
+                if outcome == .chooseAudience { showAudiencePicker = true }
+            }
+        }
+        // Ghost is a DURATION choice on the way in and a single tap on the way out — the one
+        // rule, in one place, so the toolbar and the header can never diverge.
+        .confirmationDialog("Ghost Mode", isPresented: $showGhostOptions, titleVisibility: .visible) {
+            Button(GhostDuration.oneHour.label) { Task { await engine.enterGhost(.oneHour) } }
+            Button(GhostDuration.untilTomorrow.label) { Task { await engine.enterGhost(.untilTomorrow) } }
+            Button(GhostDuration.untilOff.label) { Task { await engine.enterGhost(.untilOff) } }
+            Button("Cancel", role: .cancel) {}
+        }
         .onAppear {
-            session.hideTabBar = false   // Map is a root tab — always show the bottom bar
             engine.noteForegrounded()
             if !seenExplainer { showExplainer = true }
         }
-        .fullScreenCover(isPresented: $showExplainer) {
-            MapExplainerView(
-                onBrowseOnly: { seenExplainer = true; showExplainer = false },
-                onChoose: { seenExplainer = true; showExplainer = false; showAudiencePicker = true }
-            )
-        }
-        .sheet(isPresented: $showAudiencePicker) {
-            MapAudienceSheet(mode: .choose)
-        }
-        .sheet(isPresented: $showAudienceList) {
-            MapAudienceSheet(mode: .manage)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .voiidMapAddPeople)) { _ in
-            // The manage sheet's "Add people" dismisses itself, then asks the Map to open the
-            // chooser (SwiftUI can't swap one sheet for another in place).
-            showAudiencePicker = true
-        }
-        .confirmationDialog("Ghost Mode", isPresented: $showGhostOptions, titleVisibility: .visible) {
-            Button(GhostDuration.oneHour.label)       { Task { await engine.enterGhost(.oneHour) } }
-            Button(GhostDuration.untilTomorrow.label) { Task { await engine.enterGhost(.untilTomorrow) } }
-            Button(GhostDuration.untilOff.label)      { Task { await engine.enterGhost(.untilOff) } }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("While ghosted you’re hidden from everyone and your location isn’t taken at all.")
-        }
-        .alert("Map", isPresented: Binding(get: { engine.lastError != nil },
-                                           set: { if !$0 { engine.lastError = nil } })) {
-            Button("OK", role: .cancel) { engine.lastError = nil }
-        } message: {
-            Text(engine.lastError ?? "")
-        }
+    }
+
+    /// The chat to push, if the card's Message (or Call) was tapped. A conversation rather
+    /// than a userId, because the lookup already proved one exists.
+    @State private var openChatWith: VConversation?
+
+
+    // MARK: - Ghost Mode
+    //
+    // The one rule, in ONE place: visible → offer a duration; ghosted → leave ghost outright.
+    // Both the toolbar button and the header's eye call this, so the two can never diverge.
+
+    private func toggleGhost() {
+        if visibility.isVisible { showGhostOptions = true }
+        else { Task { await engine.leaveGhost() } }
     }
 
     // MARK: - Map
@@ -203,303 +210,89 @@ struct MapTabView: View {
         return Array(byUser.values).sorted { $0.senderUserId < $1.senderUserId }
     }
 
-    private var map: some View {
-        Map(position: $camera) {
-            ForEach(liveContacts) { p in
-                Annotation(directory.displayName(p.senderUserId), coordinate: p.coordinate) {
-                    contactMarker(p)
-                }
-            }
-            // A searched place, if one is selected — a POI pin, visually distinct from the
-            // friend avatars so the two never read as the same kind of thing.
-            if let place = search.selected {
-                Annotation(place.name, coordinate: place.coordinate) {
-                    Image(systemName: "mappin.circle.fill")
-                        .font(.system(size: 32))
-                        .foregroundColor(VoiidColor.error)
-                        .shadow(radius: 2)
-                }
-            }
-            // Your OWN blue dot — always shown, even in Ghost Mode. This is a purely
-            // client-side view of where YOU are; it is unrelated to what you broadcast to
-            // others (that is gated by `visibility`). Ghost mode hides you from others, not
-            // from yourself.
-            UserAnnotation()
-        }
-        // Snapchat-style skin: a MUTED, de-emphasised base map so the friend avatars are
-        // the visual focus, not the streets. `.muted` desaturates roads/labels/terrain
-        // (the closest native MapKit lever to Snapchat's custom look — no tile dependency,
-        // no API key). POIs are hidden so the map reads as clean canvas. A soft brand tint
-        // overlay unifies it with the app instead of stock Apple grey-blue.
-        .mapStyle(.standard(elevation: .flat, emphasis: .muted, pointsOfInterest: .excludingAll))
-        .mapControls { MapUserLocationButton(); MapCompass() }
-        // Bias autocomplete to what the user is actually looking at — "coffee" should mean
-        // coffee HERE, the way every native map search behaves.
-        .onMapCameraChange(frequency: .onEnd) { context in
-            search.setRegion(context.region)
-        }
-        // A soft brand wash unifies MapKit's stock palette with the app. It has to be LIGHTER
-        // in dark: the same 6% teal that warms a light basemap only muddies an already-dark
-        // one, turning crisp tiles into grey soup. 3% keeps the tint legible as a tint.
-        .overlay(
-            VoiidColor.primary.opacity(colorScheme == .dark ? 0.03 : 0.06)
-                .allowsHitTesting(false)
-                .ignoresSafeArea()
-        )
+    private var mapCanvas: some View {
+        MapCanvas(camera: $camera,
+                  contacts: liveContacts,
+                  selectedPlace: search.selected,
+                  colorScheme: colorScheme,
+                  displayName: { directory.displayName($0) },
+                  photoURL: { directory.photoURL($0) },
+                  move: { moves.move(from: $0) },
+                  onRegionChange: { region in
+                      search.setRegion(region)
+                      // Same bias, reused by the Move sheet's destination search.
+                      lastRegion = region
+                  },
+                  onTapContact: { selectedContact = $0 })
     }
 
-    private func contactMarker(_ p: MapPresence) -> some View {
-        let stale = MapPresenceState.forFix(at: p.fixedAt) == .stale
-        return VStack(spacing: 2) {
-            // The shared pin (also used by the live-location detail, and mirrored by Android's
-            // AvatarPin.kt), so a face looks the same wherever it appears. It resolves the real
-            // photo through AvatarCache and falls back to initials, never a generic dot.
-            MapAvatarPin(userId: p.senderUserId,
-                         name: directory.displayName(p.senderUserId),
-                         photoURL: directory.photoURL(p.senderUserId),
-                         state: stale ? .stale : .live,
-                         size: 44)
-            if stale {
-                Text(relativeAge(p.fixedAt))
-                    .font(VoiidFont.rounded(10, .semibold))
-                    .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(Capsule().fill(VoiidColor.surfaceCard))
-                    .foregroundColor(VoiidColor.textSecondary)
-            }
-        }
-        .onTapGesture { Haptics.tap(); selectedContact = p.senderUserId }
-        .accessibilityLabel("\(directory.displayName(p.senderUserId))\(stale ? ", last seen \(relativeAge(p.fixedAt))" : "")")
+    // MARK: - Header
+
+    private var header: some View {
+        MapHeader(photoURL: session.profile.photoURL,
+                  fullName: session.profile.fullName,
+                  isVisible: visibility.isVisible,
+                  statusText: pillText,
+                  onToggleGhost: toggleGhost)
     }
 
     // MARK: - Place search (Feature 4)
 
-    /// Frosted search pill, matching the visibility pill's shape so the top chrome reads as one
-    /// family. Typing drives `MKLocalSearchCompleter`; clearing it tears the results down.
     private var searchField: some View {
-        HStack(spacing: VoiidSpacing.sm) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(VoiidColor.textSecondary)
-            TextField("Search places", text: $query)
-                .font(VoiidFont.rounded(15))
-                .foregroundColor(VoiidColor.textPrimary)
-                .textFieldStyle(.plain)
-                .submitLabel(.search)
-                .focused($searchFocused)
-                .autocorrectionDisabled()
-                .onChange(of: query) { _, new in search.update(query: new) }
-            if !query.isEmpty {
-                Button {
-                    query = ""
-                    search.reset()
-                    searchFocused = false
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 15))
-                        .foregroundColor(VoiidColor.textSecondary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Clear search")
-            }
-        }
-        .padding(.horizontal, VoiidSpacing.md)
-        .padding(.vertical, 10)
-        .background(Capsule().fill(VoiidColor.surfaceCard))
-        .overlay(Capsule().stroke(VoiidColor.fieldBorder, lineWidth: 1))
+        MapSearchField(query: $query,
+                       focused: $searchFocused,
+                       onQueryChange: { search.update(query: $0) },
+                       onClear: {
+                           query = ""
+                           search.reset()
+                           searchFocused = false
+                       })
     }
 
     private var suggestionList: some View {
-        VStack(spacing: 0) {
-            ForEach(search.suggestions.prefix(6), id: \.self) { s in
-                Button {
-                    Haptics.tap()
-                    searchFocused = false
-                    query = s.title
-                    search.choose(s)
-                } label: {
-                    HStack(spacing: VoiidSpacing.sm) {
-                        Image(systemName: "mappin.circle.fill")
-                            .font(.system(size: 16))
-                            .foregroundColor(VoiidColor.primary)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(s.title)
-                                .font(VoiidFont.rounded(14, .medium))
-                                .foregroundColor(VoiidColor.textPrimary)
-                                .lineLimit(1)
-                            if !s.subtitle.isEmpty {
-                                Text(s.subtitle)
-                                    .font(VoiidFont.rounded(11))
-                                    .foregroundColor(VoiidColor.textSecondary)
-                                    .lineLimit(1)
-                            }
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.vertical, 9)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
+        MapSuggestionList(suggestions: search.suggestions) { s in
+            searchFocused = false
+            query = s.title
+            search.choose(s)
         }
-        .padding(.horizontal, VoiidSpacing.md)
-        .background(VoiidColor.surfaceCard)
-        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
     }
 
-    /// Bottom card for a resolved place: name, address, and the two system handoffs.
     private func placeCard(_ place: MapSearchModel.SelectedPlace) -> some View {
-        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
-            HStack(alignment: .top, spacing: VoiidSpacing.sm) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(place.name)
-                        .font(VoiidFont.rounded(16, .semibold))
-                        .foregroundColor(VoiidColor.textPrimary)
-                        .lineLimit(2)
-                    if let address = place.address {
-                        Text(address)
-                            .font(VoiidFont.rounded(12))
-                            .foregroundColor(VoiidColor.textSecondary)
-                            .lineLimit(2)
-                    }
-                }
-                Spacer(minLength: 0)
-                Button {
-                    Haptics.tap()
-                    search.selected = nil
-                    query = ""
-                    search.reset()
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(VoiidColor.textSecondary)
-                        .padding(8).background(VoiidColor.fieldFill).clipShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Close")
-            }
-            HStack(spacing: VoiidSpacing.sm) {
-                // Handoff only — no in-app routing (docs/LOCATION.md §10.10).
-                placeAction("Directions", "arrow.triangle.turn.up.right.circle.fill", filled: true) {
-                    place.openInMaps(directions: true)
-                }
-                placeAction("Open in Maps", "map.fill", filled: false) {
-                    place.openInMaps(directions: false)
-                }
-            }
+        MapPlaceCard(place: place) {
+            search.selected = nil
+            query = ""
+            search.reset()
         }
-        .padding(14)
-        .background(VoiidColor.surfaceCard)
-        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
-        .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
     }
 
-    private func placeAction(_ title: String, _ icon: String, filled: Bool,
-                             _ tap: @escaping () -> Void) -> some View {
-        Button(action: { Haptics.tap(); tap() }) {
-            Label(title, systemImage: icon)
-                .font(VoiidFont.rounded(14, .semibold))
-                .foregroundColor(filled ? .white : VoiidColor.textPrimary)
-                .frame(maxWidth: .infinity).padding(.vertical, 11)
-                .background(filled ? VoiidColor.primary : VoiidColor.fieldFill)
-                .clipShape(Capsule())
-        }
-        .buttonStyle(.plain)
-    }
-
-    /// The card shown when you tap a friend's face on the Map.
-    ///
-    /// Deliberately minimal: who, how fresh their position is, and a way out. No street address
-    /// (we never reverse-geocode — docs/LOCATION.md §10) and no coordinate readout.
     private func contactCard(_ p: MapPresence) -> some View {
-        let stale = MapPresenceState.forFix(at: p.fixedAt) == .stale
-        return HStack(spacing: VoiidSpacing.md) {
-            MapAvatarPin(userId: p.senderUserId,
-                         name: directory.displayName(p.senderUserId),
-                         photoURL: directory.photoURL(p.senderUserId),
-                         state: stale ? .stale : .live,
-                         size: 46)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(directory.displayName(p.senderUserId))
-                    .font(VoiidFont.rounded(16, .semibold))
-                    .foregroundColor(VoiidColor.textPrimary)
-                    .lineLimit(1)
-                Text(stale ? "May have lost signal" : "Updated \(relativeAge(p.fixedAt))")
-                    .font(VoiidFont.rounded(12))
-                    .foregroundColor(VoiidColor.textSecondary)
-                    .lineLimit(1)
-                // A Map pin is an area, not a doorstep. Presence accuracy is deliberately
-                // coarsened to ≥100 m before sending, so this honestly reads "about 100 m".
-                Text(LocationAccuracy.note(p.accuracy))
-                    .font(VoiidFont.rounded(10))
-                    .foregroundColor(VoiidColor.textSecondary)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 0)
-            Button {
-                Haptics.tap()
-                selectedContact = nil
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(VoiidColor.textSecondary)
-                    .padding(8)
-                    .background(VoiidColor.fieldFill)
-                    .clipShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Close")
-        }
-        .padding(14)
-        .background(VoiidColor.surfaceCard)
-        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
-        .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
+        MapContactCard(presence: p,
+                       displayName: directory.displayName(p.senderUserId),
+                       photoURL: directory.photoURL(p.senderUserId),
+                       move: moves.move(from: p.senderUserId),
+                       distanceText: MapFormatters.distanceText(from: myLocation.lastFix,
+                                                                to: p.coordinate),
+                       conversation: directConversation(with: p.senderUserId),
+                       onOpenMove: { openMoveFor = p.senderUserId },
+                       onClose: { selectedContact = nil })
     }
 
     // MARK: - Visibility pill (persistent, unmissable)
 
     private var visibilityPill: some View {
-        Button {
-            Haptics.tap()
+        MapVisibilityPill(isVisible: visibility.isVisible, text: pillText) {
             showAudienceList = true
-        } label: {
-            HStack(spacing: VoiidSpacing.sm) {
-                Circle()
-                    .fill(visibility.isVisible ? VoiidColor.primary : VoiidColor.textSecondary)
-                    .frame(width: 8, height: 8)
-                    .opacity(visibility.isVisible ? 1 : 0.5)
-                Text(pillText)
-                    .font(VoiidFont.rounded(14, .semibold))
-                    .foregroundColor(visibility.isVisible ? VoiidColor.textOnPrimary : VoiidColor.textPrimary)
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor((visibility.isVisible ? VoiidColor.textOnPrimary : VoiidColor.textSecondary).opacity(0.8))
-            }
-            .padding(.horizontal, VoiidSpacing.md)
-            .padding(.vertical, 10)
-            .background(
-                Capsule().fill(visibility.isVisible ? VoiidColor.primary : VoiidColor.surfaceCard)
-            )
-            .overlay(
-                Capsule().stroke(VoiidColor.fieldBorder.opacity(visibility.isVisible ? 0 : 1), lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
         }
-        .buttonStyle(.plain)
     }
 
+    /// One wording of visibility state, used by BOTH the pill and the header's status line, so
+    /// the two can never disagree.
     private var pillText: String {
-        if !visibility.isVisible { return "Ghost Mode — hidden from everyone" }
-        let n = engine.audience.count
-        return n == 1 ? "Visible to 1 person" : "Visible to \(n) people"
+        MapVisibilityPill.text(isVisible: visibility.isVisible,
+                               audienceCount: engine.audience.count)
     }
 
     // MARK: - Away / waiting strip (contacts off the map)
-    //
-    // Aged-out contacts keep their last-known position off the map but appear here with a
-    // "last seen" — that is the honest signal that a phone went dark, distinct from an
-    // explicit stop (which erases them entirely). Contacts who shared but haven't sent a
-    // first fix yet show "Locating…".
 
     private var awayContacts: [MapPresence] {
         engine.presences.filter { MapPresenceState.forFix(at: $0.fixedAt) == .agedOut }
@@ -511,39 +304,16 @@ struct MapTabView: View {
     }
 
     private var awayStrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: VoiidSpacing.sm) {
-                ForEach(waitingContacts, id: \.self) { uid in
-                    awayChip(name: directory.displayName(uid), subtitle: "Locating…",
-                             photo: directory.photoURL(uid))
-                }
-                ForEach(awayContacts) { p in
-                    awayChip(name: directory.displayName(p.senderUserId),
-                             subtitle: "Last seen \(relativeAge(p.fixedAt))",
-                             photo: directory.photoURL(p.senderUserId))
-                }
-            }
-            .padding(.vertical, 2)
-        }
+        MapAwayStrip(waiting: waitingContacts,
+                     away: awayContacts,
+                     displayName: { directory.displayName($0) },
+                     photoURL: { directory.photoURL($0) })
     }
 
-    private func awayChip(name: String, subtitle: String, photo: String?) -> some View {
-        HStack(spacing: 6) {
-            ProfileAvatarButton(photoURL: photo, name: name, size: 26)
-                .saturation(0.2)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(name).font(VoiidFont.rounded(12, .semibold)).foregroundColor(VoiidColor.textPrimary)
-                Text(subtitle).font(VoiidFont.rounded(10, .regular)).foregroundColor(VoiidColor.textSecondary)
-            }
-        }
-        .padding(.horizontal, 8).padding(.vertical, 6)
-        .background(Capsule().fill(VoiidColor.surfaceCard))
-        .overlay(Capsule().stroke(VoiidColor.fieldBorder, lineWidth: 1))
-    }
-
-    private func relativeAge(_ date: Date) -> String {
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .short
-        return f.localizedString(for: date, relativeTo: Date())
+    /// The existing 1:1 with this person, if there is one. Deliberately a LOOKUP, never a
+    /// creation: the Map may open a conversation that already exists, but starting one is not
+    /// something a tap on a pin should do.
+    private func directConversation(with userId: String) -> VConversation? {
+        chat.directConversations.first { $0.type == .direct && $0.peerUserId == userId }
     }
 }

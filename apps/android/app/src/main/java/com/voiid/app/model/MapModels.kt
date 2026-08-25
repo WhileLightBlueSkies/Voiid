@@ -44,6 +44,33 @@ data class MapEnvelope(
     val expiresAt: Long? = null,         // map_key only — the guarantee both sides hold locally
     val key: String? = null,            // map_key only — base64 32-byte shareKey (NEVER a backup secret)
     val cadence: Int? = null,            // seconds — map_key only
+
+    // ── Move (journey / ETA) ────────────────────────────────────────────────────────────
+    // Carried on the SAME `fix` frame under the SAME shareKey. A destination and an arrival
+    // time are at least as sensitive as the position — "where they will be, and when" is the
+    // one thing a position alone does not give you — so they ride inside the authenticated
+    // plaintext the server relays as an opaque blob. No new share kind, no server column:
+    // `018_location_shares.sql` constrains kind to ('conversation','map') deliberately.
+    //
+    // Every field is nullable with a default, and explicitNulls=false keeps them off the wire
+    // for an ordinary fix. That is the cross-platform contract: iOS's synthesized decoder
+    // THROWS on a missing non-optional key (it does not fall back to the default) and its
+    // receiveFix() drops the frame on a throw — so a required Move field here would silently
+    // kill every Android fix on iOS, the same failure shape already documented on t/n.
+    val dlat: Double? = null,            // destination lat, rounded to 3 dp like a presence fix
+    val dlon: Double? = null,            // destination lon, same rounding
+    val dname: String? = null,           // destination name, chosen by the traveller
+    val daddr: String? = null,           // optional street address
+    // ABSOLUTE epoch millis of predicted arrival, never a relative countdown: a "12 minutes"
+    // is already stale when it renders, while an absolute instant is self-correcting against
+    // the viewer's own clock. Long + the lenient serializer, matching iOS's Int64.
+    @Serializable(with = LenientEpochMillisSerializer::class)
+    val eta: Long? = null,
+    // Epoch millis the journey started — the denominator of the arrival progress bar. On the
+    // wire because a viewer deriving it from its own first-seen frame would restart the bar
+    // at 0% every time the screen was reopened.
+    @Serializable(with = LenientEpochMillisSerializer::class)
+    val mstart: Long? = null,
 )
 
 /**
