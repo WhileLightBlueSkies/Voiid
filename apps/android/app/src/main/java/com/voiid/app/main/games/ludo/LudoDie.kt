@@ -80,8 +80,17 @@ object LudoDie {
         }
     }
 
-    /** Fraction of the tray the settled die occupies. */
+    /** Fraction of the die's own box the settled die occupies. */
     const val REST_FILL_FACTOR = 0.92f
+
+    /**
+     * How much bigger the drawing surface is than the die's layout footprint.
+     *
+     * A turning cube spans up to √3 of its side and the throw lifts it clear of the ground, so
+     * the surface has to be larger than the space the die occupies in the row — otherwise the
+     * airborne die is sliced off at the top and the throw looks like it happens in a box.
+     */
+    const val CANVAS_FACTOR = 1.75f
 
     // Corner index → sign vector: bit0 x, bit1 y, bit2 z (value −1 / +1).
     private fun corner(i: Int): V3 {

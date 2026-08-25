@@ -239,9 +239,15 @@ struct LudoGameView: View {
         return !state.isFinished && state.turn?.seat == seat
     }
 
+    /// A seat's countdown, human or bot.
+    ///
+    /// Bots carry `botActionAt` instead of `deadlineAt`, so following only the human deadline
+    /// left a bot's pod and the board border with no clock at all — a bot turn looked identical
+    /// to a stalled one. Both now render the same way; only the underlying clock differs.
     private func ringFraction(_ state: LudoGameStateV2, _ seat: Int) -> Double? {
         guard !state.isFinished, let turn = state.turn, turn.seat == seat else { return nil }
-        return LudoTimerRing.state(opensAt: turn.opensAt, deadlineAt: turn.deadlineAt,
+        return LudoTimerRing.state(opensAt: turn.opensAt,
+                                   deadlineAt: turn.deadlineAt ?? turn.botActionAt,
                                    estimatedNowMs: engine.estimatedServerNowMs())?
             .fractionRemaining
     }
@@ -249,6 +255,8 @@ struct LudoGameView: View {
     private func timerOverride(_ state: LudoGameStateV2, _ seat: Int) -> Color? {
         guard !state.isFinished, let turn = state.turn, turn.seat == seat else { return nil }
         let colors = LudoColors.resolve(scheme)
+        // Only a HUMAN window turns amber and then red. A bot's clock is pacing, not pressure,
+        // so warning colours on it would be a lie about a deadline nobody can miss.
         guard let deadlineAt = turn.deadlineAt else { return nil }
         let remaining = deadlineAt - engine.estimatedServerNowMs()
         if remaining <= 2_000 { return colors.timerCritical }
@@ -275,10 +283,12 @@ struct LudoGameView: View {
                 // TimelineView drives the perimeter clock. Without a per-frame tick the border
                 // would only redraw when a new server frame landed, so it would jump in whole
                 // seconds instead of shortening.
-                TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !clockRunning(state))) { _ in
+                TimelineView(.animation(minimumInterval: 1.0 / 30,
+                                        paused: !boardNeedsFrames(state))) { timeline in
                     Canvas { ctx, size in
                         let colors = LudoColors.resolve(scheme)
-                        drawBoard(&ctx, size: size, colors: colors, state: state)
+                        drawBoard(&ctx, size: size, colors: colors, state: state,
+                                  now: timeline.date)
                     }
                     .frame(width: side, height: side)
                 }
@@ -302,17 +312,18 @@ struct LudoGameView: View {
         .aspectRatio(1, contentMode: .fit)
     }
 
-    /// True only while a human decision window is actually open and counting.
-    private func clockRunning(_ state: LudoGameStateV2) -> Bool {
-        guard !state.isFinished, let turn = state.turn, turn.deadlineAt != nil else { return false }
-        return !reduceMotion
+    /// True while anything on the board needs per-frame redrawing: a decision window counting
+    /// down, or a playable token whose dashes are marching.
+    private func boardNeedsFrames(_ state: LudoGameStateV2) -> Bool {
+        guard !reduceMotion, !state.isFinished, let turn = state.turn else { return false }
+        return turn.deadlineAt != nil || turn.botActionAt != nil || !turn.legalTokenIds.isEmpty
     }
 
     /// 0...1 of the active seat's window still left, over the SMOOTHED server clock.
     private func boardTimerFraction(_ state: LudoGameStateV2) -> CGFloat? {
         guard !state.isFinished, let turn = state.turn else { return nil }
         guard let ring = LudoTimerRing.state(
-            opensAt: turn.opensAt, deadlineAt: turn.deadlineAt,
+            opensAt: turn.opensAt, deadlineAt: turn.deadlineAt ?? turn.botActionAt,
             estimatedNowMs: engine.estimatedServerNowMs()) else { return nil }
         return CGFloat(ring.fractionRemaining)
     }
@@ -343,6 +354,7 @@ struct LudoGameView: View {
         size: CGSize,
         colors: LudoColors,
         state: LudoGameStateV2,
+        now: Date = Date(),
     ) {
         // Display-pawn overrides from the coordinator. A move that captures has TWO pawns in
         // transit at once — the mover hopping and the victim still standing where it was hit —
@@ -364,6 +376,7 @@ struct LudoGameView: View {
             sweep: sweepVisual,
             displayOverrides: overrides,
             highContrast: contrast == .increased,
+            dashPhase: CGFloat(now.timeIntervalSinceReferenceDate),
             timerFraction: boardTimerFraction(state),
             timerTint: timerOverride(state, state.turn?.seat ?? -1))
     }
@@ -487,14 +500,25 @@ struct LudoGameView: View {
                                         matchId: matchId)
             }
         case "move", "capture", "autoTurn":
+            // THE ACTOR IS `fromSeat` WHENEVER THE MOVE ALSO ENDED THE TURN. The server commits
+            // the move with the mover's seat and then rewrites actorSeat to the next player,
+            // leaving the move payload describing the OUTGOING seat's pawn. Reading actorSeat
+            // resolved the home lane against the wrong seat, so a pawn heading for its own
+            // victory route walked off toward another colour's start instead, and only snapped
+            // back when the animation ended and authoritative state took over.
+            let mover = action.fromSeat ?? action.actorSeat
             // A timeout that produced no move is a skip; say so, because otherwise the turn
             // simply moves on and the player who ran out of time is never told why.
             if action.type == "autoTurn" {
-                if let r = action.roll { lastRolledValue = r.value }
-                announceSkip(seat: action.actorSeat, moved: action.move != nil)
+                if let r = action.roll {
+                    lastRolledValue = r.value
+                    coordinator.enqueueRoll(rollId: r.rollId, value: r.value,
+                                            seat: mover, matchId: matchId)
+                }
+                announceSkip(seat: mover, moved: action.move != nil)
             }
             if let m = action.move {
-                enqueueMoveBeat(m, actorSeat: action.actorSeat)
+                enqueueMoveBeat(m, actorSeat: mover)
             }
         default:
             break   // drop/end carry no mandatory motion beyond final positions

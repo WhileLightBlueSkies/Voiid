@@ -64,6 +64,11 @@ object LudoMotion {
      * number stays readable before the board moves under it.
      */
     const val FORCED_MOVE_HOLD_MS = 420L
+    /**
+     * Multiplies the throw's height. The surface has headroom for it (CANVAS_FACTOR), so the die
+     * can actually leave the ground instead of clipping at the top of its box.
+     */
+    const val DIE_LIFT_SCALE = 1.45f
     const val PIP_CROSS_FADE_MS = 120
     const val ROLL_TOTAL_MS = 940
     const val HOP_MS = 120

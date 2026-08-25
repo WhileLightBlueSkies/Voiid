@@ -59,19 +59,32 @@ enum LudoPawnShape {
     /// Layering runs widest-first — outline, then white border, then the colour — so the border
     /// comes from three strokes of ONE path instead of three separately inset paths that would
     /// drift apart at small sizes.
+    /// How much larger a playable token draws than a resting one.
+    static let activeScale: CGFloat = 1.14
+
     static func draw(
         _ ctx: inout GraphicsContext,
         width w: CGFloat,
         height h: CGFloat,
         hue: Color,
         active: Bool,
+        /// Advances the marching dashes on a playable token. Seconds are fine; only the
+        /// fractional part matters.
+        dashPhase: CGFloat = 0,
         colors: LudoColors,
     ) {
         let pin = pinPath(width: w, height: h)
         let base = Path(ellipseIn: baseRect(width: w, height: h))
-        let border = max(1.2, w * 0.085)
+        // A playable token carries a heavier border as well as the ring, so the difference
+        // survives at small board sizes where a 1pt dash is nearly invisible.
+        let border = max(1.2, w * (active ? 0.105 : 0.085))
         let outline = max(0.7, w * 0.032)
-        let fill = active ? hue : colors.mutedHue(hue)
+        // FULL COLOUR IN BOTH STATES. Tokens used to desaturate when they were not playable,
+        // which meant a token changed colour halfway through its own walk: the turn advances
+        // the moment the move commits, so the pawn still travelling stopped being "legal" and
+        // washed out mid-step. Playability is carried by the ring, the glow and the size — never
+        // by the seat's colour, which has to stay readable as identity at all times.
+        let fill = hue
 
         // Contact shadow first, under everything.
         ctx.fill(Path(ellipseIn: baseRect(width: w, height: h).insetBy(dx: -w * 0.02, dy: -w * 0.01)
@@ -99,23 +112,31 @@ enum LudoPawnShape {
 
         // Hollow centre, in the border colour so it reads as a hole punched through.
         ctx.fill(Path(ellipseIn: holeRect(width: w, height: h)), with: .color(colors.pawnBorder))
+
+        // Marching dashes around a playable token. Motion is what makes it read as an
+        // invitation rather than decoration, and it survives colour-blindness and dark mode in
+        // a way a hue change never could.
+        if active {
+            let ringInset = -(border + outline + w * 0.085)
+            let ring = pinPath(width: w - ringInset * 2, height: h - ringInset * 2)
+            var ringCtx = ctx
+            ringCtx.translateBy(x: ringInset, y: ringInset)
+            let dash = w * 0.20
+            ringCtx.stroke(
+                ring,
+                with: .color(colors.pawnOutline.opacity(0.55)),
+                style: StrokeStyle(lineWidth: max(1.1, w * 0.052), lineCap: .round,
+                                   lineJoin: .round, dash: [dash, dash * 0.75],
+                                   dashPhase: -dashPhase * dash * 3.2))
+            ringCtx.stroke(
+                ring,
+                with: .color(colors.pawnBorder),
+                style: StrokeStyle(lineWidth: max(0.8, w * 0.030), lineCap: .round,
+                                   lineJoin: .round, dash: [dash, dash * 0.75],
+                                   dashPhase: -dashPhase * dash * 3.2))
+        }
     }
 
-    /// Desaturated, muted version of a seat hue for a token that cannot move this turn.
-    static func muted(_ base: Color) -> Color {
-        #if canImport(UIKit)
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        UIColor(base).getRed(&r, green: &g, blue: &b, alpha: &a)
-        let luma = 0.299 * r + 0.587 * g + 0.114 * b
-        // Partway to its own grey, then lifted slightly. Enough desaturation to read as "not
-        // playable this turn", but the seat is still identifiable at a glance — a token pulled
-        // all the way to grey loses which player it belongs to.
-        func mix(_ c: CGFloat) -> Double { Double(c * 0.58 + luma * 0.42) * 0.80 + 0.15 }
-        return Color(red: mix(r), green: mix(g), blue: mix(b), opacity: 1)
-        #else
-        return base.opacity(0.45)
-        #endif
-    }
 }
 
 /// Stacking and hit-target resolution (§4, §17): pairs at 82% offset ±0.14 cellSide

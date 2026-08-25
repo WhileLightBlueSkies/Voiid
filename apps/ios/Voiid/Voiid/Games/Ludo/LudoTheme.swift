@@ -130,9 +130,6 @@ struct LudoColors {
         scheme == .dark ? .dark : .light
     }
 
-    /// Muted token colour for a pawn that cannot move this turn.
-    func mutedHue(_ base: Color) -> Color { LudoPawnShape.muted(base) }
-
     /// The board is flat in both themes.
     func boardShadow() -> (offset: CGSize, radius: CGFloat) {
         (.zero, 0)
@@ -174,6 +171,9 @@ enum LudoMotion {
     static let dieRelocateMs: Double = 120
     /// How far the airborne die shrinks so a turning cube stays inside its tray.
     static let dieAirborneScale: Double = 0.62
+    /// Multiplies the throw's height. The surface has headroom for it (canvasFactor), so the
+    /// die can actually leave the ground instead of clipping at the top of its box.
+    static let dieLiftScale: Double = 1.45
     /// Hold after a roll settles before a forced (single-legal-token) move plays itself, so the
     /// number stays readable before the board moves under it.
     static let forcedMoveHoldMs: Double = 420

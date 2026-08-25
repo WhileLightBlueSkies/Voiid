@@ -4,6 +4,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -77,6 +79,9 @@ object LudoPawnPath {
      * from three strokes of ONE path instead of three separately inset paths that would drift
      * apart at small sizes.
      */
+    /** How much larger a playable token draws than a resting one. */
+    const val ACTIVE_SCALE = 1.14f
+
     fun DrawScope.drawPawn(
         origin: Offset,
         width: Float,
@@ -84,14 +89,23 @@ object LudoPawnPath {
         hue: Color,
         active: Boolean,
         colors: LudoThemeColors,
+        /** Advances the marching dashes on a playable token; only the fraction matters. */
+        dashPhase: Float = 0f,
     ) {
         translate(origin.x, origin.y) {
             val pin = path(width, height)
             val baseR = baseRect(width, height)
             val base = Path().apply { addOval(baseR) }
-            val border = max(1.2f, width * 0.085f)
+            // A playable token carries a heavier border as well as the ring, so the difference
+            // survives at small board sizes where a 1dp dash is nearly invisible.
+            val border = max(1.2f, width * (if (active) 0.105f else 0.085f))
             val outline = max(0.7f, width * 0.032f)
-            val fill = if (active) hue else muted(hue)
+            // FULL COLOUR IN BOTH STATES. Tokens used to desaturate when they were not playable,
+            // which meant a token changed colour halfway through its own walk: the turn advances
+            // the moment the move commits, so the pawn still travelling stopped being "legal"
+            // and washed out mid-step. Playability is carried by the ring, the glow and the size
+            // — never by the seat's colour, which has to stay readable as identity at all times.
+            val fill = hue
 
             // Contact shadow first, under everything.
             drawOval(
@@ -135,16 +149,37 @@ object LudoPawnPath {
                 Offset(hole.left, hole.top),
                 androidx.compose.ui.geometry.Size(hole.width, hole.height),
             )
+
+            // Marching dashes around a playable token. Motion is what makes it read as an
+            // invitation rather than decoration, and it survives colour-blindness and dark mode
+            // in a way a hue change never could.
+            if (active) {
+                val ringInset = border + outline + width * 0.085f
+                val ring = path(width + ringInset * 2f, height + ringInset * 2f)
+                val dash = width * 0.20f
+                val intervals = floatArrayOf(dash, dash * 0.75f)
+                translate(-ringInset, -ringInset) {
+                    drawPath(
+                        ring, colors.c(colors.pawnOutline).copy(alpha = 0.55f),
+                        style = Stroke(
+                            width = max(1.1f, width * 0.052f),
+                            cap = StrokeCap.Round, join = StrokeJoin.Round,
+                            pathEffect = PathEffect.dashPathEffect(
+                                intervals, -dashPhase * dash * 3.2f),
+                        ),
+                    )
+                    drawPath(
+                        ring, colors.c(colors.pawnBorder),
+                        style = Stroke(
+                            width = max(0.8f, width * 0.030f),
+                            cap = StrokeCap.Round, join = StrokeJoin.Round,
+                            pathEffect = PathEffect.dashPathEffect(
+                                intervals, -dashPhase * dash * 3.2f),
+                        ),
+                    )
+                }
+            }
         }
     }
 
-    /** Desaturated, muted version of a seat hue for a token that cannot move this turn. */
-    fun muted(base: Color): Color {
-        val luma = 0.299f * base.red + 0.587f * base.green + 0.114f * base.blue
-        // Partway to its own grey, then lifted slightly. Enough desaturation to read as "not
-        // playable this turn", but the seat is still identifiable at a glance — a token pulled
-        // all the way to grey loses which player it belongs to.
-        fun mix(c: Float) = ((c * 0.58f + luma * 0.42f) * 0.80f + 0.15f).coerceIn(0f, 1f)
-        return Color(mix(base.red), mix(base.green), mix(base.blue), 1f)
-    }
 }

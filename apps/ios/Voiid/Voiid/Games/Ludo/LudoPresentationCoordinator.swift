@@ -226,7 +226,7 @@ final class LudoPresentationCoordinator: ObservableObject {
             self.rollPose = makePose(
                 rx: rest.rotationXDeg + zDir * xTurns * 360 * remaining,
                 ry: rest.rotationYDeg + yTurns * 360 * remaining,
-                lift: 3 - 21 * sin(.pi * t),
+                lift: (3 - 21 * sin(.pi * t)) * LudoMotion.dieLiftScale,
                 sx: 1 + 0.05 * (1 - t), sy: 1 - 0.09 * (1 - t),
                 // Grows back only over the last third, while the spin is nearly spent.
                 depth: airborne + (1 - airborne) * max(0, (t - 0.66) / 0.34))

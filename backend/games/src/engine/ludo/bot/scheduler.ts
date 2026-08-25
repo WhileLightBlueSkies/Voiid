@@ -8,9 +8,18 @@ import type { BotDifficulty } from '../types';
 const ROLL_BOUNDS: Record<BotDifficulty, readonly [number, number]> = {
     relaxed: [380, 620], balanced: [300, 520], sharp: [420, 700],
 };
+// Choosing a token IS a decision, so it reads better with a beat of thought behind it — but it
+// is still bounded well inside BOT_TURN_BUDGET_MS so a bot's whole turn stays predictable.
 const MOVE_BOUNDS: Record<BotDifficulty, readonly [number, number]> = {
-    relaxed: [500, 900], balanced: [650, 1050], sharp: [900, 1500],
+    relaxed: [500, 780], balanced: [560, 860], sharp: [700, 1000],
 };
+
+/**
+ * The hard ceiling on a bot's whole turn, roll plus move, excluding the roll animation the
+ * client plays. Nothing schedules past this: a bot that appears to be thinking for longer than
+ * a person would is indistinguishable from one that has stopped responding.
+ */
+export const BOT_TURN_BUDGET_MS = 3_000;
 
 /** Separate HMAC domain: bot pacing can never consume or change a future die. */
 export function botDelay(
@@ -22,5 +31,7 @@ export function botDelay(
     const bytes = createHmac('sha256', Buffer.from(seedHex, 'hex'))
         .update(`ludo-bot-pacing:${counter}:${phase}`).digest();
     const [lo, hi] = phase === 'awaitingRoll' ? ROLL_BOUNDS[difficulty] : MOVE_BOUNDS[difficulty];
-    return lo + (bytes.readUInt32BE(0) % (hi - lo + 1));
+    const delay = lo + (bytes.readUInt32BE(0) % (hi - lo + 1));
+    // Belt and braces: whatever the bounds say, one leg of a bot turn never eats the budget.
+    return Math.min(delay, BOT_TURN_BUDGET_MS / 2);
 }

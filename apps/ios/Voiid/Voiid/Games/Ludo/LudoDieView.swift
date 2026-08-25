@@ -89,27 +89,37 @@ enum LudoDieView {
         return max(0, min(1, dot / frontResponse))
     }
 
-    /// Fraction of the tray the settled die occupies.
+    /// Fraction of the die's own box the settled die occupies.
     static let restFillFactor: CGFloat = 0.92
+
+    /// How much bigger the drawing surface is than the die's layout footprint.
+    ///
+    /// A turning cube spans up to √3 of its side and the throw lifts it clear of the ground, so
+    /// the surface has to be larger than the space the die occupies in the row — otherwise the
+    /// airborne die is sliced off at the top and the throw looks like it happens in a box.
+    static let canvasFactor: CGFloat = 1.75
 
     static func draw(
         _ ctx: inout GraphicsContext,
         size side: CGFloat,
+        /// The die's layout size; the surface is larger so the throw has headroom.
+        dieSide: CGFloat,
         value: Int,
         pose: LudoDiePose,
         pipColor: Color,
         colors: LudoColors,
     ) {
-        let drawSide = side * restFillFactor * pose.depthScale
+        let drawSide = dieSide * restFillFactor * pose.depthScale
 
         // Cast shadow on the tray floor. It stays put while the die rises, shrinking and fading
         // with height — the cue that separates a die thrown into the air from a picture being
         // rotated in place. Drawn before the transform so the lift does not move it.
         if pose.liftPx < -0.5 {
-            let height = min(1, -Double(pose.liftPx) / 21)
-            let r = side * 0.30 * (1 - 0.34 * height)
-            let cx = side / 2 + side * 0.05 * height          // light is up-left, so it slides right
-            let cy = side * 0.80
+            let height = min(1, -Double(pose.liftPx) / Double(dieSide * 0.33))
+            let r = dieSide * 0.30 * (1 - 0.34 * height)
+            // The die rests in the LOWER part of the surface so the throw has room above it.
+            let cx = side / 2 + dieSide * 0.05 * height       // light is up-left, so it slides right
+            let cy = side / 2 + dieSide * 0.30
             ctx.fill(Path(ellipseIn: CGRect(x: cx - r, y: cy - r * 0.34,
                                             width: r * 2, height: r * 0.68)),
                      with: .color(.black.opacity(0.20 * (1 - 0.65 * height))))
@@ -311,20 +321,30 @@ struct LudoDieCanvas: View {
     let pipsNeutral: Bool
     /// Active seat whose hue colors ALL pips simultaneously.
     let activeSeat: Int?
+    /// The die's LAYOUT size. The surface it draws on is larger; the overflow is transparent
+    /// and sits outside the layout, so a thrown die is never clipped by the row it lives in.
     let side: CGFloat
 
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        Canvas { ctx, size in
-            var ctx = ctx
-            let colors = LudoColors.resolve(scheme)
-            let pipColor: Color = (pipsNeutral || activeSeat == nil)
-                ? colors.dieNeutralPip
-                : colors.hue(activeSeat!)
-            LudoDieView.draw(&ctx, size: min(size.width, size.height), value: value,
-                             pose: pose, pipColor: pipColor, colors: colors)
-        }
-        .frame(width: side, height: side)
+        let surface = side * LudoDieView.canvasFactor
+        // An overlay is not clipped to its parent, so the die keeps its footprint in the pod
+        // row while drawing over the space above it.
+        Color.clear
+            .frame(width: side, height: side)
+            .overlay {
+                Canvas { ctx, size in
+                    var ctx = ctx
+                    let colors = LudoColors.resolve(scheme)
+                    let pipColor: Color = (pipsNeutral || activeSeat == nil)
+                        ? colors.dieNeutralPip
+                        : colors.hue(activeSeat!)
+                    LudoDieView.draw(&ctx, size: min(size.width, size.height), dieSide: side,
+                                     value: value, pose: pose, pipColor: pipColor, colors: colors)
+                }
+                .frame(width: surface, height: surface)
+                .allowsHitTesting(false)
+            }
     }
 }

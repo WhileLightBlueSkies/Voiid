@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -25,6 +26,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -113,7 +115,8 @@ fun LudoScreen(
         action.roll?.let { lastRolledValue = it.value }
         if (action.type != "autoTurn") return@LaunchedEffect
         val who = frameV2?.state?.seats
-            ?.firstOrNull { it.seat == action.actorSeat }?.displayName ?: "Player"
+            ?.firstOrNull { it.seat == (action.fromSeat ?: action.actorSeat) }?.displayName
+            ?: "Player"
         skipNotice = if (action.move != null) "$who ran out of time — moved automatically"
                      else "$who ran out of time — turn skipped"
         delay(2200)
@@ -196,11 +199,20 @@ fun LudoScreen(
                     coordinator.enqueueRoll(it.rollId, it.value, a.fromSeat ?: a.actorSeat)
                     LudoHaptics.rollImpact(context, it.rollId)
                 }
-                "capture", "move", "autoTurn" -> a.move?.let { m ->
-                    coordinator.enqueueMove(m.path.size, m.captured) { _ -> /* hop frame hook */ }
-                    if (m.captured != null) {
-                        if (m.captured.seat == s.viewerSeat) LudoHaptics.captureOnMe(context)
-                        if (a.actorSeat == s.viewerSeat) LudoHaptics.captureByMe(context)
+                "capture", "move", "autoTurn" -> {
+                    val mover = a.fromSeat ?: a.actorSeat
+                    // A timed-out turn carries its roll in the same action. Without this the die
+                    // never tumbled for an auto-roll — the number simply appeared, already
+                    // beside the next player.
+                    if (a.type == "autoTurn") {
+                        a.roll?.let { coordinator.enqueueRoll(it.rollId, it.value, mover) }
+                    }
+                    a.move?.let { m ->
+                        coordinator.enqueueMove(m.path.size, m.captured) { _ -> /* hop frame hook */ }
+                        if (m.captured != null) {
+                            if (m.captured.seat == s.viewerSeat) LudoHaptics.captureOnMe(context)
+                            if (mover == s.viewerSeat) LudoHaptics.captureByMe(context)
+                        }
                     }
                 }
                 else -> Unit
@@ -338,10 +350,17 @@ private fun LifecycleSnapshotSync(engine: GamesEngine) {
     }
 }
 
+/**
+ * A seat's countdown, human or bot.
+ *
+ * Bots carry `botActionAt` instead of `deadlineAt`, so following only the human deadline left a
+ * bot's pod and the board border with no clock at all — a bot turn looked identical to a stalled
+ * one. Both now render the same way; only the underlying clock differs.
+ */
 internal fun ringFractionFor(state: LudoGameState, seat: Int): Float? {
     if (state.isFinished || state.turn?.seat != seat) return null
     val turn = state.turn ?: return null
-    val deadline = turn.deadlineAt ?: return null
+    val deadline = turn.deadlineAt ?: turn.botActionAt ?: return null
     val total = (deadline - turn.opensAt).coerceAtLeast(1)
     val remaining = (deadline - nowEstimated()).coerceIn(0L, LudoRules.TURN_WINDOW_MS.toLong())
     return remaining.toFloat() / total
@@ -566,7 +585,13 @@ private fun BoardArea(
                 true
             } ?: return@LaunchedEffect
             val layout = LudoBoardGeometry.Layout(sidePx.toFloat())
-            val seat = action.actorSeat
+            // THE ACTOR IS `fromSeat` WHENEVER THE MOVE ALSO ENDED THE TURN. The server commits
+            // the move with the mover's seat and then rewrites actorSeat to the next player,
+            // leaving the move payload describing the OUTGOING seat's pawn. Reading actorSeat
+            // resolved the home lane against the wrong seat, so a pawn heading for its own
+            // victory route walked off toward another colour's start instead, and only snapped
+            // back when the animation ended and authoritative state took over.
+            val seat = action.fromSeat ?: action.actorSeat
 
             fun centerOfPosSync(pos: Int): Offset? {
                 if (pos in 0 until LudoRules.TRACK_COUNT) {
@@ -690,14 +715,20 @@ private fun BoardArea(
     // The perimeter clock needs a per-frame tick; otherwise the border only redraws when a new
     // server frame lands, so it would jump in whole seconds instead of shortening.
     var boardClock by remember { mutableStateOf<Float?>(null) }
-    val clockRunning = !state.isFinished && state.turn?.deadlineAt != null && !reduceMotionEnabled
-    LaunchedEffect(state.turn?.seat, state.turn?.deadlineAt, clockRunning) {
-        if (!clockRunning) {
+    var dashPhase by remember { mutableFloatStateOf(0f) }
+    // Frames are needed while a decision window counts down — human OR bot — and while any
+    // playable token has dashes to march.
+    val needsFrames = !reduceMotionEnabled && !state.isFinished && state.turn != null &&
+        (state.turn.deadlineAt != null || state.turn.botActionAt != null ||
+            state.turn.legalTokenIds.isNotEmpty())
+    LaunchedEffect(state.turn?.seat, state.turn?.deadlineAt, state.turn?.botActionAt, needsFrames) {
+        if (!needsFrames) {
             boardClock = ringFractionFor(state, state.turn?.seat ?: -1)
             return@LaunchedEffect
         }
         while (true) {
             boardClock = ringFractionFor(state, state.turn?.seat ?: -1)
+            dashPhase = (System.nanoTime() / 1_000_000_000.0).toFloat()
             delay(33)
         }
     }
@@ -774,6 +805,7 @@ private fun BoardArea(
                 darkTheme = darkTheme,
                 reduceMotion = reduceMotionEnabled,
                 highContrast = highContrast,
+                dashPhase = dashPhase,
                 timerFraction = boardClock,
                 timerTint = boardClockTint,
             )
@@ -917,16 +949,23 @@ private fun DieFace(
     val pipSeat = dieSeat ?: state.turn?.seat
     val pipsNeutral = pipSeat == null || state.isFinished
 
-    Canvas(
+    // The die keeps its footprint in the pod row but DRAWS on a larger surface, so a thrown die
+    // is never clipped by the row it lives in. Compose does not clip children unless asked, so
+    // the overflow simply paints over the space above.
+    Box(
         Modifier
             .size(LudoDimens.dieSizeStandard)
             .clickable(enabled = canRoll, onClick = onTap)
             .semantics { contentDescription = LudoSemantics.dieLabel(state, displayedValue) },
+        contentAlignment = Alignment.Center,
+    ) {
+    Canvas(
+        Modifier.requiredSize(LudoDimens.dieSizeStandard * LudoDie.CANVAS_FACTOR),
     ) {
         val rv = rollVisual
         val pipColor = if (pipsNeutral) dColors.c(dColors.dieNeutralPip)
                        else dColors.hue(pipSeat!!)
-        val restSide = size.width * LudoDie.REST_FILL_FACTOR
+        val restSide = size.width / LudoDie.CANVAS_FACTOR * LudoDie.REST_FILL_FACTOR
         with(LudoDie) {
             if (rv == null) {
                 drawRestingDie(
@@ -951,6 +990,7 @@ private fun DieFace(
                 )
             }
         }
+    }
     }
 }
 

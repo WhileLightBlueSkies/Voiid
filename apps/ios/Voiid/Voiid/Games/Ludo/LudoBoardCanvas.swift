@@ -64,6 +64,8 @@ enum LudoBoardCanvas {
         displayOverrides: [(seat: Int, pawn: Int, center: CGPoint)] = [],
         highContrast: Bool = false,
         /// 0...1 of the active seat's decision window still remaining; nil hides the clock.
+        /// Advances the marching dashes on playable tokens.
+        dashPhase: CGFloat = 0,
         timerFraction: CGFloat? = nil,
         /// Warning / critical tint for the last seconds; nil keeps the seat hue.
         timerTint: Color? = nil,
@@ -163,14 +165,24 @@ enum LudoBoardCanvas {
         let placed = LudoPawnLayer.layout(state: state, layout: layout,
                                           droppedSeats: dropped, displayOverrides: displayOverrides)
         let activeTokens = activePawnKeys(state)
-        for pawn in placed {
-            let boxW = LudoPawnShape.widthFactor * unit * pawn.scale
-            let boxH = LudoPawnShape.heightFactor * unit * pawn.scale
+        // Playable tokens paint LAST so they sit over anything sharing their cell — a token you
+        // can act on must never be buried under one you cannot.
+        let ordered = placed.sorted { a, b in
+            let aActive = activeTokens.contains("\(a.seat):\(a.pawnIndex)")
+            let bActive = activeTokens.contains("\(b.seat):\(b.pawnIndex)")
+            return !aActive && bActive
+        }
+        for pawn in ordered {
+            let isActive = activeTokens.contains("\(pawn.seat):\(pawn.pawnIndex)")
+            let scale = pawn.scale * (isActive ? LudoPawnShape.activeScale : 1)
+            let boxW = LudoPawnShape.widthFactor * unit * scale
+            let boxH = LudoPawnShape.heightFactor * unit * scale
             var pawnCtx = ctx
             pawnCtx.translateBy(x: pawn.center.x - boxW / 2, y: pawn.center.y - boxH / 2)
             LudoPawnShape.draw(&pawnCtx, width: boxW, height: boxH,
                                hue: colors.hue(pawn.seat),
-                               active: activeTokens.contains("\(pawn.seat):\(pawn.pawnIndex)"),
+                               active: isActive,
+                               dashPhase: dashPhase,
                                colors: colors)
         }
 

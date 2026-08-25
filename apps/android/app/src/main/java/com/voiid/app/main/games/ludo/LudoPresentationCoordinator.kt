@@ -212,7 +212,7 @@ class LudoPresentationCoordinator {
                 frame(
                     restX + xTurns * 360f * zDir * (1f - angEasing.transform(t)),
                     restY + yTurns * 360f * (1f - angEasing.transform(t)),
-                    3f - 21f * sin((Math.PI * t).toFloat()),
+                    (3f - 21f * sin((Math.PI * t).toFloat())) * LudoMotion.DIE_LIFT_SCALE,
                     1f + 0.05f * (1f - t),
                     1f - 0.09f * (1f - t),
                     // Grows back only over the last third, while the spin is nearly spent.

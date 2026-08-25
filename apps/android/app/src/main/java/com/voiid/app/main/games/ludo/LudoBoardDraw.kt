@@ -45,6 +45,8 @@ object LudoBoardDraw {
         darkTheme: Boolean,
         reduceMotion: Boolean,
         highContrast: Boolean = false,
+        /** Advances the marching dashes on playable tokens. */
+        dashPhase: Float = 0f,
         /** 0..1 of the active seat's decision window still remaining; null hides the clock. */
         timerFraction: Float? = null,
         /** Warning / critical tint for the last seconds; null keeps the seat hue. */
@@ -156,17 +158,25 @@ object LudoBoardDraw {
         // A token is ACTIVE when the current roll could actually be played with it. That is the
         // server's legal set, never a guess: the glow is a promise that tapping does something.
         val activeTokens = activePawnKeys(state)
-        for (pawn in placedPawns.sortedBy { it.seat }) {
-            val boxW = LudoPawnPath.WIDTH_FACTOR * unit * pawn.scale
-            val boxH = LudoPawnPath.HEIGHT_FACTOR * unit * pawn.scale
+        // Playable tokens paint LAST so they sit over anything sharing their cell — a token you
+        // can act on must never be buried under one you cannot.
+        val orderedPawns = placedPawns.sortedWith(
+            compareBy({ activeTokens.contains("${'$'}{it.seat}:${'$'}{it.pawnIndex}") }, { it.seat }),
+        )
+        for (pawn in orderedPawns) {
+            val isActive = activeTokens.contains("${'$'}{pawn.seat}:${'$'}{pawn.pawnIndex}")
+            val scale = pawn.scale * (if (isActive) LudoPawnPath.ACTIVE_SCALE else 1f)
+            val boxW = LudoPawnPath.WIDTH_FACTOR * unit * scale
+            val boxH = LudoPawnPath.HEIGHT_FACTOR * unit * scale
             with(LudoPawnPath) {
                 drawPawn(
                     origin = Offset(pawn.center.x - boxW / 2f, pawn.center.y - boxH / 2f),
                     width = boxW,
                     height = boxH,
                     hue = colors.hue(pawn.seat),
-                    active = activeTokens.contains("${'$'}{pawn.seat}:${'$'}{pawn.pawnIndex}"),
+                    active = isActive,
                     colors = colors,
+                    dashPhase = dashPhase,
                 )
             }
         }
