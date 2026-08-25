@@ -275,8 +275,13 @@ struct LudoGameView: View {
                 }
                 .frame(width: side, height: side)
                 .contentShape(Rectangle())
+                // A tap has to carry WHERE it landed, and TapGesture does not report a
+                // location — so `lastTapPoint` was never written and every tap on the board
+                // bailed out. A zero-distance drag gives the position, which is the whole input
+                // for choosing a pawn.
                 .gesture(
-                    TapGesture().onEnded { handleBoardTap(in: side) }
+                    DragGesture(minimumDistance: 0)
+                        .onEnded { g in handleBoardTap(at: g.location, in: side) }
                 )
                 .onAppear { if boardSide == 0 { boardSide = side } }
                 .onChange(of: side) { _, new in boardSide = new }
@@ -330,14 +335,16 @@ struct LudoGameView: View {
         colors: LudoColors,
         state: LudoGameStateV2,
     ) {
-        // Display-pawn override from the coordinator: mid-hop or capture-return; authoritative
-        // state already holds every destination and is never fed back by animation.
-        var override: (seat: Int, pawn: Int, center: CGPoint)?
+        // Display-pawn overrides from the coordinator. A move that captures has TWO pawns in
+        // transit at once — the mover hopping and the victim still standing where it was hit —
+        // so these accumulate rather than replacing one another. Authoritative state already
+        // holds every destination and is never fed back by animation.
+        var overrides: [(seat: Int, pawn: Int, center: CGPoint)] = []
         if let h = coordinator.hopOverride {
-            override = (h.seat == -1 ? (state.turn?.seat ?? 0) : h.seat, h.pawn, h.center)
+            overrides.append((h.seat == -1 ? (state.turn?.seat ?? 0) : h.seat, h.pawn, h.center))
         }
         if let c = coordinator.captureReturn {
-            override = (c.seat, c.pawn, c.center)
+            overrides.append((c.seat, c.pawn, c.center))
         }
 
         LudoBoardCanvas.draw(
@@ -346,7 +353,7 @@ struct LudoGameView: View {
             colors: colors,
             state: state,
             sweep: sweepVisual,
-            displayOverride: override,
+            displayOverrides: overrides,
             highContrast: contrast == .increased,
             timerFraction: boardTimerFraction(state),
             timerTint: timerOverride(state, state.turn?.seat ?? -1))
@@ -396,14 +403,17 @@ struct LudoGameView: View {
     /// is held here until a NEW roll replaces it, so the number stays readable while you choose
     /// a pawn, and through a skip.
     private func rollDisplayValue(_ state: LudoGameStateV2) -> Int {
-        state.turn?.value ?? lastRolledValue ?? 1
+        // A roll in the air outranks live state. `turn.value` is cleared the instant the move
+        // commits, and the next action can land while the die is still tumbling, which is what
+        // made the die appear to settle on one number and then change to another.
+        coordinator.animatingRollValue ?? state.turn?.value ?? lastRolledValue ?? 1
     }
 
     @State private var lastRolledValue: Int?
 
     // MARK: Taps on the board
 
-    private func handleBoardTap(in side: CGFloat) {
+    private func handleBoardTap(at point: CGPoint, in side: CGFloat) {
         guard let state = engine.ludoV2?.state else { return }
 
         // A tap during a hop chain fast-forwards the moving pawn (§15); sends NO input.
@@ -418,24 +428,19 @@ struct LudoGameView: View {
         // than firing an intent the server will reject.
         guard let turn = state.turn, turn.phase == "awaitingMove",
               state.viewerRole == "controller", state.viewerSeat == turn.seat,
-              state.seat(bySeat: turn.seat)?.isBot == false,
-              lastTapPoint != nil else { return }
+              state.seat(bySeat: turn.seat)?.isBot == false else { return }
 
         let layout = LudoBoardGeometry.Layout(sideLength: side)
         let dropped = Set<Int>()
         let placed = LudoPawnLayer.layout(state: state, layout: layout, droppedSeats: dropped)
-        var legalBySeat: [Int: Set<Int>] = [turn.seat: Set(turn.legalTokenIds)]
-        legalBySeat[turn.seat] = Set(turn.legalTokenIds)
+        let legalBySeat: [Int: Set<Int>] = [turn.seat: Set(turn.legalTokenIds)]
 
         if let hit = LudoPawnLayer.hitTest(placed: placed, unit: layout.unit,
-                                           point: lastTapPoint ?? .zero,
+                                           point: point,
                                            legalTokensBySeat: legalBySeat) {
             engine.moveLudoV2(token: hit.pawn)
         }
-        self.lastTapPoint = nil
     }
-
-    @State private var lastTapPoint: CGPoint?
 
     // MARK: Beats wiring (§12.3, §15)
 
@@ -545,8 +550,18 @@ struct LudoGameView: View {
     private func autoMoveIfForced(key: String) async {
         guard autoMovedKey != key else { return }
         autoMovedKey = key
-        // Let the die land and be read before the board moves.
+
+        // Wait for the die to actually finish. Firing on a fixed delay meant the move committed
+        // while the roll was still in the air: the turn advanced under the animation, and the
+        // token started moving before the number was readable — it looked like the token had
+        // jumped somewhere on its own.
+        let deadline = Date().addingTimeInterval(3.0)
+        while coordinator.isAnimating && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 40_000_000)
+        }
+        // Then a beat to read the settled number before the board moves under it.
         try? await Task.sleep(nanoseconds: UInt64(LudoMotion.forcedMoveHoldMs * 1_000_000))
+
         // Re-check: the window may have closed while we waited (timeout, disconnect, resync).
         guard autoMoveKey(engine.ludoV2?.state) == key,
               let token = Int(key.split(separator: ":").last ?? "") else { return }

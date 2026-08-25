@@ -30,6 +30,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -119,21 +120,6 @@ fun LudoScreen(
         skipNotice = null
     }
 
-    // ONE legal token means there is no decision to make, so the move plays itself once the die
-    // has settled — the way Ludo King does it. Waiting keeps the number readable before the
-    // board moves under it.
-    var autoMovedKey by remember { mutableStateOf<String?>(null) }
-    val forcedKey = forcedMoveKey(frameV2?.state)
-    LaunchedEffect(forcedKey) {
-        val key = forcedKey ?: return@LaunchedEffect
-        if (autoMovedKey == key) return@LaunchedEffect
-        autoMovedKey = key
-        delay(LudoMotion.FORCED_MOVE_HOLD_MS)
-        // Re-check: the window may have closed while we waited (timeout, disconnect, resync).
-        if (forcedMoveKey(engine.ludoV2.value?.state) != key) return@LaunchedEffect
-        key.substringAfterLast(':').toIntOrNull()?.let { engine.moveLudoV2(context, it) }
-    }
-
     LaunchedEffect(matchId) {
         engine.setLudoConversationId(conversationId)
         engine.open(matchId)
@@ -169,6 +155,31 @@ fun LudoScreen(
 
     val sweep by coordinator.sweep.collectAsState()
     val rollVisual by coordinator.roll.collectAsState()
+    val animatingRoll by coordinator.animatingRollValue.collectAsState()
+
+    // ONE legal token means there is no decision to make, so the move plays itself once the die
+    // has settled — the way Ludo King does it. Waiting keeps the number readable before the
+    // board moves under it.
+    var autoMovedKey by remember { mutableStateOf<String?>(null) }
+    val forcedKey = forcedMoveKey(frameV2?.state)
+    LaunchedEffect(forcedKey) {
+        val key = forcedKey ?: return@LaunchedEffect
+        if (autoMovedKey == key) return@LaunchedEffect
+        autoMovedKey = key
+        // Wait for the die to actually finish. Firing on a fixed delay meant the move committed
+        // while the roll was still in the air: the turn advanced under the animation, and the
+        // token started moving before the number was readable — it looked like the token had
+        // jumped somewhere on its own.
+        withTimeoutOrNull(3_000) {
+            while (coordinator.animatingRollValue.value != null) delay(40)
+        }
+        // Then a beat to read the settled number before the board moves under it.
+        delay(LudoMotion.FORCED_MOVE_HOLD_MS)
+        // Re-check: the window may have closed while we waited (timeout, disconnect, resync).
+        if (forcedMoveKey(engine.ludoV2.value?.state) != key) return@LaunchedEffect
+        key.substringAfterLast(':').toIntOrNull()?.let { engine.moveLudoV2(context, it) }
+    }
+
 
     LaunchedEffect(state?.lastAction?.id) {
         val s = state ?: return@LaunchedEffect
@@ -217,7 +228,10 @@ fun LudoScreen(
                 // The board is the screen's optical centre: equal weighted spacers above and
                 // below the pod/board/pod block centre it vertically, while the board's own
                 // aspectRatio(1) centres it horizontally.
-                val displayedDie = state.turn?.value ?: lastRolledValue
+                // A roll in the air outranks live state. `turn.value` is cleared the instant the
+                // move commits, and the next action can land while the die is still tumbling,
+                // which is what made the die appear to settle on one number and then change.
+                val displayedDie = animatingRoll ?: state.turn?.value ?: lastRolledValue
                 val rollDie = { engine.rollLudoV2(context) }
                 Spacer(Modifier.weight(1f))
                 PodRow(state, presence, top = true, rollVisual = rollVisual,
@@ -533,99 +547,135 @@ private fun BoardArea(
     var captureOverride by remember { mutableStateOf<Pair<Pair<Int,Int>, Offset>?>(null) }
 
     LaunchedEffect(state.lastAction?.id) {
-        val action = state.lastAction ?: return@LaunchedEffect
-        val move = action.move ?: return@LaunchedEffect
-        if (action.type == "roll") return@LaunchedEffect
-        // Wait for the first layout so cell centers exist.
-        kotlinx.coroutines.withTimeoutOrNull(500) {
-            while (sidePx == 0) delay(16)
-            true
-        } ?: return@LaunchedEffect
-        val layout = LudoBoardGeometry.Layout(sidePx.toFloat())
-        val seat = action.actorSeat
+        // ALWAYS release the pins. This effect is keyed on the action id, so the next
+        // action cancels it mid-flight — and a cancelled coroutine skips the cleanup at
+        // the end of its body. A stale override left a pawn pinned to a position the
+        // board had already moved on from, which read as a token sitting on the wrong
+        // cell until something else happened to clear it.
+        try {
+            val action = state.lastAction ?: return@LaunchedEffect
+            val move = action.move ?: return@LaunchedEffect
+            if (action.type == "roll") return@LaunchedEffect
+            // Wait for the first layout so cell centers exist.
+            kotlinx.coroutines.withTimeoutOrNull(500) {
+                while (sidePx == 0) delay(16)
+                true
+            } ?: return@LaunchedEffect
+            val layout = LudoBoardGeometry.Layout(sidePx.toFloat())
+            val seat = action.actorSeat
 
-        suspend fun centerOfPos(pos: Int): Offset? {
-            if (pos in 0 until LudoRules.TRACK_COUNT) {
-                val c = LudoBoardGeometry.TRACK_COORDS[pos]
-                return layout.rectOf(LudoBoardGeometry.cell(c.first, c.second)).center
-            }
-            if (pos >= LudoRules.HOME_LANE_BASE && pos < LudoRules.FINISHED) {
-                val c = LudoBoardGeometry.HOME_LANE_COORDS[seat][pos - LudoRules.HOME_LANE_BASE]
-                return layout.rectOf(LudoBoardGeometry.cell(c.first, c.second)).center
-            }
-            return null
-        }
-
-        val easing = androidx.compose.animation.core.CubicBezierEasing(0.22f, 0f, 0.20f, 1f)
-        val start = centerOfPos(move.from)
-        val stops = move.path.mapNotNull { centerOfPos(it) }
-        if (start != null && stops.isNotEmpty()) {
-            var prev: Offset = start
-            for ((i, stop) in stops.withIndex()) {
-                if (i > 0) delay(LudoRules.HOP_STAGGER_MS.toLong())
-                androidx.compose.animation.core.animate(
-                    initialValue = 0f, targetValue = 1f,
-                    animationSpec = androidx.compose.animation.core.tween(LudoRules.HOP_MS, easing = easing),
-                ) { v, _ ->
-                    hopOverride = Triple(
-                        seat, move.tokenId,
-                        Offset(prev.x + (stop.x - prev.x) * v, prev.y + (stop.y - prev.y) * v),
-                    )
+            fun centerOfPosSync(pos: Int): Offset? {
+                if (pos in 0 until LudoRules.TRACK_COUNT) {
+                    val c = LudoBoardGeometry.TRACK_COORDS[pos]
+                    return layout.rectOf(LudoBoardGeometry.cell(c.first, c.second)).center
                 }
-                prev = stop
-            }
-        }
-        hopOverride = null
-
-        // Capture return: after a 70 ms hold the victim walks HOME THE WAY IT CAME — backward
-        // along the exact track cells it advanced through, then into its yard slot. A straight
-        // arc across the board read as teleporting; retracing the route shows the player what
-        // they just undid.
-        val cap = move.captured
-        if (cap != null) {
-            delay(70)
-            val fromC = centerOfPos(cap.from)
-            val slot = layout.yardSlotCenter(cap.seat, cap.tokenId).let { Offset(it.first, it.second) }
-            if (fromC != null) {
-                val route = mutableListOf(fromC)
-                val startIdx = LudoRules.startIndex(cap.seat)
-                val travelled = ((cap.from - startIdx) % LudoRules.TRACK_COUNT +
-                    LudoRules.TRACK_COUNT) % LudoRules.TRACK_COUNT
-                for (step in 1..travelled) {
-                    val idx = ((cap.from - step) % LudoRules.TRACK_COUNT +
-                        LudoRules.TRACK_COUNT) % LudoRules.TRACK_COUNT
-                    val c = LudoBoardGeometry.TRACK_COORDS[idx]
-                    route += layout.rectOf(LudoBoardGeometry.cell(c.first, c.second)).center
+                if (pos >= LudoRules.HOME_LANE_BASE && pos < LudoRules.FINISHED) {
+                    val c = LudoBoardGeometry.HOME_LANE_COORDS[seat][pos - LudoRules.HOME_LANE_BASE]
+                    return layout.rectOf(LudoBoardGeometry.cell(c.first, c.second)).center
                 }
-                route += slot
+                return null
+            }
 
-                // Fixed total duration, so a pawn sent back from two cells out and one sent
-                // back from forty take about the same beat.
-                val legs = route.size - 1
-                val perLeg = kotlin.math.max(
-                    LudoRules.CAPTURE_LEG_MIN_MS,
-                    LudoRules.CAPTURE_RETURN_TOTAL_MS / legs,
-                )
-                val linear = CubicBezierEasing(0f, 0f, 1f, 1f)
-                val settle = CubicBezierEasing(0.30f, 0f, 0.10f, 1f)
-                for (i in 1 until route.size) {
-                    val a = route[i - 1]
-                    val b = route[i]
-                    // The final leg leaves the track for the yard slot; ease it out so the pawn
-                    // settles rather than slamming into its circle.
-                    val isLast = i == route.size - 1
-                    animate(
-                        0f, 1f,
-                        animationSpec = tween(
-                            if (isLast) perLeg * 2 else perLeg,
-                            easing = if (isLast) settle else linear,
-                        ),
+            // PIN BOTH PAWNS FIRST, before any frame of motion runs.
+            //
+            // Authoritative state already holds the finished positions: the mover is on its
+            // destination and a captured pawn is back in its yard. If nothing holds them, they snap
+            // there the moment the frame lands and only animate back once this effect gets going —
+            // a captured token appeared to teleport home, reappear out on the track, and walk back.
+            // Holding them at their starting points keeps the board honest until the motion runs.
+            centerOfPosSync(move.from)?.let { hopOverride = Triple(seat, move.tokenId, it) }
+            move.captured?.let { cap ->
+                centerOfPosSync(cap.from)?.let {
+                    captureOverride = (cap.seat to cap.tokenId) to it
+                }
+            }
+
+            suspend fun centerOfPos(pos: Int): Offset? {
+                if (pos in 0 until LudoRules.TRACK_COUNT) {
+                    val c = LudoBoardGeometry.TRACK_COORDS[pos]
+                    return layout.rectOf(LudoBoardGeometry.cell(c.first, c.second)).center
+                }
+                if (pos >= LudoRules.HOME_LANE_BASE && pos < LudoRules.FINISHED) {
+                    val c = LudoBoardGeometry.HOME_LANE_COORDS[seat][pos - LudoRules.HOME_LANE_BASE]
+                    return layout.rectOf(LudoBoardGeometry.cell(c.first, c.second)).center
+                }
+                return null
+            }
+
+            val easing = androidx.compose.animation.core.CubicBezierEasing(0.22f, 0f, 0.20f, 1f)
+            val start = centerOfPos(move.from)
+            val stops = move.path.mapNotNull { centerOfPos(it) }
+            if (start != null && stops.isNotEmpty()) {
+                var prev: Offset = start
+                for ((i, stop) in stops.withIndex()) {
+                    if (i > 0) delay(LudoRules.HOP_STAGGER_MS.toLong())
+                    androidx.compose.animation.core.animate(
+                        initialValue = 0f, targetValue = 1f,
+                        animationSpec = androidx.compose.animation.core.tween(LudoRules.HOP_MS, easing = easing),
                     ) { v, _ ->
-                        captureOverride = (cap.seat to cap.tokenId) to
-                            Offset(a.x + (b.x - a.x) * v, a.y + (b.y - a.y) * v)
+                        hopOverride = Triple(
+                            seat, move.tokenId,
+                            Offset(prev.x + (stop.x - prev.x) * v, prev.y + (stop.y - prev.y) * v),
+                        )
+                    }
+                    prev = stop
+                }
+            }
+            hopOverride = null
+
+            // Capture return: after a 70 ms hold the victim walks HOME THE WAY IT CAME — backward
+            // along the exact track cells it advanced through, then into its yard slot. A straight
+            // arc across the board read as teleporting; retracing the route shows the player what
+            // they just undid.
+            val cap = move.captured
+            if (cap != null) {
+                delay(70)
+                val fromC = centerOfPos(cap.from)
+                val slot = layout.yardSlotCenter(cap.seat, cap.tokenId).let { Offset(it.first, it.second) }
+                if (fromC != null) {
+                    val route = mutableListOf(fromC)
+                    val startIdx = LudoRules.startIndex(cap.seat)
+                    val travelled = ((cap.from - startIdx) % LudoRules.TRACK_COUNT +
+                        LudoRules.TRACK_COUNT) % LudoRules.TRACK_COUNT
+                    for (step in 1..travelled) {
+                        val idx = ((cap.from - step) % LudoRules.TRACK_COUNT +
+                            LudoRules.TRACK_COUNT) % LudoRules.TRACK_COUNT
+                        val c = LudoBoardGeometry.TRACK_COORDS[idx]
+                        route += layout.rectOf(LudoBoardGeometry.cell(c.first, c.second)).center
+                    }
+                    route += slot
+
+                    // Fixed total duration, so a pawn sent back from two cells out and one sent
+                    // back from forty take about the same beat.
+                    val legs = route.size - 1
+                    val perLeg = kotlin.math.max(
+                        LudoRules.CAPTURE_LEG_MIN_MS,
+                        LudoRules.CAPTURE_RETURN_TOTAL_MS / legs,
+                    )
+                    val linear = CubicBezierEasing(0f, 0f, 1f, 1f)
+                    val settle = CubicBezierEasing(0.30f, 0f, 0.10f, 1f)
+                    for (i in 1 until route.size) {
+                        val a = route[i - 1]
+                        val b = route[i]
+                        // The final leg leaves the track for the yard slot; ease it out so the pawn
+                        // settles rather than slamming into its circle.
+                        val isLast = i == route.size - 1
+                        animate(
+                            0f, 1f,
+                            animationSpec = tween(
+                                if (isLast) perLeg * 2 else perLeg,
+                                easing = if (isLast) settle else linear,
+                            ),
+                        ) { v, _ ->
+                            captureOverride = (cap.seat to cap.tokenId) to
+                                Offset(a.x + (b.x - a.x) * v, a.y + (b.y - a.y) * v)
+                        }
                     }
                 }
+                captureOverride = null
             }
+        } finally {
+            hopOverride = null
             captureOverride = null
         }
     }
@@ -672,11 +722,20 @@ private fun BoardArea(
                                 ?: return@mapNotNull null
                             posCellCenter(pos, turn.seat, layout)?.let { t to it }
                         }.toMap()
-                        legalPawns.entries.firstOrNull { (_, c) ->
-                            val dx = offset.x - c.first
-                            val dy = offset.y - c.second
-                            dx * dx + dy * dy <= (layout.unit * 0.75f) * (layout.unit * 0.75f)
-                        }?.let { (token, _) ->
+                        // NEAREST legal pawn wins, not the first in token order. Two legal
+                        // pawns can sit a fraction of a cell apart — a stack fanned out, or
+                        // adjacent track cells — and picking by index moved a pawn the player
+                        // had not aimed at.
+                        val reach = maxOf(layout.unit * 0.75f, 22f)
+                        legalPawns.entries
+                            .map { (token, c) ->
+                                val dx = offset.x - c.first
+                                val dy = offset.y - c.second
+                                token to (dx * dx + dy * dy)
+                            }
+                            .filter { it.second <= reach * reach }
+                            .minByOrNull { it.second }
+                            ?.let { (token, _) ->
                             engine.moveLudoV2(context, token)
                         }
                     }
@@ -693,8 +752,10 @@ private fun BoardArea(
                 val key = cap.first
                 val centerOv = cap.second
                 pawnsBase.map {
+                    // Full scale, for the same reason as the mover: a pawn being sent home is
+                    // in transit, not part of any stack on the cell it is passing through.
                     if (it.seat == key.first && it.pawnIndex == key.second) {
-                        it.copy(center = centerOv, scale = 0.88f)
+                        it.copy(center = centerOv, scale = 1f)
                     } else it
                 }
             } ?: pawnsBase

@@ -60,6 +60,15 @@ class LudoPresentationCoordinator {
     private val _roll = MutableStateFlow<RollVisual?>(null)
     val roll: StateFlow<RollVisual?> = _roll.asStateFlow()
 
+    /**
+     * The value of the roll currently in the air. The die must render THIS, not whatever the
+     * live turn happens to hold: the turn advances the moment the move is committed, so a later
+     * action — a bot's roll lands within a couple of hundred milliseconds — would otherwise
+     * re-label the die while it is still tumbling.
+     */
+    private val _animatingRollValue = MutableStateFlow<Int?>(null)
+    val animatingRollValue: StateFlow<Int?> = _animatingRollValue.asStateFlow()
+
     /** The single display pawn mid-hop; authoritative state is untouched. */
     private val _hopCenter = MutableStateFlow<Pair<Int, Offset>?>(null)   // pawnIndex → center
     val hopCenter: StateFlow<Pair<Int, Offset>?> = _hopCenter.asStateFlow()
@@ -89,6 +98,7 @@ class LudoPresentationCoordinator {
         beatQueue.clear()
         _sweep.value = null
         _roll.value = null
+        _animatingRollValue.value = null
         _hopCenter.value = null
     }
 
@@ -160,52 +170,57 @@ class LudoPresentationCoordinator {
     }
 
     private suspend fun animateRoll(rollId: String, value: Int) {
-        val seed = stableHash("${matchId ?: ""}:$rollId")
-        val xTurns = 2.5f + ((seed ushr 8) % 1000) / 1000f       // 2.5–3.5 turns
-        val yTurns = 2f + ((seed ushr 20) % 1000) / 1000f        // 2–3 turns
-        val zDir = if (seed and 1L == 0L) -1f else 1f
-        val (restX, restY) = LudoDie.restAngles(value)
+        _animatingRollValue.value = value
+        try {
+            val seed = stableHash("${matchId ?: ""}:$rollId")
+            val xTurns = 2.5f + ((seed ushr 8) % 1000) / 1000f       // 2.5–3.5 turns
+            val yTurns = 2f + ((seed ushr 20) % 1000) / 1000f        // 2–3 turns
+            val zDir = if (seed and 1L == 0L) -1f else 1f
+            val (restX, restY) = LudoDie.restAngles(value)
 
-        fun frame(rx: Float, ry: Float, lift: Float, sx: Float, sy: Float, depth: Float = 1f) {
-            _roll.value = RollVisual(rx, ry, lift, sx, sy, depth)
-        }
+            fun frame(rx: Float, ry: Float, lift: Float, sx: Float, sy: Float, depth: Float = 1f) {
+                _roll.value = RollVisual(rx, ry, lift, sx, sy, depth)
+            }
 
-        // A cube spans up to √3 of its own side once it is turning, so the airborne die is drawn
-        // smaller and grows back as it lands. That keeps its corners off the tray edge and reads
-        // as the throw having depth.
-        val airborne = LudoDie.AIRBORNE_SCALE
+            // A cube spans up to √3 of its own side once it is turning, so the airborne die is drawn
+            // smaller and grows back as it lands. That keeps its corners off the tray edge and reads
+            // as the throw having depth.
+            val airborne = LudoDie.AIRBORNE_SCALE
 
-        // Anticipation 0–120 ms.
-        tween(120, cubicEasing(0.32f, 0f, 0.67f, 0f)) { t ->
-            frame(zDir * -8f * t, 10f * t, 3f * t, 1f + 0.05f * t, 1f - 0.09f * t,
-                1f - (1f - airborne) * t)
+            // Anticipation 0–120 ms.
+            tween(120, cubicEasing(0.32f, 0f, 0.67f, 0f)) { t ->
+                frame(zDir * -8f * t, 10f * t, 3f * t, 1f + 0.05f * t, 1f - 0.09f * t,
+                    1f - (1f - airborne) * t)
+            }
+            if (reduceMotion) return
+            // Tumble/release 120–760 ms. Both axes wind down to the rest pose, which is square-on:
+            // the result is already on the cube's front face, so it settles showing the committed
+            // number and never re-labels.
+            val posEasing = cubicEasing(0.12f, 0.68f, 0.22f, 1f)
+            val angEasing = cubicEasing(0.20f, 0f, 0.38f, 1f)
+            tween(640, posEasing) { t ->
+                frame(
+                    restX + xTurns * 360f * zDir * (1f - angEasing.transform(t)),
+                    restY + yTurns * 360f * (1f - angEasing.transform(t)),
+                    3f - 21f * sin((Math.PI * t).toFloat()),
+                    1f + 0.05f * (1f - t),
+                    1f - 0.09f * (1f - t),
+                    // Grows back only over the last third, while the spin is nearly spent.
+                    airborne + (1f - airborne) * ((t - 0.66f) / 0.34f).coerceAtLeast(0f),
+                )
+            }
+            // Impact 760–820 ms: squash; shadow collapse reads through lift=0.
+            tween(60, cubicEasing(0.33f, 1f, 0.68f, 1f)) { t ->
+                frame(restX, restY, 0f, 1f + 0.08f * t, 1f - 0.10f * t)
+            }
+            // Rebound/settle 820–940 ms back to the exact result orientation.
+            tween(120, cubicEasing(0.20f, 0f, 0f, 1f)) { t ->
+                frame(restX, restY, 0f, 1f + 0.08f * (1f - t), 1f - 0.10f * (1f - t))
+            }
+        } finally {
+            _roll.value = null
+            _animatingRollValue.value = null
         }
-        if (reduceMotion) return
-        // Tumble/release 120–760 ms. Both axes wind down to the rest pose, which is square-on:
-        // the result is already on the cube's front face, so it settles showing the committed
-        // number and never re-labels.
-        val posEasing = cubicEasing(0.12f, 0.68f, 0.22f, 1f)
-        val angEasing = cubicEasing(0.20f, 0f, 0.38f, 1f)
-        tween(640, posEasing) { t ->
-            frame(
-                restX + xTurns * 360f * zDir * (1f - angEasing.transform(t)),
-                restY + yTurns * 360f * (1f - angEasing.transform(t)),
-                3f - 21f * sin((Math.PI * t).toFloat()),
-                1f + 0.05f * (1f - t),
-                1f - 0.09f * (1f - t),
-                // Grows back only over the last third, while the spin is nearly spent.
-                airborne + (1f - airborne) * ((t - 0.66f) / 0.34f).coerceAtLeast(0f),
-            )
-        }
-        // Impact 760–820 ms: squash; shadow collapse reads through lift=0.
-        tween(60, cubicEasing(0.33f, 1f, 0.68f, 1f)) { t ->
-            frame(restX, restY, 0f, 1f + 0.08f * t, 1f - 0.10f * t)
-        }
-        // Rebound/settle 820–940 ms back to the exact result orientation.
-        tween(120, cubicEasing(0.20f, 0f, 0f, 1f)) { t ->
-            frame(restX, restY, 0f, 1f + 0.08f * (1f - t), 1f - 0.10f * (1f - t))
-        }
-        _roll.value = null
     }
 
     private suspend fun tween(durationMs: Long, easing: LudoMotion.CubicEasing, frame: (Float) -> Unit) {

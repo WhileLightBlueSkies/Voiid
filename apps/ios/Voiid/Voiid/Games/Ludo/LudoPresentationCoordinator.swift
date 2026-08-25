@@ -39,6 +39,12 @@ final class LudoPresentationCoordinator: ObservableObject {
     @Published private(set) var captureReturn: (seat: Int, pawn: Int, center: CGPoint)?
     @Published private(set) var isAnimating = false
 
+    /// The value of the roll currently in the air. The die must render THIS, not whatever the
+    /// live turn happens to hold: the turn advances the moment the move is committed, so a
+    /// later action — a bot's roll lands within a couple of hundred milliseconds — would
+    /// otherwise re-label the die while it is still tumbling.
+    @Published private(set) var animatingRollValue: Int?
+
     // MARK: State
 
     private var queue: [@MainActor () async -> Void] = []
@@ -78,6 +84,19 @@ final class LudoPresentationCoordinator: ObservableObject {
         /// reverse, then its yard slot.
         captureRoute: [CGPoint],
     ) {
+        // PIN BOTH PAWNS NOW, not when the beat reaches the front of the queue.
+        //
+        // Authoritative state already holds the finished positions: the mover is on its
+        // destination and a captured pawn is back in its yard. If nothing holds them, they snap
+        // there the moment the frame lands and only animate back once the queue drains — a
+        // captured token appeared to teleport home, reappear out on the track, and walk back.
+        // Holding them at their starting points keeps the board honest until the motion runs.
+        if let first = centers.first {
+            hopOverride = (actorSeat, tokenId, first)
+        }
+        if let cap = captured, let start = captureRoute.first {
+            captureReturn = (cap.seat, cap.tokenId, start)
+        }
         enqueue { [weak self] in
             await self?.runMoveBeat(tokenId: tokenId, actorSeat: actorSeat, centers: centers,
                                     captured: captured, captureRoute: captureRoute)
@@ -85,10 +104,13 @@ final class LudoPresentationCoordinator: ObservableObject {
     }
 
     func cancelAll() {
+        beatTask?.cancel()
+        beatTask = nil
         queue.removeAll()
         running = false
         sweep = nil
         rollPose = nil
+        animatingRollValue = nil
         hopOverride = nil
         captureReturn = nil
         isAnimating = false
@@ -160,6 +182,8 @@ final class LudoPresentationCoordinator: ObservableObject {
     /// §14.3 four-beat roll: anticipation → tumble → impact → rebound. ONE medium impact
     /// haptic at the 760 ms beat, once per rollId.
     private func animateRoll(rollId: String, value: Int, matchId: String?) async {
+        animatingRollValue = value
+        defer { animatingRollValue = nil }
         let hash = Self.stableHash("\(matchId ?? ""):\(rollId)")
         let xTurns: Double = 2.5 + Double((hash >> 8) % 1000) / 1000      // 2.5–3.5 turns
         let yTurns: Double = 2.0 + Double((hash >> 20) % 1000) / 1000     // 2–3 turns
@@ -214,7 +238,12 @@ final class LudoPresentationCoordinator: ObservableObject {
     // MARK: Internals
 
     private func enqueue(_ beat: @escaping @MainActor () async -> Void) {
-        guard !reduceMotion else { return }   // reduced motion renders final states instantly
+        guard !reduceMotion else {
+            // Reduced motion renders final states instantly, so release any pin taken above.
+            hopOverride = nil
+            captureReturn = nil
+            return
+        }
         queue.append(beat)
         pump()
     }
@@ -224,13 +253,21 @@ final class LudoPresentationCoordinator: ObservableObject {
         running = true
         isAnimating = true
         let beat = queue.removeFirst() // escaping by design: held until its beat finishes
-        Task { @MainActor in
+        // The running beat is HELD so cancelAll can actually stop it. Clearing the queue alone
+        // left the in-flight tween running: it kept writing pawn positions after a
+        // fast-forward, so a token that had already snapped to its destination was dragged back
+        // along a path that no longer applied.
+        beatTask = Task { @MainActor in
             await beat()
+            guard !Task.isCancelled else { return }
             self.running = false
             self.isAnimating = !self.queue.isEmpty
+            self.beatTask = nil
             self.pump()
         }
     }
+
+    private var beatTask: Task<Void, Never>?
 
     /// ~60 fps frame loop that runs ONLY while a beat is active; an idle board consumes no
     /// display loop (§19).
@@ -239,6 +276,10 @@ final class LudoPresentationCoordinator: ObservableObject {
         let start = CACurrentMediaTime()
         let duration = ms / 1000
         while true {
+            // A cancelled beat stops writing immediately and does NOT jump to its end frame:
+            // authoritative state already holds the final positions, so the board is correct
+            // the moment the override is released.
+            if Task.isCancelled { return }
             let t = (CACurrentMediaTime() - start) / duration
             if t >= 1 { frame(1); break }
             frame(easing.transform(t))

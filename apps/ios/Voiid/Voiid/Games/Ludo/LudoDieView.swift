@@ -77,6 +77,18 @@ enum LudoDieView {
 
     private static func rad(_ deg: CGFloat) -> Double { Double(deg) * .pi / 180 }
 
+    /// Key light from up and to the left, in front of the die. Normalised so a face square to
+    /// the camera — the settled result — returns exactly 1 and takes no shading at all.
+    private static let lightDir = (x: -0.30, y: -0.45, z: -1.0)
+    private static let lightLen = (0.30 * 0.30 + 0.45 * 0.45 + 1.0) .squareRoot()
+
+    private static func lambert(_ n: V3) -> Double {
+        let dot = (n.x * lightDir.x + n.y * lightDir.y + n.z * lightDir.z) / lightLen
+        // A face-on normal is (0,0,-1); dividing by that response puts it at exactly 1.
+        let frontResponse = 1.0 / lightLen
+        return max(0, min(1, dot / frontResponse))
+    }
+
     /// Fraction of the tray the settled die occupies.
     static let restFillFactor: CGFloat = 0.92
 
@@ -89,6 +101,20 @@ enum LudoDieView {
         colors: LudoColors,
     ) {
         let drawSide = side * restFillFactor * pose.depthScale
+
+        // Cast shadow on the tray floor. It stays put while the die rises, shrinking and fading
+        // with height — the cue that separates a die thrown into the air from a picture being
+        // rotated in place. Drawn before the transform so the lift does not move it.
+        if pose.liftPx < -0.5 {
+            let height = min(1, -Double(pose.liftPx) / 21)
+            let r = side * 0.30 * (1 - 0.34 * height)
+            let cx = side / 2 + side * 0.05 * height          // light is up-left, so it slides right
+            let cy = side * 0.80
+            ctx.fill(Path(ellipseIn: CGRect(x: cx - r, y: cy - r * 0.34,
+                                            width: r * 2, height: r * 0.68)),
+                     with: .color(.black.opacity(0.20 * (1 - 0.65 * height))))
+        }
+
         var transformed = ctx
         // Centre the die in its tray, then squash about that centre. Translating by the lift
         // last keeps the airborne offset independent of the squash.
@@ -187,7 +213,7 @@ enum LudoDieView {
                            rx: rad(rx), ry: rad(ry))
             // Stronger foreshortening than a near-orthographic projection: without it the cube
             // read as a flat square swapping pictures rather than a solid turning over.
-            let k = 2.3 / (2.3 + r.z / Double(s))
+            let k = 1.75 / (1.75 + r.z / Double(s))
             projected.append(CGPoint(x: CGFloat(s / 2 + r.x * k), y: CGFloat(s / 2 + r.y * k)))
         }
 
@@ -222,10 +248,16 @@ enum LudoDieView {
                 // Body — ONE neutral token on every face, every value (§1).
                 layer.fill(quadPath, with: .color(colors.dieBody))
 
-                // Directional shade on tilted faces: lighting, not a color change. Deep enough
-                // that adjacent faces separate and the form reads as a solid.
+                // Lambert shading against a fixed light, NOT a flat darkening of tilted faces.
+                //
+                // The old term darkened by how far a face had turned away from the camera, so
+                // the face showing the result dimmed as it tumbled and the body read as
+                // changing colour — an off-white die. Lighting the cube instead means the face
+                // squarest to the light stays exactly the body colour, and the faces around it
+                // fall off, which is what makes it look like an object rather than a picture.
                 let n = rotate(face.normal, rx: rad(rx), ry: rad(ry))
-                let shade = max(0, min(1, -n.z)) * 0.34
+                let lit = lambert(n)
+                let shade = (1 - lit) * 0.42
                 if shade > 0.01 {
                     layer.fill(quadPath, with: .color(.black.opacity(shade)))
                 }

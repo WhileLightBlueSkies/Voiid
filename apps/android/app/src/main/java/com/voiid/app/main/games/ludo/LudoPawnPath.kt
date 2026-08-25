@@ -24,8 +24,10 @@ import kotlin.math.min
  */
 object LudoPawnPath {
 
-    const val WIDTH_FACTOR = 0.78f
-    const val HEIGHT_FACTOR = 1.02f
+    // 80% of the cell, so a token sits INSIDE its square instead of spilling over its
+    // neighbours. The pin is drawn at 0.8 of the size it was first cut at.
+    const val WIDTH_FACTOR = 0.62f
+    const val HEIGHT_FACTOR = 0.82f
 
     /**
      * Built as a circle plus the two tangents to the tip, so the tail meets the disc smoothly at

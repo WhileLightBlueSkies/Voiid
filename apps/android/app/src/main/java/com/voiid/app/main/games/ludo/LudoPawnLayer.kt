@@ -108,8 +108,13 @@ object LudoPawnLayer {
             val seatOv = ov.first
             val pawnIdx = ov.second
             val centerOv = ov.third
+            // Full scale: the destination cell may already have fanned its occupants into a
+            // stack, and a pawn still travelling toward it must not be drawn shrunk into a
+            // stack it has not joined yet.
             return out.map {
-                if (it.seat == seatOv && it.pawnIndex == pawnIdx) it.copy(center = centerOv) else it
+                if (it.seat == seatOv && it.pawnIndex == pawnIdx) {
+                    it.copy(center = centerOv, scale = 1f)
+                } else it
             }.sortedBy { it.seat * 10 + it.pawnIndex }
         }
         return out.sortedBy { it.seat * 10 + it.pawnIndex }

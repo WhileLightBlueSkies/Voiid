@@ -61,7 +61,7 @@ enum LudoBoardCanvas {
         colors: LudoColors,
         state: LudoGameStateV2,
         sweep: LudoBoardSweep?,
-        displayOverride: (seat: Int, pawn: Int, center: CGPoint)? = nil,
+        displayOverrides: [(seat: Int, pawn: Int, center: CGPoint)] = [],
         highContrast: Bool = false,
         /// 0...1 of the active seat's decision window still remaining; nil hides the clock.
         timerFraction: CGFloat? = nil,
@@ -155,13 +155,13 @@ enum LudoBoardCanvas {
         }
 
         // 8) Pawns — pin silhouettes tinted per seat; finished sit at 52% in their slots.
-        // `displayOverride` carries the ONE display pawn mid-hop / mid-capture-return while
+        // `displayOverrides` carries every pawn in transit — a mover mid-hop AND the pawn it
         // authoritative state already holds every destination.
         //
         // A token is ACTIVE when the current roll could actually be played with it. That is the
         // server's legal set, never a guess: the glow is a promise that tapping does something.
         let placed = LudoPawnLayer.layout(state: state, layout: layout,
-                                          droppedSeats: dropped, displayOverride: displayOverride)
+                                          droppedSeats: dropped, displayOverrides: displayOverrides)
         let activeTokens = activePawnKeys(state)
         for pawn in placed {
             let boxW = LudoPawnShape.widthFactor * unit * pawn.scale

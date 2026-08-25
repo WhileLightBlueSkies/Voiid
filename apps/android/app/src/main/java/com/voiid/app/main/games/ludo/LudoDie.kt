@@ -114,6 +114,20 @@ object LudoDie {
         edgeStrokePx: Float,
         colors: LudoThemeColors,
     ) {
+        // Cast shadow on the tray floor. It stays put while the die rises, shrinking and fading
+        // with height — the cue that separates a die thrown into the air from a picture being
+        // rotated in place. Drawn before the transform so the lift does not move it.
+        if (translationYPx < -0.5f) {
+            val h = (-translationYPx / 21f).coerceAtMost(1f)
+            val r = size.width * 0.30f * (1f - 0.34f * h)
+            val cx = center.x + size.width * 0.05f * h   // light is up-left, so it slides right
+            val cy = center.y + size.height * 0.30f
+            drawOval(
+                Color.Black.copy(alpha = 0.20f * (1f - 0.65f * h)),
+                Offset(cx - r, cy - r * 0.34f),
+                androidx.compose.ui.geometry.Size(r * 2f, r * 0.68f),
+            )
+        }
         translate(center.x - sidePx / 2, center.y - sidePx / 2 + translationYPx) {
             scale(scaleX, scaleY, pivot = Offset(sidePx / 2, sidePx / 2)) {
                 drawCube(sidePx, value, rotationXDeg, rotationYDeg, pipColor, edgeStrokePx, colors)
@@ -166,6 +180,19 @@ object LudoDie {
 
     private fun rad(deg: Float): Float = Math.toRadians(deg.toDouble()).toFloat()
 
+    // Key light from up and to the left, in front of the die. Normalised so a face square to the
+    // camera — the settled result — returns exactly 1 and takes no shading at all.
+    private const val LX = -0.30f
+    private const val LY = -0.45f
+    private const val LZ = -1.0f
+    private val L_LEN = kotlin.math.sqrt(LX * LX + LY * LY + LZ * LZ)
+
+    private fun lambert(n: V3): Float {
+        val dot = (n.x * LX + n.y * LY + n.z * LZ) / L_LEN
+        // A face-on normal is (0,0,-1); dividing by that response puts it at exactly 1.
+        return (dot / (1f / L_LEN)).coerceIn(0f, 1f)
+    }
+
     private fun rotate(v: V3, rx: Float, ry: Float): V3 {
         val cy = cos(rx); val sy = sin(rx)
         val y1 = v.y * cy - v.z * sy
@@ -191,7 +218,7 @@ object LudoDie {
             val r = rotate(c, rad(rx), rad(ry))
             // Stronger foreshortening than a near-orthographic projection: without it the cube
             // read as a flat square swapping pictures rather than a solid turning over.
-            val k = 2.3f / (2.3f + r.z / s)
+            val k = 1.75f / (1.75f + r.z / s)
             Offset(s / 2f + r.x * k, s / 2f + r.y * k)
         }
 
@@ -220,10 +247,15 @@ object LudoDie {
                 // Body — ONE neutral token on every face, every value (§1).
                 drawPath(quad, colors.c(colors.dieBody))
 
-                // Directional shade on tilted faces: lighting, not a color change. Deep enough
-                // that adjacent faces separate and the form reads as a solid.
+                // Lambert shading against a fixed light, NOT a flat darkening of tilted faces.
+                //
+                // The old term darkened by how far a face had turned away from the camera, so
+                // the face showing the result dimmed as it tumbled and the body read as
+                // changing colour — an off-white die. Lighting the cube instead means the face
+                // squarest to the light stays exactly the body colour, and the faces around it
+                // fall off, which is what makes it look like an object rather than a picture.
                 val n = rotate(face.normal, rad(rx), rad(ry))
-                val shade = n.z.coerceIn(0f, 1f) * 0.34f
+                val shade = (1f - lambert(n)) * 0.42f
                 if (shade > 0.01f) {
                     drawPath(quad, Color.Black.copy(alpha = shade))
                 }

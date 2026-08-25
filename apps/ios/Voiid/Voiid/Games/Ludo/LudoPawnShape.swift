@@ -10,8 +10,10 @@ import SwiftUI
 
 enum LudoPawnShape {
 
-    static let widthFactor: CGFloat = 0.78
-    static let heightFactor: CGFloat = 1.02
+    // 80% of the cell, so a token sits INSIDE its square instead of spilling over its
+    // neighbours. The pin is drawn at 0.8 of the size it was first cut at.
+    static let widthFactor: CGFloat = 0.62
+    static let heightFactor: CGFloat = 0.82
 
     /// Map-pin silhouette: a disc with a tail drawn down to a point, over a ground ellipse.
     ///
@@ -132,7 +134,9 @@ enum LudoPawnLayer {
         state: LudoGameStateV2,
         layout: LudoBoardGeometry.Layout,
         droppedSeats: Set<Int>,
-        displayOverride: (seat: Int, pawn: Int, center: CGPoint)? = nil,
+        /// Pawns currently in transit. They are drawn where the motion says, at full size —
+        /// a pawn mid-flight is not part of any stack, so it must not inherit a stack's scale.
+        displayOverrides: [(seat: Int, pawn: Int, center: CGPoint)] = [],
     ) -> [PlacedPawn] {
         var out: [PlacedPawn] = []
 
@@ -204,12 +208,15 @@ enum LudoPawnLayer {
             }
         }
 
-        // One display pawn may be mid-hop; it wins its slot visually.
-        if let o = displayOverride {
-            return out.map {
-                ($0.seat == o.seat && $0.pawnIndex == o.pawn)
-                    ? PlacedPawn(seat: $0.seat, pawnIndex: $0.pawnIndex, center: o.center, scale: $0.scale)
-                    : $0
+        // Pawns in transit win their slot visually, and at full scale: the destination cell may
+        // already have fanned them into a stack, and a pawn still travelling toward it should
+        // not be drawn shrunk into a stack it has not joined yet.
+        if !displayOverrides.isEmpty {
+            return out.map { p in
+                guard let o = displayOverrides.first(where: {
+                    $0.seat == p.seat && $0.pawn == p.pawnIndex
+                }) else { return p }
+                return PlacedPawn(seat: p.seat, pawnIndex: p.pawnIndex, center: o.center, scale: 1)
             }.sorted { ($0.seat * 10 + $0.pawnIndex) < ($1.seat * 10 + $1.pawnIndex) }
         }
         return out.sorted { ($0.seat * 10 + $0.pawnIndex) < ($1.seat * 10 + $1.pawnIndex) }
@@ -234,13 +241,22 @@ enum LudoPawnLayer {
         point: CGPoint,
         legalTokensBySeat: [Int: Set<Int>],
     ) -> (seat: Int, pawn: Int)? {
+        // NEAREST legal pawn wins, not the first one in seat order. Two legal pawns can sit a
+        // fraction of a cell apart — a stack fanned out, or adjacent track cells — and picking
+        // by index moved a pawn the player had not aimed at.
         let r = max(unit * 0.75, 22)
-        for p in placed.sorted(by: { ($0.seat * 10 + $0.pawnIndex) < ($1.seat * 10 + $1.pawnIndex) }) {
+        var best: (seat: Int, pawn: Int)?
+        var bestDistance = r * r
+        for p in placed {
             guard let legal = legalTokensBySeat[p.seat], legal.contains(p.pawnIndex) else { continue }
             let dx = point.x - p.center.x
             let dy = point.y - p.center.y
-            if dx * dx + dy * dy <= r * r { return (p.seat, p.pawnIndex) }
+            let d = dx * dx + dy * dy
+            if d <= bestDistance {
+                bestDistance = d
+                best = (p.seat, p.pawnIndex)
+            }
         }
-        return nil
+        return best
     }
 }
