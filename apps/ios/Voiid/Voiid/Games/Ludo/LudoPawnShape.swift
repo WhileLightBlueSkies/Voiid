@@ -10,72 +10,108 @@ import SwiftUI
 
 enum LudoPawnShape {
 
-    static let widthFactor: CGFloat = 0.64
-    static let heightFactor: CGFloat = 1.14
+    static let widthFactor: CGFloat = 0.78
+    static let heightFactor: CGFloat = 1.02
 
-    /// Normalized path over a box of width w and height h per §4's construction.
-    static func path(width: CGFloat, height: CGFloat) -> Path {
+    /// Map-pin silhouette: a disc with a tail drawn down to a point, over a ground ellipse.
+    ///
+    /// Built as a circle plus the two tangents to the tip, so the tail meets the disc smoothly
+    /// at any proportion rather than at a visible seam. Everything is normalised to the box, so
+    /// one path serves every size the board asks for.
+    static func pinPath(width w: CGFloat, height h: CGFloat) -> Path {
+        let cx = 0.5 * w
+        let cy = 0.36 * h
+        let r = 0.33 * w
+        let tipY = 0.80 * h
+        let d = tipY - cy                                   // centre → tip
+        // Angle between centre→tip and centre→tangent-point.
+        let beta = d > r ? acos(min(1, r / d)) : 0
+        let betaDeg = beta * 180 / .pi
+
         var p = Path()
-        let w = width, h = height
-
-        p.move(to: CGPoint(x: 0.32 * w, y: 0.31 * h))
-        p.addLine(to: CGPoint(x: 0.68 * w, y: 0.31 * h))
-        p.addCurve(to: CGPoint(x: 0.85 * w, y: 0.71 * h),
-                   control1: CGPoint(x: 0.73 * w, y: 0.52 * h),
-                   control2: CGPoint(x: 0.78 * w, y: 0.64 * h))
-        p.addCurve(to: CGPoint(x: w, y: 0.82 * h),
-                   control1: CGPoint(x: 0.96 * w, y: 0.71 * h),
-                   control2: CGPoint(x: w, y: 0.76 * h))
-        p.addLine(to: CGPoint(x: w, y: 0.89 * h))
-        p.addCurve(to: CGPoint(x: 0.50 * w, y: h),
-                   control1: CGPoint(x: 0.82 * w, y: 0.99 * h),
-                   control2: CGPoint(x: 0.68 * w, y: h))
-        p.addCurve(to: CGPoint(x: 0, y: 0.89 * h),
-                   control1: CGPoint(x: 0.32 * w, y: h),
-                   control2: CGPoint(x: 0.18 * w, y: 0.99 * h))
-        p.addLine(to: CGPoint(x: 0, y: 0.82 * h))
-        p.addCurve(to: CGPoint(x: 0.15 * w, y: 0.71 * h),
-                   control1: CGPoint(x: 0, y: 0.76 * h),
-                   control2: CGPoint(x: 0.04 * w, y: 0.71 * h))
-        p.addCurve(to: CGPoint(x: 0.32 * w, y: 0.31 * h),
-                   control1: CGPoint(x: 0.22 * w, y: 0.64 * h),
-                   control2: CGPoint(x: 0.27 * w, y: 0.52 * h))
-        p.closeSubpath()
-        p.addEllipse(in: CGRect(x: 0.5 * w - 0.175 * h, y: 0,
-                                width: 0.35 * h, height: 0.35 * h))
-        return p
-    }
-
-    /// Visible lower half of the base top ellipse.
-    static func rimPath(width: CGFloat, height: CGFloat) -> Path {
-        var p = Path()
-        p.move(to: CGPoint(x: 0.04 * width, y: 0.735 * height))
-        p.addCurve(to: CGPoint(x: 0.96 * width, y: 0.735 * height),
-                   control1: CGPoint(x: 0.20 * width, y: 0.82 * height),
-                   control2: CGPoint(x: 0.80 * width, y: 0.82 * height))
-        return p
-    }
-
-    /// Lower head contact line.
-    static func highlightArc(width: CGFloat, height: CGFloat) -> Path {
-        let cx = 0.50 * width
-        let cy = 0.175 * height
-        let r = 0.175 * height
-        var p = Path()
+        // Increasing angle from 90+β sweeps left, over the top, back to the right tangent.
         p.addArc(center: CGPoint(x: cx, y: cy), radius: r,
-                 startAngle: .degrees(20), endAngle: .degrees(160), clockwise: false)
+                 startAngle: .degrees(90 + betaDeg),
+                 endAngle: .degrees(450 - betaDeg),
+                 clockwise: false)
+        p.addLine(to: CGPoint(x: cx, y: tipY))
+        p.closeSubpath()
         return p
     }
 
-    /// Darker same-hue rim line color: RGB × 0.78 light / 0.72 dark (§4).
-    static func rimColor(_ base: Color, darkTheme: Bool) -> Color {
-        let f: Double = darkTheme ? 0.72 : 0.78
+    /// The hollow centre of the pin head.
+    static func holeRect(width w: CGFloat, height h: CGFloat) -> CGRect {
+        let r = 0.132 * w
+        return CGRect(x: 0.5 * w - r, y: 0.36 * h - r, width: r * 2, height: r * 2)
+    }
+
+    /// The ground ellipse the pin stands on, so a token reads as placed rather than floating.
+    static func baseRect(width w: CGFloat, height h: CGFloat) -> CGRect {
+        let rx = 0.30 * w
+        let ry = 0.115 * w
+        return CGRect(x: 0.5 * w - rx, y: 0.845 * h - ry, width: rx * 2, height: ry * 2)
+    }
+
+    /// Draws one token into `ctx`, which the caller has already translated to the token's box.
+    ///
+    /// Layering runs widest-first — outline, then white border, then the colour — so the border
+    /// comes from three strokes of ONE path instead of three separately inset paths that would
+    /// drift apart at small sizes.
+    static func draw(
+        _ ctx: inout GraphicsContext,
+        width w: CGFloat,
+        height h: CGFloat,
+        hue: Color,
+        active: Bool,
+        colors: LudoColors,
+    ) {
+        let pin = pinPath(width: w, height: h)
+        let base = Path(ellipseIn: baseRect(width: w, height: h))
+        let border = max(1.2, w * 0.085)
+        let outline = max(0.7, w * 0.032)
+        let fill = active ? hue : colors.mutedHue(hue)
+
+        // Contact shadow first, under everything.
+        ctx.fill(Path(ellipseIn: baseRect(width: w, height: h).insetBy(dx: -w * 0.02, dy: -w * 0.01)
+                        .offsetBy(dx: 0, dy: h * 0.012)),
+                 with: .color(.black.opacity(0.16)))
+
+        // Active glow: concentric strokes fading outward. Cheaper than a real blur in Canvas and
+        // it stays crisp at every board size.
+        if active {
+            for step in stride(from: 3, through: 1, by: -1) {
+                let spread = border + CGFloat(step) * w * 0.055
+                ctx.stroke(pin, with: .color(hue.opacity(0.052 * Double(4 - step) + 0.03)),
+                           style: StrokeStyle(lineWidth: spread * 2, lineJoin: .round))
+            }
+        }
+
+        for shape in [base, pin] {
+            ctx.stroke(shape, with: .color(colors.pawnOutline),
+                       style: StrokeStyle(lineWidth: border * 2 + outline * 2, lineJoin: .round))
+            ctx.stroke(shape, with: .color(colors.pawnBorder),
+                       style: StrokeStyle(lineWidth: border * 2, lineJoin: .round))
+        }
+        ctx.fill(base, with: .color(fill))
+        ctx.fill(pin, with: .color(fill))
+
+        // Hollow centre, in the border colour so it reads as a hole punched through.
+        ctx.fill(Path(ellipseIn: holeRect(width: w, height: h)), with: .color(colors.pawnBorder))
+    }
+
+    /// Desaturated, muted version of a seat hue for a token that cannot move this turn.
+    static func muted(_ base: Color) -> Color {
         #if canImport(UIKit)
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         UIColor(base).getRed(&r, green: &g, blue: &b, alpha: &a)
-        return Color(red: Double(r) * f, green: Double(g) * f, blue: Double(b) * f, opacity: 1)
+        let luma = 0.299 * r + 0.587 * g + 0.114 * b
+        // Partway to its own grey, then lifted slightly. Enough desaturation to read as "not
+        // playable this turn", but the seat is still identifiable at a glance — a token pulled
+        // all the way to grey loses which player it belongs to.
+        func mix(_ c: CGFloat) -> Double { Double(c * 0.58 + luma * 0.42) * 0.80 + 0.15 }
+        return Color(red: mix(r), green: mix(g), blue: mix(b), opacity: 1)
         #else
-        return base.opacity(f)
+        return base.opacity(0.45)
         #endif
     }
 }

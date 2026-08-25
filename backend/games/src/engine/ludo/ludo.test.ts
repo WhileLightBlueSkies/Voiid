@@ -51,8 +51,15 @@ check('home-lane exact finish and overshoot', destination(104,1,0)===FINISHED&&d
 check('all eight safe cells are exact', [0,8,13,21,26,34,39,47].every(isSafe)&&!isSafe(50));
 const cells=buildBoardCells();
 check('generated board has 225 uniquely keyed addressable cells', cells.length===225&&new Set(cells.map(c=>c.id)).size===225);
-check('start cells have full seat ink and no symbol', [0,13,26,39].every(i=>cells.find(c=>c.trackIndex===i)?.decoration==='none'));
-check('four outline stars and four approach chevrons generated', cells.filter(c=>c.decoration==='star').length===4&&cells.filter(c=>c.decoration==='approachChevron').length===4);
+// Start cells are safe, so they carry a star like the other four safe squares, AND they carry
+// their seat so the client can ink them in that seat's colour. They used to be inked but
+// unmarked, which read as ordinary coloured track rather than as a safe square.
+check('start cells carry their seat, a star, and safety', [0,13,26,39].every((i,seat)=>{
+    const c=cells.find(x=>x.trackIndex===i);
+    return c?.decoration==='star'&&c?.isEntry===true&&c?.isSafe===true&&c?.seat===seat;
+}));
+check('every safe cell is starred and approach chevrons are untouched', cells.filter(c=>c.decoration==='star').length===8&&cells.filter(c=>c.decoration==='approachChevron').length===4);
+check('only start cells are flagged as entries', cells.filter(c=>c.isEntry).length===4);
 const fixture=JSON.parse(readFileSync(resolve(process.cwd(),'../../packages/design-tokens/fixtures/ludo_board_v3.json'),'utf8'));
 check('shared v3 fixture matches generated cells', JSON.stringify(fixture.cells)===JSON.stringify(cells));
 

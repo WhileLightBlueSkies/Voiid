@@ -361,6 +361,10 @@ data class LudoThemeColors(
     val textPrimary: Int, val textSecondary: Int,
     val podSurface: Int, val podBorder: Int,
     val timerTrack: Int, val timerActive: Int, val timerWarning: Int, val timerCritical: Int,
+    /** Token border ring: white in light, a light grey-white in dark. */
+    val pawnBorder: Int,
+    /** Thin outline OUTSIDE the border, for contrast against a same-toned cell. */
+    val pawnOutline: Int,
     val focusRing: Int,
 ) {
     fun c(v: Int): Color = Color(v.toULong().toLong().let { if (v > 0xFFFFFF) v else (0xFF000000L or v.toLong()) }.toInt())
@@ -387,6 +391,7 @@ data class LudoThemeColors(
             podSurface = 0xFFFEFEFE.toInt(), podBorder = 0xFFC7C9CF.toInt(),
             timerTrack = 0xFFD9DDE3.toInt(), timerActive = 0xFF69717D.toInt(), timerWarning = 0xFFB07818.toInt(),
             timerCritical = 0xFFC0392F.toInt(),
+            pawnBorder = 0xFFFFFFFF.toInt(), pawnOutline = 0xFF1B2A4A.toInt(),
             focusRing = 0xFF13828C.toInt(),
         )
 
@@ -405,6 +410,7 @@ data class LudoThemeColors(
             podSurface = 0xFF181920.toInt(), podBorder = 0xFF464952.toInt(),
             timerTrack = 0xFF3A3E47.toInt(), timerActive = 0xFFB2B8C3.toInt(), timerWarning = 0xFFE0A83C.toInt(),
             timerCritical = 0xFFEF7A6B.toInt(),
+            pawnBorder = 0xFFE8EAF0.toInt(), pawnOutline = 0xFF0B1424.toInt(),
             focusRing = 0xFF68B8BD.toInt(),
         )
     }

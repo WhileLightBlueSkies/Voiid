@@ -24,6 +24,9 @@ struct LudoDiePose {
     var scaleY: CGFloat = 1
     /// Non-nil only at rest: draw the flat single face instead of projecting the cube.
     var restingValue: Int?
+    /// Shrinks the cube while it is airborne so its corners stay inside the tray — a rotated
+    /// cube spans up to √3 of its own side, which would otherwise be clipped square.
+    var depthScale: CGFloat = 1
 
     /// Rest pose: the result faces the viewer SQUARE ON, no tilt.
     ///
@@ -50,6 +53,16 @@ enum LudoDieView {
         6: [(0, 0), (2, 0), (0, 1), (2, 1), (0, 2), (2, 2)],
     ]
 
+    /// Face values as front, back, right, left, top, bottom — the result on the front, its
+    /// complement behind it, and the two remaining opposite pairs on the sides and poles.
+    static func faceValues(result: Int) -> [Int] {
+        let r = min(6, max(1, result))
+        let remaining = [[1, 6], [2, 5], [3, 4]].filter { !$0.contains(r) }
+        return [r, 7 - r,
+                remaining[0][0], remaining[0][1],
+                remaining[1][0], remaining[1][1]]
+    }
+
     private struct V3 { let x: Double; let y: Double; let z: Double }
 
     private static func rotate(_ v: V3, rx: Double, ry: Double) -> V3 {
@@ -64,6 +77,9 @@ enum LudoDieView {
 
     private static func rad(_ deg: CGFloat) -> Double { Double(deg) * .pi / 180 }
 
+    /// Fraction of the tray the settled die occupies.
+    static let restFillFactor: CGFloat = 0.92
+
     static func draw(
         _ ctx: inout GraphicsContext,
         size side: CGFloat,
@@ -72,16 +88,23 @@ enum LudoDieView {
         pipColor: Color,
         colors: LudoColors,
     ) {
+        let drawSide = side * restFillFactor * pose.depthScale
         var transformed = ctx
-        transformed.translateBy(x: 0, y: pose.liftPx)
+        // Centre the die in its tray, then squash about that centre. Translating by the lift
+        // last keeps the airborne offset independent of the squash.
+        transformed.translateBy(x: (side - drawSide) / 2,
+                                y: (side - drawSide) / 2 + pose.liftPx)
+        transformed.translateBy(x: drawSide / 2, y: drawSide / 2)
         transformed.scaleBy(x: pose.scaleX, y: pose.scaleY)
+        transformed.translateBy(x: -drawSide / 2, y: -drawSide / 2)
+
         // At rest one face is all that is visible, so draw it directly. Projecting a face-on
         // cube would give the same picture through eight rotations and a depth sort.
         if let resting = pose.restingValue {
-            drawFlatFace(&transformed, side: side, value: resting,
+            drawFlatFace(&transformed, side: drawSide, value: resting,
                          pipColor: pipColor, colors: colors)
         } else {
-            drawCube(&transformed, side: side, value: value,
+            drawCube(&transformed, side: drawSide, value: value,
                      rx: pose.rotationXDeg, ry: pose.rotationYDeg,
                      pipColor: pipColor, colors: colors)
         }
@@ -136,14 +159,23 @@ enum LudoDieView {
                z: (i & 4 == 0) ? -1 : 1)
         }
 
-        // Face defs: CCW loops seen from OUTSIDE; physically consistent values.
+        // Face defs: CCW loops seen from OUTSIDE. The values are ROTATED so the rolled result
+        // always sits on the front face, with opposites still summing to 7.
+        //
+        // The alternative — a fixed labelling plus a per-value landing orientation — is what
+        // made the die appear to change its number after settling: the tumble ended at whatever
+        // angles the pose carried, showing some other face, and the handoff to the flat resting
+        // face then snapped to the real result. Turning the labels instead of the cube lets
+        // every roll settle at rotation (0,0), square-on and upright, so the tumble and the
+        // resting face show the same number in the same place.
+        let fv = faceValues(result: value)
         let faces: [(value: Int, normal: V3, corners: [Int])] = [
-            (1, V3(x: 0, y: 0, z: 1), [4, 5, 7, 6]),
-            (6, V3(x: 0, y: 0, z: -1), [1, 0, 2, 3]),
-            (2, V3(x: 1, y: 0, z: 0), [5, 1, 3, 7]),
-            (5, V3(x: -1, y: 0, z: 0), [0, 4, 6, 2]),
-            (3, V3(x: 0, y: -1, z: 0), [4, 0, 1, 5]),
-            (4, V3(x: 0, y: 1, z: 0), [2, 6, 7, 3]),
+            (fv[0], V3(x: 0, y: 0, z: 1), [4, 5, 7, 6]),
+            (fv[1], V3(x: 0, y: 0, z: -1), [1, 0, 2, 3]),
+            (fv[2], V3(x: 1, y: 0, z: 0), [5, 1, 3, 7]),
+            (fv[3], V3(x: -1, y: 0, z: 0), [0, 4, 6, 2]),
+            (fv[4], V3(x: 0, y: -1, z: 0), [4, 0, 1, 5]),
+            (fv[5], V3(x: 0, y: 1, z: 0), [2, 6, 7, 3]),
         ]
 
         // Project all eight corners with weak perspective into local coordinates.
@@ -153,7 +185,9 @@ enum LudoDieView {
             let c = corner(i)
             let r = rotate(V3(x: Double(c.x * s / 2), y: Double(c.y * s / 2), z: Double(c.z * s / 2)),
                            rx: rad(rx), ry: rad(ry))
-            let k = 3.4 / (3.4 + r.z / Double(s))
+            // Stronger foreshortening than a near-orthographic projection: without it the cube
+            // read as a flat square swapping pictures rather than a solid turning over.
+            let k = 2.3 / (2.3 + r.z / Double(s))
             projected.append(CGPoint(x: CGFloat(s / 2 + r.x * k), y: CGFloat(s / 2 + r.y * k)))
         }
 
@@ -167,7 +201,6 @@ enum LudoDieView {
             return (f.value, f.normal, f.corners, depth)
         }.sorted { $0.depth > $1.depth }
 
-        let radius: CGFloat = 0.10 * s
         let edgeWidth: CGFloat = colors.isDark ? 1.25 : 1.0
 
         for face in visible {
@@ -178,30 +211,28 @@ enum LudoDieView {
             for i in 1..<pts.count { quadPath.addLine(to: pts[i]) }
             quadPath.closeSubpath()
 
-            let minX = pts.map(\.x).min() ?? 0
-            let minY = pts.map(\.y).min() ?? 0
-            let maxX = pts.map(\.x).max() ?? s
-            let maxY = pts.map(\.y).max() ?? s
-            let rect = CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
-            let rounded = RoundedRectangle(cornerRadius: radius).path(in: rect)
-
-            // Draw each face into a clipped layer so pips never bleed past the rounded square.
+            // The face is the PROJECTED QUAD itself, not a rounded rect sized to its bounding
+            // box. The bbox of a turned quad is far larger than the quad, so filling it and
+            // clipping to the quad painted a full grey slab with the pip grid laid out against
+            // the wrong rectangle — which is why the tumbling die read as a flat square swapping
+            // pictures instead of a cube turning over.
             ctx.drawLayer { layer in
                 layer.clip(to: quadPath)
 
                 // Body — ONE neutral token on every face, every value (§1).
-                layer.fill(rounded, with: .color(colors.dieBody))
+                layer.fill(quadPath, with: .color(colors.dieBody))
 
-                // Directional shade ≤14% black on tilted faces: lighting, not a color change.
+                // Directional shade on tilted faces: lighting, not a color change. Deep enough
+                // that adjacent faces separate and the form reads as a solid.
                 let n = rotate(face.normal, rx: rad(rx), ry: rad(ry))
-                let shade = max(0, min(1, -n.z)) * 0.14
+                let shade = max(0, min(1, -n.z)) * 0.34
                 if shade > 0.01 {
-                    layer.fill(rounded, with: .color(.black.opacity(shade)))
+                    layer.fill(quadPath, with: .color(.black.opacity(shade)))
                 }
 
                 // Edge stroke (§14.2).
-                layer.stroke(rounded, with: .color(colors.dieEdge),
-                             style: StrokeStyle(lineWidth: edgeWidth))
+                layer.stroke(quadPath, with: .color(colors.dieEdge),
+                             style: StrokeStyle(lineWidth: edgeWidth, lineJoin: .round))
 
                 guard let layout = pips[face.value] else { return }
                 let inset = 0.23 * s

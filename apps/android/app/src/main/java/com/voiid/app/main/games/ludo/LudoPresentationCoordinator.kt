@@ -47,6 +47,11 @@ class LudoPresentationCoordinator {
         val liftPx: Float,
         val scaleX: Float,
         val scaleY: Float,
+        /**
+         * Shrinks the airborne cube so its corners stay inside the tray, and doubles as depth:
+         * small while thrown, full size once it lands.
+         */
+        val depthScale: Float = 1f,
     )
 
     private val _sweep = MutableStateFlow<BorderSweep?>(null)
@@ -161,16 +166,24 @@ class LudoPresentationCoordinator {
         val zDir = if (seed and 1L == 0L) -1f else 1f
         val (restX, restY) = LudoDie.restAngles(value)
 
-        fun frame(rx: Float, ry: Float, lift: Float, sx: Float, sy: Float) {
-            _roll.value = RollVisual(rx, ry, lift, sx, sy)
+        fun frame(rx: Float, ry: Float, lift: Float, sx: Float, sy: Float, depth: Float = 1f) {
+            _roll.value = RollVisual(rx, ry, lift, sx, sy, depth)
         }
+
+        // A cube spans up to √3 of its own side once it is turning, so the airborne die is drawn
+        // smaller and grows back as it lands. That keeps its corners off the tray edge and reads
+        // as the throw having depth.
+        val airborne = LudoDie.AIRBORNE_SCALE
 
         // Anticipation 0–120 ms.
         tween(120, cubicEasing(0.32f, 0f, 0.67f, 0f)) { t ->
-            frame(zDir * -8f * t, 10f * t, 3f * t, 1f + 0.05f * t, 1f - 0.09f * t)
+            frame(zDir * -8f * t, 10f * t, 3f * t, 1f + 0.05f * t, 1f - 0.09f * t,
+                1f - (1f - airborne) * t)
         }
         if (reduceMotion) return
-        // Tumble/release 120–760 ms.
+        // Tumble/release 120–760 ms. Both axes wind down to the rest pose, which is square-on:
+        // the result is already on the cube's front face, so it settles showing the committed
+        // number and never re-labels.
         val posEasing = cubicEasing(0.12f, 0.68f, 0.22f, 1f)
         val angEasing = cubicEasing(0.20f, 0f, 0.38f, 1f)
         tween(640, posEasing) { t ->
@@ -180,6 +193,8 @@ class LudoPresentationCoordinator {
                 3f - 21f * sin((Math.PI * t).toFloat()),
                 1f + 0.05f * (1f - t),
                 1f - 0.09f * (1f - t),
+                // Grows back only over the last third, while the spin is nearly spent.
+                airborne + (1f - airborne) * ((t - 0.66f) / 0.34f).coerceAtLeast(0f),
             )
         }
         // Impact 760–820 ms: squash; shadow collapse reads through lift=0.

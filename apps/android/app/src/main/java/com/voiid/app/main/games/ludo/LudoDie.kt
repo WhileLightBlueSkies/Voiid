@@ -6,6 +6,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
@@ -43,15 +44,44 @@ object LudoDie {
 
     private data class FaceDef(val value: Int, val normal: V3, val corners: List<Int>)
 
-    // Corner order per face is a consistent CCW loop seen from OUTSIDE.
-    private val FACES = listOf(
-        FaceDef(1, V3(0f, 0f, 1f), listOf(4, 5, 7, 6)),   // front +Z : (-,-,+)(+,-,+)(+,+,+)(-,+,+)
-        FaceDef(6, V3(0f, 0f, -1f), listOf(1, 0, 2, 3)),  // back  -Z
-        FaceDef(2, V3(1f, 0f, 0f), listOf(5, 1, 3, 7)),   // right +X
-        FaceDef(5, V3(-1f, 0f, 0f), listOf(0, 4, 6, 2)),  // left  -X
-        FaceDef(3, V3(0f, -1f, 0f), listOf(4, 0, 1, 5)),  // top   -Y
-        FaceDef(4, V3(0f, 1f, 0f), listOf(2, 6, 7, 3)),   // bottom +Y
+    // Corner order per face is a consistent CCW loop seen from OUTSIDE. Normals and winding are
+    // fixed; only the VALUES are rotated, by facesFor().
+    private val FACE_GEOMETRY = listOf(
+        V3(0f, 0f, 1f) to listOf(4, 5, 7, 6),    // front +Z : (-,-,+)(+,-,+)(+,+,+)(-,+,+)
+        V3(0f, 0f, -1f) to listOf(1, 0, 2, 3),   // back  -Z
+        V3(1f, 0f, 0f) to listOf(5, 1, 3, 7),    // right +X
+        V3(-1f, 0f, 0f) to listOf(0, 4, 6, 2),   // left  -X
+        V3(0f, -1f, 0f) to listOf(4, 0, 1, 5),   // top   -Y
+        V3(0f, 1f, 0f) to listOf(2, 6, 7, 3),    // bottom +Y
     )
+
+    /**
+     * Face values as front, back, right, left, top, bottom — the result on the front, its
+     * complement behind it, and the two remaining opposite pairs on the sides and poles.
+     *
+     * The alternative — a fixed labelling plus a per-value landing orientation — is what made
+     * the die appear to change its number after settling: the tumble ended at whatever angles
+     * the pose carried, showing some other face, and the handoff to the flat resting face then
+     * snapped to the real result. Turning the labels instead of the cube lets every roll settle
+     * at rotation (0,0), square-on and upright.
+     */
+    fun faceValues(result: Int): List<Int> {
+        val r = result.coerceIn(1, 6)
+        val remaining = listOf(listOf(1, 6), listOf(2, 5), listOf(3, 4)).filter { r !in it }
+        return listOf(r, 7 - r,
+            remaining[0][0], remaining[0][1],
+            remaining[1][0], remaining[1][1])
+    }
+
+    private fun facesFor(result: Int): List<FaceDef> {
+        val values = faceValues(result)
+        return FACE_GEOMETRY.mapIndexed { i, (normal, corners) ->
+            FaceDef(values[i], normal, corners)
+        }
+    }
+
+    /** Fraction of the tray the settled die occupies. */
+    const val REST_FILL_FACTOR = 0.92f
 
     // Corner index → sign vector: bit0 x, bit1 y, bit2 z (value −1 / +1).
     private fun corner(i: Int): V3 {
@@ -61,15 +91,12 @@ object LudoDie {
         return V3(x, y, z)
     }
 
-    /** Rest pose showing `value` at the viewer with the fixed three-quarter tilt (§14.1). */
-    fun restAngles(value: Int): Pair<Float, Float> = when (value) {
-        1 -> 0f to 0f       // front
-        6 -> 180f to 0f     // back
-        2 -> 0f to -90f     // right
-        5 -> 0f to 90f      // left
-        3 -> 90f to 0f      // top toward viewer
-        else -> -90f to 0f  // bottom toward viewer
-    }
+    /**
+     * Rest pose. Always square-on: the rolled result is placed on the cube's front face by
+     * facesFor(), so no per-value re-orientation is needed and the tumble can wind down to
+     * (0,0) showing the committed number upright.
+     */
+    fun restAngles(@Suppress("UNUSED_PARAMETER") value: Int): Pair<Float, Float> = 0f to 0f
 
     /**
      * Draw the die centered in the current box. `pose` carries rotation + impact squash +
@@ -93,6 +120,9 @@ object LudoDie {
             }
         }
     }
+
+    /** How far the airborne die shrinks so a turning cube stays inside its tray. */
+    const val AIRBORNE_SCALE = 0.62f
 
     /**
      * The RESTING die: one rounded square, one crisp upright pip grid, no projection.
@@ -159,23 +189,27 @@ object LudoDie {
         val projected = Array(8) { i ->
             val c = corner(i).let { it.times(s / 2f) }
             val r = rotate(c, rad(rx), rad(ry))
-            val k = 3.4f / (3.4f + r.z / s)
+            // Stronger foreshortening than a near-orthographic projection: without it the cube
+            // read as a flat square swapping pictures rather than a solid turning over.
+            val k = 2.3f / (2.3f + r.z / s)
             Offset(s / 2f + r.x * k, s / 2f + r.y * k)
         }
 
-        val visible = FACES.mapNotNull { f ->
+        val visible = facesFor(value).mapNotNull { f ->
             val n = rotate(f.normal, rad(rx), rad(ry))
             if (n.z >= 0.02f) return@mapNotNull null            // back-face culled by winding
             val depth = f.corners.sumOf { corner(it).let { c -> rotate(c.times(s), rad(rx), rad(ry)).z.toDouble() } }
             f to depth
         }.sortedByDescending { it.second }                      // far → near
 
-        val radius = 0.10f * s
-
         for ((face, _) in visible) {
             val pts = face.corners.map { projected[it] }
 
-            // Face quad path (used for clipping only).
+            // The face is the PROJECTED QUAD itself, not a rounded rect sized to its bounding
+            // box. The bbox of a turned quad is far larger than the quad, so filling it and
+            // clipping to the quad painted a full grey slab with the pip grid laid out against
+            // the wrong rectangle — which is why the tumbling die read as a flat square swapping
+            // pictures instead of a cube turning over.
             val quad = Path().apply {
                 moveTo(pts[0].x, pts[0].y)
                 for (i in 1 until pts.size) lineTo(pts[i].x, pts[i].y)
@@ -183,26 +217,20 @@ object LudoDie {
             }
 
             clipPath(quad) {
-                // Rounded square fitted to the quad's bounds — the rounded FACE look.
-                val tl = Offset(pts.minOf { it.x }, pts.minOf { it.y })
-                val br = Offset(pts.maxOf { it.x }, pts.maxOf { it.y })
-                val rect = Rect(tl, Size(br.x - tl.x, br.y - tl.y))
-
                 // Body — ONE neutral token on every face, every value (§1).
-                drawRoundRect(colors.c(colors.dieBody), topLeft = rect.topLeft, size = rect.size,
-                    cornerRadius = CornerRadius(radius))
+                drawPath(quad, colors.c(colors.dieBody))
 
-                // Directional shade ≤14% black on tilted faces: lighting, not color change.
+                // Directional shade on tilted faces: lighting, not a color change. Deep enough
+                // that adjacent faces separate and the form reads as a solid.
                 val n = rotate(face.normal, rad(rx), rad(ry))
-                val shade = n.z.coerceIn(0f, 1f) * 0.14f
+                val shade = n.z.coerceIn(0f, 1f) * 0.34f
                 if (shade > 0.01f) {
-                    drawRoundRect(Color.Black.copy(alpha = shade), topLeft = rect.topLeft,
-                        size = rect.size, cornerRadius = CornerRadius(radius))
+                    drawPath(quad, Color.Black.copy(alpha = shade))
                 }
 
                 // Edge stroke (§14.2): 1pt light / 1.25pt dark supplied by caller.
-                drawRoundRect(colors.c(colors.dieEdge), topLeft = rect.topLeft, size = rect.size,
-                    cornerRadius = CornerRadius(radius), style = Stroke(edgeStrokePx))
+                drawPath(quad, colors.c(colors.dieEdge),
+                    style = Stroke(edgeStrokePx, join = StrokeJoin.Round))
 
                 // Pips projected through the SAME transform via bilinear mapping over the quad.
                 val layout = PIPS[face.value] ?: return@clipPath

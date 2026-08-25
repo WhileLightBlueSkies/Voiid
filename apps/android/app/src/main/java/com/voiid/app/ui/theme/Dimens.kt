@@ -59,6 +59,11 @@ object LudoDimens {
 object LudoMotion {
     const val BORDER_SWEEP_MS = 360
     const val DIE_RELOCATE_MS = 120
+    /**
+     * Hold after a roll settles before a forced (single-legal-token) move plays itself, so the
+     * number stays readable before the board moves under it.
+     */
+    const val FORCED_MOVE_HOLD_MS = 420L
     const val PIP_CROSS_FADE_MS = 120
     const val ROLL_TOTAL_MS = 940
     const val HOP_MS = 120

@@ -31,6 +31,10 @@ struct LudoColors {
     let yardPocketBorder: Color
     let inactiveYard: Color
     let boardOuterNeutral: Color
+    /// Token border ring: white in light, a light grey-white in dark.
+    let pawnBorder: Color
+    /// Thin outline OUTSIDE the border, for contrast against a same-toned cell.
+    let pawnOutline: Color
 
     // THE DIE HAS ONE NEUTRAL BODY in every state; only pips take the active hue (§1).
     let dieBody: Color
@@ -71,6 +75,8 @@ struct LudoColors {
         yardPocketBorder: Color(hex: 0x202020),
         inactiveYard: .white,
         boardOuterNeutral: Color(hex: 0x202020),
+        pawnBorder: Color(hex: 0xFFFFFF),
+        pawnOutline: Color(hex: 0x1B2A4A),
         dieBody: Color(hex: 0xFEFEFE),
         dieEdge: Color(hex: 0xC7C9CF),
         dieNeutralPip: Color(hex: 0x69717D),
@@ -103,6 +109,8 @@ struct LudoColors {
         yardPocketBorder: Color(hex: 0x101316),
         inactiveYard: Color(hex: 0x1F2326),
         boardOuterNeutral: Color(hex: 0x101316),
+        pawnBorder: Color(hex: 0xE8EAF0),
+        pawnOutline: Color(hex: 0x0B1424),
         dieBody: Color(hex: 0x181920),
         dieEdge: Color(hex: 0x464952),
         dieNeutralPip: Color(hex: 0xB2B8C3),
@@ -121,6 +129,9 @@ struct LudoColors {
     static func resolve(_ scheme: ColorScheme) -> LudoColors {
         scheme == .dark ? .dark : .light
     }
+
+    /// Muted token colour for a pawn that cannot move this turn.
+    func mutedHue(_ base: Color) -> Color { LudoPawnShape.muted(base) }
 
     /// The board is flat in both themes.
     func boardShadow() -> (offset: CGSize, radius: CGFloat) {
@@ -161,6 +172,11 @@ enum LudoDimens {
 enum LudoMotion {
     static let borderSweepMs: Double = 360
     static let dieRelocateMs: Double = 120
+    /// How far the airborne die shrinks so a turning cube stays inside its tray.
+    static let dieAirborneScale: Double = 0.62
+    /// Hold after a roll settles before a forced (single-legal-token) move plays itself, so the
+    /// number stays readable before the board moves under it.
+    static let forcedMoveHoldMs: Double = 420
     static let pipCrossFadeMs: Double = 120
     static let hopMs: Double = 120
     static let hopStaggerMs: Double = 92

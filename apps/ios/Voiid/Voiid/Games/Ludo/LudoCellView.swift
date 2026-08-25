@@ -13,6 +13,9 @@ enum LudoCellView {
     static func fill(_ node: LudoBoardGeometry.CellNode, _ c: LudoColors) -> Color {
         switch node.role {
         case .sharedTrack:
+            // A start square carries its owner's colour, the same hue as that seat's home lane,
+            // so the square a token first steps onto reads as part of that seat's route.
+            if node.isEntry { return c.homeLane(node.seat ?? 0) }
             return node.isSafe ? c.safeCellFill : c.trackCellFill
         case .homeLane:
             return c.homeLane(node.seat ?? 0)

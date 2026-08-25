@@ -23,8 +23,12 @@ import kotlin.math.sin
 object LudoCellRenderer {
 
     fun cellFill(node: LudoBoardGeometry.CellNode, colors: LudoThemeColors): Color = when (node.role) {
+        // A start square carries its owner's colour, the same hue as that seat's home lane, so
+        // the square a token first steps onto reads as part of that seat's route.
         LudoBoardGeometry.Role.SHARED_TRACK ->
-            if (node.isSafe) colors.c(colors.safeCellFill) else colors.c(colors.trackCellFill)
+            if (node.isEntry) colors.homeLane(node.seat ?: 0)
+            else if (node.isSafe) colors.c(colors.safeCellFill)
+            else colors.c(colors.trackCellFill)
         LudoBoardGeometry.Role.HOME_LANE -> colors.homeLane(node.seat ?: 0)
         LudoBoardGeometry.Role.CENTER, LudoBoardGeometry.Role.UNUSED -> colors.c(colors.unusedCellFill)
         else -> colors.c(colors.trackCellFill)

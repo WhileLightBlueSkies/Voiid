@@ -841,7 +841,13 @@ async function handleTournamentForfeit(msg: Record<string, any>): Promise<void> 
 
 // --- The deadline sweeper -------------------------------------------------------------
 
-const SWEEP_INTERVAL_MS = 1000;
+// Bot turns are driven by this sweep, not by a timer of their own: a bot's botActionAt lands in
+// the same deadline set as a human's clock. At one second per tick a bot paid up to a full
+// second of scheduling latency for its roll and again for its move, so a four-player table
+// spent several seconds a round waiting on the poll rather than on the bots. Quarter-second
+// ticks keep a bot turn close to its intended 0.7–1.75 s pacing; the sweep itself is one
+// zrangebyscore against a set that is empty most of the time.
+const SWEEP_INTERVAL_MS = 250;
 
 async function sweepOne(matchId: string): Promise<void> {
     await enqueue(matchId, async () => {
@@ -892,6 +898,7 @@ async function sweepOne(matchId: string): Promise<void> {
 
 let sweeping = false;
 let lastInviteSweepAt = 0;
+let lastPresenceSweepAt = 0;
 setInterval(() => {
     if (sweeping) return;
     sweeping = true;
@@ -905,8 +912,13 @@ setInterval(() => {
         .finally(() => {
             sweeping = false;
         });
-    // Presence flips piggyback on the same cadence; they never pause a clock.
-    sweepPresence().catch((e) => console.error('[games] presence sweep error', e));
+    // Presence flips ride the same interval but keep their own one-second cadence: only the
+    // deadline sweep needs the faster tick, and a connection state that changes four times a
+    // second is noise, not news.
+    if (Date.now() - lastPresenceSweepAt >= 1_000) {
+        lastPresenceSweepAt = Date.now();
+        sweepPresence().catch((e) => console.error('[games] presence sweep error', e));
+    }
     if (Date.now() - lastInviteSweepAt >= 5_000) {
         lastInviteSweepAt = Date.now();
         sweepExpiredLudoInvites().catch((e) => console.error('[games] invite sweep error', e));

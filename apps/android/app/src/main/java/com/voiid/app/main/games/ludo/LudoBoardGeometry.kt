@@ -31,6 +31,8 @@ object LudoBoardGeometry {
         val trackIndex: Int?,
         val homeStep: Int?,
         val isSafe: Boolean,
+        /** A seat's start square: safe, starred, and filled in that seat's colour. */
+        val isEntry: Boolean,
         val decoration: Decoration,
     )
 
@@ -115,6 +117,7 @@ object LudoBoardGeometry {
                 var trackIndex: Int? = null
                 var homeStep: Int? = null
                 var isSafe = false
+                var isEntry = false
                 var decoration = Decoration.NONE
 
                 when {
@@ -123,14 +126,20 @@ object LudoBoardGeometry {
                         role = Role.SHARED_TRACK
                         trackIndex = trackAt[x to y]
                         isSafe = LudoRules.SAFE_INDICES.contains(trackIndex)
-                        if (trackIndex in LudoRules.ENTRY_INDICES) seat = LudoRules.ENTRY_INDICES.indexOf(trackIndex)
+                        if (trackIndex in LudoRules.ENTRY_INDICES) {
+                            seat = LudoRules.ENTRY_INDICES.indexOf(trackIndex)
+                            isEntry = true
+                        }
+                        // Every SAFE cell is starred, entry cells included. A start square is
+                        // safe and is drawn in its seat's colour like the home lane, so it needs
+                        // the same mark as the other four or it reads as ordinary coloured track.
                         decoration = when (trackIndex) {
                             in LudoRules.APPROACH_INDICES -> {
                                 seat = LudoRules.APPROACH_INDICES.indexOf(trackIndex)
                                 Decoration.APPROACH_CHEVRON
                             }
                             in LudoRules.STAR_INDICES -> Decoration.STAR
-                            else -> Decoration.NONE
+                            else -> if (isEntry) Decoration.STAR else Decoration.NONE
                         }
                     }
                     laneAt.containsKey(x to y) -> {
@@ -158,6 +167,7 @@ object LudoBoardGeometry {
                         trackIndex = trackIndex,
                         homeStep = homeStep,
                         isSafe = isSafe,
+                        isEntry = isEntry,
                         decoration = decoration,
                     )
                 )
@@ -247,6 +257,7 @@ object LudoBoardGeometry {
             if ((f["trackIndex"] as? Int) != node.trackIndex) return false
             if ((f["homeStep"] as? Int) != node.homeStep) return false
             if ((f["isSafe"] as Boolean) != node.isSafe) return false
+            if ((f["isEntry"] as Boolean) != node.isEntry) return false
             val decOk = when (node.decoration) {
                 Decoration.NONE -> f["decoration"] == "none"
                 Decoration.STAR -> f["decoration"] == "star"

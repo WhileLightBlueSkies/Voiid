@@ -51,6 +51,8 @@ enum LudoBoardGeometry {
         let trackIndex: Int?
         let homeStep: Int?
         let isSafe: Bool
+        /// A seat's start square: safe, starred, and filled in that seat's colour.
+        let isEntry: Bool
         let decoration: Decoration
     }
 
@@ -139,6 +141,7 @@ enum LudoBoardGeometry {
                 var trackIndex: Int?
                 var homeStep: Int?
                 var isSafe = false
+                var isEntry = false
                 var decoration = Decoration.none
 
                 if isCenter(x, y) {
@@ -147,8 +150,13 @@ enum LudoBoardGeometry {
                     role = .sharedTrack
                     trackIndex = idx
                     isSafe = LudoRules.safeIndices.contains(idx)
+                    // Every SAFE cell is starred, entry cells included. A start square is safe
+                    // and is drawn in its seat's colour like the home lane, so it needs the same
+                    // mark as the other four or it reads as ordinary coloured track.
                     if LudoRules.entryIndices.contains(idx) {
                         seat = LudoRules.entryIndices.sorted().firstIndex(of: idx)
+                        isEntry = true
+                        decoration = .star
                     } else if let owner = LudoRules.approachIndices.firstIndex(of: idx) {
                         seat = owner
                         decoration = .approachChevron
@@ -174,6 +182,7 @@ enum LudoBoardGeometry {
                     trackIndex: trackIndex,
                     homeStep: homeStep,
                     isSafe: isSafe,
+                    isEntry: isEntry,
                     decoration: decoration))
             }
         }
@@ -245,6 +254,7 @@ enum LudoBoardGeometry {
                 "trackIndex": f["trackIndex"] as? Int,
                 "homeStep": f["homeStep"] as? Int,
                 "isSafe": f["isSafe"] as? Bool,
+                "isEntry": f["isEntry"] as? Bool,
                 "decoration": f["decoration"] as? String,
             ]
         }
@@ -269,6 +279,7 @@ enum LudoBoardGeometry {
             precondition(eq(f["trackIndex"] as? Int, node.trackIndex), "fixture drift at \(i)")
             precondition(eq(f["homeStep"] as? Int, node.homeStep), "fixture drift at \(i)")
             precondition(eq(f["isSafe"] as? Bool, node.isSafe), "fixture drift at \(i)")
+            precondition(eq(f["isEntry"] as? Bool, node.isEntry), "fixture drift at \(i)")
             precondition(eq(f["decoration"] as? String, node.decoration.rawValue), "fixture drift at \(i)")
         }
         #endif

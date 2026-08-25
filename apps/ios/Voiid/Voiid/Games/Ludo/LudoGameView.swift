@@ -117,6 +117,13 @@ struct LudoGameView: View {
                 coordinator.setReduceMotion(
                     reduceMotion || ProcessInfo.processInfo.isLowPowerModeEnabled)
             }
+        // ONE legal token means there is no decision to make, so the move plays itself once the
+        // die has settled — the way Ludo King does it. Waiting for the roll animation to finish
+        // keeps the number readable before the board moves under it.
+        .onChange(of: autoMoveKey(state)) { _, key in
+            guard let key else { return }
+            Task { await autoMoveIfForced(key: key) }
+        }
         .onDisappear { coordinator.cancelAll() }
     }
 
@@ -299,7 +306,8 @@ struct LudoGameView: View {
     @ViewBuilder
     private func accessiblePawnActions(state: LudoGameStateV2, side: CGFloat) -> some View {
         if let turn = state.turn, turn.phase == "awaitingMove",
-           state.viewerRole == "controller", state.viewerSeat == turn.seat {
+           state.viewerRole == "controller", state.viewerSeat == turn.seat,
+           state.seat(bySeat: turn.seat)?.isBot == false {
             let layout = LudoBoardGeometry.Layout(sideLength: side)
             let placed = LudoPawnLayer.layout(state: state, layout: layout, droppedSeats: [])
             let name = state.seat(bySeat: turn.seat)?.displayName ?? "Player"
@@ -354,7 +362,8 @@ struct LudoGameView: View {
         let pipsNeutral = state.isFinished || state.turn == nil
         let pose = coordinator.rollPose.map { rp in
             LudoDiePose(rotationXDeg: rp.rotationXDeg, rotationYDeg: rp.rotationYDeg,
-                        liftPx: rp.liftPx, scaleX: rp.scaleX, scaleY: rp.scaleY)
+                        liftPx: rp.liftPx, scaleX: rp.scaleX, scaleY: rp.scaleY,
+                        depthScale: rp.depthScale)
         } ?? LudoDiePose.resting(value: value)
 
         return ZStack {
@@ -403,9 +412,13 @@ struct LudoGameView: View {
             return
         }
 
-        // Resolve ONLY among server-legal tokens (§17).
+        // Resolve ONLY among server-legal tokens (§17), and only for a seat this viewer really
+        // controls. Seat ownership is checked here as well as on the server so that tapping your
+        // own colour during someone else's turn — including a bot's — does nothing at all rather
+        // than firing an intent the server will reject.
         guard let turn = state.turn, turn.phase == "awaitingMove",
               state.viewerRole == "controller", state.viewerSeat == turn.seat,
+              state.seat(bySeat: turn.seat)?.isBot == false,
               lastTapPoint != nil else { return }
 
         let layout = LudoBoardGeometry.Layout(sideLength: side)
@@ -512,6 +525,33 @@ struct LudoGameView: View {
     }
 
     @State private var lastPresentedActionID: String?
+
+    // MARK: Forced move
+
+    /// Identifies a decision window that has exactly one legal answer, for a seat this viewer
+    /// controls. Nil whenever the player genuinely has a choice — or none at all.
+    private func autoMoveKey(_ state: LudoGameStateV2?) -> String? {
+        guard let state, !state.isFinished, let turn = state.turn,
+              turn.phase == "awaitingMove",
+              state.viewerRole == "controller", state.viewerSeat == turn.seat,
+              state.seat(bySeat: turn.seat)?.isBot == false,
+              turn.legalTokenIds.count == 1,
+              let token = turn.legalTokenIds.first else { return nil }
+        return "\(turn.seat):\(turn.serial):\(turn.rollId ?? ""):\(token)"
+    }
+
+    @State private var autoMovedKey: String?
+
+    private func autoMoveIfForced(key: String) async {
+        guard autoMovedKey != key else { return }
+        autoMovedKey = key
+        // Let the die land and be read before the board moves.
+        try? await Task.sleep(nanoseconds: UInt64(LudoMotion.forcedMoveHoldMs * 1_000_000))
+        // Re-check: the window may have closed while we waited (timeout, disconnect, resync).
+        guard autoMoveKey(engine.ludoV2?.state) == key,
+              let token = Int(key.split(separator: ":").last ?? "") else { return }
+        engine.moveLudoV2(token: token)
+    }
 
     // MARK: Skip announcement
 

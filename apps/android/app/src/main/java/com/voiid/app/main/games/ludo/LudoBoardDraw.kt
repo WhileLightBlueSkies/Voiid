@@ -24,6 +24,16 @@ import kotlin.math.min
  * for highlight, pulse, hit-test and semantics. Token hit targets are overlays, not drawing.
  */
 object LudoBoardDraw {
+    /**
+     * "seat:pawn" keys for every token the CURRENT roll can legally move. Empty between turns,
+     * so nothing glows while there is no decision to make.
+     */
+    fun activePawnKeys(state: LudoGameState): Set<String> {
+        val turn = state.turn ?: return emptySet()
+        if (state.isFinished || turn.phase != "awaitingMove") return emptySet()
+        return turn.legalTokenIds.map { "${'$'}{turn.seat}:${'$'}it" }.toSet()
+    }
+
 
     fun drawAll(
         scope: DrawScope,
@@ -140,25 +150,24 @@ object LudoBoardDraw {
                 style = Stroke(2.dp.toPx()))
         }
 
-        // 8) Pawns — blank silhouettes tinted per seat; finished pawns already sit in their
+        // 8) Pawns — pin silhouettes tinted per seat; finished pawns already sit in their
         // triangle slots at 52% via the layer layout.
+        //
+        // A token is ACTIVE when the current roll could actually be played with it. That is the
+        // server's legal set, never a guess: the glow is a promise that tapping does something.
+        val activeTokens = activePawnKeys(state)
         for (pawn in placedPawns.sortedBy { it.seat }) {
             val boxW = LudoPawnPath.WIDTH_FACTOR * unit * pawn.scale
             val boxH = LudoPawnPath.HEIGHT_FACTOR * unit * pawn.scale
-            translate(pawn.center.x - boxW / 2f, pawn.center.y - boxH / 2f) {
-                val hue = colors.hue(pawn.seat)
-
-                // Contact shadow: y=2, blur=3 at rest (§2.2 elevation).
-                drawCircle(Color.Black.copy(alpha = 0.14f), radius = boxW * 0.34f,
-                    center = Offset(boxW / 2f, boxH * 0.965f))
-
-                drawPath(LudoPawnPath.path(boxW, boxH), hue)
-                drawPath(LudoPawnPath.rimPath(boxW, boxH),
-                    LudoPawnPath.rimColor(hue, darkTheme),
-                    style = Stroke(if (darkTheme) 1f else 0.75f))
-                drawPath(LudoPawnPath.highlightArc(boxW, boxH),
-                    LudoPawnPath.rimColor(hue, darkTheme).copy(alpha = .45f),
-                    style = Stroke(1.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round))
+            with(LudoPawnPath) {
+                drawPawn(
+                    origin = Offset(pawn.center.x - boxW / 2f, pawn.center.y - boxH / 2f),
+                    width = boxW,
+                    height = boxH,
+                    hue = colors.hue(pawn.seat),
+                    active = activeTokens.contains("${'$'}{pawn.seat}:${'$'}{pawn.pawnIndex}"),
+                    colors = colors,
+                )
             }
         }
 

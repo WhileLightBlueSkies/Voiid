@@ -35,6 +35,8 @@ export interface BoardCellNode {
     trackIndex: number | null;
     homeStep: number | null;
     isSafe: boolean;
+    /** A seat's start square: safe, starred, and filled in that seat's colour. */
+    isEntry: boolean;
     decoration: CellDecoration;
 }
 
@@ -85,6 +87,7 @@ export function buildBoardCells(): BoardCellNode[] {
                 trackIndex: null,
                 homeStep: null,
                 isSafe: false,
+                isEntry: false,
                 decoration: 'none',
             };
 
@@ -100,9 +103,13 @@ export function buildBoardCells(): BoardCellNode[] {
                     : APPROACH_INDICES.includes(idx)
                         ? APPROACH_INDICES.indexOf(idx)
                         : null;
+                // Every SAFE cell is starred, entry cells included. A start square is safe and
+                // is drawn in its seat's colour like the home lane, so it needs the same mark as
+                // the other four safe squares or it reads as ordinary coloured track.
+                node.isEntry = ENTRY_INDICES.includes(idx);
                 node.decoration = APPROACH_INDICES.includes(idx)
                     ? 'approachChevron'
-                    : STAR_INDICES.includes(idx)
+                    : (STAR_INDICES.includes(idx) || node.isEntry)
                         ? 'star'
                         : 'none';
             } else if (HOME_LANE_AT.has(key)) {

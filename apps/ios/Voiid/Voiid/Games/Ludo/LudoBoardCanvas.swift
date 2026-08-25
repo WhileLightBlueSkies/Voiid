@@ -28,6 +28,15 @@ enum LudoBoardCanvas {
         []
     }
 
+    /// "seat:pawn" keys for every token the CURRENT roll can legally move. Empty between turns,
+    /// so nothing glows while there is no decision to make.
+    static func activePawnKeys(_ state: LudoGameStateV2) -> Set<String> {
+        guard !state.isFinished, let turn = state.turn, turn.phase == "awaitingMove" else {
+            return []
+        }
+        return Set(turn.legalTokenIds.map { "\(turn.seat):\($0)" })
+    }
+
     /// Cell keys under server-legal tokens — the halo/highlight set.
     static func legalCellHighlights(_ state: LudoGameStateV2) -> Set<String> {
         guard !state.isFinished, let turn = state.turn else { return [] }
@@ -145,31 +154,24 @@ enum LudoBoardCanvas {
             }
         }
 
-        // 8) Pawns — blank silhouettes tinted per seat; finished sit at 52% in their slots.
+        // 8) Pawns — pin silhouettes tinted per seat; finished sit at 52% in their slots.
         // `displayOverride` carries the ONE display pawn mid-hop / mid-capture-return while
         // authoritative state already holds every destination.
+        //
+        // A token is ACTIVE when the current roll could actually be played with it. That is the
+        // server's legal set, never a guess: the glow is a promise that tapping does something.
         let placed = LudoPawnLayer.layout(state: state, layout: layout,
                                           droppedSeats: dropped, displayOverride: displayOverride)
+        let activeTokens = activePawnKeys(state)
         for pawn in placed {
             let boxW = LudoPawnShape.widthFactor * unit * pawn.scale
             let boxH = LudoPawnShape.heightFactor * unit * pawn.scale
             var pawnCtx = ctx
             pawnCtx.translateBy(x: pawn.center.x - boxW / 2, y: pawn.center.y - boxH / 2)
-
-            // Contact shadow: y=2 blur=3 rest / y=6 blur=8 hopping (§2.2).
-            let shadowRect = CGRect(x: boxW * 0.16, y: boxH * 0.93,
-                                    width: boxW * 0.68, height: boxW * 0.12)
-            pawnCtx.fill(Path(ellipseIn: shadowRect), with: .color(.black.opacity(0.14)))
-
-            let hue = colors.hue(pawn.seat)
-            let body = LudoPawnShape.path(width: boxW, height: boxH)
-            pawnCtx.fill(body, with: .color(hue))
-            pawnCtx.stroke(LudoPawnShape.rimPath(width: boxW, height: boxH),
-                           with: .color(LudoPawnShape.rimColor(hue, darkTheme: colors.isDark)),
-                           lineWidth: 1)
-            pawnCtx.stroke(LudoPawnShape.highlightArc(width: boxW, height: boxH),
-                           with: .color(LudoPawnShape.rimColor(hue, darkTheme: colors.isDark).opacity(0.45)),
-                           lineWidth: 1)
+            LudoPawnShape.draw(&pawnCtx, width: boxW, height: boxH,
+                               hue: colors.hue(pawn.seat),
+                               active: activeTokens.contains("\(pawn.seat):\(pawn.pawnIndex)"),
+                               colors: colors)
         }
 
         // 9) Perimeter LAST — the turn border sweeps OVER everything (§12).

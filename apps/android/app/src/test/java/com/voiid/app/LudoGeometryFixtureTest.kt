@@ -51,6 +51,7 @@ class LudoGeometryFixtureTest {
                 "trackIndex" to o["trackIndex"]?.jsonPrimitive?.let { if (it.content == "null") null else it.int },
                 "homeStep" to o["homeStep"]?.jsonPrimitive?.let { if (it.content == "null") null else it.int },
                 "isSafe" to o["isSafe"]!!.jsonPrimitive.boolean,
+                "isEntry" to o["isEntry"]!!.jsonPrimitive.boolean,
                 "decoration" to o["decoration"]!!.jsonPrimitive.content,
             )
         }

@@ -119,6 +119,21 @@ fun LudoScreen(
         skipNotice = null
     }
 
+    // ONE legal token means there is no decision to make, so the move plays itself once the die
+    // has settled — the way Ludo King does it. Waiting keeps the number readable before the
+    // board moves under it.
+    var autoMovedKey by remember { mutableStateOf<String?>(null) }
+    val forcedKey = forcedMoveKey(frameV2?.state)
+    LaunchedEffect(forcedKey) {
+        val key = forcedKey ?: return@LaunchedEffect
+        if (autoMovedKey == key) return@LaunchedEffect
+        autoMovedKey = key
+        delay(LudoMotion.FORCED_MOVE_HOLD_MS)
+        // Re-check: the window may have closed while we waited (timeout, disconnect, resync).
+        if (forcedMoveKey(engine.ludoV2.value?.state) != key) return@LaunchedEffect
+        key.substringAfterLast(':').toIntOrNull()?.let { engine.moveLudoV2(context, it) }
+    }
+
     LaunchedEffect(matchId) {
         engine.setLudoConversationId(conversationId)
         engine.open(matchId)
@@ -700,8 +715,12 @@ private fun BoardArea(
         }
 
         val turn = state.turn
+        // Seat ownership is checked here as well as on the server so that tapping your own
+        // colour during someone else's turn — including a bot's — does nothing at all rather
+        // than firing an intent the server will reject.
         if (sidePx > 0 && turn?.phase == "awaitingMove" && state.viewerRole == "controller" &&
-            state.viewerSeat == turn.seat) {
+            state.viewerSeat == turn.seat &&
+            state.seats.firstOrNull { it.seat == turn.seat }?.controller == "human") {
             val layout = LudoBoardGeometry.Layout(sidePx.toFloat())
             val placed = LudoPawnLayer.layout(state, layout, emptySet())
             val name = state.seats.firstOrNull { it.seat == turn.seat }?.displayName ?: "Player"
@@ -755,6 +774,20 @@ private fun posCellCenter(pos: Int, seat: Int, layout: LudoBoardGeometry.Layout)
         layout.rectOf(LudoBoardGeometry.cell(c.first, c.second)).center.let { it.x to it.y }
     }
     else -> null
+}
+
+/**
+ * Identifies a decision window that has exactly one legal answer, for a seat this viewer
+ * controls. Null whenever the player genuinely has a choice — or none at all.
+ */
+private fun forcedMoveKey(state: LudoGameState?): String? {
+    if (state == null || state.isFinished) return null
+    val turn = state.turn ?: return null
+    if (turn.phase != "awaitingMove") return null
+    if (state.viewerRole != "controller" || state.viewerSeat != turn.seat) return null
+    if (state.seats.firstOrNull { it.seat == turn.seat }?.controller != "human") return null
+    val only = turn.legalTokenIds.singleOrNull() ?: return null
+    return "${turn.seat}:${turn.serial}:${turn.rollId ?: ""}:$only"
 }
 
 private fun highlightCellsForLegal(state: LudoGameState): Set<String> {
@@ -823,10 +856,11 @@ private fun DieFace(
         val rv = rollVisual
         val pipColor = if (pipsNeutral) dColors.c(dColors.dieNeutralPip)
                        else dColors.hue(state.turn!!.seat)
+        val restSide = size.width * LudoDie.REST_FILL_FACTOR
         with(LudoDie) {
             if (rv == null) {
                 drawRestingDie(
-                    sidePx = size.width * 0.92f,
+                    sidePx = restSide,
                     value = displayedValue,
                     pipColor = pipColor,
                     edgeStrokePx = 1.25f,
@@ -834,7 +868,7 @@ private fun DieFace(
                 )
             } else {
                 drawDie(
-                    sidePx = size.width * 0.92f,
+                    sidePx = restSide * rv.depthScale,
                     value = displayedValue,
                     rotationXDeg = rv.rotationX,
                     rotationYDeg = rv.rotationY,

@@ -26,6 +26,9 @@ final class LudoPresentationCoordinator: ObservableObject {
         var liftPx: CGFloat
         var scaleX: CGFloat
         var scaleY: CGFloat
+        /// Shrinks the airborne cube so its corners stay inside the tray, and doubles as depth:
+        /// small while thrown, full size once it lands.
+        var depthScale: CGFloat = 1
     }
 
     // MARK: Published visual state
@@ -163,16 +166,26 @@ final class LudoPresentationCoordinator: ObservableObject {
         let zDir: Double = hash % 2 == 0 ? -1 : 1
         let rest = LudoDiePose.resting(value: value)
 
-        func makePose(rx: Double, ry: Double, lift: Double, sx: Double, sy: Double) -> RollPose {
-            RollPose(rotationXDeg: rx, rotationYDeg: ry, liftPx: lift, scaleX: sx, scaleY: sy)
+        func makePose(rx: Double, ry: Double, lift: Double, sx: Double, sy: Double,
+                      depth: Double = 1) -> RollPose {
+            RollPose(rotationXDeg: rx, rotationYDeg: ry, liftPx: lift,
+                     scaleX: sx, scaleY: sy, depthScale: depth)
         }
+
+        // A cube spans up to √3 of its own side once it is turning, so the airborne die is
+        // drawn smaller and grows back as it lands. That keeps its corners off the tray edge
+        // and reads as the throw having depth.
+        let airborne = LudoMotion.dieAirborneScale
 
         // Anticipation 0–120 ms — cubic (.32,0,.67,0).
         await tween(ms: 120, easing: CubicBezierEasing(x1: 0.32, y1: 0, x2: 0.67, y2: 0)) { t in
             self.rollPose = makePose(rx: zDir * -8 * t, ry: 10 * t,
-                                     lift: 3 * t, sx: 1 + 0.05 * t, sy: 1 - 0.09 * t)
+                                     lift: 3 * t, sx: 1 + 0.05 * t, sy: 1 - 0.09 * t,
+                                     depth: 1 - (1 - airborne) * t)
         }
         // Tumble/release 120–760 ms — position (.12,.68,.22,1); angular deceleration (.20,0,.38,1).
+        // Both axes wind down to the rest pose, which is square-on: the result is already on the
+        // cube's front face, so it settles showing the committed number and never re-labels.
         let angular = CubicBezierEasing(x1: 0.20, y1: 0, x2: 0.38, y2: 1)
         await tween(ms: 640, easing: CubicBezierEasing(x1: 0.12, y1: 0.68, x2: 0.22, y2: 1)) { t in
             let remaining = 1 - angular.transform(t)
@@ -180,7 +193,9 @@ final class LudoPresentationCoordinator: ObservableObject {
                 rx: rest.rotationXDeg + zDir * xTurns * 360 * remaining,
                 ry: rest.rotationYDeg + yTurns * 360 * remaining,
                 lift: 3 - 21 * sin(.pi * t),
-                sx: 1 + 0.05 * (1 - t), sy: 1 - 0.09 * (1 - t))
+                sx: 1 + 0.05 * (1 - t), sy: 1 - 0.09 * (1 - t),
+                // Grows back only over the last third, while the spin is nearly spent.
+                depth: airborne + (1 - airborne) * max(0, (t - 0.66) / 0.34))
         }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         // Impact 760–820 ms — squash; shadow collapse reads through lift=0. Cubic (.33,1,.68,1).
