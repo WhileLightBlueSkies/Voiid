@@ -81,29 +81,19 @@ struct MatchHistoryView: View {
         .padding(.horizontal, VoiidSpacing.md)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(VoiidColor.background.ignoresSafeArea())
-        // The header below draws its own back chevron; without this the pushed navigation bar
-        // would stack a second one right above it. Same arrangement LeaderboardView uses.
-        .navigationBarBackButtonHidden(true)
-        .toolbar(.hidden, for: .navigationBar)
+        // ── THE NATIVE BAR, NOT A HAND-ROLLED ONE ───────────────────────────────────
+        // Was a hidden bar plus its own chevron. That looked the same and behaved worse: the
+        // hit target was the glyph rather than the platform's 44pt, and hiding the bar takes
+        // the INTERACTIVE SWIPE-BACK GESTURE with it — the way most people actually leave a
+        // pushed screen. Same change as LeaderboardView.
+        .navigationTitle("Match history")
+        .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
     }
 
-    private var header: some View {
-        HStack {
-            Button { onClose?() } label: {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(VoiidColor.textPrimary)
-            }
-            Spacer()
-            Text("Match history")
-                .font(VoiidFont.rounded(17, .semibold))
-                .foregroundStyle(VoiidColor.textPrimary)
-            Spacer()
-            Image(systemName: "chevron.left").opacity(0)
-        }
-        .padding(.vertical, VoiidSpacing.md)
-    }
+    /// EMPTY, deliberately — the title and back button belong to the navigation bar now.
+    /// Kept as a zero-height view so the call site's layout arithmetic is untouched.
+    private var header: some View { EmptyView() }
 
     private func opponentName(for row: GamesAPI.MatchRow) -> String? {
         row.opponentId(me: me).flatMap { names[$0] }

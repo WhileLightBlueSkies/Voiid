@@ -30,16 +30,29 @@
 //  hold no key. 030's header makes this argument in full. Channel messages (MLS) and the
 //  member↔host DM stay encrypted and share no code path with anything here.
 //
-//  ── NO AVATAR EDITING, DELIBERATELY ─────────────────────────────────────────────
-//  `PATCH /communities/:id` accepts `avatar_r2_key`, and this screen does not offer it. The
-//  column holds an OPAQUE R2 KEY, and nothing in this app produces one a community card can
-//  render back: `POST /media/presign-upload` returns a key that needs a per-caller
-//  `presign-download` round trip to become viewable, and `POST /clips/presign-upload` mints a
-//  clip, which is a different kind of object addressed a different way. A picker wired to
-//  either would let a host choose a photo, report success, and leave every viewer — themselves
-//  included — looking at a broken image. The same reasoning `CommunityPostComposer` gives for
-//  having no media field. When a presign that returns a durable readable URL exists,
-//  `update(avatar:)` is a one-line addition and this is the only view that changes.
+//  ── THE AVATAR, AND WHY IT WORKS NOW ────────────────────────────────────────────
+//  This screen shipped with no avatar picker, because `communities.avatar_r2_key` holds an
+//  OPAQUE R2 KEY and nothing in the app produced one a community card could render back —
+//  a picker wired to `POST /media/presign-upload` would have let a host choose a photo, report
+//  success, and leave every viewer looking at a broken image.
+//
+//  `MediaKeyResolver` closed that (its header carries the full argument for a client-side
+//  resolver over a public bucket), and the server was in fact already halfway there:
+//  `publicCard()` presigns this exact column into the card's `avatar_url` before the card goes
+//  on the wire. So the key goes up and a fetchable URL comes straight back down.
+//
+//  ── THE AVATAR SAVES IMMEDIATELY; THE TEXT DRAFT DOES NOT ───────────────────────
+//  Deliberately different from every other control here, and the difference is not an
+//  inconsistency. The text fields are edited progressively and interact with each other, which
+//  is why they batch into one explicit Save. Choosing a photo is a single completed decision
+//  with a visible result — the host picks, and the picture changes. Parking it behind Save
+//  would mean the preview showed one thing and the community showed another until they
+//  remembered to press a button, and a photo that reverted on discard would look like a bug.
+//
+//  ── NOT E2EE, AND UNFIXABLY SO ──────────────────────────────────────────────────
+//  A community avatar is PLAINTEXT in R2. 030's header: it is shown to people who are NOT
+//  members and hold no key, which is the entire purpose of the card it sits on. This is not a
+//  deferred improvement like the profile-photo case — there is no audience to encrypt to.
 //
 //  ── SAVING IS EXPLICIT, AND A FAILURE SAYS SO ───────────────────────────────────
 //  The text fields and toggles edit a local draft; nothing is written until Save. That is not
@@ -54,6 +67,7 @@
 //
 
 import SwiftUI
+import PhotosUI
 
 // MARK: - Limits and options
 
@@ -84,34 +98,78 @@ private enum CommunitySettingsLimits {
 /// client, keeps it and is shown it. `custom` below is what carries that case.
 private let communityCategories = ["Design", "Tech", "Gaming", "Music", "Sport", "Local"]
 
-/// The three real values of `communities.join_policy`, with the copy already used by
-/// `CommunityDetailView.visibilityText` and `CommunityAboutTab.policyText`.
+/// The three real values of `communities.join_policy` — and ONE unavailable fourth.
 ///
-/// The short label is quoted from those two verbatim so the wording cannot drift — a host
-/// choosing "Approval needed" here must read the same words a visitor reads on the card. The
-/// longer line is this screen's own, because a picker is where the choice is actually made and
-/// three words are not enough to make it.
-private struct JoinPolicyOption: Identifiable {
+/// THIS IS THE SINGLE SOURCE OF POLICY COPY. `CommunityDetailView.visibilityText`,
+/// `CommunityAboutTab.policyText` and the Communities list all read `shortLabel(for:)` from
+/// here rather than carrying their own switch. Three copies of the same three strings is how
+/// a host ends up choosing "Approval needed" and a visitor reading "Invite only" — which had
+/// already happened in `CommunitiesHomeView`, where an `approval` community was labelled
+/// "Invite only" because the ad-hoc ternary only knew about `open`.
+///
+/// The short label is what a VISITOR reads on a card; the explanation is this screen's own,
+/// because a picker is where the choice is actually made and three words are not enough.
+struct JoinPolicyOption: Identifiable {
     let id: String
     let label: String
     let explanation: String
     let icon: String
+    /// False for a tier the server has no value for. See `paid` below — the row is drawn so
+    /// the tier is legible as COMING, and made unselectable so it can never be sent.
+    let available: Bool
 
     static let all: [JoinPolicyOption] = [
-        .init(id: "open", label: "Anyone can join",
+        .init(id: "open", label: "Open to all",
               explanation: "Anyone who finds this community joins instantly.",
-              icon: "globe"),
-        .init(id: "approval", label: "Approval needed",
+              icon: "globe", available: true),
+        .init(id: "approval", label: "Request to join",
               explanation: "People ask to join and you review each request.",
-              icon: "checkmark.shield"),
+              icon: "checkmark.shield", available: true),
         .init(id: "invite_only", label: "Invite only",
               explanation: "The only way in is an invite link or an invite from a member.",
-              icon: "lock.fill"),
+              icon: "lock.fill", available: true),
+        // ── THE PAID TIER, WHICH DOES NOT EXIST ─────────────────────────────────────
+        // `communities.join_policy` has a CHECK constraint permitting exactly open |
+        // approval | invite_only. There is no `paid`, and there is no payment provider
+        // behind one — events.ts already answers 501 to a priced ticket for exactly this
+        // reason, and this follows that precedent rather than inventing a second answer.
+        //
+        // The row exists because the ABSENCE was the worse lie: hosts ask for paid
+        // communities, and a picker that simply omits the idea reads as "never", not as
+        // "not yet". So the tier is named, shown, and visibly refused.
+        //
+        // Its `id` is deliberately NOT a `join_policy` value. Nothing can assign it —
+        // `select` refuses on `available`, and `sanitised` is a second gate on the save
+        // path — so the string never reaches a request body. A value the server rejects
+        // would be worse than an absent one: it turns a mis-tap into a 400.
+        .init(id: "__paid_unavailable", label: "Paid",
+              explanation: "Paid communities aren\u{2019}t available yet.",
+              icon: "creditcard", available: false),
     ]
 
     /// Never force-unwrapped and never exhaustively switched: `join_policy` is a string column
     /// and a server that grew a fourth value must not crash a build that knows three.
     static func find(_ id: String) -> JoinPolicyOption? { all.first { $0.id == id } }
+
+    /// THE label every non-host surface shows for a policy. Falls back to "Invite only" for an
+    /// unknown value, which is the conservative read: a policy this build does not understand
+    /// is one it must not describe as open.
+    static func shortLabel(for policy: String) -> String {
+        find(policy).map { $0.available ? $0.label : "Invite only" } ?? "Invite only"
+    }
+
+    /// THE icon for a policy, so the list row and the card do not draw different symbols for
+    /// the same community. Unknown falls back to the padlock for the same conservative reason
+    /// `shortLabel` falls back to "Invite only".
+    static func icon(for policy: String) -> String {
+        find(policy).flatMap { $0.available ? $0.icon : nil } ?? "lock.fill"
+    }
+
+    /// The only ids that may ever be sent. A defence in depth behind `available`: if a future
+    /// edit makes an unavailable row tappable, the save path still refuses to transmit it.
+    static func sanitised(_ id: String, fallback: String) -> String {
+        (find(id)?.available ?? false) ? id : fallback
+    }
 }
 
 // MARK: - Screen
@@ -139,6 +197,20 @@ struct CommunitySettingsView: View {
     @State private var joinPolicy: String
     @State private var category: String
     @State private var membersCanInvite: Bool
+
+    // ── The avatar ───────────────────────────────────────────────────────────────
+    // Saved on selection rather than on Save; see the header for why this one control differs.
+    @State private var avatarItem: PhotosPickerItem?
+    /// The just-chosen image, shown INSTEAD of the card's avatar until the next card arrives.
+    /// Held so the preview updates the moment the host picks, rather than after a round trip
+    /// and a presign — those together are a visible pause on a control whose whole feedback is
+    /// that the picture changed.
+    @State private var avatarPreview: UIImage?
+    @State private var avatarBusy = false
+    /// Non-nil ONLY after an avatar write actually failed. Its own state, not `saveFailure`:
+    /// the photo and the settings draft are written by two separate requests and a host has to
+    /// be able to tell which one did not land.
+    @State private var avatarFailure: String?
 
     @State private var saving = false
     /// Non-nil ONLY after a write actually failed. Distinct from the rules list's own error:
@@ -202,9 +274,17 @@ struct CommunitySettingsView: View {
         trimmedName != (card.name ?? "")
             || about.trimmingCharacters(in: .whitespacesAndNewlines) != (card.description ?? "")
             || discoverable != card.isDiscoverable
-            || joinPolicy != card.policy
+            || sanitisedPolicy != card.policy
             || category.trimmingCharacters(in: .whitespacesAndNewlines) != (card.category ?? "")
             || effectiveMembersCanInvite != card.membersCanInvite
+    }
+
+    /// The policy as it would actually be SENT. Identical to `joinPolicy` in every reachable
+    /// state — an unavailable tier cannot be selected — so this exists to make that guarantee
+    /// structural rather than a property of the picker's layout, and to keep `dirty` and
+    /// `save` agreeing on one value.
+    private var sanitisedPolicy: String {
+        JoinPolicyOption.sanitised(joinPolicy, fallback: card.policy)
     }
 
     /// A name of only whitespace is a 400 server-side ("name cannot be empty"), so the button
@@ -312,6 +392,8 @@ struct CommunitySettingsView: View {
             footer: "The handle @\(card.handle) can\u{2019}t be changed \u{2014} every invite "
                   + "link and pasted URL already points at it."
         ) {
+            avatarRow
+            VoiidRowDivider(inset: 0)
             settingsField(icon: "textformat", label: "Name",
                           placeholder: "Community name",
                           text: capped($name, CommunitySettingsLimits.name),
@@ -322,6 +404,154 @@ struct CommunitySettingsView: View {
                           text: capped($about, CommunitySettingsLimits.description),
                           limit: CommunitySettingsLimits.description,
                           multiline: true)
+        }
+    }
+
+    /// The community's photo, with a picker and — when there is one — a way to remove it.
+    ///
+    /// The thumbnail is `ResolvedThumbnail` rather than `ClipThumbnail` because `avatar_url` on
+    /// the card is a PRESIGNED URL with an hour's life (r2.ts GET_TTL): a settings screen left
+    /// open past that would otherwise show a broken image where the photo used to be.
+    @ViewBuilder
+    private var avatarRow: some View {
+        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+            HStack(spacing: VoiidSpacing.md) {
+                Group {
+                    if let avatarPreview {
+                        Image(uiImage: avatarPreview).resizable().scaledToFill()
+                    } else if let url = card.avatar_url, !url.isEmpty {
+                        ResolvedThumbnail(source: url)
+                    } else {
+                        // No photo is a FACT, drawn as an empty slot rather than as a failure.
+                        // The community's own initial, the same fallback the card uses.
+                        VoiidColor.fieldFill.overlay(
+                            Text(AvatarPalette.initials(for: card.name))
+                                .font(VoiidFont.rounded(20, .bold))
+                                .foregroundStyle(VoiidColor.textSecondary))
+                    }
+                }
+                .frame(width: 56, height: 56)
+                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+                .overlay {
+                    if avatarBusy {
+                        RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
+                            .fill(Color.black.opacity(0.45))
+                            .overlay(ProgressView().tint(.white).controlSize(.small))
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Photo")
+                        .font(VoiidFont.rounded(15, .semibold))
+                        .foregroundStyle(VoiidColor.textPrimary)
+                    // Says where it goes, on the screen that sends it. 030's argument in one
+                    // line: this picture is shown to strangers by design, so it cannot be
+                    // encrypted, and a host is entitled to know that before they choose one.
+                    Text("Shown to anyone who finds this community. Not encrypted.")
+                        .font(VoiidFont.rounded(11.5))
+                        .foregroundStyle(VoiidColor.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: VoiidSpacing.sm) {
+                PhotosPicker(selection: $avatarItem, matching: .images) {
+                    Text(card.avatar_url == nil && avatarPreview == nil ? "Add photo" : "Change")
+                        .font(VoiidFont.rounded(13, .semibold))
+                        .foregroundStyle(VoiidColor.accentInk)
+                        .padding(.horizontal, 14)
+                        .frame(height: 32)
+                        .background(Capsule().fill(VoiidColor.accentTint))
+                }
+                .disabled(avatarBusy)
+
+                // Only offered when there is something to remove. `.some(nil)` on the PATCH is
+                // what clears the column — the whole reason `avatarKey` is doubly optional.
+                if card.avatar_url != nil || avatarPreview != nil {
+                    Button {
+                        Task { await writeAvatar(key: .some(nil), preview: nil) }
+                    } label: {
+                        Text("Remove")
+                            .font(VoiidFont.rounded(13, .semibold))
+                            .foregroundStyle(VoiidColor.textSecondary)
+                            .padding(.horizontal, 14)
+                            .frame(height: 32)
+                            .background(Capsule().fill(VoiidColor.surfaceRaised))
+                    }
+                    .buttonStyle(PressableButtonStyle())
+                    .disabled(avatarBusy)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            if let avatarFailure {
+                Text(avatarFailure)
+                    .font(.footnote)
+                    .foregroundStyle(VoiidColor.error)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, VoiidSpacing.sm)
+        .onChange(of: avatarItem) { _, item in
+            guard let item else { return }
+            Task { await pickAvatar(item) }
+        }
+    }
+
+    /// Read the picked image, upload it, and PATCH the key — in that order, and stopping at the
+    /// first failure so a half-done change never reports success.
+    private func pickAvatar(_ item: PhotosPickerItem) async {
+        avatarFailure = nil
+        guard let data = try? await item.loadTransferable(type: Data.self),
+              let image = UIImage(data: data) else {
+            avatarFailure = "Couldn\u{2019}t read that photo. Try another one."
+            Haptics.error()
+            return
+        }
+
+        avatarBusy = true
+        defer { avatarBusy = false }
+        do {
+            let key = try await MediaService.shared.uploadCommunityImage(image)
+            await writeAvatar(key: .some(key), preview: image, alreadyBusy: true)
+        } catch {
+            // The community keeps its OLD photo, on screen and on the server. An upload that
+            // failed must not leave the preview showing a picture nobody else can see.
+            avatarFailure = (error as? APIError)?.errorDescription
+                ?? "Couldn\u{2019}t upload that photo."
+            Haptics.error()
+        }
+    }
+
+    /// PATCH the avatar column. `.some(key)` sets it, `.some(nil)` clears it.
+    private func writeAvatar(key: String??, preview: UIImage?,
+                             alreadyBusy: Bool = false) async {
+        if !alreadyBusy { avatarBusy = true }
+        avatarFailure = nil
+        defer { if !alreadyBusy { avatarBusy = false } }
+
+        do {
+            let updated = try await CommunityService.shared.update(
+                communityId: card.id, avatarKey: key)
+            // The local preview is adopted only AFTER the server confirmed, and it is what the
+            // row draws until the next card load — the returned `avatar_url` is a fresh presign
+            // that would otherwise have to round-trip before anything visibly changed.
+            avatarPreview = preview
+            // The card is adopted WITHOUT going through `apply`, and that is deliberate:
+            // `apply` re-seeds the text draft from the response and stamps `savedAt`, which
+            // would discard whatever the host had typed but not yet saved, and would light the
+            // "Saved" marker for a Save they never pressed. The photo is its own write with its
+            // own feedback.
+            card = updated
+            onSaved(updated)
+            Haptics.success()
+        } catch {
+            avatarFailure = (error as? APIError)?.errorDescription
+                ?? "Couldn\u{2019}t save that photo."
+            Haptics.error()
         }
     }
 
@@ -358,31 +588,62 @@ struct CommunitySettingsView: View {
         ) {
             ForEach(Array(JoinPolicyOption.all.enumerated()), id: \.element.id) { index, option in
                 if index > 0 { VoiidRowDivider(inset: 0) }
-                Button {
-                    Haptics.selection()
-                    joinPolicy = option.id
-                } label: {
-                    HStack(spacing: VoiidSpacing.md) {
-                        VoiidRowIcon(systemName: option.icon)
-                        Text(option.label)
-                            .font(.body)
-                            .foregroundStyle(VoiidColor.textPrimary)
-                            .multilineTextAlignment(.leading)
-                        Spacer(minLength: VoiidSpacing.sm)
-                        if joinPolicy == option.id {
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(VoiidColor.accentInk)
-                        }
+                // An UNAVAILABLE tier is drawn as a plain row, not as a disabled Button.
+                // `.disabled` on a Button still leaves a tap target that eats the gesture and
+                // gives no reason; a row that was never a control cannot fail, and the
+                // "Coming soon" badge is the whole explanation. Same metrics either way —
+                // identical padding and icon — so the section's rhythm is unchanged.
+                if option.available {
+                    Button {
+                        Haptics.selection()
+                        joinPolicy = option.id
+                    } label: {
+                        policyRow(option)
                     }
-                    .padding(.horizontal, VoiidSpacing.md)
-                    .padding(.vertical, 11)
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(joinPolicy == option.id ? [.isSelected] : [])
+                } else {
+                    policyRow(option)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("\(option.label), coming soon")
+                        // Says out loud to VoiceOver what the badge says visually: this is
+                        // not a thing that can be chosen, so it must not read as a button.
+                        .accessibilityRemoveTraits(.isButton)
                 }
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(joinPolicy == option.id ? [.isSelected] : [])
             }
         }
+    }
+
+    /// The visual row, drawn identically whether or not it is tappable — see `joiningSection`.
+    /// An unavailable tier is dimmed and badged rather than hidden, because omitting the idea
+    /// reads as "never" and hosts keep asking for it.
+    private func policyRow(_ option: JoinPolicyOption) -> some View {
+        HStack(spacing: VoiidSpacing.md) {
+            VoiidRowIcon(systemName: option.icon)
+            Text(option.label)
+                .font(.body)
+                .foregroundStyle(VoiidColor.textPrimary)
+                .multilineTextAlignment(.leading)
+            if !option.available {
+                Text("COMING SOON")
+                    .font(VoiidFont.rounded(9.5, .bold))
+                    .foregroundStyle(VoiidColor.textSecondary)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Capsule().fill(VoiidColor.fieldFill))
+            }
+            Spacer(minLength: VoiidSpacing.sm)
+            // The checkmark can only ever appear on an available row: `joinPolicy` is seeded
+            // from the server's value and can only be reassigned by an available row's tap.
+            if joinPolicy == option.id {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(VoiidColor.accentInk)
+            }
+        }
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.vertical, 11)
+        .contentShape(Rectangle())
+        .opacity(option.available ? 1 : 0.45)
     }
 
     // MARK: Invites
@@ -719,7 +980,11 @@ struct CommunitySettingsView: View {
                 description: newAbout == (card.description ?? "")
                     ? nil : .some(newAbout.isEmpty ? nil : newAbout),
                 discoverable: discoverable == card.isDiscoverable ? nil : discoverable,
-                joinPolicy: joinPolicy == card.policy ? nil : joinPolicy,
+                // SANITISED, not sent raw. `available` already stops an unavailable tier
+                // being selected, and this is the belt to that pair of braces: the only
+                // strings that can leave here are real `join_policy` values. A `paid` that
+                // slipped through would be a 400, i.e. a mis-tap turned into a failed save.
+                joinPolicy: sanitisedPolicy == card.policy ? nil : sanitisedPolicy,
                 category: newCategory == (card.category ?? "")
                     ? nil : .some(newCategory.isEmpty ? nil : newCategory),
                 membersCanInvite: effectiveMembersCanInvite == card.membersCanInvite

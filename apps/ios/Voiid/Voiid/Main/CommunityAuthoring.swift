@@ -51,6 +51,7 @@
 //
 
 import SwiftUI
+import PhotosUI
 
 /// The server's own ceilings, named after the constraints that own them.
 ///
@@ -213,24 +214,27 @@ private func capped(_ source: Binding<String>, _ limit: Int) -> Binding<String> 
 
 /// Write a post into a community's Home feed.
 ///
-/// ── NO MEDIA FIELD, ON PURPOSE ──────────────────────────────────────────────────
-/// `POST /:id/posts` accepts an optional `media_url`, and the feed card already renders one.
-/// There is nonetheless no picker here, and no text box asking for a URL, because there is no
-/// upload path that produces something this feed can show:
+/// ── THE PHOTO, AND WHY IT WORKS NOW ─────────────────────────────────────────────
+/// This composer shipped with NO media field, because `POST /media/presign-upload` returns an
+/// OPAQUE R2 KEY and the feed card rendered `media_url` through `ClipThumbnail(url:)`, which
+/// fetches the string as given — a key in that field was a broken image for everyone including
+/// the author. `POST /clips/presign-upload` was no help either: it mints a clip row and a clip
+/// id, and the object it produces is addressed as a clip, not as a free-standing image.
 ///
-///   • `POST /media/presign-upload` (MediaService) returns an OPAQUE R2 KEY, not a URL. Reading
-///     it back needs a per-caller `presign-download` round trip, and the feed card renders
-///     `media_url` through `ClipThumbnail(url:)` which fetches the string as given. A key put
-///     in that field renders as a broken image for everyone including the author.
-///   • `POST /clips/presign-upload` (ClipService) is the clips pipeline: it mints a clip row
-///     and a clip id, and the object it produces is addressed as a clip, not as a free-standing
-///     image a post can point at.
+/// `MediaKeyResolver` closes that: any view holding a key presigns it on demand and caches the
+/// result, so the key stored in `media_url` is renderable by every reader. The alternative —
+/// a route handing out long-lived public URLs — was refused because the bucket also holds E2EE
+/// message ciphertext and because a URL that never expires keeps serving a photo after its
+/// author or a moderator has taken it down. `MediaKeyResolver`'s header makes the full argument.
 ///
-/// A text box asking the user to paste a URL is the option this deliberately refuses. It moves
-/// the missing infrastructure onto the user and produces posts whose media is a link to
-/// somebody else's server that can rot, redirect, or track the reader. When a presign that
-/// returns a durable readable URL exists, `mediaUrl:` on `createPost` is already waiting and
-/// this is the only view that changes.
+/// A text box asking the user to paste a URL remains refused, and always will be: it moves
+/// missing infrastructure onto the user and produces posts whose media is a link to somebody
+/// else's server that can rot, redirect, or track the reader.
+///
+/// ── THE UPLOAD MUST NOT COST THE USER THEIR TEXT ────────────────────────────────
+/// The photo is uploaded as part of Post, not on selection, and a FAILED upload leaves the
+/// sheet open with the body intact and the photo still attached. The one thing this must never
+/// do is discard what somebody wrote because their network dropped while sending a picture.
 struct CommunityPostComposer: View {
     let communityId: String
     /// Handed the post the server actually created — never a locally-built one. The server
@@ -242,6 +246,19 @@ struct CommunityPostComposer: View {
     @State private var busy = false
     @State private var failure: String?
     @FocusState private var focused: Bool
+
+    // ── The photo ────────────────────────────────────────────────────────────────
+    @State private var photoItem: PhotosPickerItem?
+    /// The chosen image, held as pixels rather than as a `PhotosPickerItem` so the preview can
+    /// draw immediately and so a retry after a failed upload does not have to re-read from the
+    /// photo library — which can fail on its own, for its own reasons, and would turn one
+    /// error into two.
+    @State private var photo: UIImage?
+    /// Set when reading the picked item failed. Distinct from `failure`, which is about the
+    /// POST: a photo that would not load and a post that would not send are different problems
+    /// with different fixes, and one message for both would name the wrong one.
+    @State private var photoError: String?
+    @State private var loadingPhoto = false
 
     private var trimmed: String {
         body_.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -270,6 +287,8 @@ struct CommunityPostComposer: View {
                     .focused($focused)
             }
 
+            photoRow
+
             // Said before they post, not after. 047 makes this feed server-readable because a
             // post is a broadcast; the person writing one is entitled to know that before they
             // write it rather than to discover it in a privacy policy.
@@ -290,6 +309,98 @@ struct CommunityPostComposer: View {
         }
         // The keyboard is the point of this sheet; opening without it costs a tap every time.
         .task { focused = true }
+        .onChange(of: photoItem) { _, item in
+            guard let item else { return }
+            Task { await loadPhoto(item) }
+        }
+    }
+
+    /// Add-a-photo, or the chosen photo with a way to remove it.
+    ///
+    /// The preview is drawn at the same 172pt height the FEED CARD uses, so what the composer
+    /// shows is what the post will look like — a preview at a different size is a preview of a
+    /// different thing.
+    @ViewBuilder
+    private var photoRow: some View {
+        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+            if let photo {
+                ZStack(alignment: .topTrailing) {
+                    Image(uiImage: photo)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 172)
+                        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md,
+                                                    style: .continuous))
+
+                    // Disabled while the post is in flight. A photo pulled out from under an
+                    // upload that has already started would leave the composer's state and the
+                    // request disagreeing about what is being sent.
+                    Button {
+                        Haptics.tap()
+                        self.photo = nil
+                        photoItem = nil
+                        photoError = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(VoiidColor.textOnAccent)
+                            .frame(width: 28, height: 28)
+                            .background(Circle().fill(Color.black.opacity(0.55)))
+                    }
+                    .padding(VoiidSpacing.sm)
+                    .disabled(busy)
+                    .accessibilityLabel("Remove photo")
+                }
+            }
+
+            PhotosPicker(selection: $photoItem, matching: .images) {
+                HStack(spacing: VoiidSpacing.sm) {
+                    if loadingPhoto {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: photo == nil ? "photo.on.rectangle"
+                                                       : "arrow.triangle.2.circlepath")
+                            .font(.system(size: 13))
+                    }
+                    Text(photo == nil ? "Add a photo" : "Replace photo")
+                        .font(VoiidFont.rounded(14, .semibold))
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(VoiidColor.accentInk)
+                .padding(VoiidSpacing.md)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(VoiidColor.fieldFill)
+                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
+                    .stroke(VoiidColor.fieldBorder, lineWidth: 1))
+            }
+            .disabled(busy || loadingPhoto)
+
+            if let photoError {
+                Text(photoError)
+                    .font(.footnote)
+                    .foregroundStyle(VoiidColor.error)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// Read the picked item into pixels. NO UPLOAD HAPPENS HERE — see `submit`.
+    private func loadPhoto(_ item: PhotosPickerItem) async {
+        loadingPhoto = true
+        photoError = nil
+        defer { loadingPhoto = false }
+
+        guard let data = try? await item.loadTransferable(type: Data.self),
+              let image = UIImage(data: data) else {
+            // The previously chosen photo, if any, is LEFT ALONE. A failed replace must not
+            // also destroy the picture that was already attached and fine.
+            photoError = "Couldn\u{2019}t read that photo. Try another one."
+            Haptics.error()
+            return
+        }
+        photo = image
     }
 
     private func submit() async {
@@ -299,8 +410,19 @@ struct CommunityPostComposer: View {
         defer { busy = false }
 
         do {
+            // The upload is part of Post rather than of picking, so a user who chooses a photo
+            // and then changes their mind never spends data on it.
+            //
+            // A THROW HERE LEAVES THE SHEET OPEN with the body and the photo both intact — the
+            // catch below does not distinguish, and does not need to: whichever half failed,
+            // the user's next action is the same, and their text is still on screen.
+            var mediaKey: String?
+            if let photo {
+                mediaKey = try await MediaService.shared.uploadCommunityImage(photo)
+            }
+
             let post = try await CommunityService.shared.createPost(
-                communityId: communityId, body: trimmed)
+                communityId: communityId, body: trimmed, mediaUrl: mediaKey)
             Haptics.success()
             onPosted(post)
             dismiss()

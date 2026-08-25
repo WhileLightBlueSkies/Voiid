@@ -19,18 +19,32 @@
 //  DO NOT RE-ADD IT FROM THE REFERENCE.
 //
 //  HIDDEN — "Continue Playing" and "Friends Online". Neither has a backend (no session-resume
-//  state; no presence-for-games endpoint) and neither can ever be populated today. Hidden
-//  rather than shown with an empty state, because a permanently-empty section is clutter that
-//  teaches the user to scroll past that part of the screen forever. Both section bodies are
-//  KEPT below, behind their `has…` gates, so the day a backend lands they light up unchanged.
+//  state; NO PRESENCE-FOR-GAMES ENDPOINT — nothing anywhere can answer "who is online and in a
+//  lobby right now") and neither can ever be populated today. Hidden rather than shown with an
+//  empty state, because a permanently-empty section is clutter that teaches the user to scroll
+//  past that part of the screen forever. Both section bodies are KEPT below, behind their
+//  `has…` gates, so the day a backend lands they light up unchanged. FRIENDS ONLINE STAYS
+//  HIDDEN — do not populate it with last-seen timestamps or conversation activity; that is
+//  presence invented from adjacent data, which is worse than an absent section.
 //
-//  ── THE FLOW ROUTES THROUGH THE REAL LOBBY ──────────────────────────────────────
-//  The ported GameLobbyScreen / MatchStartingScreen are a PARTY lobby — ready-states, chat,
-//  team codes, voice and crossplay toggles, an 8-second countdown. Voiid's lobby is an invite
-//  that waits for acceptance. Those two files are therefore left unreferenced for the design
-//  record, and this screen pushes GameDetailScreen → GameSetupSheet → the REAL GameLobbyView,
-//  which is the one that actually sends the invite and opens the board. See the note at the
-//  bottom of ReferenceGamesModels for the full reasoning.
+//  TOURNAMENTS now render an empty STATE rather than vanishing — see `emptyTournaments`. They
+//  are community-scoped by design, so a user in no community has none by definition, and one
+//  line saying where they live beats a section that silently does not exist.
+//
+//  ── ONE SHEET FROM CARD TO BOARD ────────────────────────────────────────────────
+//  Tapping a game opens `GameEntryFlow` — a SINGLE sheet with a NavigationStack inside it. It
+//  replaced a chain of four modal presentations (setup → opponent/seats → overs/duel), which
+//  had no back, no sense of place, and a separate dismiss animation per layer. See that file's
+//  header for the shape and the reasoning; `handle(_:for:)` below turns its one answer into
+//  the right piece of match plumbing.
+//
+//  ── TWO LOBBIES, AND BOTH ARE NOW REACHABLE ─────────────────────────────────────
+//  `GameLobbyView` is the 1:1 invite-and-wait: an invite was sent, we are waiting, here is how
+//  long they have. `GameLobbyScreen` (via `PartyLobbyHost`) is the PARTY lobby — real
+//  ready-states, a real join code, real chat, all over a live WS channel. The party lobby was
+//  fully wired to `game_lobbies` / `game_lobby_members` / `game_lobby_messages` and had NO
+//  ENTRY POINT ANYWHERE IN THE APP until "Open a lobby" became a first-class choice in the
+//  entry flow, alongside "a friend" and "the bot".
 //
 //  ── ARTWORK ─────────────────────────────────────────────────────────────────────
 //  Real art now, where it exists: each catalog row's `icon_key` is an asset name, looked up by
@@ -68,33 +82,31 @@ struct GamesScreen: View {
     // Reused verbatim from GamesHomeView, which is the reference implementation for all of
     // this. Not a second version of it: same states, same sheets, same destinations.
 
-    /// The game whose setup sheet is open. A card is a GAME; nothing exists until an opponent
+    /// The game whose ENTRY FLOW is open. A card is a GAME; nothing exists until an opponent
     /// is chosen.
+    ///
+    /// ONE SHEET FOR THE WHOLE DECISION. This used to be the head of a chain — `setupGame` →
+    /// `pendingGame` → `pendingCricket`/`pendingDuel`, four modal presentations for one
+    /// question. `GameEntryFlow` is a single sheet with a NavigationStack inside it; see that
+    /// file's header for why that shape and not a content swap.
     @State private var setupGame: Game?
-    /// The game awaiting a FRIEND — held between "play a friend" and picking who.
-    @State private var pendingGame: Game?
     /// The offline practice board: which game, at what difficulty.
     @State private var botGame: BotSession?
     /// The open online match, as id + slug. The SLUG chooses the renderer.
     @State private var openMatch: OpenMatch?
-    /// The lobby the CREATOR waits in after sending an invite. THE REAL ONE.
+    /// The lobby the CREATOR waits in after sending an invite. The 1:1 invite-and-wait one.
     @State private var lobby: LobbyArgs?
-    /// Per-game pre-creation settings, which must be chosen BEFORE the match row exists
-    /// because the server builds the innings / arena from them.
-    @State private var pendingCricket: PendingSetup?
-    @State private var pendingDuel: PendingSetup?
+    /// The PARTY lobby — ready-states, join code, chat. A different room from `lobby` above,
+    /// chosen explicitly in the entry flow. See PartyLobbyHost.
+    @State private var party: PartyArgs?
     @State private var showSkinPicker = false
+    @State private var showSettings = false
     @State private var showLudoWalkthrough = false
     @State private var ludoWalkthroughCompletion: (() -> Void)?
 
     private struct OpenMatch: Identifiable, Hashable {
         let id: String
         let slug: String
-    }
-    private struct PendingSetup: Identifiable {
-        let id = UUID()
-        let game: Game
-        let conversation: VConversation
     }
     private struct BotSession: Identifiable, Hashable {
         let id = UUID()
@@ -262,73 +274,39 @@ struct GamesScreen: View {
                     },
                     onMessage: { self.invite = nil })
             }
+            // THE PARTY LOBBY. Reachable at last — it was fully wired to
+            // `game_lobbies`/`game_lobby_members`/`game_lobby_messages` and had no entry point
+            // anywhere in the app. See PartyLobbyHost for the state handling it adds.
+            .navigationDestination(item: $party) { args in
+                if let game = store.games.first(where: { $0.id == args.gameId }) {
+                    PartyLobbyHost(
+                        game: game,
+                        args: args,
+                        onStart: {
+                            openMatch = OpenMatch(id: args.id, slug: game.slug)
+                            party = nil
+                        },
+                        onClose: { party = nil })
+                        .environmentObject(session)
+                }
+            }
+            // ── ONE SHEET FOR THE WHOLE ENTRY DECISION ──────────────────────────────
+            // Was four chained presentations (setup → opponent/seats → overs/duel). Now one,
+            // with the steps pushed INSIDE it so the system's interactive swipe-back works at
+            // every step and no surface ever animates away to be replaced by another.
             .sheet(item: $setupGame) { game in
-                GameSetupSheet(
-                    gameName: game.title,
-                    slug: game.slug,
-                    onPlayFriend: { pendingGame = game },
-                    // NIL FOR A GAME WITH NO BOT. The bot destination above switches on slug
+                GameEntryFlow(
+                    game: game,
+                    conversations: chat.directConversations,
+                    // FALSE FOR A GAME WITH NO BOT. The bot destination above switches on slug
                     // and falls through to Tic Tac Toe, so a game without a case does not
                     // merely show a dead button — it opens a DIFFERENT GAME.
-                    onPlayBot: Self.hasLocalBot(game.slug) ? { level, skill in
-                        startBot(game: game, level: level, skill: skill)
-                    } : nil,
-                    onCustomise: game.slug == "snake" ? { showSkinPicker = true } : nil)
+                    hasLocalBot: Self.hasLocalBot(game.slug),
+                    onFinish: { outcome in handle(outcome, for: game) })
             }
-            .sheet(item: $pendingGame) { game in
-                // MORE THAN TWO SEATS GETS THE MULTI-SELECT PICKER (README §2.4). Keyed on the
-                // CATALOG ROW rather than on a list of slugs: the row is already the authority
-                // on how many seats a game takes, and a second hardcoded copy here is how the
-                // two disagree after the next game ships.
-                if game.maxPlayers > 2 {
-                    SeatPickerSheet(
-                        conversations: chat.directConversations,
-                        maxOpponents: game.maxPlayers - 1,
-                        minOpponents: max(1, game.minPlayers - 1)
-                    ) { convos in
-                        Task { await startMultiMatch(game: game, conversations: convos) }
-                    }
-                } else {
-                    OpponentPickerSheet(conversations: chat.directConversations) { convo in
-                        // Hand cricket needs its match length before the row is minted (the
-                        // server builds the innings from it), so it takes one more step. Snake
-                        // needs its bot count for the same reason. Every other game has nothing
-                        // left to ask.
-                        if game.slug == "cricket" {
-                            pendingCricket = PendingSetup(game: game, conversation: convo)
-                        } else if game.slug == "snake" {
-                            pendingDuel = PendingSetup(game: game, conversation: convo)
-                        } else {
-                            Task { await startMatch(game: game, conversation: convo) }
-                        }
-                    }
-                }
-            }
-            // How busy the arena is, for an online Snake match. Zero bots is a duel.
-            .sheet(item: $pendingDuel) { pending in
-                DuelSheet { bots in
-                    pendingDuel = nil
-                    Task {
-                        await startMatch(
-                            game: pending.game,
-                            conversation: pending.conversation,
-                            options: ["bots": bots].merging(
-                                SnakeChoiceStore.matchOptions) { a, _ in a },
-                            skin: SnakeChoiceStore.skinId)
-                    }
-                }
-            }
-            // Match length for an online hand cricket game. Chosen by the CREATOR and then
-            // fixed for both players, because it is a property of the match, not of a player.
-            .sheet(item: $pendingCricket) { pending in
-                OversSheet { overs in
-                    pendingCricket = nil
-                    Task {
-                        await startMatch(game: pending.game,
-                                         conversation: pending.conversation,
-                                         options: ["overs": overs])
-                    }
-                }
+            .sheet(isPresented: $showSettings) {
+                GameSettingsSheet { showSettings = false }
+                    .presentationDetents([.medium, .large])
             }
             .sheet(isPresented: $showSkinPicker) {
                 SnakeSkinPicker { showSkinPicker = false }
@@ -360,7 +338,7 @@ struct GamesScreen: View {
         // when a NavigationStack pops to this view, and RootTabView's self-heal only runs on a
         // TAB change — so coming out of a game back onto this same tab left the bar hidden with
         // nothing to put it back.
-        .onChange(of: openMatch == nil && botGame == nil && lobby == nil) { _, atRoot in
+        .onChange(of: openMatch == nil && botGame == nil && lobby == nil && party == nil) { _, atRoot in
             if atRoot { session.hideTabBar = false }
         }
         // Join tapped on a game-invite bubble over in Chats.
@@ -428,6 +406,19 @@ struct GamesScreen: View {
                 }
                 .buttonStyle(PressableButtonStyle())
                 .accessibilityLabel("Match history")
+
+                // GAME SETTINGS — sound, haptics, Snake's steering scheme. `GameSettingsSheet`
+                // was fully built and reachable only from `GamesHomeView`, which is not the
+                // screen this tab renders — so the only way to silence a match was to silence
+                // the phone, which is exactly the problem that sheet was written to solve.
+                Button {
+                    Haptics.tap()
+                    showSettings = true
+                } label: {
+                    circleButtonLabel("slider.horizontal.3")
+                }
+                .buttonStyle(PressableButtonStyle())
+                .accessibilityLabel("Game settings")
             }
         }
         .padding(.horizontal, VoiidSpacing.md)
@@ -645,11 +636,12 @@ struct GamesScreen: View {
 
     private var tournaments: some View {
         VStack(alignment: .leading, spacing: VoiidSpacing.md) {
-            // Only drawn when there is something to say. An empty tournaments header over
-            // nothing is the same clutter as an empty Friends strip.
-            if store.tournamentState != .empty {
-                sectionHeader("Live Tournaments", showAll: false)
-            }
+            // ALWAYS DRAWN NOW. It used to be suppressed on `.empty`, which meant the section
+            // vanished entirely — and a section that renders nothing is indistinguishable from
+            // a section that does not exist. Tournaments DO exist; they just live inside
+            // communities, and a user in none has none by definition. That is a fact worth one
+            // line, not a reason to make the whole feature invisible. See `emptyTournaments`.
+            sectionHeader("Live Tournaments", showAll: false)
 
             VStack(spacing: VoiidSpacing.sm + 2) {
                 switch store.tournamentState {
@@ -677,10 +669,7 @@ struct GamesScreen: View {
                     .background(VoiidColor.surfaceCard)
                     .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
                 case .empty:
-                    // Hidden entirely — the header above is suppressed too. Tournaments live
-                    // inside communities, so a user in none has no tournaments by definition
-                    // and does not need to be told so on the arcade tab.
-                    EmptyView()
+                    emptyTournaments
                 case .loaded:
                     ForEach(store.tournaments) { tournament in
                         TournamentCard(tournament: tournament) {
@@ -691,6 +680,43 @@ struct GamesScreen: View {
             }
             .padding(.horizontal, VoiidSpacing.md)
         }
+    }
+
+    /// The tournaments empty state — which says WHICH KIND of empty it is.
+    ///
+    /// Two causes, one blank list, and they need different sentences because they have
+    /// different remedies. A user in no community will never see a tournament here no matter
+    /// how long they wait, and telling them where tournaments actually live is the only useful
+    /// thing this space can do. A user who IS in communities is simply between events.
+    ///
+    /// NO BUTTON. Joining a community is a Community-tab journey with its own discovery
+    /// surface; a shortcut minted here would be a second entry point to maintain for a
+    /// one-sentence explanation.
+    private var emptyTournaments: some View {
+        VStack(spacing: VoiidSpacing.xs) {
+            Image(systemName: "trophy")
+                .font(.system(size: 26))
+                .foregroundColor(VoiidColor.textSecondary)
+                .padding(.bottom, 2)
+
+            Text(store.inAnyCommunity ? "Nothing running right now"
+                                      : "Tournaments live in communities")
+                .font(VoiidFont.rounded(15, .semibold))
+                .foregroundColor(VoiidColor.textPrimary)
+
+            Text(store.inAnyCommunity
+                 ? "When one of your communities starts a tournament, it shows up here."
+                 : "Join a community and its tournaments appear here.")
+                .font(VoiidFont.rounded(12.5))
+                .foregroundColor(VoiidColor.textSecondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, VoiidSpacing.lg)
+        .background(VoiidColor.surfaceCard)
+        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
+            .stroke(VoiidColor.divider, lineWidth: 1))
     }
 
     // MARK: Incoming invites
@@ -800,6 +826,91 @@ struct GamesScreen: View {
     // Reused verbatim from GamesHomeView — same calls, same order, same reasons. The only
     // change is that the catalog row arrives as a `Game` rather than a `CatalogGame`.
 
+    /// Turn the entry flow's ONE answer into the right piece of match plumbing.
+    ///
+    /// The flow decides WHO and WITH WHAT; this decides what that means. Keeping the split
+    /// there is what lets `GameEntryFlow` know nothing about `GamesEngine`.
+    ///
+    /// EVERY BRANCH THAT PUSHES A SCREEN WAITS OUT THE SHEET FIRST. `GameEntryFlow` calls
+    /// `dismiss()` and then answers, so this runs while the sheet is still animating away —
+    /// and SwiftUI silently DROPS a navigation push that lands inside that window. That is the
+    /// bug `GameEntryFlow.dismissWait` exists for; the one difference from the old flow is that
+    /// there is now exactly ONE dismissal to wait out instead of up to four.
+    private func handle(_ outcome: GameEntryOutcome, for game: Game) {
+        switch outcome {
+        case .customise:
+            // WAITS TOO, for the mirror of the push problem: presenting a second sheet while
+            // the first is still animating away is the sheet-over-sheet the whole redesign
+            // exists to remove, and iOS drops the second presentation outright when the timing
+            // is unlucky. The picker is a different surface for a different question, so it is
+            // a fresh sheet — but only once this one has actually gone.
+            Task {
+                try? await Task.sleep(nanoseconds: GameEntryFlow.dismissWait)
+                showSkinPicker = true
+            }
+
+        case .bot(let level, let skill):
+            startBot(game: game, level: level, skill: skill)
+
+        case .friend(let convo, let options, let skin):
+            Task {
+                try? await Task.sleep(nanoseconds: GameEntryFlow.dismissWait)
+                await startMatch(game: game, conversation: convo,
+                                 options: options, skin: skin)
+            }
+
+        case .seats(let convos, let options):
+            Task {
+                try? await Task.sleep(nanoseconds: GameEntryFlow.dismissWait)
+                await startMultiMatch(game: game, conversations: convos, options: options)
+            }
+
+        case .party(let convos, let options):
+            Task {
+                try? await Task.sleep(nanoseconds: GameEntryFlow.dismissWait)
+                await startParty(game: game, conversations: convos, options: options)
+            }
+        }
+    }
+
+    /// Create the match, then open a PARTY LOBBY on it.
+    ///
+    /// SAME CREATION CALL AS `startMultiMatch`, deliberately. A party lobby is not a different
+    /// kind of match — it is the same row with a lobby opened on it, which is exactly what
+    /// `POST /games/matches/:id/lobby` does. What differs is where the creator waits: the party
+    /// room (ready-states, join code, chat) rather than the 1:1 invite-and-wait screen.
+    ///
+    /// The Ludo walkthrough gate applies here for the same reason it applies to a direct
+    /// multi-seat create: it is gating a player's FIRST Ludo match, not a particular lobby shape.
+    private func startParty(game: Game, conversations: [VConversation],
+                            options: [String: Int] = [:]) async {
+        if game.slug == "ludo" && !Self.ludoWalkthroughSeen {
+            showLudoWalkthrough = true
+            ludoWalkthroughCompletion = {
+                Task { await startParty(game: game, conversations: conversations,
+                                        options: options) }
+            }
+            return
+        }
+        let opponents: [(userId: String, conversationId: String)] = conversations.compactMap {
+            guard let peer = $0.peerUserId, !peer.isEmpty else { return nil }
+            return (userId: peer, conversationId: $0.id)
+        }
+        guard !opponents.isEmpty else { return }
+
+        if let id = await GamesEngine.shared.createMulti(
+            slug: game.slug, opponents: opponents, gameName: game.title, options: options) {
+            let overs = options["overs"] ?? 0
+            party = PartyArgs(
+                id: id,
+                gameId: game.id,
+                asHost: true,
+                // The host's free-text option line. EMPTY when the game has no such setting —
+                // `LobbyState.format` renders nothing rather than inventing a string.
+                format: overs > 0 ? "\(overs) \(overs == 1 ? "over" : "overs")" : "")
+        }
+    }
+
     private func startBot(game: Game, level: BotDifficulty, skill: Double) {
         // Snake's and Ludo's bots live on the SERVER, so "play a bot" mints a real match
         // rather than opening a local simulation. Every other game here is turn-based and
@@ -809,13 +920,15 @@ struct GamesScreen: View {
             return
         }
         let slug = game.slug
-        setupGame = nil
         Task {
             // WAIT FOR THE SHEET TO FINISH DISMISSING before pushing. SwiftUI silently DROPS a
             // navigation push that lands while a sheet is still animating away, and the REST
             // round-trip below usually finishes inside that window — so the first taps did
             // nothing at all. Half a beat is enough to clear the transition.
-            try? await Task.sleep(nanoseconds: 350_000_000)
+            //
+            // The flow already called `dismiss()` on itself, so there is no `setupGame = nil`
+            // here any more; the wait is unchanged and is now the single one in the path.
+            try? await Task.sleep(nanoseconds: GameEntryFlow.dismissWait)
             // Difficulty maps to how many bots share the arena. Bots use identical physics to
             // the player — no speed or turning advantage — so a busier arena IS the difficulty.
             let bots: Int

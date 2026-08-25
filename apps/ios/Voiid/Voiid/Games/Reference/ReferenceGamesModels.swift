@@ -330,6 +330,16 @@ final class GamesStore {
     /// and vice versa — they are separate round-trips to separate services.
     var tournamentState: GamesFeedState = .loading
 
+    /// Whether the user belongs to ANY community.
+    ///
+    /// WHY THIS EXISTS: "no tournaments" has two completely different causes and the same
+    /// empty list. Tournaments are community-scoped by design — there is no global tournaments
+    /// route — so a user in no community has none BY DEFINITION and nothing they do on this
+    /// tab will ever change that. A user who IS in communities and sees none is simply between
+    /// events. Showing the same blank space for both leaves the first user hunting for a
+    /// feature that was never going to appear here. Set on every `loadTournaments()`.
+    var inAnyCommunity = false
+
     /// Live invites waiting on the user. Real, from `GamesAPI.invites()`.
     var invites: [GamesAPI.PendingInvite] = []
     /// Match ids acknowledged this session. A MISSED invite is information you need once;
@@ -420,6 +430,9 @@ final class GamesStore {
             tournamentState = .failed("Couldn't load tournaments")
             return
         }
+        // Recorded BEFORE the per-community fan-out, so the empty state can tell "you are in no
+        // communities" apart from "your communities have nothing running".
+        inAnyCommunity = mine.contains { $0.isMember }
         var out: [Tournament] = []
         for community in mine where community.isMember {
             guard let list = try? await TournamentService.shared.list(communityId: community.id)

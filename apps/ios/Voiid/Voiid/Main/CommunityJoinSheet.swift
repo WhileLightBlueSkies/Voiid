@@ -140,6 +140,9 @@ struct CommunityJoinSheet: View {
                     if busy {
                         ProgressView().tint(VoiidColor.textOnPrimary)
                     } else {
+                        // "Request to join" is `JoinPolicyOption`'s own label for the
+                        // approval tier, quoted deliberately: the sentence a visitor taps
+                        // must be the one the host chose.
                         Text(card.policy == "approval" ? "Request to join" : "Join community")
                             .font(VoiidFont.rounded(16, .semibold))
                             .foregroundStyle(VoiidColor.textOnPrimary)
@@ -259,19 +262,28 @@ struct CommunityJoinSheet: View {
         }
     }
 
+    /// Why the Join button must NOT be drawn, or nil if it may be.
+    ///
+    /// One switch over `CommunityMembership`, the same value the community card and the
+    /// Communities list read — so a link that opens on "You’re already a member" cannot lead
+    /// to a card offering Join.
+    ///
+    /// `.none` covers never-joined AND `left`, which is also where a DECLINED request lands:
+    /// rejecting an applicant sets their row to `left` because the schema has no `declined`
+    /// state, so the honest thing to show them is the join button again.
     private static func blockedReason(_ card: CommunityService.CommunityCard) -> String? {
-        if card.isSuspended { return "This community is suspended and can’t be joined." }
-        if card.isBanned { return "You can’t rejoin this community." }
-        if card.isMember { return "You’re already a member." }
-        if card.isPending { return "Your request is waiting for an admin to approve it." }
-        // A link whose token is dead is only fatal for invite_only — an open or approval
-        // community is joinable without one, so the expired token is worth mentioning and not
-        // worth blocking on.
-        // A dead token is only FATAL for invite_only — an open or approval community is joinable
-        // without one, so a stale poster still works and `policyBlurb` is where the expired link
-        // gets mentioned.
-        if card.policy == "invite_only", card.invite_valid != true { return deadInvite }
-        return nil
+        switch card.membership {
+        case .suspended: return "This community is suspended and can’t be joined."
+        case .banned:    return "You can’t rejoin this community."
+        case .joined:    return "You’re already a member."
+        case .requested: return "Your request is waiting for an admin to approve it."
+        case .none:
+            // A dead token is only FATAL for invite_only — an open or approval community is
+            // joinable without one, so a stale poster still works and `policyBlurb` is where
+            // the expired link gets mentioned.
+            if card.policy == "invite_only", card.invite_valid != true { return deadInvite }
+            return nil
+        }
     }
 
     /// ONE sentence for every way an invite can be dead, because the server gives one answer for

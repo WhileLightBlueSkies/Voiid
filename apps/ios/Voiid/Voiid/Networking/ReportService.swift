@@ -32,6 +32,17 @@ enum ReportTarget {
     case clip(id: String)
     case creator(userId: String)
     case person(userId: String)
+    /// A post in a community's Home feed (community_posts.id, 047).
+    ///
+    /// TARGETS THE POST, NOT ITS AUTHOR, and the distinction is the server's too (053). A
+    /// person is reported through `.creator` or `.person`, and those accumulate against an
+    /// account; a post report is about one piece of content and resolving it removes that
+    /// content. Collapsing the two would make one bad post and a pattern of abuse into the
+    /// same row.
+    case communityPost(postId: String)
+    /// A whole community (communities.id, 030) — "this entire community is a scam", which is
+    /// a different report from any one post inside it.
+    case community(communityId: String)
 
     /// The server's `target_type` vocabulary (routes/reports.ts TARGET_TYPES).
     var type: String {
@@ -39,6 +50,8 @@ enum ReportTarget {
         case .clip: return "clip"
         case .creator: return "creator"
         case .person: return "message_sender"
+        case .communityPost: return "community_post"
+        case .community: return "community"
         }
     }
 
@@ -47,6 +60,8 @@ enum ReportTarget {
         case .clip(let id): return id
         case .creator(let userId): return userId
         case .person(let userId): return userId
+        case .communityPost(let postId): return postId
+        case .community(let communityId): return communityId
         }
     }
 }

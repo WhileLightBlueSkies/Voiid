@@ -10,14 +10,14 @@
 //  `CommunityAnnouncement` and `CommunityAboutLink` are deleted rather than kept as a second
 //  shape to hold in step with the server.
 //
+//  The admin dashboard has since gone the same way. `AdminTask` is DELETED in favour of
+//  `CommunityService.QueueItem`, and `AdminStat` survives as a render type with its `samples`
+//  removed — 053_community_moderation.sql added GET /communities/:id/stats and
+//  /moderation-queue, so the numbers are counts over real tables and the queue is real pending
+//  join requests plus real reported posts. One card did NOT survive: see `AdminStat` below for
+//  why "Active today" is absent rather than estimated.
+//
 //  WHAT REMAINS MOCK, AND WHY:
-//    AdminStat / AdminTask ....... NO BACKEND AT ALL. There is no stats endpoint, no aggregate
-//                                  of members/active/posts/reports, and no unified moderation
-//                                  queue. The numbers are invented and identical for every
-//                                  community. Deliberately NOT derived from whatever data is
-//                                  in hand: a dashboard reporting "1,204 posts" because it
-//                                  counted one page of the feed is a mock that lies, which is
-//                                  worse than one that visibly does not.
 //    CommunitySpace decoration ... purpose/unread/member-count; the channels endpoint has no
 //                                  such columns (047 adds purpose/posting/pinned_at to
 //                                  community_channels, but no route reads them yet).
@@ -109,53 +109,29 @@ struct AdminStat: Identifiable, Hashable {
     /// arrow direction carries it too.
     var isPositive: Bool = true
 
-    static let samples: [AdminStat] = [
-        .init(id: "members", label: "Members", value: "48.2K", delta: "+312 this week",
-              icon: "person.2.fill"),
-        .init(id: "active", label: "Active today", value: "6,140", delta: "+8%",
-              icon: "bolt.fill"),
-        .init(id: "posts", label: "Posts", value: "1,204", delta: "+96 this week",
-              icon: "square.and.pencil"),
-        .init(id: "reports", label: "Open reports", value: "3", delta: "2 new today",
-              icon: "exclamationmark.triangle.fill", isPositive: false),
-    ]
+    // `samples` IS GONE. It held four constants — 48.2K members, 6,140 active today, 1,204
+    // posts, 3 open reports — shown identically to every host of every community, including one
+    // with eleven members. `GET /communities/:id/stats` (053) serves the real numbers and
+    // `CommunityHomeTab.statCards` builds these from them.
+    //
+    // THERE IS NO LONGER AN "ACTIVE TODAY" CARD, and that is the point rather than an omission
+    // to tidy up later: nothing in the schema records a per-user last-seen, so the number is not
+    // computable, and the three ways to fake it (count recent authors, count recent joiners,
+    // take a percentage of the member count) each produce something that looks precise and is
+    // wrong. The server omits the key; do not reintroduce it here.
 }
 
-/// Something waiting on an admin. Deliberately one type for join requests, reported posts and
-/// pending events — the dashboard's job is a single queue of "what needs me", and three
-/// separate lists would hide the smallest one.
-struct AdminTask: Identifiable, Hashable {
-    enum Kind: String, Hashable {
-        case joinRequest = "Join request"
-        case report = "Reported post"
-        case eventApproval = "Event approval"
-
-        var icon: String {
-            switch self {
-            case .joinRequest:   "person.badge.plus"
-            case .report:        "flag.fill"
-            case .eventApproval: "calendar.badge.clock"
-            }
-        }
-    }
-
-    let id: String
-    let kind: Kind
-    let subject: String
-    let detail: String
-    let age: String
-
-    static let samples: [AdminTask] = [
-        .init(id: "t1", kind: .joinRequest, subject: "Sana Malik",
-              detail: "Wants to join · @sana.m", age: "12m ago"),
-        .init(id: "t2", kind: .report, subject: "Post by Dev Anand",
-              detail: "Reported as spam by 3 members", age: "1h ago"),
-        .init(id: "t3", kind: .eventApproval, subject: "Type Crit Night",
-              detail: "Submitted by Nova Rao · 18 Sep", age: "3h ago"),
-        .init(id: "t4", kind: .joinRequest, subject: "Imran Q",
-              detail: "Wants to join · @imranq", age: "5h ago"),
-    ]
-}
+// `AdminTask` IS GONE, replaced by `CommunityService.QueueItem` from
+// GET /communities/:id/moderation-queue (053) — the same move `CommunityPost` and
+// `CommunityAnnouncement` made when 047 landed, and for the same reason: a second local shape
+// held in step with the server is a shape that drifts out of step with it.
+//
+// Its four sample rows were a fake queue, identical in every community. Two of its three kinds
+// are now real (`join_request` from community_members.state = 'pending', `reported_post` from
+// content_reports). THE THIRD, `eventApproval`, IS NOT AND WAS NEVER REAL: no table in the
+// schema has an event-approval state, so there was nothing behind it and there is nothing to
+// wire. It is not carried forward as an empty case — a kind that can never occur is a branch
+// that can only ever mislead the next reader into looking for the route that fills it.
 
 // MARK: - Spaces
 //

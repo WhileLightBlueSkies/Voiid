@@ -208,7 +208,9 @@ private struct CommunityCardRow: View {
                     }
 
                     HStack(spacing: 5) {
-                        Image(systemName: card.policy == "open" ? "globe" : "lock.fill")
+                        // From the shared option list, so `approval` gets its own mark
+                        // rather than being drawn with the padlock that means "no way in".
+                        Image(systemName: JoinPolicyOption.icon(for: card.policy))
                             .font(.system(size: 9.5))
                         Text("\(card.members) member\(card.members == 1 ? "" : "s")")
                         if card.isSuspended {
@@ -224,18 +226,33 @@ private struct CommunityCardRow: View {
                 Spacer(minLength: 0)
 
                 // Membership reads at the top-right, where the reference puts its unread count.
-                if card.isMember {
+                // ONE switch over `CommunityMembership`, the same value the detail screen's
+                // join button reads — so a row badged "Requested" cannot open a card that
+                // says "Join". `banned` and `suspended` were previously drawn as NOTHING,
+                // which read as "you may join": the refusal was only discovered on tap.
+                switch card.membership {
+                case .joined:
                     Text("Joined")
                         .font(VoiidFont.rounded(10, .semibold))
                         .foregroundColor(VoiidColor.textOnAccent)
                         .padding(.horizontal, 7).padding(.vertical, 3)
                         .background(Capsule().fill(VoiidColor.accent))
-                } else if card.isPending {
+                case .requested:
                     Text("Requested")
                         .font(VoiidFont.rounded(10, .semibold))
                         .foregroundColor(VoiidColor.accentInk)
                         .padding(.horizontal, 7).padding(.vertical, 3)
                         .background(Capsule().fill(VoiidColor.accentTint))
+                case .banned:
+                    Text("Blocked")
+                        .font(VoiidFont.rounded(10, .semibold))
+                        .foregroundColor(VoiidColor.error)
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(Capsule().fill(VoiidColor.error.opacity(0.14)))
+                // `.suspended` is already said in the metadata line below the name, and
+                // `.none` (never joined, or left) is the plain case that needs no badge.
+                case .suspended, .none:
+                    EmptyView()
                 }
             }
 
@@ -253,8 +270,16 @@ private struct CommunityCardRow: View {
                     .font(VoiidFont.rounded(11.5))
                     .foregroundColor(VoiidColor.placeholder)
                 Spacer(minLength: 0)
-                if !card.isMember && !card.isPending {
-                    Text(card.policy == "open" ? "Anyone can join" : "Invite only")
+                // Was `card.policy == "open" ? "Anyone can join" : "Invite only"`, which
+                // labelled every APPROVAL community "Invite only" — telling people there was
+                // no way in when the whole point of that policy is that they may ask. Now
+                // from `JoinPolicyOption`, the same list the host chose from.
+                //
+                // Drawn for `.none` only: a member, an applicant and a banned account all
+                // already carry a badge above that says something more specific than the
+                // policy does.
+                if case .none = card.membership {
+                    Text(JoinPolicyOption.shortLabel(for: card.policy))
                         .font(VoiidFont.rounded(11, .semibold))
                         .foregroundColor(VoiidColor.textSecondary)
                 }

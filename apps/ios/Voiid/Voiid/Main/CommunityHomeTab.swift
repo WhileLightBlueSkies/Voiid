@@ -12,13 +12,30 @@
 //  non-members of a discoverable community, and there is no key that means "everyone who
 //  might later look". The channels themselves stay E2EE and are not touched here.
 //
-//  THE ADMIN DASHBOARD IS STILL PLACEHOLDER, deliberately. `AdminStat` and `AdminTask` have
-//  NO backend: there is no stats endpoint, no aggregate of members/active/posts/reports, and
-//  no unified moderation queue to read. Those numbers are invented and every community sees
-//  the same four. They are left exactly as they were rather than derived from what happens to
-//  be in hand, because a dashboard that says "1,204 posts" when it counted the 20 rows on the
-//  first feed page is worse than one that is visibly a mock — it is a mock that lies. When a
-//  stats endpoint exists, `adminDashboard` is the only thing that changes.
+//  THE ADMIN DASHBOARD IS NOW REAL (053_community_moderation.sql). It used to read four
+//  invented constants and a four-row fake queue, identical in every community — telling a host
+//  with eleven members that they had 48.2K. Both halves are served now:
+//
+//    GET /communities/:id/stats ............. members (the trigger-maintained column, 030),
+//                                             posts (a TRUE count over community_posts, never
+//                                             the length of a feed page), and open reports.
+//    GET /communities/:id/moderation-queue .. pending join requests (community_members.state =
+//                                             'pending') and reported posts (content_reports,
+//                                             target_type 'community_post'), merged newest
+//                                             first, with the approve/reject buttons calling
+//                                             /members/:userId/approve and /remove.
+//
+//  ── THREE STAT CARDS, NOT FOUR, AND THAT IS THE FEATURE ─────────────────────────
+//  "Active today" is GONE rather than computed. Nothing in the schema records a per-user
+//  last-seen, so it can only be faked — as a count of recent authors (a fraction of readers), a
+//  count of recent joiners (growth wearing engagement's label), or a percentage (a made-up
+//  number with a real one's precision). The server omits the key and this file renders what it
+//  is given. A dashboard with three true numbers beats one with four of which a host cannot
+//  tell which is the lie.
+//
+//  THE APPEARANCE IS UNCHANGED: same grid, same cards, same 58pt queue rows, same two circular
+//  buttons. Only the data source moved, plus the buttons now do what they always looked like
+//  they did.
 //
 //  AUTHORING (CommunityAuthoring.swift) hangs off this file: the compose bar above the feed,
 //  Delete on a post's overflow menu, and the manager's pin/replace/unpin controls on the
@@ -58,6 +75,24 @@ struct CommunityHomeTab: View {
     /// presented state — an `item:`-shaped flag, so the alert can never fire against a post
     /// that has since scrolled out of the array.
     @State private var pendingDelete: CommunityService.Post?
+    /// The post being reported. Non-nil IS the sheet's presented state, so it can never fire
+    /// against a post the feed has since reloaded away.
+    @State private var reporting: CommunityService.Post?
+
+    // ── The admin dashboard (053_community_moderation.sql) ───────────────────────
+    // Both of these were `AdminStat.samples` and `AdminTask.samples` — invented constants and a
+    // fake four-row queue, identical in every community.
+    @State private var stats: CommunityService.Stats?
+    @State private var queue: [CommunityService.QueueItem] = []
+    @State private var adminLoading = false
+    /// Non-nil ONLY when a fetch actually failed, and kept separate from an empty queue for the
+    /// same reason `postsError` is: a moderation queue that failed to load and drew as empty
+    /// would tell a host there is nothing waiting on them, which is the one lie a moderation
+    /// surface must never tell.
+    @State private var statsError: String?
+    @State private var queueError: String?
+    /// Queue rows with a write in flight, so a second tap cannot fire a duplicate approve.
+    @State private var queueBusy: Set<String> = []
     /// Writes in flight, so a second tap cannot fire a duplicate delete or unpin.
     @State private var deleteBusy: Set<String> = []
     @State private var unpinBusy = false
@@ -133,6 +168,12 @@ struct CommunityHomeTab: View {
                 announcementError = nil
                 writeError = nil
             }
+        }
+        // Presented from HERE rather than from inside the card, for the same reason the delete
+        // confirmation is: a sheet owned by a row in a lazy stack is torn down when that row
+        // scrolls out of the stack, which can happen while the user is mid-report.
+        .sheet(item: $reporting) { post in
+            ReportSheet(target: .communityPost(postId: post.id)) { reporting = nil }
         }
         .alert("Delete this post?", isPresented: Binding(
             get: { pendingDelete != nil },
@@ -273,7 +314,128 @@ struct CommunityHomeTab: View {
 
         async let feedTask = fetchPosts()
         async let pinnedTask = fetchAnnouncement()
-        _ = await (feedTask, pinnedTask)
+        // The dashboard is fetched CONCURRENTLY with the feed, not after it: a host waiting on
+        // twenty posts before their moderation queue appears is a host who stops checking it.
+        //
+        // The gate is convenience only. Both routes are `requireManager` server-side and would
+        // 403 an ordinary member regardless of what this client believes — `isAdmin` here just
+        // avoids firing two requests that are certain to be refused.
+        async let adminTask: Void = isAdmin ? fetchAdmin() : ()
+        _ = await (feedTask, pinnedTask, adminTask)
+    }
+
+    /// The dashboard's two reads.
+    ///
+    /// Independently faulted on purpose. The stats block and the queue fail for different
+    /// reasons and a host must be able to tell which one did — a single shared error would let
+    /// a working queue be hidden by a stats timeout, which on a moderation surface means real
+    /// work going unseen.
+    private func fetchAdmin() async {
+        adminLoading = true
+        defer { adminLoading = false }
+
+        async let statsTask = fetchStats()
+        async let queueTask = fetchQueue()
+        _ = await (statsTask, queueTask)
+    }
+
+    private func fetchStats() async {
+        do {
+            stats = try await CommunityService.shared.stats(communityId: communityId)
+            statsError = nil
+        } catch {
+            // The previous numbers are DISCARDED rather than left on screen. Stale stats
+            // presented as current are the same failure the invented ones were, only harder to
+            // spot because they were true an hour ago.
+            stats = nil
+            statsError = (error as? APIError)?.errorDescription
+                ?? "Couldn\u{2019}t load these numbers."
+        }
+    }
+
+    private func fetchQueue() async {
+        do {
+            queue = try await CommunityService.shared.moderationQueue(communityId: communityId)
+            queueError = nil
+        } catch {
+            queue = []
+            queueError = (error as? APIError)?.errorDescription
+                ?? "Couldn\u{2019}t load what needs you."
+        }
+    }
+
+    /// Act on one queue row.
+    ///
+    /// ── WHAT EACH BUTTON ACTUALLY DOES ──────────────────────────────────────────────
+    ///   join request, tick .... POST /members/:userId/approve — pending becomes active.
+    ///   join request, cross ... POST /members/:userId/remove — pending becomes left.
+    ///                           DELIBERATELY `remove` AND NOT `ban`. The server keeps them as
+    ///                           separate verbs so the harsher one is chosen on purpose, and a
+    ///                           rejected applicant can ask again — the right default for
+    ///                           someone whose only act so far was knocking.
+    ///   reported post, tick ... clears the row locally. There is NO "dismiss report" route:
+    ///                           resolving a content_report is a platform-admin action
+    ///                           (035 gives `resolved_by` a `admin_users` foreign key), not a
+    ///                           community host's. See the note below.
+    ///   reported post, cross .. removes the post, the same route the card's own Delete uses.
+    private func resolveQueueItem(_ item: CommunityService.QueueItem, approve: Bool) async {
+        guard !queueBusy.contains(item.id) else { return }
+        queueBusy.insert(item.id)
+        defer { queueBusy.remove(item.id) }
+
+        do {
+            switch item.resolvedKind {
+            case .joinRequest:
+                guard let userId = item.user_id else { return }
+                if approve {
+                    try await CommunityService.shared.approveMember(
+                        communityId: communityId, userId: userId)
+                } else {
+                    try await CommunityService.shared.removeMember(
+                        communityId: communityId, userId: userId)
+                }
+
+            case .reportedPost:
+                guard let postId = item.post_id else { return }
+                if approve {
+                    // ── AN HONEST LIMITATION, NOT A SILENT ONE ──────────────────────
+                    // "Keep this post" clears the row from THIS host's view and nothing more.
+                    // The open content_reports rows survive, because marking a report resolved
+                    // is bound to an `admin_users` row (035) and a community host is not one.
+                    // Building a host-side resolve would mean either widening `resolved_by`
+                    // past the admin table or adding a parallel per-community resolution
+                    // state — both are moderation-authority decisions, not details to settle
+                    // inside a button handler.
+                    //
+                    // The row therefore returns on the next refresh. That is the truthful
+                    // behaviour: the report IS still open. Nothing here claims otherwise.
+                    Haptics.tap()
+                } else {
+                    try await CommunityService.shared.deletePost(
+                        communityId: communityId, postId: postId)
+                    // Take it out of the feed too, if it is on screen. Leaving a removed post
+                    // rendered above the dashboard that just removed it is the kind of
+                    // disagreement that makes a host doubt the button worked.
+                    posts.removeAll { $0.id == postId }
+                }
+
+            case .none:
+                return
+            }
+
+            queue.removeAll { $0.id == item.id }
+            // The badge and the "Needs review" card are counts of the same work, so the numbers
+            // are refetched rather than decremented locally — the server's count is the one
+            // that survives a pull-to-refresh, and a local guess would disagree with it.
+            await fetchStats()
+            Haptics.success()
+        } catch {
+            // THE ROW STAYS. A queue item that vanishes on a failed write tells a host the work
+            // is done when it is not, and there is nothing left on screen to retry from.
+            Haptics.error()
+            queueError = (error as? APIError)?.errorDescription
+                ?? "Couldn\u{2019}t do that. Try again."
+        }
     }
 
     private func fetchPosts() async {
@@ -354,7 +516,8 @@ struct CommunityHomeTab: View {
                     // Nil hides the menu item entirely rather than disabling it: a greyed
                     // Delete on somebody else's post is an invitation to wonder why.
                     onDelete: canDelete(post) ? { pendingDelete = post } : nil,
-                    onLike: { Task { await toggleLike(post) } }
+                    onLike: { Task { await toggleLike(post) } },
+                    onReport: { reporting = post }
                 )
                 // The row is mid-delete: dimmed and inert, so a second tap cannot start a
                 // duplicate write against a post that is already on its way out.
@@ -388,20 +551,56 @@ struct CommunityHomeTab: View {
                     .background(Capsule().fill(VoiidColor.accent))
             }
 
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: 8),
-                                GridItem(.flexible(), spacing: 8)], spacing: 8) {
-                ForEach(AdminStat.samples) { stat in
-                    statCard(stat)
+            // THE SAME TWO-COLUMN GRID, THE SAME CARDS. Only the source changed: these are
+            // counts over real tables now (GET /communities/:id/stats) instead of four
+            // constants that told a host with eleven members they had 48.2K.
+            //
+            // THREE CARDS, NOT FOUR, and the missing one is "Active today". Nothing in the
+            // schema records a per-user last-seen, so it is not computable — and the three ways
+            // to fake it (count recent authors, count recent joiners, take a percentage of the
+            // member count) each produce a number that looks precise and is wrong. 053's header
+            // works through each. The server omits the key; this renders what it is given, so
+            // there is no build in which a guess appears here.
+            if let stats {
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8),
+                                    GridItem(.flexible(), spacing: 8)], spacing: 8) {
+                    ForEach(statCards(stats)) { stat in
+                        statCard(stat)
+                    }
                 }
+            } else if let statsError {
+                // A failed fetch says so. It must never draw as zeroes — a dashboard reading
+                // "0 posts" because the request timed out is the same class of lie the invented
+                // numbers were.
+                emptyish(icon: "exclamationmark.triangle", title: statsError,
+                         detail: "Pull down to try again.")
+            } else if adminLoading {
+                ProgressView().tint(VoiidColor.accent)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, VoiidSpacing.md)
             }
 
-            if !AdminTask.samples.isEmpty {
+            // "Needs you" appears only when something actually is. An empty queue draws
+            // NOTHING, exactly as the placeholder did when its array was empty — a "nothing to
+            // do" card would be a permanent fixture on every healthy community's dashboard.
+            if let queueError {
+                HStack {
+                    Text("Needs you")
+                        .font(VoiidFont.rounded(15, .bold))
+                        .foregroundColor(VoiidColor.textPrimary)
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, VoiidSpacing.sm)
+
+                emptyish(icon: "exclamationmark.triangle", title: queueError,
+                         detail: "Pull down to try again.")
+            } else if !queue.isEmpty {
                 HStack {
                     Text("Needs you")
                         .font(VoiidFont.rounded(15, .bold))
                         .foregroundColor(VoiidColor.textPrimary)
 
-                    Text("\(AdminTask.samples.count)")
+                    Text("\(queue.count)")
                         .font(VoiidFont.rounded(10.5, .bold))
                         .foregroundColor(VoiidColor.textOnAccent)
                         .frame(minWidth: 19, minHeight: 19)
@@ -412,13 +611,41 @@ struct CommunityHomeTab: View {
                 .padding(.top, VoiidSpacing.sm)
 
                 VStack(spacing: 8) {
-                    ForEach(AdminTask.samples) { task in
-                        taskRow(task)
+                    ForEach(queue) { item in
+                        taskRow(item)
+                            .opacity(queueBusy.contains(item.id) ? 0.45 : 1)
+                            .allowsHitTesting(!queueBusy.contains(item.id))
                     }
                 }
             }
         }
         .padding(.bottom, VoiidSpacing.sm)
+    }
+
+    /// The stat cards, built from what the server actually sent.
+    ///
+    /// EVERY ONE OF THESE IS A COUNT OF ROWS. There is no derived, estimated or extrapolated
+    /// number here, and there is no `delta` that was not computed — which is why `delta` is
+    /// empty on all three.
+    ///
+    /// ── WHY NO "+312 THIS WEEK" ─────────────────────────────────────────────────────
+    /// The placeholder's cards each carried a trend line. A trend needs a PREVIOUS value to
+    /// compare against, and nothing stores one: there are no historical snapshots of a
+    /// community's member or post count, so "+312 this week" could only ever be invented. The
+    /// arrow and its label are therefore absent — `statCard` already renders an empty delta as
+    /// no row at all, so the card is shorter rather than wrong.
+    private func statCards(_ s: CommunityService.Stats) -> [AdminStat] {
+        [
+            .init(id: "members", label: "Members", value: "\(s.memberCount)", delta: "",
+                  icon: "person.2.fill"),
+            .init(id: "posts", label: "Posts", value: "\(s.postCount)", delta: "",
+                  icon: "square.and.pencil"),
+            // `isPositive: false` is the placeholder's own convention for this card and it is
+            // kept: it drives the warning tint and the exclamation glyph, so open reports never
+            // render as good news with an up arrow.
+            .init(id: "reports", label: "Needs review", value: "\(s.openReports)", delta: "",
+                  icon: "exclamationmark.triangle.fill", isPositive: false),
+        ]
     }
 
     private func statCard(_ stat: AdminStat) -> some View {
@@ -438,14 +665,21 @@ struct CommunityHomeTab: View {
                 .foregroundColor(VoiidColor.textPrimary)
                 .monospacedDigit()
 
-            HStack(spacing: 3) {
-                // Direction AND colour. Hue alone would fail for a colour-blind admin.
-                Image(systemName: stat.isPositive ? "arrow.up.right" : "exclamationmark.circle")
-                    .font(.system(size: 9, weight: .bold))
-                Text(stat.delta)
-                    .font(VoiidFont.rounded(10.5))
+            // The delta row is drawn ONLY when there is a delta. It used to be unconditional
+            // because the samples always carried one; every real stat carries none, because no
+            // historical snapshot exists to compare against and a trend nobody measured is not
+            // a trend. An empty delta is a shorter card, not a card with a blank arrow.
+            if !stat.delta.isEmpty {
+                HStack(spacing: 3) {
+                    // Direction AND colour. Hue alone would fail for a colour-blind admin.
+                    Image(systemName: stat.isPositive ? "arrow.up.right"
+                                                      : "exclamationmark.circle")
+                        .font(.system(size: 9, weight: .bold))
+                    Text(stat.delta)
+                        .font(VoiidFont.rounded(10.5))
+                }
+                .foregroundColor(stat.isPositive ? VoiidColor.success : VoiidColor.warning)
             }
-            .foregroundColor(stat.isPositive ? VoiidColor.success : VoiidColor.warning)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(VoiidSpacing.sm + 2)
@@ -455,23 +689,34 @@ struct CommunityHomeTab: View {
             .stroke(VoiidColor.divider, lineWidth: 1))
     }
 
-    private func taskRow(_ task: AdminTask) -> some View {
-        HStack(spacing: VoiidSpacing.sm + 2) {
-            Image(systemName: task.kind.icon)
+    /// One row of the real moderation queue.
+    ///
+    /// THE LAYOUT IS UNCHANGED from the placeholder — same 58pt row, same 34pt glyph tile, same
+    /// two circular buttons on the right. What changed is that the buttons now call routes.
+    ///
+    /// ── THE TWO KINDS DO DIFFERENT THINGS, AND THE LABELS SAY SO ────────────────────
+    /// A join request approves or rejects a PERSON (`/members/:userId/approve` and `/remove`).
+    /// A reported post has no equivalent pair — approving a person is not a thing you can do to
+    /// a post — so its tick means "this post is fine, clear it" and its cross opens the delete
+    /// path the card's own menu uses. Giving both kinds the same two glyphs with different
+    /// meanings is a real hazard, which is why the accessibility labels differ per kind rather
+    /// than being one shared string.
+    private func taskRow(_ item: CommunityService.QueueItem) -> some View {
+        let isReport = item.resolvedKind == .reportedPost
+        return HStack(spacing: VoiidSpacing.sm + 2) {
+            Image(systemName: isReport ? "flag.fill" : "person.badge.plus")
                 .font(.system(size: 13))
-                .foregroundColor(task.kind == .report ? VoiidColor.warning
-                                                      : VoiidColor.accentInk)
+                .foregroundColor(isReport ? VoiidColor.warning : VoiidColor.accentInk)
                 .frame(width: 34, height: 34)
                 .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(task.kind == .report ? VoiidColor.warning.opacity(0.14)
-                                               : VoiidColor.accentTint))
+                    .fill(isReport ? VoiidColor.warning.opacity(0.14) : VoiidColor.accentTint))
 
             VStack(alignment: .leading, spacing: 1) {
-                Text(task.subject)
+                Text(item.name)
                     .font(VoiidFont.rounded(14, .semibold))
                     .foregroundColor(VoiidColor.textPrimary)
                     .lineLimit(1)
-                Text(task.detail)
+                Text(taskDetail(item))
                     .font(VoiidFont.rounded(11.5))
                     .foregroundColor(VoiidColor.textSecondary)
                     .lineLimit(1)
@@ -479,7 +724,7 @@ struct CommunityHomeTab: View {
 
             Spacer(minLength: 0)
 
-            Text(task.age)
+            Text(CommunityFeedDate.age(item.at))
                 .font(VoiidFont.rounded(10.5))
                 .foregroundColor(VoiidColor.textSecondary)
 
@@ -487,7 +732,7 @@ struct CommunityHomeTab: View {
             // that does not get cleared.
             HStack(spacing: 6) {
                 Button {
-                    Haptics.success()
+                    Task { await resolveQueueItem(item, approve: true) }
                 } label: {
                     Image(systemName: "checkmark")
                         .font(.system(size: 11, weight: .bold))
@@ -496,10 +741,10 @@ struct CommunityHomeTab: View {
                         .background(Circle().fill(VoiidColor.accent))
                 }
                 .buttonStyle(PressableButtonStyle())
-                .accessibilityLabel("Approve")
+                .accessibilityLabel(isReport ? "Keep this post" : "Approve")
 
                 Button {
-                    Haptics.tap()
+                    Task { await resolveQueueItem(item, approve: false) }
                 } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 11, weight: .bold))
@@ -508,7 +753,7 @@ struct CommunityHomeTab: View {
                         .background(Circle().fill(VoiidColor.surfaceRaised))
                 }
                 .buttonStyle(PressableButtonStyle())
-                .accessibilityLabel("Dismiss")
+                .accessibilityLabel(isReport ? "Remove this post" : "Reject")
             }
         }
         .padding(.horizontal, VoiidSpacing.sm + 2)
@@ -518,7 +763,35 @@ struct CommunityHomeTab: View {
         .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
             .stroke(VoiidColor.divider, lineWidth: 1))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(task.kind.rawValue): \(task.subject), \(task.detail)")
+        .accessibilityLabel("\(isReport ? "Reported post" : "Join request"): "
+                            + "\(item.name), \(taskDetail(item))")
+    }
+
+    /// The row's second line. Says what is actually known and nothing more.
+    private func taskDetail(_ item: CommunityService.QueueItem) -> String {
+        switch item.resolvedKind {
+        case .joinRequest:
+            // The handle when the server sent one — a null `username` is a real row (a user who
+            // never set one), not a defect, so the line degrades rather than showing "@".
+            if let u = item.username, !u.isEmpty { return "Wants to join · @\(u)" }
+            return "Wants to join"
+        case .reportedPost:
+            let n = item.reporter_count ?? 0
+            // "3 members reported this" is a count of DISTINCT REPORTERS, which is what the
+            // server sends and what the sentence claims. Counting report rows instead would
+            // let one person's repeat reports inflate it — the thing 035's partial unique index
+            // exists to prevent.
+            let who = n == 1 ? "1 member reported this" : "\(n) members reported this"
+            if let excerpt = item.detail?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !excerpt.isEmpty {
+                return "\(who) · \(excerpt)"
+            }
+            return who
+        case .none:
+            // A kind this build does not know. Never guessed at — the row still renders with
+            // its subject and time so it is visibly present rather than silently dropped.
+            return "Needs review"
+        }
     }
 
     // MARK: Announcement
@@ -718,6 +991,10 @@ private struct CommunityPostCard: View {
     /// Fired by the heart. The parent owns the optimistic flip and the reconciliation, so this
     /// card stays a pure render of whatever it was handed.
     let onLike: () -> Void
+    /// Fired by Report. The parent presents the sheet, for the same reason it owns the delete
+    /// confirmation: a sheet presented from inside a row in a lazy stack is a sheet that can be
+    /// torn down mid-interaction when the row scrolls out.
+    let onReport: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
@@ -738,8 +1015,15 @@ private struct CommunityPostCard: View {
                 Menu {
                     Button("Save post", systemImage: "bookmark") {}
                     Button("Share", systemImage: "square.and.arrow.up") {}
+                    // WIRED. This item was inert — a UGC feed with a Report button that did
+                    // nothing is worse than one with no button, because it tells a reader their
+                    // complaint was filed when no row was ever written. It now opens the same
+                    // `ReportSheet` clips and profiles use, against `community_post` (053).
                     Button("Report", systemImage: "exclamationmark.triangle",
-                           role: .destructive) {}
+                           role: .destructive) {
+                        Haptics.tap()
+                        onReport()
+                    }
                     // Last, after a divider, and only where it can succeed. The confirmation
                     // is the parent's alert — a destructive menu item that acts on the tap is
                     // one slip away from removing a post nobody meant to.
@@ -765,9 +1049,16 @@ private struct CommunityPostCard: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             // The gradient is the SAME stand-in the reference used, now shown only for posts
-            // that actually carry media. `media_url` is a plaintext URL (047 stores a URL, not
-            // bytes, like clips) — the block is drawn at the same 172pt whether or not the
-            // image itself has been loaded, so the card never reflows underneath the reader.
+            // that actually carry media. The block is drawn at the same 172pt whether or not
+            // the image itself has been loaded, so the card never reflows underneath the reader.
+            //
+            // `media_url` is PLAINTEXT and holds EITHER a fetchable URL or an opaque R2 object
+            // key — the column is named for a URL and 047 describes it as one, but the composer
+            // now writes the key that `POST /media/presign-upload` returns, because that is the
+            // only thing the upload path produces. `ResolvedThumbnail` handles both: a URL goes
+            // straight through, a key is presigned on demand and cached by
+            // `MediaKeyResolver`. THE LAYOUT IS UNCHANGED — same 172pt frame, same corner
+            // radius, same gradient behind it.
             if let media = post.media_url, !media.isEmpty {
                 RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
                     .fill(
@@ -781,7 +1072,7 @@ private struct CommunityPostCard: View {
                     )
                     .frame(height: 172)
                     .overlay {
-                        ClipThumbnail(url: media)
+                        ResolvedThumbnail(source: media)
                             .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md,
                                                         style: .continuous))
                     }

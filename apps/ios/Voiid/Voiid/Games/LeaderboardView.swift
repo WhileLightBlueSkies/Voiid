@@ -65,29 +65,23 @@ struct LeaderboardView: View {
         .padding(.horizontal, VoiidSpacing.md)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(VoiidColor.background.ignoresSafeArea())
-        // The header below draws its own back chevron; without this the pushed
-        // navigation bar would stack a second one right above it.
-        .navigationBarBackButtonHidden(true)
-        .toolbar(.hidden, for: .navigationBar)
+        // ── THE NATIVE BAR, NOT A HAND-ROLLED ONE ───────────────────────────────────
+        // This used to hide the navigation bar and draw its own chevron. That looked the
+        // same and behaved worse: a `Button` with a bare `Image` has the glyph's hit area
+        // rather than the platform's 44pt target, and hiding the bar takes the INTERACTIVE
+        // SWIPE-BACK GESTURE with it — the way most people actually leave a pushed screen.
+        //
+        // The system's back button restores both, plus its label, its press feedback and
+        // its VoiceOver announcement, none of which are written here.
+        .navigationTitle("Leaderboard")
+        .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
     }
 
-    private var header: some View {
-        HStack {
-            Button { onClose?() } label: {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(VoiidColor.textPrimary)
-            }
-            Spacer()
-            Text("Leaderboard")
-                .font(VoiidFont.rounded(17, .semibold))
-                .foregroundStyle(VoiidColor.textPrimary)
-            Spacer()
-            Image(systemName: "chevron.left").opacity(0)
-        }
-        .padding(.vertical, VoiidSpacing.md)
-    }
+    /// EMPTY, deliberately. The title and the back button are the navigation bar's now —
+    /// see the note on `body`. Kept as a zero-height view rather than deleted so the call
+    /// site's layout arithmetic is untouched.
+    private var header: some View { EmptyView() }
 
     private func load() async {
         loading = true

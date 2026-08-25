@@ -55,6 +55,31 @@ final class CommunityService {
     /// envelope's sibling field and from a separate probe respectively, because that is where
     /// the server puts them — deliberately: the card is a property of the community, whereas
     /// both of these are properties of the CALLER holding this link.
+    /// Every relationship a caller can have to a community, as ONE value.
+    ///
+    /// The four roster states are `community_members.state` — active | pending | banned | left
+    /// — collapsed onto what the UI must actually distinguish. `left` and "never joined" are
+    /// the SAME case (`none`) on purpose: the retained row exists so a ban survives a leave,
+    /// and treating it as a refusal would lock out everyone who ever walked away.
+    ///
+    /// THERE IS NO `declined`. A rejected request is REMOVED (set to `left`), not marked, so a
+    /// declined applicant reaches this as `.none` and may ask again. That is the schema's
+    /// design, not an omission here — inventing a fifth case would mean showing a state the
+    /// server can never send.
+    enum CommunityMembership {
+        /// Not on the roster, or on it as `left`. May join, subject to the policy.
+        case none
+        /// `pending` — asked, waiting on a manager. NOT joined, and must never read as joined.
+        case requested
+        /// `active`.
+        case joined
+        /// `banned`. A statement, never a button: the join route refuses this row with a 403.
+        case banned
+        /// The COMMUNITY is suspended — not a property of this caller at all, but it lands
+        /// here because it refuses the same action for the same practical reason.
+        case suspended
+    }
+
     struct CommunityCard: Decodable {
         let id: String
         let handle: String
@@ -104,6 +129,25 @@ final class CommunityService {
         var isMember: Bool { membership_state == "active" }
         var isPending: Bool { membership_state == "pending" }
         var isBanned: Bool { membership_state == "banned" }
+        /// A row that WAS a membership and is not one now — the state `/leave` writes, and the
+        /// state `/unban` drops a lifted ban back to. It is deliberately NOT a refusal: the
+        /// row is retained so a ban survives a leave, not to keep an ex-member out. Every
+        /// surface treats `left` exactly as it treats nil, i.e. "you may join" (subject to the
+        /// policy) — and that is also how a DECLINED request arrives, because approve/reject
+        /// is `approve` -> active or `remove` -> left. The schema has no `declined`.
+        var hasLeft: Bool { membership_state == "left" }
+
+        /// THE ONE ANSWER to "what is this caller's relationship to this community", so the
+        /// card, the list row and the join sheet cannot disagree about it. Order matters:
+        /// suspension outranks everything (nobody joins a suspended community, member or not),
+        /// then a ban, then the roster states.
+        var membership: CommunityMembership {
+            if isSuspended { return .suspended }
+            if isBanned { return .banned }
+            if isMember { return .joined }
+            if isPending { return .requested }
+            return .none
+        }
     }
 
     /// What both read endpoints actually return: the card, plus the caller's own relationship to
@@ -367,9 +411,19 @@ final class CommunityService {
     /// Change a community's settings. Manager only server-side (`requireManager`: active owner
     /// or active admin) — the client gate is convenience, this is the enforcement.
     ///
-    /// Covers all seven fields the route accepts. `avatar_r2_key` is deliberately NOT among
-    /// them: it is an opaque R2 key needing an upload flow, and no helper in this app produces
-    /// one a community card can render back. See the note on `CommunitySettingsView`.
+    /// Covers all eight fields the route accepts, `avatar_r2_key` now among them.
+    ///
+    /// ── WHY THE AVATAR IS REACHABLE NOW ─────────────────────────────────────────────
+    /// It used to be excluded because the column holds an OPAQUE R2 KEY and nothing in this
+    /// app produced one a community card could render back — a picker wired to it would have
+    /// let a host choose a photo, report success, and leave everyone looking at a broken image.
+    /// Two things closed that gap: `MediaKeyResolver` resolves a key on demand for any view
+    /// that holds one, and `publicCard()` server-side already presigns this exact column into
+    /// the card's `avatar_url`. The key goes up; a fetchable URL comes back.
+    ///
+    /// `avatarKey` is doubly optional for the same reason `description` is: `.some(nil)` clears
+    /// the avatar, an outer nil leaves it alone. Collapsing those would make "remove my
+    /// community's photo" impossible to express.
     ///
     /// THE RETURNED CARD IS THE TRUTH, not the values that were sent. The server forces
     /// `members_can_invite` off for an invite-only community, so a caller that assumed its own
@@ -380,9 +434,11 @@ final class CommunityService {
                 discoverable: Bool? = nil,
                 joinPolicy: String? = nil,
                 category: String?? = nil,
-                membersCanInvite: Bool? = nil) async throws -> CommunityCard {
+                membersCanInvite: Bool? = nil,
+                avatarKey: String?? = nil) async throws -> CommunityCard {
         var body = PatchBody()
         body.set("name", name)
+        body.setNullable("avatar_r2_key", avatarKey)
         // `.some(nil)` encodes an explicit `null`: clear it. An outer nil leaves the key out
         // entirely, which is the route's "leave this column alone".
         body.setNullable("description", description)
@@ -696,5 +752,130 @@ final class CommunityService {
         // An older server that answers 200 without these keys still joined the caller; treating
         // that as a failure would tell the user nothing happened when it did.
         return (res.state ?? "active", res.existed ?? false)
+    }
+
+    /// Leave a community — OR CANCEL A PENDING REQUEST, which is the same route.
+    ///
+    /// That is not a convenience this client invented: POST /:id/leave updates
+    /// `state in ('active', 'pending')`, so an applicant who has not been approved yet is
+    /// withdrawn by exactly the call that removes a member. Checked before the "Cancel
+    /// request" affordance was offered, because a control that would 400 is worse than none.
+    ///
+    /// Returns whether a row actually moved. `false` is the server saying there was nothing to
+    /// leave — already gone, or never in — and is NOT an error: two taps, or two devices, must
+    /// not both report a failure for one successful departure.
+    ///
+    /// The OWNER cannot leave (400, "the owner cannot leave their own community"): a community
+    /// whose owner walked out would have no reachable host. Callers gate on ownership before
+    /// offering this.
+    @discardableResult
+    func leave(communityId: String) async throws -> Bool {
+        struct Envelope: Decodable { var left: Bool? }
+        let env: Envelope = try await api.request("POST", "communities/\(communityId)/leave")
+        return env.left ?? true
+    }
+
+    // MARK: - The admin dashboard (053_community_moderation.sql)
+    //
+    // ── THESE REPLACE INVENTED NUMBERS ──────────────────────────────────────────────
+    // The Home tab's admin overview read from `AdminStat.samples` and `AdminTask.samples` —
+    // four constants and a four-row fake queue, identical in every community, telling a host
+    // with eleven members that they had 48.2K. Both are now served.
+    //
+    // ── OMISSION IS A FEATURE OF THIS TYPE, NOT A GAP IN IT ─────────────────────────
+    // `activeMembers` DOES NOT EXIST on `Stats` and cannot be added by decoding harder. The
+    // server does not send it, because it cannot compute it: nothing in the schema records a
+    // per-user last-seen, so "active today" would have to be a count of recent AUTHORS, a count
+    // of recent JOINERS, or a percentage — three numbers that look precise and are wrong. 053's
+    // header works through each. The absence is deliberate and the dashboard renders three
+    // cards; do not "fix" this by inventing a fourth.
+
+    /// The dashboard's numbers. Manager only server-side.
+    struct Stats: Decodable {
+        /// Trigger-maintained on `communities` (030), the same number the card and the
+        /// directory show — read rather than recounted, so the dashboard cannot disagree with
+        /// the header above it.
+        var members: Int?
+        /// A TRUE total over community_posts, not the length of a feed page. That distinction
+        /// is the whole reason the mock existed.
+        var posts: Int?
+        var pending_members: Int?
+        var reported_posts: Int?
+        var open_reports: Int?
+
+        var memberCount: Int { members ?? 0 }
+        var postCount: Int { posts ?? 0 }
+        var pendingCount: Int { pending_members ?? 0 }
+        var reportedCount: Int { reported_posts ?? 0 }
+        /// Defaulted from its two halves rather than trusted blindly, so a server that has not
+        /// grown the combined key still gives the badge a true number.
+        var openReports: Int { open_reports ?? (pendingCount + reportedCount) }
+    }
+
+    func stats(communityId: String) async throws -> Stats {
+        try await api.request("GET", "communities/\(communityId)/stats")
+    }
+
+    /// One thing waiting on a moderator.
+    ///
+    /// ONE type for both kinds, matching the route: the dashboard's job is a single "what needs
+    /// me", and two lists hide the smaller one, which is reliably the urgent one.
+    struct QueueItem: Decodable, Identifiable, Hashable {
+        let id: String
+        /// "join_request" | "reported_post". Free text rather than an enum on the wire so an
+        /// unknown future kind decodes instead of failing the whole page; `resolvedKind` below
+        /// is where it becomes a case, and an unrecognised one is dropped by the caller rather
+        /// than rendered as something it is not.
+        var kind: String?
+        /// The person to approve or remove. Null on a reported post whose author was deleted —
+        /// 047's ON DELETE SET NULL makes that a normal row.
+        var user_id: String?
+        var post_id: String?
+        var subject: String?
+        var username: String?
+        /// A server-truncated excerpt of a reported post, so triage does not require opening
+        /// every item and does not ship 5,000 characters to draw one line.
+        var detail: String?
+        var reporter_count: Int?
+        var reason: String?
+        var at: String?
+
+        enum Kind: String {
+            case joinRequest = "join_request"
+            case reportedPost = "reported_post"
+        }
+
+        var resolvedKind: Kind? { kind.flatMap(Kind.init(rawValue:)) }
+        var name: String { subject ?? "Someone" }
+    }
+
+    func moderationQueue(communityId: String) async throws -> [QueueItem] {
+        struct Envelope: Decodable { var items: [QueueItem]? }
+        let env: Envelope = try await api.request(
+            "GET", "communities/\(communityId)/moderation-queue")
+        return env.items ?? []
+    }
+
+    /// Approve a pending join request. Manager only server-side — every gate the dashboard
+    /// draws is convenience, and this route decides identically whether or not a button was
+    /// drawn for it.
+    func approveMember(communityId: String, userId: String) async throws {
+        struct EmptyBody: Encodable {}
+        _ = try await api.request(
+            "POST", "communities/\(communityId)/members/\(userId)/approve",
+            body: EmptyBody(), as: EmptyResponse.self)
+    }
+
+    /// Reject a pending request, or remove an active member: both are `state -> 'left'`.
+    ///
+    /// DELIBERATELY `remove` AND NOT `ban`. The server keeps them as separate verbs so a
+    /// moderator has to choose the harsher one on purpose, and a queue's dismiss button is the
+    /// last place a ban should be one tap away — a rejected applicant can ask again, which is
+    /// the right default for someone whose only action so far was knocking.
+    func removeMember(communityId: String, userId: String) async throws {
+        struct EmptyBody: Encodable {}
+        _ = try await api.request(
+            "POST", "communities/\(communityId)/members/\(userId)/remove",
+            body: EmptyBody(), as: EmptyResponse.self)
     }
 }

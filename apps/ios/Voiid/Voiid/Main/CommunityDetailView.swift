@@ -18,6 +18,9 @@ struct CommunityDetailView: View {
     @State private var card: CommunityService.CommunityCard?
     @State private var loading = true
     @State private var error: String?
+    /// A failure from a TAP, kept apart from `error` (a failure to LOAD). The empty state
+    /// renders the latter; only this one is worth interrupting a drawn card for.
+    @State private var actionError: String?
     @State private var busy = false
     @State private var showInbox = false
     @State private var showSettings = false
@@ -101,6 +104,19 @@ struct CommunityDetailView: View {
             }
         }
         .navigationDestination(item: $openConversation) { ChatDetailView(conversation: $0) }
+        // A FAILED ACTION HAD NOWHERE TO GO. `error` is rendered only in the no-card branch,
+        // so a refused join or cancel set a string that nothing on screen ever drew — the tap
+        // simply did nothing. An alert rather than an inline banner: the card layout is
+        // signed off, and a failure that pushes the hero down is a layout change.
+        //
+        // Bound to `actionError` and NOT to `error`, because `error` doubles as the load
+        // failure and alerting over the empty state would show the same sentence twice.
+        .alert("Couldn\u{2019}t do that", isPresented: Binding(
+            get: { actionError != nil },
+            set: { if !$0 { actionError = nil } }
+        ), presenting: actionError) { _ in
+            Button("OK", role: .cancel) { actionError = nil }
+        } message: { Text($0) }
     }
 
     // MARK: Hero
@@ -157,7 +173,10 @@ struct CommunityDetailView: View {
                 Image(systemName: "person.2.fill").font(.system(size: 11))
                 Text("\(c.members) member\(c.members == 1 ? "" : "s")")
                 Text("\u{2022}")
-                Image(systemName: c.policy == "open" ? "globe" : "lock.fill")
+                // Shared with the list row and the settings picker — an `approval` community
+                // is not an open globe and is not a padlock either, and drawing it as one of
+                // those two was how the middle policy kept being read as the wrong extreme.
+                Image(systemName: JoinPolicyOption.icon(for: c.policy))
                     .font(.system(size: 10))
                 Text(visibilityText(c))
             }
@@ -207,12 +226,12 @@ struct CommunityDetailView: View {
         return letters.isEmpty ? String(source.prefix(1)).uppercased() : letters.uppercased()
     }
 
+    /// Reads from `JoinPolicyOption`, which is where the picker a host chooses from also
+    /// reads. There used to be a switch here, a second one in `CommunityAboutTab.policyText`
+    /// and a third ternary in `CommunitiesHomeView` that did not know about `approval` at all
+    /// — three chances for a host's choice and a visitor's reading to disagree. Now one.
     private func visibilityText(_ c: CommunityService.CommunityCard) -> String {
-        switch c.policy {
-        case "open":     return "Anyone can join"
-        case "approval": return "Approval needed"
-        default:         return "Invite only"
-        }
+        JoinPolicyOption.shortLabel(for: c.policy)
     }
 
     // MARK: Actions
@@ -306,21 +325,42 @@ struct CommunityDetailView: View {
         .accessibilityLabel("More community options")
     }
 
-    /// Every membership state the server can put you in, said plainly. A banned account is
-    /// told it cannot join rather than being shown a button that will fail, and an
-    /// approval-gated community says "requested" rather than "joined" — the difference between
-    /// an honest state and a lie the next screen would expose.
+    /// Every membership state the server can put you in, said plainly — ONE switch over
+    /// `CommunityMembership`, so this screen cannot disagree with the list row or the join
+    /// sheet about what the caller's relationship is.
+    ///
+    /// A banned account is TOLD it cannot join rather than shown a button that will 403. An
+    /// approval-gated request says "Requested" rather than "Joined", because the lie would be
+    /// discovered on the next screen when no channels appeared.
+    ///
+    /// `left` is not a case here. It arrives as `.none` and is offered the join button again,
+    /// which is also how a DECLINED request arrives: rejecting an applicant sets their row to
+    /// `left` (there is no `declined` state in the schema), so "you may ask again" is both
+    /// what the server means and what this draws.
     @ViewBuilder
     private func joinButton(_ c: CommunityService.CommunityCard) -> some View {
-        if c.isBanned {
+        switch c.membership {
+        case .banned:
             pill("You can\u{2019}t join", filled: false, disabled: true)
-        } else if c.isMember {
-            pill("Joined", icon: "checkmark", filled: true, disabled: true)
-        } else if c.isPending {
-            pill("Requested", filled: false, disabled: true)
-        } else if c.isSuspended {
+        case .suspended:
             pill("Suspended", filled: false, disabled: true)
-        } else {
+        case .joined:
+            pill("Joined", icon: "checkmark", filled: true, disabled: true)
+        case .requested:
+            // A LIVE control, not a dead badge — and only because the route supports it:
+            // POST /:id/leave moves `state in ('active','pending')`, so withdrawing an
+            // unapproved request is the same call that leaves a community. If it did not,
+            // this would be the disabled "Requested" pill and nothing more.
+            Button {
+                Haptics.tap()
+                Task { await cancelRequest(c) }
+            } label: {
+                pillLabel("Cancel request", icon: "xmark", filled: false)
+            }
+            .buttonStyle(.plain)
+            .disabled(busy)
+            .accessibilityHint("Withdraws your request to join. You can ask again later.")
+        case .none:
             Button {
                 Haptics.tap()
                 Task { await join(c) }
@@ -455,13 +495,27 @@ struct CommunityDetailView: View {
         catch { self.error = (error as? APIError)?.errorDescription }
     }
 
+    /// Withdraw a pending request. Reloads rather than assuming the outcome: the manager may
+    /// have approved it in the seconds before this tap, in which case the same route LEFT the
+    /// community instead of cancelling a request — and the card must say which happened.
+    private func cancelRequest(_ c: CommunityService.CommunityCard) async {
+        busy = true; defer { busy = false }
+        do {
+            _ = try await CommunityService.shared.leave(communityId: c.id)
+            await load()
+        } catch {
+            self.actionError = (error as? APIError)?.errorDescription
+                ?? "Couldn\u{2019}t cancel that request."
+        }
+    }
+
     private func join(_ c: CommunityService.CommunityCard) async {
         busy = true; defer { busy = false }
         do {
             _ = try await CommunityService.shared.join(communityId: c.id, inviteToken: nil)
             await load()
         } catch {
-            self.error = (error as? APIError)?.errorDescription ?? "Couldn\u{2019}t join."
+            self.actionError = (error as? APIError)?.errorDescription ?? "Couldn\u{2019}t join."
         }
     }
 }

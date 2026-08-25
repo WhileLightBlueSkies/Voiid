@@ -134,6 +134,73 @@ struct ClipThumbnail: View {
     }
 }
 
+/// `ClipThumbnail` for a string that may be EITHER a fetchable URL or an opaque R2 object
+/// key, resolving the latter through `MediaKeyResolver` before handing it on.
+///
+/// ── WHY A WRAPPER AND NOT A CHANGE TO `ClipThumbnail` ───────────────────────────
+/// `ClipThumbnail` is used by the clips grid, the player, the creator profile and the
+/// conference roster, and in every one of those the string it is given is ALREADY a presigned
+/// URL the server minted. Teaching it to presign would put an async round trip in the path of
+/// eighteen call sites that do not need one, and would make a typo'd URL silently attempt a
+/// media-key resolution. This is additive: the two community surfaces that hold keys use this,
+/// everything else is untouched.
+///
+/// The three states are `ClipThumbnail`'s own, plus one this view owns: a key that FAILED to
+/// resolve renders as broken rather than as blank, because a photo the server would not sign
+/// for us is a photo we cannot show, and an empty box would read as "this post has no image".
+struct ResolvedThumbnail: View {
+    /// A presigned https URL, an R2 object key, or nil.
+    let source: String?
+
+    @State private var resolved: String?
+    @State private var resolving = true
+    @State private var failed = false
+
+    var body: some View {
+        Group {
+            if failed {
+                // Deliberately NOT `ClipThumbnail(url: nil)`, which would also draw the broken
+                // state but by a different route; going through the same view keeps one
+                // appearance for one meaning.
+                ClipThumbnail(url: nil)
+            } else if resolving {
+                ClipShimmer()
+            } else {
+                ClipThumbnail(url: resolved)
+            }
+        }
+        .task(id: source) { await load() }
+    }
+
+    private func load() async {
+        failed = false
+        guard let source, !source.isEmpty else {
+            resolving = false
+            failed = true
+            return
+        }
+        guard MediaKeyResolver.isObjectKey(source) else {
+            // Already fetchable. No round trip, and no shimmer frame either — the URL is
+            // handed straight down and `ClipThumbnail` runs its own load.
+            resolved = source
+            resolving = false
+            return
+        }
+        // A cache hit resolves without ever entering the loading state, so scrolling back to a
+        // post already seen does not re-shimmer.
+        if let hit = MediaKeyResolver.shared.cached(source) {
+            resolved = hit
+            resolving = false
+            return
+        }
+        resolving = true
+        let url = await MediaKeyResolver.shared.resolve(source)
+        resolved = url
+        resolving = false
+        failed = url == nil
+    }
+}
+
 // MARK: - Shimmer
 
 /// The skeleton sweep. One implementation, one period — the grid skeleton and the

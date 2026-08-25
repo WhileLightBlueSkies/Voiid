@@ -25,7 +25,20 @@ const router = Router();
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const TARGET_TYPES = ['clip', 'creator', 'message_sender'] as const;
+// 053 adds the last two. 'community_post' targets the POST, never its author — reporting a
+// person is what 'creator' and 'message_sender' are for, and those accumulate against an
+// account, which is a different fact from "this one post is bad".
+const TARGET_TYPES = ['clip', 'creator', 'message_sender', 'community_post', 'community'] as const;
+
+/**
+ * Which target kinds name a USER rather than a piece of content.
+ *
+ * Used only by the anti-self-report guard below. Extracted because that guard compares
+ * `target_id` to the caller's user id, and doing so for a kind whose target_id is a POST id
+ * would be comparing two different namespaces — harmless today, but it is the sort of thing
+ * that silently becomes wrong when a fifth kind arrives.
+ */
+const USER_TARGET_TYPES: readonly string[] = ['creator', 'message_sender'];
 const REASONS = [
   'spam', 'harassment', 'hate', 'violence', 'nudity',
   'self_harm', 'child_safety', 'impersonation', 'illegal', 'other',
@@ -63,7 +76,12 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
   if (note != null && (typeof note !== 'string' || note.length > MAX_NOTE)) {
     return res.status(400).json({ error: `note must be under ${MAX_NOTE} characters` });
   }
-  if (target_id === user_id) {
+  // The anti-self-report guard, now scoped to the kinds whose target_id IS a user id. For a
+  // 'community_post' or 'community' the id names content, not a person, so this comparison
+  // would be against the wrong namespace — and the real "do not report your own thing" check
+  // for a post is the authorship test below, which is a different question with a different
+  // answer.
+  if (USER_TARGET_TYPES.includes(target_type) && target_id === user_id) {
     return res.status(400).json({ error: 'you cannot report yourself' });
   }
 
@@ -87,9 +105,45 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
   // The target must exist — but the response NEVER says whether it did. A report endpoint
   // that distinguishes "no such clip" from "reported" is an existence oracle for content
   // the caller may not be able to see, and for user ids generally.
-  const exists = target_type === 'clip'
-    ? (await query(`select 1 from clips where id = $1 limit 1`, [target_id])).length > 0
-    : (await query(`select 1 from users where id = $1 and deleted_at is null limit 1`, [target_id])).length > 0;
+  //
+  // The two 053 kinds probe their own tables. `community_post` deliberately does NOT filter on
+  // `removed_at is null`: a post removed between the reader seeing it and the report arriving
+  // is still a report worth recording — it is evidence about the AUTHOR's behaviour that a
+  // moderator reviewing an appeal needs, and dropping it would silently discard exactly the
+  // reports filed about the worst content, which tends to be removed fastest.
+  let exists: boolean;
+  switch (target_type) {
+    case 'clip':
+      exists = (await query(`select 1 from clips where id = $1 limit 1`, [target_id])).length > 0;
+      break;
+    case 'community_post':
+      exists = (await query(
+        `select 1 from community_posts where id = $1 limit 1`, [target_id])).length > 0;
+      break;
+    case 'community':
+      exists = (await query(
+        `select 1 from communities where id = $1 limit 1`, [target_id])).length > 0;
+      break;
+    default:
+      // 'creator' and 'message_sender' — both name a user.
+      exists = (await query(
+        `select 1 from users where id = $1 and deleted_at is null limit 1`,
+        [target_id])).length > 0;
+  }
+
+  // Reporting your OWN post is refused, and this is the post-shaped half of the self-report
+  // guard above. Not a privacy matter — it is that the author already has Delete on their own
+  // post, so a self-report can only ever be noise in a moderator's queue.
+  //
+  // Checked ONLY when the post exists, and answered with the same 202 as everything else, so
+  // this cannot be used to probe who wrote a post the caller cannot see.
+  if (exists && target_type === 'community_post') {
+    const own = await query(
+      `select 1 from community_posts where id = $1 and author_id = $2 limit 1`,
+      [target_id, user_id]
+    );
+    if (own.length > 0) return res.status(202).json({ received: true });
+  }
 
   if (exists) {
     // ON CONFLICT DO NOTHING against the anti-report-bombing key in 035: one open report per

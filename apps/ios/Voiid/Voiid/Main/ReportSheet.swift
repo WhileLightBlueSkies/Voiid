@@ -145,6 +145,13 @@ struct ReportSheet: View {
                 + "your messages with them — those are encrypted and we hold no key."
         case .clip, .creator:
             return "We can see the content you are reporting."
+        case .communityPost, .community:
+            // Deliberately says WHO ELSE sees it, which the other cases do not have to. A
+            // community's own owner and admins work its moderation queue (053), so a member
+            // reporting a post is handing it to people they are in a room with — and they are
+            // entitled to know that before they tap Send rather than to discover it afterwards.
+            return "Posts and communities are not end-to-end encrypted, so we can see what you "
+                + "are reporting. This community's host and admins can see it too."
         }
     }
 

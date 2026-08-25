@@ -13,6 +13,7 @@
 //
 
 import Foundation
+import UIKit
 
 @MainActor
 final class MediaService {
@@ -66,6 +67,62 @@ final class MediaService {
         // Named local: the plaintext-ness is stated where it happens, not inferred.
         let plaintextJpeg = imageData
         return try await upload(body: plaintextJpeg, mime: mime)
+    }
+
+    /// Community image upload — ⚠️ NOT ENCRYPTED. The server can read these bytes.
+    ///
+    /// Used by post photos (community_posts.media_url) and community avatars
+    /// (communities.avatar_r2_key). Named separately from `uploadProfilePhoto` even though the
+    /// transport is identical, because the REASON they are plaintext is different and the
+    /// difference matters:
+    ///
+    ///   A profile photo is plaintext because there is no channel to deliver a key over to a
+    ///   stranger who might contact you — a gap that a Signal-style profile key would close,
+    ///   and that `uploadProfilePhoto`'s comment tracks as work still to do.
+    ///
+    ///   A community image is plaintext because it is a BROADCAST and there is nothing to fix.
+    ///   047's header: a post is addressed to everyone who might later look, including
+    ///   non-members of a discoverable community who hold no MLS key, and there is no key that
+    ///   means "everyone who might later look". 030 says the same of the avatar, which is shown
+    ///   to strangers deciding whether to join. Encrypting either is not a deferred improvement;
+    ///   it is a thing that cannot be done and would break the surface if it were.
+    ///
+    /// Returns the OPAQUE R2 KEY. It is not fetchable as-is — `MediaKeyResolver` turns it back
+    /// into a URL on demand, and `publicCard()` server-side presigns the avatar column before
+    /// the card goes on the wire.
+    ///
+    /// ── DOWNSCALED BEFORE UPLOAD ────────────────────────────────────────────────────
+    /// A full-resolution capture from a modern iPhone is several megabytes and the feed card
+    /// draws it at 172pt. Uploading the original would spend the poster's data, and every
+    /// reader's, on detail no screen in the app can show.
+    func uploadCommunityImage(_ image: UIImage, maxDimension: CGFloat = 1600,
+                              quality: CGFloat = 0.82) async throws -> String {
+        let plaintextJpeg = try Self.downscaledJPEG(image, maxDimension: maxDimension,
+                                                    quality: quality)
+        return try await upload(body: plaintextJpeg, mime: "image/jpeg")
+    }
+
+    /// Fit inside `maxDimension` on the long edge, preserving aspect ratio, then JPEG.
+    ///
+    /// An image already smaller than the bound is NOT upscaled — enlarging a small photo to hit
+    /// a target adds bytes and no detail.
+    static func downscaledJPEG(_ image: UIImage, maxDimension: CGFloat,
+                               quality: CGFloat) throws -> Data {
+        let longEdge = max(image.size.width, image.size.height)
+        let scale = longEdge > maxDimension ? maxDimension / longEdge : 1
+        let target = CGSize(width: (image.size.width * scale).rounded(),
+                            height: (image.size.height * scale).rounded())
+
+        let rendered = scale < 1
+            ? UIGraphicsImageRenderer(size: target).image { _ in
+                image.draw(in: CGRect(origin: .zero, size: target))
+            }
+            : image
+
+        guard let data = rendered.jpegData(compressionQuality: quality) else {
+            throw APIError.http(status: 0, message: "couldn’t prepare that image")
+        }
+        return data
     }
 
     /// Encrypted download: get a presigned GET for `key`, fetch the ciphertext.

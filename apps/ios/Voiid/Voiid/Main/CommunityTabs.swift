@@ -281,6 +281,12 @@ struct CommunityMembersTab: View {
 
     @State private var members: [CommunityService.Member] = []
     @State private var pending: [CommunityService.Member] = []
+    /// The ids currently being written, NOT a single `busy` flag: a manager clearing a queue
+    /// taps several rows in a row, and one shared flag would freeze the whole list on each.
+    @State private var deciding: Set<String> = []
+    /// Kept apart from `error`, which owns the ROSTER's failure. A refused approval must not
+    /// replace a roster that loaded perfectly well with an error state.
+    @State private var queueError: String?
     @State private var loading = true
     @State private var error: String?
     @State private var filter: MemberFilter = .all
@@ -340,8 +346,18 @@ struct CommunityMembersTab: View {
             if isAdmin && !pending.isEmpty {
                 sectionLabel("Requests", count: pending.count)
                 ForEach(Array(pending.enumerated()), id: \.element.id) { index, m in
-                    MemberDirectoryRow(member: decorated(m, index: index),
-                                       isAdmin: isAdmin, pendingRequest: true)
+                    MemberDirectoryRow(
+                        member: decorated(m, index: index),
+                        isAdmin: isAdmin,
+                        pendingRequest: true,
+                        onApprove: { Task { await decide(m, approve: true) } },
+                        onDecline: { Task { await decide(m, approve: false) } },
+                        busy: deciding.contains(m.id))
+                }
+                if let queueError {
+                    Text(queueError)
+                        .font(VoiidFont.rounded(12))
+                        .foregroundColor(VoiidColor.error)
                 }
             }
 
@@ -383,6 +399,38 @@ struct CommunityMembersTab: View {
         if isAdmin {
             pending = (try? await CommunityService.shared.members(
                 communityId: communityId, state: "pending")) ?? []
+        }
+    }
+
+    /// Approve or decline one request.
+    ///
+    /// Both verbs already existed on the server and on `CommunityService`; only the buttons
+    /// were missing. `remove` and NOT `ban` for a decline — the row lands on `left`, which
+    /// means "may ask again", and there is deliberately no `declined` state in the schema to
+    /// mark them with. See `CommunityMembership`.
+    ///
+    /// The row is dropped optimistically ONLY after the call returns, and the roster is
+    /// reloaded on an approval because the new member now belongs in the list below — a local
+    /// insert would have to invent their role and join date.
+    private func decide(_ member: CommunityService.Member, approve: Bool) async {
+        guard !deciding.contains(member.id) else { return }
+        deciding.insert(member.id)
+        defer { deciding.remove(member.id) }
+        do {
+            if approve {
+                try await CommunityService.shared.approveMember(
+                    communityId: communityId, userId: member.id)
+            } else {
+                try await CommunityService.shared.removeMember(
+                    communityId: communityId, userId: member.id)
+            }
+            queueError = nil
+            Haptics.success()
+            await load()
+        } catch {
+            queueError = (error as? APIError)?.errorDescription
+                ?? (approve ? "Couldn\u{2019}t approve that request."
+                            : "Couldn\u{2019}t decline that request.")
         }
     }
 
@@ -449,6 +497,29 @@ private struct MemberDirectoryRow: View {
     let member: CommunityDirectoryMember
     let isAdmin: Bool
     let pendingRequest: Bool
+    /// Nil for a row that is not an answerable request, which is what keeps the roster rows
+    /// from growing two buttons they have no route for.
+    var onApprove: (() -> Void)?
+    var onDecline: (() -> Void)?
+    /// Set while THIS community's queue is writing, so a double-tap cannot approve twice —
+    /// the second call would 200 with `changed: false`, but the row would have lied in
+    /// between about which state it was in.
+    var busy: Bool = false
+
+    /// Text-weight, not filled. Two filled pills in a roster row would out-shout the member's
+    /// own name, and this row's metrics are signed off — the actions live in the space the
+    /// overflow menu occupies on every other row.
+    private func requestAction(_ title: String, tint: Color,
+                               action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(VoiidFont.rounded(12, .semibold))
+                .foregroundColor(tint)
+                .padding(.horizontal, 9).padding(.vertical, 5)
+                .background(Capsule().fill(VoiidColor.fieldFill))
+        }
+        .buttonStyle(.plain)
+    }
 
     var body: some View {
         HStack(spacing: VoiidSpacing.sm + 2) {
@@ -496,11 +567,33 @@ private struct MemberDirectoryRow: View {
             Spacer(minLength: 0)
 
             if pendingRequest {
-                Text("Waiting")
-                    .font(VoiidFont.rounded(10, .bold))
-                    .foregroundColor(VoiidColor.accentInk)
-                    .padding(.horizontal, 7).padding(.vertical, 3)
-                    .background(Capsule().fill(VoiidColor.accentTint))
+                // A REQUEST IS A THING TO ANSWER. This was a dead "Waiting" badge: the
+                // Requests section named the queue and then gave the manager no way to
+                // clear it, so the only route to approving anyone was the separate
+                // moderation dashboard. Both endpoints already existed.
+                //
+                // Approve and Decline, never Ban. `remove` sets the row to `left`, which
+                // means the applicant may ask again — the right default for someone whose
+                // only act so far was knocking. Banning is a deliberate, harsher verb and
+                // must not sit one tap from a queue.
+                if isAdmin {
+                    HStack(spacing: 6) {
+                        requestAction("Decline", tint: VoiidColor.textSecondary) {
+                            onDecline?()
+                        }
+                        requestAction("Approve", tint: VoiidColor.accentInk) {
+                            onApprove?()
+                        }
+                    }
+                    .disabled(busy)
+                    .opacity(busy ? 0.5 : 1)
+                } else {
+                    Text("Waiting")
+                        .font(VoiidFont.rounded(10, .bold))
+                        .foregroundColor(VoiidColor.accentInk)
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(Capsule().fill(VoiidColor.accentTint))
+                }
             } else if isAdmin {
                 Menu {
                     Button("View profile", systemImage: "person.crop.circle") {}
@@ -838,12 +931,11 @@ struct CommunityAboutTab: View {
         }
     }
 
+    /// From `JoinPolicyOption`, the same list the host's settings picker is built from. This
+    /// used to be its own switch, duplicating one in `CommunityDetailView.visibilityText` —
+    /// two places for three strings, i.e. two chances to drift apart.
     private var policyText: String {
-        switch card.policy {
-        case "open":     return "Anyone can join"
-        case "approval": return "Approval needed"
-        default:         return "Invite only"
-        }
+        JoinPolicyOption.shortLabel(for: card.policy)
     }
 
     @ViewBuilder

@@ -2502,4 +2502,224 @@ router.delete(
   })
 );
 
+// ═════════════════════════════════════════════════════════════════════════════════
+// THE ADMIN DASHBOARD (053_community_moderation.sql)
+//
+// The Home tab renders an admin overview that, until now, read from four invented constants
+// and a fake four-row queue — identical in every community, showing a host with eleven members
+// that they have 48.2K. These two routes replace both with the truth.
+//
+// ── THE RULE THESE ROUTES ARE BUILT ON: OMIT, NEVER ESTIMATE ────────────────────
+// `stats` returns three numbers and NOT a fourth. "Active members" is not computable from this
+// schema — nothing records a per-user last-seen — and the three plausible ways to fake it
+// (count recent authors, count recent joiners, take a percentage) each produce a number that
+// looks precise and is wrong. 053's header works through each. The field is therefore ABSENT
+// from the response rather than null or zero: a client cannot accidentally render an omitted
+// key, whereas it can very easily render a zero as a fact.
+// ═════════════════════════════════════════════════════════════════════════════════
+
+// GET /communities/:id/stats — manager only.
+//
+// Four counts in ONE round trip. Deliberately not four endpoints and not four sequential
+// queries: the dashboard draws them as one block, so a partial answer would mean cards
+// populating one at a time, and any of them failing separately would leave the block showing a
+// mixture of real and stale numbers with no way for the host to tell which was which.
+//
+// Manager-gated even though every underlying number is derivable by a determined member from
+// public surfaces (the member count is on the card, the posts are in the feed). The gate is not
+// about secrecy of the counts — it is that OPEN REPORTS is genuinely moderator-only
+// information, and a route that answered partially by role would be two shapes pretending to
+// be one.
+router.get(
+  '/:id/stats',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id } = (req as any).auth;
+    const gate = await requireManager(String(req.params.id ?? ''), user_id);
+    if (!gate.ok) return res.status(gate.status).json({ error: gate.error });
+    const communityId = gate.community.id;
+
+    const [posts, pending, postReports] = await Promise.all([
+      // Live posts only. `removed_at is null` matches community_posts_feed_idx's predicate, so
+      // this uses the index the feed already maintains rather than scanning.
+      //
+      // This is a TRUE TOTAL — a count(*) over the table — and not the length of a feed page.
+      // That distinction is the entire reason the old mock existed: a dashboard that counts one
+      // 20-row page and prints "1,204 posts" is a mock that lies, which is worse than one that
+      // visibly does not.
+      query<{ n: string }>(
+        `select count(*)::text as n from community_posts
+          where community_id = $1 and removed_at is null`,
+        [communityId]
+      ),
+      // Pending join requests. idx_community_members_pending (030) is partial on exactly this.
+      query<{ n: string }>(
+        `select count(*)::text as n from community_members
+          where community_id = $1 and state = 'pending'`,
+        [communityId]
+      ),
+      // Open reports against this community's posts. The join is from the reports side — the
+      // partial index 053 adds is on (target_id) where status='open' and
+      // target_type='community_post', so this probes community_posts per report rather than
+      // scanning every post in the community.
+      //
+      // count(DISTINCT target_id), not count(*): the number the host sees is HOW MANY POSTS
+      // NEED LOOKING AT, not how many people complained. Twelve reports on one post is one
+      // piece of work, and a queue badge reading 12 for a single item is the shape that makes
+      // a host stop trusting the badge.
+      query<{ n: string }>(
+        `select count(distinct r.target_id)::text as n
+           from content_reports r
+           join community_posts p on p.id = r.target_id
+          where r.status = 'open'
+            and r.target_type = 'community_post'
+            and p.community_id = $1
+            and p.removed_at is null`,
+        [communityId]
+      ),
+    ]);
+
+    res.json({
+      // Denormalised and trigger-maintained by 030 (bump_community_member_count). Read from
+      // the container rather than counted, because that column IS the number the directory
+      // and the card already show — computing a second, independently-derived total here
+      // would produce a dashboard that disagrees with the header above it.
+      members: gate.community.member_count,
+
+      // ACTIVE MEMBERS IS ABSENT, NOT NULL AND NOT ZERO. See the header. The client renders
+      // whatever cards it receives, so an omitted key is a card that does not appear.
+
+      posts: Number(posts[0]?.n ?? 0),
+      // The two halves of the queue, reported separately as well as together, because they are
+      // different work: approving a join is a decision about a person, reviewing a report is a
+      // decision about content, and a host wants to know which kind is waiting.
+      pending_members: Number(pending[0]?.n ?? 0),
+      reported_posts: Number(postReports[0]?.n ?? 0),
+      open_reports: Number(pending[0]?.n ?? 0) + Number(postReports[0]?.n ?? 0),
+    });
+  })
+);
+
+const MODERATION_QUEUE_LIMIT = 50;
+
+// GET /communities/:id/moderation-queue — manager only.
+//
+// ONE queue, two kinds of item, newest-need-first. Deliberately merged rather than served as
+// two lists: 047's dashboard type says it, and it is right — the dashboard's job is a single
+// "what needs me", and three separate lists hide the smallest one, which is reliably the
+// urgent one.
+//
+// ── WHAT IS *NOT* IN THIS QUEUE ─────────────────────────────────────────────────
+// Reports filed against the COMMUNITY ITSELF ('community' target type, 053). A host is not the
+// right person to adjudicate an accusation about their own community; those belong to the
+// platform admin queue, and surfacing them here would let a host see who accused them, which
+// is the retaliation vector 035 refuses in every other place it comes up.
+//
+// Event approvals, which the mock's third row invented. There is no event-approval state
+// anywhere in the schema — community_events has no pending kind — so there is nothing to list.
+// Rather than leave a placeholder, the kind simply does not appear.
+router.get(
+  '/:id/moderation-queue',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id } = (req as any).auth;
+    const gate = await requireManager(String(req.params.id ?? ''), user_id);
+    if (!gate.ok) return res.status(gate.status).json({ error: gate.error });
+    const communityId = gate.community.id;
+
+    const [pendingRows, reportRows] = await Promise.all([
+      // Pending join requests, OLDEST FIRST. The opposite order from reports, and on purpose:
+      // a join request is somebody waiting at the door, and the one who has waited longest is
+      // the one being kept waiting. idx_community_members_pending (030) is ordered exactly so.
+      query<any>(
+        `select m.user_id, m.joined_at,
+                u.full_name as name, u.username
+           from community_members m
+           left join users u on u.id = m.user_id
+          where m.community_id = $1 and m.state = 'pending'
+          order by m.joined_at asc
+          limit $2`,
+        [communityId, MODERATION_QUEUE_LIMIT]
+      ),
+      // Reported posts, grouped so one post is ONE row however many people reported it. The
+      // report count rides along because it is the field a moderator prioritises by, and
+      // `distinct r.reporter_user_id` rather than count(*) for the reason 035's header gives:
+      // scoping uniqueness to open reports means the row count is a count of reports, not of
+      // people, and "3 members reported this" is the claim the dashboard actually makes.
+      query<any>(
+        `select p.id as post_id,
+                p.body,
+                p.author_id,
+                p.created_at as post_created_at,
+                u.full_name as author_name,
+                u.username as author_username,
+                count(distinct r.reporter_user_id)::text as reporter_count,
+                max(r.created_at) as latest_report_at,
+                min(r.reason) as sample_reason
+           from content_reports r
+           join community_posts p on p.id = r.target_id
+           left join users u on u.id = p.author_id
+          where r.status = 'open'
+            and r.target_type = 'community_post'
+            and p.community_id = $1
+            and p.removed_at is null
+          group by p.id, p.body, p.author_id, p.created_at, u.full_name, u.username
+          order by max(r.created_at) desc
+          limit $2`,
+        [communityId, MODERATION_QUEUE_LIMIT]
+      ),
+    ]);
+
+    // EVERY KEY ALWAYS PRESENT, null rather than omitted — the rule `publicCard` and
+    // `postShape` state, for the reason they state it: Swift's Codable throws keyNotFound on an
+    // absent key and fails the WHOLE decode, so a row that drops `author_name` for a deleted
+    // author breaks the queue for exactly the rows a moderator most needs to see.
+    const items = [
+      ...pendingRows.map((r) => ({
+        // A composite id, because the two kinds are drawn from different tables and neither
+        // has an id unique across the merged list. Prefixed so a client can never confuse a
+        // membership row with a post row.
+        id: `join:${r.user_id}`,
+        kind: 'join_request' as const,
+        // The two ids the client needs to call approve/remove. Named for what they are.
+        user_id: r.user_id,
+        post_id: null,
+        subject: r.name ?? (r.username ? `@${r.username}` : 'Someone'),
+        username: r.username ?? null,
+        detail: null,
+        reporter_count: null,
+        reason: null,
+        at: r.joined_at,
+      })),
+      ...reportRows.map((r) => ({
+        id: `post:${r.post_id}`,
+        kind: 'reported_post' as const,
+        user_id: r.author_id ?? null,
+        post_id: r.post_id,
+        // 047's ON DELETE SET NULL makes a null author a NORMAL row, not a defect: deleting an
+        // account must not rewrite the community's history. "Deleted account" is the honest
+        // rendering and the client falls back to it.
+        subject: r.author_name
+          ?? (r.author_username ? `@${r.author_username}` : 'Deleted account'),
+        username: r.author_username ?? null,
+        // A short excerpt so a moderator can triage without opening every item. Truncated
+        // server-side rather than client-side so the whole body of a 5,000-character post is
+        // not shipped fifty times to render fifty one-line rows.
+        detail: typeof r.body === 'string' ? r.body.slice(0, 140) : null,
+        reporter_count: Number(r.reporter_count ?? 0),
+        reason: r.sample_reason ?? null,
+        at: r.latest_report_at,
+      })),
+    ]
+      // Merged by recency of the NEED, not by kind: a join request from an hour ago outranks a
+      // report from yesterday. Sorting after the merge rather than in SQL because the two
+      // halves are ordered by different columns for different reasons (see above) and a UNION
+      // would have to abandon one of those orderings to get a single sort.
+      .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
+      .slice(0, MODERATION_QUEUE_LIMIT);
+
+    res.json({ items });
+  })
+);
+
 export default router;
