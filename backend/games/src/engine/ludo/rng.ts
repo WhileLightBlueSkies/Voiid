@@ -5,7 +5,7 @@
 // every future roll in twenty lines. Schema v2 replaces it with a 256-bit secret and
 // HMAC-SHA256 in counter mode:
 //
-//   stream = HMAC-SHA256(seed, "ludo-roll-v2:" || counter)  → bytes
+//   stream = HMAC-SHA256(seed, "ludo-roll-v3:" || counter)  → bytes
 //
 // Each roll consumes one counter step; the face comes from rejection sampling over the first
 // two bytes so 1..6 is UNBIASED (a bare `h % 6` would bias 1..4 by 0.0015% — invisible to a
@@ -18,7 +18,7 @@
 // can be proven fair after the fact but never predicted during one.
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 
-const STREAM_PREFIX = 'ludo-roll-v2:';
+const STREAM_PREFIX = 'ludo-roll-v3:';
 
 /** One uniform 1..6 value per call; `counter` advances exactly once. */
 export class DiceRng {
@@ -49,19 +49,15 @@ export class DiceRng {
     }
 
     next(): number {
-        const stream = createHmac('sha256', Buffer.from(this.seedHex, 'hex'))
-            .update(STREAM_PREFIX + this.counter)
-            .digest();
-        this.counter += 1;
-        // Rejection sampling over two bytes: 65536 % 6 = 4, so values >= 65532 are discarded
-        // rather than folded back onto the low faces.
-        let r = stream[0];
-        for (let attempt = 1; attempt < 8; attempt++) {
-            r = (stream[0] << 8) | stream[attempt % stream.length];
-            if (r < 65532) break;
+        for (;;) {
+            const stream = createHmac('sha256', Buffer.from(this.seedHex, 'hex'))
+                .update(STREAM_PREFIX + this.counter).digest();
+            this.counter += 1;
+            for (let offset = 0; offset + 1 < stream.length; offset += 2) {
+                const r = stream.readUInt16BE(offset);
+                if (r < 65532) return (r % 6) + 1;
+            }
         }
-        if (r >= 65532) r = stream[stream.length - 1] % 65532;
-        return (r % 6) + 1;
     }
 }
 

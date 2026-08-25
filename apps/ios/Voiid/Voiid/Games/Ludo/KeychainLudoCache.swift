@@ -45,6 +45,21 @@ final class KeychainLudoCache {
         return account
     }
 
+    func read(matchId: String) -> [String: Any]? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: matchId,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return json
+    }
+
     func clear(matchId: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

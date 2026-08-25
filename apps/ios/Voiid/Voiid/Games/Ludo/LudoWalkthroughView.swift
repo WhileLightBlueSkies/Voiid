@@ -116,7 +116,8 @@ private struct WalkthroughBoard: View {
         }()
         func seat(_ s: Int, name: String) -> LudoSeatViewV2 {
             LudoSeatViewV2(seat: s, seatId: "demo-\(s)", color: LudoSeatColor(rawValue: s) ?? .red,
-                           displayName: name, participation: "active", connection: "connected",
+                           displayName: name, controller: "human", botMarker: nil, botDifficulty: nil,
+                           participation: "active", connection: "connected",
                            timeoutStreak: 0, finishedPawns: 0, captures: 0)
         }
         return LudoGameStateV2(
@@ -124,14 +125,14 @@ private struct WalkthroughBoard: View {
             rulesVersion: LudoRules.rulesVersion,
             mode: "duel",
             status: "active",
-            serverNow: 0, viewerSeat: 0,
+            serverNow: 0, viewerSeat: 0, viewerRole: "controller",
             seats: [seat(0, name: "@you"), seat(2, name: "@rival")],
             tokensPerSeat: 4,
             tokens: tokens + [],
             turn: nil,
             lastAction: nil,
             winnerSeat: step == 6 ? 0 : nil,
-            endReason: step == 6 ? "win" : nil,
+            endReason: step == 6 ? "allPawnsHome" : nil,
             seedCommitment: nil,
             seq: 0)
     }

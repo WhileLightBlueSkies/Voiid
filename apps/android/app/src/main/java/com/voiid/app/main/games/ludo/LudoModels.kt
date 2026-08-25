@@ -5,7 +5,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 
 /**
- * Wire/state model for Ludo schema v2 (LUDO_GAME_SPEC.md §5–§6).
+ * Wire/state model for Ludo schema v3 (LUDO_GAME_SPEC.md §5–§6).
  *
  * Type names mirror backend/games/src/engine/ludo/types.ts normatively; only casing differs.
  * THE CLIENT IS A RENDERER: it never decides legality — the frame's `turn.legalTokenIds`
@@ -17,8 +17,8 @@ import androidx.compose.ui.geometry.Size
  * never receive an unauthorized real username and then hide it locally.
  */
 object LudoRules {
-    const val SCHEMA_VERSION = 2
-    const val RULES_VERSION = "ludo-classic-1"
+    const val SCHEMA_VERSION = 3
+    const val RULES_VERSION = "ludo-classic-2"
 
     const val TRACK_COUNT = 52
     const val HOME_LANE_COUNT = 5
@@ -45,6 +45,7 @@ object LudoRules {
     val SAFE_INDICES = setOf(0, 8, 13, 21, 26, 34, 39, 47)
     val ENTRY_INDICES = listOf(0, 13, 26, 39)
     val STAR_INDICES = listOf(8, 21, 34, 47)
+    val APPROACH_INDICES = listOf(50, 11, 24, 37)
 
     fun startIndex(seat: Int): Int = START_INDICES[seat]
     val START_INDICES = intArrayOf(0, 13, 26, 39)
@@ -60,13 +61,19 @@ data class LudoTurnView(
     val serial: Int,
     val phase: String,
     val opensAt: Long,
-    val deadlineAt: Long,
+    val deadlineAt: Long?,
+    val botActionAt: Long?,
     val sixStreak: Int,
     val rollId: String?,
     val value: Int?,
-    val legalTokenIds: List<Int>,
+    val legalMoves: List<LudoLegalMove>,
     val automated: Boolean,
-)
+) { val legalTokenIds: List<Int> get() = legalMoves.map { it.tokenId } }
+
+data class LudoLegalMove(
+    val tokenId: Int, val to: Int, val path: List<Int>,
+    val capture: Capture?, val isSafe: Boolean,
+) { data class Capture(val seat: Int, val tokenId: Int) }
 
 data class LudoMovePayload(
     val tokenId: Int,
@@ -96,13 +103,16 @@ data class LudoSeatView(
     val seatId: String,
     val color: LudoSeatColor,
     val displayName: String,
+    val controller: String,
+    val botMarker: String?,
+    val botDifficulty: String?,
     val participation: String,
     val connection: String,
     val timeoutStreak: Int,
     val finishedPawns: Int,
     val captures: Int,
 ) {
-    val isDropped: Boolean get() = participation == "dropped"
+    val isBot: Boolean get() = controller == "bot"
     val isWaiting: Boolean get() = participation == "waiting"
 }
 
@@ -117,6 +127,7 @@ data class LudoGameState(
     val status: String,
     val serverNow: Long,
     val viewerSeat: Int?,
+    val viewerRole: String,
     val seats: List<LudoSeatView>,
     val tokensPerSeat: Int,
     val tokens: List<List<Int>>,

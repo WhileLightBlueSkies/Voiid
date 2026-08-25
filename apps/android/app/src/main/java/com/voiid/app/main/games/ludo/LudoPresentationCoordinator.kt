@@ -60,6 +60,7 @@ class LudoPresentationCoordinator {
     val hopCenter: StateFlow<Pair<Int, Offset>?> = _hopCenter.asStateFlow()
 
     private var beatJob: Job? = null
+    private val beatQueue = ArrayDeque<suspend () -> Unit>()
     private var reduceMotion = false
     private var matchId: String? = null
     /** Resolved once per theme from the composable layer; animations never read composition. */
@@ -80,6 +81,7 @@ class LudoPresentationCoordinator {
     fun cancelAll() {
         beatJob?.cancel()
         beatJob = null
+        beatQueue.clear()
         _sweep.value = null
         _roll.value = null
         _hopCenter.value = null
@@ -123,10 +125,13 @@ class LudoPresentationCoordinator {
     }
 
     private fun runSerialized(block: suspend () -> Unit) {
-        if (beatJob?.isActive == true) return   // never overlap the §12.3 sequence
+        if (reduceMotion) return                // authoritative final state is already rendered
+        beatQueue.addLast(block)
+        if (beatJob?.isActive == true) return   // retain, but never overlap, the §12.3 sequence
         beatJob = scope.launch {
-            if (reduceMotion) return@launch      // reduced motion renders final states instantly
-            block()
+            while (beatQueue.isNotEmpty()) {
+                beatQueue.removeFirst().invoke()
+            }
         }
     }
 

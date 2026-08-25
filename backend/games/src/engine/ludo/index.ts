@@ -1,730 +1,476 @@
-// Ludo schema-v2 engine adapter (LUDO_GAME_SPEC.md §5, §6, §12–§16).
-//
-// THE SERVER OWNS EVERYTHING THAT MATTERS: the die, rules, legal moves, deadlines, results,
-// and the sequence number. Clients render and submit intent only.
-//
-// WHY THE OLD ENGINE WAS REPLACED IN PLACE: v1 had a 45-second clock, seat-count-dependent
-// pawn counts, creator-fixed colours and no authoritative presentation timeline. v2 keeps the
-// useful shape — durable state, the secret channel, the sweeper-driven clock — and replaces
-// the behaviour this contract forbids. A v1 state found on restore is ABANDONED with a clear
-// version reason rather than converted mid-match (§20 P1).
-//
-// ACTIONS AND SEQ: every accepted transition produces EXACTLY ONE action and the runtime
-// increments seq once for it. A transition that both moves a pawn and changes the seat packs
-// BOTH facts into that one action (`fromSeat`, `actorSeat`, `roll`, `move`,
-// `presentationEndsAt`) rather than emitting two frames — a client animates an action at most
-// once (§6), so two actions for one transition would double-render it.
 import { randomUUID } from 'node:crypto';
-import type {
-    ApplyResult,
-    GameEngine,
-    GameInput,
-    GameOutcome,
-    GameStatePayload,
-} from '../GameEngine';
+import type { ApplyResult, GameEngine, GameInput, GameOutcome, GameStatePayload } from '../GameEngine';
 import {
-    destination,
-    FINISHED,
-    HOME_LANE_BASE,
-    MAX_SEATS,
-    SEAT_COLORS,
-    TOKENS_PER_SEAT,
-    TRACK_COUNT,
-    YARD,
-    path,
+    FINISHED, MAX_SEATS, SEAT_COLORS, TOKENS_PER_SEAT, YARD, destination, isSafe, path,
 } from './board';
-import {
-    activeSeats,
-    finishedPawns,
-    legalMoves,
-    nextActiveSeat,
-    pickAutoMove,
-    resolveCapture,
-} from './rules';
+import { activeSeats, finishedPawns, legalMoves, nextActiveSeat, resolveCapture } from './rules';
+import { pickTimeoutMove } from './autoplay';
+import { selectBotMove } from './bot/policy';
+import { botDelay } from './bot/scheduler';
+import { botName } from './bot/names';
 import { DiceRng } from './rng';
 import {
-    RULES_VERSION,
-    SCHEMA_VERSION,
-    type ActionType,
-    type LastAction,
-    type LudoMode,
-    type LudoPublicState,
-    type LudoStateV2,
-    type SeatView,
+    BOT_POLICY_VERSION, RULES_VERSION, SCHEMA_VERSION,
+    type ActionType, type BotDifficulty, type ControllerType, type EndReason,
+    type LastAction, type LegalMoveView, type LudoMode, type LudoPublicState,
+    type LudoStateV3, type RosterEntry, type SeatView, type ViewerRole,
 } from './types';
 
-/** Border sweep (360 ms) + die relocation / pip cross-fade (120 ms) (§12.3). */
 export const TRANSITION_MS = 480;
-/** Die roll choreography total (§14.3). */
+export const FIRST_TURN_MS = 120;
 export const ROLL_SETTLE_MS = 940;
-/** The per-decision server clock (§13). */
 export const TURN_WINDOW_MS = 30_000;
-
-/** Hop chain duration for n cells (§15). */
-export const hopMs = (n: number) => (n === 0 ? 0 : 120 + 92 * (n - 1));
+export const hopMs = (n: number) => n === 0 ? 0 : 120 + 92 * (n - 1);
 const CAPTURE_EXTRA_MS = 480;
 const FINISH_EXTRA_MS = 550;
 
 export interface FrameContext {
     serverNow: number;
-    /** userId -> connection state, maintained by the runtime's presence tracker. */
+    seq?: number;
     connections: Record<string, 'connected' | 'disconnected'>;
-    /** userId -> projected display name FOR THIS VIEWER's frame. */
     names: Record<string, string>;
 }
 
-/** Opaque, match-scoped, non-reversible seat id. Never a raw user id. */
 function opaqueSeatId(matchKey: string, seat: number): string {
     return `seat-${matchKey.slice(0, 8)}-${seat}`;
 }
+function difficulty(value: unknown): BotDifficulty {
+    return value === 'relaxed' || value === 'sharp' ? value : 'balanced';
+}
 
-class LudoEngineV2 implements GameEngine {
-    private s: LudoStateV2;
-    private rng: DiceRng;
-    private matchKey: string;
+class LudoEngineV3 implements GameEngine {
     private ctx: FrameContext | null = null;
 
-    constructor(state: LudoStateV2, rng: DiceRng, matchKey: string) {
-        this.s = state;
-        this.rng = rng;
-        this.matchKey = matchKey;
+    constructor(
+        private s: LudoStateV3,
+        private rng: DiceRng,
+        private pacingCounter: number,
+        private matchKey: string,
+    ) {}
+
+    setFrameContext(ctx: FrameContext): void { this.ctx = ctx; }
+
+    accept(userId: string): boolean {
+        const seat = this.s.humanUserIds.indexOf(userId);
+        if (seat >= 0) this.s.accepted[seat] = true;
+        return this.allAccepted();
     }
-
-    setFrameContext(ctx: FrameContext): void {
-        this.ctx = ctx;
+    allAccepted(): boolean {
+        return this.s.assigned.every((assigned, seat) => !assigned || this.s.accepted[seat]);
     }
-
-    // --- Lifecycle -----------------------------------------------------------------------
-
-    /**
-     * Select the first active seat AFTER all players accept, using the server-secret RNG
-     * (§5.4). Idempotent: the final accept and a racing rejoin converge on one start.
-     */
     startAll(now: number): void {
-        if (this.s.started || this.s.status !== 'waiting') return;
-        for (let s = 0; s < MAX_SEATS; s++) {
-            if (this.s.players[s] !== null) this.s.participation[s] = 'active';
+        if (this.s.started || this.s.status !== 'waiting' || !this.allAccepted()) return;
+        for (let seat = 0; seat < MAX_SEATS; seat++) {
+            if (this.s.assigned[seat]) this.s.participation[seat] = 'active';
         }
-        const eligible = activeSeats(this.s);
-        if (eligible.length === 0) return;
-        const pick = eligible[Math.floor(this.rng.next()) % eligible.length];
+        const seats = activeSeats(this.s);
+        if (seats.length === 0) return;
+        const first = seats[(this.rng.next() - 1) % seats.length];
         this.s.started = true;
+        this.s.startedAt = now;
         this.s.status = 'active';
-        this.s.activeSeat = pick;
+        this.s.activeSeat = first;
         this.s.turnSerial = 1;
         this.s.phase = 'awaitingRoll';
-        this.s.opensAt = now + TRANSITION_MS;
-        this.s.deadlineAt = this.s.opensAt + TURN_WINDOW_MS;
-        this.s.turnHadAutoAction = false;
-        // First authoritative turn: the full border SETS to the first hue without travel
-        // because there is no outgoing player (§12.1). One action, opensAt = +480.
-        this.commitAction('turnChanged', now, {
-            actorSeat: pick,
-            presentationEndsAt: now + TRANSITION_MS,
-        });
+        this.s.opensAt = now + FIRST_TURN_MS;
+        this.openDecision(first, this.s.opensAt);
+        this.commitAction('turnChanged', now, { actorSeat: first, presentationEndsAt: this.s.opensAt });
     }
-
-    /** Mark a seat accepted. Returns true when every assigned seat has accepted. */
-    accept(userId: string): boolean {
-        const seat = this.s.players.indexOf(userId);
-        if (seat !== -1) this.s.accepted[seat] = true;
-        for (let s = 0; s < MAX_SEATS; s++) {
-            if (this.s.players[s] !== null && !this.s.accepted[s]) return false;
-        }
-        return true;
-    }
-
-    /**
-     * Explicit forfeit (§11.5, §16). Duel: the other player wins. Four: the seat drops and
-     * play continues unless one active seat remains. Killing the app is NOT a forfeit — only
-     * this deliberate call reaches here.
-     */
-    forfeit(userId: string, now: number): ApplyResult {
-        const seat = this.s.players.indexOf(userId);
-        if (
-            seat === -1 ||
-            this.s.status === 'finished' ||
-            this.s.status === 'abandoned'
-        ) {
-            return { accepted: false };
-        }
-        if (!this.s.started) {
-            this.s.status = 'abandoned';
-            this.s.endReason = 'lobbyCancelled';
-            this.commitAction('end', now, { actorSeat: seat });
-            return { accepted: true, outcome: { winnerId: null, scores: {} } };
-        }
-        return this.dropSeat(seat, now, 'playerForfeit');
-    }
-
-    private dropSeat(
-        seat: number,
-        now: number,
-        _reason: 'timeoutForfeit' | 'playerForfeit',
-    ): ApplyResult {
-        this.s.participation[seat] = 'dropped';
-        // Remove unfinished pawns from track/home lane: they no longer capture or block.
-        // Finished pawns stay finished; yard pawns stay put in the desaturated yard.
-        for (let t = 0; t < this.s.tokens[seat].length; t++) {
-            const p = this.s.tokens[seat][t];
-            if ((p >= 0 && p < TRACK_COUNT) || (p >= HOME_LANE_BASE && p < FINISHED)) {
-                this.s.tokens[seat][t] = YARD;
-            }
-        }
-        this.commitAction('drop', now, { actorSeat: seat });
-
-        const remaining = activeSeats(this.s);
-        if (remaining.length <= 1) {
-            // Duel: the remaining player wins by the reason the seat left. Four-player: a
-            // lone survivor wins by lastActive.
-            const terminalReason =
-                this.s.mode === 'duel' ? _reason : remaining.length === 1 ? 'lastActive' : _reason;
-            return this.finish(remaining[0] ?? null, terminalReason, now, false);
-        }
-        return this.endTurn(now, {});
-    }
-
-    // --- Input ---------------------------------------------------------------------------
 
     applyInput(playerId: string, input: GameInput): ApplyResult {
         const now = Date.now();
         if (typeof input.presence === 'boolean') return { accepted: true, silent: true };
         if (input.forfeit === true) return this.forfeit(playerId, now);
-
-        const seat = this.s.players.indexOf(playerId);
-        if (seat === -1) return { accepted: false, rejection: 'NOT_A_PLAYER' };
+        const seat = this.s.humanUserIds.indexOf(playerId);
+        if (seat < 0 && this.s.formerControllerUserIds.includes(playerId)) {
+            return { accepted: false, rejection: 'NOT_SEAT_CONTROLLER' };
+        }
+        if (seat < 0) return { accepted: false, rejection: 'NOT_A_PLAYER' };
+        if (this.s.controller[seat] !== 'human') return { accepted: false, rejection: 'NOT_SEAT_CONTROLLER' };
         if (this.s.status !== 'active') return { accepted: false, rejection: 'MATCH_NOT_ACTIVE' };
-
-        const serialOk =
-            typeof input.turnSerial === 'number' && input.turnSerial === this.s.turnSerial;
-        if (seat !== this.s.activeSeat || !serialOk) {
+        if (seat !== this.s.activeSeat || input.turnSerial !== this.s.turnSerial) {
             return { accepted: false, rejection: 'NOT_YOUR_TURN' };
         }
-
-        if (input.roll === true) return this.roll(seat, now, false);
-        if (typeof input.move === 'number') return this.move(seat, input, now, false);
+        if (input.roll === true) return this.roll(seat, now, false, false);
+        if (typeof input.move === 'number') return this.move(seat, input, now, false, 0);
         return { accepted: false };
     }
 
+    forfeit(userId: string, now: number): ApplyResult {
+        const seat = this.s.humanUserIds.indexOf(userId);
+        if (seat < 0 || this.s.controller[seat] !== 'human') {
+            return { accepted: false, rejection: seat < 0 ? 'NOT_A_PLAYER' : 'NOT_SEAT_CONTROLLER' };
+        }
+        if (this.s.status !== 'active') return { accepted: false, rejection: 'MATCH_NOT_ACTIVE' };
+        if (this.s.mode === 'duel') {
+            const winner = activeSeats(this.s).find((candidate) => candidate !== seat) ?? null;
+            return this.finish(winner, 'duelForfeit', now, false);
+        }
+        this.installTakeover(seat, now);
+        if (seat === this.s.activeSeat) this.openDecision(seat, Math.max(now, this.s.opensAt ?? now));
+        return { accepted: true };
+    }
+
     private timingReject(now: number): ApplyResult | null {
-        if (this.s.opensAt !== null && now < this.s.opensAt) {
-            return { accepted: false, rejection: 'TOO_EARLY' };
-        }
-        if (this.s.deadlineAt !== null && now > this.s.deadlineAt) {
-            return { accepted: false, rejection: 'DEADLINE_PASSED' };
-        }
+        if (this.s.opensAt !== null && now < this.s.opensAt) return { accepted: false, rejection: 'TOO_EARLY' };
+        if (this.s.deadlineAt !== null && now > this.s.deadlineAt) return { accepted: false, rejection: 'DEADLINE_PASSED' };
         return null;
     }
 
-    private roll(seat: number, now: number, auto: boolean): ApplyResult {
-        if (this.s.phase !== 'awaitingRoll') {
-            return { accepted: false, rejection: 'PHASE_MISMATCH' };
-        }
-        if (!auto) {
-            const gate = this.timingReject(now);
-            if (gate) return gate;
-        }
-        if (auto) this.s.turnHadAutoAction = true;
-
+    private roll(seat: number, now: number, timeout: boolean, bot: boolean): ApplyResult {
+        if (this.s.phase !== 'awaitingRoll') return { accepted: false, rejection: 'PHASE_MISMATCH' };
+        if (!timeout && !bot) { const gate = this.timingReject(now); if (gate) return gate; }
+        if (timeout) this.s.turnHadAutoAction = true;
         const value = this.rng.next();
         const rollId = randomUUID();
         this.s.rollId = rollId;
         this.s.rollValue = value;
-        this.s.automated = auto;
+        this.s.automated = timeout;
+        if (value === 6) this.s.sixStreak += 1; else this.s.sixStreak = 0;
 
-        // THREE CONSECUTIVE SIXES FORFEIT THE THIRD ROLL (§5.2 r6): the value is displayed,
-        // no pawn moves for it, prior moves remain, play passes clockwise. The streak resets
-        // because the seat is handing off regardless.
-        if (value === 6) this.s.sixStreak += 1;
         if (this.s.sixStreak >= 3) {
             this.s.sixStreak = 0;
-            return this.passAfterRoll(seat, now, rollId, value, auto);
+            return this.passAfterRoll(seat, now, rollId, value, timeout);
         }
 
         const legal = legalMoves(this.s, seat, value);
-
-        if (legal.length === 0) {
-            // Show the roll, wait for its landing animation, then pass automatically (§5.2 r7).
-            // There is no pass button.
-            this.s.sixStreak = 0;
-            return this.passAfterRoll(seat, now, rollId, value, auto);
-        }
-
         this.s.legalTokenIds = legal;
-
-        if (auto) {
-            // Atomic timeout auto-turn (§13): commit the roll AND the deterministic move in ONE
-            // accepted transition. An absent player never consumes a second 30-second wait.
-            this.s.phase = 'awaitingMove';
-            this.s.opensAt = now; // the decision window is not reopening; auto skips gates anyway
-            const tokenId = pickAutoMove(this.s, seat, value, legal)!;
-            return this.move(seat, { move: tokenId, rollId }, now, true);
+        if (legal.length === 0) {
+            if (value === 6) {
+                const opensAt = now + ROLL_SETTLE_MS + 120;
+                this.s.phase = 'awaitingRoll';
+                this.s.rollId = null;
+                this.s.rollValue = null;
+                this.s.legalTokenIds = [];
+                this.s.opensAt = opensAt;
+                this.openDecision(seat, opensAt);
+                this.commitAction('roll', now, {
+                    actorSeat: seat, presentationEndsAt: now + ROLL_SETTLE_MS,
+                    roll: { rollId, value, auto: timeout },
+                });
+                return { accepted: true };
+            }
+            return this.passAfterRoll(seat, now, rollId, value, timeout);
         }
 
         this.s.phase = 'awaitingMove';
-        // Awaiting move starts when the mandatory die animation is expected to settle (§13):
-        // moveOpensAt = rollCommittedAt + 940.
         const moveOpensAt = now + ROLL_SETTLE_MS;
         this.s.opensAt = moveOpensAt;
-        this.s.deadlineAt = moveOpensAt + TURN_WINDOW_MS;
-        this.commitAction(auto ? 'autoTurn' : 'roll', now, {
-            actorSeat: seat,
-            presentationEndsAt: moveOpensAt,
-            roll: { rollId, value, auto },
+        if (timeout) {
+            const tokenId = pickTimeoutMove(this.s, seat, value, legal)!;
+            return this.move(seat, { move: tokenId, rollId }, now, true, ROLL_SETTLE_MS);
+        }
+        if (bot) {
+            this.openDecision(seat, moveOpensAt);
+        } else {
+            this.s.deadlineAt = moveOpensAt + TURN_WINDOW_MS;
+            this.s.botActionAt = null;
+        }
+        this.commitAction('roll', now, {
+            actorSeat: seat, presentationEndsAt: moveOpensAt,
+            roll: { rollId, value, auto: false },
         });
         return { accepted: true };
     }
 
-    /** A roll whose value cannot be used: display it, settle the die, pass clockwise. */
-    private passAfterRoll(
-        seat: number,
-        now: number,
-        rollId: string,
-        value: number,
-        auto: boolean,
-    ): ApplyResult {
-        this.s.rollValue = null;
-        this.s.rollId = null;
-        this.s.legalTokenIds = [];
+    private passAfterRoll(seat: number, now: number, rollId: string, value: number, auto: boolean): ApplyResult {
+        this.s.rollId = null; this.s.rollValue = null; this.s.legalTokenIds = [];
         return this.endTurn(now, {
+            type: auto ? 'autoTurn' : 'roll', actorSeat: seat,
             roll: { rollId, value, auto },
-            // No-legal-move six (or any unusable face): next seat opens at +940 + 480 (§15).
-            opensAt: now + ROLL_SETTLE_MS + TRANSITION_MS,
             presentationEndsAt: now + ROLL_SETTLE_MS,
-            type: auto ? 'autoTurn' : 'roll',
-            actorSeat: seat,
+            opensAt: now + ROLL_SETTLE_MS + TRANSITION_MS,
         });
     }
 
-    private move(seat: number, input: GameInput, now: number, auto: boolean): ApplyResult {
-        if (this.s.phase !== 'awaitingMove') {
-            return { accepted: false, rejection: 'PHASE_MISMATCH' };
-        }
+    private move(seat: number, input: GameInput, now: number, timeout: boolean, rollLeadMs: number): ApplyResult {
+        if (this.s.phase !== 'awaitingMove') return { accepted: false, rejection: 'PHASE_MISMATCH' };
         if (typeof input.rollId !== 'string' || input.rollId !== this.s.rollId) {
             return { accepted: false, rejection: 'ROLL_MISMATCH' };
         }
-        if (!auto) {
-            const gate = this.timingReject(now);
-            if (gate) return gate;
+        if (!timeout && this.s.controller[seat] === 'human') {
+            const gate = this.timingReject(now); if (gate) return gate;
         }
-        const token = input.move as number;
-        if (!Number.isInteger(token) || !this.s.legalTokenIds.includes(token)) {
+        const tokenId = input.move as number;
+        const die = this.s.rollValue;
+        const recomputed = die === null ? [] : legalMoves(this.s, seat, die);
+        if (!Number.isInteger(tokenId) || die === null || !recomputed.includes(tokenId)) {
             return { accepted: false, rejection: 'ILLEGAL_MOVE' };
         }
-        const die = this.s.rollValue;
-        if (die === null) return { accepted: false, rejection: 'PHASE_MISMATCH' };
-        if (auto) this.s.turnHadAutoAction = true;
-
-        const from = this.s.tokens[seat][token];
-        const to = destination(from, die, seat);
-        if (to === null) return { accepted: false, rejection: 'ILLEGAL_MOVE' };
-
+        if (timeout) this.s.turnHadAutoAction = true;
+        const from = this.s.tokens[seat][tokenId];
+        const to = destination(from, die, seat)!;
         const route = path(from, die, seat);
-        this.s.tokens[seat][token] = to;
-
-        // Capture resolves AFTER movement lands (§5.3). At most one opponent pawn can be
-        // captured, because landing on an opponent block was already illegal.
-        let capturedPayload:
-            | NonNullable<NonNullable<LastAction['move']>['captured']>
-            | null = null;
-        const cap = resolveCapture(this.s, seat, to);
-        if (cap) {
-            const capFrom = this.s.tokens[cap.seat][cap.tokenId];
-            this.s.tokens[cap.seat][cap.tokenId] = YARD; // back to its ORIGINAL yard slot
+        this.s.tokens[seat][tokenId] = to;
+        let capturedPayload: NonNullable<LastAction['move']>['captured'] = null;
+        const captured = resolveCapture(this.s, seat, to);
+        if (captured) {
+            const capFrom = this.s.tokens[captured.seat][captured.tokenId];
+            this.s.tokens[captured.seat][captured.tokenId] = YARD;
             this.s.captures[seat] += 1;
-            capturedPayload = {
-                seat: cap.seat, tokenId: cap.tokenId, from: capFrom, to: YARD,
-            };
+            capturedPayload = { ...captured, from: capFrom, to: YARD };
         }
-
-        const finished = finishedPawns(this.s, seat) === TOKENS_PER_SEAT;
-        const extraMs = cap ? CAPTURE_EXTRA_MS : finished ? FINISH_EXTRA_MS : 0;
-        const presentationEndsAt = now + hopMs(route.length) + extraMs;
-
-        const actionType: ActionType = finished ? 'move' : cap ? 'capture' : auto ? 'autoTurn' : 'move';
+        const pawnFinished = to === FINISHED;
+        const matchFinished = finishedPawns(this.s, seat) === TOKENS_PER_SEAT;
+        const moveMs = from === YARD ? 360 : hopMs(route.length);
+        const extraMs = captured ? CAPTURE_EXTRA_MS : pawnFinished ? FINISH_EXTRA_MS : 0;
+        const presentationEndsAt = now + rollLeadMs + moveMs + extraMs;
+        const actionType: ActionType = timeout ? 'autoTurn' : captured ? 'capture' : 'move';
         this.commitAction(actionType, now, {
-            actorSeat: seat,
-            presentationEndsAt,
-            roll: this.s.rollId ? { rollId: this.s.rollId, value: die, auto } : undefined,
-            move: { tokenId: token, from, to, path: route, captured: capturedPayload },
+            actorSeat: seat, presentationEndsAt,
+            roll: this.s.rollId ? { rollId: this.s.rollId, value: die, auto: timeout } : undefined,
+            move: { tokenId, from, to, path: route, captured: capturedPayload },
         });
-
-        if (finished) return this.finish(seat, 'win', now, true);
-
-        // A six grants ONE extra roll after the resulting move (§5.2 r5); capturing and
-        // finishing do not grant extra rolls. The extra roll opens 120 ms after the mandatory
-        // presentation ends (§12.3).
+        if (matchFinished) return this.finish(seat, 'allPawnsHome', now, true);
         if (die === 6) {
-            this.s.phase = 'awaitingRoll';
-            this.s.rollValue = null;
-            this.s.rollId = null;
-            this.s.legalTokenIds = [];
-            this.s.opensAt = presentationEndsAt + 120;
-            this.s.deadlineAt = this.s.opensAt + TURN_WINDOW_MS;
+            this.s.phase = 'awaitingRoll'; this.s.rollId = null; this.s.rollValue = null;
+            this.s.legalTokenIds = []; this.s.opensAt = presentationEndsAt + 120;
+            this.openDecision(seat, this.s.opensAt);
             return { accepted: true };
         }
-
-        return this.endTurn(now, {
-            preservePresentation: true,
-            opensAt: presentationEndsAt + TRANSITION_MS,
-        });
+        return this.endTurn(now, { preservePresentation: true, opensAt: presentationEndsAt + TRANSITION_MS });
     }
 
-    /**
-     * Hand the turn to the next active seat, applying the timeout-streak rule (§13).
-     *
-     * `preservePresentation` keeps the just-committed move/capture action as THE action for
-     * this transition and stamps the seat handoff onto it — one seq step, one action, both
-     * facts. Otherwise a fresh `turnChanged` (optionally embedding the displayed roll) is
-     * committed.
-     */
-    private endTurn(
-        now: number,
-        opts: {
-            preservePresentation?: boolean;
-            opensAt?: number;
-            presentationEndsAt?: number;
-            roll?: { rollId: string; value: number; auto: boolean };
-            type?: ActionType;
-            actorSeat?: number;
-        },
-    ): ApplyResult {
+    private endTurn(now: number, opts: {
+        preservePresentation?: boolean; opensAt: number; presentationEndsAt?: number;
+        roll?: { rollId: string; value: number; auto: boolean }; type?: ActionType; actorSeat?: number;
+    }): ApplyResult {
         const outgoing = this.s.activeSeat;
-        if (this.s.turnHadAutoAction) {
-            this.s.timeoutStreak[outgoing] += 1;
-        } else {
-            this.s.timeoutStreak[outgoing] = 0;
-        }
-        this.s.turnHadAutoAction = false;
-        this.s.automated = false;
-        this.s.rollValue = null;
-        this.s.rollId = null;
-        this.s.legalTokenIds = [];
-        this.s.sixStreak = 0;
-
-        if (this.s.timeoutStreak[outgoing] >= 3) {
-            // At three consecutive timed-out turns, mark the seat dropped BEFORE selecting
-            // the next active seat (§13).
-            return this.dropSeat(outgoing, now, 'timeoutForfeit');
-        }
-
+        this.s.timeoutStreak[outgoing] = this.s.turnHadAutoAction ? this.s.timeoutStreak[outgoing] + 1 : 0;
+        const takeover = this.s.controller[outgoing] === 'human' && this.s.timeoutStreak[outgoing] >= 3;
+        this.s.turnHadAutoAction = false; this.s.automated = false; this.s.rollValue = null;
+        this.s.rollId = null; this.s.legalTokenIds = []; this.s.sixStreak = 0;
         const next = nextActiveSeat(this.s, outgoing);
-        const opensAt = Math.max(opts.opensAt ?? now, now + TRANSITION_MS);
-        this.s.activeSeat = next;
-        this.s.turnSerial += 1;
-        this.s.phase = 'awaitingRoll';
-        this.s.opensAt = opensAt;
-        this.s.deadlineAt = opensAt + TURN_WINDOW_MS;
+        this.s.activeSeat = next; this.s.turnSerial += 1; this.s.phase = 'awaitingRoll';
+        this.s.opensAt = Math.max(opts.opensAt, now + TRANSITION_MS);
+        this.openDecision(next, this.s.opensAt);
 
-        if (opts.preservePresentation && this.s.lastAction) {
+        if (takeover) {
+            this.installTakeover(outgoing, now, false);
+            const previous = this.s.lastAction;
+            this.commitAction('controllerChanged', now, {
+                actorSeat: next, fromSeat: outgoing,
+                presentationEndsAt: previous?.presentationEndsAt ?? (this.s.opensAt - TRANSITION_MS),
+                roll: previous?.roll, move: previous?.move,
+            });
+        } else if (opts.preservePresentation && this.s.lastAction) {
             this.s.lastAction.fromSeat = outgoing;
             this.s.lastAction.actorSeat = next;
-            this.s.lastAction.presentationEndsAt = opts.presentationEndsAt
-                ?? this.s.lastAction.presentationEndsAt;
         } else {
             this.commitAction(opts.type ?? 'turnChanged', now, {
-                actorSeat: next,
-                fromSeat: outgoing,
-                presentationEndsAt: opts.presentationEndsAt ?? opensAt - TRANSITION_MS,
+                actorSeat: next, fromSeat: outgoing,
+                presentationEndsAt: opts.presentationEndsAt ?? this.s.opensAt - TRANSITION_MS,
                 ...(opts.roll ? { roll: opts.roll } : {}),
             });
         }
         return { accepted: true };
     }
 
-    /**
-     * Terminal transition. `preserveLastAction` keeps the winning move as the frame's action
-     * so every client can finish presenting it before the result sheet; otherwise (drops,
-     * integrity ends) an explicit `end` action is committed.
-     */
-    private finish(
-        winnerSeat: number | null,
-        endReason: string,
-        now: number,
-        preserveLastAction: boolean,
-    ): ApplyResult {
-        if (!preserveLastAction) {
-            this.commitAction('end', now, { actorSeat: winnerSeat ?? -1 });
+    private installTakeover(seat: number, now: number, commit = true): void {
+        const former = this.s.humanUserIds[seat];
+        if (former) this.s.formerControllerUserIds[seat] = former;
+        this.s.controller[seat] = 'bot';
+        this.s.botDifficulty[seat] = 'balanced';
+        this.s.botPolicyVersion[seat] = BOT_POLICY_VERSION;
+        this.s.timeoutStreak[seat] = 0;
+        const used = new Set(this.s.botNames.filter((name): name is string => !!name));
+        this.s.botNames[seat] = botName(this.rng.seedHex, seat, used);
+        if (commit) this.commitAction('controllerChanged', now, { actorSeat: seat, presentationEndsAt: now + 160 });
+    }
+
+    private openDecision(seat: number, opensAt: number): void {
+        if (this.s.controller[seat] === 'bot') {
+            this.s.deadlineAt = null;
+            const tier = this.s.botDifficulty[seat] ?? 'balanced';
+            this.s.botActionAt = opensAt + botDelay(this.rng.seedHex, this.pacingCounter++, tier,
+                this.s.phase === 'awaitingMove' ? 'awaitingMove' : 'awaitingRoll');
+        } else {
+            this.s.botActionAt = null;
+            this.s.deadlineAt = opensAt + TURN_WINDOW_MS;
         }
+    }
+
+    private finish(winnerSeat: number | null, reason: EndReason, now: number, preserve: boolean): ApplyResult {
+        if (!preserve) this.commitAction('end', now, { actorSeat: winnerSeat ?? -1 });
         if (winnerSeat !== null) this.s.participation[winnerSeat] = 'winner';
         this.s.winnerSeat = winnerSeat;
-        this.s.endReason = endReason;
-        this.s.status = 'finished';
-        this.s.phase = 'none';
-        this.s.deadlineAt = null;
-        this.s.rollValue = null;
-        this.s.rollId = null;
-        this.s.legalTokenIds = [];
+        this.s.winnerController = winnerSeat === null ? null : this.s.controller[winnerSeat];
+        this.s.winnerUserId = winnerSeat === null || this.s.controller[winnerSeat] === 'bot'
+            ? null : this.s.humanUserIds[winnerSeat];
+        this.s.endReason = reason; this.s.status = reason === 'serverIntegrityError' || reason === 'legacyVersionAbandoned'
+            ? 'abandoned' : 'finished';
+        this.s.phase = 'none'; this.s.deadlineAt = null; this.s.botActionAt = null;
+        this.s.rollId = null; this.s.rollValue = null; this.s.legalTokenIds = [];
         return { accepted: true, outcome: this.outcome() };
     }
 
     private outcome(): GameOutcome {
-        if (this.s.winnerSeat === null) return { winnerId: null, scores: {} };
         const scores: Record<string, number> = {};
-        for (let s = 0; s < MAX_SEATS; s++) {
-            const uid = this.s.players[s];
-            if (uid === null) continue;
-            scores[uid] = finishedPawns(this.s, s);
+        for (let seat = 0; seat < MAX_SEATS; seat++) {
+            const uid = this.s.humanUserIds[seat]; if (uid) scores[uid] = finishedPawns(this.s, seat);
         }
-        return { winnerId: this.s.players[this.s.winnerSeat], scores };
+        return { winnerId: this.s.winnerUserId, scores };
     }
 
-    private commitAction(
-        type: ActionType,
-        committedAt: number,
-        rest: Partial<LastAction>,
-    ): void {
+    private commitAction(type: ActionType, committedAt: number, rest: Partial<LastAction>): void {
         this.s.actionCounter += 1;
-        this.s.lastAction = {
-            id: String(this.s.actionCounter),
-            type,
-            committedAt,
-            presentationEndsAt: committedAt,
-            actorSeat: this.s.activeSeat,
-            ...rest,
-        };
+        this.s.lastAction = { id: String(this.s.actionCounter), type, committedAt,
+            presentationEndsAt: committedAt, actorSeat: this.s.activeSeat, ...rest };
     }
-
-    // --- Deadlines -----------------------------------------------------------------------
 
     deadlineAt(): number | null {
         if (this.s.status !== 'active') return null;
-        return this.s.deadlineAt;
+        return this.s.deadlineAt ?? this.s.botActionAt;
     }
-
-    /** Server timeout: auto-play, never an instant loss (§13). */
     onTimeout(): ApplyResult {
         const now = Date.now();
-        if (this.s.status !== 'active' || this.s.deadlineAt === null) return { accepted: false };
-        if (now < this.s.deadlineAt) return { accepted: false };
+        if (this.s.status !== 'active') return { accepted: false };
         const seat = this.s.activeSeat;
-        if (this.s.phase === 'awaitingRoll') return this.roll(seat, now, true);
-        if (
-            this.s.phase === 'awaitingMove' &&
-            this.s.legalTokenIds.length > 0 &&
-            this.s.rollId !== null &&
-            this.s.rollValue !== null
-        ) {
-            const tokenId = pickAutoMove(this.s, seat, this.s.rollValue, this.s.legalTokenIds)!;
-            return this.move(seat, { move: tokenId, rollId: this.s.rollId }, now, true);
+        if (this.s.controller[seat] === 'bot') {
+            if (this.s.botActionAt === null || now < this.s.botActionAt) return { accepted: false };
+            if (this.s.phase === 'awaitingRoll') return this.roll(seat, now, false, true);
+            if (this.s.phase === 'awaitingMove' && this.s.rollId && this.s.rollValue !== null) {
+                const legal = legalMoves(this.s, seat, this.s.rollValue);
+                const token = selectBotMove(this.s, seat, this.s.rollValue, legal, this.s.botDifficulty[seat] ?? 'balanced');
+                if (token === null) return { accepted: false };
+                return this.move(seat, { move: token, rollId: this.s.rollId }, now, false, 0);
+            }
+            return { accepted: false };
+        }
+        if (this.s.deadlineAt === null || now < this.s.deadlineAt) return { accepted: false };
+        if (this.s.phase === 'awaitingRoll') return this.roll(seat, now, true, false);
+        if (this.s.phase === 'awaitingMove' && this.s.rollId && this.s.rollValue !== null) {
+            const legal = legalMoves(this.s, seat, this.s.rollValue);
+            const token = pickTimeoutMove(this.s, seat, this.s.rollValue, legal);
+            return token === null ? { accepted: false } : this.move(seat, { move: token, rollId: this.s.rollId }, now, true, 0);
         }
         return { accepted: false };
     }
 
-    // --- Serialization -------------------------------------------------------------------
+    serialize(): GameStatePayload { return { ludo: this.s }; }
+    serializeSecret(): GameStatePayload { return { ludo: { rng: this.rng.state, pacingCounter: this.pacingCounter } }; }
 
-    serialize(): GameStatePayload {
-        // Persisted ONLY — Redis/Postgres and restore(). Raw user ids ride along because
-        // sparse duel seats cannot be rebuilt from game_matches.player_ids alone. Clients
-        // NEVER receive this object: Ludo always broadcasts through serializeForPlayer().
-        return { ludo: this.s };
-    }
-
-    serializeSecret(): GameStatePayload {
-        return {
-            ludo: {
-                rng: this.rng.state,
-                players: this.s.players,
-                accepted: this.s.accepted,
-            },
-        };
-    }
-
-    /**
-     * Per-recipient projection (§6, §11.2). displayName comes from the frame context the
-     * runtime supplies; an unauthorized viewer sees neutral labels because the runtime never
-     * puts a real name in the map. Raw ids and the RNG never appear here.
-     */
     serializeForPlayer(playerId: string): GameStatePayload {
-        const ctx = this.ctx ?? { serverNow: Date.now(), connections: {}, names: {} };
-        const viewerSeat = this.s.players.indexOf(playerId);
+        const ctx = this.ctx ?? { serverNow: Date.now(), seq: 0, connections: {}, names: {} };
+        const currentSeat = this.s.humanUserIds.findIndex((uid, seat) => uid === playerId && this.s.controller[seat] === 'human');
+        const formerSeat = this.s.formerControllerUserIds.indexOf(playerId);
+        const viewerSeat = currentSeat >= 0 ? currentSeat : formerSeat >= 0 ? formerSeat : null;
+        const viewerRole: ViewerRole = currentSeat >= 0 ? 'controller' : formerSeat >= 0 ? 'formerController' : 'none';
         const seats: SeatView[] = [];
         for (let seat = 0; seat < MAX_SEATS; seat++) {
-            const uid = this.s.players[seat];
-            if (uid === null) continue;
+            if (!this.s.assigned[seat]) continue;
+            const uid = this.s.humanUserIds[seat];
+            const controller = this.s.controller[seat];
             seats.push({
-                seat,
-                seatId: opaqueSeatId(this.matchKey, seat),
-                color: SEAT_COLORS[seat],
-                displayName: ctx.names[uid] ?? `Player ${seat + 1}`,
+                seat, seatId: opaqueSeatId(this.matchKey, seat), color: SEAT_COLORS[seat], controller,
+                displayName: controller === 'bot' ? (this.s.botNames[seat] ?? `Bot ${seat + 1}`)
+                    : uid ? (ctx.names[uid] ?? `Player ${seat + 1}`) : `Player ${seat + 1}`,
+                botMarker: controller === 'bot' ? 'BOT' : null,
+                botDifficulty: controller === 'bot' ? this.s.botDifficulty[seat] : null,
                 participation: this.s.participation[seat],
-                connection:
-                    this.s.participation[seat] === 'dropped'
-                        ? 'disconnected'
-                        : // Unknown presence projects as disconnected — never invent liveness.
-                        (ctx.connections[uid] ?? 'disconnected'),
-                timeoutStreak: this.s.timeoutStreak[seat],
-                finishedPawns: finishedPawns(this.s, seat),
+                connection: controller === 'bot' ? 'connected' : uid ? (ctx.connections[uid] ?? 'disconnected') : 'disconnected',
+                timeoutStreak: this.s.timeoutStreak[seat], finishedPawns: finishedPawns(this.s, seat),
                 captures: this.s.captures[seat],
             });
         }
-
+        const legalViews: LegalMoveView[] = this.s.phase === 'awaitingMove' && this.s.rollValue !== null
+            ? this.s.legalTokenIds.map((tokenId) => {
+                const from = this.s.tokens[this.s.activeSeat][tokenId];
+                const to = destination(from, this.s.rollValue!, this.s.activeSeat)!;
+                return { tokenId, to, path: path(from, this.s.rollValue!, this.s.activeSeat),
+                    capture: resolveCapture(this.s, this.s.activeSeat, to), isSafe: isSafe(to) };
+            }) : [];
         const payload: LudoPublicState = {
-            schemaVersion: SCHEMA_VERSION,
-            rulesVersion: RULES_VERSION,
-            mode: this.s.mode,
-            status: this.s.status,
-            serverNow: ctx.serverNow,
-            viewerSeat: viewerSeat === -1 ? null : viewerSeat,
-            seats,
-            tokensPerSeat: TOKENS_PER_SEAT,
-            tokens: this.s.tokens.map((row) => [...row]),
-            turn:
-                this.s.status === 'active'
-                    ? {
-                          seat: this.s.activeSeat,
-                          serial: this.s.turnSerial,
-                          phase: this.s.phase,
-                          opensAt: this.s.opensAt ?? ctx.serverNow,
-                          deadlineAt:
-                              this.s.deadlineAt ?? (this.s.opensAt ?? ctx.serverNow) + TURN_WINDOW_MS,
-                          sixStreak: this.s.sixStreak,
-                          rollId: this.s.rollId,
-                          value: this.s.rollValue,
-                          legalTokenIds: [...this.s.legalTokenIds],
-                          automated: this.s.automated,
-                      }
-                    : null,
-            lastAction: this.s.lastAction,
-            winnerSeat: this.s.winnerSeat,
-            endReason: this.s.endReason,
+            schemaVersion: 3, rulesVersion: RULES_VERSION, mode: this.s.mode, status: this.s.status,
+            seq: ctx.seq ?? 0, serverNow: ctx.serverNow, viewerSeat, viewerRole, seats,
+            tokensPerSeat: 4, tokens: this.s.tokens.map((row) => [...row]),
+            turn: this.s.status === 'active' && this.s.phase !== 'none' ? {
+                seat: this.s.activeSeat, serial: this.s.turnSerial, phase: this.s.phase,
+                opensAt: this.s.opensAt ?? ctx.serverNow, deadlineAt: this.s.deadlineAt,
+                botActionAt: this.s.botActionAt, sixStreak: this.s.sixStreak, rollId: this.s.rollId,
+                value: this.s.rollValue, legalMoves: legalViews, automated: this.s.automated,
+            } : null,
+            lastAction: this.s.lastAction, winnerSeat: this.s.winnerSeat, endReason: this.s.endReason,
             seedCommitment: this.rng.commitment(),
         };
-        return { ludoV2: payload };
+        return { ludoV3: payload };
     }
-
-    isFinished(): boolean {
-        return this.s.status === 'finished' || this.s.status === 'abandoned';
-    }
+    isFinished(): boolean { return this.s.status === 'finished' || this.s.status === 'abandoned'; }
 }
 
-/** Tombstone for a pre-v2 state: the match is abandoned with a clear version reason. */
 class LegacyAbandonEngine implements GameEngine {
-    constructor(private reason: string) {}
-    applyInput(): ApplyResult {
-        return { accepted: false };
+    applyInput(): ApplyResult { return { accepted: false, rejection: 'MATCH_NOT_ACTIVE' }; }
+    serialize(): GameStatePayload { return { legacyAbandoned: 'legacyVersionAbandoned' }; }
+    deadlineAt(): number | null { return null; }
+    onTimeout(): ApplyResult { return { accepted: false }; }
+    isFinished(): boolean { return true; }
+}
+
+function normalizedRoster(playerIds: string[], options?: Record<string, unknown>): RosterEntry[] {
+    const raw = Array.isArray(options?.roster) ? options!.roster as Array<Record<string, unknown>> : [];
+    if (raw.length === 2 || raw.length === 4) {
+        return raw.map((entry) => entry.kind === 'bot'
+            ? { kind: 'bot', difficulty: difficulty(entry.difficulty) }
+            : { kind: 'human', userId: String(entry.userId ?? entry.user_id ?? '') });
     }
-    serialize(): GameStatePayload {
-        return { legacyAbandoned: this.reason };
-    }
-    deadlineAt(): number | null {
-        return null;
-    }
-    onTimeout(): ApplyResult {
-        return { accepted: false };
-    }
-    isFinished(): boolean {
-        return true;
-    }
+    return playerIds.map((userId) => ({ kind: 'human', userId }));
 }
 
 export const ludo = {
     slug: 'ludo',
     create(playerIds: string[], options?: Record<string, unknown>): GameEngine {
-        const rawMode = options?.mode;
-        const mode: LudoMode =
-            rawMode === 'duel' || rawMode === 'four'
-                ? rawMode
-                : playerIds.length <= 2
-                    ? 'duel'
-                    : 'four';
-
-        // Test hook: a fixed hex seed makes dice sequences reproducible in CI.
-        const seedOpt = options?.rngSeed;
-        const rng =
-            typeof seedOpt === 'string' && /^[0-9a-f]{64}$/.test(seedOpt)
-                ? DiceRng.fromState({ seed: seedOpt, counter: 0 })!
-                : DiceRng.generate();
-
-        // Seat assignment is SERVER-SHUFFLED so the creator does not always receive red
-        // (§5.4). A duel occupies opposite seats: red (0) and yellow (2).
-        const players: (string | null)[] = [null, null, null, null];
-        const seatsToFill = mode === 'duel' ? [0, 2] : [0, 1, 2, 3];
-        const shuffled = [...seatsToFill];
-        for (let i = shuffled.length - 1; i > 0; i--) {
-            const j = Math.floor(rng.next()) % (i + 1);
-            [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+        const roster = normalizedRoster(playerIds, options);
+        const mode: LudoMode = options?.mode === 'four' || roster.length === 4 ? 'four' : 'duel';
+        const seed = options?.rngSeed;
+        const rng = typeof seed === 'string' && /^[0-9a-f]{64}$/.test(seed)
+            ? DiceRng.fromState({ seed, counter: 0 })! : DiceRng.generate();
+        const physical = mode === 'duel' ? [0, 2] : [0, 1, 2, 3];
+        for (let i = physical.length - 1; i > 0; i--) {
+            const j = (rng.next() - 1) % (i + 1); [physical[i], physical[j]] = [physical[j], physical[i]];
         }
-        playerIds.slice(0, shuffled.length).forEach((uid, i) => {
-            players[shuffled[i]] = uid;
+        const assigned = Array(MAX_SEATS).fill(false) as boolean[];
+        const controller = Array(MAX_SEATS).fill('human') as ControllerType[];
+        const humanUserIds = Array(MAX_SEATS).fill(null) as (string | null)[];
+        const formerControllerUserIds = Array(MAX_SEATS).fill(null) as (string | null)[];
+        const botDifficulty = Array(MAX_SEATS).fill(null) as (BotDifficulty | null)[];
+        const botNames = Array(MAX_SEATS).fill(null) as (string | null)[];
+        const botPolicyVersion = Array(MAX_SEATS).fill(null) as (string | null)[];
+        const accepted = Array(MAX_SEATS).fill(false) as boolean[];
+        const used = new Set<string>();
+        roster.slice(0, physical.length).forEach((entry, index) => {
+            const seat = physical[index]; assigned[seat] = true; controller[seat] = entry.kind;
+            if (entry.kind === 'bot') {
+                botDifficulty[seat] = difficulty(entry.difficulty); botPolicyVersion[seat] = BOT_POLICY_VERSION;
+                botNames[seat] = botName(rng.seedHex, seat, used); used.add(botNames[seat]!); accepted[seat] = true;
+            } else {
+                humanUserIds[seat] = entry.userId || playerIds[index] || null;
+                accepted[seat] = humanUserIds[seat] === playerIds[0];
+            }
         });
-
-        const tokens: number[][] = [];
-        for (let s = 0; s < MAX_SEATS; s++) {
-            tokens.push(players[s] !== null ? Array(TOKENS_PER_SEAT).fill(YARD) : []);
-        }
-
-        const state: LudoStateV2 = {
-            schemaVersion: SCHEMA_VERSION,
-            rulesVersion: RULES_VERSION,
-            mode,
-            status: 'waiting',
-            started: false,
-            players,
-            accepted: [false, false, false, false],
-            participation: Array(MAX_SEATS).fill('waiting') as LudoStateV2['participation'],
-            timeoutStreak: [0, 0, 0, 0],
-            captures: [0, 0, 0, 0],
-            tokens,
-            startedByRng: false,
-            firstSeatChosen: false,
-            activeSeat: 0,
-            turnSerial: 0,
-            phase: 'none',
-            opensAt: null,
-            deadlineAt: null,
-            sixStreak: 0,
-            rollId: null,
-            rollValue: null,
-            legalTokenIds: [],
-            automated: false,
-            turnHadAutoAction: false,
-            actionCounter: 0,
-            lastAction: null,
-            winnerSeat: null,
-            endReason: null,
+        const state: LudoStateV3 = {
+            schemaVersion: 3, rulesVersion: RULES_VERSION, mode, status: 'waiting', started: false,
+            assigned, controller, humanUserIds, formerControllerUserIds, botDifficulty, botNames,
+            botPolicyVersion, accepted, participation: Array(MAX_SEATS).fill('waiting'),
+            timeoutStreak: [0, 0, 0, 0], captures: [0, 0, 0, 0],
+            tokens: assigned.map((yes) => yes ? Array(4).fill(YARD) : []), activeSeat: 0,
+            turnSerial: 0, phase: 'none', opensAt: null, deadlineAt: null, botActionAt: null,
+            sixStreak: 0, rollId: null, rollValue: null, legalTokenIds: [], automated: false,
+            turnHadAutoAction: false, actionCounter: 0, lastAction: null, winnerSeat: null,
+            winnerController: null, winnerUserId: null, endReason: null, startedAt: null,
         };
-        return new LudoEngineV2(state, rng, randomUUID());
+        return new LudoEngineV3(state, rng, 0, randomUUID());
     },
-
     restore(state: GameStatePayload, secret?: GameStatePayload): GameEngine {
-        const inner = (state as { ludo?: unknown }).ludo as LudoStateV2 | undefined;
-        if (
-            !inner ||
-            inner.schemaVersion !== SCHEMA_VERSION ||
-            inner.rulesVersion !== RULES_VERSION
-        ) {
-            // Preserve v1 rows only long enough to abandon them with a clear reason (§20 P1);
-            // ambiguous live rules are never converted mid-match.
-            console.error('[ludo] legacy/incompatible state on restore — abandoning match');
-            return new LegacyAbandonEngine('schemaVersionMismatch');
-        }
-
-        const secretInner = (secret as { ludo?: unknown } | undefined)?.ludo as
-            | { rng?: unknown; players?: unknown; accepted?: unknown }
-            | undefined;
-        const rng = DiceRng.fromState(
-            (secretInner?.rng ?? {}) as { seed?: unknown; counter?: unknown },
-        );
+        const inner = (state as { ludo?: unknown }).ludo as LudoStateV3 | undefined;
+        if (!inner || inner.schemaVersion !== 3 || inner.rulesVersion !== RULES_VERSION) return new LegacyAbandonEngine();
+        const secretInner = (secret as { ludo?: { rng?: unknown; pacingCounter?: unknown } } | undefined)?.ludo;
+        const rng = DiceRng.fromState((secretInner?.rng ?? {}) as { seed?: unknown; counter?: unknown });
         if (!rng) {
-            // IF RNG SECRET STATE IS MISSING, ABANDON — never reseed and continue silently (§16).
-            console.error('[ludo] RNG secret state missing on restore — abandoning match');
-            inner.status = 'abandoned';
-            inner.endReason = 'serverIntegrityError';
-            inner.phase = 'none';
-            inner.deadlineAt = null;
-            return new LudoEngineV2(inner, DiceRng.generate(), randomUUID());
+            inner.status = 'abandoned'; inner.endReason = 'serverIntegrityError'; inner.phase = 'none';
+            inner.deadlineAt = null; inner.botActionAt = null;
+            return new LudoEngineV3(inner, DiceRng.generate(), 0, randomUUID());
         }
-
-        if (Array.isArray(secretInner?.players)) {
-            inner.players = (secretInner.players as (string | null)[]).map((p) =>
-                typeof p === 'string' || p === null ? p : null,
-            );
-        }
-        if (Array.isArray(secretInner?.accepted)) {
-            inner.accepted = (secretInner.accepted as boolean[]).map((b) => b === true);
-        }
-
-        return new LudoEngineV2(inner, rng, randomUUID());
+        const pacingCounter = typeof secretInner?.pacingCounter === 'number' ? secretInner.pacingCounter : 0;
+        return new LudoEngineV3(inner, rng, pacingCounter, randomUUID());
     },
 };

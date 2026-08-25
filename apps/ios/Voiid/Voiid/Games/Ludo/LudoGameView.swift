@@ -23,6 +23,7 @@ struct LudoGameView: View {
     @StateObject private var coordinator = LudoPresentationCoordinator()
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var contrast
 
     @State private var showExitConfirm = false
     @State private var showHelp = false
@@ -71,6 +72,15 @@ struct LudoGameView: View {
             if showChat, let convo = engine.ludoConversationId ?? conversationId {
                 LudoChatSheet(matchId: matchId, conversationId: convo, onDismiss: { showChat = false })
             }
+            if engine.ludoRequiresUpdate {
+                VStack(spacing: 16) {
+                    Text("Update Voiid to continue this game")
+                        .font(.system(size: 17, weight: .semibold, design: .rounded))
+                    Button("Back to chat", action: onClose)
+                }
+                .padding(24)
+                .background(RoundedRectangle(cornerRadius: 14).fill(LudoColors.resolve(scheme).podSurface))
+            }
 
             // Result sheet over scrim; final board stays visible underneath (§11.5).
             if let s = state, s.isFinished {
@@ -86,7 +96,14 @@ struct LudoGameView: View {
         .onChange(of: engine.ludoV2?.state.lastAction?.id) { _, _ in
             presentBeatsIfNeeded()
         }
-        .onChange(of: reduceMotion) { _, enabled in coordinator.setReduceMotion(enabled) }
+        .onChange(of: reduceMotion) { _, enabled in
+            coordinator.setReduceMotion(enabled || ProcessInfo.processInfo.isLowPowerModeEnabled)
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: Notification.Name.NSProcessInfoPowerStateDidChange)) { _ in
+                coordinator.setReduceMotion(
+                    reduceMotion || ProcessInfo.processInfo.isLowPowerModeEnabled)
+            }
         .onDisappear { coordinator.cancelAll() }
     }
 
@@ -94,7 +111,7 @@ struct LudoGameView: View {
 
     private func open() async {
         LudoBoardGeometry.selfCheck()          // DEBUG parity assertion against the fixture
-        coordinator.setReduceMotion(reduceMotion)
+        coordinator.setReduceMotion(reduceMotion || ProcessInfo.processInfo.isLowPowerModeEnabled)
         await engine.openLudo(matchId: matchId)
         presentBeatsIfNeeded()
     }
@@ -169,7 +186,8 @@ struct LudoGameView: View {
     private func timerOverride(_ state: LudoGameStateV2, _ seat: Int) -> Color? {
         guard !state.isFinished, let turn = state.turn, turn.seat == seat else { return nil }
         let colors = LudoColors.resolve(scheme)
-        let remaining = turn.deadlineAt - engine.estimatedServerNowMs()
+        guard let deadlineAt = turn.deadlineAt else { return nil }
+        let remaining = deadlineAt - engine.estimatedServerNowMs()
         if remaining <= 2_000 { return colors.timerCritical }
         if remaining <= 5_000 { return colors.timerWarning }
         return nil
@@ -179,7 +197,7 @@ struct LudoGameView: View {
         var s = "\(sv.displayName), \(sv.color.name)"
         if !state.isFinished && state.turn?.seat == sv.seat { s += ", action" }
         s += ", \(sv.finishedPawns) of 4 pawns home"
-        if sv.isDropped { s += ", left game" }
+        if sv.isBot { s += ", bot" }
         else if sv.connection == "disconnected" { s += ", disconnected" }
         return s
     }
@@ -203,11 +221,33 @@ struct LudoGameView: View {
                 .onAppear { if boardSide == 0 { boardSide = side } }
                 .onChange(of: side) { _, new in boardSide = new }
 
+                accessiblePawnActions(state: state, side: side)
+
                 dieAnchorView(state: state)
             }
             .frame(width: geo.size.width, height: geo.size.height)
         }
         .aspectRatio(1, contentMode: .fit)
+    }
+
+    @ViewBuilder
+    private func accessiblePawnActions(state: LudoGameStateV2, side: CGFloat) -> some View {
+        if let turn = state.turn, turn.phase == "awaitingMove",
+           state.viewerRole == "controller", state.viewerSeat == turn.seat {
+            let layout = LudoBoardGeometry.Layout(sideLength: side)
+            let placed = LudoPawnLayer.layout(state: state, layout: layout, droppedSeats: [])
+            let name = state.seat(bySeat: turn.seat)?.displayName ?? "Player"
+            ForEach(turn.legalTokenIds, id: \.self) { token in
+                if let pawn = placed.first(where: { $0.seat == turn.seat && $0.pawnIndex == token }) {
+                    Button { engine.moveLudoV2(token: token) } label: { Color.clear }
+                        .frame(width: max(44, layout.unit * 1.5), height: max(44, layout.unit * 1.5))
+                        .position(pawn.center)
+                        .accessibilityLabel(LudoAccessibility.pawnLabel(
+                            state: state, seat: turn.seat, pawn: token, displayName: name))
+                        .accessibilityHint(LudoAccessibility.legalHint(state: state, token: token) ?? "Move pawn")
+                }
+            }
+        }
     }
 
     private func drawBoard(
@@ -216,9 +256,6 @@ struct LudoGameView: View {
         colors: LudoColors,
         state: LudoGameStateV2,
     ) {
-        let layout = LudoBoardGeometry.Layout(sideLength: size.width)
-        let dropped = Set(state.seats.filter { $0.isDropped }.map { $0.seat })
-
         // Display-pawn override from the coordinator: mid-hop or capture-return; authoritative
         // state already holds every destination and is never fed back by animation.
         var override: (seat: Int, pawn: Int, center: CGPoint)?
@@ -235,7 +272,8 @@ struct LudoGameView: View {
             colors: colors,
             state: state,
             sweep: sweepVisual,
-            displayOverride: override)
+            displayOverride: override,
+            highContrast: contrast == .increased)
     }
 
     private var sweepVisual: LudoBoardSweep? { coordinator.sweep }
@@ -247,7 +285,7 @@ struct LudoGameView: View {
     private func dieAnchorView(state: LudoGameStateV2) -> some View {
         let canRoll = state.isActive &&
             state.turn?.phase == "awaitingRoll" &&
-            state.viewerSeat == state.turn?.seat
+            state.viewerRole == "controller" && state.viewerSeat == state.turn?.seat
 
         GeometryReader { geo in
             // Anchors sit just outside each board edge, beside the owning pod's inner corner.
@@ -317,11 +355,11 @@ struct LudoGameView: View {
 
         // Resolve ONLY among server-legal tokens (§17).
         guard let turn = state.turn, turn.phase == "awaitingMove",
-              state.viewerSeat == turn.seat,
-              let lastLocation = lastTapPoint else { return }
+              state.viewerRole == "controller", state.viewerSeat == turn.seat,
+              lastTapPoint != nil else { return }
 
         let layout = LudoBoardGeometry.Layout(sideLength: side)
-        let dropped = Set(state.seats.filter { $0.isDropped }.map { $0.seat })
+        let dropped = Set<Int>()
         let placed = LudoPawnLayer.layout(state: state, layout: layout, droppedSeats: dropped)
         var legalBySeat: [Int: Set<Int>] = [turn.seat: Set(turn.legalTokenIds)]
         legalBySeat[turn.seat] = Set(turn.legalTokenIds)
@@ -346,7 +384,7 @@ struct LudoGameView: View {
         let actionID = s.lastAction?.id
         guard actionID != lastPresentedActionID else { return }
         lastPresentedActionID = actionID
-        coordinator.setReduceMotion(reduceMotion)
+        coordinator.setReduceMotion(reduceMotion || ProcessInfo.processInfo.isLowPowerModeEnabled)
 
         guard let action = s.lastAction else { return }
         // §9: animate only when ≥200 ms of the intended window remains; else final positions.

@@ -162,7 +162,7 @@ export async function saveMatch(m: LiveMatch): Promise<void> {
  * them is how a Sea Battle match ends up with a board whose ships no longer exist anywhere.
  */
 async function saveDurable(m: LiveMatch): Promise<void> {
-  await query(
+  const saved = await query<{ seq: number }>(
     `insert into game_match_state (match_id, state, secret, seq, joined, commands, updated_at)
      values ($1, $2, $3, $4, $5, $6::jsonb, now())
      on conflict (match_id) do update
@@ -171,7 +171,9 @@ async function saveDurable(m: LiveMatch): Promise<void> {
            seq = excluded.seq,
            joined = excluded.joined,
            commands = excluded.commands,
-           updated_at = now()`,
+           updated_at = now()
+       where game_match_state.seq < excluded.seq
+     returning seq`,
     [
       m.matchId,
       JSON.stringify(m.state),
@@ -181,6 +183,9 @@ async function saveDurable(m: LiveMatch): Promise<void> {
       JSON.stringify(pruneCommands(m.processedCommands)),
     ]
   );
+  if (!saved[0] || saved[0].seq !== m.seq) {
+    throw new Error(`stale durable match write rejected for ${m.matchId} seq ${m.seq}`);
+  }
   // Written after the row, so the marker never claims a row that does not exist yet.
   await state.set(durableKey(m.matchId), '1', 'EX', DURABLE_MARKER_TTL_SECONDS);
 }

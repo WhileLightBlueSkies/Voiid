@@ -34,11 +34,12 @@ object LudoBoardDraw {
         sweep: LudoPresentationCoordinator.BorderSweep?,
         darkTheme: Boolean,
         reduceMotion: Boolean,
+        highContrast: Boolean = false,
     ) = with(scope) {
         val side = size.width
         val layout = LudoBoardGeometry.Layout(side)
         val unit = layout.unit
-        val droppedSeats = state.seats.filter { it.isDropped }.map { it.seat }.toSet()
+        val droppedSeats = emptySet<Int>()
 
         // 1) Backing.
         drawRoundRect(
@@ -53,17 +54,19 @@ object LudoBoardDraw {
             val r = layout.rectOf(node)
             when (node.role) {
                 LudoBoardGeometry.Role.YARD -> {
-                    drawRoundRect(yardFill(node, droppedSeats, colors), r.topLeft, r.size, CornerRadius(2f))
-                }
-                LudoBoardGeometry.Role.YARD_POCKET -> {
-                    drawRoundRect(
-                        LudoBoardDraw.tok(colors.yardPocket),
-                        r.topLeft, r.size,
-                        CornerRadius(min(LudoDimens.yardPocketRadiusFactor * unit, r.width / 2f)),
-                    )
+                    drawRect(yardFill(node, droppedSeats, colors), r.topLeft, r.size)
                 }
                 else -> Unit
             }
+        }
+        for (seat in 0..3) {
+            val origin = when (seat) { 0 -> 0 to 9; 1 -> 0 to 0; 2 -> 9 to 0; else -> 9 to 9 }
+            val inset = unit * .80f
+            val topLeft = Offset(origin.first * unit + inset, origin.second * unit + inset)
+            val pocketSize = Size(unit * 4.4f, unit * 4.4f)
+            drawRoundRect(tok(colors.yardPocket), topLeft, pocketSize, CornerRadius.Zero)
+            drawRoundRect(tok(colors.yardPocketBorder), topLeft, pocketSize, CornerRadius.Zero,
+                style = Stroke(maxOf(.75.dp.toPx(), unit * .04f)))
         }
 
         // 4) Cells (track + lanes + center base + unused), each from its own rect.
@@ -76,7 +79,7 @@ object LudoBoardDraw {
             val r = layout.rectOf(node)
             val pressed = false
             with(LudoCellRenderer) {
-                node.let { drawCell(it, r, pressed, null, highContrast = false, cellBorderPx, colors) }
+                node.let { drawCell(it, r, pressed, null, highContrast, cellBorderPx, colors) }
             }
         }
 
@@ -98,11 +101,14 @@ object LudoBoardDraw {
             val r = layout.rectOf(node)
             when (node.decoration) {
                 LudoBoardGeometry.Decoration.STAR ->
-                    drawPath(LudoCellRenderer.safeStarPath(r), LudoBoardDraw.tok(colors.safeCellStar))
-                LudoBoardGeometry.Decoration.ENTRY_CHEVRON ->
+                    drawPath(LudoCellRenderer.safeStarPath(r), LudoBoardDraw.tok(colors.safeCellStar),
+                        style = Stroke(maxOf(1.dp.toPx(), unit * .055f)))
+                LudoBoardGeometry.Decoration.APPROACH_CHEVRON ->
                     drawPath(
-                        LudoCellRenderer.entryChevronPath(r, node.seat ?: node.trackIndex!! / 13),
-                        colors.hue(node.trackIndex!! / 13),
+                        LudoCellRenderer.entryChevronPath(r, node.seat ?: 0),
+                        colors.yard(node.seat ?: 0),
+                        style = Stroke(unit * .10f, cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                            join = androidx.compose.ui.graphics.StrokeJoin.Round),
                     )
                 else -> Unit
             }
@@ -134,16 +140,9 @@ object LudoBoardDraw {
                 drawPath(LudoPawnPath.rimPath(boxW, boxH),
                     LudoPawnPath.rimColor(hue, darkTheme),
                     style = Stroke(if (darkTheme) 1f else 0.75f))
-                // Rim line across the base at y=0.82H.
-                val rimY = 0.82f * boxH
-                drawLine(
-                    LudoPawnPath.rimColor(hue, darkTheme),
-                    Offset(boxW * 0.10f, rimY), Offset(boxW * 0.90f, rimY),
-                    strokeWidth = 1f,
-                )
                 drawPath(LudoPawnPath.highlightArc(boxW, boxH),
-                    Color.White.copy(alpha = if (darkTheme) 0.10f else 0.14f),
-                    style = Stroke(0.035f * boxW, cap = androidx.compose.ui.graphics.StrokeCap.Round))
+                    LudoPawnPath.rimColor(hue, darkTheme).copy(alpha = .45f),
+                    style = Stroke(1.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round))
             }
         }
 
@@ -170,7 +169,7 @@ object LudoBoardDraw {
         // Game end: border returns to podBorder instantly (§12.1); winner presentation belongs
         // to the result sheet.
         if (state.isFinished) {
-            drawPath(perimeter, LudoBoardDraw.tok(colors.podBorder), style = Stroke(strokePx))
+            drawPath(perimeter, LudoBoardDraw.tok(colors.trackCellBorder), style = Stroke(strokePx))
         }
     }
 
@@ -178,7 +177,7 @@ object LudoBoardDraw {
 
     private fun yardFill(node: LudoBoardGeometry.CellNode, dropped: Set<Int>, colors: LudoThemeColors): Color {
         val owner = node.seat ?: return LudoBoardDraw.tok(colors.unusedCellFill)
-        return if (owner in dropped) LudoBoardDraw.tok(colors.inactiveYard) else colors.yard(owner)
+        return colors.yard(owner)
     }
 
     private fun highlightHue(state: LudoGameState, node: LudoBoardGeometry.CellNode, colors: LudoThemeColors): Color =
@@ -186,7 +185,7 @@ object LudoBoardDraw {
 
     /** Steady border color by current state (§12.1). */
     fun restingBorderColor(state: LudoGameState, colors: LudoThemeColors): Color = when {
-        state.status != "active" -> LudoBoardDraw.tok(colors.podBorder)
+        state.status != "active" || state.turn == null -> LudoBoardDraw.tok(colors.trackCellBorder)
         else -> colors.hue(state.turn?.seat ?: 0)
     }
 
@@ -200,5 +199,3 @@ object LudoBoardDraw {
             )
         }
 }
-
-

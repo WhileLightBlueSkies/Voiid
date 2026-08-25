@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -43,6 +44,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.animate
@@ -59,6 +63,7 @@ import com.voiid.app.ui.theme.LudoMotion
 import com.voiid.app.ui.theme.LudoPalette
 import com.voiid.app.ui.theme.ludoPaletteFor
 import com.voiid.app.ui.theme.VoiidColor
+import kotlin.math.roundToInt
 
 /**
  * The Ludo match screen (§11): responsive portrait chrome — top bar (close / help / network),
@@ -79,6 +84,7 @@ fun LudoScreen(
     val context = LocalContext.current
     val engine = remember { GamesEngine.get(context) }
     val frameV2 by engine.ludoV2.collectAsState()
+    val requiresUpdate by engine.ludoRequiresUpdate.collectAsState()
     val presence by engine.ludoPresence.collectAsState()
 
     var showExitConfirm by remember { mutableStateOf(false) }
@@ -94,6 +100,26 @@ fun LudoScreen(
 
     val state = frameV2?.state
     val reduceMotion = remember { ReduceMotionReader() }
+    val powerManager = remember {
+        context.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+    }
+    var lowPower by remember { androidx.compose.runtime.mutableStateOf(powerManager.isPowerSaveMode) }
+    androidx.compose.runtime.DisposableEffect(context, powerManager) {
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: android.content.Context?, intent: android.content.Intent?) {
+                lowPower = powerManager.isPowerSaveMode
+            }
+        }
+        context.registerReceiver(
+            receiver,
+            android.content.IntentFilter(android.os.PowerManager.ACTION_POWER_SAVE_MODE_CHANGED),
+        )
+        onDispose { context.unregisterReceiver(receiver) }
+    }
+    val highContrast = remember {
+        android.provider.Settings.Secure.getInt(context.contentResolver,
+            "high_text_contrast_enabled", 0) == 1
+    }
 
     // Presentation coordinator: one instance per match; new action ids enqueue beats once.
     val coordinator = remember(matchId) { LudoPresentationCoordinator().also { it.setMatchId(matchId) } }
@@ -104,7 +130,7 @@ fun LudoScreen(
 
     LaunchedEffect(state?.lastAction?.id) {
         val s = state ?: return@LaunchedEffect
-        coordinator.setReduceMotion(reduceMotion.read(context))
+        coordinator.setReduceMotion(reduceMotion.read(context) || lowPower)
         when (val a = s.lastAction) {
             null -> Unit
             else -> when (a.type) {
@@ -130,6 +156,12 @@ fun LudoScreen(
             .fillMaxSize()
             .background(LudoPalette.screenBackground()),
     ) {
+        if (requiresUpdate) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("Update Voiid to continue this Ludo match.")
+            }
+            return@Box
+        }
         Column(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
             TopBar(
                 connected = state != null,
@@ -148,6 +180,8 @@ fun LudoScreen(
                     coordinator = coordinator,
                     engine = engine,
                     exploreBoard = exploreBoard,
+                    reduceMotionEnabled = reduceMotion.read(context) || lowPower,
+                    highContrast = highContrast,
                     modifier = Modifier.weight(1f),
                 )
                 PodRow(state, presence, top = false)
@@ -242,8 +276,9 @@ private fun LifecycleSnapshotSync(engine: GamesEngine) {
 internal fun ringFractionFor(state: LudoGameState, seat: Int): Float? {
     if (state.isFinished || state.turn?.seat != seat) return null
     val turn = state.turn ?: return null
-    val total = (turn.deadlineAt - turn.opensAt).coerceAtLeast(1)
-    val remaining = (turn.deadlineAt - nowEstimated()).coerceIn(0L, LudoRules.TURN_WINDOW_MS.toLong())
+    val deadline = turn.deadlineAt ?: return null
+    val total = (deadline - turn.opensAt).coerceAtLeast(1)
+    val remaining = (deadline - nowEstimated()).coerceIn(0L, LudoRules.TURN_WINDOW_MS.toLong())
     return remaining.toFloat() / total
 }
 
@@ -251,11 +286,11 @@ internal fun ringFractionFor(state: LudoGameState, seat: Int): Float? {
 internal fun timerOverrideColor(state: LudoGameState, seat: Int): Color? {
     if (state.isFinished || state.turn?.seat != seat) return null
     val colors = ludoPaletteFor(!com.voiid.app.ui.theme.isLightTheme())
-    val remaining = state.turn!!.deadlineAt - nowEstimated()
+    val remaining = state.turn!!.deadlineAt?.minus(nowEstimated()) ?: return null
     return when {
         remaining <= 2_000 -> colors.c(colors.timerCritical)
         remaining <= 5_000 -> colors.c(colors.timerWarning)
-        else -> null
+        else -> colors.c(colors.timerActive)
     }
 }
 
@@ -271,7 +306,7 @@ internal fun podAccessibility(
     append(sv.displayName)
     if (!state.isFinished && state.turn?.seat == seat) append(", action")
     append(", ${sv.finishedPawns} of 4 pawns home")
-    if (sv.isDropped) append(", left game")
+    if (sv.isBot) append(", bot")
 }
 
 // ── Chrome ───────────────────────────────────────────────────────────────────────────────
@@ -384,6 +419,8 @@ private fun BoardArea(
     coordinator: LudoPresentationCoordinator,
     engine: GamesEngine,
     exploreBoard: Boolean,
+    reduceMotionEnabled: Boolean,
+    highContrast: Boolean,
     modifier: Modifier,
 ) {
     val context = LocalContext.current
@@ -477,7 +514,9 @@ private fun BoardArea(
 
                         // Resolve ONLY among server-legal pawns at the tapped point (§17).
                         val turn = state.turn ?: return@detectTapGestures
-                        if (turn.phase != "awaitingMove" || state.viewerSeat != turn.seat) return@detectTapGestures
+                        val viewer = state.seats.firstOrNull { it.seat == state.viewerSeat }
+                        if (turn.phase != "awaitingMove" || state.viewerRole != "controller" ||
+                            state.viewerSeat != turn.seat || viewer?.controller != "human") return@detectTapGestures
                         val placed = LudoPawnLayer.layout(state, layout, droppedSeats(state))
                         val legalPawns = turn.legalTokenIds.mapNotNull { t ->
                             val pos = state.tokens.getOrNull(turn.seat)?.getOrNull(t)
@@ -519,8 +558,34 @@ private fun BoardArea(
                 highlightCells = highlightCellsForLegal(state),
                 sweep = sweep,
                 darkTheme = darkTheme,
-                reduceMotion = false,
+                    reduceMotion = reduceMotionEnabled,
+                    highContrast = highContrast,
             )
+        }
+
+        val turn = state.turn
+        if (sidePx > 0 && turn?.phase == "awaitingMove" && state.viewerRole == "controller" &&
+            state.viewerSeat == turn.seat) {
+            val layout = LudoBoardGeometry.Layout(sidePx.toFloat())
+            val placed = LudoPawnLayer.layout(state, layout, emptySet())
+            val name = state.seats.firstOrNull { it.seat == turn.seat }?.displayName ?: "Player"
+            for (token in turn.legalTokenIds) {
+                val pawn = placed.firstOrNull { it.seat == turn.seat && it.pawnIndex == token } ?: continue
+                Box(
+                    Modifier
+                        .size(48.dp)
+                        .absoluteOffset {
+                            IntOffset((pawn.center.x - 24.dp.toPx()).roundToInt(),
+                                (pawn.center.y - 24.dp.toPx()).roundToInt())
+                        }
+                        .clickable { engine.moveLudoV2(context, token) }
+                        .semantics {
+                            role = Role.Button
+                            contentDescription = LudoSemantics.pawnLabel(state, turn.seat, token, name) +
+                                ", " + (LudoSemantics.legalHint(state, token) ?: "Move pawn")
+                        },
+                )
+            }
         }
 
         DieAtAnchor(
@@ -542,7 +607,7 @@ private fun cellKeyFromTrack(i: Int): String =
     LudoBoardGeometry.TRACK_COORDS[i].let { "cell-${it.first}-${it.second}" }
 
 private fun droppedSeats(st: LudoGameState): Set<Int> =
-    st.seats.filter { it.isDropped }.map { it.seat }.toSet()
+    emptySet()
 
 private fun posCellCenter(pos: Int, seat: Int, layout: LudoBoardGeometry.Layout): Pair<Float, Float>? = when {
     pos in 0 until LudoRules.TRACK_COUNT -> {
@@ -619,7 +684,9 @@ private fun DieAtAnchor(
     }
     val canRoll = state.isActive &&
         state.turn?.phase == "awaitingRoll" &&
-        state.viewerSeat == state.turn?.seat
+        state.viewerRole == "controller" &&
+        state.viewerSeat == state.turn?.seat &&
+        state.seats.firstOrNull { it.seat == state.viewerSeat }?.controller == "human"
     val value = state.turn?.value ?: 1
     val pipsNeutral = state.turn == null || state.isFinished
 

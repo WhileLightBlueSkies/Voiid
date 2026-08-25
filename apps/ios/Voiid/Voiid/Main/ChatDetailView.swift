@@ -34,6 +34,7 @@ struct ChatDetailView: View {
     @State private var showAttach = false     // attach menu (photo / poll)
     @State private var showPollCompose = false
     @State private var showLocationCompose = false   // location share compose sheet
+    @State private var showLudoSetup = false
     @State private var pickPhoto = false
     @State private var showGifPicker = false
     /// Recording takes over the WHOLE composer row — see RecordingBar. Kept here rather than
@@ -178,6 +179,12 @@ struct ChatDetailView: View {
                 onSendPin: { label, coord in sendLocationPin(label: label, coordinate: coord) },
                 onStartLive: { duration in startLiveShare(duration: duration) })
             .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $showLudoSetup) {
+            LudoChatSetupView(hasHumanPeer: conversation.type != .self) { mode, difficulty in
+                startLudo(mode: mode, difficulty: difficulty)
+            }
+            .presentationDetents([.medium])
         }
         .sheet(item: $infoMessage) { msg in
             MessageInfoSheet(message: msg, isGroup: conversation.type == .group)
@@ -781,6 +788,7 @@ struct ChatDetailView: View {
         Menu {
             Button { pickPhoto = true } label: { Label("Photo", systemImage: "photo") }
             Button { showLocationCompose = true } label: { Label("Location", systemImage: "location") }
+            Button { showLudoSetup = true } label: { Label("Games · Ludo", systemImage: "gamecontroller") }
             if conversation.type == .group {
                 Button { showPollCompose = true } label: { Label("Poll", systemImage: "chart.bar") }
             }
@@ -804,6 +812,43 @@ struct ChatDetailView: View {
                 }
                 photoItem = nil
             }
+        }
+    }
+
+    private func startLudo(mode: LudoChatMode, difficulty: String) {
+        Task {
+            let candidates: [String]
+            if conversation.type == .group {
+                candidates = groupMembers.filter { !$0.isYou }.map(\.id)
+            } else if conversation.type == .direct {
+                if let peer = conversation.peerUserId {
+                    candidates = [peer]
+                } else {
+                    let resolved = try? await ChatService.shared.resolvePeer(
+                        conversationId: conversation.id)
+                    candidates = resolved?.peerUserId.map { [$0] } ?? []
+                }
+            } else {
+                candidates = []
+            }
+            let opponents: [String]
+            let bots: Int
+            switch mode {
+            case .duelHuman: opponents = Array(candidates.prefix(1)); bots = 0
+            case .duelBot: opponents = []; bots = 1
+            case .four: opponents = Array(candidates.prefix(3)); bots = 3 - opponents.count
+            }
+            guard let id = await GamesEngine.shared.createLudoFromChat(
+                conversationId: conversation.id, opponentIds: opponents,
+                bots: bots, difficulty: difficulty) else { return }
+            if !opponents.isEmpty {
+                chat.send(GameInvite.encode(slug: "ludo", matchId: id, meta: .init(
+                    game: "Ludo", from: "", level: bots > 0 ? difficulty.capitalized : "",
+                    format: mode == .four ? "4 players" : "1 vs 1",
+                    sentAt: GameInvite.nowMs())), to: conversation.id)
+            }
+            NotificationCenter.default.post(name: .voiidOpenGameMatch, object: nil,
+                userInfo: ["match_id": id, "slug": "ludo"])
         }
     }
 
@@ -1455,7 +1500,10 @@ private struct GameInviteBubble: View {
             // ships later needs no change here, and one without art degrades to a tinted glyph.
             ZStack {
                 Rectangle().fill(VoiidColor.primary.opacity(0.10))
-                if UIImage(named: "game_\(invite.slug)") != nil {
+                if invite.slug == "ludo" {
+                    LudoInviteMiniBoard()
+                        .frame(width: 40, height: 40)
+                } else if UIImage(named: "game_\(invite.slug)") != nil {
                     Image("game_\(invite.slug)")
                         .resizable()
                         .scaledToFill()
@@ -1525,6 +1573,26 @@ private struct GameInviteBubble: View {
         .frame(width: 248)
         .background(VoiidColor.surfaceCard)
         .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+}
+
+struct LudoInviteMiniBoard: View {
+    var body: some View {
+        Canvas { ctx, size in
+            let u = min(size.width, size.height) / 15
+            let colors = LudoColors.resolve(.light)
+            ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(colors.boardSurface))
+            for node in LudoBoardGeometry.cells {
+                let rect = CGRect(x: CGFloat(node.x) * u, y: CGFloat(node.y) * u, width: u, height: u)
+                let fill: Color = node.role == .yard ? colors.yard(node.seat ?? 0)
+                    : node.role == .homeLane ? colors.homeLane(node.seat ?? 0) : colors.trackCellFill
+                ctx.fill(Path(rect), with: .color(fill))
+                if node.role == .sharedTrack || node.role == .homeLane {
+                    ctx.stroke(Path(rect), with: .color(colors.trackCellBorder), lineWidth: max(0.25, u * 0.06))
+                }
+            }
+        }
+        .accessibilityHidden(true)
     }
 }
 

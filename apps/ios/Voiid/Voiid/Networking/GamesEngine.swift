@@ -558,6 +558,7 @@ final class GamesEngine: ObservableObject {
     /// Ludo schema-v2 frame (§7.2): per-recipient envelope + payload, one apply path for
     /// live frames and snapshots.
     @Published private(set) var ludoV2: LudoFrameV2?
+    @Published private(set) var ludoRequiresUpdate = false
     /// One received snake frame plus when it landed, on the monotonic host clock.
     struct SnakeFrame {
         let state: SnakeState
@@ -689,8 +690,12 @@ final class GamesEngine: ObservableObject {
         case "cricket": cricket = CricketState.parse(payload)
         case "seabattle": seaBattle = SeaBattleState.parse(payload)
         case "ludo":
-            // Schema v2 per-recipient frame (§6/§7.2).
+            if (info["schema_version"] as? Int ?? 0) > LudoRules.schemaVersion {
+                ludoRequiresUpdate = true
+                return
+            }
             if let parsed = LudoWireParser.parse(seq: seq, payload: payload) {
+                lastLudoPayload = payload
                 applyLudoFrame(parsed)
             }
         case "snake":
@@ -726,6 +731,7 @@ final class GamesEngine: ObservableObject {
     }
 
     private var lastRenderedActionId: String?
+    private var lastLudoPayload: [String: Any]?
     private var commandCounter = 0
     private func nextCommandId() -> String {
         commandCounter += 1
@@ -753,6 +759,7 @@ final class GamesEngine: ObservableObject {
         var q = [String: Any]()
         q["lastSeq"] = state.seq
         q["lastAction"] = state.lastAction?.id ?? ""
+        q["lastSnapshot"] = lastLudoPayload ?? [:]
         KeychainLudoCache.shared.save(matchId: matchId ?? "", dict: q)
     }
     func readCachedLudoMatchId() -> String? { KeychainLudoCache.shared.readMatchId() }
@@ -763,10 +770,11 @@ final class GamesEngine: ObservableObject {
         ludoPresence = [:]
         ludoEnded = nil
         lastRenderedActionId = nil
+        ludoRequiresUpdate = false
     }
 
     func rollLudoV2() {
-        guard let s = ludoV2?.state, let turn = s.turn else { return }
+        guard let s = ludoV2?.state, s.viewerRole == "controller", let turn = s.turn else { return }
         WebSocketClient.shared.sendGameInput(matchId: matchId ?? "", payload: [
             "commandId": nextCommandId(),
             "expectedSeq": s.seq,
@@ -776,7 +784,7 @@ final class GamesEngine: ObservableObject {
     }
 
     func moveLudoV2(token: Int) {
-        guard let s = ludoV2?.state, let turn = s.turn, let rollId = turn.rollId else { return }
+        guard let s = ludoV2?.state, s.viewerRole == "controller", let turn = s.turn, let rollId = turn.rollId else { return }
         WebSocketClient.shared.sendGameInput(matchId: matchId ?? "", payload: [
             "commandId": nextCommandId(),
             "expectedSeq": s.seq,
@@ -846,6 +854,13 @@ final class GamesEngine: ObservableObject {
      */
     func openLudo(matchId: String) async {
         await open(matchId: matchId)
+        if let cached = KeychainLudoCache.shared.read(matchId: matchId),
+           let seq = cached["lastSeq"] as? Int,
+           let payload = cached["lastSnapshot"] as? [String: Any],
+           let parsed = LudoWireParser.parse(seq: seq, payload: payload) {
+            lastLudoPayload = payload
+            applyLudoFrame(parsed)
+        }
         if ludoV2 == nil {
             let deadline = Date().addingTimeInterval(0.7)
             while ludoV2 == nil && Date() < deadline {
@@ -1085,6 +1100,39 @@ final class GamesEngine: ObservableObject {
                 slug: slug, opponentIds: [], options: options, skin: skin)
             await open(matchId: id)
             return id
+        } catch {
+            joinError = "Couldn't start the match."
+            return nil
+        }
+    }
+
+    /// Ludo practice uses the authoritative match path with one or three server-owned seats.
+    func createLudoBot(difficulty: String, fourSeats: Bool = false) async -> String? {
+        do {
+            let response = try await api.createLudo(
+                mode: fourSeats ? "four" : "duel", opponentIds: [], conversationId: nil,
+                idempotencyKey: UUID().uuidString, bots: fourSeats ? 3 : 1,
+                difficulty: difficulty)
+            await open(matchId: response.match_id)
+            return response.match_id
+        } catch {
+            joinError = "Couldn't start the match."
+            return nil
+        }
+    }
+
+    /// Creates a chat-scoped roster; the caller posts the returned id through the E2EE pipe.
+    func createLudoFromChat(
+        conversationId: String, opponentIds: [String], bots: Int, difficulty: String
+    ) async -> String? {
+        do {
+            let seats = 1 + opponentIds.count + bots
+            let response = try await api.createLudo(
+                mode: seats == 2 ? "duel" : "four", opponentIds: opponentIds,
+                conversationId: conversationId, idempotencyKey: UUID().uuidString,
+                bots: bots, difficulty: difficulty)
+            await open(matchId: response.match_id)
+            return response.match_id
         } catch {
             joinError = "Couldn't start the match."
             return nil

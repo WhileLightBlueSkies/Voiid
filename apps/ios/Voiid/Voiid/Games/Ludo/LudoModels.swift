@@ -2,7 +2,7 @@
 //  LudoModels.swift
 //  Voiid
 //
-//  Wire/state model for Ludo schema v2 (LUDO_GAME_SPEC.md §5–§6).
+//  Wire/state model for Ludo schema v3 (LUDO_GAME_SPEC.md §5–§6).
 //
 //  Type names mirror backend/games/src/engine/ludo/types.ts normatively; only casing differs.
 //  THE CLIENT IS A RENDERER: it never decides legality — the frame's `legalTokenIds` is the one
@@ -17,8 +17,8 @@
 import Foundation
 
 enum LudoRules {
-    static let schemaVersion = 2
-    static let rulesVersion = "ludo-classic-1"
+    static let schemaVersion = 3
+    static let rulesVersion = "ludo-classic-2"
 
     static let trackCount = 52
     static let homeLaneCount = 5
@@ -42,6 +42,7 @@ enum LudoRules {
     static let safeIndices: Set<Int> = [0, 8, 13, 21, 26, 34, 39, 47]
     static let entryIndices: Set<Int> = [0, 13, 26, 39]
     static let starIndices: Set<Int> = [8, 21, 34, 47]
+    static let approachIndices: [Int] = [50, 11, 24, 37]
 
     static let startIndices = [0, 13, 26, 39]
     static func startIndex(_ seat: Int) -> Int { startIndices[seat % 4] }
@@ -68,12 +69,22 @@ struct LudoTurnView {
     let serial: Int
     let phase: String            // "awaitingRoll" | "awaitingMove" | "none"
     let opensAt: Double          // epoch ms
-    let deadlineAt: Double       // epoch ms
+    let deadlineAt: Double?      // epoch ms; nil for bots
+    let botActionAt: Double?
     let sixStreak: Int
     let rollId: String?
     let value: Int?
-    let legalTokenIds: [Int]
+    let legalMoves: [LudoLegalMove]
     let automated: Bool
+    var legalTokenIds: [Int] { legalMoves.map(\.tokenId) }
+}
+
+struct LudoLegalMove {
+    let tokenId: Int
+    let to: Int
+    let path: [Int]
+    let capture: (seat: Int, tokenId: Int)?
+    let isSafe: Bool
 }
 
 struct LudoActionMove {
@@ -102,12 +113,15 @@ struct LudoSeatViewV2 {
     let seatId: String
     let color: LudoSeatColor
     let displayName: String
-    let participation: String    // waiting|active|dropped|winner
+    let controller: String       // human|bot
+    let botMarker: String?
+    let botDifficulty: String?
+    let participation: String    // waiting|active|winner
     let connection: String       // connected|disconnected
     let timeoutStreak: Int
     let finishedPawns: Int
     let captures: Int
-    var isDropped: Bool { participation == "dropped" }
+    var isBot: Bool { controller == "bot" }
 }
 
 /// One authoritative frame, applied in ONE transaction so a refresh never flashes an empty
@@ -119,6 +133,7 @@ struct LudoGameStateV2 {
     let status: String           // waiting|active|finished|abandoned
     let serverNow: Double        // epoch ms of emission; drives the smoothed clock offset
     let viewerSeat: Int?
+    let viewerRole: String
     let seats: [LudoSeatViewV2]
     let tokensPerSeat: Int
     let tokens: [[Int]]
@@ -140,9 +155,10 @@ struct LudoGameStateV2 {
 }
 
 enum LudoWireParser {
-    /// Parse the per-recipient `ludoV2` payload (§7.2). Never sees a raw user id.
+    /// Parse the per-recipient `ludoV3` payload (§7.2). Never sees a raw user id.
     static func parse(seq: Int, payload: [String: Any]) -> LudoGameStateV2? {
-        guard let v2 = payload["ludoV2"] as? [String: Any] else { return nil }
+        guard let v2 = payload["ludoV3"] as? [String: Any] else { return nil }
+        guard (v2["schemaVersion"] as? Int) == LudoRules.schemaVersion else { return nil }
         guard let rawSeats = v2["seats"] as? [[String: Any]] else { return nil }
         guard let rawTokens = v2["tokens"] as? [[Int]] else { return nil }
 
@@ -156,6 +172,9 @@ enum LudoWireParser {
                 seatId: s["seatId"] as? String ?? "",
                 color: LudoSeatColor(rawValue: seat) ?? .red,
                 displayName: s["displayName"] as? String ?? "",
+                controller: s["controller"] as? String ?? "human",
+                botMarker: s["botMarker"] as? String,
+                botDifficulty: s["botDifficulty"] as? String,
                 participation: s["participation"] as? String ?? "waiting",
                 connection: s["connection"] as? String ?? "disconnected",
                 timeoutStreak: s["timeoutStreak"] as? Int ?? 0,
@@ -165,16 +184,26 @@ enum LudoWireParser {
 
         let turn: LudoTurnView? = (v2["turn"] as? [String: Any]).flatMap { t in
             guard let seat = t["seat"] as? Int else { return nil }
+            let legalMoves: [LudoLegalMove] = (t["legalMoves"] as? [[String: Any]] ?? []).compactMap { move in
+                guard let tokenId = move["tokenId"] as? Int, let to = move["to"] as? Int else { return nil }
+                let capture = (move["capture"] as? [String: Any]).flatMap { c -> (Int, Int)? in
+                    guard let seat = c["seat"] as? Int, let pawn = c["tokenId"] as? Int else { return nil }
+                    return (seat, pawn)
+                }
+                return LudoLegalMove(tokenId: tokenId, to: to, path: move["path"] as? [Int] ?? [],
+                                     capture: capture, isSafe: move["isSafe"] as? Bool ?? false)
+            }
             return LudoTurnView(
                 seat: seat,
                 serial: t["serial"] as? Int ?? 0,
                 phase: t["phase"] as? String ?? "awaitingRoll",
                 opensAt: t["opensAt"] as? Double ?? 0,
-                deadlineAt: t["deadlineAt"] as? Double ?? 0,
+                deadlineAt: t["deadlineAt"] as? Double,
+                botActionAt: t["botActionAt"] as? Double,
                 sixStreak: t["sixStreak"] as? Int ?? 0,
                 rollId: t["rollId"] as? String,
                 value: t["value"] as? Int,
-                legalTokenIds: t["legalTokenIds"] as? [Int] ?? [],
+                legalMoves: legalMoves,
                 automated: t["automated"] as? Bool ?? false)
         }
 
@@ -220,6 +249,7 @@ enum LudoWireParser {
             status: v2["status"] as? String ?? "active",
             serverNow: v2["serverNow"] as? Double ?? Date().timeIntervalSince1970 * 1000,
             viewerSeat: v2["viewerSeat"] as? Int,
+            viewerRole: v2["viewerRole"] as? String ?? "none",
             seats: seats,
             tokensPerSeat: v2["tokensPerSeat"] as? Int ?? 4,
             tokens: rawTokens,

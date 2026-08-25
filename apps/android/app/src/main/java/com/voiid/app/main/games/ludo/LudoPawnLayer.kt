@@ -70,7 +70,7 @@ object LudoPawnLayer {
                     pos == LudoRules.FINISHED -> null
                     else -> "pos:$pos"
                 }
-                if (key == null) { out += single(seat, pawn, center); continue }
+                if (key == null) { out += single(seat, pawn, center, pos == LudoRules.FINISHED); continue }
                 groups.getOrPut(pos) { mutableListOf() }.add(Entry(seat, pawn, center))
             }
         }
@@ -88,13 +88,14 @@ object LudoPawnLayer {
                 out += PlacedPawn(entries[1].seat, entries[1].pawn,
                     entries[1].center + (perp * off), 0.82f)
             } else if (entries.size > 1) {
-                // Safe-cell coexistence (any colours): 2×2 fan at 68%.
+                val grid = if (entries.size <= 4) 2 else if (entries.size <= 9) 3 else 4
+                val scale = if (entries.size <= 4) .58f else if (entries.size <= 9) .40f else .30f
+                val spacing = unit * if (grid == 2) .28f else if (grid == 3) .22f else .17f
                 entries.forEachIndexed { i, e ->
-                    val dx = if (i % 2 == 0) -1f else 1f
-                    val dy = if (i < 2) -1f else 1f
-                    val off = 0.16f * unit
+                    val dx = (i % grid) - (grid - 1) / 2f
+                    val dy = (i / grid) - (grid - 1) / 2f
                     out += PlacedPawn(e.seat, e.pawn,
-                        e.center + Offset(dx * off, dy * off), 0.68f, overlapsLegalPeer = true)
+                        e.center + Offset(dx * spacing, dy * spacing), scale, overlapsLegalPeer = true)
                 }
             } else {
                 val e = entries.first()

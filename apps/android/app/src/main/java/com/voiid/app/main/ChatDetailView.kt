@@ -56,6 +56,7 @@ import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Photo
+import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.outlined.AddCircleOutline
 import androidx.compose.material.icons.outlined.Mood
@@ -146,6 +147,7 @@ fun ChatDetailView(
     var showPollCompose by remember { mutableStateOf(false) }
     var showGifPicker by remember { mutableStateOf(false) }
     var showLocation by remember { mutableStateOf(false) }
+    var showLudoSetup by remember { mutableStateOf(false) }
     var infoMessage by remember { mutableStateOf<VMessage?>(null) }
     var forwardMessage by remember { mutableStateOf<VMessage?>(null) }
     var deleteMessage by remember { mutableStateOf<VMessage?>(null) }
@@ -505,6 +507,9 @@ fun ChatDetailView(
                             VoiidMenuItem("Location", Icons.Default.LocationOn) {
                                 showAttach = false; showLocation = true
                             }
+                            VoiidMenuItem("Games · Ludo", Icons.Default.SportsEsports) {
+                                showAttach = false; showLudoSetup = true
+                            }
                             if (isGroup) {
                                 VoiidMenuItem("Poll", Icons.Default.BarChart) {
                                     showAttach = false; showPollCompose = true
@@ -651,6 +656,48 @@ fun ChatDetailView(
     }
     if (showLocation) {
         LocationComposeSheet(conv = conversation, onDismiss = { showLocation = false })
+    }
+    if (showLudoSetup) {
+        val humanCandidates = if (isGroup) groupMembers.filterNot { it.isYou }.map { it.id }
+            else listOfNotNull(conversation.peerUserId)
+        com.voiid.app.main.games.ludo.LudoChatSetupDialog(
+            hasHumanPeer = humanCandidates.isNotEmpty() || (!isGroup && !isSelfChat),
+            onStart = { mode, difficulty ->
+                showLudoSetup = false
+                scope.launch {
+                    val resolved = if (!isGroup && humanCandidates.isEmpty()) {
+                        listOfNotNull(runCatching {
+                            com.voiid.app.net.ChatService(context).resolvePeer(conversation.id).peerUserId
+                        }.getOrNull())
+                    } else humanCandidates
+                    val opponents = when (mode) {
+                        com.voiid.app.main.games.ludo.LudoChatMode.DUEL_HUMAN -> resolved.take(1)
+                        com.voiid.app.main.games.ludo.LudoChatMode.DUEL_BOT -> emptyList()
+                        com.voiid.app.main.games.ludo.LudoChatMode.FOUR -> resolved.take(3)
+                    }
+                    val bots = when (mode) {
+                        com.voiid.app.main.games.ludo.LudoChatMode.DUEL_HUMAN -> 0
+                        com.voiid.app.main.games.ludo.LudoChatMode.DUEL_BOT -> 1
+                        com.voiid.app.main.games.ludo.LudoChatMode.FOUR -> 3 - opponents.size
+                    }
+                    val id = com.voiid.app.net.GamesEngine.get(context).createLudoFromChat(
+                        conversation.id, opponents, bots, difficulty) ?: return@launch
+                    if (opponents.isNotEmpty()) {
+                        chat.send(
+                            com.voiid.app.net.GameInvite.encode("ludo", id,
+                                com.voiid.app.net.GameInvite.Meta(
+                                    game = "Ludo",
+                                    format = if (mode == com.voiid.app.main.games.ludo.LudoChatMode.FOUR) "4 players" else "1 vs 1",
+                                    level = if (bots > 0) difficulty.replaceFirstChar { it.uppercase() } else "",
+                                    sentAt = System.currentTimeMillis())),
+                            conversationId = conversation.id,
+                        )
+                    }
+                    com.voiid.app.net.DeepLinkRouter.openGameMatch(id, "ludo")
+                }
+            },
+            onDismiss = { showLudoSetup = false },
+        )
     }
     infoMessage?.let { m ->
         MessageInfoSheet(message = m, isGroup = isGroup, onDismiss = { infoMessage = null })

@@ -20,7 +20,7 @@ function walk(dir) {
     const p = path.join(dir, e.name);
     if (e.isDirectory()) { walk(p); continue; }
     if (!/\.(swift|kt|json)$/.test(e.name)) continue;
-    if (/ludo_board_v2\.json$/.test(p)) continue; // geometry fixture is data, not an asset
+    if (/ludo_board_v3\.json$/.test(p)) continue; // geometry fixture is data, not an asset
     let text;
     try { text = fs.readFileSync(p, 'utf8'); } catch { continue; }
     if (/game_ludo\s*\+\s*\.(png|jpg|jpeg|webp)/i.test(text)) offenders.push(p);

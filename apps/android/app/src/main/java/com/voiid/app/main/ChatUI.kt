@@ -756,7 +756,9 @@ private fun GameInviteBubble(
                 .background(VoiidColor.primary.copy(alpha = 0.10f)),
             contentAlignment = Alignment.Center,
         ) {
-            if (artId != 0) {
+            if (invite.slug == "ludo") {
+                LudoInviteMiniBoard(Modifier.size(40.dp))
+            } else if (artId != 0) {
                 // Fully qualified: this file imports `icons.filled.Image`, so a bare `Image` here
                 // resolves to the icon, not the composable.
                 androidx.compose.foundation.Image(
@@ -772,16 +774,18 @@ private fun GameInviteBubble(
                 )
             }
             // Keeps the label strip legible over arbitrary artwork.
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(
-                        androidx.compose.ui.graphics.Brush.verticalGradient(
-                            0.45f to androidx.compose.ui.graphics.Color.Transparent,
-                            1f to androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.55f),
+            if (invite.slug != "ludo") {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(
+                            androidx.compose.ui.graphics.Brush.verticalGradient(
+                                0.45f to androidx.compose.ui.graphics.Color.Transparent,
+                                1f to androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.55f),
+                            )
                         )
-                    )
-            )
+                )
+            }
             if (expired) {
                 Box(
                     Modifier
@@ -864,6 +868,29 @@ private fun GameInviteBubble(
                     style = VoiidFont.rounded(14, FontWeight.Bold),
                     color = if (expired) VoiidColor.textSecondary else VoiidColor.textOnPrimary,
                 )
+            }
+        }
+    }
+}
+
+@Composable
+internal fun LudoInviteMiniBoard(modifier: Modifier = Modifier) {
+    val colors = com.voiid.app.ui.theme.ludoPaletteFor(false)
+    androidx.compose.foundation.Canvas(modifier) {
+        val u = minOf(size.width, size.height) / 15f
+        drawRect(colors.c(colors.boardSurface))
+        for (node in com.voiid.app.main.games.ludo.LudoBoardGeometry.CELLS) {
+            val fill = when (node.role) {
+                com.voiid.app.main.games.ludo.LudoBoardGeometry.Role.YARD -> colors.yard(node.seat ?: 0)
+                com.voiid.app.main.games.ludo.LudoBoardGeometry.Role.HOME_LANE -> colors.homeLane(node.seat ?: 0)
+                else -> colors.c(colors.trackCellFill)
+            }
+            val top = androidx.compose.ui.geometry.Offset(node.x * u, node.y * u)
+            drawRect(fill, top, androidx.compose.ui.geometry.Size(u, u))
+            if (node.role == com.voiid.app.main.games.ludo.LudoBoardGeometry.Role.SHARED_TRACK ||
+                node.role == com.voiid.app.main.games.ludo.LudoBoardGeometry.Role.HOME_LANE) {
+                drawRect(colors.c(colors.trackCellBorder), top, androidx.compose.ui.geometry.Size(u, u),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(maxOf(.25f, u * .06f)))
             }
         }
     }

@@ -418,7 +418,13 @@ struct GamesHomeView: View {
                     case "seabattle":
                         SeaBattleBotView(level: s.level, skill: s.skill) { botGame = nil }
                     case "ludo":
-                        LudoBotView(level: s.level, skill: s.skill) { botGame = nil }
+                        LudoServerBotSetupView(
+                            level: s.level,
+                            onOpen: { id in
+                                botGame = nil
+                                openMatch = OpenMatch(id: id, slug: "ludo")
+                            },
+                            onClose: { botGame = nil })
                     default:        TicTacToeBotView(level: s.level, skill: s.skill) { botGame = nil }
                     }
                 }
@@ -467,11 +473,23 @@ struct GamesHomeView: View {
                                 case .moderate: bots = 5
                                 case .hard:     bots = 8
                                 }
-                                if let id = await GamesEngine.shared.createSolo(
-                                    slug: slug,
-                                    options: ["bots": bots].merging(
-                                        SnakeChoiceStore.matchOptions) { a, _ in a },
-                                    skin: SnakeChoiceStore.skinId) {
+                                let id: String?
+                                if slug == "ludo" {
+                                    let difficulty: String
+                                    switch level {
+                                    case .easy: difficulty = "relaxed"
+                                    case .moderate: difficulty = "balanced"
+                                    case .hard: difficulty = "sharp"
+                                    }
+                                    id = await GamesEngine.shared.createLudoBot(difficulty: difficulty)
+                                } else {
+                                    id = await GamesEngine.shared.createSolo(
+                                        slug: slug,
+                                        options: ["bots": bots].merging(
+                                            SnakeChoiceStore.matchOptions) { a, _ in a },
+                                        skin: SnakeChoiceStore.skinId)
+                                }
+                                if let id {
                                     openMatch = OpenMatch(id: id, slug: slug)
                                 }
                             }

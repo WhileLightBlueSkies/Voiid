@@ -121,7 +121,9 @@ fun InviteBanner(
                 .background(VoiidColor.primary.copy(alpha = 0.10f)),
             contentAlignment = Alignment.Center,
         ) {
-            if (artId != 0) {
+            if (invite.slug == "ludo") {
+                com.voiid.app.main.LudoInviteMiniBoard(Modifier.size(40.dp))
+            } else if (artId != 0) {
                 Image(
                     painter = painterResource(artId),
                     contentDescription = null,

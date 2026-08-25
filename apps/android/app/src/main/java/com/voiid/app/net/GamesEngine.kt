@@ -17,6 +17,7 @@ import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.jsonObject
 
 /**
  * Client half of the games system (docs/GAMES.md §4). Mirrors iOS `GamesEngine.swift`:
@@ -470,10 +471,12 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
             "cricket" -> _cricket.value = parseCricket(payload)
             "seabattle" -> _seaBattle.value = parseSeaBattle(payload)
             "ludo" -> {
-                if (payload.containsKey("ludoV2")) {
-                    // Schema v2 per-recipient frame (§7.2). One ingest path for live frames
+                if (payload.containsKey("ludoV3")) {
+                    // Schema v3 per-recipient frame (§7.2). One ingest path for live frames
                     // and snapshots keeps apply-ordering in exactly one place.
                     applyLudoFrame(seq, payload, snapshot = false)
+                } else if (payload.keys.any { it.startsWith("ludoV") }) {
+                    _ludoRequiresUpdate.value = true
                 } else {
                     _ludo.value = parseLudo(payload)
                 }
@@ -805,6 +808,7 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         _seaBattle.value = null
         _ludo.value = null
         clearLudoLocalState()
+        restoreCachedLudo(matchId)
         _snakeFrames.value = emptyList()
         desiredHeading = null
         desiredBoost = false
@@ -819,7 +823,9 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
             kotlinx.coroutines.withTimeoutOrNull(700) {
                 while (_ludoV2.value == null) kotlinx.coroutines.delay(50)
                 true
-            } ?: fetchLudoSnapshot()
+            } ?: fetchLudoSnapshot(force = true)
+        } else {
+            fetchLudoSnapshot(force = true)
         }
     }
 
@@ -871,6 +877,7 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
                 require(opponents.size == 3) { "Four-player Ludo needs exactly three opponents" }
                 service.createLudo(
                     mode = "four",
+                    creatorId = myUserId ?: error("not authenticated"),
                     opponentIds = opponents.map { it.first },
                     conversationId = opponents[0].second,
                     gameName = gameName,
@@ -927,6 +934,7 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
             val id = if (slug == "ludo") {
                 service.createLudo(
                     mode = "duel",
+                    creatorId = myUserId ?: error("not authenticated"),
                     opponentIds = listOf(opponentId),
                     conversationId = conversationId,
                     gameName = gameName,
@@ -1175,7 +1183,7 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         WebSocketClient.get(context).sendGameInput(id, """{"respawn":true}""")
     }
 
-    // ── LUDO SCHEMA V2 (LUDO_GAME_SPEC.md §6–§9, §16) ───────────────────────────────────
+    // ── LUDO SCHEMA V3 (LUDO_GAME_SPEC.md §6–§9, §16) ───────────────────────────────────
     //
     // The authoritative frame is per-recipient (`ludoV2` payload): seats carry projected
     // display names and connection bits; the turn carries opensAt/deadlineAt/rollId/legal.
@@ -1186,6 +1194,8 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
 
     private val _ludoV2 = MutableStateFlow<LudoGameStateV2?>(null)
     val ludoV2: StateFlow<LudoGameStateV2?> = _ludoV2.asStateFlow()
+    private val _ludoRequiresUpdate = MutableStateFlow(false)
+    val ludoRequiresUpdate: StateFlow<Boolean> = _ludoRequiresUpdate.asStateFlow()
 
     data class LudoGameStateV2(
         val state: com.voiid.app.main.games.ludo.LudoGameState,
@@ -1204,7 +1214,7 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
     @Volatile var serverClockOffsetMs: Long = 0L
         private set
 
-    fun estimatedServerNow(): Long = android.os.SystemClock.elapsedRealtime() + serverClockOffsetMs
+    fun estimatedServerNow(): Long = System.currentTimeMillis() + serverClockOffsetMs
 
     private fun observeClock(serverNow: Long) {
         val localNow = System.currentTimeMillis()
@@ -1311,14 +1321,15 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         observeClock(parsed.serverNow)
         // Applied in one transaction — never an empty intermediate model (§9).
         _ludoV2.value = LudoGameStateV2(parsed, android.os.SystemClock.elapsedRealtime())
+        _ludoRequiresUpdate.value = false
         if (parsed.lastAction != null && !snapshot) {
             lastRenderedActionId = parsed.lastAction.id
         }
-        persistCache(parsed)
+        persistCache(parsed, payload)
     }
 
     /** Force-quit restore cache (§9): encrypted {matchId,lastSeq,lastRenderedActionId}. */
-    fun persistCache(state: com.voiid.app.main.games.ludo.LudoGameState) {
+    fun persistCache(state: com.voiid.app.main.games.ludo.LudoGameState, payload: JsonObject? = null) {
         runCatching {
             val prefs = SecurePrefs.open(appContext, "ludo_cache")
             prefs.edit()
@@ -1326,7 +1337,18 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
                 .putInt("lastSeq", state.seq)
                 .putString("lastAction", state.lastAction?.id)
                 .putLong("at", System.currentTimeMillis())
+                .apply { if (payload != null) putString("payload", payload.toString()) }
                 .apply()
+        }
+    }
+
+    private fun restoreCachedLudo(id: String) {
+        runCatching {
+            val prefs = SecurePrefs.open(appContext, "ludo_cache")
+            if (prefs.getString("matchId", null) != id) return@runCatching
+            val raw = prefs.getString("payload", null) ?: return@runCatching
+            val payload = kotlinx.serialization.json.Json.parseToJsonElement(raw).jsonObject
+            applyLudoFrame(prefs.getInt("lastSeq", -1), payload, snapshot = true)
         }
     }
 
@@ -1362,6 +1384,7 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
         _ludoV2.value = null
         _ludoRejection.value = null
         _ludoPresence.value = emptyMap()
+        _ludoRequiresUpdate.value = false
         lastRenderedActionId = null
     }
 
@@ -1402,6 +1425,50 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
             _joinError.value = "Couldn't start the match."
             null
         }
+    }
+
+    /** Ludo practice is authoritative: a duel or one human plus three server bots. */
+    suspend fun createLudoBot(difficulty: String, fourSeats: Boolean = false): String? = runCatching {
+        val id = service.createLudo(
+            mode = if (fourSeats) "four" else "duel",
+            creatorId = myUserId ?: error("not authenticated"),
+            opponentIds = emptyList(),
+            conversationId = null,
+            gameName = "Ludo",
+            idempotencyKey = java.util.UUID.randomUUID().toString(),
+            bots = if (fourSeats) 3 else 1,
+            difficulty = difficulty,
+        ).match_id
+        open(id)
+        id
+    }.getOrElse {
+        _joinError.value = "Couldn't start the match."
+        null
+    }
+
+    /** Creates a chat-scoped roster; caller posts the returned id through the existing E2EE pipe. */
+    suspend fun createLudoFromChat(
+        conversationId: String,
+        opponentIds: List<String>,
+        bots: Int,
+        difficulty: String,
+    ): String? = runCatching {
+        val seats = 1 + opponentIds.size + bots
+        val id = service.createLudo(
+            mode = if (seats == 2) "duel" else "four",
+            creatorId = myUserId ?: error("not authenticated"),
+            opponentIds = opponentIds,
+            conversationId = conversationId,
+            gameName = "Ludo",
+            idempotencyKey = java.util.UUID.randomUUID().toString(),
+            bots = bots,
+            difficulty = difficulty,
+        ).match_id
+        open(id)
+        id
+    }.getOrElse {
+        _joinError.value = "Couldn't start the match."
+        null
     }
 
     fun leave() {

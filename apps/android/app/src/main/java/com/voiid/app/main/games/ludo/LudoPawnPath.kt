@@ -15,8 +15,8 @@ import kotlin.math.sin
 object LudoPawnPath {
 
     /** Visual box is 0.82 × 1.18 cellSide, centered on the cell, allowed to rise above it. */
-    const val WIDTH_FACTOR = 0.82f
-    const val HEIGHT_FACTOR = 1.18f
+    const val WIDTH_FACTOR = 0.64f
+    const val HEIGHT_FACTOR = 1.14f
 
     /**
      * Normalized path over a box of width W and height H:
@@ -31,36 +31,16 @@ object LudoPawnPath {
         val h = height
         val p = Path()
 
-        // Base body — rounded trapezoid.
-        val baseTopY = 0.78f * h
-        val baseBotY = 0.98f * h
-        val insetTopBase = 0.10f * w
-        val corner = 0.09f * w
-        p.moveTo(0.05f * w + corner, baseBotY)
-        lineTo(p, 0.95f * w - corner, baseBotY)
-        cubicTo(
-            p, 0.95f * w, baseBotY, 0.95f * w, baseBotY - corner,
-            0.95f * w - insetTopBase * 0.4f, baseTopY + 0.02f * h,
-        )
-        lineTo(p, 0.76f * w + 0.02f * w, baseTopY)
-        cubicTo(
-            p, 0.80f * w, baseTopY, 0.72f * w, 0.70f * h,
-            0.62f * w, 0.55f * h,
-        )
-        // Neck up to under the head.
-        cubicTo(
-            p, 0.56f * w, 0.44f * h, 0.56f * w, 0.40f * h, 0.575f * w, 0.345f * h,
-        )
-        lineTo(p, 0.425f * w, 0.345f * h)
-        // Mirror down the left side.
-        cubicTo(
-            p, 0.44f * w, 0.40f * h, 0.44f * w, 0.44f * h, 0.38f * w, 0.55f * h,
-        )
-        cubicTo(
-            p, 0.28f * w, 0.70f * h, 0.20f * w, baseTopY, 0.24f * w + 0.02f * w, baseTopY,
-        )
-        lineTo(p, 0.05f * w + insetTopBase * 0.4f, baseTopY + 0.02f * h)
+        p.moveTo(.32f*w,.31f*h); p.lineTo(.68f*w,.31f*h)
+        p.cubicTo(.73f*w,.52f*h,.78f*w,.64f*h,.85f*w,.71f*h)
+        p.cubicTo(.96f*w,.71f*h,w,.76f*h,w,.82f*h); p.lineTo(w,.89f*h)
+        p.cubicTo(.82f*w,.99f*h,.68f*w,h,.50f*w,h)
+        p.cubicTo(.32f*w,h,.18f*w,.99f*h,0f,.89f*h); p.lineTo(0f,.82f*h)
+        p.cubicTo(0f,.76f*h,.04f*w,.71f*h,.15f*w,.71f*h)
+        p.cubicTo(.22f*w,.64f*h,.27f*w,.52f*h,.32f*w,.31f*h)
         p.close()
+        val headRadius = .175f*h
+        p.addOval(Rect(.5f*w-headRadius, 0f, .5f*w+headRadius, .35f*h))
         return p
     }
 
@@ -71,13 +51,10 @@ object LudoPawnPath {
 
     /** Base top rim ellipse spanning x=0.11W..0.89W centered y=0.79H, height 0.16H. */
     fun rimPath(width: Float, height: Float): Path {
-        val rect = Rect(
-            left = 0.11f * width,
-            top = 0.79f * height - 0.08f * height,
-            right = 0.89f * width,
-            bottom = 0.79f * height + 0.08f * height,
-        )
-        return Path().apply { addOval(rect) }
+        return Path().apply {
+            moveTo(.04f*width,.735f*height)
+            cubicTo(.20f*width,.82f*height,.80f*width,.82f*height,.96f*width,.735f*height)
+        }
     }
 
     /**
@@ -86,15 +63,13 @@ object LudoPawnPath {
      */
     fun highlightArc(width: Float, height: Float): Path {
         val cx = 0.50f * width
-        val cy = 0.20f * height
-        val r = 0.185f * height
-        val start = (-200.0).toRadians()   // upper-left sweep of 70 degrees
-        val end = (-130.0).toRadians()
+        val cy = 0.175f * height
+        val r = 0.175f * height
         return Path().apply {
             arcTo(
                 rect = Rect(cx - r, cy - r, cx + r, cy + r),
-                startAngleDegrees = Math.toDegrees(start).toFloat(),
-                sweepAngleDegrees = Math.toDegrees(end - start).toFloat(),
+                startAngleDegrees = 20f,
+                sweepAngleDegrees = 140f,
                 forceMoveTo = true,
             )
         }

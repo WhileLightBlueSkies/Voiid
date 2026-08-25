@@ -644,8 +644,9 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                                 com.voiid.app.main.games.BotDifficulty.MODERATE -> 5
                                 com.voiid.app.main.games.BotDifficulty.HARD -> 8
                             }
-                            com.voiid.app.net.GamesEngine.get(context)
-                                .createSolo(game.slug, mapOf("bots" to bots))
+                            val engine = com.voiid.app.net.GamesEngine.get(context)
+                            val matchId = engine.createSolo(game.slug, mapOf("bots" to bots))
+                            matchId
                                 ?.let { openGameMatch = it to game.slug }
                         }
                     } else {
@@ -695,10 +696,24 @@ fun MainScreen(chat: ChatStore, ai: AIStore, clips: ClipsStore, stories: com.voi
                         level = level, skill = skill, onClose = { botGame = null })
                     "seabattle" -> com.voiid.app.main.games.SeaBattleBotScreen(
                         level = level, skill = skill, onClose = { botGame = null })
-                    "ludo" -> com.voiid.app.main.games.LudoBotScreen(
-                        level = level, skill = skill, onClose = { botGame = null })
                     "tictactoe" -> com.voiid.app.main.games.TicTacToeBotScreen(
                         level = level, skill = skill, onClose = { botGame = null })
+                    "ludo" -> com.voiid.app.main.games.LudoServerBotSetup(
+                        onStart = { fourSeats ->
+                            val difficulty = when (level) {
+                                com.voiid.app.main.games.BotDifficulty.EASY -> "relaxed"
+                                com.voiid.app.main.games.BotDifficulty.MODERATE -> "balanced"
+                                com.voiid.app.main.games.BotDifficulty.HARD -> "sharp"
+                            }
+                            gamesScope.launch {
+                                val id = com.voiid.app.net.GamesEngine.get(context)
+                                    .createLudoBot(difficulty, fourSeats)
+                                botGame = null
+                                id?.let { openGameMatch = it to "ludo" }
+                            }
+                        },
+                        onClose = { botGame = null },
+                    )
                     else -> LaunchedEffect(slug) { botGame = null }
                 }
             }

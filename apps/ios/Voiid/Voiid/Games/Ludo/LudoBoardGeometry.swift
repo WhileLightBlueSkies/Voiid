@@ -5,7 +5,7 @@
 //  Generated 15×15 board geometry (LUDO_GAME_SPEC.md §3).
 //
 //  ONE immutable array of 225 addressable nodes, row-major, built from the same tables the
-//  backend fixture generator uses. The checked-in fixture (Resources/ludo_board_v2.json,
+//  backend fixture generator uses. The checked-in fixture (Resources/ludo_board_v3.json,
 //  synced from packages/design-tokens/fixtures by tools/sync-ludo-fixture.sh) pins every
 //  coordinate; [selfCheck] validates it in DEBUG on first layout so the app can never ship a
 //  drifted table.
@@ -39,7 +39,7 @@ enum LudoBoardGeometry {
     enum Decoration: String {
         case none
         case star
-        case entryChevron
+        case approachChevron
     }
 
     struct CellNode {
@@ -81,6 +81,13 @@ enum LudoBoardGeometry {
         [(2, 2), (4, 2), (2, 4), (4, 4)],
         [(10, 2), (12, 2), (10, 4), (12, 4)],
         [(10, 10), (12, 10), (10, 12), (12, 12)],
+    ]
+
+    static let finishSlots: [[(CGFloat, CGFloat)]] = [
+        [(1.15,2.15),(1.85,2.15),(1.15,2.65),(1.85,2.65)],
+        [(0.35,1.15),(0.85,1.15),(0.35,1.85),(0.85,1.85)],
+        [(1.15,0.35),(1.85,0.35),(1.15,0.85),(1.85,0.85)],
+        [(2.15,1.15),(2.65,1.15),(2.15,1.85),(2.65,1.85)],
     ]
 
     /// Normalized clockwise border anchors (§12.1).
@@ -132,7 +139,10 @@ enum LudoBoardGeometry {
                     trackIndex = idx
                     isSafe = LudoRules.safeIndices.contains(idx)
                     if LudoRules.entryIndices.contains(idx) {
-                        decoration = .entryChevron
+                        seat = LudoRules.entryIndices.sorted().firstIndex(of: idx)
+                    } else if let owner = LudoRules.approachIndices.firstIndex(of: idx) {
+                        seat = owner
+                        decoration = .approachChevron
                     } else if LudoRules.starIndices.contains(idx) {
                         decoration = .star
                     }
@@ -206,7 +216,7 @@ enum LudoBoardGeometry {
 
     private static func fixtureCells() -> [[String: Any?]]? {
         #if DEBUG
-        guard let url = Bundle.main.url(forResource: "ludo_board_v2", withExtension: "json"),
+        guard let url = Bundle.main.url(forResource: "ludo_board_v3", withExtension: "json"),
               let data = try? Data(contentsOf: url),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let arr = obj["cells"] as? [[String: Any]] else { return nil }

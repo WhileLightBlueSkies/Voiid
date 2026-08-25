@@ -18,8 +18,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 
 /**
- * Parsing for the schema-v2 wire envelope (§7.2):
- *   { type, match_id, game:"ludo", schema_version:2, seq, server_now, payload:{ ludoV2:{...} } }
+ * Parsing for the schema-v3 wire envelope (§7.2).
  *
  * The payload is built per recipient by the games service — `displayName` is already the
  * viewer's projection. This parser never sees a raw user id and must never invent one.
@@ -27,7 +26,8 @@ import kotlinx.serialization.json.long
 object LudoWire {
 
     fun parseState(seq: Int, payload: JsonObject): LudoGameState? {
-        val v2 = payload["ludoV2"] as? JsonObject ?: return null
+        val v2 = payload["ludoV3"] as? JsonObject ?: return null
+        if (v2.int("schemaVersion") != LudoRules.SCHEMA_VERSION) return null
         val seats = v2.arr("seats")?.mapNotNull { s ->
             val o = s as? JsonObject ?: return@mapNotNull null
             LudoSeatView(
@@ -40,6 +40,9 @@ object LudoWire {
                     else -> LudoSeatColor.RED
                 },
                 displayName = o.str("displayName") ?: "",
+                controller = o.str("controller") ?: "human",
+                botMarker = o.str("botMarker"),
+                botDifficulty = o.str("botDifficulty"),
                 participation = o.str("participation") ?: "waiting",
                 connection = o.str("connection") ?: "disconnected",
                 timeoutStreak = o.int("timeoutStreak") ?: 0,
@@ -58,12 +61,23 @@ object LudoWire {
                 serial = t.int("serial") ?: 0,
                 phase = t.str("phase") ?: "awaitingRoll",
                 opensAt = t.long("opensAt") ?: 0L,
-                deadlineAt = t.long("deadlineAt") ?: 0L,
+                deadlineAt = t.long("deadlineAt"),
+                botActionAt = t.long("botActionAt"),
                 sixStreak = t.int("sixStreak") ?: 0,
                 rollId = t.str("rollId"),
                 value = t.int("value"),
-                legalTokenIds = t.arr("legalTokenIds")?.mapNotNull {
-                    (it as? JsonPrimitive)?.intOrNull
+                legalMoves = t.arr("legalMoves")?.mapNotNull { raw ->
+                    val move = raw as? JsonObject ?: return@mapNotNull null
+                    LudoLegalMove(
+                        tokenId = move.int("tokenId") ?: return@mapNotNull null,
+                        to = move.int("to") ?: return@mapNotNull null,
+                        path = move.arr("path")?.mapNotNull { (it as? JsonPrimitive)?.intOrNull } ?: emptyList(),
+                        capture = (move["capture"] as? JsonObject)?.let { capture ->
+                            LudoLegalMove.Capture(capture.int("seat") ?: return@let null,
+                                capture.int("tokenId") ?: return@let null)
+                        },
+                        isSafe = move.bool("isSafe") ?: false,
+                    )
                 } ?: emptyList(),
                 automated = t.bool("automated") ?: false,
             )
@@ -110,6 +124,7 @@ object LudoWire {
             status = v2.str("status") ?: "active",
             serverNow = v2.long("serverNow") ?: System.currentTimeMillis(),
             viewerSeat = v2.int("viewerSeat"),
+            viewerRole = v2.str("viewerRole") ?: "none",
             seats = seats,
             tokensPerSeat = v2.int("tokensPerSeat") ?: 4,
             tokens = tokens,

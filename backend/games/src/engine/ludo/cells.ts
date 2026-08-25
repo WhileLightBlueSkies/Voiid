@@ -1,9 +1,10 @@
 // The 15×15 addressable board-cell model (LUDO_GAME_SPEC.md §3).
 //
 // ONE immutable array of 225 nodes in row-major order. Clients mirror this layout literally;
-// the checked-in fixture (packages/design-tokens/fixtures/ludo_board_v2.json) is generated
+// the checked-in fixture (packages/design-tokens/fixtures/ludo_board_v3.json) is generated
 // from these tables and the parity tests fail if any copy drifts.
 import {
+    APPROACH_INDICES,
     CENTER_RECT,
     ENTRY_INDICES,
     HOME_LANE_COORDS,
@@ -21,7 +22,7 @@ export type CellRole =
     | 'center'
     | 'unused';
 
-export type CellDecoration = 'none' | 'star' | 'entryChevron';
+export type CellDecoration = 'none' | 'star' | 'approachChevron';
 
 export interface BoardCellNode {
     /** "cell-x-y" — stable across platforms and releases. */
@@ -94,8 +95,13 @@ export function buildBoardCells(): BoardCellNode[] {
                 node.role = 'sharedTrack';
                 node.trackIndex = idx;
                 node.isSafe = SAFE_INDICES.has(idx);
-                node.decoration = ENTRY_INDICES.includes(idx)
-                    ? 'entryChevron'
+                node.seat = ENTRY_INDICES.includes(idx)
+                    ? ENTRY_INDICES.indexOf(idx)
+                    : APPROACH_INDICES.includes(idx)
+                        ? APPROACH_INDICES.indexOf(idx)
+                        : null;
+                node.decoration = APPROACH_INDICES.includes(idx)
+                    ? 'approachChevron'
                     : STAR_INDICES.includes(idx)
                         ? 'star'
                         : 'none';

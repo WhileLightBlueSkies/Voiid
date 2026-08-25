@@ -16,6 +16,7 @@
 // message sent by the client over the normal message pipe — this router never sees it. All
 // it does is mint the match row the invite points at.
 import { Router } from 'express';
+import { createHash } from 'node:crypto';
 import { query } from '../db';
 import { publisher } from '../redis';
 import { requireAuth } from '../auth';
@@ -33,6 +34,31 @@ const GAMES_INPUT_CHANNEL = 'channel:games:input';
 /** Invite lifetime is EXACTLY 10 minutes from server created_at (LUDO_GAME_SPEC.md §8.1). */
 const LUDO_INVITE_TTL_MS = 10 * 60 * 1000;
 
+const LUDO_STARTS = [0, 13, 26, 39];
+const LUDO_SAFE = new Set([0, 8, 13, 21, 26, 34, 39, 47]);
+function ludoDestination(position: number, die: number, seat: number): number | null {
+  if (position === 200) return null;
+  if (position === -1) return die === 6 ? LUDO_STARTS[seat] : null;
+  if (position >= 100 && position <= 104) {
+    const next = position - 100 + die;
+    return next === 5 ? 200 : next < 5 ? 100 + next : null;
+  }
+  const progress = (position - LUDO_STARTS[seat] + 52) % 52;
+  const next = progress + die;
+  if (next === 57) return 200;
+  if (next > 57) return null;
+  if (next >= 52) return 100 + next - 52;
+  return (LUDO_STARTS[seat] + next) % 52;
+}
+function ludoPath(position: number, die: number, seat: number): number[] {
+  if (position === -1) { const to = ludoDestination(position, die, seat); return to === null ? [] : [to]; }
+  const result: number[] = [];
+  for (let step = 1; step <= die; step++) {
+    const to = ludoDestination(position, step, seat); if (to !== null) result.push(to);
+  }
+  return result;
+}
+
 /**
  * Publish an invite-card state change to every seat (§7.2). One frame per copy of the card:
  * waiting/live invite, declined/cancelled, expired and finished states are all driven by
@@ -41,21 +67,19 @@ const LUDO_INVITE_TTL_MS = 10 * 60 * 1000;
 async function publishInviteStatus(
   matchId: string,
   playerIds: string[],
-  status: 'waiting' | 'declined' | 'cancelled' | 'active' | 'finished',
+  status: 'waiting' | 'declined' | 'cancelled' | 'expired' | 'active' | 'finished',
   acceptedSeats = 0,
   expiresAt?: number
 ): Promise<void> {
-  await publisher.publish(
-    GAMES_INPUT_CHANNEL,
-    JSON.stringify({
+  const frame = JSON.stringify({
       type: 'game_invite_status',
       match_id: matchId,
       status,
       accepted_seats: acceptedSeats,
       total_seats: playerIds.length,
       expires_at: expiresAt ?? Date.now() + LUDO_INVITE_TTL_MS,
-    })
-  );
+  });
+  await Promise.all(playerIds.map((id) => publisher.publish(`channel:user:${id}`, frame)));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────
@@ -157,28 +181,50 @@ router.post(
     const game = games[0];
     if (!game) return res.status(404).json({ error: 'unknown game' });
 
-    // ── LUDO SCHEMA-V2 VALIDATION (§7.1, §8.1) ────────────────────────────────────────
-    // Exact counts only: duel needs exactly one opponent, four exactly three. The mode and
-    // the SOURCE CONVERSATION are required — the conversation authorizes identity
-    // projection later, so it must be verified at creation, against the live roster.
+    // ── LUDO SCHEMA-V3 VALIDATION (§7.1, §8.1) ────────────────────────────────────────
     let ludoMode: 'duel' | 'four' | null = null;
     let sourceConversationId: string | null = null;
     let idempotencyKey: string | null = null;
+    let ludoRoster: Array<{ kind: 'human'; userId: string } | { kind: 'bot'; difficulty: 'relaxed' | 'balanced' | 'sharp' }> | null = null;
+    let ludoHumanIds: string[] | null = null;
     if (slug === 'ludo') {
       const rawMode = (req.body?.mode ?? matchOptions.mode) as unknown;
       if (rawMode !== 'duel' && rawMode !== 'four') {
         return res.status(400).json({ error: "ludo requires mode 'duel' or 'four'" });
       }
       ludoMode = rawMode;
-      const expectedOpponents = ludoMode === 'duel' ? 1 : 3;
-      if (opponents.length !== expectedOpponents) {
-        return res.status(400).json({ error: `ludo ${ludoMode} requires exactly ${expectedOpponents} opponent(s)` });
+      const rawRoster = req.body?.roster;
+      const expectedSeats = ludoMode === 'duel' ? 2 : 4;
+      if (!Array.isArray(rawRoster) || rawRoster.length !== expectedSeats) {
+        return res.status(400).json({ error: `ludo ${ludoMode} requires exactly ${expectedSeats} roster entries` });
+      }
+      ludoRoster = [];
+      for (const raw of rawRoster) {
+        if (!raw || typeof raw !== 'object') return res.status(400).json({ error: 'invalid ludo roster' });
+        if (raw.kind === 'human' && typeof raw.user_id === 'string' && UUID_RE.test(raw.user_id)) {
+          ludoRoster.push({ kind: 'human', userId: raw.user_id });
+        } else if (raw.kind === 'bot' && ['relaxed', 'balanced', 'sharp'].includes(raw.difficulty)) {
+          ludoRoster.push({ kind: 'bot', difficulty: raw.difficulty });
+        } else {
+          return res.status(400).json({ error: 'invalid ludo roster entry' });
+        }
+      }
+      ludoHumanIds = ludoRoster.filter((r): r is { kind: 'human'; userId: string } => r.kind === 'human').map((r) => r.userId);
+      if (ludoHumanIds.filter((id) => id === userId).length !== 1) {
+        return res.status(400).json({ error: 'caller must appear exactly once in ludo roster' });
+      }
+      if (new Set(ludoHumanIds).size !== ludoHumanIds.length) {
+        return res.status(400).json({ error: 'duplicate human in ludo roster' });
       }
       const convId = req.body?.conversation_id ?? matchOptions.conversation_id;
-      if (typeof convId !== 'string' || !UUID_RE.test(convId)) {
-        return res.status(400).json({ error: 'ludo requires a valid conversation_id' });
+      const hasInvitedHuman = ludoHumanIds.some((id) => id !== userId);
+      if (hasInvitedHuman && (typeof convId !== 'string' || !UUID_RE.test(convId))) {
+        return res.status(400).json({ error: 'ludo with invited humans requires a valid conversation_id' });
       }
-      sourceConversationId = convId;
+      sourceConversationId = typeof convId === 'string' && UUID_RE.test(convId) ? convId : null;
+      matchOptions.mode = ludoMode;
+      matchOptions.roster = ludoRoster;
+      if (sourceConversationId) matchOptions.conversation_id = sourceConversationId;
 
       const idem = req.body?.idempotency_key;
       if (idem !== undefined && (typeof idem !== 'string' || !UUID_RE.test(idem))) {
@@ -188,15 +234,15 @@ router.post(
 
       // EVERY participant must be a CURRENT accepted member of the source conversation.
       // The client list is convenience only; this is the check that matters.
-      const members = await query<{ user_id: string }>(
+      const members = sourceConversationId ? await query<{ user_id: string }>(
         `select user_id from conversation_members
           where conversation_id = $1::uuid and left_at is null and request_state = 'accepted'`,
         [sourceConversationId]
-      );
+      ) : [];
       const memberSet = new Set(members.map((m) => m.user_id));
-      const everyone = [userId, ...opponents];
+      const everyone = ludoHumanIds;
       for (const uid of everyone) {
-        if (!memberSet.has(uid)) {
+        if (sourceConversationId && !memberSet.has(uid)) {
           return res.status(403).json({ error: 'all players must be current members of the conversation' });
         }
       }
@@ -231,7 +277,7 @@ router.post(
     // Seat order is fixed at creation and never re-sorted: the rules modules use the index
     // in this array to decide who moves first (X before O), so a stable order is a rule,
     // not a detail. Creator sits first.
-    const players = [userId, ...opponents];
+    const players = ludoHumanIds ?? [userId, ...opponents];
     if (players.length < game.min_players || players.length > game.max_players) {
       return res.status(400).json({ error: 'wrong number of players for this game' });
     }
@@ -239,9 +285,10 @@ router.post(
     // AUTHORIZATION — see reachableOpponents() above. Runs BEFORE the insert so an
     // unauthorized attempt leaves no row, and therefore no invite banner and no history
     // entry, on anyone's screen. Solo matches skip it for free: opponents is empty.
-    if (opponents.length > 0) {
-      const reachable = await reachableOpponents(userId, opponents);
-      if (opponents.some((id) => !reachable.has(id))) {
+    const humanOpponents = players.filter((id) => id !== userId);
+    if (humanOpponents.length > 0 && !ludoMode) {
+      const reachable = await reachableOpponents(userId, humanOpponents);
+      if (humanOpponents.some((id) => !reachable.has(id))) {
         // 403 for the whole request, and deliberately WITHOUT naming which opponent failed.
         // Saying which one would turn this endpoint into an oracle for "is this user id real,
         // and are they in my contacts" — the same reasoning as the call path's opaque 403.
@@ -252,9 +299,11 @@ router.post(
     const insert = await query<{ id: string }>(
       `insert into game_matches
          (game_id, player_ids, created_by, status, options,
-          mode, source_conversation_id, rules_version, schema_version, idempotency_key)
+          mode, source_conversation_id, rules_version, schema_version, idempotency_key,
+          ludo_roster, controller_types, bot_difficulties, bot_policy_version)
        values ($1, $2::jsonb, $3, 'waiting', $4::jsonb,
-               $5, $6::uuid, coalesce($7::text, 'legacy'), coalesce($8::int, 1), $9)
+               $5, $6::uuid, coalesce($7::text, 'legacy'), coalesce($8::int, 1), $9,
+               $10::jsonb, $11::jsonb, $12::jsonb, $13)
        returning id`,
       [
         game.id,
@@ -263,13 +312,22 @@ router.post(
         JSON.stringify(matchOptions),
         ludoMode,
         sourceConversationId,
-        ludoMode ? 'ludo-classic-1' : null,
-        ludoMode ? 2 : null,
+        ludoMode ? 'ludo-classic-2' : null,
+        ludoMode ? 3 : null,
         idempotencyKey,
+        ludoRoster ? JSON.stringify(ludoRoster) : null,
+        ludoRoster ? JSON.stringify(ludoRoster.map((entry) => entry.kind)) : null,
+        ludoRoster ? JSON.stringify(ludoRoster.map((entry) => entry.kind === 'bot' ? entry.difficulty : null)) : null,
+        ludoRoster ? 'ludo-bot-1' : null,
       ]
     );
 
-    res.status(201).json({ match_id: insert[0].id, players });
+    if (ludoMode) {
+      await publisher.publish(GAMES_INPUT_CHANNEL, JSON.stringify({
+        type: 'game_join', match_id: insert[0].id, from_user_id: userId,
+      }));
+    }
+    res.status(201).json({ match_id: insert[0].id, players, roster: ludoRoster ?? undefined });
   })
 );
 
@@ -289,8 +347,8 @@ router.post(
     const matchId = req.params.id;
     if (!UUID_RE.test(matchId)) return res.status(400).json({ error: 'bad match id' });
 
-    const rows = await query<{ player_ids: string[]; status: string }>(
-      `select player_ids, status from game_matches where id = $1`,
+    const rows = await query<{ player_ids: string[]; status: string; created_at: Date }>(
+      `select player_ids, status, created_at from game_matches where id = $1`,
       [matchId]
     );
     const match = rows[0];
@@ -303,6 +361,15 @@ router.post(
     }
     if (match.status === 'finished' || match.status === 'abandoned') {
       return res.status(409).json({ error: 'match is over' });
+    }
+    if (match.status !== 'waiting' && match.status !== 'active') {
+      return res.status(409).json({ error: match.status, status: match.status });
+    }
+    if (match.status === 'waiting' && Date.now() >= new Date(match.created_at).getTime() + LUDO_INVITE_TTL_MS) {
+      await query(`update game_matches set status = 'expired', ended_at = now(), end_reason = 'expired' where id = $1 and status = 'waiting'`, [matchId]);
+      await publishInviteStatus(matchId, match.player_ids, 'expired', 0,
+        new Date(match.created_at).getTime() + LUDO_INVITE_TTL_MS);
+      return res.status(409).json({ error: 'expired', status: 'expired' });
     }
 
     await publisher.publish(
@@ -466,14 +533,35 @@ router.post(
     // than 400'd, so a duplicate tap from a racing client is harmless.
     if (match.status === 'waiting') {
       await query(
-        `update game_matches set status = 'abandoned', ended_at = now() where id = $1`,
+        `update game_matches set status = 'declined', ended_at = now(), end_reason = 'declined' where id = $1`,
         [matchId]
       );
       // FIXED SEATS MAKE DECLINE UNAMBIGUOUS (§8.1): one decline cancels the waiting lobby
       // for everyone. Every copy of the chat invite card flips to the cancelled state.
       await publishInviteStatus(matchId, match.player_ids, 'declined');
-    }
+    } else return res.status(409).json({ error: match.status, status: match.status });
     res.json({ ok: true });
+  })
+);
+
+/** Creator-only cancellation of a fixed-seat waiting Ludo lobby. */
+router.post(
+  '/matches/:id/cancel',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id: userId } = (req as any).auth as { user_id: string };
+    const matchId = req.params.id;
+    if (!UUID_RE.test(matchId)) return res.status(400).json({ error: 'bad match id' });
+    const rows = await query<{ player_ids: string[]; created_by: string; status: string }>(
+      `select player_ids, created_by, status from game_matches where id = $1`, [matchId]
+    );
+    const match = rows[0];
+    if (!match) return res.status(404).json({ error: 'no such match' });
+    if (match.created_by !== userId) return res.status(403).json({ error: 'creator only' });
+    if (match.status !== 'waiting') return res.status(409).json({ error: match.status });
+    await query(`update game_matches set status = 'cancelled', ended_at = now(), end_reason = 'cancelled' where id = $1 and status = 'waiting'`, [matchId]);
+    await publishInviteStatus(matchId, match.player_ids, 'cancelled');
+    res.json({ ok: true, match_id: matchId });
   })
 );
 
@@ -563,7 +651,13 @@ router.get(
     const inner = row.state as { ludo?: Record<string, unknown> };
     const ludoState = inner?.ludo;
     if (!ludoState) return res.status(404).json({ error: 'no such match' });
-    const seatPlayers = (ludoState.players as (string | null)[]) ?? [];
+    if (ludoState.schemaVersion !== 3) {
+      return res.status(409).json({ error: 'legacyVersionAbandoned' });
+    }
+    const seatPlayers = (ludoState.humanUserIds as (string | null)[]) ?? [];
+    const formerPlayers = (ludoState.formerControllerUserIds as (string | null)[]) ?? [];
+    const assigned = (ludoState.assigned as boolean[]) ?? [];
+    const controllers = (ludoState.controller as Array<'human' | 'bot'>) ?? [];
 
     const ids = seatPlayers.filter((p): p is string => p !== null);
     let entitled = new Set<string>();
@@ -596,40 +690,93 @@ router.get(
       blockedPairs = new Set();
     }
 
-    const seats = ((ludoState.seats as Array<Record<string, unknown>>) ?? []).map((seatView) => {
-      const seat = seatView.seat as number;
+    const tokens = (ludoState.tokens as number[][]) ?? [];
+    const participation = (ludoState.participation as string[]) ?? [];
+    const timeoutStreak = (ludoState.timeoutStreak as number[]) ?? [];
+    const captures = (ludoState.captures as number[]) ?? [];
+    const botNames = (ludoState.botNames as (string | null)[]) ?? [];
+    const botDifficulties = (ludoState.botDifficulty as (string | null)[]) ?? [];
+    const seats = assigned.flatMap((isAssigned, seat) => {
+      if (!isAssigned) return [];
       const uid = seatPlayers[seat] ?? null;
-      if (uid === null || uid === userId) return seatView;
-      const maySee =
-        entitled.has(uid) && entitled.has(userId) && !blockedPairs.has(`${userId}|${uid}`);
-      return { ...seatView, displayName: maySee ? usernames.get(uid) ?? `Player ${seat + 1}` : `Player ${seat + 1}` };
+      const controller = controllers[seat] ?? 'human';
+      const maySee = uid === userId || (!!uid && entitled.has(uid) && entitled.has(userId) && !blockedPairs.has(`${userId}|${uid}`));
+      return [{
+        seat,
+        seatId: `seat-${matchId.slice(0, 8)}-${seat}`,
+        color: ['red', 'green', 'yellow', 'blue'][seat],
+        displayName: controller === 'bot' ? (botNames[seat] ?? `Bot ${seat + 1}`)
+          : maySee && uid ? (usernames.get(uid) ?? `Player ${seat + 1}`) : `Player ${seat + 1}`,
+        controller,
+        botMarker: controller === 'bot' ? 'BOT' : null,
+        botDifficulty: controller === 'bot' ? (botDifficulties[seat] ?? 'balanced') : null,
+        participation: participation[seat] ?? 'active',
+        connection: controller === 'bot' ? 'connected' : 'disconnected',
+        timeoutStreak: timeoutStreak[seat] ?? 0,
+        finishedPawns: (tokens[seat] ?? []).filter((position) => position === 200).length,
+        captures: captures[seat] ?? 0,
+      }];
     });
 
+    const activeSeat = Number(ludoState.activeSeat ?? 0);
+    const rollValue = typeof ludoState.rollValue === 'number' ? ludoState.rollValue : null;
+    const legalMoves = rollValue === null ? [] : ((ludoState.legalTokenIds as number[]) ?? []).map((tokenId) => {
+      const from = tokens[activeSeat]?.[tokenId] ?? -1;
+      const to = ludoDestination(from, rollValue, activeSeat) ?? from;
+      let capture: { seat: number; tokenId: number } | null = null;
+      if (to >= 0 && to < 52 && !LUDO_SAFE.has(to)) {
+        for (let seat = 0; seat < tokens.length && !capture; seat++) {
+          if (seat === activeSeat) continue;
+          const pawn = tokens[seat]?.findIndex((position) => position === to) ?? -1;
+          if (pawn >= 0) capture = { seat, tokenId: pawn };
+        }
+      }
+      return { tokenId, to, path: ludoPath(from, rollValue, activeSeat), capture, isSafe: LUDO_SAFE.has(to) };
+    });
+    const currentSeat = seatPlayers.findIndex((uid, seat) => uid === userId && controllers[seat] === 'human');
+    const formerSeat = formerPlayers.indexOf(userId);
+    const secretSeed = (((row.secret as any)?.ludo?.rng?.seed) as string | undefined);
+
     const payload: Record<string, unknown> = {
-      schemaVersion: 2,
-      rulesVersion: ludoState.rulesVersion ?? 'ludo-classic-1',
+      schemaVersion: 3,
+      rulesVersion: ludoState.rulesVersion ?? 'ludo-classic-2',
       mode: ludoState.mode,
       status: row.status === 'finished' ? 'finished' : (ludoState.status ?? 'active'),
       serverNow: Date.now(),
-      viewerSeat: seatPlayers.indexOf(userId),
+      seq: row.seq,
+      viewerSeat: currentSeat >= 0 ? currentSeat : formerSeat >= 0 ? formerSeat : null,
+      viewerRole: currentSeat >= 0 ? 'controller' : formerSeat >= 0 ? 'formerController' : 'none',
       seats,
       tokensPerSeat: ludoState.tokensPerSeat ?? 4,
-      tokens: ludoState.tokens ?? [],
-      turn: ludoState.turn ?? null,
+      tokens,
+      turn: ludoState.status === 'active' && ludoState.phase !== 'none' ? {
+        seat: activeSeat,
+        serial: ludoState.turnSerial ?? 0,
+        phase: ludoState.phase,
+        opensAt: ludoState.opensAt,
+        deadlineAt: ludoState.deadlineAt ?? null,
+        botActionAt: ludoState.botActionAt ?? null,
+        sixStreak: ludoState.sixStreak ?? 0,
+        rollId: ludoState.rollId ?? null,
+        value: rollValue,
+        legalMoves,
+        automated: ludoState.automated ?? false,
+      } : null,
       lastAction: ludoState.lastAction ?? null,
       winnerSeat: ludoState.winnerSeat ?? null,
       endReason: ludoState.endReason ?? null,
-      seedCommitment: null, // revealed by live frames; snapshots never re-derive secrets
+      seedCommitment: secretSeed && /^[0-9a-f]{64}$/.test(secretSeed)
+        ? createHash('sha256').update(secretSeed).digest('hex') : null,
     };
 
     res.json({
       type: 'game_state',
       match_id: matchId,
       game: 'ludo',
-      schema_version: 2,
+      schema_version: 3,
       seq: row.seq,
       server_now: Date.now(),
-      payload,
+      payload: { ludoV3: payload },
     });
   })
 );
@@ -669,9 +816,20 @@ router.post(
       min_players: number;
       max_players: number;
       enabled: boolean;
+      slug: string;
+      mode: string | null;
+      source_conversation_id: string | null;
+      rules_version: string | null;
+      schema_version: number | null;
+      ludo_roster: unknown;
+      controller_types: unknown;
+      bot_difficulties: unknown;
+      bot_policy_version: string | null;
     }>(
-      `select m.game_id, m.player_ids, m.status, m.options,
-              g.min_players, g.max_players, g.enabled
+      `select m.game_id, m.player_ids, m.status, m.options, m.mode,
+              m.source_conversation_id, m.rules_version, m.schema_version,
+              m.ludo_roster, m.controller_types, m.bot_difficulties, m.bot_policy_version,
+              g.slug, g.min_players, g.max_players, g.enabled
          from game_matches m
          join games g on g.id = m.game_id
         where m.id = $1`,
@@ -708,12 +866,26 @@ router.post(
     // THE REQUESTER SITS WHERE THEY SAT. Re-using player_ids verbatim keeps seat order stable
     // rather than putting whoever tapped Rematch first, which would hand them X every time.
     const insert = await query<{ id: string }>(
-      `insert into game_matches (game_id, player_ids, created_by, status, options)
-       values ($1, $2::jsonb, $3, 'waiting', $4::jsonb)
+      `insert into game_matches
+         (game_id, player_ids, created_by, status, options, mode, source_conversation_id,
+          rules_version, schema_version, ludo_roster, controller_types, bot_difficulties, bot_policy_version)
+       values ($1, $2::jsonb, $3, 'waiting', $4::jsonb, $5, $6, $7, $8,
+               $9::jsonb, $10::jsonb, $11::jsonb, $12)
        returning id`,
       [prev.game_id, JSON.stringify(prev.player_ids), userId,
-       JSON.stringify(prev.options ?? {})]
+       JSON.stringify(prev.options ?? {}), prev.mode, prev.source_conversation_id,
+       prev.rules_version, prev.schema_version,
+       prev.ludo_roster ? JSON.stringify(prev.ludo_roster) : null,
+       prev.controller_types ? JSON.stringify(prev.controller_types) : null,
+       prev.bot_difficulties ? JSON.stringify(prev.bot_difficulties) : null,
+       prev.bot_policy_version]
     );
+
+    if (prev.slug === 'ludo') {
+      await publisher.publish(GAMES_INPUT_CHANNEL, JSON.stringify({
+        type: 'game_join', match_id: insert[0].id, from_user_id: userId,
+      }));
+    }
 
     res.status(201).json({ match_id: insert[0].id, players: prev.player_ids });
   })

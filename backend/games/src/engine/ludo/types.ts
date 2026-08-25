@@ -1,154 +1,64 @@
-// Ludo schema-v2 state types (LUDO_GAME_SPEC.md §6).
-//
-// Type names are normative across TypeScript, Swift and Kotlin; only casing differs. The
-// PUBLIC frame (LudoPublicState) is what a client receives. Raw user IDs, RNG seed/counter,
-// processed command IDs, presence timestamps and acceptance state are SERVER-ONLY (§6) —
-// they live in LudoSecret / the runtime's LiveMatch record and never serialize into a frame.
-
 import type { SeatColor } from './board';
 
-export const SCHEMA_VERSION = 2;
-export const RULES_VERSION = 'ludo-classic-1';
+export const SCHEMA_VERSION = 3;
+export const RULES_VERSION = 'ludo-classic-2';
+export const BOT_POLICY_VERSION = 'ludo-bot-1';
 
 export type LudoMode = 'duel' | 'four';
 export type MatchStatus = 'waiting' | 'active' | 'finished' | 'abandoned';
-export type Participation = 'waiting' | 'active' | 'dropped' | 'winner';
+export type Participation = 'waiting' | 'active' | 'winner';
+export type ControllerType = 'human' | 'bot';
+export type BotDifficulty = 'relaxed' | 'balanced' | 'sharp';
+export type ViewerRole = 'controller' | 'formerController' | 'none';
+export type EndReason = 'allPawnsHome' | 'duelForfeit' | 'serverIntegrityError' | 'legacyVersionAbandoned';
 
-/** Per-seat public facts. `displayName` is filled per recipient at projection time. */
+export interface RosterEntry { kind: ControllerType; userId?: string; difficulty?: BotDifficulty }
 export interface SeatView {
-    seat: number;
-    seatId: string;
-    color: SeatColor;
-    displayName?: string;
-    participation: Participation;
-    connection: 'connected' | 'disconnected';
-    timeoutStreak: number;
-    finishedPawns: number;
-    captures: number;
+    seat: number; seatId: string; color: SeatColor; displayName: string;
+    controller: ControllerType; botMarker: 'BOT' | null; botDifficulty: BotDifficulty | null;
+    participation: Participation; connection: 'connected' | 'disconnected';
+    timeoutStreak: number; finishedPawns: number; captures: number;
 }
-
+export interface LegalMoveView {
+    tokenId: number; to: number; path: number[];
+    capture: { seat: number; tokenId: number } | null; isSafe: boolean;
+}
 export interface TurnView {
-    seat: number;
-    serial: number;
-    phase: 'awaitingRoll' | 'awaitingMove' | 'none';
-    opensAt: number;
-    deadlineAt: number;
-    sixStreak: number;
-    rollId: string | null;
-    value: number | null;
-    legalTokenIds: number[];
-    automated: boolean;
+    seat: number; serial: number; phase: 'awaitingRoll' | 'awaitingMove'; opensAt: number;
+    deadlineAt: number | null; botActionAt: number | null; sixStreak: number;
+    rollId: string | null; value: number | null; legalMoves: LegalMoveView[]; automated: boolean;
 }
-
-export type ActionType =
-    | 'turnChanged'
-    | 'roll'
-    | 'move'
-    | 'autoTurn'
-    | 'capture'
-    | 'drop'
-    | 'end';
-
-export interface ActionRoll {
-    rollId: string;
-    value: number;
-    auto: boolean;
-}
-
+export type ActionType = 'turnChanged' | 'roll' | 'move' | 'autoTurn' | 'capture' | 'controllerChanged' | 'end';
+export interface ActionRoll { rollId: string; value: number; auto: boolean }
 export interface ActionMove {
-    tokenId: number;
-    from: number;
-    to: number;
-    /** Intermediate squares INCLUDING the landing cell; [] for a yard entry. */
-    path: number[];
+    tokenId: number; from: number; to: number; path: number[];
     captured: { seat: number; tokenId: number; from: number; to: number } | null;
 }
-
-/**
- * What just happened, for exactly-once client animation (§9). `id` is stable across
- * persistence and re-broadcast; clients keep `lastRenderedActionId` per match.
- */
 export interface LastAction {
-    id: string;
-    type: ActionType;
-    committedAt: number;
-    /**
-     * Universal presentation window end (§15): the moment every client may open the next
-     * border sweep / turn. Local fast-forward never moves it earlier.
-     */
-    presentationEndsAt: number;
-    actorSeat: number;
-    fromSeat?: number;
-    roll?: ActionRoll;
-    move?: ActionMove;
+    id: string; type: ActionType; committedAt: number; presentationEndsAt: number;
+    actorSeat: number; fromSeat?: number; roll?: ActionRoll; move?: ActionMove;
 }
-
-export interface LudoPublicTurn extends Omit<TurnView, 'seat'> {
-    seat: number;
-}
-
-/** The full wire payload, before per-viewer name projection. */
 export interface LudoPublicState {
-    schemaVersion: 2;
-    rulesVersion: string;
-    mode: LudoMode;
-    status: MatchStatus;
-    serverNow: number;
-    viewerSeat: number | null;
-    seats: SeatView[];
-    tokensPerSeat: 4;
-    tokens: number[][];
-    turn: TurnView | null;
-    lastAction: LastAction | null;
-    winnerSeat: number | null;
-    endReason: string | null;
+    schemaVersion: 3; rulesVersion: typeof RULES_VERSION; mode: LudoMode; status: MatchStatus;
+    seq: number; serverNow: number; viewerSeat: number | null; viewerRole: ViewerRole;
+    seats: SeatView[]; tokensPerSeat: 4; tokens: number[][]; turn: TurnView | null;
+    lastAction: LastAction | null; winnerSeat: number | null; endReason: EndReason | null;
     seedCommitment: string | null;
 }
 
-/** SERVER-ONLY. Never in any frame. */
-export interface LudoSecretState {
-    rng: { seed: string; counter: number };
-    /** Raw user ids by physical seat. Kept beside the RNG so restore() can rebuild players. */
-    players: (string | null)[];
-    accepted: boolean[];
+/** Complete persisted logical state. Raw identities and scheduler/RNG facts never serialize. */
+export interface LudoStateV3 {
+    schemaVersion: typeof SCHEMA_VERSION; rulesVersion: typeof RULES_VERSION;
+    mode: LudoMode; status: MatchStatus; started: boolean;
+    assigned: boolean[]; controller: ControllerType[]; humanUserIds: (string | null)[];
+    formerControllerUserIds: (string | null)[]; botDifficulty: (BotDifficulty | null)[];
+    botNames: (string | null)[]; botPolicyVersion: (string | null)[]; accepted: boolean[];
+    participation: Participation[]; timeoutStreak: number[]; captures: number[]; tokens: number[][];
+    activeSeat: number; turnSerial: number; phase: 'awaitingRoll' | 'awaitingMove' | 'none';
+    opensAt: number | null; deadlineAt: number | null; botActionAt: number | null;
+    sixStreak: number; rollId: string | null; rollValue: number | null; legalTokenIds: number[];
+    automated: boolean; turnHadAutoAction: boolean; actionCounter: number; lastAction: LastAction | null;
+    winnerSeat: number | null; winnerController: ControllerType | null; winnerUserId: string | null;
+    endReason: EndReason | null; startedAt: number | null;
 }
-
-/** The engine's persisted logical object — everything needed to rebuild exactly (§20 P1). */
-export interface LudoStateV2 {
-    schemaVersion: typeof SCHEMA_VERSION;
-    rulesVersion: string;
-    mode: LudoMode;
-    status: MatchStatus;
-    started: boolean;
-
-    /** Physical seats 0..3; null for an unassigned seat. SERVER-ONLY raw ids. */
-    players: (string | null)[];
-    accepted: boolean[];
-    participation: Participation[];
-    timeoutStreak: number[];
-    captures: number[];
-
-    /** [seat][pawn] -> position encoding. Always four pawns for an assigned seat. */
-    tokens: number[][];
-
-    startedByRng: boolean;
-    firstSeatChosen: boolean;
-    activeSeat: number;
-    turnSerial: number;
-    phase: 'awaitingRoll' | 'awaitingMove' | 'none';
-    opensAt: number | null;
-    deadlineAt: number | null;
-    sixStreak: number;
-    rollId: string | null;
-    rollValue: number | null;
-    legalTokenIds: number[];
-    automated: boolean;
-    /** True when this uninterrupted turn used ANY auto action (roll or move). */
-    turnHadAutoAction: boolean;
-
-    actionCounter: number;
-    lastAction: LastAction | null;
-
-    winnerSeat: number | null;
-    endReason: string | null;
-}
+export interface LudoSecretState { rng: { seed: string; counter: number }; pacingCounter: number }

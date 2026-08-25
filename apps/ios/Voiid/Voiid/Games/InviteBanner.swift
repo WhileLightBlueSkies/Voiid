@@ -65,7 +65,9 @@ struct InviteBanner: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 10)
                     .fill(VoiidColor.primary.opacity(0.10))
-                if UIImage(named: "game_\(invite.slug)") != nil {
+                if invite.slug == "ludo" {
+                    LudoInviteMiniBoard().frame(width: 40, height: 40)
+                } else if UIImage(named: "game_\(invite.slug)") != nil {
                     Image("game_\(invite.slug)")
                         .resizable()
                         .scaledToFill()

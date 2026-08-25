@@ -214,7 +214,7 @@ class GamesService(private val api: ApiClient) {
         return json.decodeFromString<DailyStartResponse>(body).match_id
     }
 
-    // ── LUDO SCHEMA V2 (LUDO_GAME_SPEC.md §7.1) ─────────────────────────────────────────
+    // ── LUDO SCHEMA V3 (LUDO_GAME_SPEC.md §7.1) ─────────────────────────────────────────
 
     /**
      * Create a Ludo match from a chat conversation. The SERVER re-verifies membership,
@@ -224,19 +224,27 @@ class GamesService(private val api: ApiClient) {
      */
     suspend fun createLudo(
         mode: String,
+        creatorId: String,
         opponentIds: List<String>,
-        conversationId: String,
+        conversationId: String?,
         gameName: String,
         idempotencyKey: String? = null,
+        bots: Int = 0,
+        difficulty: String = "balanced",
     ): CreateResponse {
         require(mode == "duel" || mode == "four") { "mode must be duel or four" }
         val opponents = opponentIds.joinToString(",") { "\"" + it + "\"" }
+        val humans = (listOf(creatorId) + opponentIds).joinToString(",") {
+            "{\"kind\":\"human\",\"user_id\":\"$it\"}"
+        }
+        val botEntries = List(bots) { "{\"kind\":\"bot\",\"difficulty\":\"$difficulty\"}" }
+        val roster = (listOf(humans).filter { it.isNotEmpty() } + botEntries).joinToString(",")
         val idem = if (idempotencyKey != null) ",\"idempotency_key\":\"$idempotencyKey\"" else ""
+        val conversation = conversationId?.let { ",\"conversation_id\":\"$it\"" } ?: ""
         val body = api.request(
             "POST", "games/matches",
             """{"slug":"ludo","mode":"$mode","opponent_ids":[$opponents],""" +
-                """"conversation_id":"$conversationId","options":{"mode":"$mode"},""" +
-                """"game_name":"$gameName"$idem}""",
+                """"roster":[$roster],"options":{"mode":"$mode"},"game_name":"$gameName"$conversation$idem}""",
         )
         return json.decodeFromString<CreateResponse>(body)
     }

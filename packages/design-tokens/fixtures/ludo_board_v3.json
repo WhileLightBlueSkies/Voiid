@@ -1,6 +1,6 @@
 {
-  "schemaVersion": 2,
-  "rulesVersion": "ludo-classic-1",
+  "schemaVersion": 3,
+  "rulesVersion": "ludo-classic-2",
   "boardSide": 15,
   "trackCount": 52,
   "homeLaneCount": 5,
@@ -30,6 +30,12 @@
     13,
     26,
     39
+  ],
+  "approachIndices": [
+    50,
+    11,
+    24,
+    37
   ],
   "starIndices": [
     8,
@@ -423,6 +429,80 @@
       }
     ]
   ],
+  "finishSlots": [
+    [
+      {
+        "x": 1.15,
+        "y": 2.15
+      },
+      {
+        "x": 1.85,
+        "y": 2.15
+      },
+      {
+        "x": 1.15,
+        "y": 2.65
+      },
+      {
+        "x": 1.85,
+        "y": 2.65
+      }
+    ],
+    [
+      {
+        "x": 0.35,
+        "y": 1.15
+      },
+      {
+        "x": 0.85,
+        "y": 1.15
+      },
+      {
+        "x": 0.35,
+        "y": 1.85
+      },
+      {
+        "x": 0.85,
+        "y": 1.85
+      }
+    ],
+    [
+      {
+        "x": 1.15,
+        "y": 0.35
+      },
+      {
+        "x": 1.85,
+        "y": 0.35
+      },
+      {
+        "x": 1.15,
+        "y": 0.85
+      },
+      {
+        "x": 1.85,
+        "y": 0.85
+      }
+    ],
+    [
+      {
+        "x": 2.15,
+        "y": 1.15
+      },
+      {
+        "x": 2.65,
+        "y": 1.15
+      },
+      {
+        "x": 2.15,
+        "y": 1.85
+      },
+      {
+        "x": 2.65,
+        "y": 1.85
+      }
+    ]
+  ],
   "borderAnchors": [
     {
       "seat": 0,
@@ -528,11 +608,11 @@
       "x": 7,
       "y": 0,
       "role": "sharedTrack",
-      "seat": null,
+      "seat": 2,
       "trackIndex": 24,
       "homeStep": null,
       "isSafe": false,
-      "decoration": "none"
+      "decoration": "approachChevron"
     },
     {
       "id": "cell-8-0",
@@ -704,11 +784,11 @@
       "x": 8,
       "y": 1,
       "role": "sharedTrack",
-      "seat": null,
+      "seat": 2,
       "trackIndex": 26,
       "homeStep": null,
       "isSafe": true,
-      "decoration": "entryChevron"
+      "decoration": "none"
     },
     {
       "id": "cell-9-1",
@@ -1452,11 +1532,11 @@
       "x": 1,
       "y": 6,
       "role": "sharedTrack",
-      "seat": null,
+      "seat": 1,
       "trackIndex": 13,
       "homeStep": null,
       "isSafe": true,
-      "decoration": "entryChevron"
+      "decoration": "none"
     },
     {
       "id": "cell-2-6",
@@ -1606,11 +1686,11 @@
       "x": 0,
       "y": 7,
       "role": "sharedTrack",
-      "seat": null,
+      "seat": 1,
       "trackIndex": 11,
       "homeStep": null,
       "isSafe": false,
-      "decoration": "none"
+      "decoration": "approachChevron"
     },
     {
       "id": "cell-1-7",
@@ -1760,11 +1840,11 @@
       "x": 14,
       "y": 7,
       "role": "sharedTrack",
-      "seat": null,
+      "seat": 3,
       "trackIndex": 37,
       "homeStep": null,
       "isSafe": false,
-      "decoration": "none"
+      "decoration": "approachChevron"
     },
     {
       "id": "cell-0-8",
@@ -1914,11 +1994,11 @@
       "x": 13,
       "y": 8,
       "role": "sharedTrack",
-      "seat": null,
+      "seat": 3,
       "trackIndex": 39,
       "homeStep": null,
       "isSafe": true,
-      "decoration": "entryChevron"
+      "decoration": "none"
     },
     {
       "id": "cell-14-8",
@@ -2662,11 +2742,11 @@
       "x": 6,
       "y": 13,
       "role": "sharedTrack",
-      "seat": null,
+      "seat": 0,
       "trackIndex": 0,
       "homeStep": null,
       "isSafe": true,
-      "decoration": "entryChevron"
+      "decoration": "none"
     },
     {
       "id": "cell-7-13",
@@ -2838,11 +2918,11 @@
       "x": 7,
       "y": 14,
       "role": "sharedTrack",
-      "seat": null,
+      "seat": 0,
       "trackIndex": 50,
       "homeStep": null,
       "isSafe": false,
-      "decoration": "none"
+      "decoration": "approachChevron"
     },
     {
       "id": "cell-8-14",

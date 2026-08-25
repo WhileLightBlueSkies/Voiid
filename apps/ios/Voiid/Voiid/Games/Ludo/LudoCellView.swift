@@ -23,10 +23,10 @@ enum LudoCellView {
         }
     }
 
-    /// Yard fields tint with their owner hue; a DROPPED seat desaturates to inactiveYard (§13).
+    /// Yard fields never dim or disappear after a match starts.
     static func yardFill(_ node: LudoBoardGeometry.CellNode, dropped: Set<Int>, _ c: LudoColors) -> Color {
         guard let owner = node.seat else { return c.unusedCellFill }
-        return dropped.contains(owner) ? c.inactiveYard : c.yard(owner)
+        return c.yard(owner)
     }
 
     @inline(__always)
@@ -53,10 +53,10 @@ enum LudoCellView {
 
     // MARK: Safe decorations — Paths, never glyphs (§1).
 
-    /// Five-point star for indices {8,21,34,47}; outer radius = 0.28 × cellSide.
+    /// Five-point outline star for indices {8,21,34,47}.
     static func safeStarPath(in rect: CGRect) -> Path {
-        let outer = 0.28 * rect.width
-        let inner = outer * 0.42
+        let outer = 0.34 * rect.width
+        let inner = 0.15 * rect.width
         let cx = rect.midX, cy = rect.midY
         var p = Path()
         for i in 0..<10 {
@@ -70,7 +70,7 @@ enum LudoCellView {
         return p
     }
 
-    /// Filled chevron in the owner hue pointing along the seat's travel direction into the board.
+    /// Open two-segment approach chevron.
     static func entryChevronPath(in rect: CGRect, seat: Int) -> Path {
         let dir: CGPoint = {
             switch seat % 4 {
@@ -80,22 +80,19 @@ enum LudoCellView {
             default: return CGPoint(x: -1, y: 0)  // blue start (13,8) travels left
             }
         }()
-        let size = rect.width * 0.42
+        let size = rect.width * 0.38
         let c = CGPoint(x: rect.midX, y: rect.midY)
         let tip = CGPoint(x: c.x + dir.x * size * 0.6, y: c.y + dir.y * size * 0.6)
         let perp = CGPoint(x: -dir.y, y: dir.x)
         func pt(_ dx: CGFloat, _ dy: CGFloat) -> CGPoint { CGPoint(x: dx, y: dy) }
         let backL = pt(tip.x - dir.x * size - perp.x * size * 0.8,
                        tip.y - dir.y * size - perp.y * size * 0.8)
-        let backMid = pt(tip.x - dir.x * size * 0.45, tip.y - dir.y * size * 0.45)
         let backR = pt(tip.x - dir.x * size + perp.x * size * 0.8,
                        tip.y - dir.y * size + perp.y * size * 0.8)
         var p = Path()
         p.move(to: backL)
         p.addLine(to: tip)
         p.addLine(to: backR)
-        p.addLine(to: backMid)
-        p.closeSubpath()
         return p
     }
 
@@ -127,18 +124,11 @@ enum LudoCellView {
 
     /// The 2×2 finish slots inside each triangle; a finished pawn shrinks into one at 52% (§3.2).
     static func finishSlotRect(seat: Int, pawnIndex: Int, centerRect: CGRect) -> CGRect {
-        let w = centerRect.width / 4
-        let h = centerRect.height / 4
-        let col = pawnIndex % 2
-        let row = pawnIndex / 2
-        var left = centerRect.minX + CGFloat(col) * w
-        var top = centerRect.minY + CGFloat(row) * h
-        switch seat % 4 {
-        case 3: left = centerRect.maxX - CGFloat(col + 1) * w
-        case 0: top = centerRect.maxY - CGFloat(row + 1) * h
-        default: break
-        }
-        return CGRect(x: left, y: top, width: w, height: h)
+        let unit = centerRect.width / 3
+        let slot = LudoBoardGeometry.finishSlots[seat % 4][pawnIndex % 4]
+        return CGRect(x: centerRect.minX + slot.0 * unit - unit * 0.26,
+                      y: centerRect.minY + slot.1 * unit - unit * 0.26,
+                      width: unit * 0.52, height: unit * 0.52)
     }
 
     static func centerRect(for layout: LudoBoardGeometry.Layout) -> CGRect {

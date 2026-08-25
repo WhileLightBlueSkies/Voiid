@@ -293,19 +293,32 @@ struct GamesAPI {
         return res.matches
     }
 
-    // ── LUDO SCHEMA V2 (LUDO_GAME_SPEC.md §7.1) ─────────────────────────────────────────
+    // ── LUDO SCHEMA V3 (LUDO_GAME_SPEC.md §7.1) ─────────────────────────────────────────
+
+    struct LudoRosterEntry: Encodable {
+        let kind: String
+        let user_id: String?
+        let difficulty: String?
+        static func human(_ id: String) -> Self { .init(kind: "human", user_id: id, difficulty: nil) }
+        static func bot(_ difficulty: String) -> Self { .init(kind: "bot", user_id: nil, difficulty: difficulty) }
+    }
 
     /// Create a Ludo match from a chat conversation. The SERVER re-verifies membership,
     /// blocks and exact counts; the client list is convenience only.
     func createLudo(
         mode: String,
         opponentIds: [String],
-        conversationId: String,
+        conversationId: String?,
         idempotencyKey: String? = nil,
+        bots: Int = 0,
+        difficulty: String = "balanced",
     ) async throws -> CreateResponse {
-        try await api.request("POST", "games/matches", body: LudoCreateBody(
+        guard let me = TokenStore.shared.userId else { throw URLError(.userAuthenticationRequired) }
+        let humans = [me] + opponentIds
+        let roster = humans.map(LudoRosterEntry.human) + Array(repeating: LudoRosterEntry.bot(difficulty), count: bots)
+        return try await api.request("POST", "games/matches", body: LudoCreateBody(
             mode: mode,
-            opponent_ids: opponentIds,
+            opponent_ids: opponentIds, roster: roster,
             conversation_id: conversationId,
             idempotency_key: idempotencyKey ?? UUID().uuidString,
             options: ["mode": mode]))
@@ -342,7 +355,8 @@ struct GamesAPI {
         let slug = "ludo"
         let mode: String
         let opponent_ids: [String]
-        let conversation_id: String
+        let roster: [LudoRosterEntry]
+        let conversation_id: String?
         let idempotency_key: String?
         let options: [String: String]
     }

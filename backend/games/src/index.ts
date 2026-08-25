@@ -21,7 +21,8 @@
 // a second input interleave between the first's load and save. For multi-process deploys
 // the Postgres seq compare-and-swap in matches.ts remains the outer guard; this queue makes
 // the single-process case correct rather than merely usual.
-import { sub, pub, GAMES_INPUT_CHANNEL } from './redis';
+import { sub, pub, state as redisState, GAMES_INPUT_CHANNEL } from './redis';
+import { randomUUID } from 'node:crypto';
 import { factoryFor } from './engine/registry';
 import {
     loadMatch,
@@ -119,6 +120,28 @@ async function sweepPresence(): Promise<void> {
     }
 }
 
+/** Server-owned ten-minute invite expiry; runs even when no client has the lobby open. */
+async function sweepExpiredLudoInvites(): Promise<void> {
+    const rows = await query<{ id: string; player_ids: string[]; created_at: Date }>(
+        `with due as (
+           select m.id from game_matches m join games g on g.id = m.game_id
+            where g.slug = 'ludo' and m.status = 'waiting'
+              and m.created_at <= now() - interval '10 minutes'
+            order by m.created_at limit 100 for update of m skip locked
+         )
+         update game_matches m set status = 'expired', ended_at = now(), end_reason = 'expired'
+          from due where m.id = due.id returning m.id, m.player_ids, m.created_at`,
+    );
+    for (const row of rows) {
+        const frame = JSON.stringify({
+            type: 'game_invite_status', match_id: row.id, status: 'expired',
+            accepted_seats: 0, total_seats: row.player_ids.length,
+            expires_at: new Date(row.created_at).getTime() + 10 * 60_000,
+        });
+        await Promise.all(row.player_ids.map((uid) => pub.publish(`channel:user:${uid}`, frame)));
+    }
+}
+
 /**
  * Push state to every player in the match. One publish per recipient on the SAME
  * `channel:user:<id>` the API and relay already use — which is why the clients need no
@@ -164,7 +187,7 @@ interface LudoEngineHooks {
     setFrameContext?: (ctx: unknown) => void;
 }
 
-/** The schema-v2 envelope (§7.2): recipient-projected, seq-stamped, server_now stamped. */
+/** The schema-v3 envelope (§7.2): recipient-projected, seq-stamped, server_now stamped. */
 async function broadcastLudo(m: LiveMatch, engine: GameEngine): Promise<void> {
     const players = ludoSeatPlayers(engine, m);
     const base = await projectionFor(m.matchId, players, m.sourceConversationId ?? null);
@@ -174,6 +197,7 @@ async function broadcastLudo(m: LiveMatch, engine: GameEngine): Promise<void> {
     for (const uid of m.players) {
         (engine as unknown as LudoEngineHooks).setFrameContext?.({
             serverNow,
+            seq: m.seq,
             connections,
             names: namesForViewer(base, uid),
         });
@@ -184,7 +208,7 @@ async function broadcastLudo(m: LiveMatch, engine: GameEngine): Promise<void> {
                 type: 'game_state',
                 match_id: m.matchId,
                 game: m.slug,
-                schema_version: 2,
+                schema_version: 3,
                 seq: m.seq,
                 server_now: serverNow,
                 payload,
@@ -195,8 +219,8 @@ async function broadcastLudo(m: LiveMatch, engine: GameEngine): Promise<void> {
 
 function ludoSeatPlayers(engine: GameEngine, m: LiveMatch): (string | null)[] {
     try {
-        const secret = engine.serializeSecret?.() as { ludo?: { players?: (string | null)[] } };
-        if (secret?.ludo?.players && Array.isArray(secret.ludo.players)) return secret.ludo.players;
+        const state = engine.serialize() as { ludo?: { humanUserIds?: (string | null)[] } };
+        if (state?.ludo?.humanUserIds && Array.isArray(state.ludo.humanUserIds)) return state.ludo.humanUserIds;
     } catch {
         // fall through to the flat roster
     }
@@ -205,8 +229,8 @@ function ludoSeatPlayers(engine: GameEngine, m: LiveMatch): (string | null)[] {
 
 function ludoPublic(engine: GameEngine, viewerId: string): Record<string, unknown> | null {
     try {
-        const p = engine.serializeForPlayer!(viewerId) as { ludoV2?: Record<string, unknown> };
-        return p.ludoV2 ?? null;
+        const p = engine.serializeForPlayer!(viewerId) as { ludoV3?: Record<string, unknown> };
+        return p.ludoV3 ?? null;
     } catch {
         return null;
     }
@@ -413,6 +437,23 @@ async function handleInput(msg: Record<string, any>): Promise<void> {
     await enqueue(matchId, () => processInput(matchId, userId, msg.payload ?? {}));
 }
 
+async function withMatchLease(matchId: string, job: () => Promise<void>): Promise<void> {
+    const key = `games:lease:${matchId}`, token = randomUUID();
+    for (let attempt = 0; attempt < 25; attempt++) {
+        if (await redisState.set(key, token, 'PX', 10_000, 'NX')) {
+            try { await job(); }
+            finally {
+                await redisState.eval(
+                    `if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('del',KEYS[1]) else return 0 end`,
+                    1, key, token,
+                );
+            }
+            return;
+        }
+        await new Promise((done) => setTimeout(done, 20));
+    }
+}
+
 async function processInput(
     matchId: string,
     userId: string,
@@ -437,7 +478,12 @@ async function processInput(
     if (!factory) return;
 
     if (m.slug === 'ludo') {
-        await processLudoInput(m, userId, payload);
+        await withMatchLease(matchId, async () => {
+            // Refresh after acquiring the cross-process lease; another worker may have
+            // committed while this command waited.
+            const current = (await loadMatch(matchId)) ?? m;
+            await processLudoInput(current, userId, payload);
+        });
         return;
     }
 
@@ -541,8 +587,9 @@ async function broadcastLudoTo(m: LiveMatch, engine: GameEngine, userId: string)
     const players = ludoSeatPlayers(engine, m);
     const base = await projectionFor(m.matchId, players, m.sourceConversationId ?? null);
     const serverNow = Date.now();
-    (engine as unknown as LudoEngineHooks).setFrameContext?.({
-        serverNow,
+        (engine as unknown as LudoEngineHooks).setFrameContext?.({
+            serverNow,
+            seq: m.seq,
         connections: connectionsOf(m),
         names: namesForViewer(base, userId),
     });
@@ -553,7 +600,7 @@ async function broadcastLudoTo(m: LiveMatch, engine: GameEngine, userId: string)
             type: 'game_state',
             match_id: m.matchId,
             game: m.slug,
-            schema_version: 2,
+            schema_version: 3,
             seq: m.seq,
             server_now: serverNow,
             payload,
@@ -594,16 +641,20 @@ async function processJoin(matchId: string, joiner: string | null): Promise<void
                 // seat has accepted; the starting seat is chosen here, after the final
                 // acceptance. Idempotent — a rejoin racing the start cannot start it twice.
                 if (joiner) hooks.accept?.(joiner);
-                if (acceptedCount(existing, engine) >= assignedSeats(existing)) {
+                if (hooks.allAccepted?.() === true) {
                     hooks.startAll?.(Date.now());
                     await markStarted(matchId);
                     await commitLudoTransition(existing, engine);
                 } else if (joiner) {
+                    existing.state = engine.serialize();
+                    existing.secret = engine.serializeSecret?.();
+                    existing.seq += 1;
                     await saveMatch(existing);
                     await broadcastLudoTo(existing, engine, joiner);
                 }
             } else {
                 // REJOIN / RESYNC (§9): register presence and return current status.
+                existing.seq += 1;
                 await saveMatch(existing);
                 await broadcastLudo(existing, engine);
             }
@@ -659,11 +710,18 @@ async function processJoin(matchId: string, joiner: string | null): Promise<void
     if (row.slug === 'ludo') {
         // The creator was accepted at creation; joining marks further seats. The board is
         // built and held until every seat accepts — a waiting lobby never shows a game.
-        if (joiner) (engine as unknown as LudoLifecycle).accept?.(joiner);
+        const lifecycle = engine as unknown as LudoLifecycle;
+        if (joiner) lifecycle.accept?.(joiner);
         liveMatches.set(matchId, m);
         liveEngines.set(matchId, engine);
-        await saveMatch(m);
-        if (joiner) await broadcastLudoTo(m, engine, joiner);
+        if (lifecycle.allAccepted?.() === true) {
+            lifecycle.startAll?.(Date.now());
+            await markStarted(matchId);
+            await commitLudoTransition(m, engine);
+        } else {
+            await saveMatch(m);
+            if (joiner) await broadcastLudoTo(m, engine, joiner);
+        }
         await publishInviteStatus(m);
         return;
     }
@@ -681,6 +739,7 @@ async function processJoin(matchId: string, joiner: string | null): Promise<void
 
 interface LudoLifecycle {
     accept?: (userId: string) => boolean;
+    allAccepted?: () => boolean;
     startAll?: (now: number) => void;
     setFrameContext?: (ctx: unknown) => void;
 }
@@ -691,15 +750,12 @@ function ludoStarted(m: LiveMatch): boolean {
 
 function acceptedCount(m: LiveMatch, engine: GameEngine): number {
     try {
-        const secret = engine.serializeSecret?.() as { ludo?: { accepted?: boolean[] } };
-        return (secret?.ludo?.accepted ?? []).filter(Boolean).length;
+        const state = engine.serialize() as { ludo?: { accepted?: boolean[]; assigned?: boolean[] } };
+        return (state?.ludo?.accepted ?? []).filter((accepted, seat) =>
+            accepted && (state.ludo?.assigned?.[seat] ?? true)).length;
     } catch {
         return m.joined?.length ?? 0;
     }
-}
-
-function assignedSeats(m: LiveMatch): number {
-    return m.players.length;
 }
 
 /** `game_invite_status` keeps every copy of the chat invite card authoritative (§7.2). */
@@ -711,7 +767,8 @@ async function publishInviteStatus(m: LiveMatch): Promise<void> {
         match_id: m.matchId,
         status: ludoStarted(m) ? 'active' : 'waiting',
         accepted_seats: Math.max(acceptedCount(m, engine!), m.joined?.length ?? 0),
-        total_seats: m.players.length,
+        total_seats: ((engine?.serialize() as { ludo?: { assigned?: boolean[] } } | undefined)
+            ?.ludo?.assigned ?? []).filter(Boolean).length || m.players.length,
         expires_at: (m.inviteCreatedAtMs ?? Date.now()) + 10 * 60 * 1000,
     });
     for (const uid of m.players) {
@@ -834,6 +891,7 @@ async function sweepOne(matchId: string): Promise<void> {
 }
 
 let sweeping = false;
+let lastInviteSweepAt = 0;
 setInterval(() => {
     if (sweeping) return;
     sweeping = true;
@@ -849,6 +907,10 @@ setInterval(() => {
         });
     // Presence flips piggyback on the same cadence; they never pause a clock.
     sweepPresence().catch((e) => console.error('[games] presence sweep error', e));
+    if (Date.now() - lastInviteSweepAt >= 5_000) {
+        lastInviteSweepAt = Date.now();
+        sweepExpiredLudoInvites().catch((e) => console.error('[games] invite sweep error', e));
+    }
 }, SWEEP_INTERVAL_MS);
 
 sub.subscribe(GAMES_INPUT_CHANNEL, (err) => {

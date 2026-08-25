@@ -25,15 +25,15 @@ object VoiidRadius {
  * `LudoDimens`/`LudoMotion` and packages/design-tokens/tokens.json → dimension/motion.
  */
 object LudoDimens {
-    val boardCornerRadius = 18.dp
+    val boardCornerRadius = 0.dp
     const val perimeterStrokeLightDp = 3f
     const val perimeterStrokeDarkDp = 3.5f
-    val boardContentInset = 4.dp
+    val boardContentInset = 0.dp
     const val cellBorderLightDp = 0.75f
     const val cellBorderDarkDp = 1f
-    const val cellCornerRadiusFactor = 0.08f
-    const val yardPocketRadiusFactor = 0.48f
-    const val safeStarRadiusFactor = 0.28f
+    const val cellCornerRadiusFactor = 0f
+    const val yardPocketRadiusFactor = 0f
+    const val safeStarRadiusFactor = 0.27f
 
     val podWidthStandard = 156.dp
     val podHeightStandard = 52.dp
@@ -47,7 +47,7 @@ object LudoDimens {
     val timerRingStroke = 2.5.dp
 
     val dieSizeStandard = 64.dp
-    val dieSizeCompact = 56.dp
+    val dieSizeCompact = 44.dp
     val dieSizeTablet = 72.dp
     val dieHitTarget = 72.dp
 }

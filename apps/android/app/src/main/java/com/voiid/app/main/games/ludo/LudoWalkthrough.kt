@@ -73,16 +73,17 @@ object LudoWalkthrough {
             status = "active",
             serverNow = 0,
             viewerSeat = 0,
+            viewerRole = "controller",
             seats = listOf(
                 seatView(0, "@you"),
                 seatView(2, "@rival"),
             ),
             tokensPerSeat = 4,
-            tokens = tokens + emptyList(),
+            tokens = listOf(tokens[0], emptyList(), tokens[1], emptyList()),
             turn = null,
             lastAction = null,
             winnerSeat = if (step == 6) 0 else null,
-            endReason = if (step == 6) "win" else null,
+            endReason = if (step == 6) "allPawnsHome" else null,
             seedCommitment = null,
             seq = 0,
         )
@@ -93,6 +94,9 @@ object LudoWalkthrough {
         seatId = "demo-$seat",
         color = LudoSeatColor.RED,
         displayName = name,
+        controller = "human",
+        botMarker = null,
+        botDifficulty = null,
         participation = "active",
         connection = "connected",
         timeoutStreak = 0,
@@ -231,4 +235,3 @@ private fun highlightForStep(step: Int): Set<String> = when (step) {
 private fun cellKey(x: Int, y: Int) = "cell-$x-$y"
 private fun cellKeyFromTrack(i: Int) =
     LudoBoardGeometry.TRACK_COORDS[i].let { "cell-${it.first}-${it.second}" }
-

@@ -15,7 +15,7 @@ import {
     TRACK_COUNT,
     YARD,
 } from './board';
-import type { LudoStateV2, SeatView } from './types';
+import type { LudoStateV3 } from './types';
 
 /**
  * Squares an opponent has blocked against `seat`: two or more of ONE other colour on a
@@ -24,9 +24,9 @@ import type { LudoStateV2, SeatView } from './types';
  * BLOCKS CANNOT FORM ON SAFE CELLS. Tokens may stack there — they are already safe — but
  * such a stack does not block passage.
  */
-export function blockedSquares(state: LudoStateV2, seat: number): Set<number> {
+export function blockedSquares(state: LudoStateV3, seat: number): Set<number> {
     const counts = new Map<number, Map<number, number>>();
-    for (let s = 0; s < state.players.length; s++) {
+    for (let s = 0; s < state.assigned.length; s++) {
         if (s === seat || !isActiveSeat(state, s)) continue;
         for (const p of state.tokens[s]) {
             if (!onTrack(p) || isSafe(p)) continue;
@@ -45,20 +45,20 @@ export function blockedSquares(state: LudoStateV2, seat: number): Set<number> {
 }
 
 /** An ASSIGNED, accepted seat that has not dropped and whose owner has not won. */
-export function isActiveSeat(state: LudoStateV2, seat: number): boolean {
-    if (state.players[seat] === null || state.players[seat] === undefined) return false;
-    return state.participation[seat] === 'active' || state.participation[seat] === 'waiting';
+export function isActiveSeat(state: LudoStateV3, seat: number): boolean {
+    return state.assigned[seat] === true &&
+        (state.participation[seat] === 'active' || state.participation[seat] === 'waiting');
 }
 
-export function activeSeats(state: LudoStateV2): number[] {
+export function activeSeats(state: LudoStateV3): number[] {
     const out: number[] = [];
-    for (let s = 0; s < state.players.length; s++) if (isActiveSeat(state, s)) out.push(s);
+    for (let s = 0; s < state.assigned.length; s++) if (isActiveSeat(state, s)) out.push(s);
     return out;
 }
 
 /** The next active seat clockwise from `from`, skipping unassigned and dropped seats. */
-export function nextActiveSeat(state: LudoStateV2, from: number): number {
-    const n = state.players.length;
+export function nextActiveSeat(state: LudoStateV3, from: number): number {
+    const n = state.assigned.length;
     for (let i = 1; i <= n; i++) {
         const candidate = (from + i) % n;
         if (isActiveSeat(state, candidate)) return candidate;
@@ -67,7 +67,7 @@ export function nextActiveSeat(state: LudoStateV2, from: number): number {
 }
 
 /** Finished-pawn count per seat, derived rather than stored so it can never drift. */
-export function finishedPawns(state: LudoStateV2, seat: number): number {
+export function finishedPawns(state: LudoStateV3, seat: number): number {
     return state.tokens[seat].filter(isFinishedPos).length;
 }
 
@@ -77,7 +77,7 @@ export function finishedPawns(state: LudoStateV2, seat: number): number {
  * THE ONE DEFINITION OF "WHAT CAN THIS PLAYER DO". Blocks are applied here over the whole
  * board because they are the only rule that depends on more than the moving token.
  */
-export function legalMoves(state: LudoStateV2, seat: number, die: number): number[] {
+export function legalMoves(state: LudoStateV3, seat: number, die: number): number[] {
     const blocked = blockedSquares(state, seat);
     const legal: number[] = [];
 
@@ -109,7 +109,7 @@ export function legalMoves(state: LudoStateV2, seat: number, die: number): numbe
     return legal;
 }
 
-function ownBlockOn(state: LudoStateV2, seat: number, mover: number, at: number): boolean {
+function ownBlockOn(state: LudoStateV3, seat: number, mover: number, at: number): boolean {
     let own = 0;
     for (let i = 0; i < state.tokens[seat].length; i++) {
         if (i === mover) continue;
@@ -126,7 +126,7 @@ function ownBlockOn(state: LudoStateV2, seat: number, mover: number, at: number)
  * pawn can be captured, because landing on an opponent BLOCK was already illegal.
  */
 export function resolveCapture(
-    state: LudoStateV2,
+    state: LudoStateV3,
     seat: number,
     to: number,
 ): { seat: number; tokenId: number } | null {
@@ -151,7 +151,7 @@ export function resolveCapture(
  * Shared by timeout auto-play and tests; clients never duplicate it.
  */
 export function pickAutoMove(
-    state: LudoStateV2,
+    state: LudoStateV3,
     seat: number,
     die: number,
     legal: number[],
@@ -196,7 +196,7 @@ export function pickAutoMove(
     return best ?? legal[0];
 }
 
-function rankGreater(a: number[], b: number[]): boolean {
+export function rankGreater(a: number[], b: number[]): boolean {
     for (let i = 0; i < a.length; i++) {
         if (a[i] !== b[i]) return a[i] > b[i];
     }

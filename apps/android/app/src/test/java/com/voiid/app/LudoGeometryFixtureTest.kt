@@ -15,7 +15,7 @@ import org.junit.Test
 /**
  * Cross-platform geometry fixture parity (LUDO_GAME_SPEC.md §19).
  *
- * The ONE checked-in fixture — packages/design-tokens/fixtures/ludo_board_v2.json, generated
+ * The ONE checked-in fixture — packages/design-tokens/fixtures/ludo_board_v3.json, generated
  * from the backend's own tables and synced into app/src/test/resources by
  * tools/sync-ludo-fixture.sh — pins every cell of the 225-node board. If this test fails, a
  * client has drifted from the shared geometry: centers would disagree between iOS, Android and
@@ -29,7 +29,7 @@ class LudoGeometryFixtureTest {
     private fun loadFixture() =
         Json.parseToJsonElement(
             javaClass.classLoader!!
-                .getResourceAsStream("ludo_board_v2.json")!!
+                .getResourceAsStream("ludo_board_v3.json")!!
                 .bufferedReader().readText()
         ).jsonObject
 

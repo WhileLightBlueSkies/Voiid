@@ -41,7 +41,7 @@ for (const slug of ['tictactoe', 'rps', 'cricket']) {
   // Schema v2 (LUDO_GAME_SPEC.md §6): Ludo now projects PER RECIPIENT — not for hidden
   // state, but for the identity projection. A viewer must never RECEIVE an unauthorized
   // real username, so names are resolved server-side per frame.
-  ok('ludo has a player projection (identity, schema v2)', typeof e.serializeForPlayer === 'function');
+  ok('ludo has a player projection (identity, schema v3)', typeof e.serializeForPlayer === 'function');
   const frame = JSON.stringify(e.serializeForPlayer!('a'));
   ok('projection carries no raw user ids', !frame.includes('"a"') && !frame.includes('"players"'));
   ok('ludo has a secret channel (rng + seat roster)', typeof e.serializeSecret === 'function');

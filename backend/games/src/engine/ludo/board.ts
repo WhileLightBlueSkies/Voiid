@@ -3,7 +3,7 @@
 // Split from index.ts because all of it is pure: it takes a position and a die and returns a
 // position, holds no match state, and is therefore the part that can be tested exhaustively.
 // The tables here are the SINGLE SOURCE the checked-in geometry fixture
-// (packages/design-tokens/fixtures/ludo_board_v2.json) is generated from and validated
+// (packages/design-tokens/fixtures/ludo_board_v3.json) is generated from and validated
 // against — clients mirror them literally, and the parity tests fail if any copy drifts.
 
 /** Main track: 52 shared squares, indices 0-51. */
@@ -57,9 +57,11 @@ export const TRACK_COORDS: ReadonlyArray<readonly [number, number]> = [
 export const SAFE_INDICES = new Set([0, 8, 13, 21, 26, 34, 39, 47]);
 export const isSafe = (p: number) => onTrack(p) && SAFE_INDICES.has(p);
 
-/** Entry cells carry a chevron in their owner's hue; the other four carry the star. */
+/** Colored start cells are fully filled and contain no symbol. */
 export const ENTRY_INDICES = [0, 13, 26, 39];
 export const STAR_INDICES = [8, 21, 34, 47];
+/** Non-safe approach cells carry the open chevrons. */
+export const APPROACH_INDICES = [50, 11, 24, 37];
 
 /** Per-seat start index on the shared track: 0, 13, 26, 39. */
 export const START_INDICES = [0, 13, 26, 39];
@@ -88,6 +90,14 @@ export const YARD_SLOTS: ReadonlyArray<ReadonlyArray<readonly [number, number]>>
     [[2, 2], [4, 2], [2, 4], [4, 4]],               // green
     [[10, 2], [12, 2], [10, 4], [12, 4]],           // yellow
     [[10, 10], [12, 10], [10, 12], [12, 12]],       // blue
+];
+
+/** Center-local finish slots, indexed by physical seat then pawn index. */
+export const FINISH_SLOTS: ReadonlyArray<ReadonlyArray<readonly [number, number]>> = [
+    [[1.15, 2.15], [1.85, 2.15], [1.15, 2.65], [1.85, 2.65]],
+    [[0.35, 1.15], [0.85, 1.15], [0.35, 1.85], [0.85, 1.85]],
+    [[1.15, 0.35], [1.85, 0.35], [1.15, 0.85], [1.85, 0.85]],
+    [[2.15, 1.15], [2.65, 1.15], [2.15, 1.85], [2.65, 1.85]],
 ];
 
 /** The center occupies this inclusive rect; four triangles meet at its middle. */

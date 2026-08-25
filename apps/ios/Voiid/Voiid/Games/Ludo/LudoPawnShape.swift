@@ -10,64 +10,60 @@ import SwiftUI
 
 enum LudoPawnShape {
 
-    /// Visual box is 0.82 × 1.18 cellSide, centered on the cell, allowed to rise above it (§4).
-    static let widthFactor: CGFloat = 0.82
-    static let heightFactor: CGFloat = 1.18
+    static let widthFactor: CGFloat = 0.64
+    static let heightFactor: CGFloat = 1.14
 
     /// Normalized path over a box of width w and height h per §4's construction.
     static func path(width: CGFloat, height: CGFloat) -> Path {
         var p = Path()
         let w = width, h = height
 
-        // Base body — rounded trapezoid y=0.78H..0.98H, x=0.05W..0.95W, corner 0.09W.
-        let baseTopY = 0.78 * h
-        let baseBotY = 0.98 * h
-        let corner = 0.09 * w
-
-        p.move(to: CGPoint(x: 0.05 * w + corner, y: baseBotY))
-        p.addLine(to: CGPoint(x: 0.95 * w - corner, y: baseBotY))
-        p.addCurve(
-            to: CGPoint(x: 0.87 * w, y: baseTopY + 0.02 * h),
-            control1: CGPoint(x: 0.95 * w, y: baseBotY),
-            control2: CGPoint(x: 0.95 * w, y: baseBotY - corner))
-        p.addLine(to: CGPoint(x: 0.78 * w, y: baseTopY))
-        // Right flare up to the neck.
-        p.addCurve(
-            to: CGPoint(x: 0.575 * w, y: 0.345 * h),
-            control1: CGPoint(x: 0.72 * w, y: 0.70 * h),
-            control2: CGPoint(x: 0.56 * w, y: 0.44 * h))
-        p.addLine(to: CGPoint(x: 0.425 * w, y: 0.345 * h))
-        // Mirror down the left side.
-        p.addCurve(
-            to: CGPoint(x: 0.22 * w, y: baseTopY),
-            control1: CGPoint(x: 0.44 * w, y: 0.44 * h),
-            control2: CGPoint(x: 0.28 * w, y: 0.70 * h))
-        p.addLine(to: CGPoint(x: 0.13 * w, y: baseTopY + 0.02 * h))
-        p.addCurve(
-            to: CGPoint(x: 0.05 * w + corner, y: baseBotY),
-            control1: CGPoint(x: 0.05 * w, y: baseBotY - corner),
-            control2: CGPoint(x: 0.05 * w, y: baseBotY))
+        p.move(to: CGPoint(x: 0.32 * w, y: 0.31 * h))
+        p.addLine(to: CGPoint(x: 0.68 * w, y: 0.31 * h))
+        p.addCurve(to: CGPoint(x: 0.85 * w, y: 0.71 * h),
+                   control1: CGPoint(x: 0.73 * w, y: 0.52 * h),
+                   control2: CGPoint(x: 0.78 * w, y: 0.64 * h))
+        p.addCurve(to: CGPoint(x: w, y: 0.82 * h),
+                   control1: CGPoint(x: 0.96 * w, y: 0.71 * h),
+                   control2: CGPoint(x: w, y: 0.76 * h))
+        p.addLine(to: CGPoint(x: w, y: 0.89 * h))
+        p.addCurve(to: CGPoint(x: 0.50 * w, y: h),
+                   control1: CGPoint(x: 0.82 * w, y: 0.99 * h),
+                   control2: CGPoint(x: 0.68 * w, y: h))
+        p.addCurve(to: CGPoint(x: 0, y: 0.89 * h),
+                   control1: CGPoint(x: 0.32 * w, y: h),
+                   control2: CGPoint(x: 0.18 * w, y: 0.99 * h))
+        p.addLine(to: CGPoint(x: 0, y: 0.82 * h))
+        p.addCurve(to: CGPoint(x: 0.15 * w, y: 0.71 * h),
+                   control1: CGPoint(x: 0, y: 0.76 * h),
+                   control2: CGPoint(x: 0.04 * w, y: 0.71 * h))
+        p.addCurve(to: CGPoint(x: 0.32 * w, y: 0.31 * h),
+                   control1: CGPoint(x: 0.22 * w, y: 0.64 * h),
+                   control2: CGPoint(x: 0.27 * w, y: 0.52 * h))
         p.closeSubpath()
+        p.addEllipse(in: CGRect(x: 0.5 * w - 0.175 * h, y: 0,
+                                width: 0.35 * h, height: 0.35 * h))
         return p
     }
 
-    /// Base top rim ellipse spanning x=0.11W..0.89W centered y=0.79H, height 0.16H.
+    /// Visible lower half of the base top ellipse.
     static func rimPath(width: CGFloat, height: CGFloat) -> Path {
-        Path(ellipseIn: CGRect(
-            x: 0.11 * width,
-            y: 0.79 * height - 0.08 * height,
-            width: 0.78 * width,
-            height: 0.16 * height))
+        var p = Path()
+        p.move(to: CGPoint(x: 0.04 * width, y: 0.735 * height))
+        p.addCurve(to: CGPoint(x: 0.96 * width, y: 0.735 * height),
+                   control1: CGPoint(x: 0.20 * width, y: 0.82 * height),
+                   control2: CGPoint(x: 0.80 * width, y: 0.82 * height))
+        return p
     }
 
-    /// Restrained head highlight: white arc at 14%/10% opacity, stroke 0.035W, upper-left 70°.
+    /// Lower head contact line.
     static func highlightArc(width: CGFloat, height: CGFloat) -> Path {
         let cx = 0.50 * width
-        let cy = 0.20 * height
-        let r = 0.185 * height
+        let cy = 0.175 * height
+        let r = 0.175 * height
         var p = Path()
         p.addArc(center: CGPoint(x: cx, y: cy), radius: r,
-                 startAngle: .degrees(-200), endAngle: .degrees(-130), clockwise: false)
+                 startAngle: .degrees(20), endAngle: .degrees(160), clockwise: false)
         return p
     }
 
@@ -156,15 +152,16 @@ enum LudoPawnLayer {
                                       center: entries[1].center.applying(.init(translationX: dir.y * off, y: -dir.x * off)),
                                       scale: 0.82))
             } else if entries.count > 1 {
-                // Safe-cell coexistence (any colours): 2×2 fan at 68%.
+                let grid = entries.count <= 4 ? 2 : entries.count <= 9 ? 3 : 4
+                let scale: CGFloat = entries.count <= 4 ? 0.58 : entries.count <= 9 ? 0.40 : 0.30
+                let spacing = unit * (grid == 2 ? 0.28 : grid == 3 ? 0.22 : 0.17)
                 for (i, e) in entries.enumerated() {
-                    let dx: CGFloat = i % 2 == 0 ? -1 : 1
-                    let dy: CGFloat = i < 2 ? -1 : 1
-                    let off = 0.16 * unit
+                    let col = CGFloat(i % grid) - CGFloat(grid - 1) / 2
+                    let row = CGFloat(i / grid) - CGFloat(grid - 1) / 2
                     out.append(PlacedPawn(seat: e.seat, pawnIndex: e.pawn,
-                                          center: CGPoint(x: e.center.x + dx * off,
-                                                          y: e.center.y + dy * off),
-                                          scale: 0.68))
+                                          center: CGPoint(x: e.center.x + col * spacing,
+                                                          y: e.center.y + row * spacing),
+                                          scale: scale))
                 }
             } else if let e = entries.first {
                 out.append(PlacedPawn(seat: e.seat, pawnIndex: e.pawn, center: e.center, scale: 1))

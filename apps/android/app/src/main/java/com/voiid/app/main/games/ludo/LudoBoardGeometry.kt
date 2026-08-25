@@ -8,7 +8,7 @@ import androidx.compose.ui.geometry.Size
  *
  * ONE immutable array of 225 addressable nodes, row-major, built from the same tables the
  * backend fixture generator uses. The checked-in fixture
- * (app/src/test/resources/ludo_board_v2.json) pins every coordinate; [selfCheck] fails fast
+ * (app/src/test/resources/ludo_board_v3.json) pins every coordinate; [selfCheck] fails fast
  * in unit tests and in DEBUG builds if any table ever drifts.
  *
  * The board NEVER rotates per viewer: green top-left, yellow top-right, blue bottom-right,
@@ -20,7 +20,7 @@ object LudoBoardGeometry {
     const val CELL_COUNT = SIDE * SIDE
 
     enum class Role { YARD, YARD_POCKET, SHARED_TRACK, HOME_LANE, CENTER, UNUSED }
-    enum class Decoration { NONE, STAR, ENTRY_CHEVRON }
+    enum class Decoration { NONE, STAR, APPROACH_CHEVRON }
 
     data class CellNode(
         val id: String,
@@ -62,6 +62,12 @@ object LudoBoardGeometry {
         listOf(10 to 2, 12 to 2, 10 to 4, 12 to 4),
         listOf(10 to 10, 12 to 10, 10 to 12, 12 to 12),
     )
+    val FINISH_SLOTS: List<List<Pair<Float, Float>>> = listOf(
+        listOf(1.15f to 2.15f, 1.85f to 2.15f, 1.15f to 2.65f, 1.85f to 2.65f),
+        listOf(.35f to 1.15f, .85f to 1.15f, .35f to 1.85f, .85f to 1.85f),
+        listOf(1.15f to .35f, 1.85f to .35f, 1.15f to .85f, 1.85f to .85f),
+        listOf(2.15f to 1.15f, 2.65f to 1.15f, 2.15f to 1.85f, 2.65f to 1.85f),
+    )
 
     /** Normalized clockwise border anchors (§12.1). */
     val BORDER_ANCHORS = floatArrayOf(0.00f, 0.25f, 0.50f, 0.75f)
@@ -102,8 +108,12 @@ object LudoBoardGeometry {
                         role = Role.SHARED_TRACK
                         trackIndex = trackAt[x to y]
                         isSafe = LudoRules.SAFE_INDICES.contains(trackIndex)
+                        if (trackIndex in LudoRules.ENTRY_INDICES) seat = LudoRules.ENTRY_INDICES.indexOf(trackIndex)
                         decoration = when (trackIndex) {
-                            in LudoRules.ENTRY_INDICES -> Decoration.ENTRY_CHEVRON
+                            in LudoRules.APPROACH_INDICES -> {
+                                seat = LudoRules.APPROACH_INDICES.indexOf(trackIndex)
+                                Decoration.APPROACH_CHEVRON
+                            }
                             in LudoRules.STAR_INDICES -> Decoration.STAR
                             else -> Decoration.NONE
                         }
@@ -220,7 +230,7 @@ object LudoBoardGeometry {
             val decOk = when (node.decoration) {
                 Decoration.NONE -> f["decoration"] == "none"
                 Decoration.STAR -> f["decoration"] == "star"
-                Decoration.ENTRY_CHEVRON -> f["decoration"] == "entryChevron"
+                Decoration.APPROACH_CHEVRON -> f["decoration"] == "approachChevron"
             }
             if (!decOk) return false
         }

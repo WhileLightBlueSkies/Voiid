@@ -25,7 +25,7 @@ struct LudoBoardSweep {
 enum LudoBoardCanvas {
 
     static func droppedSeats(_ state: LudoGameStateV2) -> Set<Int> {
-        Set(state.seats.filter { $0.isDropped }.map { $0.seat })
+        []
     }
 
     /// Cell keys under server-legal tokens — the halo/highlight set.
@@ -53,19 +53,16 @@ enum LudoBoardCanvas {
         state: LudoGameStateV2,
         sweep: LudoBoardSweep?,
         displayOverride: (seat: Int, pawn: Int, center: CGPoint)? = nil,
+        highContrast: Bool = false,
     ) {
         let side = size.width
         let layout = LudoBoardGeometry.Layout(sideLength: side)
         let unit = layout.unit
         let dropped = droppedSeats(state)
 
-        // 1) Backing + §2.2 board shadow (y=4/blur=14 light, y=6/blur=18 dark).
+        // 1) Flat board backing; the contract requires zero board elevation.
         let boardRect = CGRect(origin: .zero, size: CGSize(width: side, height: side))
         let boardShape = RoundedRectangle(cornerRadius: LudoDimens.boardCornerRadius)
-        let shadowInfo = colors.boardShadow()
-        ctx.fill(
-            boardShape.path(in: boardRect.offsetBy(dx: 0, dy: shadowInfo.offset.height)),
-            with: .color(colors.shadow.opacity(0.5)))
         ctx.fill(boardShape.path(in: boardRect), with: .color(colors.boardSurface))
 
         // 2+3) Yard fields then pockets.
@@ -73,21 +70,26 @@ enum LudoBoardCanvas {
             let r = layout.rect(of: node)
             switch node.role {
             case .yard:
-                ctx.fill(RoundedRectangle(cornerRadius: 2).path(in: r),
+                ctx.fill(Rectangle().path(in: r),
                          with: .color(LudoCellView.yardFill(node, dropped: dropped, colors)))
-            case .yardPocket:
-                let radius = min(LudoDimens.yardPocketRadiusFactor * unit, r.width / 2)
-                ctx.fill(RoundedRectangle(cornerRadius: radius).path(in: r),
-                         with: .color(colors.yardPocket))
             default:
                 continue
             }
+        }
+        for seat in 0..<4 {
+            let origin: (Int, Int) = seat == 0 ? (0, 9) : seat == 1 ? (0, 0) : seat == 2 ? (9, 0) : (9, 9)
+            let inset = unit * LudoDimens.yardPocketInsetFactor
+            let r = CGRect(x: CGFloat(origin.0) * unit + inset, y: CGFloat(origin.1) * unit + inset,
+                           width: unit * 4.4, height: unit * 4.4)
+            let pocket = RoundedRectangle(cornerRadius: unit * LudoDimens.yardPocketRadiusFactor).path(in: r)
+            ctx.fill(pocket, with: .color(colors.yardPocket))
+            ctx.stroke(pocket, with: .color(colors.yardPocketBorder), lineWidth: max(0.75, unit * 0.04))
         }
 
         // 4) Cells — track + lanes; each from its OWN rect.
         for node in LudoBoardGeometry.cells where node.role != .yard && node.role != .yardPocket {
             LudoCellView.draw(&ctx, node: node, rect: layout.rect(of: node), colors: colors,
-                              pressed: false, highlight: nil, highContrast: false,
+                              pressed: false, highlight: nil, highContrast: highContrast,
                               darkTheme: colors.isDark)
         }
 
@@ -102,12 +104,13 @@ enum LudoBoardCanvas {
         for node in LudoBoardGeometry.cells {
             switch node.decoration {
             case .star:
-                ctx.fill(LudoCellView.safeStarPath(in: layout.rect(of: node)),
-                         with: .color(colors.safeCellStar))
-            case .entryChevron:
-                let seat = (node.trackIndex ?? 0) / 13
-                ctx.fill(LudoCellView.entryChevronPath(in: layout.rect(of: node), seat: seat),
-                         with: .color(colors.hue(seat)))
+                ctx.stroke(LudoCellView.safeStarPath(in: layout.rect(of: node)),
+                           with: .color(colors.safeCellStar), lineWidth: max(1, unit * 0.055))
+            case .approachChevron:
+                let seat = node.seat ?? 0
+                ctx.stroke(LudoCellView.entryChevronPath(in: layout.rect(of: node), seat: seat),
+                           with: .color(colors.yard(seat)),
+                           style: StrokeStyle(lineWidth: unit * 0.10, lineCap: .round, lineJoin: .round))
             case .none:
                 continue
             }
@@ -146,16 +149,10 @@ enum LudoBoardCanvas {
             pawnCtx.fill(body, with: .color(hue))
             pawnCtx.stroke(LudoPawnShape.rimPath(width: boxW, height: boxH),
                            with: .color(LudoPawnShape.rimColor(hue, darkTheme: colors.isDark)),
-                           lineWidth: colors.isDark ? 1 : 0.75)
-            let rimY = 0.82 * boxH
-            var rim = Path()
-            rim.move(to: CGPoint(x: boxW * 0.10, y: rimY))
-            rim.addLine(to: CGPoint(x: boxW * 0.90, y: rimY))
-            pawnCtx.stroke(rim, with: .color(LudoPawnShape.rimColor(hue, darkTheme: colors.isDark)),
                            lineWidth: 1)
             pawnCtx.stroke(LudoPawnShape.highlightArc(width: boxW, height: boxH),
-                           with: .color(.white.opacity(colors.isDark ? 0.10 : 0.14)),
-                           lineWidth: 0.035 * boxW)
+                           with: .color(LudoPawnShape.rimColor(hue, darkTheme: colors.isDark).opacity(0.45)),
+                           lineWidth: 1)
         }
 
         // 9) Perimeter LAST — the turn border sweeps OVER everything (§12).
@@ -163,10 +160,10 @@ enum LudoBoardCanvas {
         let perimeter = LudoTurnBorder.perimeterPath(
             side: side, cornerRadius: LudoDimens.boardCornerRadius, stroke: stroke)
 
-        if state.isFinished {
+        if state.isFinished || state.turn == nil {
             // Game end changes INSTANTLY to podBorder; winner presentation belongs to the
             // result sheet, not a false "active" border (§12.1).
-            ctx.stroke(perimeter, with: .color(colors.podBorder), lineWidth: stroke)
+            ctx.stroke(perimeter, with: .color(colors.boardOuterNeutral), lineWidth: stroke)
         } else if let s = sweep, s.fromSeat != s.toSeat {
             LudoTurnBorder.draw(
                 &ctx, path: perimeter, stroke: stroke,
@@ -186,11 +183,12 @@ struct LudoV2BoardView: View {
     let state: LudoGameStateV2
     var sweep: LudoBoardSweep?
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
         Canvas { ctx, size in
             LudoBoardCanvas.draw(&ctx, size: size, colors: LudoColors.resolve(scheme),
-                                 state: state, sweep: sweep)
+                                 state: state, sweep: sweep, highContrast: contrast == .increased)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(LudoAccessibility.boardSummary(state))

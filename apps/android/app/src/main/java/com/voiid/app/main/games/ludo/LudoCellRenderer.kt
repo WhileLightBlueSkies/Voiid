@@ -33,7 +33,7 @@ object LudoCellRenderer {
     /** Yard fields tint with their owner hue; a DROPPED seat desaturates to inactiveYard (§13). */
     fun yardFill(node: LudoBoardGeometry.CellNode, droppedSeats: Set<Int>, colors: LudoThemeColors): Color {
         val owner = node.seat ?: return colors.c(colors.unusedCellFill)
-        return if (owner in droppedSeats) colors.c(colors.inactiveYard) else colors.yard(owner)
+        return colors.yard(owner)
     }
 
     fun DrawScope.drawCell(
@@ -78,8 +78,8 @@ object LudoCellRenderer {
      * directional chevron in the owner hue on the four entries.
      */
     fun safeStarPath(rect: Rect): Path {
-        val outer = LudoDimens.safeStarRadiusFactor * rect.width
-        val inner = outer * 0.42f
+        val outer = 0.34f * rect.width
+        val inner = 0.15f * rect.width
         val cx = rect.center.x
         val cy = rect.center.y
         val path = Path()
@@ -106,21 +106,18 @@ object LudoCellRenderer {
             2 -> Offset(0f, 1f)    // yellow start (8,1), travels downward
             else -> Offset(-1f, 0f)
         }
-        val size = rect.width * 0.42f
+        val size = rect.width * 0.38f
         val c = rect.center
         val tip = Offset(c.x + dir.x * size * 0.6f, c.y + dir.y * size * 0.6f)
         val perp = Offset(-dir.y, dir.x)
         val backL = Offset(tip.x - dir.x * size - perp.x * size * 0.8f,
                            tip.y - dir.y * size - perp.y * size * 0.8f)
-        val backMid = Offset(tip.x - dir.x * size * 0.45f, tip.y - dir.y * size * 0.45f)
         val backR = Offset(tip.x - dir.x * size + perp.x * size * 0.8f,
                            tip.y - dir.y * size + perp.y * size * 0.8f)
         return Path().apply {
             moveTo(backL.x, backL.y)
             lineTo(tip.x, tip.y)
             lineTo(backR.x, backR.y)
-            lineTo(backMid.x, backMid.y)
-            close()
         }
     }
 
@@ -142,20 +139,10 @@ object LudoCellRenderer {
 
     /** The 2×2 finish slots inside each triangle; a finished pawn shrinks into one at 52%. */
     fun finishSlotRect(seat: Int, pawnIndex: Int, centerRect: Rect): Rect {
-        val w = centerRect.width / 4f
-        val h = centerRect.height / 4f
-        val col = pawnIndex % 2
-        val row = pawnIndex / 2
-        val left = when (seat % 4) {
-            1 -> centerRect.left + col * w                 // green fills from left edge
-            3 -> centerRect.right - (col + 1) * w          // blue from right edge
-            else -> centerRect.left + col * w
-        }
-        val top = when (seat % 4) {
-            2 -> centerRect.top + row * h                  // yellow from top edge
-            0 -> centerRect.bottom - (row + 1) * h         // red from bottom edge
-            else -> centerRect.top + row * h
-        }
-        return Rect(left, top, left + w, top + h)
+        val unit = centerRect.width / 3f
+        val slot = LudoBoardGeometry.FINISH_SLOTS[seat % 4][pawnIndex % 4]
+        val left = centerRect.left + slot.first * unit - unit * .26f
+        val top = centerRect.top + slot.second * unit - unit * .26f
+        return Rect(left, top, left + unit * .52f, top + unit * .52f)
     }
 }

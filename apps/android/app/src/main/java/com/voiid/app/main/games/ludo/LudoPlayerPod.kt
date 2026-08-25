@@ -87,7 +87,7 @@ fun LudoPlayerPod(
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 13.sp,
             ),
-            color = LudoPalette.textPrimary().copy(alpha = if (seatView?.isDropped == true) 0.55f else 1f),
+            color = LudoPalette.textPrimary(),
             modifier = Modifier
                 .padding(start = 8.dp)
                 .weight(1f, fill = false)
@@ -97,13 +97,13 @@ fun LudoPlayerPod(
 }
 
 private fun chipOutlined(seatView: LudoSeatView?): Boolean =
-    seatView == null || seatView.isWaiting || seatView.isDropped
+    seatView == null || seatView.isWaiting
 
 @Composable
 private fun usernameLine(seatView: LudoSeatView?): String = when {
     seatView == null -> ""
     seatView.isWaiting -> "Waiting…"
-    else -> seatView.displayName.take(18)
+    else -> (seatView.displayName + if (seatView.isBot) "  BOT" else "").take(22)
 }
 
 @Composable

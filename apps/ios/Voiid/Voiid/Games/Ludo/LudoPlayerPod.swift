@@ -53,7 +53,7 @@ struct LudoPlayerPod: View {
                 .font(.system(size: 13, weight: .semibold, design: .rounded))
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .foregroundStyle(colors.textPrimary.opacity(seatView?.isDropped == true ? 0.55 : 1))
+                .foregroundStyle(colors.textPrimary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.trailing, 8)
         }
@@ -68,11 +68,12 @@ struct LudoPlayerPod: View {
     private var usernameLine: String {
         guard let sv = seatView else { return "" }
         if sv.participation == "waiting" { return "Waiting…" }
-        return String(sv.displayName.prefix(18))
+        let name = String(sv.displayName.prefix(18))
+        return sv.isBot ? "\(name) BOT" : name
     }
 
     private var outlined: Bool {
-        seatView == nil || seatView?.participation == "waiting" || seatView?.isDropped == true
+        seatView == nil || seatView?.participation == "waiting"
     }
 
     private func chipColor(_ c: LudoColors) -> Color {
@@ -83,7 +84,7 @@ struct LudoPlayerPod: View {
     private func arcColor(_ c: LudoColors) -> Color {
         guard active else { return c.timerTrack }          // inactive pods draw only the track
         if let o = ringColorOverride { return o }
-        return seatView.map { c.hue($0.seat) } ?? c.timerTrack
+        return c.timerActive
     }
 }
 

@@ -283,44 +283,45 @@ object LudoPalette {
     private fun pair(light: Long, dark: Long): Color =
         if (LocalVoiidDark.current) Color(dark) else Color(light)
 
-    @Composable fun screenBackground() = pair(0xFFF6F8F8, 0xFF080C0E)
-    @Composable fun boardSurface() = pair(0xFFF3F4F6, 0xFF15171C)
-    @Composable fun trackCellFill() = pair(0xFFFFFFFF, 0xFF202229)
-    @Composable fun trackCellBorder() = pair(0xFFC9CDD5, 0xFF444852)
+    @Composable fun screenBackground() = pair(0xFFF2F2F3, 0xFF111015)
+    @Composable fun boardSurface() = pair(0xFFFFFFFF, 0xFF1F2326)
+    @Composable fun trackCellFill() = pair(0xFFFFFFFF, 0xFF1F2326)
+    @Composable fun trackCellBorder() = pair(0xFF202020, 0xFF101316)
     @Composable fun trackCellPressed() = pair(0xFFE7EAEE, 0xFF2A2D35)
-    @Composable fun unusedCellFill() = pair(0xFFF3F4F6, 0xFF15171C)
-    @Composable fun safeCellFill() = pair(0xFFE8EBF0, 0xFF2A2D35)
-    @Composable fun safeCellStar() = pair(0xFF626A76, 0xFFC2C7D0)
+    @Composable fun unusedCellFill() = pair(0xFFFFFFFF, 0xFF1F2326)
+    @Composable fun safeCellFill() = pair(0xFFFFFFFF, 0xFF1F2326)
+    @Composable fun safeCellStar() = pair(0xFF383838, 0xFFF4F6FA)
 
     // Player hues — pawn, lane, border, pips. Fixed per seat, never derived at runtime.
-    @Composable fun red() = pair(0xFFD94B47, 0xFFF06460)
-    @Composable fun green() = pair(0xFF248A4B, 0xFF56B870)
-    @Composable fun yellow() = pair(0xFFC99A00, 0xFFF1C84B)
-    @Composable fun blue() = pair(0xFF2F6FD6, 0xFF5B8DEF)
+    @Composable fun red() = pair(0xFFCF514F, 0xFFFD605B)
+    @Composable fun green() = pair(0xFF5F9F5E, 0xFF3AD784)
+    @Composable fun yellow() = pair(0xFFE9BD2E, 0xFFFED632)
+    @Composable fun blue() = pair(0xFF4B78E5, 0xFF337AE5)
 
-    @Composable fun redYard() = pair(0xFFF8E4E3, 0xFF2D2022)
-    @Composable fun greenYard() = pair(0xFFE2F0E7, 0xFF1B2A22)
-    @Composable fun yellowYard() = pair(0xFFF7EFCF, 0xFF2C2819)
-    @Composable fun blueYard() = pair(0xFFE3EBFA, 0xFF1C2431)
+    @Composable fun redYard() = pair(0xFFF30104, 0xFFB70407)
+    @Composable fun greenYard() = pair(0xFF03A822, 0xFF028327)
+    @Composable fun yellowYard() = pair(0xFFFDD805, 0xFFD4A70E)
+    @Composable fun blueYard() = pair(0xFF0F7DEE, 0xFF024F9F)
 
-    @Composable fun redHomeLane() = pair(0xFFE88C89, 0xFFB84D4C)
-    @Composable fun greenHomeLane() = pair(0xFF72B58B, 0xFF3C7F50)
-    @Composable fun yellowHomeLane() = pair(0xFFE3C558, 0xFFA98F3A)
-    @Composable fun blueHomeLane() = pair(0xFF7FA4E6, 0xFF446CB4)
+    @Composable fun redHomeLane() = redYard()
+    @Composable fun greenHomeLane() = greenYard()
+    @Composable fun yellowHomeLane() = yellowYard()
+    @Composable fun blueHomeLane() = blueYard()
 
-    @Composable fun yardPocket() = pair(0xFFFFFFFF, 0xFF202229)
-    @Composable fun yardPocketBorder() = pair(0xFFD4D8DF, 0xFF3D414B)
-    @Composable fun inactiveYard() = pair(0xFFE7E9ED, 0xFF202229)
+    @Composable fun yardPocket() = pair(0xFFFFFFFF, 0xFF1F2326)
+    @Composable fun yardPocketBorder() = pair(0xFF202020, 0xFF101316)
+    @Composable fun inactiveYard() = yardPocket()
 
-    @Composable fun dieBody() = pair(0xFFF8F8F9, 0xFF1B1D24)
-    @Composable fun dieEdge() = pair(0xFFC6CAD2, 0xFF4A4E58)
+    @Composable fun dieBody() = pair(0xFFFEFEFE, 0xFF181920)
+    @Composable fun dieEdge() = pair(0xFFC7C9CF, 0xFF464952)
     @Composable fun dieNeutralPip() = pair(0xFF69717D, 0xFFB2B8C3)
 
-    @Composable fun textPrimary() = pair(0xFF101617, 0xFFF6F8F8)
+    @Composable fun textPrimary() = pair(0xFF111015, 0xFFF7F7F7)
     @Composable fun textSecondary() = pair(0xFF5D696C, 0xFFA6B0B2)
-    @Composable fun podSurface() = pair(0xFFFFFFFF, 0xFF171C1F)
-    @Composable fun podBorder() = pair(0xFFD7DEDF, 0xFF2D383C)
+    @Composable fun podSurface() = pair(0xFFFEFEFE, 0xFF181920)
+    @Composable fun podBorder() = pair(0xFFC7C9CF, 0xFF464952)
     @Composable fun timerTrack() = pair(0xFFD9DDE3, 0xFF3A3E47)
+    @Composable fun timerActive() = pair(0xFF69717D, 0xFFB2B8C3)
     @Composable fun timerWarning() = pair(0xFFB07818, 0xFFE0A83C)
     @Composable fun timerCritical() = pair(0xFFC0392F, 0xFFEF7A6B)
     @Composable fun focusRing() = pair(0xFF13828C, 0xFF68B8BD)
@@ -337,7 +338,7 @@ object LudoPalette {
     @Composable fun homeLane(seat: Int): Color = when (seat % 4) {
         0 -> redHomeLane(); 1 -> greenHomeLane(); 2 -> yellowHomeLane(); else -> blueHomeLane()
     }
-    @Composable fun centerTriangle(seat: Int): Color = hue(seat)
+    @Composable fun centerTriangle(seat: Int): Color = yard(seat)
 
 }
 
@@ -359,7 +360,7 @@ data class LudoThemeColors(
     val dieBody: Int, val dieEdge: Int, val dieNeutralPip: Int,
     val textPrimary: Int, val textSecondary: Int,
     val podSurface: Int, val podBorder: Int,
-    val timerTrack: Int, val timerWarning: Int, val timerCritical: Int,
+    val timerTrack: Int, val timerActive: Int, val timerWarning: Int, val timerCritical: Int,
     val focusRing: Int,
 ) {
     fun c(v: Int): Color = Color(v.toULong().toLong().let { if (v > 0xFFFFFF) v else (0xFF000000L or v.toLong()) }.toInt())
@@ -367,42 +368,42 @@ data class LudoThemeColors(
     fun hue(seat: Int): Color = c(playerHues[seat % 4])
     fun yard(seat: Int): Color = c(yards[seat % 4])
     fun homeLane(seat: Int): Color = c(homeLanes[seat % 4])
-    fun centerTriangle(seat: Int): Color = hue(seat)
+    fun centerTriangle(seat: Int): Color = yard(seat)
 
     companion object {
         private const val R = 0
         fun light(): LudoThemeColors = LudoThemeColors(
-            screenBackground = 0xFFF6F8F8.toInt(), boardSurface = 0xFFF3F4F6.toInt(),
-            trackCellFill = 0xFFFFFFFF.toInt(), trackCellBorder = 0xFFC9CDD5.toInt(),
-            trackCellPressed = 0xFFE7EAEE.toInt(), unusedCellFill = 0xFFF3F4F6.toInt(),
-            safeCellFill = 0xFFE8EBF0.toInt(), safeCellStar = 0xFF626A76.toInt(),
-            playerHues = listOf(0xFFD94B47.toInt(), 0xFF248A4B.toInt(), 0xFFC99A00.toInt(), 0xFF2F6FD6.toInt()),
-            yards = listOf(0xFFF8E4E3.toInt(), 0xFFE2F0E7.toInt(), 0xFFF7EFCF.toInt(), 0xFFE3EBFA.toInt()),
-            homeLanes = listOf(0xFFE88C89.toInt(), 0xFF72B58B.toInt(), 0xFFE3C558.toInt(), 0xFF7FA4E6.toInt()),
-            yardPocket = 0xFFFFFFFF.toInt(), yardPocketBorder = 0xFFD4D8DF.toInt(),
-            inactiveYard = 0xFFE7E9ED.toInt(),
-            dieBody = 0xFFF8F8F9.toInt(), dieEdge = 0xFFC6CAD2.toInt(), dieNeutralPip = 0xFF69717D.toInt(),
-            textPrimary = 0xFF101617.toInt(), textSecondary = 0xFF5D696C.toInt(),
-            podSurface = 0xFFFFFFFF.toInt(), podBorder = 0xFFD7DEDF.toInt(),
-            timerTrack = 0xFFD9DDE3.toInt(), timerWarning = 0xFFB07818.toInt(),
+            screenBackground = 0xFFF2F2F3.toInt(), boardSurface = 0xFFFFFFFF.toInt(),
+            trackCellFill = 0xFFFFFFFF.toInt(), trackCellBorder = 0xFF202020.toInt(),
+            trackCellPressed = 0xFFE7EAEE.toInt(), unusedCellFill = 0xFFFFFFFF.toInt(),
+            safeCellFill = 0xFFFFFFFF.toInt(), safeCellStar = 0xFF383838.toInt(),
+            playerHues = listOf(0xFFCF514F.toInt(), 0xFF5F9F5E.toInt(), 0xFFE9BD2E.toInt(), 0xFF4B78E5.toInt()),
+            yards = listOf(0xFFF30104.toInt(), 0xFF03A822.toInt(), 0xFFFDD805.toInt(), 0xFF0F7DEE.toInt()),
+            homeLanes = listOf(0xFFF30104.toInt(), 0xFF03A822.toInt(), 0xFFFDD805.toInt(), 0xFF0F7DEE.toInt()),
+            yardPocket = 0xFFFFFFFF.toInt(), yardPocketBorder = 0xFF202020.toInt(),
+            inactiveYard = 0xFFFFFFFF.toInt(),
+            dieBody = 0xFFFEFEFE.toInt(), dieEdge = 0xFFC7C9CF.toInt(), dieNeutralPip = 0xFF69717D.toInt(),
+            textPrimary = 0xFF111015.toInt(), textSecondary = 0xFF5D696C.toInt(),
+            podSurface = 0xFFFEFEFE.toInt(), podBorder = 0xFFC7C9CF.toInt(),
+            timerTrack = 0xFFD9DDE3.toInt(), timerActive = 0xFF69717D.toInt(), timerWarning = 0xFFB07818.toInt(),
             timerCritical = 0xFFC0392F.toInt(),
             focusRing = 0xFF13828C.toInt(),
         )
 
         fun dark(): LudoThemeColors = LudoThemeColors(
-            screenBackground = 0xFF080C0E.toInt(), boardSurface = 0xFF15171C.toInt(),
-            trackCellFill = 0xFF202229.toInt(), trackCellBorder = 0xFF444852.toInt(),
-            trackCellPressed = 0xFF2A2D35.toInt(), unusedCellFill = 0xFF15171C.toInt(),
-            safeCellFill = 0xFF2A2D35.toInt(), safeCellStar = 0xFFC2C7D0.toInt(),
-            playerHues = listOf(0xFFF06460.toInt(), 0xFF56B870.toInt(), 0xFFF1C84B.toInt(), 0xFF5B8DEF.toInt()),
-            yards = listOf(0xFF2D2022.toInt(), 0xFF1B2A22.toInt(), 0xFF2C2819.toInt(), 0xFF1C2431.toInt()),
-            homeLanes = listOf(0xFFB84D4C.toInt(), 0xFF3C7F50.toInt(), 0xFFA98F3A.toInt(), 0xFF446CB4.toInt()),
-            yardPocket = 0xFF202229.toInt(), yardPocketBorder = 0xFF3D414B.toInt(),
-            inactiveYard = 0xFF202229.toInt(),
-            dieBody = 0xFF1B1D24.toInt(), dieEdge = 0xFF4A4E58.toInt(), dieNeutralPip = 0xFFB2B8C3.toInt(),
-            textPrimary = 0xFFF6F8F8.toInt(), textSecondary = 0xFFA6B0B2.toInt(),
-            podSurface = 0xFF171C1F.toInt(), podBorder = 0xFF2D383C.toInt(),
-            timerTrack = 0xFF3A3E47.toInt(), timerWarning = 0xFFE0A83C.toInt(),
+            screenBackground = 0xFF111015.toInt(), boardSurface = 0xFF1F2326.toInt(),
+            trackCellFill = 0xFF1F2326.toInt(), trackCellBorder = 0xFF101316.toInt(),
+            trackCellPressed = 0xFF2A2D35.toInt(), unusedCellFill = 0xFF1F2326.toInt(),
+            safeCellFill = 0xFF1F2326.toInt(), safeCellStar = 0xFFF4F6FA.toInt(),
+            playerHues = listOf(0xFFFD605B.toInt(), 0xFF3AD784.toInt(), 0xFFFED632.toInt(), 0xFF337AE5.toInt()),
+            yards = listOf(0xFFB70407.toInt(), 0xFF028327.toInt(), 0xFFD4A70E.toInt(), 0xFF024F9F.toInt()),
+            homeLanes = listOf(0xFFB70407.toInt(), 0xFF028327.toInt(), 0xFFD4A70E.toInt(), 0xFF024F9F.toInt()),
+            yardPocket = 0xFF1F2326.toInt(), yardPocketBorder = 0xFF101316.toInt(),
+            inactiveYard = 0xFF1F2326.toInt(),
+            dieBody = 0xFF181920.toInt(), dieEdge = 0xFF464952.toInt(), dieNeutralPip = 0xFFB2B8C3.toInt(),
+            textPrimary = 0xFFF7F7F7.toInt(), textSecondary = 0xFFA6B0B2.toInt(),
+            podSurface = 0xFF181920.toInt(), podBorder = 0xFF464952.toInt(),
+            timerTrack = 0xFF3A3E47.toInt(), timerActive = 0xFFB2B8C3.toInt(), timerWarning = 0xFFE0A83C.toInt(),
             timerCritical = 0xFFEF7A6B.toInt(),
             focusRing = 0xFF68B8BD.toInt(),
         )
