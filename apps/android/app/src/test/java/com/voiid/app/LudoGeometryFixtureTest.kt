@@ -85,7 +85,31 @@ class LudoGeometryFixtureTest {
                 assertEquals(seat, node.seat)
                 assertEquals(step, node.homeStep)
             }
-            assertEquals(4, fixture["yardSlots"]!!.jsonArray[seat].jsonArray.size)
+            // Yard slots are continuous coords and must match the fixture EXACTLY. They drifted
+            // once already: seats 2 and 3 were a whole cell off-centre, and every seat was read
+            // as a cell index, so pawns sat half a cell down-right of their pocket slot.
+            val slots = fixture["yardSlots"]!!.jsonArray[seat].jsonArray
+            assertEquals(4, slots.size)
+            for ((pawn, el) in slots.withIndex()) {
+                val c = el.jsonObject
+                assertEquals(
+                    c["x"]!!.jsonPrimitive.double,
+                    LudoBoardGeometry.YARD_SLOTS[seat][pawn].first.toDouble(),
+                    1e-6,
+                )
+                assertEquals(
+                    c["y"]!!.jsonPrimitive.double,
+                    LudoBoardGeometry.YARD_SLOTS[seat][pawn].second.toDouble(),
+                    1e-6,
+                )
+            }
+            // Every slot sits exactly one unit from the pocket centre on both axes, which is
+            // what makes the four pawns read as evenly inset from the pocket edge.
+            val (ox, oy) = LudoBoardGeometry.YARD_ORIGINS[seat]
+            for ((sx, sy) in LudoBoardGeometry.YARD_SLOTS[seat]) {
+                assertEquals(1.0, kotlin.math.abs(sx - (ox + 3f)).toDouble(), 1e-6)
+                assertEquals(1.0, kotlin.math.abs(sy - (oy + 3f)).toDouble(), 1e-6)
+            }
         }
     }
 

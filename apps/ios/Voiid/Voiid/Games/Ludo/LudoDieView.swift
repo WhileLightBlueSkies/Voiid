@@ -8,9 +8,10 @@
 //  PHYSICALLY CONSISTENT FACES (opposites sum to 7):
 //    front +Z = 1   back -Z = 6   right +X = 2   left -X = 5   top -Y = 3   bottom +Y = 4
 //
-//  At rest the displayed result faces the viewer with a fixed three-quarter pose of x=-8°,
-//  y=+10°. Pips use the CURRENT ACTIVE HUE on all six faces simultaneously; the body is ONE
-//  neutral token in every state and never changes color during a roll or turn change (§1).
+//  At rest the displayed result faces the viewer SQUARE ON and is drawn as a single flat face —
+//  the cube projection runs only while the die is tumbling. Pips use the CURRENT ACTIVE HUE on
+//  all six faces simultaneously; the body is ONE neutral token in every state and never changes
+//  color during a roll or turn change (§1).
 //
 
 import SwiftUI
@@ -21,20 +22,19 @@ struct LudoDiePose {
     var liftPx: CGFloat = 0
     var scaleX: CGFloat = 1
     var scaleY: CGFloat = 1
+    /// Non-nil only at rest: draw the flat single face instead of projecting the cube.
+    var restingValue: Int?
 
-    /// Rest pose showing `value` toward the viewer with the fixed three-quarter tilt (§14.1).
+    /// Rest pose: the result faces the viewer SQUARE ON, no tilt.
+    ///
+    /// The old rest pose carried a three-quarter tilt (x −8°, y +10°). Every projected face is
+    /// drawn as a rounded rect built from the face's axis-aligned bounding box and then clipped
+    /// to the face quad — which is exact only when the face is square to the camera. Under the
+    /// tilt the bbox was much larger than the quad, so the rounded corners and the pip grid were
+    /// laid out against the wrong rectangle and got sliced off: the flat grey slab with pips
+    /// crowding its edges. Face-on, bbox and quad coincide and the die reads cleanly.
     static func resting(value: Int) -> LudoDiePose {
-        let base: (CGFloat, CGFloat) = {
-            switch value {
-            case 6: return (180, 0)
-            case 2: return (0, -90)
-            case 5: return (0, 90)
-            case 3: return (90, 0)
-            case 4: return (-90, 0)
-            default: return (0, 0)
-            }
-        }()
-        return LudoDiePose(rotationXDeg: base.0 - 8, rotationYDeg: base.1 + 10)
+        LudoDiePose(rotationXDeg: 0, rotationYDeg: 0, restingValue: value)
     }
 }
 
@@ -75,9 +75,49 @@ enum LudoDieView {
         var transformed = ctx
         transformed.translateBy(x: 0, y: pose.liftPx)
         transformed.scaleBy(x: pose.scaleX, y: pose.scaleY)
-        drawCube(&transformed, side: side, value: value,
-                 rx: pose.rotationXDeg, ry: pose.rotationYDeg,
-                 pipColor: pipColor, colors: colors)
+        // At rest one face is all that is visible, so draw it directly. Projecting a face-on
+        // cube would give the same picture through eight rotations and a depth sort.
+        if let resting = pose.restingValue {
+            drawFlatFace(&transformed, side: side, value: resting,
+                         pipColor: pipColor, colors: colors)
+        } else {
+            drawCube(&transformed, side: side, value: value,
+                     rx: pose.rotationXDeg, ry: pose.rotationYDeg,
+                     pipColor: pipColor, colors: colors)
+        }
+    }
+
+    /// The resting die: one rounded square, one crisp pip grid, no projection.
+    private static func drawFlatFace(
+        _ ctx: inout GraphicsContext,
+        side s: CGFloat,
+        value: Int,
+        pipColor: Color,
+        colors: LudoColors,
+    ) {
+        let rect = CGRect(x: 0, y: 0, width: s, height: s)
+        let body = RoundedRectangle(cornerRadius: 0.18 * s).path(in: rect)
+        ctx.fill(body, with: .color(colors.dieBody))
+        ctx.stroke(body, with: .color(colors.dieEdge),
+                   style: StrokeStyle(lineWidth: colors.isDark ? 1.25 : 1.0))
+
+        guard let layout = pips[value] else { return }
+        let inset = 0.26 * s
+        let step = (s - 2 * inset) / 2
+        let radius = 0.093 * s
+
+        for (col, row) in layout {
+            let cx = inset + CGFloat(col) * step
+            let cy = inset + CGFloat(row) * step
+            func circle(_ x: CGFloat, _ y: CGFloat, _ r: CGFloat) -> Path {
+                Path(ellipseIn: CGRect(x: x - r, y: y - r, width: r * 2, height: r * 2))
+            }
+            // Inset-depth treatment: shadow slightly low, then the pip, then a top-left catch.
+            ctx.fill(circle(cx, cy + 0.016 * s, radius), with: .color(.black.opacity(0.18)))
+            ctx.fill(circle(cx, cy, radius), with: .color(pipColor))
+            ctx.fill(circle(cx - radius * 0.30, cy - radius * 0.30, radius * 0.30),
+                     with: .color(.white.opacity(0.14)))
+        }
     }
 
     private static func drawCube(

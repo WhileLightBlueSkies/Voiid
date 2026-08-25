@@ -55,13 +55,28 @@ object LudoBoardGeometry {
         listOf(13 to 7, 12 to 7, 11 to 7, 10 to 7, 9 to 7),   // blue
     )
 
-    /** Yard pawn slots per seat, in pawn order. */
-    val YARD_SLOTS: List<List<Pair<Int, Int>>> = listOf(
-        listOf(2 to 11, 4 to 11, 2 to 13, 4 to 13),
-        listOf(2 to 2, 4 to 2, 2 to 4, 4 to 4),
-        listOf(10 to 2, 12 to 2, 10 to 4, 12 to 4),
-        listOf(10 to 10, 12 to 10, 10 to 12, 12 to 12),
+    /** Yard origins (top-left of each 6x6 yard block), in grid units. */
+    val YARD_ORIGINS: List<Pair<Float, Float>> = listOf(
+        0f to 9f,   // red, bottom-left
+        0f to 0f,   // green, top-left
+        9f to 0f,   // yellow, top-right
+        9f to 9f,   // blue, bottom-right
     )
+
+    /**
+     * Yard pawn slots as CONTINUOUS grid coordinates, not cell indices. The pocket drawn in each
+     * yard is centred on origin+3, so the slots sit at that centre ±1 and read as evenly inset
+     * from every pocket edge. Consuming these as cell indices (and so as cell CENTRES, index +
+     * 0.5) is what used to push every pawn half a cell down-right.
+     */
+    val YARD_SLOTS: List<List<Pair<Float, Float>>> = YARD_ORIGINS.map { (ox, oy) ->
+        listOf(
+            ox + 2f to oy + 2f,
+            ox + 4f to oy + 2f,
+            ox + 2f to oy + 4f,
+            ox + 4f to oy + 4f,
+        )
+    }
     val FINISH_SLOTS: List<List<Pair<Float, Float>>> = listOf(
         listOf(1.15f to 2.15f, 1.85f to 2.15f, 1.15f to 2.65f, 1.85f to 2.65f),
         listOf(.35f to 1.15f, .85f to 1.15f, .35f to 1.85f, .85f to 1.85f),
@@ -187,7 +202,7 @@ object LudoBoardGeometry {
         /** Center of an encoded position for this viewer-independent layout. */
         fun centerOfPosition(pos: Int, seat: Int): Pair<Float, Float> {
             val coord: Pair<Int, Int> = when {
-                pos == LudoRules.YARD -> YARD_SLOTS[seat].first()  // caller supplies pawn slot instead
+                pos == LudoRules.YARD -> return yardSlotCenter(seat, 0)  // caller supplies pawn slot instead
                 pos == LudoRules.FINISHED -> 7 to 7
                 pos in LudoRules.HOME_LANE_BASE until LudoRules.HOME_LANE_BASE + LudoRules.HOME_LANE_COUNT ->
                     HOME_LANE_COORDS[seat][pos - LudoRules.HOME_LANE_BASE]
@@ -198,9 +213,14 @@ object LudoBoardGeometry {
         }
 
         fun yardSlotCenter(seat: Int, pawn: Int): Pair<Float, Float> {
-            val (cx, cy) = YARD_SLOTS[seat][pawn]
-            val r = rectOf(cell(cx, cy))
-            return r.center.x to r.center.y
+            val (sx, sy) = YARD_SLOTS[seat][pawn]
+            return sx * unit to sy * unit
+        }
+
+        /** Centre of a seat's yard pocket, in px — the anchor the four slots ring. */
+        fun yardPocketCenter(seat: Int): Pair<Float, Float> {
+            val (ox, oy) = YARD_ORIGINS[seat % 4]
+            return (ox + 3f) * unit to (oy + 3f) * unit
         }
     }
 

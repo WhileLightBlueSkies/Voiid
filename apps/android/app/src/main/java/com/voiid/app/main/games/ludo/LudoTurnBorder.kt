@@ -70,6 +70,32 @@ object LudoTurnBorder {
      * segments (§18.2). The segment is written into the backing store of a fresh compose
      * Path via its own asAndroidPath().
      */
+    /**
+     * One arc of [length] (0..1 of the perimeter) starting at [phaseStart], wrapping if it runs
+     * past the end of the path. Used by the turn clock, which shortens this arc from the active
+     * seat's own anchor as their window runs down.
+     */
+    fun DrawScope.drawArc(
+        path: Path,
+        strokePx: Float,
+        color: Color,
+        phaseStart: Float,
+        length: Float,
+    ) {
+        if (length >= 1f) {
+            drawPath(path, color, style = Stroke(strokePx))
+            return
+        }
+        val tail = phaseStart % 1f
+        val head = tail + length
+        if (head <= 1f) {
+            trimStroke(path, color, strokePx, tail, head, rounded = false)
+        } else {
+            trimStroke(path, color, strokePx, tail, 1f, rounded = false)
+            trimStroke(path, color, strokePx, 0f, head - 1f, rounded = false)
+        }
+    }
+
     private fun DrawScope.trimStroke(
         path: Path,
         color: Color,

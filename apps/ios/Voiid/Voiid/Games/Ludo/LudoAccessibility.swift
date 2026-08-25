@@ -39,8 +39,11 @@ enum LudoAccessibility {
             return "\(colorName(node.seat ?? 0)) home lane, step \((node.homeStep ?? 0) + 1) of 5\(rowCol)"
         case .yardPocket:
             if let seat = node.seat {
+                // Slots are continuous grid coords; a cell owns the slot that falls inside it.
                 let slots = LudoBoardGeometry.yardSlots[seat % 4]
-                if let pawn = slots.firstIndex(where: { $0.0 == node.x && $0.1 == node.y }) {
+                if let pawn = slots.firstIndex(where: {
+                    Int($0.0) == node.x && Int($0.1) == node.y
+                }) {
                     return "Yard slot \(pawn + 1)\(rowCol)"
                 }
             }

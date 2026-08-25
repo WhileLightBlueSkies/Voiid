@@ -135,6 +135,8 @@ enum LudoDimens {
     static func cellBorder(dark: Bool) -> CGFloat { 0.75 }
     static let cellCornerRadiusFactor: CGFloat = 0
     static let yardPocketInsetFactor: CGFloat = 0.80
+    /// Resting-circle radius for a yard slot, as a fraction of one cell.
+    static let yardSlotRadiusFactor: CGFloat = 0.46
     static let yardPocketRadiusFactor: CGFloat = 0.72
     static let safeStarOuterRadiusFactor: CGFloat = 0.34
     static let safeStarInnerRadiusFactor: CGFloat = 0.15
@@ -165,6 +167,9 @@ enum LudoMotion {
     static let fastForwardMs: Double = 90
     static let haloBreatheMs: Double = 520
     static let captureScaleMs: Double = 150
+    /// Whole capture retrace, split across however many cells the pawn has to walk back.
+    static let captureReturnTotalMs: Double = 520
+    static let captureLegMinMs: Double = 26
     static let captureReturnMs: Double = 260
     static let finishShrinkMs: Double = 240
     static let resultRippleMs: Double = 420

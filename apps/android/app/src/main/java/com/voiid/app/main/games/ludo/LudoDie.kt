@@ -94,6 +94,46 @@ object LudoDie {
         }
     }
 
+    /**
+     * The RESTING die: one rounded square, one crisp upright pip grid, no projection.
+     *
+     * Every projected face is a rounded rect built from the face's bounding box and clipped to
+     * the face quad, which is exact only square-on; and a rest pose such as 3's (90°,0°) draws
+     * its pip grid in a rotated frame. Drawing the settled face directly keeps it upright and
+     * identical on both platforms.
+     */
+    fun DrawScope.drawRestingDie(
+        sidePx: Float,
+        value: Int,
+        pipColor: Color,
+        edgeStrokePx: Float,
+        colors: LudoThemeColors,
+    ) {
+        translate(center.x - sidePx / 2, center.y - sidePx / 2) {
+            val body = androidx.compose.ui.geometry.RoundRect(
+                left = 0f, top = 0f, right = sidePx, bottom = sidePx,
+                cornerRadius = CornerRadius(.18f * sidePx),
+            )
+            val path = Path().apply { addRoundRect(body) }
+            drawPath(path, colors.c(colors.dieBody))
+            drawPath(path, colors.c(colors.dieEdge), style = Stroke(edgeStrokePx))
+
+            val layout = PIPS[value] ?: return@translate
+            val inset = .26f * sidePx
+            val step = (sidePx - 2 * inset) / 2f
+            val radius = .093f * sidePx
+            for ((col, row) in layout) {
+                val cx = inset + col * step
+                val cy = inset + row * step
+                drawCircle(Color.Black.copy(alpha = .18f), radius,
+                    Offset(cx, cy + .016f * sidePx))
+                drawCircle(pipColor, radius, Offset(cx, cy))
+                drawCircle(Color.White.copy(alpha = .14f), radius * .30f,
+                    Offset(cx - radius * .30f, cy - radius * .30f))
+            }
+        }
+    }
+
     private fun rad(deg: Float): Float = Math.toRadians(deg.toDouble()).toFloat()
 
     private fun rotate(v: V3, rx: Float, ry: Float): V3 {

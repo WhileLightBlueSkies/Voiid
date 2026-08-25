@@ -33,6 +33,8 @@ object LudoDimens {
     const val cellBorderDarkDp = 1f
     const val cellCornerRadiusFactor = 0f
     const val yardPocketRadiusFactor = 0f
+    /** Resting-circle radius for a yard slot, as a fraction of one cell. */
+    const val yardSlotRadiusFactor = 0.46f
     const val safeStarRadiusFactor = 0.27f
 
     // Pods carry only a chip and a username, so they stay small and let the board dominate —

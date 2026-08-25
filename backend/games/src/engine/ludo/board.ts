@@ -84,13 +84,31 @@ export const HOME_LANE_COORDS: ReadonlyArray<ReadonlyArray<readonly [number, num
     [[13, 7], [12, 7], [11, 7], [10, 7], [9, 7]],   // blue, bottom-right
 ];
 
-/** Yard pawn slots per seat, in pawn order. */
-export const YARD_SLOTS: ReadonlyArray<ReadonlyArray<readonly [number, number]>> = [
-    [[2, 11], [4, 11], [2, 13], [4, 13]],           // red
-    [[2, 2], [4, 2], [2, 4], [4, 4]],               // green
-    [[10, 2], [12, 2], [10, 4], [12, 4]],           // yellow
-    [[10, 10], [12, 10], [10, 12], [12, 12]],       // blue
+/**
+ * Yard pawn slots per seat, in pawn order, as CONTINUOUS grid coordinates — not cell indices.
+ *
+ * Each 6x6 yard starts at its origin below; the pocket drawn inside it spans origin+0.8 to
+ * origin+5.2, so its centre is origin+3. The four slots sit at that centre ±1 on both axes,
+ * which is what makes them read as evenly inset from the pocket edge.
+ *
+ * These used to be cell indices, and were consumed as cell CENTRES (index + 0.5), which pushed
+ * every pawn half a cell down-right. Seats 2 and 3 were additionally a full cell off, so their
+ * pawns sat visibly closer to one pocket edge than the other — the "floating" look.
+ */
+const YARD_ORIGINS: ReadonlyArray<readonly [number, number]> = [
+    [0, 9],   // red, bottom-left
+    [0, 0],   // green, top-left
+    [9, 0],   // yellow, top-right
+    [9, 9],   // blue, bottom-right
 ];
+
+export const YARD_SLOTS: ReadonlyArray<ReadonlyArray<readonly [number, number]>> =
+    YARD_ORIGINS.map(([ox, oy]) => [
+        [ox + 2, oy + 2],
+        [ox + 4, oy + 2],
+        [ox + 2, oy + 4],
+        [ox + 4, oy + 4],
+    ] as ReadonlyArray<readonly [number, number]>);
 
 /** Center-local finish slots, indexed by physical seat then pawn index. */
 export const FINISH_SLOTS: ReadonlyArray<ReadonlyArray<readonly [number, number]>> = [

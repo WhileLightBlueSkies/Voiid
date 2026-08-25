@@ -42,10 +42,6 @@ final class LudoPresentationCoordinator: ObservableObject {
     private var running = false
     private var reduceMotion = false
 
-    /// Set right before enqueueMove so the capture arc has its geometry.
-    var arcMidpoint: CGPoint?
-    var arcFrom: CGPoint = .zero
-
     func setReduceMotion(_ enabled: Bool) { reduceMotion = enabled }
 
     // MARK: Beat entry points
@@ -75,11 +71,13 @@ final class LudoPresentationCoordinator: ObservableObject {
         actorSeat: Int,
         centers: [CGPoint],
         captured: LudoActionMove.CapturedPawn?,
-        yardSlotCenter: CGPoint?,
+        /// The captured pawn's way home: its current cell, every track cell it came through in
+        /// reverse, then its yard slot.
+        captureRoute: [CGPoint],
     ) {
         enqueue { [weak self] in
             await self?.runMoveBeat(tokenId: tokenId, actorSeat: actorSeat, centers: centers,
-                                    captured: captured, yardSlotCenter: yardSlotCenter)
+                                    captured: captured, captureRoute: captureRoute)
         }
     }
 
@@ -102,7 +100,7 @@ final class LudoPresentationCoordinator: ObservableObject {
         actorSeat: Int,
         centers: [CGPoint],
         captured: LudoActionMove.CapturedPawn?,
-        yardSlotCenter: CGPoint?,
+        captureRoute: [CGPoint],
     ) async {
         let hopEasing = CubicBezierEasing(x1: 0.22, y1: 0, x2: 0.20, y2: 1)
         guard centers.count >= 2 else { return }
@@ -118,17 +116,31 @@ final class LudoPresentationCoordinator: ObservableObject {
         }
         hopOverride = nil
 
-        guard let cap = captured, let slot = yardSlotCenter else { return }
+        guard let cap = captured, captureRoute.count >= 2 else { return }
         try? await Task.sleep(nanoseconds: 70_000_000)                       // hold after landing
         await tween(ms: LudoMotion.captureScaleMs,
                     easing: CubicBezierEasing(x1: 0, y1: 0, x2: 1, y2: 1)) { _ in }
-        await tween(ms: LudoMotion.captureReturnMs,
-                    easing: CubicBezierEasing(x1: 0.30, y1: 0, x2: 0.10, y2: 1)) { t in
-            guard let mid = self.arcMidpoint else { return }
-            let inv = 1 - t
-            let cx = inv * inv * self.arcFrom.x + 2 * inv * t * mid.x + t * t * slot.x
-            let cy = inv * inv * self.arcFrom.y + 2 * inv * t * mid.y + t * t * slot.y
-            self.captureReturn = (cap.seat, cap.tokenId, CGPoint(x: cx, y: cy))
+
+        // Retrace the route at a FIXED total duration, so a pawn sent back from two cells out
+        // and one sent back from forty both take about the same beat — long returns would
+        // otherwise stall the game for seconds.
+        let legs = captureRoute.count - 1
+        let perLeg = max(LudoMotion.captureLegMinMs,
+                         LudoMotion.captureReturnTotalMs / Double(legs))
+        let linear = CubicBezierEasing(x1: 0, y1: 0, x2: 1, y2: 1)
+        for i in 1..<captureRoute.count {
+            let from = captureRoute[i - 1]
+            let to = captureRoute[i]
+            // The final leg leaves the track for the yard slot; ease it out so the pawn settles
+            // rather than slamming into its circle.
+            let isLast = i == captureRoute.count - 1
+            await tween(ms: perLeg * (isLast ? 2.0 : 1.0),
+                        easing: isLast ? CubicBezierEasing(x1: 0.30, y1: 0, x2: 0.10, y2: 1)
+                                       : linear) { t in
+                let cx = from.x + (to.x - from.x) * t
+                let cy = from.y + (to.y - from.y) * t
+                self.captureReturn = (cap.seat, cap.tokenId, CGPoint(x: cx, y: cy))
+            }
         }
         captureReturn = nil
     }

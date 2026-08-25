@@ -38,6 +38,9 @@ object LudoRules {
     /** Hop chain duration for n cells, and the universal presentation windows (§15). */
     fun hopMs(n: Int): Int = if (n == 0) 0 else HOP_MS + HOP_STAGGER_MS * (n - 1)
     const val HOP_MS = 120
+    /** Whole capture retrace, split across however many cells the pawn has to walk back. */
+    const val CAPTURE_RETURN_TOTAL_MS = 520
+    const val CAPTURE_LEG_MIN_MS = 26
     const val HOP_STAGGER_MS = 92
     const val CAPTURE_EXTRA_MS = 480
     const val FINISH_EXTRA_MS = 550

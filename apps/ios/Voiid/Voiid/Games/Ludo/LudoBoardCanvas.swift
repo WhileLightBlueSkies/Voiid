@@ -54,6 +54,10 @@ enum LudoBoardCanvas {
         sweep: LudoBoardSweep?,
         displayOverride: (seat: Int, pawn: Int, center: CGPoint)? = nil,
         highContrast: Bool = false,
+        /// 0...1 of the active seat's decision window still remaining; nil hides the clock.
+        timerFraction: CGFloat? = nil,
+        /// Warning / critical tint for the last seconds; nil keeps the seat hue.
+        timerTint: Color? = nil,
     ) {
         let side = size.width
         let layout = LudoBoardGeometry.Layout(sideLength: side)
@@ -84,6 +88,19 @@ enum LudoBoardCanvas {
             let pocket = RoundedRectangle(cornerRadius: unit * LudoDimens.yardPocketRadiusFactor).path(in: r)
             ctx.fill(pocket, with: .color(colors.yardPocket))
             ctx.stroke(pocket, with: .color(colors.yardPocketBorder), lineWidth: max(0.75, unit * 0.04))
+
+            // Four resting circles, one per pawn, ringed on the pocket centre. They give a pawn
+            // in the yard somewhere to SIT rather than float, and stay legible when the slot is
+            // empty — the same read as the seat rings in Ludo King.
+            let slotRadius = unit * LudoDimens.yardSlotRadiusFactor
+            for pawn in 0..<4 {
+                let c = layout.yardSlotCenter(seat: seat, pawn: pawn)
+                let ring = Path(ellipseIn: CGRect(x: c.x - slotRadius, y: c.y - slotRadius,
+                                                  width: slotRadius * 2, height: slotRadius * 2))
+                ctx.fill(ring, with: .color(colors.yard(seat).opacity(0.16)))
+                ctx.stroke(ring, with: .color(colors.yard(seat)),
+                           lineWidth: max(0.75, unit * 0.045))
+            }
         }
 
         // 4) Cells — track + lanes; each from its OWN rect.
@@ -172,8 +189,28 @@ enum LudoBoardCanvas {
                 phaseStart: LudoBoardGeometry.borderAnchors[s.fromSeat % 4],
                 progress: s.progress)
         } else {
-            // Steady full border in the active hue (§12.1); reduced motion lands here too.
-            ctx.stroke(perimeter, with: .color(colors.hue(state.turn?.seat ?? 0)), lineWidth: stroke)
+            // The perimeter IS the clock. It carries the active seat's hue and shortens from
+            // that seat's own anchor as their window runs down, so who is on the clock and how
+            // long they have left are one signal instead of two (§12.1). Reduced motion lands
+            // here too: the border simply stops shortening smoothly, it never disappears.
+            let seat = state.turn?.seat ?? 0
+            let hue = timerTint ?? colors.hue(seat)
+            let anchor = LudoBoardGeometry.borderAnchors[seat % 4]
+
+            guard let fraction = timerFraction else {
+                ctx.stroke(perimeter, with: .color(hue), lineWidth: stroke)
+                return
+            }
+
+            // The spent part stays as a dim track so the board never loses its outline. It uses
+            // the pod ring's track token, not the game-end outline, which is near-black and read
+            // as a hard shadow down one edge of the board.
+            ctx.stroke(perimeter, with: .color(colors.timerTrack), lineWidth: stroke)
+            let remaining = max(0, min(1, fraction))
+            guard remaining > 0.001 else { return }
+            LudoTurnBorder.drawArc(
+                &ctx, path: perimeter, stroke: stroke, color: hue,
+                phaseStart: anchor, length: remaining)
         }
     }
 }

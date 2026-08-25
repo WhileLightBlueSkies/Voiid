@@ -72,6 +72,32 @@ enum LudoTurnBorder {
         }
     }
 
+    /// One arc of `length` (0...1 of the perimeter) starting at `phaseStart`, wrapping if it
+    /// runs past the end of the path. Used by the turn clock, which shortens this arc from the
+    /// active seat's own anchor as their window runs down.
+    static func drawArc(
+        _ ctx: inout GraphicsContext,
+        path: Path,
+        stroke: CGFloat,
+        color: Color,
+        phaseStart: CGFloat,
+        length: CGFloat,
+    ) {
+        let style = StrokeStyle(lineWidth: stroke, lineCap: .butt)
+        guard length < 1 else {
+            ctx.stroke(path, with: .color(color), style: style)
+            return
+        }
+        let tail = phaseStart.truncatingRemainder(dividingBy: 1)
+        let head = tail + length
+        if head <= 1 {
+            ctx.stroke(trimmed(path, from: tail, to: head), with: .color(color), style: style)
+        } else {
+            ctx.stroke(trimmed(path, from: tail, to: 1), with: .color(color), style: style)
+            ctx.stroke(trimmed(path, from: 0, to: head - 1), with: .color(color), style: style)
+        }
+    }
+
     private static func trimmed(_ path: Path, from: CGFloat, to: CGFloat) -> Path {
         guard to > from else { return Path() }
         return path.trimmedPath(from: from, to: to)

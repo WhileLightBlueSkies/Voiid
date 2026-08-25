@@ -76,12 +76,21 @@ enum LudoBoardGeometry {
     ]
 
     /// Yard pawn slots per seat, in pawn order.
-    static let yardSlots: [[(Int, Int)]] = [
-        [(2, 11), (4, 11), (2, 13), (4, 13)],
-        [(2, 2), (4, 2), (2, 4), (4, 4)],
-        [(10, 2), (12, 2), (10, 4), (12, 4)],
-        [(10, 10), (12, 10), (10, 12), (12, 12)],
+    /// Yard origins (top-left of each 6x6 yard block), in grid units.
+    static let yardOrigins: [(CGFloat, CGFloat)] = [
+        (0, 9),   // red, bottom-left
+        (0, 0),   // green, top-left
+        (9, 0),   // yellow, top-right
+        (9, 9),   // blue, bottom-right
     ]
+
+    /// Yard pawn slots as CONTINUOUS grid coordinates, not cell indices. The pocket drawn in
+    /// each yard is centred on origin+3, so the slots sit at that centre ±1 and read as evenly
+    /// inset from every pocket edge. Consuming these as cell indices (and so as cell CENTRES,
+    /// index + 0.5) is what used to push every pawn half a cell down-right.
+    static let yardSlots: [[(CGFloat, CGFloat)]] = yardOrigins.map { o in
+        [(o.0 + 2, o.1 + 2), (o.0 + 4, o.1 + 2), (o.0 + 2, o.1 + 4), (o.0 + 4, o.1 + 4)]
+    }
 
     static let finishSlots: [[(CGFloat, CGFloat)]] = [
         [(1.15,2.15),(1.85,2.15),(1.15,2.65),(1.85,2.65)],
@@ -208,7 +217,13 @@ enum LudoBoardGeometry {
 
         func yardSlotCenter(seat: Int, pawn: Int) -> CGPoint {
             let slot = LudoBoardGeometry.yardSlots[seat % 4][pawn]
-            return rect(of: LudoBoardGeometry.cell(slot.0, slot.1)).midPoint
+            return CGPoint(x: slot.0 * unit, y: slot.1 * unit)
+        }
+
+        /// Centre of a seat's yard pocket, in points — the anchor the four slots ring.
+        func yardPocketCenter(seat: Int) -> CGPoint {
+            let o = LudoBoardGeometry.yardOrigins[seat % 4]
+            return CGPoint(x: (o.0 + 3) * unit, y: (o.1 + 3) * unit)
         }
     }
 

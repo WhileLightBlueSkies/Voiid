@@ -35,6 +35,10 @@ object LudoBoardDraw {
         darkTheme: Boolean,
         reduceMotion: Boolean,
         highContrast: Boolean = false,
+        /** 0..1 of the active seat's decision window still remaining; null hides the clock. */
+        timerFraction: Float? = null,
+        /** Warning / critical tint for the last seconds; null keeps the seat hue. */
+        timerTint: Color? = null,
     ) = with(scope) {
         val side = size.width
         val layout = LudoBoardGeometry.Layout(side)
@@ -67,6 +71,18 @@ object LudoBoardDraw {
             drawRoundRect(tok(colors.yardPocket), topLeft, pocketSize, CornerRadius.Zero)
             drawRoundRect(tok(colors.yardPocketBorder), topLeft, pocketSize, CornerRadius.Zero,
                 style = Stroke(maxOf(.75.dp.toPx(), unit * .04f)))
+
+            // Four resting circles, one per pawn, ringed on the pocket centre. They give a pawn
+            // in the yard somewhere to SIT rather than float, and stay legible when the slot is
+            // empty — the same read as the seat rings in Ludo King.
+            val slotRadius = unit * LudoDimens.yardSlotRadiusFactor
+            val seatHue = colors.yard(seat)
+            for (pawn in 0..3) {
+                val (cx, cy) = layout.yardSlotCenter(seat, pawn)
+                drawCircle(seatHue.copy(alpha = .16f), slotRadius, Offset(cx, cy))
+                drawCircle(seatHue, slotRadius, Offset(cx, cy),
+                    style = Stroke(maxOf(.75.dp.toPx(), unit * .045f)))
+            }
         }
 
         // 4) Cells (track + lanes + center base + unused), each from its own rect.
@@ -152,8 +168,27 @@ object LudoBoardDraw {
                        else LudoDimens.perimeterStrokeLightDp.dp.toPx()
         val restingColor = restingBorderColor(state, colors)
         if (sweep == null || reduceMotion) {
-            // Reduced motion changes the full border instantly; no travel (§12.2).
-            drawPath(perimeter, sweep?.toColor ?: restingColor, style = Stroke(strokePx))
+            // The perimeter IS the clock. It carries the active seat's hue and shortens from
+            // that seat's own anchor as their window runs down, so who is on the clock and how
+            // long they have left are one signal instead of two (§12.1). Reduced motion lands
+            // here too: the border stops shortening smoothly, it never disappears.
+            val seat = state.turn?.seat ?: 0
+            val hue = timerTint ?: (sweep?.toColor ?: restingColor)
+            if (timerFraction == null || state.isFinished || state.turn == null) {
+                drawPath(perimeter, hue, style = Stroke(strokePx))
+            } else {
+                // The spent part stays as a dim track so the board never loses its outline. It
+                // uses the pod ring's track token, not the cell-border token, which is near-black
+                // and read as a hard shadow down one edge of the board.
+                drawPath(perimeter, LudoBoardDraw.tok(colors.timerTrack), style = Stroke(strokePx))
+                val remaining = timerFraction.coerceIn(0f, 1f)
+                if (remaining > 0.001f) {
+                    with(LudoTurnBorder) {
+                        drawArc(perimeter, strokePx, hue,
+                            LudoBoardGeometry.BORDER_ANCHORS[seat % 4], remaining)
+                    }
+                }
+            }
         } else {
             with(LudoTurnBorder) {
                 drawBorder(

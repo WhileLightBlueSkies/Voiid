@@ -30,9 +30,12 @@ object LudoSemantics {
             LudoBoardGeometry.Role.HOME_LANE ->
                 "${colorName(node.seat ?: 0)} home lane, step ${(node.homeStep ?: 0) + 1} of 5$rowCol"
             LudoBoardGeometry.Role.YARD_POCKET -> {
-                // Slot numbering follows pawn index within the seat's yard.
+                // Slot numbering follows pawn index within the seat's yard. Slots are continuous
+                // grid coords, so a cell owns the slot that falls inside it.
                 val slots = LudoBoardGeometry.YARD_SLOTS[node.seat ?: 0]
-                val pawn = slots.indexOf(node.x to node.y)
+                val pawn = slots.indexOfFirst {
+                    it.first.toInt() == node.x && it.second.toInt() == node.y
+                }
                 if (pawn >= 0) "Yard slot ${pawn + 1}$rowCol" else "Yard$rowCol"
             }
             LudoBoardGeometry.Role.YARD ->

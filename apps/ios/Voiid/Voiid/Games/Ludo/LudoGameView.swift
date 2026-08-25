@@ -65,6 +65,14 @@ struct LudoGameView: View {
             }
             .padding(.horizontal, 12)
 
+            VStack {
+                skipBanner
+                    .padding(.top, 52)
+                Spacer()
+            }
+            .animation(.easeOut(duration: 0.18), value: skipNotice)
+            .allowsHitTesting(false)
+
             // Exit confirmation ONLY during an active match (§11.5); backgrounding is not this.
             if showExitConfirm, state?.isActive == true {
                 exitSheet
@@ -166,27 +174,53 @@ struct LudoGameView: View {
     private func PodRow(state: LudoGameStateV2, top: Bool) -> some View {
         let seats = top ? [1, 2] : [0, 3]
         HStack(spacing: 0) {
-            pod(state: state, seat: seats[0])
+            pod(state: state, seat: seats[0], trayTrailing: true)
             Spacer(minLength: 8)
-            pod(state: state, seat: seats[1])
+            pod(state: state, seat: seats[1], trayTrailing: false)
         }
         .frame(maxWidth: .infinity)
     }
 
+    /// A pod and its die tray. The tray is ALWAYS reserved so the row never reflows when the
+    /// turn moves; only the active seat's tray actually holds the die.
     @ViewBuilder
-    private func pod(state: LudoGameStateV2, seat: Int) -> some View {
+    private func pod(state: LudoGameStateV2, seat: Int, trayTrailing: Bool) -> some View {
         if let sv = state.seat(bySeat: seat) {
-            LudoPlayerPod(
-                seatView: sv,
-                active: !state.isFinished && state.turn?.seat == seat,
-                ringFraction: ringFraction(state, seat),
-                ringColorOverride: timerOverride(state, seat),
-                compact: compactLayout,
-                accessibilityLabel: podAccessibility(sv, state))
+            HStack(spacing: 6) {
+                if !trayTrailing { dieTray(state: state, seat: seat) }
+                LudoPlayerPod(
+                    seatView: sv,
+                    active: !state.isFinished && state.turn?.seat == seat,
+                    ringFraction: ringFraction(state, seat),
+                    ringColorOverride: timerOverride(state, seat),
+                    compact: compactLayout,
+                    accessibilityLabel: podAccessibility(sv, state))
+                if trayTrailing { dieTray(state: state, seat: seat) }
+            }
         } else {
             // Keeps the opposite pod pinned to its own corner in a duel.
             Color.clear.frame(width: 0, height: LudoDimens.podSizeCompact.height)
         }
+    }
+
+    /// The die's home: a tray beside the owning pod, OUTSIDE the board.
+    ///
+    /// The die used to be drawn inside the board's own square — first past its edge, where it
+    /// was clipped away entirely, then inside the active seat's home yard, where it sat on top
+    /// of that seat's four resting pawns. It belongs next to the player it belongs to, the way
+    /// Ludo King seats it beside the profile.
+    @ViewBuilder
+    private func dieTray(state: LudoGameStateV2, seat: Int) -> some View {
+        let side = compactLayout ? LudoDimens.dieSizeCompact : LudoDimens.dieSizeStandard
+        let isActive = !state.isFinished && state.turn?.seat == seat
+        ZStack {
+            RoundedRectangle(cornerRadius: LudoDimens.podCornerRadius)
+                .fill(isActive ? LudoColors.resolve(scheme).podSurface : .clear)
+            if isActive {
+                dieView(state: state)
+            }
+        }
+        .frame(width: side + 8, height: side + 8)
     }
 
     private func ringFraction(_ state: LudoGameStateV2, _ seat: Int) -> Double? {
@@ -222,9 +256,15 @@ struct LudoGameView: View {
         GeometryReader { geo in
             let side = min(geo.size.width, geo.size.height)
             ZStack {
-                Canvas { ctx, size in
-                    let colors = LudoColors.resolve(scheme)
-                    drawBoard(&ctx, size: size, colors: colors, state: state)
+                // TimelineView drives the perimeter clock. Without a per-frame tick the border
+                // would only redraw when a new server frame landed, so it would jump in whole
+                // seconds instead of shortening.
+                TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !clockRunning(state))) { _ in
+                    Canvas { ctx, size in
+                        let colors = LudoColors.resolve(scheme)
+                        drawBoard(&ctx, size: size, colors: colors, state: state)
+                    }
+                    .frame(width: side, height: side)
                 }
                 .frame(width: side, height: side)
                 .contentShape(Rectangle())
@@ -235,12 +275,25 @@ struct LudoGameView: View {
                 .onChange(of: side) { _, new in boardSide = new }
 
                 accessiblePawnActions(state: state, side: side)
-
-                dieAnchorView(state: state)
             }
             .frame(width: geo.size.width, height: geo.size.height)
         }
         .aspectRatio(1, contentMode: .fit)
+    }
+
+    /// True only while a human decision window is actually open and counting.
+    private func clockRunning(_ state: LudoGameStateV2) -> Bool {
+        guard !state.isFinished, let turn = state.turn, turn.deadlineAt != nil else { return false }
+        return !reduceMotion
+    }
+
+    /// 0...1 of the active seat's window still left, over the SMOOTHED server clock.
+    private func boardTimerFraction(_ state: LudoGameStateV2) -> CGFloat? {
+        guard !state.isFinished, let turn = state.turn else { return nil }
+        guard let ring = LudoTimerRing.state(
+            opensAt: turn.opensAt, deadlineAt: turn.deadlineAt,
+            estimatedNowMs: engine.estimatedServerNowMs()) else { return nil }
+        return CGFloat(ring.fractionRemaining)
     }
 
     @ViewBuilder
@@ -286,50 +339,17 @@ struct LudoGameView: View {
             state: state,
             sweep: sweepVisual,
             displayOverride: override,
-            highContrast: contrast == .increased)
+            highContrast: contrast == .increased,
+            timerFraction: boardTimerFraction(state),
+            timerTint: timerOverride(state, state.turn?.seat ?? -1))
     }
 
     private var sweepVisual: LudoBoardSweep? { coordinator.sweep }
 
-    /// One global die resting at the ACTIVE player's anchor OUTSIDE the board (§11.3). It
-    /// never flies across the board during a roll — it tumbles in place at its anchor. The §12.3
-    /// sequence relocates it only after the border sweep completes (coordinator-ordered).
-    @ViewBuilder
-    private func dieAnchorView(state: LudoGameStateV2) -> some View {
+    private func dieView(state: LudoGameStateV2) -> some View {
         let canRoll = state.isActive &&
             state.turn?.phase == "awaitingRoll" &&
             state.viewerRole == "controller" && state.viewerSeat == state.turn?.seat
-
-        GeometryReader { geo in
-            // The die rests INSIDE the active seat's home quadrant, the way Ludo King does. The
-            // anchors used to sit at a negative inset outside the board rect, which put the die
-            // beyond the layout bounds and clipped it away entirely — the die was never visible.
-            // The yard pocket is empty space by construction, so nothing is occluded.
-            let side = min(geo.size.width, geo.size.height)
-            let quadrant = side * 0.235          // centre of a 6x6 home yard on the 15x15 grid
-            let originX = (geo.size.width - side) / 2
-            let originY = (geo.size.height - side) / 2
-            let point: CGPoint = {
-                switch state.turn?.seat ?? 0 {
-                case 1: return CGPoint(x: originX + quadrant,
-                                       y: originY + quadrant)                 // green top-left
-                case 2: return CGPoint(x: originX + side - quadrant,
-                                       y: originY + quadrant)                 // yellow top-right
-                case 3: return CGPoint(x: originX + side - quadrant,
-                                       y: originY + side - quadrant)          // blue bottom-right
-                default: return CGPoint(x: originX + quadrant,
-                                        y: originY + side - quadrant)         // red bottom-left
-                }
-            }()
-
-            dieView(state: state, canRoll: canRoll)
-                .frame(width: LudoDimens.dieHitTarget, height: LudoDimens.dieHitTarget)
-                .position(point)
-        }
-        .allowsHitTesting(true)
-    }
-
-    private func dieView(state: LudoGameStateV2, canRoll: Bool) -> some View {
         let value = rollDisplayValue(state)
         let pipsNeutral = state.isFinished || state.turn == nil
         let pose = coordinator.rollPose.map { rp in
@@ -338,7 +358,7 @@ struct LudoGameView: View {
         } ?? LudoDiePose.resting(value: value)
 
         return ZStack {
-            Circle().fill(Color.clear).contentShape(Circle())
+            Rectangle().fill(Color.clear).contentShape(Rectangle())
             LudoDieCanvas(value: value, pose: pose, pipsNeutral: pipsNeutral,
                           activeSeat: state.turn?.seat, side: dieSide)
         }
@@ -360,9 +380,17 @@ struct LudoGameView: View {
 
     private var compactLayout: Bool { UIScreen.main.bounds.height < 700 }
 
+    /// The face the die shows.
+    ///
+    /// `turn.value` is cleared the moment the turn advances, which blanked the die back to 1 as
+    /// soon as a roll resolved — you never got to see what you rolled. The last committed roll
+    /// is held here until a NEW roll replaces it, so the number stays readable while you choose
+    /// a pawn, and through a skip.
     private func rollDisplayValue(_ state: LudoGameStateV2) -> Int {
-        state.turn?.value ?? 1
+        state.turn?.value ?? lastRolledValue ?? 1
     }
+
+    @State private var lastRolledValue: Int?
 
     // MARK: Taps on the board
 
@@ -419,9 +447,16 @@ struct LudoGameView: View {
                                           toSeat: action.actorSeat)
         case "roll":
             if let r = action.roll {
+                lastRolledValue = r.value
                 coordinator.enqueueRoll(rollId: r.rollId, value: r.value, matchId: matchId)
             }
         case "move", "capture", "autoTurn":
+            // A timeout that produced no move is a skip; say so, because otherwise the turn
+            // simply moves on and the player who ran out of time is never told why.
+            if action.type == "autoTurn" {
+                if let r = action.roll { lastRolledValue = r.value }
+                announceSkip(seat: action.actorSeat, moved: action.move != nil)
+            }
             if let m = action.move {
                 enqueueMoveBeat(m, actorSeat: action.actorSeat)
             }
@@ -451,20 +486,67 @@ struct LudoGameView: View {
         if let start = center(of: m.from) { centers.append(start) }
         centers.append(contentsOf: m.path.compactMap { center(of: $0) })
 
-        var yardSlot: CGPoint?
+        // A captured pawn walks HOME THE WAY IT CAME: backward along the exact track cells it
+        // advanced through, then into its yard slot. A straight arc across the board read as
+        // teleporting; retracing the route shows the player what they just undid.
+        var captureRoute: [CGPoint] = []
         if let cap = m.captured {
-            yardSlot = layout.yardSlotCenter(seat: cap.seat, pawn: cap.tokenId)
-            if let fromC = center(of: cap.from), let slot = yardSlot {
-                coordinator.arcFrom = fromC
-                coordinator.arcMidpoint = CGPoint(x: (fromC.x + slot.x) / 2,
-                                                  y: min(fromC.y, slot.y) - layout.unit)
+            let slot = layout.yardSlotCenter(seat: cap.seat, pawn: cap.tokenId)
+            if let fromC = center(of: cap.from) {
+                captureRoute.append(fromC)
+                let start = LudoRules.startIndex(cap.seat)
+                let travelled = ((cap.from - start) % LudoRules.trackCount
+                                 + LudoRules.trackCount) % LudoRules.trackCount
+                if travelled > 0 {
+                    for step in 1...travelled {
+                        let idx = ((cap.from - step) % LudoRules.trackCount
+                                   + LudoRules.trackCount) % LudoRules.trackCount
+                        if let c = center(of: idx) { captureRoute.append(c) }
+                    }
+                }
             }
+            captureRoute.append(slot)
         }
         coordinator.enqueueMove(tokenId: m.tokenId, actorSeat: actorSeat, centers: centers,
-                                captured: m.captured, yardSlotCenter: yardSlot)
+                                captured: m.captured, captureRoute: captureRoute)
     }
 
     @State private var lastPresentedActionID: String?
+
+    // MARK: Skip announcement
+
+    /// Transient line naming the seat whose window expired. Auto-clears; never blocks input.
+    @State private var skipNotice: String?
+    @State private var skipNoticeToken = 0
+
+    private func announceSkip(seat: Int, moved: Bool) {
+        let name = engine.ludoV2?.state.seat(bySeat: seat)?.displayName ?? "Player"
+        skipNotice = moved ? "\(name) ran out of time — moved automatically"
+                           : "\(name) ran out of time — turn skipped"
+        skipNoticeToken += 1
+        let token = skipNoticeToken
+        UIAccessibility.post(notification: .announcement, argument: skipNotice)
+        Task {
+            try? await Task.sleep(nanoseconds: 2_200_000_000)
+            if token == skipNoticeToken { skipNotice = nil }
+        }
+    }
+
+    @ViewBuilder
+    private var skipBanner: some View {
+        if let notice = skipNotice {
+            let colors = LudoColors.resolve(scheme)
+            Text(notice)
+                .font(VoiidFont.rounded(13, .semibold))
+                .foregroundStyle(colors.textPrimary)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(Capsule().fill(colors.podSurface))
+                .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+                .accessibilityHidden(true)   // already posted as a VoiceOver announcement
+        }
+    }
 
     // MARK: Sheets
 

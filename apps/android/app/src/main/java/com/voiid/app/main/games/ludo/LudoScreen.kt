@@ -44,6 +44,8 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.Role
@@ -94,6 +96,28 @@ fun LudoScreen(
     // with that row gone it follows the screen-reader state directly, so the 225 cell labels
     // exist exactly when something can read them and never clutter normal navigation.
     val exploreBoard = remember { isScreenReaderOn(context) }
+
+    // The face the die shows. `turn.value` is cleared the moment the turn advances, which
+    // blanked the die back to 1 as soon as a roll resolved — you never got to see what you
+    // rolled. The last committed roll is held until a NEW roll replaces it, so the number stays
+    // readable while you choose a pawn, and through a skip.
+    var lastRolledValue by remember { mutableIntStateOf(1) }
+    // Transient line naming the seat whose window expired; never blocks input.
+    var skipNotice by remember { mutableStateOf<String?>(null) }
+
+    // A timeout that produced no move is a skip; say so, because otherwise the turn simply
+    // moves on and the player who ran out of time is never told why.
+    LaunchedEffect(frameV2?.state?.lastAction?.id) {
+        val action = frameV2?.state?.lastAction ?: return@LaunchedEffect
+        action.roll?.let { lastRolledValue = it.value }
+        if (action.type != "autoTurn") return@LaunchedEffect
+        val who = frameV2?.state?.seats
+            ?.firstOrNull { it.seat == action.actorSeat }?.displayName ?: "Player"
+        skipNotice = if (action.move != null) "$who ran out of time — moved automatically"
+                     else "$who ran out of time — turn skipped"
+        delay(2200)
+        skipNotice = null
+    }
 
     LaunchedEffect(matchId) {
         engine.setLudoConversationId(conversationId)
@@ -178,8 +202,11 @@ fun LudoScreen(
                 // The board is the screen's optical centre: equal weighted spacers above and
                 // below the pod/board/pod block centre it vertically, while the board's own
                 // aspectRatio(1) centres it horizontally.
+                val displayedDie = state.turn?.value ?: lastRolledValue
+                val rollDie = { engine.rollLudoV2(context) }
                 Spacer(Modifier.weight(1f))
-                PodRow(state, presence, top = true)
+                PodRow(state, presence, top = true, rollVisual = rollVisual,
+                    onRollDie = rollDie, displayedDieValue = displayedDie)
                 BoardArea(
                     state = state,
                     sweep = sweep,
@@ -191,8 +218,25 @@ fun LudoScreen(
                     highContrast = highContrast,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                PodRow(state, presence, top = false)
+                PodRow(state, presence, top = false, rollVisual = rollVisual,
+                    onRollDie = rollDie, displayedDieValue = displayedDie)
                 Spacer(Modifier.weight(1f))
+            }
+        }
+
+        skipNotice?.let { notice ->
+            Box(Modifier.fillMaxSize().padding(top = 64.dp), Alignment.TopCenter) {
+                Text(
+                    notice,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = LudoPalette.textPrimary(),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(LudoPalette.podSurface())
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
+                        .semantics { liveRegion = LiveRegionMode.Polite },
+                )
             }
         }
 
@@ -370,27 +414,83 @@ internal fun NeutralBoardSkeleton() {
 
 /** Fixed seats around the board (§11.2); duel renders NO pod for unassigned seats. */
 @Composable
-private fun PodRow(state: LudoGameState, presence: Map<Int, String>, top: Boolean) {
+private fun PodRow(
+    state: LudoGameState,
+    presence: Map<Int, String>,
+    top: Boolean,
+    rollVisual: LudoPresentationCoordinator.RollVisual?,
+    onRollDie: () -> Unit,
+    displayedDieValue: Int,
+) {
     val seats = if (top) listOf(1, 2) else listOf(0, 3)
     Row(Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        horizontalArrangement = Arrangement.SpaceBetween) {
-        seats.forEach { seat ->
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically) {
+        seats.forEachIndexed { index, seat ->
             val sv = state.seats.firstOrNull { it.seat == seat }
             if (sv == null) {
                 Spacer(Modifier.size(LudoDimens.podWidthStandard, 1.dp))
-                return@forEach
+                return@forEachIndexed
             }
-            LudoPlayerPod(
-                seatView = sv,
-                isSeatAssigned = true,
-                active = !state.isFinished && state.turn?.seat == seat,
-                ringFraction = ringFractionFor(state, seat),
-                ringColorOverride = timerOverrideColor(state, seat),
-                compact = false,
-                modifier = Modifier.semantics {
-                    contentDescription = podAccessibility(sv, state, seat, presence[seat])
-                },
-            )
+            // The tray sits on the OUTER side of each pod, so the two never collide mid-row.
+            val trayTrailing = index == 0
+            Row(verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (!trayTrailing) {
+                    DieTray(state, seat, rollVisual, onRollDie, displayedDieValue)
+                }
+                LudoPlayerPod(
+                    seatView = sv,
+                    isSeatAssigned = true,
+                    active = !state.isFinished && state.turn?.seat == seat,
+                    ringFraction = ringFractionFor(state, seat),
+                    ringColorOverride = timerOverrideColor(state, seat),
+                    compact = false,
+                    modifier = Modifier.semantics {
+                        contentDescription = podAccessibility(sv, state, seat, presence[seat])
+                    },
+                )
+                if (trayTrailing) {
+                    DieTray(state, seat, rollVisual, onRollDie, displayedDieValue)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The die's home: a tray beside the owning pod, OUTSIDE the board.
+ *
+ * The die used to be drawn inside the board's own square — first past its edge, where it was
+ * clipped away entirely, then inside the active seat's home yard, where it sat on top of that
+ * seat's four resting pawns. It belongs next to the player it belongs to, the way Ludo King
+ * seats it beside the profile. The tray is ALWAYS reserved so the row never reflows when the
+ * turn moves; only the active seat's tray actually holds the die.
+ */
+@Composable
+private fun DieTray(
+    state: LudoGameState,
+    seat: Int,
+    rollVisual: LudoPresentationCoordinator.RollVisual?,
+    onRollDie: () -> Unit,
+    displayedValue: Int,
+) {
+    val isActive = !state.isFinished && state.turn?.seat == seat
+    val trayside = LudoDimens.dieSizeStandard + 8.dp
+    Box(
+        Modifier
+            .size(trayside)
+            .then(
+                if (isActive) {
+                    Modifier
+                        .clip(RoundedCornerShape(LudoDimens.podCornerRadius))
+                        .background(LudoPalette.podSurface())
+                } else Modifier
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (isActive) {
+            DieFace(state, rollVisual, onRollDie, displayedValue)
         }
     }
 }
@@ -462,21 +562,53 @@ private fun BoardArea(
         }
         hopOverride = null
 
-        // Capture return: after a 70 ms hold the victim follows a 260 ms quadratic arc home.
+        // Capture return: after a 70 ms hold the victim walks HOME THE WAY IT CAME — backward
+        // along the exact track cells it advanced through, then into its yard slot. A straight
+        // arc across the board read as teleporting; retracing the route shows the player what
+        // they just undid.
         val cap = move.captured
         if (cap != null) {
             delay(70)
             val fromC = centerOfPos(cap.from)
             val slot = layout.yardSlotCenter(cap.seat, cap.tokenId).let { Offset(it.first, it.second) }
             if (fromC != null) {
-                val mid = Offset((fromC.x + slot.x) / 2f, kotlin.math.min(fromC.y, slot.y) - layout.unit)
-                animate(0f, 1f, animationSpec = tween(260, easing = CubicBezierEasing(0.30f, 0f, 0.10f, 1f))) { v, _ ->
-                    val inv = 1 - v
-                    val p = Offset(
-                        inv * inv * fromC.x + 2 * inv * v * mid.x + v * v * slot.x,
-                        inv * inv * fromC.y + 2 * inv * v * mid.y + v * v * slot.y,
-                    )
-                    captureOverride = (cap.seat to cap.tokenId) to p
+                val route = mutableListOf(fromC)
+                val startIdx = LudoRules.startIndex(cap.seat)
+                val travelled = ((cap.from - startIdx) % LudoRules.TRACK_COUNT +
+                    LudoRules.TRACK_COUNT) % LudoRules.TRACK_COUNT
+                for (step in 1..travelled) {
+                    val idx = ((cap.from - step) % LudoRules.TRACK_COUNT +
+                        LudoRules.TRACK_COUNT) % LudoRules.TRACK_COUNT
+                    val c = LudoBoardGeometry.TRACK_COORDS[idx]
+                    route += layout.rectOf(LudoBoardGeometry.cell(c.first, c.second)).center
+                }
+                route += slot
+
+                // Fixed total duration, so a pawn sent back from two cells out and one sent
+                // back from forty take about the same beat.
+                val legs = route.size - 1
+                val perLeg = kotlin.math.max(
+                    LudoRules.CAPTURE_LEG_MIN_MS,
+                    LudoRules.CAPTURE_RETURN_TOTAL_MS / legs,
+                )
+                val linear = CubicBezierEasing(0f, 0f, 1f, 1f)
+                val settle = CubicBezierEasing(0.30f, 0f, 0.10f, 1f)
+                for (i in 1 until route.size) {
+                    val a = route[i - 1]
+                    val b = route[i]
+                    // The final leg leaves the track for the yard slot; ease it out so the pawn
+                    // settles rather than slamming into its circle.
+                    val isLast = i == route.size - 1
+                    animate(
+                        0f, 1f,
+                        animationSpec = tween(
+                            if (isLast) perLeg * 2 else perLeg,
+                            easing = if (isLast) settle else linear,
+                        ),
+                    ) { v, _ ->
+                        captureOverride = (cap.seat to cap.tokenId) to
+                            Offset(a.x + (b.x - a.x) * v, a.y + (b.y - a.y) * v)
+                    }
                 }
             }
             captureOverride = null
@@ -485,6 +617,22 @@ private fun BoardArea(
 
     val boardColors = ludoPaletteFor(!com.voiid.app.ui.theme.isLightTheme())
     val darkTheme = !com.voiid.app.ui.theme.isLightTheme()
+
+    // The perimeter clock needs a per-frame tick; otherwise the border only redraws when a new
+    // server frame lands, so it would jump in whole seconds instead of shortening.
+    var boardClock by remember { mutableStateOf<Float?>(null) }
+    val clockRunning = !state.isFinished && state.turn?.deadlineAt != null && !reduceMotionEnabled
+    LaunchedEffect(state.turn?.seat, state.turn?.deadlineAt, clockRunning) {
+        if (!clockRunning) {
+            boardClock = ringFractionFor(state, state.turn?.seat ?: -1)
+            return@LaunchedEffect
+        }
+        while (true) {
+            boardClock = ringFractionFor(state, state.turn?.seat ?: -1)
+            delay(33)
+        }
+    }
+    val boardClockTint = timerOverrideColor(state, state.turn?.seat ?: -1)
 
     Box(modifier.fillMaxWidth(), Alignment.Center) {
         Canvas(
@@ -544,8 +692,10 @@ private fun BoardArea(
                 highlightCells = highlightCellsForLegal(state),
                 sweep = sweep,
                 darkTheme = darkTheme,
-                    reduceMotion = reduceMotionEnabled,
-                    highContrast = highContrast,
+                reduceMotion = reduceMotionEnabled,
+                highContrast = highContrast,
+                timerFraction = boardClock,
+                timerTint = boardClockTint,
             )
         }
 
@@ -573,13 +723,6 @@ private fun BoardArea(
                 )
             }
         }
-
-        DieAtAnchor(
-            anchor = anchorForSeat(state),
-            state = state,
-            rollVisual = rollVisual,
-            onTap = { engine.rollLudoV2(context) },
-        )
 
         // Explore-board overlay: per-cell semantic labels, opt-in so normal navigation never
         // walks 225 cells (§17).
@@ -651,74 +794,57 @@ private fun ExploreOverlay(state: LudoGameState) {
 
 // ── Die ──────────────────────────────────────────────────────────────────────────────────
 
-internal enum class DieAnchor { TopLeft, TopRight, BottomRight, BottomLeft }
-
-internal fun anchorForSeat(state: LudoGameState): DieAnchor = when (state.turn?.seat ?: 0) {
-    1 -> DieAnchor.TopLeft
-    2 -> DieAnchor.TopRight
-    3 -> DieAnchor.BottomRight
-    else -> DieAnchor.BottomLeft
-}
-
+/**
+ * The die itself, drawn inside its tray. At rest it is one flat face so the number stays crisp
+ * and upright; the projected cube runs only while it is tumbling.
+ */
 @Composable
-private fun DieAtAnchor(
-    anchor: DieAnchor,
+private fun DieFace(
     state: LudoGameState,
     rollVisual: LudoPresentationCoordinator.RollVisual?,
     onTap: () -> Unit,
+    displayedValue: Int,
 ) {
     val darkNow = !com.voiid.app.ui.theme.isLightTheme()
     val dColors = ludoPaletteFor(darkNow)
-    // The die rests INSIDE the active seat's home quadrant, the way Ludo King does. It used to
-    // live in a fixed 76dp-tall Box pinned to the top of the board, so the two bottom anchors
-    // resolved outside that box and the die was never visible. Aligning within the full board
-    // square and insetting to the yard centre keeps every anchor on screen; the yard pocket is
-    // empty by construction, so nothing is occluded.
-    val alignment = when (anchor) {
-        DieAnchor.TopLeft -> Alignment.TopStart
-        DieAnchor.TopRight -> Alignment.TopEnd
-        DieAnchor.BottomRight -> Alignment.BottomEnd
-        DieAnchor.BottomLeft -> Alignment.BottomStart
-    }
-    // Centre of a 6x6 home yard on the 15x15 grid, less half the die, as a fraction of the side.
-    val quadrantInset = 0.235f
     val canRoll = state.isActive &&
         state.turn?.phase == "awaitingRoll" &&
         state.viewerRole == "controller" &&
         state.viewerSeat == state.turn?.seat &&
         state.seats.firstOrNull { it.seat == state.viewerSeat }?.controller == "human"
-    val value = state.turn?.value ?: 1
     val pipsNeutral = state.turn == null || state.isFinished
 
-    BoxWithConstraints(Modifier.fillMaxWidth().aspectRatio(1f)) {
-        val inset = (maxWidth * quadrantInset - LudoDimens.dieHitTarget / 2)
-            .coerceAtLeast(0.dp)
-        Box(Modifier.fillMaxSize(), alignment) {
-            Canvas(
-                Modifier
-                    .padding(inset)
-                    .size(LudoDimens.dieHitTarget)
-                    .clickable(enabled = canRoll, onClick = onTap)
-                    .semantics { contentDescription = LudoSemantics.dieLabel(state, value) },
-            ) {
-                val rest = LudoDie.restAngles(value)
-                val rv = rollVisual
-                val pipColor = if (pipsNeutral) dColors.c(dColors.dieNeutralPip)
-                               else dColors.hue(state.turn.seat)
-                with(LudoDie) {
-                    drawDie(
-                        sidePx = size.width * 0.9f,
-                        value = value,
-                        rotationXDeg = rv?.rotationX ?: rest.first,
-                        rotationYDeg = rv?.rotationY ?: rest.second,
-                        translationYPx = rv?.liftPx ?: 0f,
-                        scaleX = rv?.scaleX ?: 1f,
-                        scaleY = rv?.scaleY ?: 1f,
-                        pipColor = pipColor,
-                        edgeStrokePx = 1.25f,
-                        colors = dColors,
-                    )
-                }
+    Canvas(
+        Modifier
+            .size(LudoDimens.dieSizeStandard)
+            .clickable(enabled = canRoll, onClick = onTap)
+            .semantics { contentDescription = LudoSemantics.dieLabel(state, displayedValue) },
+    ) {
+        val rv = rollVisual
+        val pipColor = if (pipsNeutral) dColors.c(dColors.dieNeutralPip)
+                       else dColors.hue(state.turn!!.seat)
+        with(LudoDie) {
+            if (rv == null) {
+                drawRestingDie(
+                    sidePx = size.width * 0.92f,
+                    value = displayedValue,
+                    pipColor = pipColor,
+                    edgeStrokePx = 1.25f,
+                    colors = dColors,
+                )
+            } else {
+                drawDie(
+                    sidePx = size.width * 0.92f,
+                    value = displayedValue,
+                    rotationXDeg = rv.rotationX,
+                    rotationYDeg = rv.rotationY,
+                    translationYPx = rv.liftPx,
+                    scaleX = rv.scaleX,
+                    scaleY = rv.scaleY,
+                    pipColor = pipColor,
+                    edgeStrokePx = 1.25f,
+                    colors = dColors,
+                )
             }
         }
     }
