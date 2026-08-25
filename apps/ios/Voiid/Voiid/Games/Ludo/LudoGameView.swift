@@ -219,15 +219,24 @@ struct LudoGameView: View {
     @ViewBuilder
     private func dieTray(state: LudoGameStateV2, seat: Int) -> some View {
         let side = compactLayout ? LudoDimens.dieSizeCompact : LudoDimens.dieSizeStandard
-        let isActive = !state.isFinished && state.turn?.seat == seat
+        // No surface behind it: the die is an object thrown on the spot, not a chip in a slot.
         ZStack {
-            RoundedRectangle(cornerRadius: LudoDimens.podCornerRadius)
-                .fill(isActive ? LudoColors.resolve(scheme).podSurface : .clear)
-            if isActive {
+            if holdsDie(state: state, seat: seat) {
                 dieView(state: state)
             }
         }
         .frame(width: side + 8, height: side + 8)
+    }
+
+    /// Which seat the die belongs beside right now.
+    ///
+    /// A roll in the air outranks the live turn. The server advances `activeSeat` the instant a
+    /// roll produces no legal move, so following live state made the die disappear from the
+    /// roller's side mid-tumble and reappear next to the following player — you never got to
+    /// see what you had rolled.
+    private func holdsDie(state: LudoGameStateV2, seat: Int) -> Bool {
+        if let rolling = coordinator.animatingRollSeat { return rolling == seat }
+        return !state.isFinished && state.turn?.seat == seat
     }
 
     private func ringFraction(_ state: LudoGameStateV2, _ seat: Int) -> Double? {
@@ -362,11 +371,15 @@ struct LudoGameView: View {
     private var sweepVisual: LudoBoardSweep? { coordinator.sweep }
 
     private func dieView(state: LudoGameStateV2) -> some View {
+        // No rolling while a roll is still in the air, even if the server has already opened the
+        // next window — otherwise a fast tap fires the next roll before this one is readable.
         let canRoll = state.isActive &&
+            coordinator.animatingRollSeat == nil &&
             state.turn?.phase == "awaitingRoll" &&
             state.viewerRole == "controller" && state.viewerSeat == state.turn?.seat
         let value = rollDisplayValue(state)
-        let pipsNeutral = state.isFinished || state.turn == nil
+        let dieSeat = coordinator.animatingRollSeat ?? state.turn?.seat
+        let pipsNeutral = state.isFinished || dieSeat == nil
         let pose = coordinator.rollPose.map { rp in
             LudoDiePose(rotationXDeg: rp.rotationXDeg, rotationYDeg: rp.rotationYDeg,
                         liftPx: rp.liftPx, scaleX: rp.scaleX, scaleY: rp.scaleY,
@@ -376,7 +389,7 @@ struct LudoGameView: View {
         return ZStack {
             Rectangle().fill(Color.clear).contentShape(Rectangle())
             LudoDieCanvas(value: value, pose: pose, pipsNeutral: pipsNeutral,
-                          activeSeat: state.turn?.seat, side: dieSide)
+                          activeSeat: dieSeat, side: dieSide)
         }
         .onTapGesture {
             guard canRoll else { return }   // second tap while animating fast-forwards upstream
@@ -466,7 +479,12 @@ struct LudoGameView: View {
         case "roll":
             if let r = action.roll {
                 lastRolledValue = r.value
-                coordinator.enqueueRoll(rollId: r.rollId, value: r.value, matchId: matchId)
+                // A roll that produced no legal move ALSO ends the turn, and the server commits
+                // that as one action whose actorSeat is already the next player. `fromSeat` is
+                // the seat that actually rolled, and that is where the die has to stay.
+                coordinator.enqueueRoll(rollId: r.rollId, value: r.value,
+                                        seat: action.fromSeat ?? action.actorSeat,
+                                        matchId: matchId)
             }
         case "move", "capture", "autoTurn":
             // A timeout that produced no move is a skip; say so, because otherwise the turn

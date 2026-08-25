@@ -156,6 +156,7 @@ fun LudoScreen(
     val sweep by coordinator.sweep.collectAsState()
     val rollVisual by coordinator.roll.collectAsState()
     val animatingRoll by coordinator.animatingRollValue.collectAsState()
+    val animatingRollSeat by coordinator.animatingRollSeat.collectAsState()
 
     // ONE legal token means there is no decision to make, so the move plays itself once the die
     // has settled — the way Ludo King does it. Waiting keeps the number readable before the
@@ -188,8 +189,11 @@ fun LudoScreen(
             null -> Unit
             else -> when (a.type) {
                 "turnChanged" -> coordinator.enqueueTurnChange(a.fromSeat ?: a.actorSeat, a.actorSeat)
+                // A roll that produced no legal move ALSO ends the turn, and the server commits
+                // that as one action whose actorSeat is already the next player. `fromSeat` is
+                // the seat that actually rolled, and that is where the die has to stay.
                 "roll" -> a.roll?.let {
-                    coordinator.enqueueRoll(it.rollId, it.value)
+                    coordinator.enqueueRoll(it.rollId, it.value, a.fromSeat ?: a.actorSeat)
                     LudoHaptics.rollImpact(context, it.rollId)
                 }
                 "capture", "move", "autoTurn" -> a.move?.let { m ->
@@ -235,7 +239,8 @@ fun LudoScreen(
                 val rollDie = { engine.rollLudoV2(context) }
                 Spacer(Modifier.weight(1f))
                 PodRow(state, presence, top = true, rollVisual = rollVisual,
-                    onRollDie = rollDie, displayedDieValue = displayedDie)
+                    onRollDie = rollDie, displayedDieValue = displayedDie,
+                    dieSeat = animatingRollSeat)
                 BoardArea(
                     state = state,
                     sweep = sweep,
@@ -248,7 +253,8 @@ fun LudoScreen(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 PodRow(state, presence, top = false, rollVisual = rollVisual,
-                    onRollDie = rollDie, displayedDieValue = displayedDie)
+                    onRollDie = rollDie, displayedDieValue = displayedDie,
+                    dieSeat = animatingRollSeat)
                 Spacer(Modifier.weight(1f))
             }
         }
@@ -450,6 +456,8 @@ private fun PodRow(
     rollVisual: LudoPresentationCoordinator.RollVisual?,
     onRollDie: () -> Unit,
     displayedDieValue: Int,
+    /** Seat whose roll is in the air; outranks the live turn while it lasts. */
+    dieSeat: Int?,
 ) {
     val seats = if (top) listOf(1, 2) else listOf(0, 3)
     Row(Modifier.fillMaxWidth().padding(vertical = 4.dp),
@@ -466,7 +474,7 @@ private fun PodRow(
             Row(verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (!trayTrailing) {
-                    DieTray(state, seat, rollVisual, onRollDie, displayedDieValue)
+                    DieTray(state, seat, rollVisual, onRollDie, displayedDieValue, dieSeat)
                 }
                 LudoPlayerPod(
                     seatView = sv,
@@ -480,7 +488,7 @@ private fun PodRow(
                     },
                 )
                 if (trayTrailing) {
-                    DieTray(state, seat, rollVisual, onRollDie, displayedDieValue)
+                    DieTray(state, seat, rollVisual, onRollDie, displayedDieValue, dieSeat)
                 }
             }
         }
@@ -503,23 +511,19 @@ private fun DieTray(
     rollVisual: LudoPresentationCoordinator.RollVisual?,
     onRollDie: () -> Unit,
     displayedValue: Int,
+    dieSeat: Int?,
 ) {
-    val isActive = !state.isFinished && state.turn?.seat == seat
+    // A roll in the air outranks the live turn. The server advances `activeSeat` the instant a
+    // roll produces no legal move, so following live state made the die disappear from the
+    // roller's side mid-tumble and reappear next to the following player — you never got to see
+    // what you had rolled.
+    val holdsDie = if (dieSeat != null) dieSeat == seat
+                   else !state.isFinished && state.turn?.seat == seat
     val trayside = LudoDimens.dieSizeStandard + 8.dp
-    Box(
-        Modifier
-            .size(trayside)
-            .then(
-                if (isActive) {
-                    Modifier
-                        .clip(RoundedCornerShape(LudoDimens.podCornerRadius))
-                        .background(LudoPalette.podSurface())
-                } else Modifier
-            ),
-        contentAlignment = Alignment.Center,
-    ) {
-        if (isActive) {
-            DieFace(state, rollVisual, onRollDie, displayedValue)
+    // No surface behind it: the die is an object thrown on the spot, not a chip in a slot.
+    Box(Modifier.size(trayside), contentAlignment = Alignment.Center) {
+        if (holdsDie) {
+            DieFace(state, rollVisual, onRollDie, displayedValue, dieSeat)
         }
     }
 }
@@ -898,15 +902,20 @@ private fun DieFace(
     rollVisual: LudoPresentationCoordinator.RollVisual?,
     onTap: () -> Unit,
     displayedValue: Int,
+    dieSeat: Int?,
 ) {
     val darkNow = !com.voiid.app.ui.theme.isLightTheme()
     val dColors = ludoPaletteFor(darkNow)
+    // No rolling while a roll is still in the air, even if the server has already opened the
+    // next window — otherwise a fast tap fires the next roll before this one is readable.
     val canRoll = state.isActive &&
+        dieSeat == null &&
         state.turn?.phase == "awaitingRoll" &&
         state.viewerRole == "controller" &&
         state.viewerSeat == state.turn?.seat &&
         state.seats.firstOrNull { it.seat == state.viewerSeat }?.controller == "human"
-    val pipsNeutral = state.turn == null || state.isFinished
+    val pipSeat = dieSeat ?: state.turn?.seat
+    val pipsNeutral = pipSeat == null || state.isFinished
 
     Canvas(
         Modifier
@@ -916,7 +925,7 @@ private fun DieFace(
     ) {
         val rv = rollVisual
         val pipColor = if (pipsNeutral) dColors.c(dColors.dieNeutralPip)
-                       else dColors.hue(state.turn!!.seat)
+                       else dColors.hue(pipSeat!!)
         val restSide = size.width * LudoDie.REST_FILL_FACTOR
         with(LudoDie) {
             if (rv == null) {

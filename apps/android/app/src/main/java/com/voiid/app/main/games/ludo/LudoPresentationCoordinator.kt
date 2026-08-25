@@ -69,6 +69,14 @@ class LudoPresentationCoordinator {
     private val _animatingRollValue = MutableStateFlow<Int?>(null)
     val animatingRollValue: StateFlow<Int?> = _animatingRollValue.asStateFlow()
 
+    /**
+     * The seat whose roll is in the air. The server advances `activeSeat` the moment a roll
+     * produces no legal move, so binding the die to the live turn made it vanish from the
+     * roller's side and reappear on the next player's — the number never got read.
+     */
+    private val _animatingRollSeat = MutableStateFlow<Int?>(null)
+    val animatingRollSeat: StateFlow<Int?> = _animatingRollSeat.asStateFlow()
+
     /** The single display pawn mid-hop; authoritative state is untouched. */
     private val _hopCenter = MutableStateFlow<Pair<Int, Offset>?>(null)   // pawnIndex → center
     val hopCenter: StateFlow<Pair<Int, Offset>?> = _hopCenter.asStateFlow()
@@ -99,6 +107,7 @@ class LudoPresentationCoordinator {
         _sweep.value = null
         _roll.value = null
         _animatingRollValue.value = null
+        _animatingRollSeat.value = null
         _hopCenter.value = null
     }
 
@@ -118,8 +127,8 @@ class LudoPresentationCoordinator {
     }
 
     /** §14.3 roll choreography. Turn counts derive from hash(matchId+rollId), never the value. */
-    fun enqueueRoll(rollId: String, value: Int) {
-        runSerialized { animateRoll(rollId, value) }
+    fun enqueueRoll(rollId: String, value: Int, seat: Int) {
+        runSerialized { animateRoll(rollId, value, seat) }
     }
 
     /** §15 hops + optional capture return, serialized after any running beats. */
@@ -169,8 +178,9 @@ class LudoPresentationCoordinator {
         _sweep.value = null
     }
 
-    private suspend fun animateRoll(rollId: String, value: Int) {
+    private suspend fun animateRoll(rollId: String, value: Int, seat: Int) {
         _animatingRollValue.value = value
+        _animatingRollSeat.value = seat
         try {
             val seed = stableHash("${matchId ?: ""}:$rollId")
             val xTurns = 2.5f + ((seed ushr 8) % 1000) / 1000f       // 2.5–3.5 turns
@@ -220,6 +230,7 @@ class LudoPresentationCoordinator {
         } finally {
             _roll.value = null
             _animatingRollValue.value = null
+            _animatingRollSeat.value = null
         }
     }
 

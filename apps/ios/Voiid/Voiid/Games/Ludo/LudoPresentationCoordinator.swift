@@ -45,6 +45,11 @@ final class LudoPresentationCoordinator: ObservableObject {
     /// otherwise re-label the die while it is still tumbling.
     @Published private(set) var animatingRollValue: Int?
 
+    /// The seat whose roll is in the air. The server advances `activeSeat` the moment a roll
+    /// produces no legal move, so binding the die to the live turn made it vanish from the
+    /// roller's side and reappear on the next player's — the number never got read.
+    @Published private(set) var animatingRollSeat: Int?
+
     // MARK: State
 
     private var queue: [@MainActor () async -> Void] = []
@@ -68,9 +73,9 @@ final class LudoPresentationCoordinator: ObservableObject {
 
     /// §14.3 roll choreography. Whole turns derive from hash(matchId+rollId), never the value;
     /// every path lands on the already-known face.
-    func enqueueRoll(rollId: String, value: Int, matchId: String?) {
+    func enqueueRoll(rollId: String, value: Int, seat: Int, matchId: String?) {
         enqueue { [weak self] in
-            await self?.animateRoll(rollId: rollId, value: value, matchId: matchId)
+            await self?.animateRoll(rollId: rollId, value: value, seat: seat, matchId: matchId)
         }
     }
 
@@ -111,6 +116,7 @@ final class LudoPresentationCoordinator: ObservableObject {
         sweep = nil
         rollPose = nil
         animatingRollValue = nil
+        animatingRollSeat = nil
         hopOverride = nil
         captureReturn = nil
         isAnimating = false
@@ -181,9 +187,13 @@ final class LudoPresentationCoordinator: ObservableObject {
 
     /// §14.3 four-beat roll: anticipation → tumble → impact → rebound. ONE medium impact
     /// haptic at the 760 ms beat, once per rollId.
-    private func animateRoll(rollId: String, value: Int, matchId: String?) async {
+    private func animateRoll(rollId: String, value: Int, seat: Int, matchId: String?) async {
         animatingRollValue = value
-        defer { animatingRollValue = nil }
+        animatingRollSeat = seat
+        defer {
+            animatingRollValue = nil
+            animatingRollSeat = nil
+        }
         let hash = Self.stableHash("\(matchId ?? ""):\(rollId)")
         let xTurns: Double = 2.5 + Double((hash >> 8) % 1000) / 1000      // 2.5–3.5 turns
         let yTurns: Double = 2.0 + Double((hash >> 20) % 1000) / 1000     // 2–3 turns

@@ -1,8 +1,12 @@
 import { createHmac } from 'node:crypto';
 import type { BotDifficulty } from '../types';
 
+// Rolling involves no decision, so a bot should not sit on it. The roll animation itself
+// already holds ROLL_SETTLE_MS so the number can be read; stacking a second of "thinking" on
+// top of that is what made a table of bots feel stalled, especially early on when nobody can
+// leave home and every turn is roll-and-pass.
 const ROLL_BOUNDS: Record<BotDifficulty, readonly [number, number]> = {
-    relaxed: [900, 1500], balanced: [700, 1200], sharp: [1050, 1750],
+    relaxed: [380, 620], balanced: [300, 520], sharp: [420, 700],
 };
 const MOVE_BOUNDS: Record<BotDifficulty, readonly [number, number]> = {
     relaxed: [500, 900], balanced: [650, 1050], sharp: [900, 1500],

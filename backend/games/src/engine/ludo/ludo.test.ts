@@ -80,7 +80,13 @@ const auto=state({tokens:[[50,40,YARD,YARD],[YARD,YARD,YARD,YARD],[YARD,YARD,YAR
 const legal=legalMoves(auto,0,1);
 check('timeout adapter is exactly Balanced selection', pickTimeoutMove(auto,0,1,legal)===selectBotMove(auto,0,1,legal,'balanced'));
 check('deterministic auto-pick ties remain stable', pickAutoMove(auto,0,1,legal)===pickAutoMove(auto,0,1,legal));
-check('bot names and pacing are deterministic and bounded', botName(seed,2,new Set())===botName(seed,2,new Set())&&botDelay(seed,3,'balanced','awaitingRoll')>=700&&botDelay(seed,3,'balanced','awaitingRoll')<=1200);
+// Rolling carries no decision, so its pacing is short; choosing a token does, so it is longer.
+// The gap between the two is the point: a bot that pauses the same length before both reads as
+// stalled on the roll, which is what a table of bots felt like early on when nobody can leave
+// home and every turn is roll-and-pass.
+check('bot names are deterministic', botName(seed,2,new Set())===botName(seed,2,new Set()));
+check('bot roll pacing is short and bounded', botDelay(seed,3,'balanced','awaitingRoll')>=300&&botDelay(seed,3,'balanced','awaitingRoll')<=520);
+check('bot move pacing stays longer than roll pacing', botDelay(seed,3,'balanced','awaitingMove')>botDelay(seed,3,'balanced','awaitingRoll'));
 
 console.log('\nLudo v3 lifecycle, projection, recovery');
 const e=ludo.create(['u0'],{mode:'duel',rngSeed:seed,roster:[{kind:'human',userId:'u0'},{kind:'bot',difficulty:'sharp'}]}) as GameEngine&{accept(id:string):boolean;startAll(now:number):void;setFrameContext(c:unknown):void};
