@@ -134,6 +134,15 @@ final class AppSession: ObservableObject {
         if let url = p.photoURL, !url.isEmpty { profile.photoURL = url }
         if let bio = p.about, !bio.isEmpty { profile.bio = bio }
         if let u = p.username, !u.isEmpty { profile.username = u }
+        // ASSIGNED UNCONDITIONALLY, unlike every field above it.
+        //
+        // The others use "only if the server sent something" because a blank from the server
+        // is more likely to be a gap than an intention, and blanking a name on a bad response
+        // is worse than keeping a stale one. Status is the opposite: clearing it is a normal,
+        // deliberate act, and skipping the nil would make "no status" the one setting this
+        // device could never learn about — it would keep showing a status the user removed on
+        // their other phone, forever.
+        profile.statusText = p.statusText
         // The server returns the phone number ONLY for our own profile — the authoritative,
         // Firebase-independent source. Use it if we don't already have one (e.g. an account
         // that logged in before we captured it at OTP), and persist it for offline launches.
@@ -157,6 +166,10 @@ final class AppSession: ObservableObject {
         var email: String?
         var bio: String?
         var username: String?
+        /// Optional so an EXISTING stored blob — written before this field existed — still
+        /// decodes. A non-optional addition here would fail the whole decode and silently
+        /// reset every user's locally-cached name and photo on first launch after update.
+        var statusText: String?
     }
 
     private func loadLocalProfile() {
@@ -170,7 +183,8 @@ final class AppSession: ObservableObject {
                         photoName: nil,
                         photoURL: stored.photoURL,
                         username: stored.username,
-                        bio: stored.bio)
+                        bio: stored.bio,
+                        statusText: stored.statusText)
     }
 
     private func persistLocalProfile() {
@@ -179,7 +193,8 @@ final class AppSession: ObservableObject {
                                    photoURL: profile.photoURL,
                                    email: profile.email,
                                    bio: profile.bio,
-                                   username: profile.username)
+                                   username: profile.username,
+                                   statusText: profile.statusText)
         if let data = try? JSONEncoder().encode(stored) {
             UserDefaults.standard.set(data, forKey: Self.profileKey)
         }
@@ -196,6 +211,23 @@ final class AppSession: ObservableObject {
         if let email { profile.email = email }
         if let bio { profile.bio = bio }
         if let username { profile.username = username }
+        persistLocalProfile()
+    }
+
+    /// Set or clear the availability status, server first.
+    ///
+    /// SERVER FIRST, unlike `updateProfile` above, and the difference is deliberate. That one
+    /// is optimistic because the value it writes is one the user typed and can see; the point
+    /// of a status is what OTHER people see, so "it looks set on my phone" is not the outcome
+    /// being bought. Showing it as changed before the server has it would report success for
+    /// a status nobody else can read. The caller renders its own in-flight state and gets a
+    /// thrown error to surface if the write fails.
+    ///
+    /// Local state is written only after the round trip succeeds, so a failure leaves the UI
+    /// showing what is actually stored rather than a value that exists on one device.
+    func setStatus(_ status: AvailabilityStatus?) async throws {
+        _ = try await ProfileService.shared.updateStatus(status)
+        profile.statusText = status?.rawValue
         persistLocalProfile()
     }
 

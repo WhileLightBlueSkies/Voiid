@@ -7,6 +7,35 @@ import { asyncHandler } from '../util';
 
 const router = Router();
 
+// ─────────────────────────────────────────────────────────────────────────────────
+// Availability status — users.status_text.
+//
+// THE COLUMN IS OLD; NOTHING EVER READ OR WROTE IT. It has been `text` since 001, and until
+// now no route accepted it and no client set it. That freedom is exactly why this closes it
+// down to a FIXED VOCABULARY rather than opening a free-text field:
+//
+//   • Free text here is user-generated content shown to strangers — `GET /users/:id` and
+//     `GET /reachability/by-username` both hand a profile to someone who may never have met
+//     the owner. That needs a length cap, a moderation queue and a reports.ts target type,
+//     none of which exist for this field. `bio` already occupies the "write something about
+//     yourself" slot and already travels with the user as a reportable subject; a SECOND
+//     free-text surface buys nothing and costs a moderation surface.
+//   • A closed set is also the only shape a client can localise, sort or draw as a coloured
+//     dot. "Busy" renders as a swatch; an arbitrary sentence cannot.
+//
+// Clearing is `null`, not an empty string, so "no status" has exactly one representation and
+// a row cannot be simultaneously unset and set-to-blank.
+//
+// NOTE WHAT IS NOT HERE: nothing in this list changes delivery, notification or ringing
+// behaviour anywhere in the API. It is a label the owner chooses and viewers read. In
+// particular `dnd` does NOT suppress push — the notification path never reads this column —
+// and the client is required to say so rather than let the name imply it.
+const STATUS_VALUES = ['available', 'busy', 'away', 'dnd'] as const;
+type StatusValue = (typeof STATUS_VALUES)[number];
+function isStatusValue(v: unknown): v is StatusValue {
+  return typeof v === 'string' && (STATUS_VALUES as readonly string[]).includes(v);
+}
+
 // Username rules (Clips feature only — NOT messaging identity): 3–20 chars,
 // must start with a letter, lowercase letters/digits/underscore. Mirrors the DB
 // CHECK constraint in migration 010. Returns null if valid, else a reason.
@@ -126,12 +155,29 @@ router.get('/:id', requireAuth, async (req, res) => {
   const allowed = (scope: string) =>
     isOwner || (!blockedPair && (scope === 'everyone' || (scope === 'contacts' && viewerIsContact)));
 
+  // ── Availability status rides the LAST-SEEN gate, not photo_privacy and not about_privacy.
+  //
+  // A status is presence information: "Away" and "Do not disturb" say something about where
+  // the person is and whether they are attending their phone, which is the same class of
+  // fact `last_seen_privacy` exists to withhold. Gating it under About instead would leave a
+  // second door into the same room — someone who set last-seen to 'nobody' would still be
+  // broadcasting "Away", and would reasonably think they had closed that.
+  //
+  // `canSeeLastSeen` is CALLED rather than reimplemented, deliberately. It is the single
+  // source of truth the presence routes already share, including its ordering (blocking
+  // short-circuits the scope) and its direction (the TARGET's address book decides, not the
+  // viewer's). A local copy of those two subtleties is a copy that will drift.
+  const showStatus = await canSeeLastSeen(viewerId, targetId);
+
   res.json({
     user: {
       id: u.id,
       full_name: u.full_name,
       username: u.username,
-      status_text: u.status_text,
+      // Hidden reads as null — the same shape as "never set one" — so a viewer cannot tell a
+      // privacy setting from an unset field, exactly as hidden presence is indistinguishable
+      // from being offline.
+      status_text: showStatus ? u.status_text : null,
       photo_url: allowed(u.photo_privacy) ? u.photo_url : null,
       // The ENCRYPTED avatar object, plus the key version it was encrypted under. A client
       // holding an older version knows its wrapped key is stale and re-fetches, rather than
@@ -182,7 +228,21 @@ router.post('/profile/update', requireAuth, async (req, res) => {
   add('email', email);
   add('photo_url', photo_url);
   add('bio', bio);
-  add('status_text', status_text);
+  // Availability status — validated against the closed vocabulary, in the same shape as the
+  // privacy enums below rather than passed through like `bio`. An unvalidated write here
+  // would put arbitrary caller-supplied text on a profile that strangers can read, which is
+  // precisely what choosing a fixed set was meant to prevent; the column's type does not
+  // enforce it, so this is the only place that can.
+  //
+  // `null` clears. It is accepted explicitly because `add` skips only `undefined`, so
+  // "remove my status" and "don't touch my status" stay distinguishable — a client that
+  // conflated them could never turn one off.
+  if (status_text !== undefined) {
+    if (status_text !== null && !isStatusValue(status_text)) {
+      return res.status(400).json({ error: `status_text must be null or one of ${STATUS_VALUES.join(', ')}` });
+    }
+    add('status_text', status_text);
+  }
   // Privacy visibility — validate the enum so a bad value can't corrupt enforcement.
   for (const [col, v] of [['photo_privacy', photo_privacy], ['about_privacy', about_privacy],
                           ['last_seen_privacy', last_seen_privacy]] as const) {
@@ -219,42 +279,105 @@ router.post('/profile/update', requireAuth, async (req, res) => {
   }
 });
 
-// GET /users/status/:id — online + last_seen, with last_seen_privacy enforced.
-router.get('/status/:id', requireAuth, async (req, res) => {
-  const viewerId = (req as any).auth.user_id;
-  const targetId = req.params.id;
-  const { redis } = await import('../redis');
+// ─────────────────────────────────────────────────────────────────────────────────
+// Presence — online + last_seen, with users.last_seen_privacy enforced.
+//
+// TWO ROUTES, ONE GATE. `/status/:id` answers for one user and `/presence` answers for many,
+// and they MUST agree: a batch endpoint that is even slightly more permissive than the single
+// one is a probe — a caller who cannot see Ravi's presence one way asks the other way. So the
+// rule lives exactly once, in `presenceFor` below, and both routes call it. Do not inline a
+// second copy of this logic anywhere, however small the shortcut looks.
+// ─────────────────────────────────────────────────────────────────────────────────
 
-  // Resolve last-seen visibility for THIS viewer.
-  let showLastSeen = true;
+/**
+ * May `viewerId` see `targetId`'s last-seen (and therefore their online state)?
+ *
+ * THE SINGLE SOURCE OF TRUTH for presence visibility. Extracted from `/status/:id`, whose
+ * behaviour it reproduces exactly — including its ordering, where blocking is checked BEFORE
+ * the privacy scope and short-circuits it.
+ */
+async function canSeeLastSeen(viewerId: string, targetId: string): Promise<boolean> {
+  // Your own presence is never hidden from you.
+  if (viewerId === targetId) return true;
   // Blocking (043) hides presence in BOTH directions, and does it by reusing the existing
   // hidden shape — `online: false, last_seen: null` — rather than a distinctive error.
   // That is the same answer a viewer gets from someone whose scope is 'nobody', so a
   // blocked user cannot tell a block from a privacy setting.
-  if (viewerId !== targetId && (await isBlockedEitherWay(viewerId, targetId))) {
-    showLastSeen = false;
-  } else if (viewerId !== targetId) {
-    const prow = await query<{ last_seen_privacy: string }>(
-      `select last_seen_privacy from users where id = $1`, [targetId]);
-    const scope = prow[0]?.last_seen_privacy ?? 'everyone';
-    if (scope === 'nobody') showLastSeen = false;
-    else if (scope === 'contacts') {
-      const c = await query(
-        `select 1 from contact_sync where owner_user_id = $1 and contact_user_id = $2 limit 1`,
-        [targetId, viewerId]);
-      showLastSeen = c.length > 0;
-    }
-  }
+  if (await isBlockedEitherWay(viewerId, targetId)) return false;
 
+  const prow = await query<{ last_seen_privacy: string }>(
+    `select last_seen_privacy from users where id = $1`, [targetId]);
+  const scope = prow[0]?.last_seen_privacy ?? 'everyone';
+  if (scope === 'nobody') return false;
+  if (scope === 'contacts') {
+    // NOTE THE DIRECTION: it is the TARGET's address book that decides, not the viewer's.
+    // 'contacts' means "people I have in my contacts", so the owner of the row is the target.
+    const c = await query(
+      `select 1 from contact_sync where owner_user_id = $1 and contact_user_id = $2 limit 1`,
+      [targetId, viewerId]);
+    return c.length > 0;
+  }
+  return true;
+}
+
+/** One user's presence, already gated. The shape both routes serve. */
+async function presenceFor(viewerId: string, targetId: string) {
+  const { redis } = await import('../redis');
+  const showLastSeen = await canSeeLastSeen(viewerId, targetId);
+  // Redis is only READ once the gate has said yes for last_seen; `online` is read either way
+  // but discarded when hidden, because the answer must not vary in TIMING between a visible
+  // and a hidden user any more than it varies in shape.
   const online = await redis.get(`user:${targetId}:online`);
   const lastSeen = showLastSeen ? await redis.get(`user:${targetId}:last_seen`) : null;
-  res.json({
+  return {
     user_id: targetId,
     // When last-seen is hidden, online is hidden too (they leak the same info).
     online: showLastSeen ? online === '1' : false,
     last_seen: lastSeen ? Number(lastSeen) : null,
-  });
-});
+  };
+}
+
+// GET /users/status/:id — online + last_seen, with last_seen_privacy enforced.
+router.get('/status/:id', requireAuth, asyncHandler(async (req, res) => {
+  const viewerId = (req as any).auth.user_id;
+  res.json(await presenceFor(viewerId, req.params.id));
+}));
+
+// POST /users/presence — body: { user_ids: string[] } → { presence: [...] }
+//
+// WHY THIS EXISTS: the Games tab wants presence for everyone the player has a direct
+// conversation with. Per-user that is N round trips over a mobile link for a screen that
+// re-polls every minute; a friends list of a dozen people would spend a dozen requests to
+// draw one row of avatars.
+//
+// BOUNDED, because an unbounded id list is an enumeration primitive: hand the server ten
+// thousand ids and it happily reports which of them are awake right now. 64 is comfortably
+// above any plausible direct-conversation count on one screen and far below useful for
+// sweeping a user table. Over the cap is a 400, not a silent truncation — a caller that
+// asked about 200 people and got 64 answers cannot tell which 136 were dropped.
+//
+// THE GATE IS PER USER AND IS THE SAME GATE. Every id goes through `presenceFor`
+// individually; there is no batched shortcut around it. A user this viewer may not see comes
+// back `online: false, last_seen: null` — present in the response and indistinguishable from
+// someone who is genuinely offline, exactly as the single route answers. Absent ids would
+// themselves be a signal ("the server declined to answer about Ravi").
+const PRESENCE_BATCH_MAX = 64;
+router.post('/presence', requireAuth, asyncHandler(async (req, res) => {
+  const viewerId = (req as any).auth.user_id;
+  const ids = req.body?.user_ids;
+  if (!Array.isArray(ids)) return res.status(400).json({ error: 'user_ids must be an array' });
+  // De-duplicated before the cap is applied, so a client that sends the same id twice is not
+  // punished for it, and so the cap counts real subjects rather than list entries.
+  const unique = [...new Set(ids.filter((v: unknown): v is string => typeof v === 'string' && v.length > 0))];
+  if (unique.length > PRESENCE_BATCH_MAX) {
+    return res.status(400).json({ error: `at most ${PRESENCE_BATCH_MAX} user_ids` });
+  }
+  if (!unique.length) return res.json({ presence: [] });
+  // Concurrent rather than sequential: each entry is two or three cheap indexed reads, and
+  // serialising 64 of them would make the batch route slower than the N calls it replaces.
+  const presence = await Promise.all(unique.map((id) => presenceFor(viewerId, id)));
+  res.json({ presence });
+}));
 
 // POST /users/consent — DPDP lawful consent capture at signup (Section 4.13).
 router.post('/consent', requireAuth, async (req, res) => {

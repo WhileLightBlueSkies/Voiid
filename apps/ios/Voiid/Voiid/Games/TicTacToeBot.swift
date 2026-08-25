@@ -52,9 +52,51 @@ enum BotDifficulty: String, CaseIterable, Identifiable {
         }
     }
 
+    /// One line describing what the bot ACTUALLY DOES at this level, for the entry sheet.
+    ///
+    /// THIS COPY IS DERIVED FROM THE MECHANIC, NOT INVENTED AROUND IT. Every local bot in the
+    /// app implements `skill` the same way: it is the probability of playing the BEST move it
+    /// can find, and otherwise it plays a random legal one (`TicTacToeBot.chooseMove`,
+    /// `RpsBot.chooseThrow`, `CricketBot.choosePick`, `SeaBattleBot.chooseShot`). So the honest
+    /// description of a level is HOW OFTEN IT BLUNDERS, and that is what these say. There is no
+    /// search depth to boast about and no personality to describe — a bot at 0.55 is not
+    /// "cautious", it is right slightly more often than not, and saying anything more colourful
+    /// would be describing a bot we did not write.
+    ///
+    /// The percentages are stated in the UI beside these, so the words must not contradict the
+    /// number sitting next to them: "roughly one move in six" IS 0.15's complement rounded, and
+    /// "rarely" IS 0.92. Change one, change both.
+    var blurb: String {
+        switch self {
+        case .easy:
+            // 0.15: plays its best move about one time in six, random otherwise. It will walk
+            // past a win that is sitting on the board, which is the defining tell of this level.
+            return "Plays at random most of the time. Misses easy wins."
+        case .moderate:
+            // 0.55: best move slightly more often than not. The mix is the point — it punishes
+            // some mistakes and hands back others, which is what a human opponent feels like.
+            return "Right about half the time. Trades mistakes with you."
+        case .hard:
+            // 0.92: best move roughly eleven times in twelve. In Sea Battle this crosses into
+            // the probability-density band; in Tic Tac Toe it is near-perfect minimax. Common
+            // to all of them: it takes the opening when you leave one.
+            return "Rarely blunders. Punishes anything you leave open."
+        }
+    }
+
     /// The preset a raw skill value corresponds to, or nil if the slider sits between them.
     static func matching(_ skill: Double) -> BotDifficulty? {
         allCases.first { abs($0.skill - skill) < 0.001 }
+    }
+
+    /// The preset a raw skill value is NEAREST to — always answers, unlike `matching`.
+    ///
+    /// WHY BOTH EXIST. `matching` is exact and returns nil between presets, which is correct for
+    /// deciding whether a row is SELECTED. But a slider parked at 0.60 still needs the sheet to
+    /// say something true about the opponent the player is about to face, and "no level" is not
+    /// a description of a bot. This answers that second question and never returns nil.
+    static func nearest(_ skill: Double) -> BotDifficulty {
+        allCases.min { abs($0.skill - skill) < abs($1.skill - skill) } ?? .moderate
     }
 }
 

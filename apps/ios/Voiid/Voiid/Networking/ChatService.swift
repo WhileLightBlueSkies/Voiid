@@ -202,4 +202,36 @@ final class ChatService {
         let last = env.last_seen.map { Date(timeIntervalSince1970: $0 / 1000) }
         return (env.online, last)
     }
+
+    /// Presence for MANY users in ONE round trip — POST /users/presence.
+    ///
+    /// WHY NOT JUST LOOP `status(userId:)`: a screen that wants presence for everyone in a
+    /// roster would open one connection per person, on a mobile link, on a repeating poll.
+    /// The batch route answers the whole set at once and applies the IDENTICAL privacy gate
+    /// per user — a person whose `last_seen_privacy` hides them comes back `online: false`
+    /// here exactly as they do from the single route, so this is a cheaper way to ask the
+    /// same question and never a way to learn more.
+    ///
+    /// The server caps the list (currently 64) and REJECTS an over-long one rather than
+    /// truncating it, so callers chunk rather than hope. Returns a map keyed by user id;
+    /// an id the server did not answer for is simply absent, and absent is NOT "offline" —
+    /// the caller must not conflate the two.
+    func presence(userIds: [String]) async throws -> [String: (online: Bool, lastSeen: Date?)] {
+        struct Envelope: Decodable { let presence: [Row] }
+        struct Row: Decodable { let user_id: String; let online: Bool; let last_seen: Double? }
+        guard !userIds.isEmpty else { return [:] }
+        var out: [String: (online: Bool, lastSeen: Date?)] = [:]
+        // Chunked to the server's cap. A roster larger than one chunk is rare, but a rejected
+        // request would blank the whole section, and that is a worse failure than two calls.
+        for chunk in stride(from: 0, to: userIds.count, by: 64).map({
+            Array(userIds[$0..<min($0 + 64, userIds.count)])
+        }) {
+            let env: Envelope = try await api.request("POST", "users/presence",
+                                                      body: ["user_ids": chunk])
+            for row in env.presence {
+                out[row.user_id] = (row.online, row.last_seen.map { Date(timeIntervalSince1970: $0 / 1000) })
+            }
+        }
+        return out
+    }
 }

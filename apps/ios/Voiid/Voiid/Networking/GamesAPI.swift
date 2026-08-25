@@ -351,6 +351,34 @@ struct GamesAPI {
                               body: WalkthroughBody(version: version))
     }
 
+    // ── PER-GAME VISIBILITY ─────────────────────────────────────────────────────
+    //
+    // Which catalog rows this person wants on their shelf. Server-side these are one key
+    // inside the shared `user_game_preferences.preferences` blob, merged with `jsonb_set`
+    // so writing visibility cannot clobber the walkthrough marker written just above.
+    //
+    // A PREFERENCE, NOT MODERATION. Hiding a game changes only this user's browsing
+    // surface. The invite path (`invites()`) does not consult it and must not: a friend's
+    // invite to a game you hid still arrives, still shows a banner, and still joins.
+
+    struct VisibilityResponse: Decodable { let hidden_slugs: [String] }
+    struct VisibilityBody: Encodable { let hidden_slugs: [String] }
+
+    /// The caller's hidden slugs. An empty array means everything is visible.
+    func visibility() async throws -> [String] {
+        let res: VisibilityResponse = try await api.request("GET", "games/visibility")
+        return res.hidden_slugs
+    }
+
+    /// Replace the hidden set wholesale — the settings screen's switches ARE the whole list,
+    /// so a whole-list PUT is the honest shape. The server rejects slugs the catalog does
+    /// not contain, so a stale client cannot poison the blob.
+    @discardableResult
+    func setVisibility(hiddenSlugs: [String]) async throws -> VisibilityResponse {
+        try await api.request("PUT", "games/visibility",
+                              body: VisibilityBody(hidden_slugs: hiddenSlugs))
+    }
+
     struct LudoCreateBody: Encodable {
         let slug = "ludo"
         let mode: String

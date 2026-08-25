@@ -59,4 +59,25 @@ final class ProfileService {
         let env: ProfileEnvelope = try await api.request("POST", "users/profile/update", body: body)
         return env.user
     }
+
+    /// Set or clear the availability status.
+    ///
+    /// A SEPARATE CALL rather than another parameter on `updateProfile`, because `nil` there
+    /// means "leave this field alone" for every other field, and clearing the status needs to
+    /// send an explicit JSON null. Folding a tri-state (set / clear / untouched) into a body
+    /// typed `[String: String]` would either lose the clear or silently rewrite it as the
+    /// empty string, which the server would then store as a status that is neither set nor
+    /// absent. The route distinguishes `null` from `undefined` deliberately; this preserves
+    /// that distinction rather than fighting it.
+    @discardableResult
+    func updateStatus(_ status: AvailabilityStatus?) async throws -> ProfileUser {
+        struct Body: Encodable {
+            // Explicitly `String?` and always encoded — `Encodable` writes a JSON null for a
+            // nil optional property, which is exactly the "clear it" signal the route wants.
+            let status_text: String?
+        }
+        let env: ProfileEnvelope = try await api.request(
+            "POST", "users/profile/update", body: Body(status_text: status?.rawValue))
+        return env.user
+    }
 }

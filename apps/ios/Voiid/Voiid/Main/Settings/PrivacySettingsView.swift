@@ -34,6 +34,25 @@
 //  And there is no footer explaining any of that. A Settings screen states what it does;
 //  it does not narrate what it lacks.
 //
+//  "Who can reach you" is PROSE, not toggles, and that is not an omission
+//  ---------------------------------------------------------------------
+//  reachability.ts enforces exactly three routes into your inbox and offers no choice
+//  between them: no column turns requests off, none closes username search, none makes a
+//  mutual contact go through a request first. The rules were real and enforced but stated
+//  nowhere, so a user had no way to know who could message them or how. That is what the
+//  section fixes — by explaining, not by adding switches. A toggle here would promise a
+//  decision the server does not honour, which is worse than no toggle: a privacy control
+//  that silently does nothing. The Contact PIN sits under the explanation because it is the
+//  one genuine control among them, governing the third path.
+//
+//  "My status" is here rather than in Edit Profile
+//  -----------------------------------------------
+//  The server gates `status_text` on `last_seen_privacy` — a status says where you are and
+//  whether you are attending your phone, so it is presence information and rides the presence
+//  gate. That makes this the screen where the control and the switch deciding who sees it can
+//  be read together. Edit Profile is also a dirty-tracked form behind a Save button, and a
+//  status that took a Save to change would be the wrong shape for a thing you flip.
+//
 //  Every footer below is load-bearing. Each of these toggles creates a reasonable and
 //  wrong assumption — that turning receipts off also hides other people's receipts from
 //  you, that hiding the presence line hides you from others — and the footer's job is to
@@ -43,6 +62,13 @@
 import SwiftUI
 
 struct PrivacySettingsView: View {
+
+    /// Your own availability status. Lives on this screen rather than in Edit Profile because
+    /// it is governed by the last-seen scope two cards below it — the server gates the status
+    /// on `last_seen_privacy`, so the control and the switch that decides who sees it belong
+    /// on one screen. Edit Profile is also a dirty-tracked form with a Save button, and a
+    /// status that took two taps and a Save to change would be the wrong shape entirely.
+    @EnvironmentObject private var session: AppSession
 
     @ObservedObject private var settings = PrivacySettings.shared
     /// Blocking (043). Drives the count beside the Blocked contacts row.
@@ -61,6 +87,17 @@ struct PrivacySettingsView: View {
     @State private var pinBusy = false
     @State private var pinError: String?
     @State private var confirmRotate = false
+    /// Availability status write in flight. The picker is disabled while it runs — a status
+    /// is about what other people see, so letting a second tap race the first would leave the
+    /// screen showing one value and the server holding another.
+    @State private var statusBusy = false
+    @State private var statusError: String?
+    /// Pending inbound requests. `nil` means UNKNOWN — either not asked yet or the ask
+    /// failed — and is rendered as no number at all, never as a zero. A "0" beside the row
+    /// would state that nobody is waiting, which is a claim a failed fetch cannot make.
+    @State private var requestCount: Int?
+    @State private var requestsLoading = true
+    @State private var showRequests = false
 
     var body: some View {
         ScrollView {
@@ -71,6 +108,14 @@ struct PrivacySettingsView: View {
                 subtitle: "Who can reach you, what this device sends, and who you've blocked."
             )
 
+            // MARK: My status
+
+            statusSection
+
+            // MARK: Who can reach you
+
+            reachabilitySection
+
             // MARK: Contact PIN (reachability by @username)
 
             // ONE short footer, not three paragraphs. The old copy explained the storage
@@ -78,6 +123,12 @@ struct PrivacySettingsView: View {
             // had seen their own PIN — a wall of text where a number belongs. The card below
             // shows the PIN; the sentence says what it's for; everything else moved to the
             // moment it becomes relevant (the rotate confirmation).
+            //
+            // It now sits DIRECTLY UNDER the explanation of the three paths, because the PIN
+            // is only meaningful as the mechanism for the third of them. On its own it was a
+            // six-digit number with no stated purpose beyond one footer sentence; read after
+            // "Someone who searches your @username", it is the answer to a question the user
+            // has just been given.
             VoiidCardSection(
                 "Contact PIN",
                 footer: "Share this with people who find you by @username. They'll need it to "
@@ -311,6 +362,16 @@ struct PrivacySettingsView: View {
             // token server-side.
             pinState = try? await ContactPinService.shared.state()
         }
+        .task { await loadRequestCount() }
+        .sheet(isPresented: $showRequests) {
+            // The SAME screen the Chats banner opens, not a second copy of the list. Accepting
+            // from here re-reads the count so the row stops advertising a request the user has
+            // just dealt with; there is no conversation to open from Settings, so the callback
+            // does only that.
+            MessageRequestsView { _ in
+                Task { await loadRequestCount() }
+            }
+        }
         .confirmationDialog("Generate a new PIN?", isPresented: $confirmRotate,
                             titleVisibility: .visible) {
             Button("Generate", role: .destructive) { rotatePin() }
@@ -320,6 +381,205 @@ struct PrivacySettingsView: View {
             // footer the user reads before they have any reason to care.
             Text("Anyone who has your current PIN will no longer be able to reach you with it.")
         }
+    }
+
+    // MARK: - My status
+
+    /// The availability status, as four choices and a Clear.
+    ///
+    /// A MENU PICKER, matching the three visibility pickers below it rather than inventing a
+    /// segmented control or a row of chips. The chosen value is the thing worth showing, and
+    /// this screen already has a vocabulary for "a setting with a small closed set of values"
+    /// — using it means the status reads as one more setting rather than as a feature bolted
+    /// on beside them.
+    ///
+    /// The footer is `AvailabilityStatus.honestFooter` and is NOT paraphrased here. It is the
+    /// sentence that stops "Do not disturb" from implying a mute it does not perform, and it
+    /// lives beside the enum so that any future surface offering this picker inherits it.
+    @ViewBuilder
+    private var statusSection: some View {
+        let current = AvailabilityStatus.from(session.profile.statusText)
+
+        VoiidCardSection("My status", footer: AvailabilityStatus.honestFooter) {
+            VStack(alignment: .leading, spacing: 0) {
+                VoiidSettingsRow(
+                    // The row's own icon reflects the CURRENT status, so the setting is
+                    // legible from the icon column at a glance without opening the menu.
+                    icon: current?.systemImage ?? "circle.dashed",
+                    title: "Status"
+                ) {
+                    if statusBusy {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Picker("Status", selection: Binding(
+                            get: { current },
+                            set: { setStatus($0) }
+                        )) {
+                            // "None" is a real choice, not the absence of one. Without it
+                            // there would be no way back to having no status at all.
+                            Text("None").tag(AvailabilityStatus?.none)
+                            ForEach(AvailabilityStatus.allCases) { s in
+                                // Label rather than Text: the swatch is what makes the four
+                                // distinguishable in a closed menu, and it is the same glyph
+                                // the row and the profile use, so one status looks like
+                                // itself everywhere it appears.
+                                Label {
+                                    Text(s.label)
+                                } icon: {
+                                    Image(systemName: s.systemImage).foregroundStyle(s.tint)
+                                }
+                                .tag(AvailabilityStatus?.some(s))
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                        .tint(VoiidColor.textSecondary)
+                    }
+                }
+                .accessibilityHint("The label people see on your profile. It does not change how messages, calls or notifications reach you.")
+
+                // FAILED IS NOT SILENT. `session.setStatus` writes local state only after the
+                // server confirms, so a failure leaves the picker showing the value that is
+                // genuinely stored — but that alone would look like the tap simply did
+                // nothing, which is the worst reading of a privacy-adjacent control.
+                if let statusError {
+                    Text(statusError)
+                        .font(.footnote)
+                        .foregroundStyle(VoiidColor.error)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, VoiidSpacing.md)
+                        .padding(.bottom, VoiidSpacing.sm)
+                }
+            }
+        }
+    }
+
+    private func setStatus(_ status: AvailabilityStatus?) {
+        // Client gate only: the picker offers exactly the four values the server accepts, but
+        // it is `STATUS_VALUES` in backend/api/src/routes/users.ts that ENFORCES that — this
+        // is convenience, not authorisation. Same for the visibility scopes below.
+        guard !statusBusy else { return }
+        Haptics.tap()
+        statusBusy = true
+        statusError = nil
+        Task {
+            do {
+                try await session.setStatus(status)
+                Haptics.success()
+            } catch {
+                statusError = "Couldn't save your status. Check your connection and try again."
+            }
+            statusBusy = false
+        }
+    }
+
+    // MARK: - Who can reach you
+
+    /// The three paths `backend/api/src/routes/reachability.ts` actually enforces, stated in
+    /// the user's terms.
+    ///
+    /// WHY THIS IS PROSE AND NOT TOGGLES. The server enforces exactly three routes into your
+    /// inbox and offers no choice between them: there is no column that turns off requests,
+    /// no setting that closes username search, nothing that makes a mutual contact go through
+    /// a request first. A switch here would promise a decision the server does not honour,
+    /// which is worse than no switch — it would be a privacy control that quietly does
+    /// nothing. So this section explains, and the one real control (the PIN, which genuinely
+    /// governs the third path) sits directly beneath it.
+    ///
+    /// Ordered by how open the path is, most-trusted first, so the list reads as a widening
+    /// circle rather than an arbitrary set of rules.
+    private var reachabilitySection: some View {
+        VoiidCardSection(
+            "Who can reach you",
+            footer: "These are the only ways into your chats, and they're enforced on Voiid's "
+                + "servers — not by this app. Blocked people can't use any of them."
+        ) {
+            reachPath(
+                icon: "person.2.fill",
+                title: "People you've both saved",
+                detail: "If you have each other in your contacts, their message opens as a "
+                    + "normal chat straight away."
+            )
+            VoiidRowDivider()
+            reachPath(
+                icon: "person.crop.circle.badge.questionmark",
+                title: "Someone who has you saved",
+                detail: "If they've saved you but you haven't saved them, their message waits "
+                    + "as a request. Nothing reaches your chat list until you accept it."
+            )
+            VoiidRowDivider()
+            reachPath(
+                icon: "at",
+                title: "Someone who searched your @username",
+                detail: "A stranger who finds you by username has to enter your Contact PIN "
+                    + "first. Even then it still arrives as a request for you to accept."
+            )
+            VoiidRowDivider()
+            requestsRow
+        }
+    }
+
+    /// One path. Not a `VoiidSettingsRow`, because these are statements rather than controls
+    /// and a row shape that elsewhere means "tappable" would invite taps that go nowhere.
+    /// The icon column and spacing match exactly so it still reads as part of the card.
+    private func reachPath(icon: String, title: String, detail: String) -> some View {
+        HStack(alignment: .top, spacing: VoiidSpacing.md) {
+            VoiidRowIcon(systemName: icon)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.body)
+                    .foregroundStyle(VoiidColor.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(detail)
+                    .font(.footnote)
+                    .foregroundStyle(VoiidColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.vertical, 11)
+        .accessibilityElement(children: .combine)
+    }
+
+    /// A door to the requests inbox that is ALWAYS here.
+    ///
+    /// `MessageRequestsView` already exists and already has an entry point — the banner at the
+    /// top of Chats — so this deliberately presents that same screen rather than duplicating
+    /// the list. What it adds is permanence: the banner renders only when the count is above
+    /// zero, which is right for a chat list but means a user who has just read the three
+    /// paths above and wants to check has nowhere to go. Two doors, one room.
+    ///
+    /// Three distinct states, and a failed count is not an empty one: unknown shows nothing
+    /// beside the chevron rather than a "0" that would claim there are no requests when we
+    /// simply could not ask.
+    private var requestsRow: some View {
+        VoiidSettingsRow(icon: "tray", title: "Message requests", action: {
+            Haptics.tap()
+            showRequests = true
+        }) {
+            if requestsLoading {
+                ProgressView().controlSize(.small)
+            } else if let requestCount, requestCount > 0 {
+                Text("\(requestCount)")
+                    .font(.subheadline)
+                    .foregroundStyle(VoiidColor.textSecondary)
+            }
+            VoiidChevron()
+        }
+        .accessibilityHint("People waiting for you to accept or decline")
+    }
+
+    /// Count only — the list itself is `MessageRequestsView`'s job, and fetching it here would
+    /// be a second full read of the same endpoint for a number.
+    ///
+    /// A THROW LEAVES `requestCount` NIL rather than setting it to zero. The distinction is the
+    /// whole point: "no requests" and "we couldn't find out" look different on the row.
+    private func loadRequestCount() async {
+        requestsLoading = true
+        requestCount = try? await ContactPinService.shared.pending().count
+        requestsLoading = false
     }
 
     private func rotatePin() {
@@ -475,4 +735,7 @@ private struct ContactPinCard: View {
         PrivacySettingsView()
     }
     .tint(VoiidColor.primary)
+    // The status card reads its value from the session, so the preview needs one — without
+    // it SwiftUI traps at runtime rather than rendering.
+    .environmentObject(AppSession())
 }

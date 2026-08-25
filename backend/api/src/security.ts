@@ -34,8 +34,26 @@ export async function logSecurityEvent(
 }
 
 /**
- * Sliding-window rate-limit middleware keyed by client IP (Section 4.6/4.9).
+ * Sliding-window rate-limit middleware (Section 4.6/4.9).
  * Per-phone OTP limiting lives in the auth route; this guards general API abuse.
+ *
+ * ── KEYED BY USER WHEN WE KNOW ONE, BY IP OTHERWISE ─────────────────────────────
+ * This used to key on IP alone, which quietly punished the wrong people. Everyone
+ * behind one NAT — an office, a home, a phone and a simulator on the same Wi-Fi —
+ * shared a single bucket, so a colleague creating communities could exhaust yours,
+ * and a ten-per-hour limit became ten per hour FOR THE BUILDING. That is not the
+ * abuse this guards against; it is a shared-fate accident.
+ *
+ * An authenticated caller is a far better subject than their address: it is the
+ * thing the limit is actually about ("how much may THIS ACCOUNT do"), it survives a
+ * network change mid-session, and it cannot be diluted by a neighbour.
+ *
+ * Anonymous traffic still keys on IP, because there is nothing else to key on — and
+ * that is precisely where address-based limiting earns its keep, since an
+ * unauthenticated flood is the attack this exists to blunt.
+ *
+ * The bucket NAMESPACE separates the two (`u:` / `ip:`), so an account cannot reset
+ * its own counter by dropping its token, and an IP cannot inherit a user's count.
  */
 export function rateLimit(opts: { max: number; windowSeconds: number; bucket: string }) {
   return async (req: Request, res: Response, next: NextFunction) => {
@@ -43,12 +61,24 @@ export function rateLimit(opts: { max: number; windowSeconds: number; bucket: st
     // `trust proxy` setting (index.ts), so a client that reaches the port directly cannot
     // hand itself a fresh bucket — or push someone else's address over the limit.
     const ip = clientIp(req) ?? 'unknown';
-    const key = `ratelimit:${opts.bucket}:${ip}`;
+    // `requireAuth` has already run on every route that carries a limiter worth caring
+    // about, so `auth.user_id` is present. Read defensively anyway: a limiter mounted
+    // BEFORE auth (or on a public route) must still work rather than throw.
+    const userId = (req as any).auth?.user_id as string | undefined;
+    const subject = userId ? `u:${userId}` : `ip:${ip}`;
+    const key = `ratelimit:${opts.bucket}:${subject}`;
     try {
       const count = await redis.incr(key);
       if (count === 1) await redis.expire(key, opts.windowSeconds);
       if (count > opts.max) {
-        await logSecurityEvent('api_abuse', { ip_address: ip, metadata: { bucket: opts.bucket, count } });
+        // Both identifiers are logged: the account tells you WHO, the address tells you
+        // whether one machine is driving several accounts, which is the shape abuse
+        // actually takes.
+        await logSecurityEvent('api_abuse', {
+          user_id: userId,
+          ip_address: ip,
+          metadata: { bucket: opts.bucket, count, subject },
+        });
         return res.status(429).json({ error: 'rate limit exceeded' });
       }
     } catch { /* if Redis is down, fail open rather than block all traffic */ }

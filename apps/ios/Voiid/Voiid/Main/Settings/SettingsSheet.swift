@@ -178,6 +178,12 @@ enum SettingsRoute: Hashable {
     case storage
     case about
     case legal
+    // NO `.games` CASE, DELIBERATELY. Game settings — sound, haptics and per-game
+    // visibility — live in the GAMES TAB, behind the `slider.horizontal.3` button in its
+    // header (`Games/GameSettingsView.swift`). They briefly had a row here; that was
+    // reversed, because settings about the arcade belong where the player is standing when
+    // they want them, and because ONE screen must have ONE door. Re-adding a row here would
+    // recreate exactly the two-entry-point confusion this removal exists to fix.
 
     // ── PREVIEW ONLY: reference rows Voiid has no backend for ───────────────────────
     // Kept as real cases rather than dead rows so the compiler forces every one of them to
@@ -275,6 +281,8 @@ struct SettingsSheet: View {
                               "UPI, cards, transactions"),
                         .init(.linkedDevices, "laptopcomputer.and.iphone", "Devices",
                               "Linked devices, sessions"),
+                        // NO "Games" ROW. See `SettingsRoute` — game settings are reached
+                        // from the Games tab's own header and from nowhere else.
                     ])
 
                     displayGroup
@@ -418,6 +426,30 @@ struct SettingsSheet: View {
                         .font(VoiidFont.rounded(13))
                         .foregroundColor(VoiidColor.textSecondary)
                         .lineLimit(1)
+                }
+
+                // Your own availability status, where you already look to answer "am I in the
+                // right account?".
+                //
+                // ONLY WHEN SET. An "Available" that appears by default would be a status the
+                // user never chose, shown to everyone who can see their profile — and the
+                // absence of a line is the honest rendering of having no status. The row does
+                // not tap through: Privacy owns the control, and a second door into it from a
+                // block that is otherwise pure identity would be a third way to reach one
+                // setting. Unrecognised values fall out at `from` and render nothing, so a
+                // legacy row's unvetted text never reaches the screen.
+                if let status = AvailabilityStatus.from(session.profile.statusText) {
+                    HStack(spacing: 5) {
+                        Image(systemName: status.systemImage)
+                            .font(.system(size: 10))
+                            .foregroundColor(status.tint)
+                        Text(status.label)
+                            .font(VoiidFont.rounded(13))
+                            .foregroundColor(VoiidColor.textSecondary)
+                            .lineLimit(1)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Your status is \(status.label)")
                 }
 
                 HStack(spacing: VoiidSpacing.sm) {

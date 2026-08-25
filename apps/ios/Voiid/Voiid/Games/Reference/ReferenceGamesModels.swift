@@ -38,10 +38,18 @@
 //  * CONTINUE PLAYING: there is no session-resume state anywhere. `GamesAPI.matches()`
 //    returns finished/abandoned history with no progress fraction, so a "72%" bar would be
 //    invented. The section is HIDDEN — see `hasContinuePlaying`.
-//  * FRIENDS ONLINE: there is no presence-for-games endpoint. Nothing can answer "Ravi is
-//    playing Turbo Rush". The section is HIDDEN — see `hasFriends`.
-//  Both are hidden rather than shown empty: a section that is permanently empty is clutter
-//  that teaches the user to scroll past that part of the screen forever.
+//  CONTINUE PLAYING is hidden rather than shown empty: a section that is permanently empty is
+//  clutter that teaches the user to scroll past that part of the screen forever.
+//
+//  ── FRIENDS ONLINE: NO LONGER HIDDEN ────────────────────────────────────────────
+//  This note used to say there was no presence backend. That was wrong. The WebSocket relay
+//  has always written a 60-second Redis heartbeat per connected user, and the API has always
+//  served it through the `last_seen_privacy` gate. What was missing was a BATCH read, so
+//  `POST /users/presence` was added — same gate, applied per user, one round trip.
+//
+//  The section is now live, but strictly narrower than the reference's: presence answers
+//  "awake", not "playing Turbo Rush". See `GameFriend` for exactly which fields were removed
+//  and why, and `refreshFriends` for who counts as a friend.
 //
 
 import SwiftUI
@@ -154,26 +162,29 @@ struct FeaturedGame: Identifiable, Hashable {
 
 // MARK: - Friends
 //
-// KEPT AS A TYPE, NEVER POPULATED. Voiid has no presence-for-games endpoint: nothing anywhere
-// can answer "who is online and in a lobby right now". The type survives so the ported
-// FriendCard in GamesScreen still compiles unchanged; `GamesStore.friends` is permanently
-// empty and the section that reads it is hidden. See the file note.
+// NOW POPULATED, AND NARROWER THAN THE REFERENCE'S. The reference's card claimed a `status`
+// ("Playing" / "In Lobby") and a `game` ("Turbo Rush"), and rendered that game's art beside
+// the person. Voiid's presence backend answers ONE question — is this account's WebSocket
+// heartbeat alive within the last 60 seconds — and it cannot answer either of the others:
+// there is no per-user "currently in match X" index anywhere, and `game_lobbies` is not
+// queryable by member for this purpose.
+//
+// So `status`, `game` and `gameID` are REMOVED rather than filled with a plausible default.
+// A card reading "Playing · Ludo" beside someone who is merely awake is a specific claim
+// about what another person is doing right now, and it would be false most of the time.
+// What survives is what is true: this is someone you have a direct chat with, and they are
+// online. DO NOT RE-ADD THE STATUS OR GAME FIELDS FROM THE REFERENCE without a backend that
+// can actually answer them.
 
 struct GameFriend: Identifiable, Hashable {
-    enum Status: String {
-        case playing = "Playing"
-        case inLobby = "In Lobby"
-
-        /// Lobbies are the invitation — someone waiting is someone you can join.
-        var isJoinable: Bool { self == .inLobby }
-    }
-
+    /// The peer's user id — the identity presence was resolved for.
     let id: String
     let name: String
-    let status: Status
-    let game: String
-    /// Which game art to show beside them.
-    let gameID: String
+    /// The conversation that made them a "friend". Carried so the card can hand the entry
+    /// flow the same `VConversation` the opponent picker would have used.
+    let conversationId: String
+    /// Their avatar, when the conversation resolved one.
+    let photoURL: String?
 }
 
 // MARK: - Tournaments
@@ -311,7 +322,11 @@ final class GamesStore {
     /// Suppressed below three, exactly as `GamesHomeView` does: a carousel of two is a worse
     /// grid, and the page dots under one slide are noise.
     var featured: [FeaturedGame] {
-        games.count >= 3 ? games.prefix(3).map(FeaturedGame.init) : []
+        // Built from `shelf`, not `games`: a game the user hid must not reappear as a
+        // 200pt carousel slide, which would be the single most prominent place on the tab
+        // to contradict a setting they just changed.
+        let shelf = self.shelf
+        return shelf.count >= 3 ? shelf.prefix(3).map(FeaturedGame.init) : []
     }
 
     /// PERMANENTLY EMPTY — no session-resume state exists. See the file note. Kept as a
@@ -320,9 +335,54 @@ final class GamesStore {
     var continuePlaying: [Game] { [] }
     var hasContinuePlaying: Bool { !continuePlaying.isEmpty }
 
-    /// PERMANENTLY EMPTY — no presence-for-games endpoint exists. See the file note.
-    var friends: [GameFriend] { [] }
-    var hasFriends: Bool { !friends.isEmpty }
+    // ── FRIENDS ONLINE — NOW LIVE ───────────────────────────────────────────────
+    //
+    // This section was hidden on the belief that no presence backend existed. One does:
+    // the WebSocket relay writes `user:<id>:online` into Redis with a 60s TTL, and the API
+    // serves it through the last_seen_privacy gate. What did not exist was a way to ask
+    // about MANY people at once; `POST /users/presence` is that, and it applies the same
+    // per-user gate as the single route.
+    //
+    // WHAT "FRIEND" MEANS HERE, AND WHY. Voiid has no friend graph. The three candidates
+    // were `contact_sync` (your phone's address book — people who have never used Voiid,
+    // and people you have never spoken to), `creator_follows` (a one-way subscription; a
+    // creator you follow is not someone you invite to Ludo), and DIRECT CONVERSATIONS.
+    // Direct conversations win: a person you have a one-to-one thread with is someone you
+    // have mutually chosen to talk to, they are reachable right now, and — decisively —
+    // it is ALREADY what this tab means by an opponent. `GameEntryFlow.candidates` picks
+    // the match roster from exactly this set. Any other definition would put a face in
+    // "Friends Online" that the very next screen refuses to let you play against.
+    //
+    // NOTHING IS INFERRED. `online` comes from the server or it does not come at all.
+    // There is no "recently active" fallback and no reading of message timestamps: a
+    // person whose privacy setting hides them is simply not here, and looks identical to
+    // a person who is asleep. That is the point of the gate.
+
+    /// People with a direct conversation who the server says are online RIGHT NOW.
+    /// Empty until `refreshFriends` has succeeded at least once.
+    var friends: [GameFriend] = []
+    /// Presence has its own three states — the catalog can be fine while this fails.
+    var friendState: GamesFeedState = .loading
+    /// Whether anyone could POSSIBLY appear. False when the user has no direct chats at
+    /// all, which is a different fact from "nobody is online" and hides the section
+    /// outright rather than promising a row that can never fill.
+    var hasAnyPeers = false
+
+    /// Draw the section at all?
+    ///
+    /// Deliberately NOT `!friends.isEmpty`. A failed fetch must not read as "nobody is
+    /// online" — that is a lie the user would act on — so `.failed` keeps the section on
+    /// screen to say so. A successful fetch that found nobody hides it, because an empty
+    /// shell teaches the user to scroll past this part of the screen forever.
+    var showFriendsSection: Bool {
+        guard hasAnyPeers else { return false }
+        switch friendState {
+        case .loading: return false   // nothing to say yet; the section appears when it has news
+        case .loaded:  return !friends.isEmpty
+        case .empty:   return false   // asked, answered: nobody is online
+        case .failed:  return true    // say so rather than imply an empty room
+        }
+    }
 
     /// Real tournaments, across every community the user belongs to.
     var tournaments: [Tournament] = []
@@ -363,16 +423,48 @@ final class GamesStore {
     /// offering a chip that filters to nothing is a dead control.
     var categories: [GameCategory] {
         var seen = Set<String>()
-        return games.compactMap { game in
+        // Over `shelf`, for the same reason the row exists at all: a chip whose only games
+        // are hidden would filter to an empty grid, which is precisely the dead control this
+        // property was written to prevent.
+        return shelf.compactMap { game in
             guard seen.insert(game.category.raw).inserted else { return nil }
             return game.category
         }
     }
 
+    // ── PER-GAME VISIBILITY ─────────────────────────────────────────────────────
+    //
+    // The user's own shelf. A game hidden in Games settings disappears from the carousel,
+    // the category chips and the grid — every browsing surface on this tab — and from
+    // nowhere else. It is not moderation: an invite to a hidden game still arrives (the
+    // banners read `visibleInvites`, which never consults this), still joins, and still
+    // opens its renderer. Match history and the leaderboard are likewise untouched, because
+    // a match you played is a fact about your past, not a shelf listing.
+    //
+    // FAILS OPEN, DELIBERATELY. `hiddenSlugs` starts empty and is only ever narrowed by a
+    // SUCCESSFUL fetch. A preferences call that times out therefore leaves every game
+    // visible rather than hiding the tab behind a network error — the opposite default
+    // would turn one dropped request into an app that looks broken and offers no clue why.
+
+    /// Slugs this user has switched off. Empty until `loadVisibility` succeeds.
+    var hiddenSlugs: Set<String> = []
+
+    /// The catalog minus what this user hid. Everything browsable reads THIS, not `games`.
+    var shelf: [Game] {
+        hiddenSlugs.isEmpty ? games : games.filter { !hiddenSlugs.contains($0.slug) }
+    }
+
+    /// True when a non-empty catalog has been hidden down to nothing BY THE USER.
+    ///
+    /// The distinction the empty state depends on: `games.isEmpty` means the server sent no
+    /// catalog, which the user cannot fix from here, while this means they hid every row and
+    /// the fix is two taps away. Same list, two completely different sentences.
+    var everythingHidden: Bool { !games.isEmpty && shelf.isEmpty }
+
     /// The catalog under the current filter.
     var visibleGames: [Game] {
-        guard let category else { return games }
-        return games.filter { $0.category == category }
+        guard let category else { return shelf }
+        return shelf.filter { $0.category == category }
     }
 
     // MARK: Wiring
@@ -404,10 +496,68 @@ final class GamesStore {
         }
     }
 
+    /// Pull the hidden set. Called alongside `load()`.
+    ///
+    /// SILENT ON FAILURE, AND THAT IS THE POINT. There is no `visibilityState` and no error
+    /// banner: the only consequence of a failed fetch is that `hiddenSlugs` stays as it is
+    /// (empty on a cold start), so every game shows. A user seeing one game they meant to
+    /// hide is a far smaller failure than a user seeing an error where their games were,
+    /// and the settings screen — which CAN act on the error — reports it there instead.
+    func loadVisibility() async {
+        if let fresh = try? await api.visibility() { hiddenSlugs = Set(fresh) }
+    }
+
     /// Refresh the invite banners. Called on a poll, so it deliberately does NOT touch
     /// `feedState`: a dropped invite poll must not blank the catalog.
     func refreshInvites() async {
         if let fresh = try? await api.invites() { invites = fresh }
+    }
+
+    /// Who, of the people you have a direct conversation with, is online right now.
+    ///
+    /// Takes the roster as an argument rather than reaching for `ChatStore` itself: this
+    /// store owns no dependencies on the chat layer, and the screen already holds that list
+    /// for the opponent picker. One source of truth for "who counts", shared by both.
+    ///
+    /// FAILURE IS NOT EMPTINESS. On a thrown request the previously-known list is LEFT IN
+    /// PLACE and the state becomes `.failed`. Blanking it would tell the user everyone went
+    /// offline in the last minute, which is a claim the failed request did not make.
+    func refreshFriends(peers: [VConversation]) async {
+        // Same filter the entry flow's `candidates` uses — direct chats whose peer we can
+        // actually name. Self-chats have no peer id and drop out here, which is right: you
+        // are not your own opponent.
+        let named: [(userId: String, convo: VConversation)] = peers.compactMap { convo in
+            guard convo.type == .direct, let peer = convo.peerUserId, !peer.isEmpty else { return nil }
+            return (peer, convo)
+        }
+        // Deduplicated by peer: two conversations with the same person must not draw two
+        // cards, and must not cost two entries against the server's batch cap.
+        var seen = Set<String>()
+        let unique = named.filter { seen.insert($0.userId).inserted }
+
+        hasAnyPeers = !unique.isEmpty
+        guard !unique.isEmpty else {
+            friends = []
+            friendState = .empty
+            return
+        }
+
+        do {
+            let presence = try await ChatService.shared.presence(userIds: unique.map(\.userId))
+            // ONLY genuinely-online people. An id the server did not answer for is absent
+            // from the map, and absent is not offline — but it is also not a licence to
+            // show them, so it falls out here either way.
+            friends = unique.compactMap { entry in
+                guard presence[entry.userId]?.online == true else { return nil }
+                return GameFriend(id: entry.userId,
+                                  name: entry.convo.title,
+                                  conversationId: entry.convo.id,
+                                  photoURL: entry.convo.photoURL)
+            }
+            friendState = friends.isEmpty ? .empty : .loaded
+        } catch {
+            friendState = .failed("Couldn't check who's online")
+        }
     }
 
     /// Acknowledge an invite locally at once so the banner goes immediately, then tell the

@@ -131,6 +131,106 @@ router.get(
   })
 );
 
+// ─────────────────────────────────────────────────────────────────────────────────
+// PER-USER GAME VISIBILITY — which catalog rows this person wants to see.
+//
+// ── THIS IS A PREFERENCE, NOT MODERATION ────────────────────────────────────────
+// Hiding a game hides it from the PERSON WHO HID IT and from nobody else. It is scoped to
+// one `user_id`, it is never read by any other user's request, and — deliberately — it is
+// never read by the INVITE path. GET /games/invites filters on match status and player
+// membership only; it does not join this preference and it must not start. Someone who
+// hides Ludo because they never browse for it must still be able to accept the Ludo invite
+// a friend just sent, or the setting silently becomes a way for a third party's game choice
+// to fail with no explanation. Same reasoning for /matches, /matches/:id/* and the
+// leaderboard: a hidden game is hidden from the SHELF, never from a match in progress.
+//
+// ── STORAGE: THE EXISTING BLOB, NO MIGRATION ────────────────────────────────────
+// `user_game_preferences (user_id, preferences jsonb, updated_at)` already exists and
+// already carries `ludoWalkthrough` (routes/users.ts). A jsonb blob per user is exactly the
+// shape a growing set of small per-user settings wants, so visibility becomes one more key
+// inside it rather than a table of its own:
+//
+//   { "ludoWalkthrough": 1, "hiddenSlugs": ["snake", "ludo"] }
+//
+// MERGED, NOT OVERWRITTEN. The write below is `jsonb_set` on the existing blob — the same
+// operator and the same insert/on-conflict shape routes/users.ts uses — so writing
+// visibility cannot clobber `ludoWalkthrough`, and a future key cannot be clobbered by
+// either of them. A bare `set preferences = $2` would have made these two settings
+// mutually destructive, which is the trap a shared blob sets for you.
+//
+// ── SLUGS ARE VALIDATED AGAINST THE REAL CATALOG ────────────────────────────────
+// An unknown slug is REJECTED rather than stored and ignored. Storing junk would let the
+// blob accumulate garbage no reader can interpret, and a typo'd slug that silently "worked"
+// would hide nothing while the client believed it had.
+// ─────────────────────────────────────────────────────────────────────────────────
+
+/** GET /games/visibility — the caller's hidden slugs. Absent key ⇒ nothing hidden. */
+router.get(
+  '/visibility',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id: userId } = (req as any).auth as { user_id: string };
+    const rows = await query<{ preferences: Record<string, unknown> | null }>(
+      `select preferences from user_game_preferences where user_id = $1`,
+      [userId]
+    );
+    const raw = rows[0]?.preferences?.hiddenSlugs;
+    // Defensive read: this blob is shared with other keys and other writers, so a
+    // malformed value is treated as "nothing hidden" rather than 500-ing the games tab.
+    // Failing open is the correct direction here — see the client's identical rule.
+    const hidden = Array.isArray(raw) ? raw.filter((s): s is string => typeof s === 'string') : [];
+    res.json({ hidden_slugs: hidden });
+  })
+);
+
+/**
+ * PUT /games/visibility — body: { hidden_slugs: [slug, ...] }.
+ *
+ * Whole-list PUT rather than add/remove verbs: the client screen is a list of switches whose
+ * state IS the whole list, and two devices toggling different games settle on one of the two
+ * lists instead of on a merge nobody asked for.
+ */
+router.put(
+  '/visibility',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id: userId } = (req as any).auth as { user_id: string };
+    const body = req.body?.hidden_slugs;
+    if (!Array.isArray(body) || body.length > 200) {
+      return res.status(400).json({ error: 'hidden_slugs must be an array of slugs' });
+    }
+    if (!body.every((s: unknown) => typeof s === 'string')) {
+      return res.status(400).json({ error: 'hidden_slugs must contain only strings' });
+    }
+    // Deduplicated before validation so a client that sent the same slug twice is not told
+    // its input is invalid over something that makes no difference to the stored set.
+    const requested = [...new Set(body as string[])];
+
+    // VALIDATED AGAINST THE LIVE CATALOG, including disabled rows. `enabled = false` is an
+    // operator's switch, not the user's — a game pulled from the catalog for a week must not
+    // have the user's choice about it silently discarded and come back visible.
+    const known = await query<{ slug: string }>(`select slug from games`);
+    const catalog = new Set(known.map((r) => r.slug));
+    const unknown = requested.filter((s) => !catalog.has(s));
+    if (unknown.length > 0) {
+      return res.status(400).json({ error: 'unknown game slug', slugs: unknown });
+    }
+
+    await query(
+      // Same insert/on-conflict/jsonb_set shape as users.ts's walkthrough write, so this
+      // table has exactly ONE convention. `jsonb_set` on the EXISTING blob is what makes the
+      // write a merge: every other key in `preferences` survives untouched.
+      `insert into user_game_preferences (user_id, preferences, updated_at)
+       values ($1, jsonb_set('{}'::jsonb, '{hiddenSlugs}', $2::jsonb), now())
+       on conflict (user_id) do update
+         set preferences = jsonb_set(user_game_preferences.preferences, '{hiddenSlugs}', $2::jsonb),
+             updated_at = now()`,
+      [userId, JSON.stringify(requested)]
+    );
+    res.json({ ok: true, hidden_slugs: requested });
+  })
+);
+
 /**
  * POST /games/matches — create a match and invite one or more opponents.
  * Body: { slug, opponent_ids: [uuid, ...] }

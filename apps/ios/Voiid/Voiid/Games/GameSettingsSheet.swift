@@ -19,6 +19,23 @@
 //
 //  Mirrors Android `GameSettingsSheet.kt`.
 //
+//  ── SUPERSEDED ON THE SHIPPING TAB. DO NOT ADD SETTINGS HERE. ───────────────────
+//  This sheet's whole premise — one surface holding both global and per-game settings — is
+//  the thing that got split. `RootTabView` renders `GamesScreen`, and that screen's header
+//  settings button is gone; the two scopes now live where their scope actually is:
+//
+//    global (sound, haptics)   → the Games tab header, `Games/GameSettingsView.swift`
+//    per-game (Snake steering) → that game's detail screen, `Games/Reference/GameSettingsCard.swift`
+//
+//  The file survives only because `GamesHomeView` — the older, non-rendered games home kept
+//  as the reference implementation for the match plumbing — still presents it, and deleting
+//  it would break that file's build. A new setting added here would be invisible to every
+//  shipping user. Add it in one of the two files above instead.
+//
+//  Persistence is shared with those two screens, not duplicated: all three read and write
+//  the same `GameAudio.isMuted`, `GameHaptics.isDisabled` and `SnakeChoiceStore.controlScheme`
+//  statics over the same UserDefaults keys, so nothing can disagree about a player's choice.
+//
 
 import SwiftUI
 

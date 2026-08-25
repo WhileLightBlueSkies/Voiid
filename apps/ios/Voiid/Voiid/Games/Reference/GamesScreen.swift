@@ -100,7 +100,6 @@ struct GamesScreen: View {
     /// chosen explicitly in the entry flow. See PartyLobbyHost.
     @State private var party: PartyArgs?
     @State private var showSkinPicker = false
-    @State private var showSettings = false
     @State private var showLudoWalkthrough = false
     @State private var ludoWalkthroughCompletion: (() -> Void)?
 
@@ -304,10 +303,6 @@ struct GamesScreen: View {
                     hasLocalBot: Self.hasLocalBot(game.slug),
                     onFinish: { outcome in handle(outcome, for: game) })
             }
-            .sheet(isPresented: $showSettings) {
-                GameSettingsSheet { showSettings = false }
-                    .presentationDetents([.medium, .large])
-            }
             .sheet(isPresented: $showSkinPicker) {
                 SnakeSkinPicker { showSkinPicker = false }
                     .presentationDetents([.medium, .large])
@@ -322,6 +317,10 @@ struct GamesScreen: View {
             }
         }
         .task { await store.load() }
+        // A SEPARATE `.task`, not chained onto the catalog load: the two are independent
+        // round-trips and neither should be able to delay or fail the other. Visibility
+        // failing silently leaves every game on the shelf — see `loadVisibility`.
+        .task { await store.loadVisibility() }
         .task { await store.loadTournaments() }
         .task {
             // Polled rather than pushed: an invite arrives as a chat message, and the games
@@ -330,6 +329,23 @@ struct GamesScreen: View {
             while !Task.isCancelled {
                 await store.refreshInvites()
                 try? await Task.sleep(nanoseconds: 20_000_000_000)
+            }
+        }
+        // Presence, on its own clock.
+        //
+        // 60 SECONDS, MATCHED TO THE TTL. The relay stamps `user:<id>:online` with a 60s
+        // expiry, so the underlying fact changes at most once a minute; polling faster than
+        // that spends a request to re-read a value that provably cannot have moved. Polling
+        // much SLOWER would let the card outlive the heartbeat and claim someone is here
+        // after Redis has already forgotten them.
+        //
+        // STOPS WITH THE VIEW. `.task` is cancelled when this view goes away, so switching
+        // tabs or pushing a board ends the poll rather than leaving a timer running behind a
+        // screen nobody is looking at.
+        .task(id: chat.directConversations.count) {
+            while !Task.isCancelled {
+                await store.refreshFriends(peers: chat.directConversations)
+                try? await Task.sleep(nanoseconds: 60_000_000_000)
             }
         }
         // A ROOT tab, so it claims the bar exactly like ChatsHomeView does.
@@ -354,14 +370,38 @@ struct GamesScreen: View {
     /// Everything below the header, once the catalog is in.
     @ViewBuilder
     private var content: some View {
+        // HIDING EVERY GAME MUST NOT PRODUCE A DEAD TAB. With every row switched off the
+        // carousel, the chips and the grid are all empty, and rendering them would leave a
+        // tab that looks broken with nothing on it to explain why or undo it. So the whole
+        // browsing stack is replaced by a state that NAMES THE CAUSE and carries the way
+        // back — the same screen the setting was changed on, one tap away.
+        //
+        // Distinct from `emptyState` above, which means the SERVER sent no catalog. Same
+        // blank grid, opposite causes, and only one of them is something the user can fix.
+        if store.everythingHidden {
+            allHiddenState
+            // Invites and tournaments still render below: an invite to a hidden game is
+            // still a live invite, and a tournament is not a shelf listing.
+            inviteBanners
+            tournaments
+        } else {
+            browsingContent
+        }
+    }
+
+    /// The ordinary browsing stack — everything shown when at least one game is on the shelf.
+    @ViewBuilder
+    private var browsingContent: some View {
         featured
         // HIDDEN UNTIL A BACKEND EXISTS — no session-resume state. See the file note. The
         // section body is kept intact so it lights up unchanged the day one lands.
         if store.hasContinuePlaying { continueSection }
         categories
         catalogSection
-        // HIDDEN UNTIL A BACKEND EXISTS — no presence-for-games endpoint. See the file note.
-        if store.hasFriends { friendsSection }
+        // LIVE. Shown only when there is something true to say — see `showFriendsSection`,
+        // which deliberately keeps the section up on a FAILED check and takes it down on a
+        // successful one that found nobody.
+        if store.showFriendsSection { friendsSection }
         inviteBanners
         tournaments
     }
@@ -407,13 +447,26 @@ struct GamesScreen: View {
                 .buttonStyle(PressableButtonStyle())
                 .accessibilityLabel("Match history")
 
-                // GAME SETTINGS — sound, haptics, Snake's steering scheme. `GameSettingsSheet`
-                // was fully built and reachable only from `GamesHomeView`, which is not the
-                // screen this tab renders — so the only way to silence a match was to silence
-                // the phone, which is exactly the problem that sheet was written to solve.
-                Button {
-                    Haptics.tap()
-                    showSettings = true
+                // GAME SETTINGS — THE ONE DOOR, AND IT IS HERE.
+                //
+                // This button briefly moved into the Settings tree as a "Games" row. That was
+                // wrong: game settings are settings ABOUT the arcade, and the arcade is where
+                // a player is standing when they want them. The Settings row is gone — there
+                // is no `SettingsRoute.games` any more — so this is the ONLY entry point.
+                // Do not add a second one; two doors to one screen is how a user learns to
+                // distrust both.
+                //
+                // What it opens is NOT the old `GameSettingsSheet`. That sheet mixed scopes:
+                // sound and haptics (every game) sat directly above Snake's steering (one
+                // game). The per-game half stayed split out onto the game's own detail screen
+                // (`GameSettingsCard`), which is correct and is not being undone. What comes
+                // back here is the GLOBAL half, in the card vocabulary, plus the visibility
+                // list — both of which are facts about the whole arcade.
+                //
+                // A push, not a sheet, matching Leaderboard and Match History beside it: this
+                // is a place with a list in it, not a quick modal decision.
+                NavigationLink {
+                    GameSettingsView(store: store)
                 } label: {
                     circleButtonLabel("slider.horizontal.3")
                 }
@@ -480,6 +533,49 @@ struct GamesScreen: View {
     }
 
     /// The third state: the fetch worked and the server has nothing enabled.
+    /// Every game switched off in Game settings.
+    ///
+    /// Says WHO did it ("You've hidden"), so it reads as a setting rather than a failure, and
+    /// offers the only useful action: go turn one back on. Anything less — a bare "No games"
+    /// — would have the user pulling to refresh a tab that is working exactly as told.
+    private var allHiddenState: some View {
+        VStack(spacing: VoiidSpacing.sm) {
+            Image(systemName: "eye.slash")
+                .font(.system(size: 34))
+                .foregroundColor(VoiidColor.textSecondary)
+                .padding(.bottom, VoiidSpacing.xs)
+
+            Text("You've hidden every game")
+                .font(VoiidFont.rounded(17, .semibold))
+                .foregroundColor(VoiidColor.textPrimary)
+
+            Text("Turn one back on in Game settings and it reappears here.")
+                .font(VoiidFont.rounded(13))
+                .foregroundColor(VoiidColor.textSecondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+
+            // The way out, in the empty state itself — not only under the small circle in
+            // the header the user has evidently not connected to this. Same destination, so
+            // there is still exactly one game-settings screen.
+            NavigationLink {
+                GameSettingsView(store: store)
+            } label: {
+                Text("Open Game settings")
+                    .font(VoiidFont.rounded(15, .semibold))
+                    .foregroundColor(VoiidColor.textOnAccent)
+                    .padding(.horizontal, VoiidSpacing.lg)
+                    .frame(height: 44)
+                    .background(Capsule().fill(VoiidColor.accent))
+            }
+            .buttonStyle(PressableButtonStyle())
+            .padding(.top, VoiidSpacing.xs)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, VoiidSpacing.lg)
+        .padding(.vertical, 70)
+    }
+
     private var emptyState: some View {
         VStack(spacing: VoiidSpacing.xs) {
             Text("No games yet")
@@ -614,21 +710,51 @@ struct GamesScreen: View {
 
     // MARK: Friends
     //
-    // NO BACKEND — gated off in `content`. Kept whole. See the file note.
+    // LIVE NOW — see `GamesStore.refreshFriends`. Presence is real (a 60s Redis heartbeat
+    // written by the WebSocket relay, read through the last_seen_privacy gate); what the
+    // reference claimed on top of it — "Playing", "In Lobby", a game name and that game's
+    // art — was not, and is gone. See `GameFriend`.
+    //
+    // The section's VISIBILITY is decided by `store.showFriendsSection`, not by whether the
+    // array is empty: a failed presence check keeps the section on screen to say it failed,
+    // because rendering nothing would assert that nobody is online.
 
     private var friendsSection: some View {
         VStack(alignment: .leading, spacing: VoiidSpacing.md) {
             sectionHeader("Friends Online", showAll: false)
 
-            ScrollView(.horizontal) {
-                HStack(spacing: 12) {
-                    ForEach(store.friends) { friend in
-                        FriendCard(friend: friend)
+            if case .failed(let message) = store.friendState {
+                // Distinct from "nobody is online" — same treatment tournaments give the
+                // same distinction, because it is the same distinction.
+                HStack(spacing: VoiidSpacing.sm) {
+                    Image(systemName: "wifi.exclamationmark")
+                        .font(.system(size: 15))
+                        .foregroundColor(VoiidColor.textSecondary)
+                    Text(message)
+                        .font(VoiidFont.rounded(13.5))
+                        .foregroundColor(VoiidColor.textSecondary)
+                    Spacer(minLength: 0)
+                    Button("Retry") {
+                        Task { await store.refreshFriends(peers: chat.directConversations) }
                     }
+                    .font(VoiidFont.rounded(13.5, .semibold))
+                    .foregroundColor(VoiidColor.accentInk)
                 }
+                .padding(VoiidSpacing.md)
+                .background(VoiidColor.surfaceCard)
+                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
                 .padding(.horizontal, VoiidSpacing.md)
+            } else {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 12) {
+                        ForEach(store.friends) { friend in
+                            FriendCard(friend: friend)
+                        }
+                    }
+                    .padding(.horizontal, VoiidSpacing.md)
+                }
+                .scrollIndicators(.hidden)
             }
-            .scrollIndicators(.hidden)
         }
     }
 
@@ -1232,62 +1358,54 @@ private struct FriendCard: View {
     let friend: GameFriend
 
     var body: some View {
-        Button {
-            Haptics.tap()
-        } label: {
-            HStack(spacing: 10) {
-                ProfilePhoto(name: friend.name, size: 42, allowFallbackPhoto: true)
-                    .overlay(alignment: .bottomTrailing) {
-                        Circle()
-                            .fill(VoiidColor.success)
-                            .frame(width: 12, height: 12)
-                            .overlay(Circle().stroke(VoiidColor.surfaceCard, lineWidth: 2))
-                    }
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(friend.name)
-                        .font(VoiidFont.rounded(14.5, .semibold))
-                        .foregroundColor(VoiidColor.textPrimary)
-
-                    Text(friend.status.rawValue)
-                        .font(VoiidFont.rounded(12, .medium))
-                        .foregroundColor(VoiidColor.accentInk)
-
-                    Text(friend.game)
-                        .font(VoiidFont.rounded(11.5))
-                        .foregroundColor(VoiidColor.textSecondary)
-                        .lineLimit(1)
+        // NOT A BUTTON ANY MORE. The reference's card was tappable and its action was
+        // `Haptics.tap()` — a press state, a haptic, and nothing else. A control that
+        // acknowledges a press and then does nothing is worse than a card that never
+        // offered: it teaches the user that this screen's affordances lie (§16.4).
+        //
+        // There IS a real destination — the entry flow, pre-set to this person — but it
+        // belongs to a GAME, and this card names no game. Choosing one on the user's behalf
+        // would be the screen deciding what they came to play. So the card states a fact and
+        // the games above it remain the way in.
+        HStack(spacing: 10) {
+            ProfilePhoto(name: friend.name, size: 42, allowFallbackPhoto: true)
+                .overlay(alignment: .bottomTrailing) {
+                    Circle()
+                        .fill(VoiidColor.success)
+                        .frame(width: 12, height: 12)
+                        .overlay(Circle().stroke(VoiidColor.surfaceCard, lineWidth: 2))
                 }
 
-                Spacer(minLength: 0)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(friend.name)
+                    .font(VoiidFont.rounded(14.5, .semibold))
+                    .foregroundColor(VoiidColor.textPrimary)
+                    .lineLimit(1)
 
-                // The game they are in, as art. Small, because it identifies rather than
-                // advertises.
-                LinearGradient(
-                    colors: [AvatarPalette.color(for: friend.gameID),
-                             AvatarPalette.color(for: friend.game).opacity(0.65)],
-                    startPoint: .topLeading, endPoint: .bottomTrailing
-                )
-                .frame(width: 44, height: 44)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(friend.status.isJoinable ? VoiidColor.accent : .clear,
-                                lineWidth: 1.5)
-                )
+                // The ONLY claim presence supports. "Playing" and the game name are gone —
+                // nothing in the backend knows what anyone is doing. See `GameFriend`.
+                Text("Online")
+                    .font(VoiidFont.rounded(12, .medium))
+                    // Small type wants slightly positive tracking (§15).
+                    .tracking(0.1)
+                    .foregroundColor(VoiidColor.accentInk)
             }
-            .padding(VoiidSpacing.sm + 2)
-            .frame(width: 258)
-            .background(VoiidColor.surfaceCard)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(VoiidColor.divider, lineWidth: 1)
-            )
+
+            Spacer(minLength: 0)
         }
-        .buttonStyle(PressableButtonStyle())
+        .padding(VoiidSpacing.sm + 2)
+        // Narrower than the reference's 258 — that width was sized around a 44pt game-art
+        // tile and a third line of text, neither of which exists now. `fixedSize` on the
+        // height lets the card grow with Dynamic Type instead of clipping the name.
+        .frame(width: 200)
+        .background(VoiidColor.surfaceCard)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(VoiidColor.divider, lineWidth: 1)
+        )
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(friend.name), \(friend.status.rawValue) \(friend.game)")
+        .accessibilityLabel("\(friend.name), online")
     }
 }
 

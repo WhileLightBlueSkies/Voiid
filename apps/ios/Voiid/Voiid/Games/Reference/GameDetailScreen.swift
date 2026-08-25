@@ -54,6 +54,8 @@ struct GameDetailScreen: View {
                     hero
                     identity
                     facts
+                    rules
+                    perGameSettings
                 }
             }
             .scrollIndicators(.hidden)
@@ -124,19 +126,40 @@ struct GameDetailScreen: View {
                 .font(VoiidFont.rounded(26, .bold))
                 .foregroundColor(VoiidColor.textPrimary)
 
-            Text(seatLine)
-                .font(VoiidFont.rounded(14))
-                .foregroundColor(VoiidColor.textSecondary)
+            // THE HOOK, NOT THE SEAT COUNT. This line used to read "2 players" — the exact
+            // string the facts card's `Players` row carries about 200pt below it. The same
+            // fact twice, and the second one is the better of the two because it is LABELLED:
+            // "Players — 2 players" cannot be misread, whereas a bare "2 players" under a
+            // title has to be inferred. So the facts row keeps the seat count and the subtitle
+            // gives up its copy of it.
+            //
+            // What takes the slot is the one thing this screen was missing under the title:
+            // the game's own hook, from the same `GameRules` the card below draws. It is the
+            // sibling entry sheet's subtitle too, so a player who arrives by either route
+            // reads the same sentence under the same name (§4 Familiarity).
+            //
+            // NIL RENDERS NOTHING. A slug with no tagline written gets no line at all rather
+            // than a fabricated one — the same rule the rules card follows.
+            if let tagline = GameRules.tagline(for: game.slug) {
+                Text(tagline)
+                    .font(VoiidFont.rounded(14))
+                    .foregroundColor(VoiidColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             // NO BLURB. The reference had a paragraph of copy about 3v3 battle royales; the
             // catalog carries no description column, so there is nothing to put here and an
             // invented one would be marketing nobody wrote. `GameRules` is where a game
-            // explains itself, and it is reachable from inside the match.
+            // explains itself — and as of now it does so ON THIS SCREEN, in the card below the
+            // facts, rather than only from inside the match.
 
             HStack(spacing: 7) {
-                // Facts off the row, not genre labels. The category is the catalog's own
-                // column; the seat shape is what min/max_players actually say.
-                tag(game.category.rawValue)
+                // Facts off the row, not genre labels — and only the ones the facts card does
+                // NOT already carry. The category chip was dropped: "Board" as a chip here and
+                // "Category — Board" in the card below is one fact rendered twice, and the
+                // labelled row wins for the same reason the seat count did. The shape chips
+                // survive because nothing else states them: how the seats are arranged
+                // (head-to-head vs multiplayer) is derived from min/max, not printed anywhere.
                 tag(game.maxPlayers > 2 ? "Multiplayer" : "Head-to-head")
                 if game.minPlayers <= 1 { tag("Solo") }
             }
@@ -196,6 +219,63 @@ struct GameDetailScreen: View {
         }
         .padding(.horizontal, VoiidSpacing.md)
         .frame(height: 50)
+    }
+
+    // MARK: Rules
+    //
+    // WHAT FILLED THE GAP. Between the facts card and the buttons there was nothing — on a
+    // two-row game like Rock Paper Scissors the facts ended around 40% down the screen and the
+    // player stared at half a page of ground before the CTAs. The gap was not a spacing bug; it
+    // was a missing answer to the only question this screen exists to answer. A player deciding
+    // whether to tap Play needs to know what they are agreeing to play, and Hand Cricket in
+    // particular is unplayable unguessed (see GameRules' header: "matching numbers is out" is a
+    // house rule nobody arrives knowing).
+    //
+    // ── SHOWN IN FULL, WITH NO DISCLOSURE — AND THAT WAS VERIFIED, NOT ASSUMED ──────
+    // The sibling sheet (`GameEntryFlow`) has to fold most rule sets behind a "5 more rules"
+    // row, because its play options sit IN the scrolling column: rules long enough to push them
+    // down push them off screen, and the rules must give way before a control does.
+    //
+    // THIS SCREEN HAS NO SUCH CONSTRAINT, and the reason is structural rather than a matter of
+    // how much text happens to fit. Look at `body`: the ScrollView and the `footer` are SIBLINGS
+    // in a ZStack, and the footer is pinned with `.frame(maxHeight: .infinity, alignment:
+    // .bottom)`. The buttons are not in the scrolling column at all, so no amount of content can
+    // move them — they are painted over it at a fixed place on the glass. The
+    // `.contentMargins(.bottom, 132, for: .scrollContent)` on the ScrollView reserves exactly
+    // the footer's height at the end of the scroll, so the last rule line can still be scrolled
+    // clear of the buttons rather than trapped beneath them. Longest set in the catalog is
+    // Snake's five lines; they simply extend the scroll.
+    //
+    // Hence `previewCount: nil` — the full set, and the disclosure row is never drawn. Passing a
+    // budget here would cost a tap to reveal rules that had nowhere they needed to fit.
+    private var rules: some View {
+        GameRulesCard(slug: game.slug, previewCount: nil)
+            .padding(.horizontal, VoiidSpacing.md)
+            .padding(.top, VoiidSpacing.lg)
+    }
+
+    // MARK: Per-game settings
+    //
+    // BELOW THE RULES, AND ONLY FOR GAMES THAT HAVE ANY. The screen's order is: what this
+    // game is → how it is played → how YOU play it. A control that changes your own
+    // experience of the game only makes sense once the game has been described, so it sits
+    // after the rules card rather than competing with it.
+    //
+    // Snake's steering scheme moved here from the Games tab's header sheet, where it sat
+    // under sound and haptics — two settings that apply to every game — with only a "Snake"
+    // section header to distinguish it. Scope now matches location.
+    //
+    // `GameSettingsCard` renders `EmptyView` for every other slug, which contributes no
+    // height, so the `if` here is about the PADDING rather than the card: an unconditional
+    // `.padding(.top, .lg)` on an empty view would leave a 24pt hole above the footer on
+    // every game that has no settings. `hasSettings` exists for exactly this.
+    @ViewBuilder
+    private var perGameSettings: some View {
+        if GameSettingsCard.hasSettings(game.slug) {
+            GameSettingsCard(slug: game.slug)
+                .padding(.horizontal, VoiidSpacing.md)
+                .padding(.top, VoiidSpacing.lg)
+        }
     }
 
     /// "2 players" / "2–4 players" / "1–6 players". Straight off the catalog row.

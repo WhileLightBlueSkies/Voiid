@@ -407,7 +407,11 @@ struct ContactProfileView: View {
     /// status saw it labelled "About" and a user with both lost the status entirely.
     @ViewBuilder
     private var aboutCard: some View {
-        let status = profile?.statusText ?? ""
+        // PARSED ONCE, and every branch below keys off the parsed value rather than the raw
+        // string. Testing the raw string in one place and the parsed one in another is how an
+        // unrecognised value ends up rendering nothing at all: skipped by the status branch
+        // for being unknown, and skipped by the fallback for being non-empty.
+        let status = AvailabilityStatus.from(profile?.statusText)
         let about = profile?.about ?? ""
         card("About") {
             if loadState == .loading {
@@ -420,7 +424,7 @@ struct ContactProfileView: View {
                         .frame(width: 180, height: 14)
                 }
                 .modifier(PulsePlaceholder())
-            } else if loadState == .failed && status.isEmpty && about.isEmpty {
+            } else if loadState == .failed && status == nil && about.isEmpty {
                 // FAILED IS NOT EMPTY. Showing "Hey there! I am using Voiid." here would put
                 // words in this person's mouth that they never wrote, purely because our
                 // request failed — so the failure says so, and offers the retry.
@@ -439,13 +443,24 @@ struct ContactProfileView: View {
                     .font(VoiidFont.rounded(14, .semibold))
                     .foregroundStyle(VoiidColor.primary)
                 }
-            } else if !status.isEmpty {
+            } else if let availability = status {
+                // A KNOWN STATUS, drawn from the vocabulary rather than printed as whatever
+                // text the column held.
+                //
+                // `status_text` accepted anything until the write path was closed to four
+                // values, so a row could still contain arbitrary text nobody validated and no
+                // report path covers. `AvailabilityStatus.from` returns nil for anything
+                // outside the set, and this branch is skipped — an unrecognised value shows as
+                // no status rather than as unvetted text on a stranger's profile.
+                //
+                // The glyph is the status's own, so "Busy" looks the same here as it does in
+                // the owner's Settings picker.
                 HStack(alignment: .top, spacing: VoiidSpacing.sm) {
-                    Image(systemName: "quote.opening")
+                    Image(systemName: availability.systemImage)
                         .font(.system(size: 12))
-                        .foregroundColor(VoiidColor.primary)
+                        .foregroundColor(availability.tint)
                         .padding(.top, 3)
-                    Text(status)
+                    Text(availability.label)
                         .font(VoiidFont.rounded(16, .medium))
                         .foregroundColor(VoiidColor.textPrimary)
                     Spacer(minLength: 0)
@@ -463,7 +478,7 @@ struct ContactProfileView: View {
             // Only when BOTH are genuinely absent. Previously the default text was shown
             // whenever `about` was empty, which meant a peer with a real status still read
             // "Hey there! I am using Voiid." — a message they never wrote.
-            if status.isEmpty && about.isEmpty {
+            if status == nil && about.isEmpty {
                 Text("Hey there! I am using Voiid.")
                     .font(VoiidFont.rounded(16, .regular))
                     .foregroundColor(VoiidColor.textSecondary)
