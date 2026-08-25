@@ -118,7 +118,12 @@ struct RootTabView: View {
                 case .map:     MapTabView()
                 case .clips:   ClipsFeedView()
                 case .communities: CommunitiesHomeView()
-                case .games:   GamesHomeView()
+                // THE PORTED REFERENCE, NOW WIRED. Games/Reference/GamesScreen is the
+                // reference arcade tab's layout running on the REAL backend: GamesAPI for the
+                // catalog and invites, TournamentService for tournaments, GamesEngine and
+                // GameLobbyView for the match lifecycle. `GamesHomeView` is the implementation
+                // it reuses and is now unreferenced — kept until someone decides to retire it.
+                case .games:   GamesScreen()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -166,9 +171,9 @@ struct RootTabView: View {
         }
         .ignoresSafeArea(.keyboard)
         // Join tapped on a game-invite bubble, which lives in the Chats tab. Switch to Games
-        // so the board (owned by that tab's stack) can present; GamesHomeView handles the
-        // rest. Ordering is safe either way — the notification is re-broadcast to whoever is
-        // listening, and GamesHomeView is alive as soon as the tab renders.
+        // so the board (owned by that tab's stack) can present; GamesScreen handles the rest.
+        // Ordering is safe either way — the notification is re-broadcast to whoever is
+        // listening, and GamesScreen is alive as soon as the tab renders.
         .onReceive(NotificationCenter.default.publisher(for: .voiidOpenGameMatch)) { _ in
             tab = .games
         }

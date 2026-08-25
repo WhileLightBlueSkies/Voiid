@@ -17,11 +17,13 @@
 //  should be (open reports, join requests, who is new).
 //
 //  ── WHAT EACH TAB READS ─────────────────────────────────────────────────────────
-//  Home     nothing — placeholder samples, see CommunityHomeModels.swift
+//  Home     GET /communities/:id/posts + /announcements (live); the admin dashboard's
+//           stats and task queue are still placeholder — they have no backend at all
 //  Spaces   GET /communities/:id/channels, decorated with placeholder purpose/unread/activity
 //  Events   the existing CommunityEventsSection / CommunityTournamentsSection (live)
 //  Members  GET /communities/:id/members, decorated with placeholder names/handles
-//  About    the card already in hand, plus placeholder rules and links
+//  About    the card already in hand, plus GET /communities/:id/links (live) and
+//           placeholder rules
 //
 //  ── WHERE THE PLACEHOLDERS ARE, AND WHY ─────────────────────────────────────────
 //  The server returns ids and states, not display names, purposes, unread counts or online
@@ -539,7 +541,26 @@ struct CommunityAboutTab: View {
     var isAdmin: Bool = false
 
     var rules: [CommunityRule] = CommunityRule.samples
-    var links: [CommunityAboutLink] = CommunityAboutLink.samples
+
+    /// The About tab's links, from GET /communities/:id/links (047). Server-readable by
+    /// design — 047: "Shown on the public info card, to non-members, by definition".
+    @State private var links: [CommunityService.AboutLink] = []
+    @State private var linksLoading = true
+    /// Non-nil ONLY on a real failure. A failed fetch must never render as an empty list: an
+    /// empty Links section says the host added none, which is a different fact.
+    @State private var linksError: String?
+
+    /// The add-a-link sheet (CommunityAuthoring.swift). Manager only — `POST /:id/links` and
+    /// `DELETE /:id/links/:linkId` are both `requireManager`, so a member has neither control.
+    @State private var addingLink = false
+    /// The link awaiting a delete confirmation. Non-nil IS the alert's presented state, so the
+    /// confirmation can never act on a row that has since been reloaded away.
+    @State private var pendingDelete: CommunityService.AboutLink?
+    /// Deletes in flight, so a second tap cannot fire a duplicate.
+    @State private var deleteBusy: Set<String> = []
+    /// A failed WRITE, kept apart from `linksError` (a failed READ). "We couldn't load your
+    /// links" and "your link was not added" are different sentences and must not share a slot.
+    @State private var writeError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: VoiidSpacing.lg) {
@@ -610,54 +631,210 @@ struct CommunityAboutTab: View {
                 if isAdmin { editRow("Edit rules") }
             }
 
-            section("Links") {
-                VStack(spacing: 0) {
-                    ForEach(Array(links.enumerated()), id: \.element.id) { index, link in
-                        Button {
-                            Haptics.tap()
-                        } label: {
-                            HStack(spacing: VoiidSpacing.sm + 2) {
-                                Image(systemName: link.icon)
-                                    .font(.system(size: 14))
-                                    .foregroundColor(VoiidColor.accentInk)
-                                    .frame(width: 22)
+            // The section is drawn only when there is something to say. A host who added no
+            // links gets no empty card — which is why this is not an `emptyish` placeholder:
+            // "no links" is the ordinary state of most communities, not a gap to apologise for.
+            //
+            // `|| isAdmin` is the one addition: a manager who has added no links still needs
+            // somewhere to add the first one, and for them an empty section is a place to act
+            // rather than a gap to apologise for. A member's view is unchanged.
+            if linksLoading || linksError != nil || !links.isEmpty || isAdmin {
+                section("Links") {
+                    linksBody
 
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(link.label)
-                                        .font(VoiidFont.rounded(13.5, .semibold))
-                                        .foregroundColor(VoiidColor.textPrimary)
-                                    Text(link.value)
-                                        .font(VoiidFont.rounded(12))
-                                        .foregroundColor(VoiidColor.textSecondary)
-                                }
+                    if isAdmin {
+                        addLinkRow
+                    }
 
-                                Spacer(minLength: 0)
-
-                                Image(systemName: "arrow.up.right")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundColor(VoiidColor.textSecondary)
-                            }
-                            .padding(.horizontal, VoiidSpacing.md - 2)
-                            .frame(height: 54)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-
-                        if index < links.count - 1 {
-                            Divider().overlay(VoiidColor.divider)
-                                .padding(.leading, VoiidSpacing.xl)
-                        }
+                    if let writeError {
+                        Text(writeError)
+                            .font(VoiidFont.rounded(12))
+                            .foregroundColor(VoiidColor.error)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                .background(VoiidColor.surfaceCard)
-                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
-                    .stroke(VoiidColor.divider, lineWidth: 1))
             }
 
             encryptionNote
 
             if isAdmin { dangerZone }
+        }
+        .task(id: card.id) { await loadLinks() }
+        .sheet(isPresented: $addingLink) {
+            CommunityLinkComposer(communityId: card.id) { link in
+                // Appended, not prepended: the server puts a new link at the END of the list
+                // (`position` defaults to max + 1, precisely so adding one does not reshuffle
+                // the ones already there), and the local order must match what a reload gives.
+                links.append(link)
+                linksError = nil
+                writeError = nil
+            }
+        }
+        .alert("Remove this link?", isPresented: Binding(
+            get: { pendingDelete != nil },
+            set: { if !$0 { pendingDelete = nil } }
+        ), presenting: pendingDelete) { link in
+            Button("Remove", role: .destructive) {
+                Task { await deleteLink(link) }
+            }
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+        } message: { link in
+            // A HARD delete, unlike a post — 047 gives community_links no `removed_at` because
+            // removing a dead URL is housekeeping, not a statement with an appeal. The copy
+            // says so rather than implying a history that does not exist.
+            Text("\u{201C}\(link.title)\u{201D} is removed from About. This cannot be undone.")
+        }
+    }
+
+    /// Manager only. The same shape as `editRow` above it, because it does the same kind of
+    /// thing to the section it sits under.
+    private var addLinkRow: some View {
+        Button {
+            Haptics.tap()
+            addingLink = true
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "plus")
+                    .font(.system(size: 12, weight: .semibold))
+                Text("Add a link")
+                    .font(VoiidFont.rounded(13.5, .semibold))
+            }
+            .foregroundColor(VoiidColor.accentInk)
+            .frame(maxWidth: .infinity)
+            .frame(height: 42)
+            .background(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
+                .fill(VoiidColor.accentTint))
+        }
+        .buttonStyle(PressableButtonStyle())
+    }
+
+    /// Remove a link, optimistically, restoring it to its ORIGINAL index on failure — the
+    /// list is ordered by the host's `position`, so putting a failed delete back at the end
+    /// would silently reorder About as the cost of the failure.
+    private func deleteLink(_ link: CommunityService.AboutLink) async {
+        pendingDelete = nil
+        guard !deleteBusy.contains(link.id) else { return }
+        guard let index = links.firstIndex(where: { $0.id == link.id }) else { return }
+
+        deleteBusy.insert(link.id)
+        defer { deleteBusy.remove(link.id) }
+
+        let removed = links.remove(at: index)
+        writeError = nil
+
+        do {
+            try await CommunityService.shared.deleteLink(communityId: card.id, linkId: link.id)
+            Haptics.success()
+        } catch {
+            Haptics.error()
+            links.insert(removed, at: min(index, links.count))
+            writeError = (error as? APIError)?.errorDescription
+                ?? "Couldn\u{2019}t remove that link."
+        }
+    }
+
+    /// Loading / failed / list — three distinct states, never collapsed. The list itself is
+    /// the reference's rows unchanged; only where the rows come from has moved.
+    @ViewBuilder
+    private var linksBody: some View {
+        if linksLoading && links.isEmpty {
+            ProgressView().tint(VoiidColor.accent)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, VoiidSpacing.lg)
+        } else if let linksError, links.isEmpty {
+            emptyish(icon: "exclamationmark.triangle", title: linksError,
+                     detail: "Pull down to try again.")
+        } else if links.isEmpty {
+            // Reached ONLY by a manager: the section is not drawn at all for a member with no
+            // links (see the guard above). Explicit rather than falling through to an empty
+            // card, so the Add row below has a sentence to sit under.
+            Text("No links yet. Add a website, an email address, or anything else people "
+                 + "should be pointed at.")
+                .font(VoiidFont.rounded(12.5))
+                .foregroundColor(VoiidColor.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            VStack(spacing: 0) {
+                ForEach(Array(links.enumerated()), id: \.element.id) { index, link in
+                    Button {
+                        Haptics.tap()
+                    } label: {
+                        HStack(spacing: VoiidSpacing.sm + 2) {
+                            // The host picks an SF Symbol from a client-side set (047 leaves
+                            // `icon` free text for exactly that reason), so nil is normal and
+                            // the fallback is chosen here rather than invented by the server.
+                            Image(systemName: link.icon ?? "link")
+                                .font(.system(size: 14))
+                                .foregroundColor(VoiidColor.accentInk)
+                                .frame(width: 22)
+
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(link.title)
+                                    .font(VoiidFont.rounded(13.5, .semibold))
+                                    .foregroundColor(VoiidColor.textPrimary)
+                                Text(link.subtitle)
+                                    .font(VoiidFont.rounded(12))
+                                    .foregroundColor(VoiidColor.textSecondary)
+                            }
+
+                            Spacer(minLength: 0)
+
+                            // A MANAGER'S ROW ENDS IN A MINUS, EVERYONE ELSE'S IN THE ARROW.
+                            // The member's row is untouched — the branch adds a control where
+                            // one can succeed rather than changing the one that was signed off.
+                            //
+                            // The rule is the route's: `DELETE /:id/links/:linkId` is
+                            // `requireManager`. Client-side this is CONVENIENCE ONLY; the
+                            // server refuses a non-manager whether or not the button was drawn.
+                            if isAdmin {
+                                Image(systemName: "minus.circle")
+                                    .font(.system(size: 15))
+                                    .foregroundColor(VoiidColor.error)
+                                    // Its own hit target inside the row's button: the row
+                                    // opens the link, this removes it, and they must not be
+                                    // one tap apart in the same rectangle.
+                                    .frame(width: 30, height: 44)
+                                    .contentShape(Rectangle())
+                                    .onTapGesture {
+                                        Haptics.tap()
+                                        pendingDelete = link
+                                    }
+                                    .accessibilityLabel("Remove \(link.title)")
+                            } else {
+                                Image(systemName: "arrow.up.right")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundColor(VoiidColor.textSecondary)
+                            }
+                        }
+                        .padding(.horizontal, VoiidSpacing.md - 2)
+                        .frame(height: 54)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .opacity(deleteBusy.contains(link.id) ? 0.45 : 1)
+                    .allowsHitTesting(!deleteBusy.contains(link.id))
+
+                    if index < links.count - 1 {
+                        Divider().overlay(VoiidColor.divider)
+                            .padding(.leading, VoiidSpacing.xl)
+                    }
+                }
+            }
+            .background(VoiidColor.surfaceCard)
+            .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
+                .stroke(VoiidColor.divider, lineWidth: 1))
+        }
+    }
+
+    private func loadLinks() async {
+        linksLoading = true
+        defer { linksLoading = false }
+        do {
+            links = try await CommunityService.shared.links(communityId: card.id)
+            linksError = nil
+        } catch {
+            linksError = (error as? APIError)?.errorDescription ?? "Couldn\u{2019}t load links."
         }
     }
 

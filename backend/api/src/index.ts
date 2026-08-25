@@ -28,6 +28,7 @@ import gifRoutes from './routes/gifs';
 import adminRoutes from './routes/admin';
 import clipsRoutes from './routes/clips';
 import creatorRoutes from './routes/creators';
+import highlightRoutes from './routes/highlights';
 import reportRoutes from './routes/reports';
 import consentRoutes from './routes/consent';
 import blockRoutes from './routes/blocks';
@@ -181,6 +182,16 @@ api.use('/communities', rateLimit({ max: 120, windowSeconds: 60, bucket: 'commun
 // three reachability paths in 020 are untouched, and nothing here may ever be used to
 // authorise opening a conversation.
 api.use('/creators', rateLimit({ max: 180, windowSeconds: 60, bucket: 'creators' }), creatorRoutes);
+// Creator story highlights. Declares its paths IN FULL ('/creators/:handle/highlights' and
+// '/highlights/:id'), so it mounts at the router root with no prefix — the same arrangement
+// tournaments.ts and events.ts use, and for the same reason: the read path is keyed on a
+// handle and the write paths on a highlight id, which are two different prefixes.
+//
+// MOUNTED AFTER the creators router but reached BEFORE it for this path, because Express
+// matches '/creators/:handle/highlights' (two segments under the prefix) against a router
+// whose own wildcard is the single-segment 'GET /:handle' — that wildcard cannot match a
+// two-segment path, so there is no shadowing either way. See the header of highlights.ts.
+api.use(rateLimit({ max: 180, windowSeconds: 60, bucket: 'highlights' }), highlightRoutes);
 // Content reports. A LOW ceiling deliberately: a report is a considered act, and a client
 // firing them in bulk is either broken or report-bombing. The per-(reporter,target)
 // uniqueness in 035 stops duplicates; this stops volume.

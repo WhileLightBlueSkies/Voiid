@@ -1,0 +1,497 @@
+//
+//  GameLobbyScreen.swift
+//  Voiid
+//
+//  Games flow, step 4 — the party assembles.
+//
+//  ── START MATCH IS ONLY LIVE WHEN IT SHOULD BE ──────────────────────────────────
+//  The button disables until everyone present is ready. That is the difference between a lobby
+//  and a list of names: the screen has an opinion about whether the match can begin, and it
+//  says so rather than letting the host start into an empty slot and find out afterwards.
+//
+//  ── PENDING INVITES ARE SEPARATE FROM THE PARTY ─────────────────────────────────
+//  Someone invited is not someone present. Merging the two lists would make a 2/3 party look
+//  full and the host wonder why the match will not start. They get their own section, with a
+//  cancel on each row, because an invite that never lands is a slot that needs freeing.
+//
+
+import SwiftUI
+
+struct GameLobbyScreen: View {
+
+    // ── THE ONLY ADAPTATIONS IN THIS FILE ───────────────────────────────────────────
+    // `lobby` is handed down from GamesScreen rather than read from the environment, and
+    // `session` is an ObservableObject in Voiid. See GameDetailScreen for the full note.
+    let lobby: LobbyState
+    @EnvironmentObject private var session: AppSession
+    @Environment(\.dismiss) private var dismiss
+
+    var onStart: () -> Void = {}
+
+    @State private var draft = ""
+    @FocusState private var writing: Bool
+
+    var body: some View {
+        @Bindable var lobby = lobby
+
+        return ZStack {
+            VoiidColor.background.ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                header
+                roomBar
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: VoiidSpacing.md) {
+                        partySection
+                        inviteRow
+                        if !lobby.pending.isEmpty { pendingSection }
+                        chat
+                        toggles
+                    }
+                    .padding(.horizontal, VoiidSpacing.md)
+                    .padding(.top, VoiidSpacing.md)
+                }
+                .scrollIndicators(.hidden)
+
+                startButton
+            }
+        }
+        .toolbar(.hidden, for: .navigationBar)
+        .navigationBarBackButtonHidden(true)
+        .onAppear { session.requestHideTabBar() }
+        .onDisappear { session.releaseHideTabBar() }
+    }
+
+    // MARK: Header
+
+    private var header: some View {
+        HStack(spacing: VoiidSpacing.sm) {
+            Button {
+                Haptics.tap()
+                dismiss()
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundColor(VoiidColor.textPrimary)
+                    .frame(width: 34, height: 34)
+            }
+            .buttonStyle(PressableButtonStyle())
+            .accessibilityLabel("Back")
+
+            Spacer(minLength: 0)
+
+            VStack(spacing: 1) {
+                Text(lobby.game.title)
+                    .font(VoiidFont.rounded(16.5, .semibold))
+                    .foregroundColor(VoiidColor.textPrimary)
+                Text("\(lobby.mode.partySize)v\(lobby.mode.partySize) \(lobby.mode.rawValue)")
+                    .font(VoiidFont.rounded(11.5))
+                    .foregroundColor(VoiidColor.textSecondary)
+            }
+
+            Spacer(minLength: 0)
+
+            Menu {
+                Button("Lobby settings", systemImage: "gearshape") {}
+                Button("Change mode", systemImage: "arrow.triangle.2.circlepath") {}
+                Divider()
+                Button("Leave party", systemImage: "rectangle.portrait.and.arrow.right",
+                       role: .destructive) { dismiss() }
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(VoiidColor.textPrimary)
+                    .frame(width: 34, height: 34)
+            }
+            .accessibilityLabel("Lobby options")
+        }
+        .padding(.horizontal, VoiidSpacing.sm)
+        .padding(.top, VoiidSpacing.sm)
+    }
+
+    /// Room visibility and the join code. Both are about who can get in, so they share a row.
+    private var roomBar: some View {
+        @Bindable var lobby = lobby
+
+        return HStack(spacing: VoiidSpacing.sm) {
+            Menu {
+                Button("Public") { lobby.isPublic = true }
+                Button("Private") { lobby.isPublic = false }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: lobby.isPublic ? "globe" : "lock.fill")
+                        .font(.system(size: 11))
+                        .foregroundColor(VoiidColor.textSecondary)
+                    Text("Room:")
+                        .font(VoiidFont.rounded(12.5))
+                        .foregroundColor(VoiidColor.textSecondary)
+                    Text(lobby.isPublic ? "Public" : "Private")
+                        .font(VoiidFont.rounded(12.5, .semibold))
+                        .foregroundColor(VoiidColor.accentInk)
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 36)
+                .frame(maxWidth: .infinity)
+                .background(VoiidColor.surfaceCard)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(VoiidColor.divider, lineWidth: 1))
+            }
+
+            Button {
+                Haptics.success()
+                UIPasteboard.general.string = lobby.teamCode
+            } label: {
+                HStack(spacing: 6) {
+                    Text("Team Code:")
+                        .font(VoiidFont.rounded(12.5))
+                        .foregroundColor(VoiidColor.textSecondary)
+                    Text(lobby.teamCode)
+                        .font(VoiidFont.rounded(12.5, .semibold))
+                        .foregroundColor(VoiidColor.accentInk)
+                        .monospaced()
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 11))
+                        .foregroundColor(VoiidColor.textSecondary)
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 36)
+                .frame(maxWidth: .infinity)
+                .background(VoiidColor.surfaceCard)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(VoiidColor.divider, lineWidth: 1))
+            }
+            .buttonStyle(PressableButtonStyle())
+            .accessibilityLabel("Copy team code \(lobby.teamCode)")
+        }
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.top, VoiidSpacing.sm)
+    }
+
+    // MARK: Party
+
+    private var partySection: some View {
+        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+            Text("Party (\(lobby.partyText))")
+                .font(VoiidFont.rounded(15, .bold))
+                .foregroundColor(VoiidColor.textPrimary)
+
+            VStack(spacing: 8) {
+                ForEach(lobby.members) { member in
+                    MemberRow(member: member)
+                }
+            }
+        }
+    }
+
+    private var inviteRow: some View {
+        Button {
+            Haptics.tap()
+        } label: {
+            HStack {
+                Text("Invite Friends")
+                    .font(VoiidFont.rounded(14.5, .semibold))
+                    .foregroundColor(VoiidColor.textPrimary)
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "plus")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(VoiidColor.textOnAccent)
+                    .frame(width: 28, height: 28)
+                    .background(Circle().fill(VoiidColor.accent))
+            }
+            .padding(.horizontal, VoiidSpacing.md)
+            .frame(height: 54)
+            .background(VoiidColor.surfaceCard)
+            .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
+                .stroke(VoiidColor.divider, lineWidth: 1))
+        }
+        .buttonStyle(PressableButtonStyle())
+    }
+
+    // MARK: Pending
+
+    private var pendingSection: some View {
+        @Bindable var lobby = lobby
+
+        return VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+            Text("Pending Invites")
+                .font(VoiidFont.rounded(15, .bold))
+                .foregroundColor(VoiidColor.textPrimary)
+
+            VStack(spacing: 8) {
+                ForEach(lobby.pending) { member in
+                    HStack(spacing: 10) {
+                        ProfilePhoto(name: member.name, size: 34, allowFallbackPhoto: true)
+                            .opacity(0.7)
+
+                        Text(member.name)
+                            .font(VoiidFont.rounded(14.5, .semibold))
+                            .foregroundColor(VoiidColor.textPrimary)
+
+                        Text(member.status.label)
+                            .font(VoiidFont.rounded(10.5, .semibold))
+                            .foregroundColor(VoiidColor.textSecondary)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2.5)
+                            .background(Capsule().fill(VoiidColor.surfaceRaised))
+
+                        Spacer(minLength: 0)
+
+                        Image(systemName: "clock")
+                            .font(.system(size: 13))
+                            .foregroundColor(VoiidColor.textSecondary)
+
+                        Button {
+                            Haptics.tap()
+                            withAnimation(.easeOut(duration: 0.2)) {
+                                lobby.cancelInvite(member.id)
+                            }
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(VoiidColor.textSecondary)
+                                .frame(width: 26, height: 26)
+                        }
+                        .buttonStyle(PressableButtonStyle())
+                        .accessibilityLabel("Cancel invite to \(member.name)")
+                    }
+                    .padding(.horizontal, VoiidSpacing.sm + 4)
+                    .frame(height: 54)
+                    .background(VoiidColor.surfaceCard)
+                    .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
+                        .stroke(VoiidColor.divider, lineWidth: 1))
+                }
+            }
+        }
+    }
+
+    // MARK: Chat
+
+    private var chat: some View {
+        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+            VStack(alignment: .leading, spacing: 5) {
+                ForEach(lobby.messages) { message in
+                    HStack(alignment: .top, spacing: 5) {
+                        Text("\(message.sender):")
+                            .font(VoiidFont.rounded(12.5, .semibold))
+                            .foregroundColor(VoiidColor.accentInk)
+                        Text(message.text)
+                            .font(VoiidFont.rounded(12.5))
+                            .foregroundColor(VoiidColor.textPrimary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(VoiidSpacing.sm + 4)
+            .background(VoiidColor.surfaceCard)
+            .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
+                .stroke(VoiidColor.divider, lineWidth: 1))
+
+            HStack(spacing: 8) {
+                // Three taps that need no typing. A lobby is a place people are half-attending
+                // — a reaction is the whole message most of the time.
+                ForEach(["👏", "🔥", "😄"], id: \.self) { emoji in
+                    Button {
+                        Haptics.tap()
+                        lobby.send(emoji)
+                    } label: {
+                        Text(emoji)
+                            .font(.system(size: 17))
+                            .frame(width: 38, height: 38)
+                            .background(Circle().fill(VoiidColor.surfaceCard))
+                            .overlay(Circle().stroke(VoiidColor.divider, lineWidth: 1))
+                    }
+                    .buttonStyle(PressableButtonStyle())
+                }
+
+                HStack(spacing: 8) {
+                    TextField("Type a message...", text: $draft)
+                        .font(VoiidFont.rounded(13.5))
+                        .foregroundColor(VoiidColor.textPrimary)
+                        .tint(VoiidColor.accent)
+                        .focused($writing)
+
+                    Button {
+                        Haptics.tap()
+                        lobby.send(draft)
+                        draft = ""
+                    } label: {
+                        Image(systemName: "paperplane.fill")
+                            .font(.system(size: 14))
+                            .foregroundColor(draft.isEmpty ? VoiidColor.textSecondary
+                                                           : VoiidColor.accentInk)
+                    }
+                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityLabel("Send")
+                }
+                .padding(.horizontal, VoiidSpacing.sm + 4)
+                .frame(height: 38)
+                .background(VoiidColor.surfaceCard)
+                .clipShape(Capsule())
+                .overlay(Capsule().stroke(VoiidColor.divider, lineWidth: 1))
+            }
+        }
+    }
+
+    // MARK: Toggles
+
+    private var toggles: some View {
+        @Bindable var lobby = lobby
+
+        return HStack(spacing: 8) {
+            toggleCard("waveform", "Voice Chat", on: lobby.voiceChat) {
+                lobby.voiceChat.toggle()
+            }
+            toggleCard("person.2.badge.plus", "Fill Empty", on: lobby.fillEmpty) {
+                lobby.fillEmpty.toggle()
+            }
+        }
+        .padding(.bottom, VoiidSpacing.sm)
+    }
+
+    private func toggleCard(_ icon: String, _ title: String, on: Bool,
+                            action: @escaping () -> Void) -> some View {
+        Button {
+            Haptics.selection()
+            action()
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 16))
+                    .foregroundColor(on ? VoiidColor.accentInk : VoiidColor.textSecondary)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(VoiidFont.rounded(13.5, .semibold))
+                        .foregroundColor(VoiidColor.textPrimary)
+                    Text(on ? "On" : "Off")
+                        .font(VoiidFont.rounded(11.5))
+                        .foregroundColor(on ? VoiidColor.accentInk : VoiidColor.textSecondary)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, VoiidSpacing.sm + 4)
+            .frame(height: 56)
+            .frame(maxWidth: .infinity)
+            .background(VoiidColor.surfaceCard)
+            .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
+                .stroke(on ? VoiidColor.accent.opacity(0.4) : VoiidColor.divider, lineWidth: 1))
+        }
+        .buttonStyle(PressableButtonStyle())
+    }
+
+    // MARK: Start
+
+    private var startButton: some View {
+        VStack(spacing: 0) {
+            Button {
+                Haptics.success()
+                onStart()
+            } label: {
+                Text(lobby.everyoneReady ? "Start Match" : "Waiting for players…")
+                    .font(VoiidFont.rounded(16.5, .semibold))
+                    .foregroundColor(VoiidColor.textOnAccent)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 54)
+                    .background(
+                        RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
+                            .fill(VoiidColor.accent)
+                    )
+            }
+            .buttonStyle(PressableButtonStyle())
+            .disabled(!lobby.everyoneReady)
+            .opacity(lobby.everyoneReady ? 1 : 0.45)
+        }
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.vertical, VoiidSpacing.md)
+        .background(.bar)
+    }
+}
+
+// MARK: - A member row
+
+private struct MemberRow: View {
+    let member: PartyMember
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ProfilePhoto(name: member.name, size: 34, allowFallbackPhoto: true)
+                .overlay(alignment: .bottomTrailing) {
+                    Circle()
+                        .fill(VoiidColor.success)
+                        .frame(width: 10, height: 10)
+                        .overlay(Circle().stroke(VoiidColor.surfaceCard, lineWidth: 2))
+                }
+
+            HStack(spacing: 5) {
+                Text(member.name)
+                    .font(VoiidFont.rounded(14.5, .semibold))
+                    .foregroundColor(VoiidColor.textPrimary)
+
+                if member.isYou {
+                    Text("(You)")
+                        .font(VoiidFont.rounded(12.5))
+                        .foregroundColor(VoiidColor.accentInk)
+                }
+            }
+
+            statusChip
+
+            Spacer(minLength: 0)
+
+            Image(systemName: member.micOn ? "mic.fill" : "mic.slash.fill")
+                .font(.system(size: 12))
+                .foregroundColor(member.micOn ? VoiidColor.accentInk : VoiidColor.textSecondary)
+                .frame(width: 28, height: 28)
+                .background(Circle().fill(VoiidColor.surfaceRaised))
+        }
+        .padding(.horizontal, VoiidSpacing.sm + 4)
+        .frame(height: 54)
+        .background(VoiidColor.surfaceCard)
+        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
+            .stroke(VoiidColor.divider, lineWidth: 1))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(member.name), \(member.status.label)")
+    }
+
+    /// Host reads as an identity, Ready as a state — so they get different weights rather than
+    /// the same chip with different words in it.
+    @ViewBuilder
+    private var statusChip: some View {
+        switch member.status {
+        case .host:
+            Text("Host")
+                .font(VoiidFont.rounded(10.5, .bold))
+                .foregroundColor(VoiidColor.textOnAccent)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2.5)
+                .background(Capsule().fill(VoiidColor.accent))
+        case .ready:
+            Text("Ready")
+                .font(VoiidFont.rounded(10.5, .semibold))
+                .foregroundColor(VoiidColor.accentInk)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2.5)
+                .background(Capsule().fill(VoiidColor.accentTint))
+        case .waiting, .invited:
+            Text(member.status.label)
+                .font(VoiidFont.rounded(10.5, .semibold))
+                .foregroundColor(VoiidColor.textSecondary)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2.5)
+                .background(Capsule().fill(VoiidColor.surfaceRaised))
+        }
+    }
+}

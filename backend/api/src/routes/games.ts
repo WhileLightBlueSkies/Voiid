@@ -16,7 +16,7 @@
 // message sent by the client over the normal message pipe — this router never sees it. All
 // it does is mint the match row the invite points at.
 import { Router } from 'express';
-import { createHash } from 'node:crypto';
+import { createHash, randomInt } from 'node:crypto';
 import { query } from '../db';
 import { publisher } from '../redis';
 import { requireAuth } from '../auth';
@@ -1145,6 +1145,730 @@ router.get(
       // is how the client tells "playing" from "played".
       mine: mine[0] ? { score: mine[0].score, status: mine[0].status } : null,
     });
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// THE PARTY LOBBY (database/migrations/052_game_lobbies.sql).
+//
+// A SECOND, ADDITIVE LOBBY SHAPE — it does not replace the invite-and-wait path above.
+// `POST /games/matches` + `/join` + `/decline` is a DIRECT 1:1 (or fixed-seat) invite: seats
+// are named at creation, and the match starts when the last named seat accepts. That flow is
+// untouched, and it is still what a "play them again" or a chat invite uses.
+//
+// A PARTY lobby is opened deliberately, by a host, on a match they already created. It adds
+// the three things the invite path structurally cannot express:
+//   * READY-STATES — an invited player who accepted is seated, but not necessarily looking at
+//     the screen. `game_matches.player_ids` cannot tell those apart; a lobby member row can.
+//   * A JOIN CODE — the one way in for someone who was never named in `player_ids`. The invite
+//     path has no answer for "let my friend's friend in", because it authorizes on membership
+//     of a list fixed before that person existed to the match.
+//   * LOBBY CHAT — server-readable and ephemeral, see the migration header. Deliberately NOT
+//     the E2EE message pipe, because a join-code stranger holds no ratchet session with anyone
+//     here and establishing four of them for a chat that dies in four minutes buys nothing.
+//
+// WHICH SCREEN THE CLIENT SHOWS: party lobby iff a lobby row exists for the match (the host
+// opened one). Otherwise the existing 1:1 invite-and-wait view. One fact decides it, so the
+// two can never both claim the screen.
+//
+// AUTHORIZATION IS DONE HERE AND ONLY HERE. Every route below derives the caller from
+// `requireAuth` and never reads a user id from the body — the same rule the WS relay states
+// for `from_user_id`. A non-member cannot read a lobby's chat; a non-host cannot start it.
+// ─────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Join-code alphabet. 0/O and 1/I/L are EXCLUDED — a join code's whole job is to survive being
+ * read aloud or retyped from a screenshot, and those are the pairs that do not survive it.
+ * 4 characters over this 31-symbol alphabet is ~923k codes, and only codes belonging to an OPEN
+ * lobby are live at once (the partial unique index in 052), so the space is nowhere near
+ * pressured.
+ */
+const LOBBY_CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+const LOBBY_CODE_LENGTH = 6;
+
+/**
+ * A fresh code. Uses `randomInt` rather than `Math.random`: a guessable code is a way into a
+ * public lobby, and while that is a small prize it costs nothing to not hand it over. The
+ * modulo-free `randomInt(n)` also avoids the bias that `% alphabet.length` would introduce.
+ */
+function newJoinCode(): string {
+  let out = '';
+  for (let i = 0; i < LOBBY_CODE_LENGTH; i++) {
+    out += LOBBY_CODE_ALPHABET[randomInt(LOBBY_CODE_ALPHABET.length)];
+  }
+  return out;
+}
+
+/** Chat page size. The lobby renders a short tail, not a scrollback — see the migration. */
+const LOBBY_MESSAGE_LIMIT = 50;
+
+interface LobbyRow {
+  match_id: string;
+  host_user_id: string;
+  join_code: string | null;
+  is_public: boolean;
+  format: string | null;
+  fill_empty: boolean;
+  started_at: Date | null;
+  created_at: Date;
+}
+
+interface LobbyMemberRow {
+  user_id: string;
+  state: string;
+  mic_on: boolean;
+  seat: number | null;
+  joined_at: Date;
+  seen_at: Date;
+  full_name: string | null;
+  username: string | null;
+}
+
+/**
+ * Everyone in the lobby, in arrival order, with the display fields the client needs.
+ *
+ * JOINS `users` HERE rather than making the client resolve ids. A join-code member is by
+ * definition someone the viewer may never have messaged, so the client's own contact directory
+ * cannot name them — it would render a party of raw uuids. Only name and username are exposed:
+ * enough to identify a person in a list, and nothing more than any other roster in this API
+ * already returns.
+ */
+async function lobbyMembers(matchId: string): Promise<LobbyMemberRow[]> {
+  return query<LobbyMemberRow>(
+    `select m.user_id, m.state, m.mic_on, m.seat, m.joined_at, m.seen_at,
+            u.full_name, u.username
+       from game_lobby_members m
+       left join users u on u.id = m.user_id
+      where m.match_id = $1
+      order by m.joined_at`,
+    [matchId]
+  );
+}
+
+/** The wire shape of one member. Built in one place so every route and every WS frame agrees. */
+function memberPayload(m: LobbyMemberRow) {
+  return {
+    user_id: m.user_id,
+    // 'waiting' | 'ready'. The client renders the chip from this and nothing else.
+    state: m.state,
+    // STORED INTENT ONLY — there is no voice transport behind this flag. See the migration:
+    // the client must not present it as live audio until one exists.
+    mic_on: m.mic_on,
+    seat: m.seat,
+    name: m.full_name ?? m.username ?? null,
+    username: m.username ?? null,
+    joined_at: new Date(m.joined_at).getTime(),
+  };
+}
+
+/** The wire shape of the lobby itself, minus the members. */
+function lobbyPayload(lobby: LobbyRow, maxPlayers: number) {
+  return {
+    match_id: lobby.match_id,
+    host_user_id: lobby.host_user_id,
+    join_code: lobby.join_code,
+    is_public: lobby.is_public,
+    format: lobby.format,
+    fill_empty: lobby.fill_empty,
+    // The seat cap comes from the CATALOG (`games.max_players`), never from the client. It is
+    // what makes "full" a fact rather than a client's opinion.
+    max_players: maxPlayers,
+    started_at: lobby.started_at ? new Date(lobby.started_at).getTime() : null,
+    created_at: new Date(lobby.created_at).getTime(),
+  };
+}
+
+/**
+ * Broadcast the whole lobby to every member.
+ *
+ * SENDS THE FULL ROSTER, not a delta. A lobby is at most four rows, so a delta protocol would
+ * save nothing and would introduce the one bug class this screen cannot tolerate: a client
+ * whose member list has silently diverged from the server's, showing a ready-state that is not
+ * real. Every mutation ends with one of these, so the screen is live without polling.
+ *
+ * Mirrors publishInviteStatus: same channel, same fire-and-forget posture. A failed publish
+ * must never fail the mutation that already committed — the client re-reads on next focus.
+ */
+async function publishLobbyUpdate(
+  lobby: LobbyRow,
+  maxPlayers: number,
+  members: LobbyMemberRow[],
+  reason: 'opened' | 'joined' | 'ready' | 'left' | 'host_changed' | 'started' | 'cancelled',
+  recipientIds?: string[]
+): Promise<void> {
+  const frame = JSON.stringify({
+    type: 'game_lobby_update',
+    match_id: lobby.match_id,
+    // Why the roster changed, so the client can animate a join differently from a ready toggle
+    // without diffing to guess.
+    reason,
+    lobby: lobbyPayload(lobby, maxPlayers),
+    members: members.map(memberPayload),
+  });
+  // Defaults to the current members. A LEAVE passes an explicit list that still includes the
+  // person who left, so their own device learns the leave succeeded from the same frame
+  // everyone else gets rather than from the HTTP response alone.
+  const targets = recipientIds ?? members.map((m) => m.user_id);
+  await Promise.all(
+    targets.map((id) => publisher.publish(`channel:user:${id}`, frame))
+  ).catch(() => { /* a dropped frame is a re-read, never a failed mutation */ });
+}
+
+/**
+ * Load a lobby, its match and the catalog cap in one round trip. Returns null when there is no
+ * lobby — which is the ordinary case for most matches and is never an error by itself.
+ */
+async function loadLobby(matchId: string): Promise<
+  { lobby: LobbyRow; maxPlayers: number; matchStatus: string; playerIds: string[] } | null
+> {
+  const rows = await query<LobbyRow & { max_players: number; status: string; player_ids: string[] }>(
+    `select l.match_id, l.host_user_id, l.join_code, l.is_public, l.format,
+            l.fill_empty, l.started_at, l.created_at,
+            g.max_players, m.status, m.player_ids
+       from game_lobbies l
+       join game_matches m on m.id = l.match_id
+       join games g on g.id = m.game_id
+      where l.match_id = $1`,
+    [matchId]
+  );
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    lobby: row,
+    maxPlayers: row.max_players,
+    matchStatus: row.status,
+    playerIds: row.player_ids,
+  };
+}
+
+/**
+ * POST /games/matches/:id/lobby — open a party lobby on a match the caller created.
+ * Body: { is_public?, format?, fill_empty? }
+ *
+ * CREATOR ONLY, and it reuses `game_matches.created_by` rather than minting a separate notion
+ * of ownership: the person who made the match is the person who may open a lobby on it, and
+ * two sources of truth for "whose match is this" would eventually disagree.
+ *
+ * IDEMPOTENT. The client opens the lobby as it pushes the screen, and a double-tap or a retried
+ * request must not mint a second join code for a match that already has one — the second code
+ * would be live in the index and would resolve to the same lobby, which is a code space leak
+ * for no gain. `on conflict do nothing` plus a re-read is the whole mechanism.
+ */
+router.post(
+  '/matches/:id/lobby',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id: userId } = (req as any).auth as { user_id: string };
+    const matchId = req.params.id;
+    if (!UUID_RE.test(matchId)) return res.status(400).json({ error: 'bad match id' });
+
+    const matches = await query<{ created_by: string; status: string; max_players: number }>(
+      `select m.created_by, m.status, g.max_players
+         from game_matches m join games g on g.id = m.game_id
+        where m.id = $1`,
+      [matchId]
+    );
+    const match = matches[0];
+    if (!match) return res.status(404).json({ error: 'no such match' });
+    if (match.created_by !== userId) return res.status(403).json({ error: 'creator only' });
+    // A lobby is a thing that happens BEFORE a match. Opening one on a match that already
+    // started, finished or was abandoned would render a ready-up screen for a game in progress.
+    if (match.status !== 'waiting') {
+      return res.status(409).json({ error: 'match is not waiting', status: match.status });
+    }
+
+    const isPublic = req.body?.is_public === true;
+    // Free text, capped. The migration deliberately does not enum these — they are product
+    // vocabulary the client owns — but "the client owns it" is not "the client may send 8KB".
+    const format = typeof req.body?.format === 'string' && req.body.format.length <= 32
+      ? req.body.format : null;
+    const fillEmpty = req.body?.fill_empty === true;
+
+    // The code is generated even for a private lobby. `is_public` is checked FIRST on the join
+    // path, so a lobby can be flipped public later without needing a code minted at that moment
+    // — and a code that exists but is refused is strictly simpler than a nullable one.
+    await query(
+      `insert into game_lobbies (match_id, host_user_id, join_code, is_public, format, fill_empty)
+       values ($1, $2, $3, $4, $5, $6)
+       on conflict (match_id) do nothing`,
+      [matchId, userId, newJoinCode(), isPublic, format, fillEmpty]
+    );
+
+    // The host is a member of their own lobby. Without this the roster renders without the one
+    // person guaranteed to be looking at it, and `everyone ready` would be vacuously true.
+    await query(
+      `insert into game_lobby_members (match_id, user_id, state)
+       values ($1, $2, 'ready')
+       on conflict (match_id, user_id) do nothing`,
+      [matchId, userId]
+    );
+
+    const loaded = await loadLobby(matchId);
+    if (!loaded) return res.status(500).json({ error: 'lobby vanished' });
+    const members = await lobbyMembers(matchId);
+    await publishLobbyUpdate(loaded.lobby, loaded.maxPlayers, members, 'opened');
+
+    res.status(201).json({
+      lobby: lobbyPayload(loaded.lobby, loaded.maxPlayers),
+      members: members.map(memberPayload),
+      messages: [],
+    });
+  })
+);
+
+/**
+ * GET /games/matches/:id/lobby — the lobby, its roster and the recent chat.
+ *
+ * THE READ IS AUTHORIZED, and that is the point of this handler. Chat here is server-readable
+ * (see the migration), which makes "who may read it" a decision this route has to make
+ * explicitly rather than one the encryption made for free everywhere else in this API.
+ *
+ * Two ways in, and no third:
+ *   * you are a LOBBY MEMBER, or
+ *   * you hold the JOIN CODE for a public lobby (`?code=`), which is what lets the join screen
+ *     preview a party before committing to it.
+ * Being named in `game_matches.player_ids` is deliberately NOT sufficient: seat list and lobby
+ * presence are different facts (the migration says so), and an invited player who never opened
+ * the lobby has no business reading what was typed in it.
+ */
+router.get(
+  '/matches/:id/lobby',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id: userId } = (req as any).auth as { user_id: string };
+    const matchId = req.params.id;
+    if (!UUID_RE.test(matchId)) return res.status(400).json({ error: 'bad match id' });
+
+    const loaded = await loadLobby(matchId);
+    // 404, not 200-with-null. "This match has no party lobby" is exactly what the client needs
+    // to hear in order to fall back to the 1:1 invite-and-wait view.
+    if (!loaded) return res.status(404).json({ error: 'no lobby for this match' });
+
+    const members = await lobbyMembers(matchId);
+    const isMember = members.some((m) => m.user_id === userId);
+
+    // Case-insensitive, because a code is typed by a human. Compared against the stored code
+    // only when the lobby is public — a private lobby refuses the code outright.
+    const supplied = typeof req.query.code === 'string' ? req.query.code.trim().toUpperCase() : null;
+    const holdsCode =
+      loaded.lobby.is_public &&
+      !!loaded.lobby.join_code &&
+      supplied === loaded.lobby.join_code;
+
+    if (!isMember && !holdsCode) {
+      return res.status(403).json({ error: 'not in this lobby' });
+    }
+
+    const messages = await query<{
+      id: string; user_id: string | null; body: string; created_at: Date;
+      full_name: string | null; username: string | null;
+    }>(
+      `select m.id, m.user_id, m.body, m.created_at, u.full_name, u.username
+         from game_lobby_messages m
+         left join users u on u.id = m.user_id
+        where m.match_id = $1
+        order by m.id desc
+        limit $2`,
+      [matchId, LOBBY_MESSAGE_LIMIT]
+    );
+
+    res.json({
+      lobby: lobbyPayload(loaded.lobby, loaded.maxPlayers),
+      members: members.map(memberPayload),
+      // Re-reversed to oldest-first. The query takes the NEWEST 50 (order by id desc) because
+      // the tail is what a lobby shows; the client renders top-down, so the order is flipped
+      // back here rather than in three clients.
+      messages: messages.reverse().map((m) => ({
+        id: String(m.id),
+        user_id: m.user_id,
+        // Null author means a deleted account (the migration's ON DELETE SET NULL). The client
+        // renders it as "Left" — the message is not rewritten or hidden, because other people
+        // were part of that conversation.
+        name: m.full_name ?? m.username ?? null,
+        body: m.body,
+        created_at: new Date(m.created_at).getTime(),
+      })),
+      // Told plainly rather than inferred from `host_user_id === me` in three clients.
+      is_host: loaded.lobby.host_user_id === userId,
+      is_member: isMember,
+    });
+  })
+);
+
+/**
+ * POST /games/lobbies/join — enter a public lobby with its code.
+ * Body: { join_code }
+ *
+ * NOT KEYED ON A MATCH ID, deliberately: the code IS the address. Someone joining this way does
+ * not know the match id and must not have to — handing out a uuid alongside the code would make
+ * the code pointless.
+ *
+ * Every rejection below is a real state a code can be in, and each is reported distinctly
+ * because the client's message differs: "no such code" is a typo, "already started" is bad luck,
+ * "full" is a reason to wait.
+ */
+router.post(
+  '/lobbies/join',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id: userId } = (req as any).auth as { user_id: string };
+    const raw = req.body?.join_code;
+    if (typeof raw !== 'string') return res.status(400).json({ error: 'join_code required' });
+    const code = raw.trim().toUpperCase();
+    // Shape-checked before it reaches the database: the column has a CHECK constraint of the
+    // same shape, and a query is not the place to discover the client sent a sentence.
+    if (!/^[A-Z0-9]{4,8}$/.test(code)) return res.status(404).json({ error: 'unknown code' });
+
+    const rows = await query<LobbyRow & { max_players: number; status: string }>(
+      `select l.match_id, l.host_user_id, l.join_code, l.is_public, l.format,
+              l.fill_empty, l.started_at, l.created_at, g.max_players, m.status
+         from game_lobbies l
+         join game_matches m on m.id = l.match_id
+         join games g on g.id = m.game_id
+        where l.join_code = $1 and l.started_at is null`,
+      [code]
+    );
+    const row = rows[0];
+    // A private lobby answers exactly as an unknown code does, and that is intentional: any
+    // other answer turns this endpoint into an oracle for "is this a real code" — the same
+    // reasoning the invite path's opaque 403 is built on.
+    if (!row || !row.is_public) return res.status(404).json({ error: 'unknown code' });
+    if (row.status !== 'waiting') {
+      return res.status(409).json({ error: 'match already started', status: row.status });
+    }
+
+    const members = await lobbyMembers(row.match_id);
+    // Already in? Idempotent success. A retried join must not 409 the person who is already
+    // standing in the room.
+    if (!members.some((m) => m.user_id === userId)) {
+      if (members.length >= row.max_players) {
+        return res.status(409).json({ error: 'lobby is full' });
+      }
+      // The row insert is what actually enforces one membership per person (primary key), and
+      // the length check above is a courteous pre-check, not the guarantee. Two people racing
+      // for the last seat can both pass the check; both inserts succeed and the lobby is one
+      // over. That is tolerated over a lock here because `start` re-checks the cap before it
+      // flips the match — the seat count that matters is the one at start, not at join.
+      await query(
+        `insert into game_lobby_members (match_id, user_id, state)
+         values ($1, $2, 'waiting')
+         on conflict (match_id, user_id) do nothing`,
+        [row.match_id, userId]
+      );
+
+      // SEATED IN THE MATCH TOO. A lobby member who is not in `player_ids` would be a person
+      // watching a game they cannot play — every downstream check (join, snapshot, forfeit)
+      // authorizes on that array. Appended rather than rebuilt so seat order, which the rules
+      // modules read as turn order, is preserved.
+      await query(
+        `update game_matches
+            set player_ids = case
+                  when player_ids @> $2::jsonb then player_ids
+                  else player_ids || $2::jsonb
+                end
+          where id = $1`,
+        [row.match_id, JSON.stringify([userId])]
+      );
+    }
+
+    const after = await lobbyMembers(row.match_id);
+    await publishLobbyUpdate(row, row.max_players, after, 'joined');
+
+    res.json({
+      match_id: row.match_id,
+      lobby: lobbyPayload(row, row.max_players),
+      members: after.map(memberPayload),
+    });
+  })
+);
+
+/**
+ * POST /games/matches/:id/lobby/ready — the caller's own ready state.
+ * Body: { ready: bool, mic_on?: bool }
+ *
+ * THE CALLER'S OWN, ALWAYS. There is no user id in the body and there will not be one: a member
+ * marking someone ELSE ready is how a host starts a match into a seat whose player is not there.
+ */
+router.post(
+  '/matches/:id/lobby/ready',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id: userId } = (req as any).auth as { user_id: string };
+    const matchId = req.params.id;
+    if (!UUID_RE.test(matchId)) return res.status(400).json({ error: 'bad match id' });
+    if (typeof req.body?.ready !== 'boolean') {
+      return res.status(400).json({ error: 'ready must be a boolean' });
+    }
+
+    const loaded = await loadLobby(matchId);
+    if (!loaded) return res.status(404).json({ error: 'no lobby for this match' });
+    if (loaded.lobby.started_at) return res.status(409).json({ error: 'lobby already started' });
+
+    // `mic_on` rides along because the two toggles live in the same row and a member flipping
+    // either wants one round trip. Absent means unchanged, never means false.
+    const micOn = typeof req.body?.mic_on === 'boolean' ? req.body.mic_on : null;
+
+    // The update is the membership check: no row, no update, and `returning` tells us which
+    // happened without a second query.
+    const updated = await query<{ user_id: string }>(
+      `update game_lobby_members
+          set state = $3,
+              mic_on = coalesce($4::boolean, mic_on),
+              seen_at = now()
+        where match_id = $1 and user_id = $2
+        returning user_id`,
+      [matchId, userId, req.body.ready ? 'ready' : 'waiting', micOn]
+    );
+    if (updated.length === 0) return res.status(403).json({ error: 'not in this lobby' });
+
+    const members = await lobbyMembers(matchId);
+    await publishLobbyUpdate(loaded.lobby, loaded.maxPlayers, members, 'ready');
+    res.json({ ok: true, members: members.map(memberPayload) });
+  })
+);
+
+/**
+ * POST /games/matches/:id/lobby/leave — step out of the party.
+ *
+ * ── WHEN THE HOST LEAVES, THE LOBBY IS CANCELLED. ───────────────────────────────
+ * The alternative — transfer host to the longest-present member — was considered and rejected.
+ * The lobby is keyed to a match whose `created_by` is the host, and every creator-only route in
+ * this router (`/cancel`, and `/lobby` itself) authorizes against that column. Transferring the
+ * lobby host would put the two out of step: the new host could start the match but not cancel
+ * it, and `POST /matches/:id/lobby` re-opened by the new host would 403. Making the transfer
+ * honest means also rewriting `game_matches.created_by`, i.e. rewriting who created a row —
+ * which is a durable historical fact that history and the leaderboard both read.
+ *
+ * So the host leaving ends the party, the match is marked 'cancelled' exactly as `/cancel` does,
+ * and everyone is told why. A party without the person who assembled it is not a party that
+ * should silently promote a stranger who joined by code thirty seconds ago into someone who can
+ * start a match on other people's behalf.
+ *
+ * A non-host leaving is just a row delete, and their seat frees up.
+ */
+router.post(
+  '/matches/:id/lobby/leave',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id: userId } = (req as any).auth as { user_id: string };
+    const matchId = req.params.id;
+    if (!UUID_RE.test(matchId)) return res.status(400).json({ error: 'bad match id' });
+
+    const loaded = await loadLobby(matchId);
+    // Leaving a lobby that is already gone is not an error — the caller's goal is already true.
+    // Same posture as `POST /matches/:id/leave` above.
+    if (!loaded) return res.json({ ok: true, cancelled: false });
+
+    const before = await lobbyMembers(matchId);
+    if (!before.some((m) => m.user_id === userId)) {
+      return res.json({ ok: true, cancelled: false });
+    }
+
+    if (loaded.lobby.host_user_id === userId) {
+      // Everyone who was present is told, INCLUDING the host, so their own screen dismisses off
+      // the same frame every other device gets.
+      const audience = before.map((m) => m.user_id);
+      // The match dies with the lobby. 'cancelled' rather than deleted, matching `/cancel`:
+      // the row stays out of the leaderboard (which counts only 'finished') and history can
+      // still show that a game was set up and never played.
+      await query(
+        `update game_matches
+            set status = 'cancelled', ended_at = now(), end_reason = 'cancelled'
+          where id = $1 and status = 'waiting'`,
+        [matchId]
+      );
+      // Members and messages go with it via ON DELETE CASCADE on game_lobbies(match_id).
+      await query(`delete from game_lobbies where match_id = $1`, [matchId]);
+
+      await publishLobbyUpdate(
+        { ...loaded.lobby, started_at: null }, loaded.maxPlayers, [], 'cancelled', audience
+      );
+      // The existing invite-card path is also told, so a chat invite pointing at this match
+      // flips to cancelled rather than sitting there offering a dead lobby.
+      await publishInviteStatus(matchId, loaded.playerIds, 'cancelled');
+      return res.json({ ok: true, cancelled: true });
+    }
+
+    await query(
+      `delete from game_lobby_members where match_id = $1 and user_id = $2`,
+      [matchId, userId]
+    );
+    // Unseated from the match as well — the mirror of the join path. Leaving the id in
+    // `player_ids` would leave a seat allocated to someone who walked out, and the match would
+    // wait forever for them.
+    await query(
+      `update game_matches
+          set player_ids = coalesce((
+                select jsonb_agg(value)
+                  from jsonb_array_elements(player_ids) as value
+                 where value #>> '{}' <> $2::text
+              ), '[]'::jsonb)
+        where id = $1 and status = 'waiting'`,
+      [matchId, userId]
+    );
+
+    const after = await lobbyMembers(matchId);
+    // The leaver is included in the audience so their device sees the same authoritative frame.
+    await publishLobbyUpdate(
+      loaded.lobby, loaded.maxPlayers, after, 'left',
+      [...after.map((m) => m.user_id), userId]
+    );
+    res.json({ ok: true, cancelled: false });
+  })
+);
+
+/**
+ * POST /games/matches/:id/lobby/messages — say something while you wait.
+ * Body: { body }
+ *
+ * MEMBERS ONLY. Holding the join code is enough to PREVIEW a lobby (see the GET) but not to
+ * talk in it — reading a room you are considering entering and putting words in it are
+ * different acts.
+ *
+ * SERVER-READABLE, and this is the one route in the games API that stores user prose in
+ * plaintext. The migration header carries the full argument; the short version is that it is
+ * ephemeral, dies with the match, and its members may hold no ratchet session with each other.
+ * This is NOT a precedent for the message pipe.
+ */
+router.post(
+  '/matches/:id/lobby/messages',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id: userId } = (req as any).auth as { user_id: string };
+    const matchId = req.params.id;
+    if (!UUID_RE.test(matchId)) return res.status(400).json({ error: 'bad match id' });
+
+    const raw = req.body?.body;
+    if (typeof raw !== 'string') return res.status(400).json({ error: 'body required' });
+    const body = raw.trim();
+    // Bounds mirror the CHECK constraint in 052 so a too-long message is a 400 with a reason
+    // rather than a 500 from a constraint violation.
+    if (body.length < 1 || body.length > 500) {
+      return res.status(400).json({ error: 'body must be 1-500 characters' });
+    }
+
+    const loaded = await loadLobby(matchId);
+    if (!loaded) return res.status(404).json({ error: 'no lobby for this match' });
+
+    const members = await lobbyMembers(matchId);
+    const me = members.find((m) => m.user_id === userId);
+    if (!me) return res.status(403).json({ error: 'not in this lobby' });
+
+    const inserted = await query<{ id: string; created_at: Date }>(
+      `insert into game_lobby_messages (match_id, user_id, body)
+       values ($1, $2, $3)
+       returning id, created_at`,
+      [matchId, userId, body]
+    );
+
+    const payload = {
+      id: String(inserted[0].id),
+      user_id: userId,
+      name: me.full_name ?? me.username ?? null,
+      body,
+      created_at: new Date(inserted[0].created_at).getTime(),
+    };
+
+    // A message is its OWN event rather than a lobby update carrying the roster: chat is the
+    // one thing here that arrives in a stream, and re-sending four member rows per "ok" would
+    // make the noisiest event the heaviest one.
+    const frame = JSON.stringify({
+      type: 'game_lobby_message',
+      match_id: matchId,
+      message: payload,
+    });
+    await Promise.all(
+      members.map((m) => publisher.publish(`channel:user:${m.user_id}`, frame))
+    ).catch(() => { /* the message is committed; a dropped frame is a re-read */ });
+
+    res.status(201).json({ message: payload });
+  })
+);
+
+/**
+ * POST /games/matches/:id/lobby/start — the host begins the match.
+ *
+ * HOST ONLY, and everyone must be ready. `fill_empty` relaxes the SEAT count (empty seats are
+ * accepted rather than blocking), but it deliberately does NOT relax the READY check: a seat
+ * nobody claimed is a seat the host chose to leave empty, while a member sitting at 'waiting'
+ * is a person who has not said they are there. Starting into the first is a decision; starting
+ * into the second is stranding someone.
+ *
+ * WHAT THIS DOES NOT DO: build the board. That is `game_join` on the games service, exactly as
+ * `POST /matches/:id/join` does it — the rules live in one place and this route does not learn
+ * them. It flips the durable status and hands off.
+ */
+router.post(
+  '/matches/:id/lobby/start',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id: userId } = (req as any).auth as { user_id: string };
+    const matchId = req.params.id;
+    if (!UUID_RE.test(matchId)) return res.status(400).json({ error: 'bad match id' });
+
+    const loaded = await loadLobby(matchId);
+    if (!loaded) return res.status(404).json({ error: 'no lobby for this match' });
+    if (loaded.lobby.host_user_id !== userId) return res.status(403).json({ error: 'host only' });
+    if (loaded.lobby.started_at) return res.status(409).json({ error: 'already started' });
+    if (loaded.matchStatus !== 'waiting') {
+      return res.status(409).json({ error: 'match is not waiting', status: loaded.matchStatus });
+    }
+
+    const members = await lobbyMembers(matchId);
+    // Re-checked HERE and not only at join: joins race, and the seat count that matters is the
+    // one at the moment the match becomes real.
+    if (members.length > loaded.maxPlayers) {
+      return res.status(409).json({ error: 'lobby is full' });
+    }
+    if (!loaded.lobby.fill_empty) {
+      // Without fill-empty the party must actually fill the game. The catalog's min_players is
+      // the floor, and it is the same floor `POST /games/matches` enforces.
+      const minimum = await query<{ min_players: number }>(
+        `select g.min_players from game_matches m join games g on g.id = m.game_id where m.id = $1`,
+        [matchId]
+      );
+      const min = minimum[0]?.min_players ?? 2;
+      if (members.length < min) {
+        return res.status(409).json({ error: 'not enough players', needed: min });
+      }
+    }
+    const notReady = members.filter((m) => m.state !== 'ready');
+    if (notReady.length > 0) {
+      // Counted, not named. The client already has the roster and renders which chips are grey;
+      // repeating the ids here would be a second source for a fact it can already see.
+      return res.status(409).json({ error: 'not everyone is ready', waiting: notReady.length });
+    }
+
+    const started = await query<{ started_at: Date }>(
+      // Guarded on `started_at is null` so two taps in flight cannot both start the match — the
+      // loser updates zero rows and is told the truth below.
+      `update game_lobbies set started_at = now()
+        where match_id = $1 and started_at is null
+        returning started_at`,
+      [matchId]
+    );
+    if (started.length === 0) return res.status(409).json({ error: 'already started' });
+
+    await query(
+      `update game_matches set status = 'active', started_at = now()
+        where id = $1 and status = 'waiting'`,
+      [matchId]
+    );
+
+    const startedLobby: LobbyRow = { ...loaded.lobby, started_at: started[0].started_at };
+    await publishLobbyUpdate(startedLobby, loaded.maxPlayers, members, 'started');
+    // The invite-card path is told too, so any chat invite pointing at this match stops
+    // offering a lobby that is now a game in progress.
+    await publishInviteStatus(matchId, loaded.playerIds, 'active', members.length);
+
+    // Hand the match to the games service, which owns what a fresh board looks like. Same
+    // publish `POST /matches/:id/join` makes, for the same reason.
+    await publisher.publish(
+      GAMES_INPUT_CHANNEL,
+      JSON.stringify({ type: 'game_join', match_id: matchId, from_user_id: userId })
+    );
+
+    res.json({ ok: true, match_id: matchId, started_at: new Date(started[0].started_at).getTime() });
   })
 );
 

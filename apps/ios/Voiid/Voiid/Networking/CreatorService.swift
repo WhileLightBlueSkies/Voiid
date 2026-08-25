@@ -255,6 +255,127 @@ final class CreatorService {
         return try await api.request("GET", p)
     }
 
+    // MARK: - Story highlights (048_creator_highlights.sql)
+    //
+    // A highlight is a curated shelf of the creator's own CLIPS on their public page — server-
+    // readable broadcast identity, exactly like the avatar beside it. Stories (017) are not
+    // reused and share nothing but a name in other products: a story is ephemeral, audience-
+    // scoped and E2EE; a highlight is permanent, public and server-readable.
+    //
+    // CLIPS ONLY. `creator_highlight_items` references clips(id) and nothing else — a shelf
+    // cannot hold a message, a moment or a story, because putting audience-scoped E2EE content
+    // on a public page would be a disclosure, not a feature. There is no client-side path here
+    // that could name anything but a clip.
+    //
+    // EVERY FIELD OPTIONAL OR DEFAULTED, for the reason CommunityService states at length: an
+    // absent key throws `keyNotFound` and drops the whole payload, not just the field.
+
+    /// One clip on a shelf. Lighter than `CreatorClipRow` — a rail draws a thumbnail and
+    /// nothing else.
+    struct HighlightItem: Decodable, Identifiable, Hashable {
+        let clip_id: String
+        /// Short-lived presigned GET, or nil when R2 is unconfigured or the presign failed.
+        var thumb_url: String?
+        var caption: String?
+        var duration_ms: Int?
+        var width: Int?
+        var height: Int?
+        var view_count: Int?
+        var like_count: Int?
+        var position: Int?
+
+        var id: String { clip_id }
+    }
+
+    /// One shelf on the rail.
+    ///
+    /// `cover_url` nil is the MAJORITY case, not a defect: 048 says an explicit cover is the
+    /// exception and the client falls back to the first item's thumbnail. `firstThumb` is that
+    /// fallback, resolved here so no view has to re-derive it.
+    struct Highlight: Decodable, Identifiable, Hashable {
+        let id: String
+        var title: String?
+        var cover_url: String?
+        var position: Int?
+        var item_count: Int?
+        var items: [HighlightItem]?
+        var created_at: String?
+
+        var name: String { title ?? "" }
+        var clips: [HighlightItem] { items ?? [] }
+        var count: Int { item_count ?? items?.count ?? 0 }
+        /// The cover the rail actually draws: the explicit one, else the first clip's thumb,
+        /// else nil — and a nil here is a real state the view renders, not an error.
+        var coverImage: String? { cover_url ?? items?.first?.thumb_url }
+    }
+
+    struct HighlightsResp: Decodable {
+        var highlights: [Highlight]?
+        /// Whether the viewer owns this profile. Answered by the server rather than compared
+        /// client-side, because 029 deliberately keeps `user_id` out of the public profile
+        /// shape — there is nothing local to compare against.
+        var is_self: Bool?
+
+        var rows: [Highlight] { highlights ?? [] }
+        var isSelf: Bool { is_self ?? false }
+    }
+
+    /// A creator's rail. PUBLIC — no follow, no contact, no relationship required.
+    func highlights(handle: String) async throws -> HighlightsResp {
+        try await api.request("GET", "creators/\(path(handle))/highlights")
+    }
+
+    /// Create a shelf. Owner only, implicitly: the server keys it on the AUTHENTICATED caller
+    /// and there is deliberately no user id in the body to supply.
+    func createHighlight(title: String, coverUrl: String? = nil) async throws -> Highlight {
+        struct Body: Encodable { let title: String; let cover_url: String? }
+        struct Envelope: Decodable { let highlight: Highlight }
+        let env: Envelope = try await api.request(
+            "POST", "highlights", body: Body(title: title, cover_url: coverUrl))
+        return env.highlight
+    }
+
+    /// Rename, re-cover or reorder. One shelf per request — 048 gave `position` its own column
+    /// precisely so a creator can reorder without the whole rail being rewritten.
+    func updateHighlight(id: String, title: String? = nil,
+                         position: Int? = nil) async throws -> Highlight {
+        struct Body: Encodable { let title: String?; let position: Int? }
+        struct Envelope: Decodable { let highlight: Highlight }
+        let env: Envelope = try await api.request(
+            "PATCH", "highlights/\(id)", body: Body(title: title, position: position))
+        return env.highlight
+    }
+
+    /// Delete a shelf. The clips are untouched — removing a shelf destroys no content, every
+    /// clip it pointed at is still on the grid.
+    @discardableResult
+    func deleteHighlight(id: String) async throws -> Bool {
+        struct Envelope: Decodable { var deleted: Bool? }
+        let env: Envelope = try await api.request("DELETE", "highlights/\(id)")
+        return env.deleted ?? true
+    }
+
+    /// Put one of YOUR OWN clips on the shelf. The server checks both — that you own the shelf
+    /// and that you authored the clip — so a shelf cannot be built from someone else's work.
+    @discardableResult
+    func addHighlightItem(highlightId: String, clipId: String) async throws -> Bool {
+        struct Body: Encodable { let clip_id: String }
+        struct Envelope: Decodable { var added: Bool? }
+        let env: Envelope = try await api.request(
+            "POST", "highlights/\(highlightId)/items", body: Body(clip_id: clipId))
+        // `false` means it was already on the shelf — a success, not a failure.
+        return env.added ?? true
+    }
+
+    /// Take a clip off the shelf. Removes the join row ONLY; the clip itself is untouched.
+    @discardableResult
+    func removeHighlightItem(highlightId: String, clipId: String) async throws -> Bool {
+        struct Envelope: Decodable { var removed: Bool? }
+        let env: Envelope = try await api.request(
+            "DELETE", "highlights/\(highlightId)/items/\(clipId)")
+        return env.removed ?? true
+    }
+
     // MARK: - Helpers
 
     /// Handles are `[a-z][a-z0-9_]{2,19}` so they need no escaping in practice, but a

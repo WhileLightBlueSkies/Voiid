@@ -1,0 +1,306 @@
+//
+//  MatchStartingScreen.swift
+//  Voiid
+//
+//  Games flow, step 5 — the countdown.
+//
+//  ── THE COUNTDOWN IS THE WHOLE SCREEN, AND IT RUNS ──────────────────────────────
+//  A static "00:08" would be a picture of a countdown. This one ticks on a real timer, because
+//  the number IS the content — everything else here is confirmation of what was already
+//  decided, and a frozen clock would make the screen read as hung rather than imminent.
+//
+//  ── LEAVE PARTY IS DESTRUCTIVE AND LOOKS IT ─────────────────────────────────────
+//  It is the only red thing on the screen. Leaving at T-8 seconds drops the squad to two and
+//  strands them, so the button is styled as the consequence it is rather than as a neutral
+//  back-out.
+//
+
+import SwiftUI
+import Combine
+
+struct MatchStartingScreen: View {
+
+    // ── THE ONLY ADAPTATIONS IN THIS FILE ───────────────────────────────────────────
+    // `lobby` is handed down from GamesScreen rather than read from the environment, and
+    // `session` is an ObservableObject in Voiid. See GameDetailScreen for the full note.
+    let lobby: LobbyState
+    @EnvironmentObject private var session: AppSession
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var remaining = 8
+    @State private var pulse = false
+
+    /// Ticks the countdown. One second, on the main run loop.
+    private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        ZStack {
+            VoiidColor.background.ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                header
+
+                ScrollView {
+                    VStack(spacing: VoiidSpacing.md) {
+                        countdownCard
+                        squadSection
+                        quickToggles
+                        nextUp
+                    }
+                    .padding(.horizontal, VoiidSpacing.md)
+                    .padding(.top, VoiidSpacing.md)
+                }
+                .scrollIndicators(.hidden)
+                .contentMargins(.bottom, VoiidSpacing.xl, for: .scrollContent)
+            }
+        }
+        .toolbar(.hidden, for: .navigationBar)
+        .navigationBarBackButtonHidden(true)
+        .onAppear {
+            remaining = lobby.countdown
+            session.requestHideTabBar()
+            withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
+                pulse = true
+            }
+        }
+        .onDisappear { session.releaseHideTabBar() }
+        .onReceive(tick) { _ in
+            guard remaining > 0 else { return }
+            remaining -= 1
+            // A tick at the last three seconds only. Haptics on every second would turn a
+            // countdown into a nag.
+            if remaining <= 3 { Haptics.rigid() }
+        }
+    }
+
+    // MARK: Header
+
+    private var header: some View {
+        HStack {
+            Button {
+                Haptics.tap()
+                dismiss()
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundColor(VoiidColor.textPrimary)
+                    .frame(width: 34, height: 34)
+            }
+            .buttonStyle(PressableButtonStyle())
+            .accessibilityLabel("Back")
+
+            Spacer(minLength: 0)
+
+            Text("Match Starting")
+                .font(VoiidFont.rounded(16.5, .semibold))
+                .foregroundColor(VoiidColor.textPrimary)
+
+            Spacer(minLength: 0)
+
+            Button {
+                Haptics.error()
+                dismiss()
+            } label: {
+                Text("Leave Party")
+                    .font(VoiidFont.rounded(12.5, .semibold))
+                    .foregroundColor(VoiidColor.error)
+                    .padding(.horizontal, 11)
+                    .frame(height: 30)
+                    .background(Capsule().fill(VoiidColor.error.opacity(0.14)))
+            }
+            .buttonStyle(PressableButtonStyle())
+        }
+        .padding(.horizontal, VoiidSpacing.sm)
+        .padding(.top, VoiidSpacing.sm)
+    }
+
+    // MARK: Countdown
+
+    private var countdownCard: some View {
+        VStack(spacing: 6) {
+            Text("Match starting in")
+                .font(VoiidFont.rounded(14))
+                .foregroundColor(VoiidColor.textSecondary)
+
+            Text(String(format: "00:%02d", remaining))
+                .font(.system(size: 52, weight: .bold, design: .rounded))
+                .foregroundColor(VoiidColor.textPrimary)
+                .monospacedDigit()
+                // Rolls rather than swaps, so the seconds read as continuous.
+                .contentTransition(.numericText(countsDown: true))
+                .animation(.easeOut(duration: 0.2), value: remaining)
+
+            Text(remaining == 0 ? "Loading…" : "Get Ready!")
+                .font(VoiidFont.rounded(14.5, .semibold))
+                .foregroundColor(VoiidColor.accentInk)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, VoiidSpacing.xl)
+        .background(
+            RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
+                .fill(VoiidColor.surfaceCard)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
+                .stroke(VoiidColor.accent.opacity(pulse ? 0.55 : 0.2), lineWidth: 1.5)
+        )
+        .accessibilityLabel("Match starting in \(remaining) seconds")
+    }
+
+    // MARK: Squad
+
+    private var squadSection: some View {
+        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+            Text("Squad (\(lobby.partyText))")
+                .font(VoiidFont.rounded(15, .bold))
+                .foregroundColor(VoiidColor.textPrimary)
+
+            VStack(spacing: 8) {
+                ForEach(lobby.members) { member in
+                    HStack(spacing: 10) {
+                        ProfilePhoto(name: member.name, size: 34, allowFallbackPhoto: true)
+                            .overlay(alignment: .bottomTrailing) {
+                                Circle()
+                                    .fill(VoiidColor.success)
+                                    .frame(width: 10, height: 10)
+                                    .overlay(Circle().stroke(VoiidColor.surfaceCard,
+                                                             lineWidth: 2))
+                            }
+
+                        HStack(spacing: 5) {
+                            Text(member.name)
+                                .font(VoiidFont.rounded(14.5, .semibold))
+                                .foregroundColor(VoiidColor.textPrimary)
+
+                            if member.isYou {
+                                Text("(You)")
+                                    .font(VoiidFont.rounded(12.5))
+                                    .foregroundColor(VoiidColor.accentInk)
+                            }
+
+                            if member.status == .host {
+                                Text("Host")
+                                    .font(VoiidFont.rounded(10.5, .bold))
+                                    .foregroundColor(VoiidColor.textOnAccent)
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 2.5)
+                                    .background(Capsule().fill(VoiidColor.accent))
+                            }
+                        }
+
+                        Spacer(minLength: 0)
+
+                        Image(systemName: member.micOn ? "mic.fill" : "mic.slash.fill")
+                            .font(.system(size: 12))
+                            .foregroundColor(member.micOn ? VoiidColor.accentInk
+                                                          : VoiidColor.textSecondary)
+                            .frame(width: 28, height: 28)
+                            .background(Circle().fill(VoiidColor.surfaceRaised))
+                    }
+                    .padding(.horizontal, VoiidSpacing.sm + 4)
+                    .frame(height: 54)
+                    .background(VoiidColor.surfaceCard)
+                    .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md,
+                                                style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
+                        .stroke(VoiidColor.divider, lineWidth: 1))
+                }
+            }
+        }
+    }
+
+    // MARK: Toggles
+
+    private var quickToggles: some View {
+        HStack(spacing: 8) {
+            statusCard("gamecontroller.fill", "Open Game", "Ready to launch")
+            statusCard("waveform", "Voice Chat", lobby.voiceChat ? "On" : "Off")
+        }
+    }
+
+    private func statusCard(_ icon: String, _ title: String, _ detail: String) -> some View {
+        Button {
+            Haptics.tap()
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 16))
+                    .foregroundColor(VoiidColor.accentInk)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(VoiidFont.rounded(13.5, .semibold))
+                        .foregroundColor(VoiidColor.textPrimary)
+                    Text(detail)
+                        .font(VoiidFont.rounded(11.5))
+                        .foregroundColor(VoiidColor.textSecondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, VoiidSpacing.sm + 4)
+            .frame(height: 58)
+            .frame(maxWidth: .infinity)
+            .background(VoiidColor.surfaceCard)
+            .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
+                .stroke(VoiidColor.divider, lineWidth: 1))
+        }
+        .buttonStyle(PressableButtonStyle())
+    }
+
+    // MARK: Next up
+
+    /// What comes after this match. Here rather than on Home because the eight seconds before a
+    /// match is exactly when a player decides whether they are staying for another.
+    private var nextUp: some View {
+        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+            HStack {
+                Text("Next Up")
+                    .font(VoiidFont.rounded(15, .bold))
+                    .foregroundColor(VoiidColor.textPrimary)
+
+                Spacer(minLength: 0)
+
+                Button("View All") { Haptics.tap() }
+                    .font(VoiidFont.rounded(13.5, .semibold))
+                    .foregroundColor(VoiidColor.accentInk)
+            }
+
+            Button {
+                Haptics.tap()
+            } label: {
+                HStack(spacing: VoiidSpacing.sm + 2) {
+                    Image(systemName: "trophy.fill")
+                        .font(.system(size: 19))
+                        .foregroundColor(VoiidColor.accentInk)
+                        .frame(width: 46, height: 46)
+                        .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(VoiidColor.accentTint))
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Arena Showdown")
+                            .font(VoiidFont.rounded(14.5, .semibold))
+                            .foregroundColor(VoiidColor.textPrimary)
+                        Text("Tournament · Starts in 45m")
+                            .font(VoiidFont.rounded(12))
+                            .foregroundColor(VoiidColor.textSecondary)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(VoiidColor.textSecondary)
+                }
+                .padding(VoiidSpacing.sm + 4)
+                .background(VoiidColor.surfaceCard)
+                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
+                    .stroke(VoiidColor.divider, lineWidth: 1))
+            }
+            .buttonStyle(PressableButtonStyle())
+        }
+    }
+}

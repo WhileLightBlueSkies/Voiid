@@ -413,6 +413,19 @@ final class WebSocketClient {
                                "seq": (obj["seq"] as? Int) ?? 0,
                                "payload": payload])
             }
+        case "game_lobby_update", "game_lobby_message":
+            // The party lobby's live channel (backend/api routes/games.ts, the lobby block).
+            // Relayed WHOLE and unparsed, for the same reason `game_state` is: whichever lobby
+            // screen is open decodes it against the same typed models the REST call uses, and
+            // a screen that is not open ignores it. Parsing the roster here would put a second
+            // decoder for the same payload in a file that knows nothing about lobbies.
+            //
+            // `game_lobby_update` carries the full roster rather than a delta, so a screen that
+            // missed a frame is corrected by the next one instead of drifting.
+            if let mid = obj["match_id"] as? String {
+                NotificationCenter.default.post(name: .voiidGameLobbyEvent, object: nil,
+                    userInfo: ["type": type, "match_id": mid, "frame": obj])
+            }
         case "story", "story_receipt", "story_deleted":
             // Routing signals only — a device's story ciphertext is NEVER on this channel
             // (§7.10). Wake StoryEngine, which pulls its own blobs from GET /stories/feed.

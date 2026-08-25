@@ -175,7 +175,30 @@ struct APIClient {
     }
 
     /// `code` is optional — most endpoints send only `error`.
-    private struct ErrorBody: Decodable { let error: String; var code: String? }
+    ///
+    /// `reason` is a SECOND spelling of the same field, and it exists because the event
+    /// check-in route answers a refusal as `{ ok: false, reason: "expired" }` rather than as
+    /// `{ error }`. Without this the message would be synthesised as "Request failed (409)."
+    /// and the volunteer at the door would be told nothing they could act on. Additive: a
+    /// body carrying `error` decodes exactly as it did before.
+    private struct ErrorBody: Decodable {
+        let error: String
+        var code: String?
+
+        private enum CodingKeys: String, CodingKey { case error, reason, code }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            guard let message = try c.decodeIfPresent(String.self, forKey: .error)
+                    ?? c.decodeIfPresent(String.self, forKey: .reason) else {
+                throw DecodingError.keyNotFound(
+                    CodingKeys.error,
+                    .init(codingPath: c.codingPath, debugDescription: "no error or reason"))
+            }
+            error = message
+            code = try c.decodeIfPresent(String.self, forKey: .code)
+        }
+    }
     private struct UpdateBody: Decodable { let update_url: String? }
 }
 

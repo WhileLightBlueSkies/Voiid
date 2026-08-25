@@ -4,13 +4,28 @@
 //
 //  Placeholder data behind the community Home tab, ported from the reference.
 //
-//  ── EVERYTHING HERE IS MOCK ─────────────────────────────────────────────────────
-//  Voiid has no posts table, no announcements table and no stats endpoint. These types exist
-//  so the Home tab can be built and reviewed as a UI before any of that is decided; the
-//  `samples` are hardcoded and identical for every community.
+//  ── WHAT IS LEFT HERE IS STILL MOCK; WHAT WENT LIVE HAS LEFT ────────────────────
+//  Posts, the pinned announcement and the About links are now served (047_community_home.sql)
+//  and their types live on the wire, in CommunityService — `CommunityPost`,
+//  `CommunityAnnouncement` and `CommunityAboutLink` are deleted rather than kept as a second
+//  shape to hold in step with the server.
 //
-//  When the backend lands, the `samples` arrays go and these structs get `Decodable`
-//  conformance — the views read the types, not the samples, so the UI does not change.
+//  WHAT REMAINS MOCK, AND WHY:
+//    AdminStat / AdminTask ....... NO BACKEND AT ALL. There is no stats endpoint, no aggregate
+//                                  of members/active/posts/reports, and no unified moderation
+//                                  queue. The numbers are invented and identical for every
+//                                  community. Deliberately NOT derived from whatever data is
+//                                  in hand: a dashboard reporting "1,204 posts" because it
+//                                  counted one page of the feed is a mock that lies, which is
+//                                  worse than one that visibly does not.
+//    CommunitySpace decoration ... purpose/unread/member-count; the channels endpoint has no
+//                                  such columns (047 adds purpose/posting/pinned_at to
+//                                  community_channels, but no route reads them yet).
+//    CommunityDirectoryMember .... display names and online state; the roster returns ids.
+//    CommunityRule ............... 046 has the table; no route serves it.
+//
+//  Each of those goes the same way these did: the view already reads the type, not the
+//  samples, so wiring one is a service call and a deletion.
 //
 
 import SwiftUI
@@ -76,36 +91,10 @@ struct CommunityAvatar: View {
 }
 
 // MARK: - Feed
-
-/// A pinned notice at the top of Home. One at a time by design — a list of pinned things is
-/// just a list.
-struct CommunityAnnouncement: Hashable {
-    var title: String = "Weekly design challenge is live! 🎉"
-    var body: String = "Submit your best shot by Sunday."
-    var author: String = "Admin"
-    var age: String = "2d ago"
-
-    static let sample = CommunityAnnouncement()
-}
-
-struct CommunityPost: Identifiable, Hashable {
-    let id: String
-    let author: String
-    let age: String
-    let text: String
-    /// Whether the post carries a media block. No image — a gradient stands in, as elsewhere.
-    var hasMedia: Bool = true
-
-    static let samples: [CommunityPost] = [
-        .init(id: "cp1", author: "Arjun Dev", age: "2h ago",
-              text: "Exploring neumorphism in dark mode. What do you guys think? 👀"),
-        .init(id: "cp2", author: "Nova Rao", age: "5h ago",
-              text: "Shipped the new onboarding today. Three screens down from seven.",
-              hasMedia: false),
-        .init(id: "cp3", author: "Kiran S", age: "1d ago",
-              text: "Type scale study for the new brand. Swipe for the tighter variant."),
-    ]
-}
+//
+// The feed's types are GONE from this file. A post and the pinned announcement are served by
+// GET /communities/:id/posts and /announcements, and are decoded as `CommunityService.Post`
+// and `CommunityService.Announcement` — see CommunityHomeTab.
 
 // MARK: - Admin
 
@@ -296,20 +285,9 @@ struct CommunityRule: Identifiable, Hashable {
     ]
 }
 
-/// A link on the About tab.
-///
-/// NAMED `CommunityAboutLink`, not `CommunityLink`: that name is already taken by the invite
-/// link type in Networking/CommunityLink.swift, which is a different thing entirely.
-struct CommunityAboutLink: Identifiable, Hashable {
-    let id: String
-    let label: String
-    let value: String
-    let icon: String
+// A link on the About tab is now `CommunityService.AboutLink`, served by
+// GET /communities/:id/links. The local `CommunityAboutLink` is deleted: 047 makes `value`
+// free text (a contact address and a "read the handbook" label both live there, so it is not
+// a URL) and `icon` a client-chosen SF Symbol name, and a second local copy of that shape
+// would only be somewhere for the two to disagree.
 
-    static let samples: [CommunityAboutLink] = [
-        .init(id: "site", label: "Website", value: "voiid.design", icon: "globe"),
-        .init(id: "mail", label: "Contact", value: "hello@voiid.design", icon: "envelope"),
-        .init(id: "guide", label: "Community guide", value: "Read the handbook",
-              icon: "book.closed"),
-    ]
-}

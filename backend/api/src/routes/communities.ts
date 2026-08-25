@@ -50,6 +50,10 @@ import { rateLimit } from '../security';
 import { asyncHandler } from '../util';
 import { publisher } from '../redis';
 import { presignGet, r2Configured } from '../r2';
+// The roster/role authority (communityRoles.ts). Used by the write paths below that need
+// "is this an ACTIVE member of a LIVE community" — a question with a suspended-is-frozen rule
+// and a pending-is-not-a-member rule that must not be re-implemented per route.
+import { communityAccess } from '../communityRoles';
 
 const router = Router();
 
@@ -136,6 +140,11 @@ type CommunityRow = {
   max_members: number;
   suspended_at: string | null;
   created_at: string;
+  // 046. Both were already in COMMUNITY_COLUMNS and already written by the create route, so
+  // every row this file loads has carried them all along — the TYPE just never admitted it,
+  // which is why the PATCH handler could not see them to update them.
+  category: string | null;
+  members_can_invite: boolean;
 };
 
 /**
@@ -167,6 +176,17 @@ async function publicCard(row: CommunityRow) {
     owner_id: row.owner_id,
     suspended: row.suspended_at != null,
     created_at: row.created_at,
+    // 046, and both belong on the CARD rather than on a manager-only shape.
+    //
+    // `category` is what the directory files this community under — outsider-facing by the
+    // same argument the name and description are, and useless to a browser who cannot see it.
+    //
+    // `members_can_invite` is included because the settings screen has to be able to READ BACK
+    // what it just wrote. A field a PATCH accepts but no GET returns is a field the client can
+    // only ever display from its own optimistic guess, which is exactly how a UI ends up
+    // showing a value as saved when the write silently landed on something else.
+    category: row.category ?? null,
+    members_can_invite: row.members_can_invite !== false,
   };
 }
 
@@ -1212,7 +1232,13 @@ router.post(
 // THE CONTAINER + ITS CHANNELS
 // ═════════════════════════════════════════════════════════════════════════════════
 
-// PATCH /communities/:id   { name?, description?, avatar_r2_key?, discoverable?, join_policy? }
+// PATCH /communities/:id
+//   { name?, description?, avatar_r2_key?, discoverable?, join_policy?, category?,
+//     members_can_invite? }
+//
+// `category` and `members_can_invite` (046) were columns this handler could not reach: the
+// create route wrote them and nothing could ever change them again, so a host who picked the
+// wrong category at creation was stuck with it permanently. See the invite-only rule below.
 //
 // The handle is NOT editable here. Renaming a handle breaks every printed invite link and
 // every pasted URL, and 029 already established that renames need history rows and rate
@@ -1246,13 +1272,42 @@ router.patch(
     if (body.description !== undefined) push('description', trimmed(body.description, MAX_DESCRIPTION));
     if (body.avatar_r2_key !== undefined) push('avatar_r2_key', trimmed(body.avatar_r2_key, 400));
     if (body.discoverable !== undefined) push('discoverable', body.discoverable === true);
+    let joinPolicy = gate.community.join_policy;
     if (body.join_policy !== undefined) {
       const jp = String(body.join_policy);
       if (!['open', 'approval', 'invite_only'].includes(jp)) {
         return res.status(400).json({ error: 'join_policy must be open, approval or invite_only' });
       }
       push('join_policy', jp);
+      joinPolicy = jp;
     }
+    // 046. Free text, not an enum, and deliberately: the picker offers six, but a category list
+    // is a product decision that changes more often than a schema should. `null` clears it, the
+    // same absent-vs-null distinction `description` draws above.
+    if (body.category !== undefined) push('category', trimmed(body.category, 40));
+
+    // ── THE INVITE-ONLY RULE, ENFORCED HERE AND NOT ONLY AT CREATION ───────────────
+    //
+    // 046: "an invite-only community where everyone invites is not invite-only". The create
+    // route already forces this off at insert; without the same rule here the setting could be
+    // defeated in two PATCHes — create open with members_can_invite on, then flip the policy to
+    // invite_only and leave the invite flag standing.
+    //
+    // `joinPolicy` is the policy this request LANDS ON: the incoming value when the caller is
+    // changing it, the stored one otherwise. So it covers both "becomes invite_only" and "is
+    // already invite_only", which are the same fact one write apart.
+    //
+    // It is forced silently rather than 400'd because the client also disables the control, so
+    // a request arriving with both set is a stale build rather than a user's intent — and the
+    // response carries the corrected value, so the screen redraws truthfully either way.
+    if (joinPolicy === 'invite_only') {
+      // Unconditional, not `if (body.members_can_invite !== undefined)`: a PATCH that only
+      // moves the policy TO invite_only must also clear an invite flag it never mentioned.
+      push('members_can_invite', false);
+    } else if (body.members_can_invite !== undefined) {
+      push('members_can_invite', body.members_can_invite === true);
+    }
+
     if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
 
     const rows = await query<CommunityRow>(
@@ -1559,6 +1614,891 @@ router.delete(
       [String(req.params.token ?? ''), gate.community.id]
     );
     res.json({ revoked: revoked.length > 0 });
+  })
+);
+
+
+// ═════════════════════════════════════════════════════════════════════════════════
+// THE HOME TAB — posts, likes, the pinned announcement, and the About links
+//
+// 047_community_home.sql is the file to read before touching any of this, and its header is
+// the argument for why these four tables are SERVER-READABLE while channel messages are not:
+// a post is a BROADCAST, addressed to everyone who might later look — including, for a
+// discoverable community, people who have not joined and hold no MLS key. There is no key
+// that means "everyone who might later look", so a feed the server cannot read is a feed
+// that cannot be served at all.
+//
+// NOTHING HERE IS A PRECEDENT FOR WEAKENING MESSAGING. This block creates no conversation,
+// touches no MLS group and reads no ciphertext. The channels remain E2EE, and — per the
+// header of this file — no row written here may ever be read to authorise a 1:1.
+//
+// ── WHO MAY READ THE FEED ────────────────────────────────────────────────────────
+//
+// `readGate` below, and it is deliberately NOT `communityAccess`: that helper answers "is
+// this person an active member", which is the right question for a private community and the
+// WRONG one for a discoverable one whose whole purpose is to show a stranger what is inside
+// before they join. So: an active member always reads; a non-member reads only if the
+// community is discoverable. A private community's feed is members-only, which is the promise
+// "private" makes.
+// ═════════════════════════════════════════════════════════════════════════════════
+
+const POST_PAGE_DEFAULT = 20;
+const POST_PAGE_MAX = 50;
+const MAX_POST_BODY = 5000;         // community_posts_body_len
+const MAX_ANNOUNCEMENT_TITLE = 140; // community_announcements_title_len
+const MAX_ANNOUNCEMENT_BODY = 2000; // community_announcements_body_len
+const MAX_LINK_LABEL = 60;          // community_links_label_len
+const MAX_LINK_VALUE = 500;         // community_links_value_len
+const MAX_LINK_ICON = 60;
+const MAX_LINKS_PER_COMMUNITY = 20;
+// 046: community_rules_title_len / community_rules_detail_len. Copied from the CHECK
+// constraints rather than chosen — a route limit looser than the column's turns a long title
+// into a 500, and one tighter silently forbids something the schema allows.
+const MAX_RULE_TITLE = 120;
+const MAX_RULE_DETAIL = 400;
+// No column constrains this. The create wizard already slices its rules array at 20, and a
+// rules list nobody will read past is not a feature; this makes the two agree.
+const MAX_RULES_PER_COMMUNITY = 20;
+const MAX_MEDIA_URL = 1000;
+
+type ReadGate =
+  | { ok: true; community: CommunityRow; isMember: boolean; isManager: boolean }
+  | { ok: false; status: number; error: string };
+
+/**
+ * May this caller READ this community's public-facing surfaces (feed, announcement, links)?
+ *
+ * Three answers, and the middle one is the reason this is not `requireManager` or
+ * `communityAccess`:
+ *
+ *   active member ....... yes, always. Including in a private community.
+ *   non-member .......... yes IF the community is discoverable. 047's header: the Home feed is
+ *                         the surface that sells the community to someone who has not joined,
+ *                         and gating it on membership would make the sell impossible.
+ *   non-member, private . no. A community that took itself out of search is withholding what
+ *                         is discussed inside it, and its feed is part of that.
+ *
+ * A SUSPENDED community reads as gone rather than as suspended-but-browsable: the same posture
+ * communityRoles.ts takes, because a suspended community accepting no new anything should also
+ * not keep broadcasting.
+ *
+ * `isManager` rides along so the write routes below do not pay a second roster probe.
+ */
+async function readGate(idOrHandle: string, userId: string): Promise<ReadGate> {
+  const community = await findCommunity(idOrHandle);
+  if (!community) return { ok: false, status: 404, error: 'no such community' };
+  if (community.suspended_at) return { ok: false, status: 403, error: 'this community is suspended' };
+
+  const m = await membershipOf(community.id, userId);
+  const isMember = m?.state === 'active';
+  const isManager =
+    community.owner_id === userId || (isMember && (m!.role === 'owner' || m!.role === 'admin'));
+
+  if (!isMember && !community.discoverable) {
+    // ONE message for "not a member of a private community" — never "this community is
+    // private AND you are not in it", which would confirm the community exists to someone
+    // who guessed its id. 404 rather than 403 for the same reason.
+    return { ok: false, status: 404, error: 'no such community' };
+  }
+  return { ok: true, community, isMember, isManager };
+}
+
+/**
+ * The author columns every post and announcement row carries.
+ *
+ * A LEFT JOIN, because `author_id` is `on delete set null` (047): deleting an account must not
+ * rewrite the community's history, so a null author is a normal row and renders as "Deleted
+ * account". An inner join here would make those posts silently vanish from the feed, which is
+ * the failure the schema's ON DELETE SET NULL exists to avoid.
+ */
+const AUTHOR_JOIN = `left join users u on u.id = p.author_id`;
+
+/**
+ * Shape a post for the wire.
+ *
+ * EVERY KEY IS ALWAYS PRESENT, null rather than omitted — the same rule `publicCard` states
+ * and for the same reason: Swift's Codable throws `keyNotFound` on an absent key, so a
+ * response that drops `media_url` for the posts that have no media breaks the client for
+ * exactly the common case.
+ */
+function postShape(r: any) {
+  return {
+    id: r.id,
+    author_id: r.author_id ?? null,
+    author_name: r.author_name ?? null,
+    author_username: r.author_username ?? null,
+    author_photo_url: r.author_photo_url ?? null,
+    body: r.body,
+    media_url: r.media_url ?? null,
+    like_count: r.like_count ?? 0,
+    comment_count: r.comment_count ?? 0,
+    liked_by_me: r.liked_by_me === true,
+    created_at: r.created_at,
+    edited_at: r.edited_at ?? null,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// GET /communities/:id/posts?cursor=&limit=   — the Home feed.
+//
+// Newest first, keyset-paginated on `created_at` rather than OFFSET: an offset page shifts
+// under the reader every time somebody posts, so a scroll re-shows rows it already showed.
+// The cursor is the last row's `created_at`, which is exactly the column
+// community_posts_feed_idx is ordered by.
+//
+// `removed_at is null` is in the WHERE because the partial index is defined with it — a query
+// that omits the predicate cannot use the index the schema built for this exact page.
+//
+// `liked_by_me` is answered in the SAME query by a left join on community_post_likes rather
+// than by a second round trip per page: without it the heart cannot render filled, which is
+// the whole reason 047 keeps a join table alongside the counter.
+// ─────────────────────────────────────────────────────────────────────────────────
+router.get(
+  '/:id/posts',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id } = (req as any).auth;
+    const gate = await readGate(String(req.params.id ?? ''), user_id);
+    if (!gate.ok) return res.status(gate.status).json({ error: gate.error });
+
+    const limit = clampInt(req.query.limit, POST_PAGE_DEFAULT, POST_PAGE_MAX);
+    const cursor = typeof req.query.cursor === 'string' && req.query.cursor ? req.query.cursor : null;
+
+    const rows = await query<any>(
+      `select p.id, p.author_id, p.body, p.media_url, p.like_count, p.comment_count,
+              p.created_at, p.edited_at,
+              u.full_name as author_name, u.username as author_username,
+              u.photo_url as author_photo_url,
+              (l.user_id is not null) as liked_by_me
+         from community_posts p
+         ${AUTHOR_JOIN}
+         left join community_post_likes l on l.post_id = p.id and l.user_id = $2
+        where p.community_id = $1
+          and p.removed_at is null
+          ${cursor ? 'and p.created_at < $4::timestamptz' : ''}
+        order by p.created_at desc
+        limit $3`,
+      cursor ? [gate.community.id, user_id, limit, cursor] : [gate.community.id, user_id, limit]
+    );
+
+    res.json({
+      posts: rows.map(postShape),
+      // Null rather than absent, and null on a short page rather than a cursor that would
+      // return nothing — the client stops on null and would otherwise fetch an empty page.
+      next_cursor: rows.length === limit ? rows[rows.length - 1].created_at : null,
+    });
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// POST /communities/:id/posts   { body, media_url? }
+//
+// MEMBERS ONLY, and that is not the same gate as reading. A discoverable community shows its
+// feed to a stranger so they can decide to join; letting that stranger POST into it would make
+// "join" meaningless and hand every discoverable community an open spam endpoint.
+//
+// `media_url` is a URL, not bytes — the same shape clips (022) uses. It is stored as given and
+// never fetched by the server.
+// ─────────────────────────────────────────────────────────────────────────────────
+router.post(
+  '/:id/posts',
+  requireAuth,
+  // Tighter than the router-wide ceiling. A feed is the surface where a script does the most
+  // damage per request, and 30/hour is far above any human posting rate.
+  rateLimit({ max: 30, windowSeconds: 3600, bucket: 'community-post' }),
+  asyncHandler(async (req, res) => {
+    const { user_id } = (req as any).auth;
+    const communityId = String(req.params.id ?? '');
+    if (!UUID_RE.test(communityId)) return res.status(400).json({ error: 'community id must be a uuid' });
+
+    // Membership, not readability: see above. `communityAccess` is the right helper here
+    // precisely because posting IS the "active member of a live community" question it answers.
+    const access = await communityAccess(communityId, user_id, false);
+    if (!access.ok) return res.status(access.status).json({ error: access.error });
+
+    const body = trimmed(req.body?.body, MAX_POST_BODY);
+    // community_posts_body_len rejects an empty body as a 500; catch it here as a 400.
+    if (!body) return res.status(400).json({ error: 'a post cannot be empty' });
+    const mediaUrl = req.body?.media_url !== undefined ? trimmed(req.body.media_url, MAX_MEDIA_URL) : null;
+
+    const rows = await query<any>(
+      `with inserted as (
+         insert into community_posts (community_id, author_id, body, media_url)
+              values ($1, $2, $3, $4)
+           returning id, author_id, body, media_url, like_count, comment_count,
+                     created_at, edited_at
+       )
+       select p.*, u.full_name as author_name, u.username as author_username,
+                u.photo_url as author_photo_url
+         from inserted p
+         ${AUTHOR_JOIN}`,
+      [communityId, user_id, body, mediaUrl]
+    );
+    // A fresh post is never liked by its author, so `liked_by_me` is false by construction and
+    // needs no probe.
+    res.status(201).json({ post: postShape(rows[0]) });
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// DELETE /communities/:id/posts/:postId — the author, or a manager.
+//
+// A TIMESTAMP, NOT A DELETE. 047: "A removed post stays in the table so a moderator can see
+// what they removed and an appeal has something to point at". The feed query filters on
+// `removed_at is null`, so the row disappearing from the feed is the same act either way — but
+// only one of the two leaves anything to appeal against.
+//
+// `removed_by` records WHO, which is what makes the audit trail worth keeping. An author
+// removing their own post records themselves, and that is correct: "who took this down" has an
+// answer in both cases.
+//
+// The authorisation is ONE query with the ownership test in the WHERE, not a read-then-write:
+// a select-then-update lets a post change hands between the two statements. It cannot here —
+// `author_id` never moves — but writing it as a race is how the next endpoint copies the bug.
+// ─────────────────────────────────────────────────────────────────────────────────
+router.delete(
+  '/:id/posts/:postId',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id } = (req as any).auth;
+    const communityId = String(req.params.id ?? '');
+    const postId = String(req.params.postId ?? '');
+    if (!UUID_RE.test(communityId)) return res.status(400).json({ error: 'community id must be a uuid' });
+    if (!UUID_RE.test(postId)) return res.status(400).json({ error: 'post id must be a uuid' });
+
+    // A manager may remove anyone's post; everyone else may remove only their own. The manager
+    // probe is cheap and its failure is not an error — most callers are ordinary authors.
+    const manager = await requireManager(communityId, user_id);
+    const isManager = manager.ok;
+
+    const removed = await query<{ id: string }>(
+      `update community_posts
+          set removed_at = now(), removed_by = $3
+        where id = $1
+          and community_id = $2
+          and removed_at is null
+          ${isManager ? '' : 'and author_id = $3'}
+       returning id`,
+      [postId, communityId, user_id]
+    );
+    if (!removed[0]) {
+      // ONE answer for "no such post", "already removed" and "not yours". Telling them apart
+      // turns this into a probe for which post ids exist in a community the caller can read but
+      // not moderate.
+      return res.status(404).json({ error: 'no such post' });
+    }
+    res.json({ removed: true });
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// POST /communities/:id/posts/:postId/like  — and DELETE to unlike.
+//
+// TWO WRITES IN ONE TRANSACTION, and the counter update is CONDITIONAL ON THE JOIN ROW MOVING.
+//
+// `on conflict do nothing ... returning` returns zero rows when the like already existed, and
+// the counter is only bumped when it returned one. That is what keeps `like_count` true under
+// a double-tap or a client retry: without it, two taps of an already-liked heart increment the
+// count twice while the join table — which has a primary key — stays at one row, and the
+// number on screen is then permanently wrong with nothing to reconcile it against.
+//
+// Members only. A non-member reading a discoverable feed is a visitor, not a participant.
+// ─────────────────────────────────────────────────────────────────────────────────
+router.post(
+  '/:id/posts/:postId/like',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id } = (req as any).auth;
+    const communityId = String(req.params.id ?? '');
+    const postId = String(req.params.postId ?? '');
+    if (!UUID_RE.test(communityId)) return res.status(400).json({ error: 'community id must be a uuid' });
+    if (!UUID_RE.test(postId)) return res.status(400).json({ error: 'post id must be a uuid' });
+
+    const access = await communityAccess(communityId, user_id, false);
+    if (!access.ok) return res.status(access.status).json({ error: access.error });
+
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      // The post must live in THIS community. Without the community_id test, a member of one
+      // community could like a post in another by supplying its id.
+      const post = (
+        await client.query<{ id: string }>(
+          `select id from community_posts
+            where id = $1 and community_id = $2 and removed_at is null`,
+          [postId, communityId]
+        )
+      ).rows[0];
+      if (!post) {
+        await client.query('rollback');
+        return res.status(404).json({ error: 'no such post' });
+      }
+
+      const inserted = await client.query(
+        `insert into community_post_likes (post_id, user_id) values ($1, $2)
+         on conflict (post_id, user_id) do nothing
+           returning post_id`,
+        [postId, user_id]
+      );
+      // Only a NEW like moves the counter. See the header above.
+      const counted = inserted.rowCount
+        ? (
+            await client.query<{ like_count: number }>(
+              `update community_posts set like_count = like_count + 1
+                where id = $1 returning like_count`,
+              [postId]
+            )
+          ).rows[0]
+        : (
+            await client.query<{ like_count: number }>(
+              `select like_count from community_posts where id = $1`,
+              [postId]
+            )
+          ).rows[0];
+      await client.query('commit');
+      res.json({ liked: true, like_count: counted?.like_count ?? 0 });
+    } catch (e) {
+      await client.query('rollback');
+      throw e;
+    } finally {
+      client.release();
+    }
+  })
+);
+
+router.delete(
+  '/:id/posts/:postId/like',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id } = (req as any).auth;
+    const communityId = String(req.params.id ?? '');
+    const postId = String(req.params.postId ?? '');
+    if (!UUID_RE.test(communityId)) return res.status(400).json({ error: 'community id must be a uuid' });
+    if (!UUID_RE.test(postId)) return res.status(400).json({ error: 'post id must be a uuid' });
+
+    const access = await communityAccess(communityId, user_id, false);
+    if (!access.ok) return res.status(access.status).json({ error: access.error });
+
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      const post = (
+        await client.query<{ id: string }>(
+          `select id from community_posts where id = $1 and community_id = $2`,
+          [postId, communityId]
+        )
+      ).rows[0];
+      if (!post) {
+        await client.query('rollback');
+        return res.status(404).json({ error: 'no such post' });
+      }
+
+      const deleted = await client.query(
+        `delete from community_post_likes where post_id = $1 and user_id = $2 returning post_id`,
+        [postId, user_id]
+      );
+      // Symmetric with the like path: the counter moves only if a row actually went away, and
+      // `greatest(...,0)` keeps community_posts_counts_nonneg from turning a double-unlike into
+      // a 500 if the counter were ever already at zero.
+      const counted = deleted.rowCount
+        ? (
+            await client.query<{ like_count: number }>(
+              `update community_posts set like_count = greatest(like_count - 1, 0)
+                where id = $1 returning like_count`,
+              [postId]
+            )
+          ).rows[0]
+        : (
+            await client.query<{ like_count: number }>(
+              `select like_count from community_posts where id = $1`,
+              [postId]
+            )
+          ).rows[0];
+      await client.query('commit');
+      res.json({ liked: false, like_count: counted?.like_count ?? 0 });
+    } catch (e) {
+      await client.query('rollback');
+      throw e;
+    } finally {
+      client.release();
+    }
+  })
+);
+
+// ═════════════════════════════════════════════════════════════════════════════════
+// THE PINNED ANNOUNCEMENT
+// ═════════════════════════════════════════════════════════════════════════════════
+
+/** Same always-present-key rule as `postShape`. */
+function announcementShape(r: any) {
+  return {
+    id: r.id,
+    author_id: r.author_id ?? null,
+    author_name: r.author_name ?? null,
+    author_username: r.author_username ?? null,
+    author_photo_url: r.author_photo_url ?? null,
+    title: r.title,
+    body: r.body,
+    pinned_at: r.pinned_at,
+    created_at: r.created_at,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// GET /communities/:id/announcements — THE LIVE ONE.
+//
+// `announcement: null` is a 200, not a 404: having nothing pinned is the ordinary state of
+// most communities, and making the client open by handling an error for the common case is
+// the mistake `GET /creators/me` documents avoiding.
+//
+// One row by construction — community_announcements_one_live_idx makes a second unpinned-null
+// row impossible — so this does not order-and-limit to paper over a state the schema forbids.
+//
+// `?history=1` returns the archive instead, which is the reason 047 made this a table rather
+// than a column on `communities`: "a host wants to see what was pinned last month". Manager
+// only — an unpinned announcement was deliberately taken down, and a member being able to
+// read every notice the host ever retracted is not what unpinning means.
+// ─────────────────────────────────────────────────────────────────────────────────
+router.get(
+  '/:id/announcements',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id } = (req as any).auth;
+    const gate = await readGate(String(req.params.id ?? ''), user_id);
+    if (!gate.ok) return res.status(gate.status).json({ error: gate.error });
+
+    const wantsHistory = String(req.query.history ?? '') === '1';
+    if (wantsHistory && !gate.isManager) {
+      return res.status(403).json({ error: 'only the owner or an admin can do that' });
+    }
+
+    const rows = await query<any>(
+      `select p.id, p.author_id, p.title, p.body, p.pinned_at, p.created_at, p.unpinned_at,
+              u.full_name as author_name, u.username as author_username,
+              u.photo_url as author_photo_url
+         from community_announcements p
+         ${AUTHOR_JOIN}
+        where p.community_id = $1
+          ${wantsHistory ? '' : 'and p.unpinned_at is null'}
+        order by p.pinned_at desc
+        limit ${wantsHistory ? 50 : 1}`,
+      [gate.community.id]
+    );
+
+    res.json({
+      // Both keys always present. The client reads `announcement` for the card and `history`
+      // for the archive sheet; neither may be absent, or Codable throws.
+      announcement: wantsHistory ? null : rows[0] ? announcementShape(rows[0]) : null,
+      history: wantsHistory ? rows.map(announcementShape) : [],
+    });
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// POST /communities/:id/announcements   { title, body }  — pin a new one. Manager only.
+//
+// ── THE PARTIAL UNIQUE INDEX IS THE WHOLE DESIGN OF THIS ROUTE ───────────────────
+//
+// community_announcements_one_live_idx is UNIQUE on (community_id) WHERE unpinned_at IS NULL.
+// So an INSERT while something is already pinned is a 23505 — not an accident to be caught and
+// reported, but the schema saying "unpin the old one first".
+//
+// ONE TRANSACTION does both, in order: unpin the current live row, then insert the new one.
+// Split across two requests, a host who lost connectivity between them would leave their
+// community with NOTHING pinned — the old notice gone and the new one never written. Split
+// across two statements outside a transaction, the same thing happens on any error in the
+// second. The index cannot be satisfied by an insert alone, so the unpin is not a courtesy.
+//
+// The UPDATE takes the row lock that serialises two hosts pinning at once: the second waits,
+// sees zero live rows, and inserts cleanly. Without it both would insert and one would get a
+// 23505 — which is safe, but a host being told "conflict" for pressing Pin is not a good
+// answer when the correct one is available.
+// ─────────────────────────────────────────────────────────────────────────────────
+router.post(
+  '/:id/announcements',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id } = (req as any).auth;
+    const gate = await requireManager(String(req.params.id ?? ''), user_id);
+    if (!gate.ok) return res.status(gate.status).json({ error: gate.error });
+
+    const title = trimmed(req.body?.title, MAX_ANNOUNCEMENT_TITLE);
+    const body = trimmed(req.body?.body, MAX_ANNOUNCEMENT_BODY);
+    // Both length checks exist in the schema and would surface as a 500; catch them as 400s.
+    if (!title) return res.status(400).json({ error: 'title is required' });
+    if (!body) return res.status(400).json({ error: 'body is required' });
+
+    const client = await pool.connect();
+    try {
+      await client.query('begin');
+      // Unpin whatever is live. Zero rows is the normal first-ever-announcement case.
+      await client.query(
+        `update community_announcements set unpinned_at = now()
+          where community_id = $1 and unpinned_at is null`,
+        [gate.community.id]
+      );
+      const rows = await client.query<any>(
+        `with inserted as (
+           insert into community_announcements (community_id, author_id, title, body)
+                values ($1, $2, $3, $4)
+             returning id, author_id, title, body, pinned_at, created_at
+         )
+         select p.*, u.full_name as author_name, u.username as author_username,
+                  u.photo_url as author_photo_url
+           from inserted p
+           ${AUTHOR_JOIN}`,
+        [gate.community.id, user_id, title, body]
+      );
+      await client.query('commit');
+      res.status(201).json({ announcement: announcementShape(rows.rows[0]) });
+    } catch (e) {
+      await client.query('rollback');
+      if (isUniqueViolation(e)) {
+        // Should be unreachable — the unpin above runs in the same transaction and holds the
+        // lock. Answered rather than 500'd because "something else is pinned" is a state the
+        // host can act on, and a 500 tells them nothing.
+        return res.status(409).json({ error: 'another announcement is already pinned' });
+      }
+      throw e;
+    } finally {
+      client.release();
+    }
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// DELETE /communities/:id/announcements/:annId — unpin. Manager only.
+//
+// SETS `unpinned_at`, NEVER DELETES. 047 is explicit: the table keeps history by design, and a
+// hard delete would destroy the archive the table exists to hold. Unpinning is the end of an
+// announcement's CURRENCY, not of its existence.
+//
+// `and unpinned_at is null` makes this idempotent: unpinning twice is `{ unpinned: false }`,
+// not a second timestamp that would rewrite when it came down.
+// ─────────────────────────────────────────────────────────────────────────────────
+router.delete(
+  '/:id/announcements/:annId',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id } = (req as any).auth;
+    const gate = await requireManager(String(req.params.id ?? ''), user_id);
+    if (!gate.ok) return res.status(gate.status).json({ error: gate.error });
+    const annId = String(req.params.annId ?? '');
+    if (!UUID_RE.test(annId)) return res.status(400).json({ error: 'announcement id must be a uuid' });
+
+    const rows = await query<{ id: string }>(
+      `update community_announcements set unpinned_at = now()
+        where id = $1 and community_id = $2 and unpinned_at is null
+       returning id`,
+      [annId, gate.community.id]
+    );
+    res.json({ unpinned: rows.length > 0 });
+  })
+);
+
+// ═════════════════════════════════════════════════════════════════════════════════
+// ABOUT LINKS
+//
+// Readable by anyone who can read the community — 047: "Shown on the public info card, to
+// non-members, by definition". Written by managers only: the About tab is the community's own
+// statement of what it is, and a member editing it would be editing the host's words.
+// ═════════════════════════════════════════════════════════════════════════════════
+
+function linkShape(r: any) {
+  return {
+    id: r.id,
+    label: r.label,
+    value: r.value,
+    // Null rather than omitted, and the client picks its own fallback symbol. The server does
+    // not invent one: 047 leaves `icon` free text chosen from a client-side set, and a server
+    // guessing at SF Symbol names would be guessing at a set it does not hold.
+    icon: r.icon ?? null,
+    position: r.position ?? 0,
+  };
+}
+
+// GET /communities/:id/links — the About tab's list, in the host's order.
+router.get(
+  '/:id/links',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id } = (req as any).auth;
+    const gate = await readGate(String(req.params.id ?? ''), user_id);
+    if (!gate.ok) return res.status(gate.status).json({ error: gate.error });
+
+    const rows = await query<any>(
+      `select id, label, value, icon, position
+         from community_links
+        where community_id = $1
+        order by position, created_at`,
+      [gate.community.id]
+    );
+    res.json({ links: rows.map(linkShape) });
+  })
+);
+
+// POST /communities/:id/links   { label, value, icon?, position? } — manager only.
+//
+// `position` defaults to the end of the list rather than to 0, so adding a link does not
+// silently reshuffle the ones already there.
+router.post(
+  '/:id/links',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id } = (req as any).auth;
+    const gate = await requireManager(String(req.params.id ?? ''), user_id);
+    if (!gate.ok) return res.status(gate.status).json({ error: gate.error });
+
+    const label = trimmed(req.body?.label, MAX_LINK_LABEL);
+    const value = trimmed(req.body?.value, MAX_LINK_VALUE);
+    if (!label) return res.status(400).json({ error: 'label is required' });
+    // Deliberately NOT url-validated. 047: `value` is text because the About tab also carries a
+    // contact address and a "read the handbook" label, and forcing every row to parse as a URL
+    // would exclude both.
+    if (!value) return res.status(400).json({ error: 'value is required' });
+    const icon = req.body?.icon !== undefined ? trimmed(req.body.icon, MAX_LINK_ICON) : null;
+
+    const existing = await query<{ n: number; max_position: number | null }>(
+      `select count(*)::int as n, max(position) as max_position
+         from community_links where community_id = $1`,
+      [gate.community.id]
+    );
+    if ((existing[0]?.n ?? 0) >= MAX_LINKS_PER_COMMUNITY) {
+      return res.status(409).json({
+        error: `a community can have at most ${MAX_LINKS_PER_COMMUNITY} links`,
+      });
+    }
+    const explicit = req.body?.position !== undefined ? Math.trunc(Number(req.body.position)) : undefined;
+    if (explicit !== undefined && !Number.isFinite(explicit)) {
+      return res.status(400).json({ error: 'position must be a number' });
+    }
+    const position = explicit ?? (existing[0]?.max_position ?? -1) + 1;
+
+    const rows = await query<any>(
+      `insert into community_links (community_id, label, value, icon, position)
+            values ($1, $2, $3, $4, $5)
+       returning id, label, value, icon, position`,
+      [gate.community.id, label, value, icon, position]
+    );
+    res.status(201).json({ link: linkShape(rows[0]) });
+  })
+);
+
+// DELETE /communities/:id/links/:linkId — manager only.
+//
+// A HARD delete, unlike a post or an announcement, and deliberately: a link is a pointer, not
+// a statement. There is no appeal to hear and no history worth keeping — 047 gives the table
+// no `removed_at` column precisely because removing a dead URL is housekeeping.
+router.delete(
+  '/:id/links/:linkId',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id } = (req as any).auth;
+    const gate = await requireManager(String(req.params.id ?? ''), user_id);
+    if (!gate.ok) return res.status(gate.status).json({ error: gate.error });
+    const linkId = String(req.params.linkId ?? '');
+    if (!UUID_RE.test(linkId)) return res.status(400).json({ error: 'link id must be a uuid' });
+
+    // `and community_id` proves the link belongs to THIS community rather than another one the
+    // caller also administers.
+    const rows = await query<{ id: string }>(
+      `delete from community_links where id = $1 and community_id = $2 returning id`,
+      [linkId, gate.community.id]
+    );
+    res.json({ deleted: rows.length > 0 });
+  })
+);
+
+// ═════════════════════════════════════════════════════════════════════════════════
+// RULES (046_community_setup.sql)
+//
+// The table has existed since 046 and the create wizard has been INSERTing into it since the
+// day it shipped. Nothing could read those rows back, so every host who typed rules at
+// creation had them stored and never shown — the About tab rendered `CommunityRule.samples`
+// instead, meaning four invented rules were displayed to real members of real communities as
+// though the host had written them.
+//
+// ── WHY `readGate` AND NOT `requireManager` FOR THE READ ─────────────────────────
+// Rules are the terms of joining. Someone deciding whether to join needs to see them BEFORE
+// they join, or the decision is uninformed — which is the same argument 047 makes for the
+// Home feed, so this reuses the same helper rather than inventing a third answer: an active
+// member always reads, a non-member reads only if the community is discoverable.
+//
+// ── POSITION IS THE ORDERING AUTHORITY ──────────────────────────────────────────
+// 046 gives the table an explicit `position` column precisely so a host can reorder without
+// the rules jumping to the end of the list when they edit one. Every route below preserves
+// that: create appends past the current maximum, PATCH leaves position alone unless asked,
+// and reordering is a PATCH of `position` on its own.
+// ═════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Shape a rule for the wire.
+ *
+ * EVERY KEY ALWAYS PRESENT, null rather than omitted — the rule `publicCard` and `postShape`
+ * both state, for the same reason: Swift's Codable throws `keyNotFound` on an ABSENT key and
+ * fails the WHOLE decode, so a response that drops `detail` for the rules that have none
+ * would break the client for exactly the short rules 046 made `detail` nullable to allow.
+ */
+function ruleShape(r: any) {
+  return {
+    id: r.id,
+    title: r.title,
+    detail: r.detail ?? null,
+    position: r.position ?? 0,
+  };
+}
+
+// GET /communities/:id/rules — the About tab's list, in the host's order.
+//
+// Readable by whoever may read the community; see the header above.
+router.get(
+  '/:id/rules',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id } = (req as any).auth;
+    const gate = await readGate(String(req.params.id ?? ''), user_id);
+    if (!gate.ok) return res.status(gate.status).json({ error: gate.error });
+
+    // `position, created_at` is the index community_rules_community_idx is built on, and the
+    // created_at tiebreak keeps two rules that share a position in a stable order rather than
+    // letting them swap between requests.
+    const rows = await query<any>(
+      `select id, title, detail, position
+         from community_rules
+        where community_id = $1
+        order by position, created_at`,
+      [gate.community.id]
+    );
+    res.json({ rules: rows.map(ruleShape) });
+  })
+);
+
+// POST /communities/:id/rules   { title, detail?, position? } — manager only.
+//
+// `position` defaults to the END of the list rather than to 0, so adding a rule does not
+// silently reshuffle the ones already there — the same choice the links route makes.
+router.post(
+  '/:id/rules',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id } = (req as any).auth;
+    const gate = await requireManager(String(req.params.id ?? ''), user_id);
+    if (!gate.ok) return res.status(gate.status).json({ error: gate.error });
+
+    const title = trimmed(req.body?.title, MAX_RULE_TITLE);
+    // community_rules_title_len is `between 1 and 120`, so an empty title is a constraint
+    // violation and a 500 if it reaches the database. 400 it here, where it can be explained.
+    if (!title) return res.status(400).json({ error: 'title is required' });
+    const detail = req.body?.detail !== undefined ? trimmed(req.body.detail, MAX_RULE_DETAIL) : null;
+
+    const existing = await query<{ n: number; max_position: number | null }>(
+      `select count(*)::int as n, max(position) as max_position
+         from community_rules where community_id = $1`,
+      [gate.community.id]
+    );
+    if ((existing[0]?.n ?? 0) >= MAX_RULES_PER_COMMUNITY) {
+      return res.status(409).json({
+        error: `a community can have at most ${MAX_RULES_PER_COMMUNITY} rules`,
+      });
+    }
+    const explicit = req.body?.position !== undefined ? Math.trunc(Number(req.body.position)) : undefined;
+    if (explicit !== undefined && !Number.isFinite(explicit)) {
+      return res.status(400).json({ error: 'position must be a number' });
+    }
+    const position = explicit ?? (existing[0]?.max_position ?? -1) + 1;
+
+    const rows = await query<any>(
+      `insert into community_rules (community_id, title, detail, position)
+            values ($1, $2, $3, $4)
+       returning id, title, detail, position`,
+      [gate.community.id, title, detail, position]
+    );
+    res.status(201).json({ rule: ruleShape(rows[0]) });
+  })
+);
+
+// PATCH /communities/:id/rules/:ruleId   { title?, detail?, position? } — manager only.
+//
+// Editing and REORDERING are the same endpoint, because 046's whole reason for an explicit
+// `position` column is that the two must be separable: a host fixing a typo must not have
+// their rule jump to the end of the list, and a host dragging a row must not have to resend
+// its text. An absent key leaves the column alone, so each is a write of exactly one thing.
+router.patch(
+  '/:id/rules/:ruleId',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id } = (req as any).auth;
+    const gate = await requireManager(String(req.params.id ?? ''), user_id);
+    if (!gate.ok) return res.status(gate.status).json({ error: gate.error });
+    const ruleId = String(req.params.ruleId ?? '');
+    if (!UUID_RE.test(ruleId)) return res.status(400).json({ error: 'rule id must be a uuid' });
+
+    // Same push()/param-building shape as PATCH /:id above. $1 is the rule, $2 the community.
+    const body = req.body ?? {};
+    const sets: string[] = [];
+    const params: unknown[] = [ruleId, gate.community.id];
+    const push = (sql: string, value: unknown) => {
+      params.push(value);
+      sets.push(`${sql} = $${params.length}`);
+    };
+
+    if (body.title !== undefined) {
+      const title = trimmed(body.title, MAX_RULE_TITLE);
+      // `title` is NOT NULL with a length check. Unlike `detail`, there is no "clear it"
+      // meaning available here — a rule with no title is not a rule.
+      if (!title) return res.status(400).json({ error: 'title cannot be empty' });
+      push('title', title);
+    }
+    // `detail: null` clears it; an absent key leaves it alone. The two have to be
+    // distinguishable or a host can never remove an explanation once written — the same
+    // distinction `description` draws on the community itself.
+    if (body.detail !== undefined) push('detail', trimmed(body.detail, MAX_RULE_DETAIL));
+    if (body.position !== undefined) {
+      const position = Math.trunc(Number(body.position));
+      if (!Number.isFinite(position)) {
+        return res.status(400).json({ error: 'position must be a number' });
+      }
+      push('position', position);
+    }
+    if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
+
+    // `and community_id` proves the rule belongs to THIS community rather than to another one
+    // the caller also administers — the same guard the link delete carries.
+    const rows = await query<any>(
+      `update community_rules set ${sets.join(', ')}
+        where id = $1 and community_id = $2
+       returning id, title, detail, position`,
+      params
+    );
+    if (!rows[0]) return res.status(404).json({ error: 'no such rule' });
+    res.json({ rule: ruleShape(rows[0]) });
+  })
+);
+
+// DELETE /communities/:id/rules/:ruleId — manager only.
+//
+// A HARD delete, like a link and unlike a post: a rule is the host's own standing text, not
+// somebody's statement to moderate. 046 gives the table no `removed_at` column, so there is
+// no soft delete available and none wanted — there is no appeal to hear.
+//
+// The gap it leaves in `position` is deliberately NOT closed by renumbering the survivors.
+// Ordering only ever needs to be RELATIVE, and a renumber would be a write to every remaining
+// row to fix something no reader can see.
+router.delete(
+  '/:id/rules/:ruleId',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id } = (req as any).auth;
+    const gate = await requireManager(String(req.params.id ?? ''), user_id);
+    if (!gate.ok) return res.status(gate.status).json({ error: gate.error });
+    const ruleId = String(req.params.ruleId ?? '');
+    if (!UUID_RE.test(ruleId)) return res.status(400).json({ error: 'rule id must be a uuid' });
+
+    const rows = await query<{ id: string }>(
+      `delete from community_rules where id = $1 and community_id = $2 returning id`,
+      [ruleId, gate.community.id]
+    );
+    res.json({ deleted: rows.length > 0 });
   })
 );
 

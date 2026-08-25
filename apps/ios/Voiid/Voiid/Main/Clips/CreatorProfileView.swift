@@ -32,6 +32,11 @@ struct CreatorProfileView: View {
     @State private var bioExpanded = false
     /// Which tile the user opened, as an index into this creator's grid.
     @State private var openIndex: Int?
+    /// The highlights rail (048). Its own loading and error slots, kept apart from the
+    /// profile's: a rail that fails must not take the whole profile down with it.
+    @State private var highlightRows: [CreatorService.Highlight] = []
+    @State private var highlightsLoading = true
+    @State private var highlightsError: String?
     @Namespace private var zoom
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 2), count: 3)
@@ -50,6 +55,7 @@ struct CreatorProfileView: View {
                 // feed tile usually means it is already here.
                 if profile == nil { await load() }
                 if creators.clips(for: handle).isEmpty { await creators.refreshClips(for: handle) }
+                await loadHighlights()
             }
             .alert("Report a clip", isPresented: $reportHint) {
                 Button("OK", role: .cancel) {}
@@ -258,48 +264,101 @@ struct CreatorProfileView: View {
         .accessibilityLabel("\(value) \(label)")
     }
 
-    /// The reference's highlights rail.
+    /// The highlights rail — LIVE, against GET /creators/:handle/highlights (048).
     ///
-    /// PREVIEW ONLY, and it says so: there is no highlights table, no endpoint and no way for
-    /// a creator to make one. The rail renders the intended shape with the notice above it
-    /// rather than pretending the circles are real. Migration 048 creates the table; when the
-    /// endpoint lands, the notice and `ProfileHighlight.samples` both go.
+    /// The `UnwiredNotice` that used to sit above this is gone, along with
+    /// `ProfileHighlight.samples`: both existed only to be honest that the circles were fake,
+    /// and there is nothing left to be honest about. The rail is the reference's rail
+    /// unchanged — same 56pt circles, same 14pt gutter, same 64pt column — with a real cover
+    /// image where the SF Symbol stood in.
+    ///
+    /// ── FOUR STATES, AND ONE OF THEM DRAWS NOTHING ──────────────────────────────────
+    /// A creator with no highlights gets NO RAIL AT ALL rather than an empty strip or a
+    /// placeholder: most creators have none, and a permanent empty band on every profile
+    /// would be worse than the space it saves. A FAILED fetch, by contrast, does not silently
+    /// collapse to the same nothing — it keeps the rail's height with a muted row, because a
+    /// creator whose shelves failed to load must not look like a creator with no shelves.
+    @ViewBuilder
     private var highlights: some View {
-        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
-            UnwiredNotice("Highlights have no table or endpoint yet — migration 048 adds one. "
-                          + "These circles are placeholders.")
-                .padding(.horizontal, VoiidSpacing.md)
-
-            ScrollView(.horizontal) {
-                HStack(alignment: .top, spacing: 14) {
-                    ForEach(ProfileHighlight.samples) { highlight in
-                        VStack(spacing: 6) {
-                            Circle()
-                                .fill(VoiidColor.accentTint)
-                                .frame(width: 56, height: 56)
-                                .overlay {
-                                    Image(systemName: highlight.icon)
-                                        .font(.system(size: 20))
-                                        .foregroundColor(VoiidColor.accentInk)
-                                }
-                                .overlay(Circle().stroke(VoiidColor.divider, lineWidth: 1))
-
-                            Text(highlight.title)
-                                .font(VoiidFont.rounded(11.5))
-                                .foregroundColor(VoiidColor.textSecondary)
-                                .lineLimit(1)
-                        }
-                        .frame(width: 64)
-                    }
-                }
-                .padding(.horizontal, VoiidSpacing.md)
+        if highlightsLoading && highlightRows.isEmpty {
+            railFrame {
+                ProgressView().tint(VoiidColor.accent)
+                    .frame(maxWidth: .infinity)
             }
-            .scrollIndicators(.hidden)
-            // Inert, and said so to VoiceOver rather than only in colour.
-            .allowsHitTesting(false)
-            .opacity(0.55)
+        } else if highlightsError != nil, highlightRows.isEmpty {
+            railFrame {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 12))
+                    Text("Couldn\u{2019}t load highlights")
+                        .font(VoiidFont.rounded(11.5))
+                }
+                .foregroundColor(VoiidColor.textSecondary)
+                .frame(maxWidth: .infinity)
+            }
+        } else if !highlightRows.isEmpty {
+            VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+                ScrollView(.horizontal) {
+                    HStack(alignment: .top, spacing: 14) {
+                        ForEach(highlightRows) { highlight in
+                            VStack(spacing: 6) {
+                                Circle()
+                                    .fill(VoiidColor.accentTint)
+                                    .frame(width: 56, height: 56)
+                                    .overlay {
+                                        // The explicit cover, else the first clip's thumbnail
+                                        // (048: the fallback is the common case, an explicit
+                                        // cover the exception), else the symbol the rail has
+                                        // always drawn — a shelf with neither is a real state.
+                                        if let cover = highlight.coverImage {
+                                            ClipThumbnail(url: cover)
+                                                .clipShape(Circle())
+                                        } else {
+                                            Image(systemName: "square.stack")
+                                                .font(.system(size: 20))
+                                                .foregroundColor(VoiidColor.accentInk)
+                                        }
+                                    }
+                                    .overlay(Circle().stroke(VoiidColor.divider, lineWidth: 1))
+
+                                Text(highlight.name)
+                                    .font(VoiidFont.rounded(11.5))
+                                    .foregroundColor(VoiidColor.textSecondary)
+                                    .lineLimit(1)
+                            }
+                            .frame(width: 64)
+                        }
+                    }
+                    .padding(.horizontal, VoiidSpacing.md)
+                }
+                .scrollIndicators(.hidden)
+            }
+            .padding(.top, VoiidSpacing.lg)
+        }
+    }
+
+    /// The rail's own geometry, shared by the loading and failed states so neither changes the
+    /// header's height relative to the real thing.
+    @ViewBuilder
+    private func railFrame<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
+            content()
+                .frame(height: 56)
+                .padding(.horizontal, VoiidSpacing.md)
         }
         .padding(.top, VoiidSpacing.lg)
+    }
+
+    private func loadHighlights() async {
+        highlightsLoading = true
+        defer { highlightsLoading = false }
+        do {
+            highlightRows = try await CreatorService.shared.highlights(handle: handle).rows
+            highlightsError = nil
+        } catch {
+            highlightsError = (error as? APIError)?.errorDescription
+                ?? "Couldn\u{2019}t load highlights."
+        }
     }
 
     /// 96pt portrait inside a gradient ring, with a 3pt gap of background between the two so
@@ -672,27 +731,7 @@ struct CreatorEditSheet: View {
 }
 
 // MARK: - Highlights
-
-/// One story highlight on a creator's profile.
-///
-/// ── PREVIEW ONLY ────────────────────────────────────────────────────────────────
-/// There is no `creator_highlights` table, no endpoint and no authoring flow. Migration 048
-/// creates the schema; until a route serves it, `samples` is what the rail renders and the
-/// `UnwiredNotice` above it says so on screen.
-///
-/// When the endpoint lands: add `Decodable`, delete `samples`, and delete the notice in
-/// `CreatorProfileView.highlights`. The view already reads the type rather than the samples.
-struct ProfileHighlight: Identifiable, Hashable {
-    let id: String
-    let title: String
-    /// An SF Symbol standing in for the highlight's cover image until covers exist.
-    let icon: String
-
-    static let samples: [ProfileHighlight] = [
-        .init(id: "travel", title: "Travel", icon: "airplane"),
-        .init(id: "mountains", title: "Mountains", icon: "mountain.2"),
-        .init(id: "photo", title: "Photography", icon: "camera"),
-        .init(id: "music", title: "Music", icon: "music.note"),
-        .init(id: "life", title: "Life", icon: "cup.and.saucer"),
-    ]
-}
+//
+// `ProfileHighlight` and its `samples` are GONE. The rail reads `CreatorService.Highlight`
+// straight from GET /creators/:handle/highlights (048_creator_highlights.sql), so a local
+// mirror of the type would be a second shape to keep in step with the wire for no gain.

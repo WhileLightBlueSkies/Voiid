@@ -71,6 +71,14 @@ final class CommunityService {
         let owner_id: String?
         /// Suspended communities still resolve so the card can say why joining is refused.
         let suspended: Bool?
+        /// What the directory files this community under (046). Free text, not an enum — the
+        /// picker offers six, but the server takes any string, so never switch exhaustively
+        /// on this and never assume it is one of the six a given build happens to know.
+        let category: String?
+        /// Whether an ordinary member may create invites (046). ALWAYS false in an invite-only
+        /// community — the server forces it, because an invite-only community where everyone
+        /// invites is not invite-only. Read it, never infer it from the policy.
+        let members_can_invite: Bool?
 
         /// THE ONLY SOURCE OF TRUTH FOR "AM I IN THIS". Nil means not a member. Never infer this
         /// from the fact that a link resolved; a forwarded link resolves for everyone.
@@ -86,6 +94,12 @@ final class CommunityService {
 
         var members: Int { member_count ?? 0 }
         var policy: String { join_policy ?? "open" }
+        /// Defaults to TRUE to match the column's `not null default true` (046), so a card
+        /// from a server that has not grown the key yet reads as the schema's default rather
+        /// than as "off" — the wrong default here would show every host their members cannot
+        /// invite when they can.
+        var membersCanInvite: Bool { members_can_invite ?? true }
+        var isDiscoverable: Bool { discoverable ?? true }
         var isSuspended: Bool { suspended ?? false }
         var isMember: Bool { membership_state == "active" }
         var isPending: Bool { membership_state == "pending" }
@@ -265,6 +279,413 @@ final class CommunityService {
                        category: category, members_can_invite: membersCanInvite,
                        extra_channels: extraChannels, rules: rules))
         return env.community
+    }
+
+    /// A PATCH body that can OMIT a key, which no ordinary `Encodable` struct can do.
+    ///
+    /// Swift's synthesised encoding emits every declared property — nil becomes an explicit
+    /// `null`. On these routes `null` means CLEAR THIS COLUMN and an absent key means LEAVE IT
+    /// ALONE, so a struct with `let description: String?` would wipe the description of every
+    /// community whose settings screen saved only a name. That is silent data loss, and it is
+    /// the reason this type exists rather than six near-identical body structs.
+    ///
+    /// Values are held as a small closed enum rather than as `Any`: `JSONEncoder` cannot encode
+    /// `Any`, and the three cases below are the only shapes these routes accept.
+    private struct PatchBody: Encodable {
+        private enum Value { case string(String), bool(Bool), int(Int), null }
+        /// Insertion-ordered so the JSON is stable and diffable in a proxy log. A dictionary
+        /// would reorder between runs for no gain.
+        private var fields: [(key: String, value: Value)] = []
+
+        var isEmpty: Bool { fields.isEmpty }
+
+        /// A plain optional: nil means the caller is not touching this field, so nothing is
+        /// written. There is no way to express "clear it" here, which is correct for the
+        /// non-nullable columns (`name`, `discoverable`, `join_policy`, `position`).
+        mutating func set(_ key: String, _ value: String?) {
+            if let value { fields.append((key, .string(value))) }
+        }
+        mutating func set(_ key: String, _ value: Bool?) {
+            if let value { fields.append((key, .bool(value))) }
+        }
+        mutating func set(_ key: String, _ value: Int?) {
+            if let value { fields.append((key, .int(value))) }
+        }
+
+        /// The doubly-optional one, for the NULLABLE columns. The outer nil omits the key; an
+        /// inner nil writes an explicit `null`, which is how a host clears a description or a
+        /// category they no longer want.
+        mutating func setNullable(_ key: String, _ value: String??) {
+            guard let value else { return }
+            fields.append((key, value.map { Value.string($0) } ?? .null))
+        }
+
+        /// `CodingKeys` cannot be an enum here — the keys are decided at runtime — so this is
+        /// the `CodingKey`-by-string escape hatch the protocol provides for exactly this case.
+        private struct Key: CodingKey {
+            let stringValue: String
+            init(_ s: String) { stringValue = s }
+            init?(stringValue s: String) { stringValue = s }
+            var intValue: Int? { nil }
+            init?(intValue: Int) { nil }
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: Key.self)
+            for (key, value) in fields {
+                let k = Key(key)
+                switch value {
+                case .string(let s): try c.encode(s, forKey: k)
+                case .bool(let b):   try c.encode(b, forKey: k)
+                case .int(let i):    try c.encode(i, forKey: k)
+                // `encodeNil` writes a real `null`, as opposed to `encodeIfPresent(nil)` which
+                // would drop the key — the distinction this whole type exists to preserve.
+                case .null:          try c.encodeNil(forKey: k)
+                }
+            }
+        }
+    }
+
+    // MARK: - Settings (PATCH /communities/:id, and rules CRUD from 046)
+    //
+    // ── WHY THIS DID NOT EXIST ──────────────────────────────────────────────────────
+    // `PATCH /communities/:id` has been on the server the whole time and this class had no
+    // caller for it, so a host could create a community and then change NOTHING about it —
+    // not its name, not whether it was discoverable, not how people join. The settings screen
+    // is built on this method; there was no screen because there was no method.
+    //
+    // ── ABSENT MEANS "LEAVE IT ALONE", AND THAT IS WHY EVERY ARGUMENT IS DOUBLY OPTIONAL ──
+    // The route distinguishes an ABSENT key (do not touch this column) from an explicit NULL
+    // (clear it). `JSONEncoder` emits `null` for a nil Optional rather than omitting the key,
+    // so a plain `String?` cannot express "absent" at all — sending nil would CLEAR the
+    // description of every community whose settings screen saved a name.
+    //
+    // Hence `String??`: the outer nil means the caller is not touching the field and the key
+    // is dropped from the body entirely; `.some(nil)` means clear it. That is the only shape
+    // that can say both things, and getting it wrong here is silent data loss.
+
+    /// Change a community's settings. Manager only server-side (`requireManager`: active owner
+    /// or active admin) — the client gate is convenience, this is the enforcement.
+    ///
+    /// Covers all seven fields the route accepts. `avatar_r2_key` is deliberately NOT among
+    /// them: it is an opaque R2 key needing an upload flow, and no helper in this app produces
+    /// one a community card can render back. See the note on `CommunitySettingsView`.
+    ///
+    /// THE RETURNED CARD IS THE TRUTH, not the values that were sent. The server forces
+    /// `members_can_invite` off for an invite-only community, so a caller that assumed its own
+    /// input had been stored would display a setting the server had already overridden.
+    func update(communityId: String,
+                name: String? = nil,
+                description: String?? = nil,
+                discoverable: Bool? = nil,
+                joinPolicy: String? = nil,
+                category: String?? = nil,
+                membersCanInvite: Bool? = nil) async throws -> CommunityCard {
+        var body = PatchBody()
+        body.set("name", name)
+        // `.some(nil)` encodes an explicit `null`: clear it. An outer nil leaves the key out
+        // entirely, which is the route's "leave this column alone".
+        body.setNullable("description", description)
+        body.set("discoverable", discoverable)
+        body.set("join_policy", joinPolicy)
+        body.setNullable("category", category)
+        body.set("members_can_invite", membersCanInvite)
+        // The server answers an empty body with a 400 `nothing to update`. Nothing to send is
+        // not an error the user caused, so it never becomes a round trip.
+        guard !body.isEmpty else { return try await byId(communityId) }
+
+        struct Envelope: Decodable { let community: CommunityCard }
+        let env: Envelope = try await api.request(
+            "PATCH", "communities/\(communityId)", body: body)
+        return env.community
+    }
+
+    /// The card by uuid. `GET /communities/:idOrHandle` takes either spelling.
+    private func byId(_ communityId: String) async throws -> CommunityCard {
+        let env: CommunityEnvelope = try await api.request("GET", "communities/\(communityId)")
+        return env.merged(inviteValid: nil)
+    }
+
+    /// One rule (046). `detail` is nullable BY DESIGN — a short rule does not need explaining —
+    /// so a nil detail is a normal row and not a partial decode.
+    ///
+    /// `position` is the ordering authority: 046 gives the table the column explicitly so a
+    /// host can reorder without rules jumping to the end of the list when they edit one.
+    struct Rule: Decodable, Identifiable, Hashable {
+        let id: String
+        var title: String?
+        var detail: String?
+        var position: Int?
+
+        var text: String { title ?? "" }
+        var explanation: String { detail ?? "" }
+        var order: Int { position ?? 0 }
+    }
+
+    /// The rules, in the host's order. Readable by anyone who may read the community — the
+    /// server uses the same `readGate` as the feed, because someone deciding whether to join
+    /// needs to see the terms of joining BEFORE they join.
+    func rules(communityId: String) async throws -> [Rule] {
+        struct Envelope: Decodable { var rules: [Rule]? }
+        let env: Envelope = try await api.request("GET", "communities/\(communityId)/rules")
+        return env.rules ?? []
+    }
+
+    /// Manager only. `position` omitted appends to the END of the list server-side, so adding
+    /// a rule never reshuffles the ones already there.
+    func createRule(communityId: String, title: String,
+                    detail: String? = nil) async throws -> Rule {
+        struct Body: Encodable { let title: String; let detail: String? }
+        struct Envelope: Decodable { let rule: Rule }
+        let env: Envelope = try await api.request(
+            "POST", "communities/\(communityId)/rules",
+            body: Body(title: title, detail: detail))
+        return env.rule
+    }
+
+    /// Manager only. Editing and REORDERING are the same endpoint on purpose — an absent key
+    /// leaves its column alone, so fixing a typo does not move the rule and dragging a row does
+    /// not resend its text. Same `String??` contract as `update` above, for the same reason.
+    func updateRule(communityId: String, ruleId: String,
+                    title: String? = nil,
+                    detail: String?? = nil,
+                    position: Int? = nil) async throws -> Rule {
+        var body = PatchBody()
+        body.set("title", title)
+        body.setNullable("detail", detail)
+        body.set("position", position)
+        guard !body.isEmpty else { throw APIError.http(status: 400, message: "Nothing to save.") }
+
+        struct Envelope: Decodable { let rule: Rule }
+        let env: Envelope = try await api.request(
+            "PATCH", "communities/\(communityId)/rules/\(ruleId)", body: body)
+        return env.rule
+    }
+
+    /// Manager only. A HARD delete, like a link: a rule is the host's own standing text, and
+    /// 046 gives the table no `removed_at` to soft-delete into.
+    @discardableResult
+    func deleteRule(communityId: String, ruleId: String) async throws -> Bool {
+        struct Envelope: Decodable { var deleted: Bool? }
+        let env: Envelope = try await api.request(
+            "DELETE", "communities/\(communityId)/rules/\(ruleId)")
+        return env.deleted ?? true
+    }
+
+    // MARK: - The Home tab (047_community_home.sql)
+    //
+    // ── NOT E2EE, AND THAT IS THE POINT ─────────────────────────────────────────────
+    // Posts, the pinned announcement and the About links are SERVER-READABLE by design. A post
+    // is a BROADCAST addressed to everyone who might later look — including, for a discoverable
+    // community, people who have not joined and hold no MLS key. There is no key that means
+    // "everyone who might later look", so a feed the server cannot read is a feed that cannot
+    // be served at all. Channel messages (MLS) and the member↔host DM stay encrypted and share
+    // no code path with any of this.
+    //
+    // ── EVERY FIELD OPTIONAL OR DEFAULTED ───────────────────────────────────────────
+    // Swift's synthesised Codable throws `keyNotFound` on an ABSENT key, which fails the WHOLE
+    // decode and drops the entire payload — not just the missing field. This app has been bitten
+    // by exactly that twice. The server is written to always emit every key as null rather than
+    // omit it, and these types are written as though it were not, because a client that depends
+    // on the server never regressing is a client that regresses with it.
+
+    /// One post in the Home feed.
+    ///
+    /// `author_name` is nullable ON PURPOSE and is not a defect to paper over: 047 makes
+    /// `author_id` ON DELETE SET NULL so that deleting an account does not rewrite the
+    /// community's history. A null author is a real, expected row and renders as "Deleted
+    /// account", which is the honest thing to show.
+    struct Post: Decodable, Identifiable, Hashable {
+        let id: String
+        var author_id: String?
+        var author_name: String?
+        var author_username: String?
+        var author_photo_url: String?
+        /// The only field the server cannot omit — a post with no body cannot exist
+        /// (community_posts_body_len). Defaulted anyway; see the note above.
+        var body: String?
+        var media_url: String?
+        var like_count: Int?
+        var comment_count: Int?
+        var liked_by_me: Bool?
+        var created_at: String?
+        var edited_at: String?
+
+        var text: String { body ?? "" }
+        var likes: Int { like_count ?? 0 }
+        var comments: Int { comment_count ?? 0 }
+        var isLiked: Bool { liked_by_me ?? false }
+        /// What the card shows above the body. Falls back through the two identity columns
+        /// before admitting the account is gone.
+        var displayName: String {
+            if let n = author_name, !n.isEmpty { return n }
+            if let u = author_username, !u.isEmpty { return "@\(u)" }
+            return "Deleted account"
+        }
+    }
+
+    /// A page of the feed. `next_cursor` is null on the last page — the caller stops on null
+    /// rather than fetching an empty page.
+    struct PostPage: Decodable {
+        var posts: [Post]?
+        var next_cursor: String?
+
+        var rows: [Post] { posts ?? [] }
+    }
+
+    /// The feed, newest first. Keyset-paginated on `created_at`, not OFFSET: an offset page
+    /// shifts under the reader every time somebody posts.
+    func posts(communityId: String, cursor: String? = nil, limit: Int = 20) async throws -> PostPage {
+        var path = "communities/\(communityId)/posts?limit=\(limit)"
+        if let cursor, !cursor.isEmpty {
+            let escaped = cursor.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? cursor
+            path += "&cursor=\(escaped)"
+        }
+        return try await api.request("GET", path)
+    }
+
+    /// Write a post. MEMBERS ONLY server-side — a stranger reading a discoverable feed is a
+    /// visitor, not a participant — so this can 403 even where `posts(...)` succeeded.
+    func createPost(communityId: String, body: String, mediaUrl: String? = nil) async throws -> Post {
+        struct Body: Encodable { let body: String; let media_url: String? }
+        struct Envelope: Decodable { let post: Post }
+        let env: Envelope = try await api.request(
+            "POST", "communities/\(communityId)/posts",
+            body: Body(body: body, media_url: mediaUrl))
+        return env.post
+    }
+
+    /// Remove a post. The server allows the AUTHOR or a community manager and answers a single
+    /// 404 for every refusal, so there is nothing here to branch on.
+    ///
+    /// It sets `removed_at` rather than deleting: 047 keeps the row so a moderator can see what
+    /// they removed and an appeal has something to point at.
+    @discardableResult
+    func deletePost(communityId: String, postId: String) async throws -> Bool {
+        struct Envelope: Decodable { var removed: Bool? }
+        let env: Envelope = try await api.request(
+            "DELETE", "communities/\(communityId)/posts/\(postId)")
+        return env.removed ?? true
+    }
+
+    /// The truthful like count after the write, which is why this returns it rather than
+    /// letting the caller increment locally: the server only moves the counter when the join
+    /// row actually moved, so a double-tap or a retry converges instead of drifting.
+    struct LikeResult: Decodable {
+        var liked: Bool?
+        var like_count: Int?
+    }
+
+    func likePost(communityId: String, postId: String) async throws -> LikeResult {
+        struct EmptyBody: Encodable {}
+        return try await api.request(
+            "POST", "communities/\(communityId)/posts/\(postId)/like", body: EmptyBody())
+    }
+
+    func unlikePost(communityId: String, postId: String) async throws -> LikeResult {
+        try await api.request("DELETE", "communities/\(communityId)/posts/\(postId)/like")
+    }
+
+    /// The pinned announcement.
+    ///
+    /// 047 makes this a TABLE rather than a flag on a post or a column on the community, so an
+    /// announcement outlives the feed and the history survives being replaced. Exactly one is
+    /// live at a time, enforced by a partial unique index rather than by sort order.
+    struct Announcement: Decodable, Identifiable, Hashable {
+        let id: String
+        var author_id: String?
+        var author_name: String?
+        var author_username: String?
+        var author_photo_url: String?
+        var title: String?
+        var body: String?
+        var pinned_at: String?
+        var created_at: String?
+
+        var headline: String { title ?? "" }
+        var text: String { body ?? "" }
+        /// Same fallback chain as a post's, and for the same ON DELETE SET NULL reason.
+        var displayName: String {
+            if let n = author_name, !n.isEmpty { return n }
+            if let u = author_username, !u.isEmpty { return "@\(u)" }
+            return "Deleted account"
+        }
+    }
+
+    /// `nil` is the ORDINARY state, not a failure: most communities have nothing pinned, and
+    /// the server answers that with a 200 carrying null rather than a 404 — so no screen has to
+    /// open by handling an error for the common case.
+    func announcement(communityId: String) async throws -> Announcement? {
+        struct Envelope: Decodable { var announcement: Announcement? }
+        let env: Envelope = try await api.request(
+            "GET", "communities/\(communityId)/announcements")
+        return env.announcement
+    }
+
+    /// Pin a new one. Manager only. The server unpins the current one in the SAME transaction —
+    /// it has to, because `community_announcements_one_live_idx` refuses a second live row.
+    func pinAnnouncement(communityId: String, title: String, body: String) async throws -> Announcement {
+        struct Body: Encodable { let title: String; let body: String }
+        struct Envelope: Decodable { let announcement: Announcement }
+        let env: Envelope = try await api.request(
+            "POST", "communities/\(communityId)/announcements",
+            body: Body(title: title, body: body))
+        return env.announcement
+    }
+
+    /// Unpin. Sets `unpinned_at`; the row and its history stay, by design.
+    @discardableResult
+    func unpinAnnouncement(communityId: String, announcementId: String) async throws -> Bool {
+        struct Envelope: Decodable { var unpinned: Bool? }
+        let env: Envelope = try await api.request(
+            "DELETE", "communities/\(communityId)/announcements/\(announcementId)")
+        return env.unpinned ?? true
+    }
+
+    /// One row of the About tab's links list.
+    ///
+    /// `value` is TEXT, not a URL, and must not be validated as one: 047 says so explicitly —
+    /// the About tab also carries a contact address and a "read the handbook" label, and forcing
+    /// every row to parse as a URL would exclude both.
+    ///
+    /// `icon` is free text naming an SF Symbol from a client-side set. The server never invents
+    /// one, so nil is normal and the client picks its own fallback.
+    struct AboutLink: Decodable, Identifiable, Hashable {
+        let id: String
+        var label: String?
+        var value: String?
+        var icon: String?
+        var position: Int?
+
+        var title: String { label ?? "" }
+        var subtitle: String { value ?? "" }
+    }
+
+    func links(communityId: String) async throws -> [AboutLink] {
+        struct Envelope: Decodable { var links: [AboutLink]? }
+        let env: Envelope = try await api.request("GET", "communities/\(communityId)/links")
+        return env.links ?? []
+    }
+
+    /// Manager only.
+    func createLink(communityId: String, label: String, value: String,
+                    icon: String? = nil) async throws -> AboutLink {
+        struct Body: Encodable { let label: String; let value: String; let icon: String? }
+        struct Envelope: Decodable { let link: AboutLink }
+        let env: Envelope = try await api.request(
+            "POST", "communities/\(communityId)/links",
+            body: Body(label: label, value: value, icon: icon))
+        return env.link
+    }
+
+    /// Manager only. A HARD delete, unlike a post: a link is a pointer, not a statement, so
+    /// there is no appeal to hear and no history worth keeping.
+    @discardableResult
+    func deleteLink(communityId: String, linkId: String) async throws -> Bool {
+        struct Envelope: Decodable { var deleted: Bool? }
+        let env: Envelope = try await api.request(
+            "DELETE", "communities/\(communityId)/links/\(linkId)")
+        return env.deleted ?? true
     }
 
     func join(communityId: String, inviteToken: String?) async throws -> (state: String, existed: Bool) {

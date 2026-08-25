@@ -5,8 +5,14 @@
 //  Events inside a community (plan item 3.23).
 //
 //  The member's view of an event: when, where, and a way to claim a ticket. Creating,
-//  publishing and checking people in are ADMIN flows with their own screens; this is not
-//  those.
+//  publishing and checking people in are ADMIN flows with their own screens; this section
+//  now REACHES those screens for a manager, and is otherwise unchanged.
+//
+//  ── THE HOST HALF IS ADDITIVE, AND IT IS NOT THE AUTHORISATION ───────────────────
+//  `isHost` adds a Create button and turns each row into a door to `EventHostView`. It is
+//  presentation only: every hosting endpoint is gated on the server by
+//  `communityAccess(..., needsAdmin: true)`, so a member who reached those screens would see
+//  403s rather than an unlocked control panel. The member's row is byte-for-byte what it was.
 //
 //  ── PAID EVENTS SAY SO INSTEAD OF PRETENDING ─────────────────────────────────────
 //  `POST /events/:id/orders` answers 501 for a paid event because no payment provider is
@@ -19,21 +25,36 @@ import SwiftUI
 
 struct CommunityEventsSection: View {
     let communityId: String
+    /// Whether to draw the host affordances. Defaults to false so every existing caller
+    /// renders exactly the member's view it rendered before.
+    var isHost: Bool = false
 
     @State private var events: [EventService.Event] = []
     @State private var loading = true
+    @State private var failed = false
     @State private var busyId: String?
+    @State private var creating = false
+    @State private var hosting: EventService.Event?
 
     var body: some View {
         VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
-            Text("Events")
-                .font(VoiidFont.rounded(17, .semibold))
-                .foregroundColor(VoiidColor.textPrimary)
+            HStack(spacing: VoiidSpacing.sm) {
+                Text("Events")
+                    .font(VoiidFont.rounded(17, .semibold))
+                    .foregroundColor(VoiidColor.textPrimary)
+                Spacer(minLength: 0)
+                if isHost { createButton }
+            }
 
             if loading {
                 ProgressView().tint(VoiidColor.primary)
+            } else if failed {
+                // A FAILED FETCH IS NOT AN EMPTY LIST. "No events yet" would be a claim about
+                // this community that the app has no evidence for.
+                retry("Couldn't load events.")
             } else if events.isEmpty {
-                Text("No events yet.")
+                Text(isHost ? "No events yet. Create the first one."
+                            : "No events yet.")
                     .font(VoiidFont.footnote)
                     .foregroundColor(VoiidColor.textSecondary)
             } else {
@@ -41,9 +62,71 @@ struct CommunityEventsSection: View {
             }
         }
         .task(id: communityId) { await load() }
+        .sheet(isPresented: $creating) {
+            EventCreateFlow(communityId: communityId) { _ in
+                Task { await load() }
+            }
+        }
+        // A SHEET, not a push. This section is rendered inside the community detail scroll
+        // view and does not own a navigation stack, so a push would either do nothing or
+        // escape into whichever stack happened to be above it.
+        .sheet(item: $hosting) { event in
+            NavigationStack {
+                EventHostView(event: event) { Task { await load() } }
+            }
+        }
     }
 
-    private func row(_ e: EventService.Event) -> some View {
+    /// Host only. The server gates the create route on adminship; this button is convenience.
+    private var createButton: some View {
+        Button {
+            Haptics.tap()
+            creating = true
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "plus").font(.system(size: 11, weight: .bold))
+                Text("Create").font(VoiidFont.rounded(13, .semibold))
+            }
+            .foregroundColor(VoiidColor.textOnAccent)
+            .padding(.horizontal, VoiidSpacing.md)
+            .padding(.vertical, 6)
+            .background(Capsule().fill(VoiidColor.accent))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func retry(_ message: String) -> some View {
+        Button {
+            Haptics.tap()
+            Task { await load() }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.clockwise").font(.system(size: 11, weight: .semibold))
+                Text(message).font(VoiidFont.footnote)
+                Text("Tap to retry.").font(VoiidFont.footnote).foregroundColor(VoiidColor.accentInk)
+            }
+            .foregroundColor(VoiidColor.textSecondary)
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// The row itself is UNCHANGED for a member. For a host it gains a tap target and a
+    /// chevron; nothing about the member's rendering moved.
+    @ViewBuilder private func row(_ e: EventService.Event) -> some View {
+        if isHost {
+            Button {
+                Haptics.tap()
+                hosting = e
+            } label: {
+                rowBody(e)
+            }
+            .buttonStyle(.plain)
+        } else {
+            rowBody(e)
+        }
+    }
+
+    private func rowBody(_ e: EventService.Event) -> some View {
         HStack(alignment: .top, spacing: VoiidSpacing.md) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(e.title)
@@ -137,7 +220,14 @@ struct CommunityEventsSection: View {
 
     private func load() async {
         loading = events.isEmpty
+        failed = false
         defer { loading = false }
-        events = (try? await EventService.shared.list(communityId: communityId)) ?? events
+        do {
+            events = try await EventService.shared.list(communityId: communityId)
+        } catch {
+            // Keep the last good list if there is one; only claim failure when there is
+            // nothing to show, so a background refresh does not blank a working screen.
+            failed = events.isEmpty
+        }
     }
 }

@@ -20,6 +20,7 @@ struct CommunityDetailView: View {
     @State private var error: String?
     @State private var busy = false
     @State private var showInbox = false
+    @State private var showSettings = false
     @State private var tab: CommunityTab = .home
     @State private var openConversation: VConversation?
 
@@ -87,6 +88,18 @@ struct CommunityDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
         .sheet(isPresented: $showInbox) { CommunityInboxView() }
+        // Presented on the loaded card rather than on the handle, so the settings screen opens
+        // already holding the values it edits and never has to render its own second load of
+        // something this screen has in hand.
+        .sheet(isPresented: $showSettings) {
+            if let card {
+                CommunitySettingsView(card: card) { updated in
+                    // The SERVER's card, so the name, policy and discoverability behind the
+                    // sheet redraw from what was actually stored — not from what was sent.
+                    self.card = updated
+                }
+            }
+        }
         .navigationDestination(item: $openConversation) { ChatDetailView(conversation: $0) }
     }
 
@@ -254,6 +267,25 @@ struct CommunityDetailView: View {
     @ViewBuilder
     private func overflowMenu(_ c: CommunityService.CommunityCard) -> some View {
         Menu {
+            // HOST ONLY, and gated on the SAME `isOwner` signal the Inbox action uses — that
+            // is deliberate reuse rather than a second guess at manager-ness.
+            //
+            // THE CLIENT GATE IS CONVENIENCE, NOT ENFORCEMENT. Every route the settings screen
+            // touches is `requireManager` server-side (an ACTIVE owner or an ACTIVE admin of a
+            // live community, checked against communities.owner_id AND the roster row). This
+            // test only stops a member being shown a door that would refuse them; a build that
+            // got it wrong would produce a 403, not an unauthorised write.
+            //
+            // It sits in the overflow rather than the button row on purpose: the row is a
+            // signed-off layout, and settings is a rare, deliberate act rather than something
+            // a host reaches for on every visit.
+            if isOwner(c) {
+                Button("Community settings", systemImage: "slider.horizontal.3") {
+                    Haptics.tap()
+                    showSettings = true
+                }
+                Divider()
+            }
             Button("Share community", systemImage: "square.and.arrow.up") {}
             Button("Notifications", systemImage: "bell") {}
             Button("Report", systemImage: "exclamationmark.triangle") {}
@@ -334,13 +366,20 @@ struct CommunityDetailView: View {
                 Group {
                     switch tab {
                     case .home:
-                        CommunityHomeTab(isAdmin: isOwner(c))
+                        CommunityHomeTab(communityId: c.id, isAdmin: isOwner(c))
                     case .spaces:
                         CommunitySpacesTab(communityId: c.id, isAdmin: isOwner(c))
                     case .events:
+                        // `isOwner` is the manager signal this screen already uses for every
+                        // other tab — reused rather than re-derived, so there is one answer to
+                        // "does this person run this community" on this screen.
+                        //
+                        // IT IS NOT THE AUTHORISATION. Every hosting endpoint is gated on the
+                        // server by `communityAccess(..., needsAdmin: true)`; this flag only
+                        // decides whether the buttons are drawn.
                         VStack(alignment: .leading, spacing: VoiidSpacing.md) {
-                            CommunityEventsSection(communityId: c.id)
-                            CommunityTournamentsSection(communityId: c.id)
+                            CommunityEventsSection(communityId: c.id, isHost: isOwner(c))
+                            CommunityTournamentsSection(communityId: c.id, isHost: isOwner(c))
                         }
                     case .members:
                         CommunityMembersTab(communityId: c.id, isAdmin: isOwner(c))

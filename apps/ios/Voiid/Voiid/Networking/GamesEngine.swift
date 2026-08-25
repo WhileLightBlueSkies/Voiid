@@ -43,6 +43,9 @@ extension Notification.Name {
     static let voiidGamePresence = Notification.Name("voiidGamePresence")
     static let voiidGameInviteStatus = Notification.Name("voiidGameInviteStatus")
     static let voiidGameEnded = Notification.Name("voiidGameEnded")
+    /// A party-lobby frame (`game_lobby_update` / `game_lobby_message`) arrived on the socket.
+    /// Carries the raw frame; `GameLobbyPartyStore` is the only thing that decodes it.
+    static let voiidGameLobbyEvent = Notification.Name("voiidGameLobbyEvent")
 }
 
 /// Authoritative Tic Tac Toe state as broadcast by backend/games.
