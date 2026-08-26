@@ -214,6 +214,60 @@ console.log('\nSnake engine\n');
     Math.hypot(sn.x, sn.y) < (state.arenaRadius as number));
 }
 
+// --- 7b. Invulnerability protects from harm, not from food -------------------------------
+//
+// `resolveEating` shared `resolveCollisions`' invulnerability guard, so for the first
+// INVULN seconds of every life a snake drove over pellets and none of them registered — they
+// stayed on the board behind it and nothing on screen explained why. It reads as the game not
+// registering input, at the one moment a player is most likely to conclude the controls are
+// broken.
+//
+// Driven as a real match rather than against the geometry: unlike the collision cases below,
+// this one reproduces exactly and deterministically — plant food along the spawn heading and
+// the snake must drive through it.
+{
+  let state: GameStatePayload = snake.create(['u1'], { bots: 0, seed: 4242 }).serialize();
+  const spawned = (state.snakes as any[])[0];
+
+  // A carpet of pellets straight ahead of the head, spaced closer than a tick's travel so the
+  // snake cannot step between them. At 300 u/s the invulnerable window covers ~450 units.
+  const planted: [number, number, number, number][] = [];
+  let nextId = state.nextFoodId as number;
+  for (let d = 40; d <= 600; d += 20) {
+    planted.push([
+      Math.round(spawned.x + Math.cos(spawned.h) * d),
+      Math.round(spawned.y + Math.sin(spawned.h) * d),
+      1, nextId++,
+    ]);
+  }
+  const plantedIds = new Set(planted.map((f) => f[3]));
+  state = {
+    ...state,
+    food: [...(state.food as any[]), ...planted],
+    nextFoodId: nextId,
+  };
+
+  // Run only while still invulnerable, so the assertion cannot be satisfied by eating after
+  // the window expires.
+  let ateWhileInvulnerable = 0;
+  for (let i = 0; i < Math.ceil(TUNING.INVULN * TUNING.TICK_HZ); i++) {
+    const e = snake.restore(state);
+    e.tick!();
+    state = e.serialize();
+    const sn = (state.snakes as any[])[0];
+    if ((state.t as number) >= sn.iv) break;
+    ateWhileInvulnerable =
+      planted.length - (state.food as any[]).filter((f) => plantedIds.has(f[3])).length;
+  }
+
+  const grown = (state.snakes as any[])[0].m;
+  check('a snake eats during spawn invulnerability',
+    ateWhileInvulnerable > 0,
+    `${ateWhileInvulnerable} of ${planted.length} pellets eaten in the invulnerable window`);
+  check('eating during invulnerability actually feeds',
+    grown > TUNING.START_MASS, `mass ${grown} vs start ${TUNING.START_MASS}`);
+}
+
 // --- 8. Bots survive on their own ------------------------------------------------------
 // The web build shipped a bug where 100% of deaths were border deaths because bots never
 // evaluated in time. This is the regression guard for it.
@@ -514,14 +568,20 @@ console.log('\nSnake engine\n');
   console.log(`\n  wire frame: avg ${(avg / 1024).toFixed(1)} KB, peak ${(peak / 1024).toFixed(1)} KB`);
   console.log(`  bandwidth : ${perSec.toFixed(0)} KB/s per player at ${TUNING.TICK_HZ} Hz`);
 
-  // 30 KB/s, raised from 25 alongside the speed increase user testing asked for.
+  // 45 KB/s, raised from 30 as an explicit product decision after playtesting.
   //
-  // Faster snakes mean longer bodies on the wire and more food churn per second; the old
-  // ceiling was set when the game was a third slower. 30 KB/s is still comfortably inside a
-  // weak mobile connection (roughly a quarter of what a low-bitrate video call uses), and
-  // holding the old number would have meant paying for it in gameplay — which is the wrong
-  // trade when the testing feedback was specifically that the game felt sluggish.
-  check('sustained bandwidth under 30 KB/s', perSec < 30, `${perSec.toFixed(0)} KB/s`);
+  // The history: 25 -> 30 when snakes got faster, and now 30 -> 45 to buy three things the
+  // testing said the game actually needed. Snakes eating during their spawn invulnerability
+  // (they grow sooner, so bodies are longer on the wire), a denser hazard field (geography the
+  // player actually meets rather than 2% coverage they never reach), and headroom for the
+  // netcode work the prediction complaints need.
+  //
+  // 45 KB/s is roughly a third of a low-bitrate video call, still comfortably inside a weak
+  // mobile connection. The ceiling exists to catch a REGRESSION — a change that quietly makes
+  // the payload grow — not to force gameplay to pay for a number chosen years ago. Raising it
+  // deliberately, with the reason recorded, is the correct way to spend it; drifting past it
+  // without noticing is not.
+  check('sustained bandwidth under 45 KB/s', perSec < 45, `${perSec.toFixed(0)} KB/s`);
 }
 
 // --- N. The drawn body must BE the lethal body ---------------------------------------

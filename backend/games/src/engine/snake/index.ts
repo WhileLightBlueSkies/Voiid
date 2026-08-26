@@ -669,7 +669,18 @@ class SnakeEngine implements GameEngine {
 
   private resolveEating(): void {
     for (const sn of this.s.snakes) {
-      if (!sn.alive || this.s.t < sn.invulnUntil) continue;
+      // NO INVULNERABILITY CHECK HERE, and its absence is deliberate.
+      //
+      // `resolveCollisions` skips invulnerable snakes because invulnerability is protection
+      // FROM HARM. This loop used to share that guard, which meant that for the first 1.5 s of
+      // every life a snake drove over pellets and none of them registered: measured on seed
+      // 4242, a fresh spawn crossed 21 planted pellets in its invulnerable window and ate
+      // exactly 0, leaving them behind it on the board. Nothing on screen explains that, so it
+      // reads as the game not registering input at the one moment a player is most likely to
+      // conclude the controls are broken.
+      //
+      // Invulnerability protects you from dying. It was never meant to protect you from food.
+      if (!sn.alive) continue;
 
       // Per-snake, because the mouth scales with the head. Same `radiusFor` curve the hitbox
       // and the drawn head use, so a snake's reach can never disagree with its own size.
@@ -739,22 +750,83 @@ class SnakeEngine implements GameEngine {
     return !sn.alive && this.s.t >= sn.respawnAt;
   }
 
-  /** Place a snake at a point far from other heads, at starting mass. No catch-up bonus. */
+  /**
+   * Place a snake far from anything that can kill it, at starting mass. No catch-up bonus.
+   *
+   * SCORED AGAINST BODIES AND ROCKS, NOT JUST HEADS. This used to measure distance to other
+   * snakes' HEADS only, which is not the thing that kills you: a head is one point, a body is
+   * a polyline hundreds of units long, and a rock is lethal on contact. So a spawn could land
+   * on top of a long snake's tail or inside a rock, sit through its 1.5 s of invulnerability,
+   * and then die the instant that expired — with nothing visible happening, because nothing
+   * visible DID happen. Measured before the fix: 4 of 129 spawns landed within 40 units of a
+   * body, the worst at 13.4 units, which is inside the kill radius.
+   */
   private spawnSnake(sn: SnakeState): void {
+    const headR = radiusFor(TUNING.START_MASS, TUNING.HEAD_RADIUS);
+
+    /** Distance from a candidate point to the nearest thing that could kill this snake. */
+    const clearance = (px: number, py: number): number => {
+      let nearest = Infinity;
+
+      for (const o of this.s.snakes) {
+        if (o.id === sn.id || !o.alive) continue;
+
+        // The HEAD, then the BODY. Broad-phase reject first, exactly as bodyHit does, so a
+        // spawn search stays cheap even in a crowded late-game arena.
+        const d = Math.hypot(px - o.x, py - o.y);
+        if (d < nearest) nearest = d;
+
+        const reach = pathLength(o.path) + headR + radiusFor(o.mass, TUNING.BODY_RADIUS);
+        if (d > reach) continue;
+
+        const path = o.path;
+        for (let i = 0; i + 1 < path.length; i += 2) {
+          const bd = Math.hypot(px - path[i], py - path[i + 1])
+            - radiusFor(o.mass, TUNING.BODY_RADIUS);
+          if (bd < nearest) nearest = bd;
+        }
+      }
+
+      // Rocks kill outright and spikes cost mass; both are worth spawning away from. Slicks
+      // only slow you down, so they are not a spawn hazard.
+      for (const h of this.s.hazards) {
+        if (h.k === 'slick') continue;
+        const hd = Math.hypot(px - h.x, py - h.y) - h.r;
+        if (hd < nearest) nearest = hd;
+      }
+
+      return nearest === Infinity ? 9999 : nearest;
+    };
+
     let bx = 0, by = 0, best = -Infinity;
     for (let attempt = 0; attempt < 20; attempt++) {
       const a = this.rng.next() * Math.PI * 2;
       const rad = Math.sqrt(this.rng.next()) * (this.s.arenaRadius - 240);
       const px = Math.cos(a) * rad, py = Math.sin(a) * rad;
 
-      let nearest = Infinity;
-      for (const o of this.s.snakes) {
-        if (o.id === sn.id || !o.alive) continue;
-        const d = Math.hypot(px - o.x, py - o.y);
-        if (d < nearest) nearest = d;
-      }
-      if (nearest === Infinity) nearest = 9999;
+      const nearest = clearance(px, py);
       if (nearest > best) { best = nearest; bx = px; by = py; }
+      // Good enough to stop looking. A spawn only has to be SAFE, not optimal, and stopping
+      // early keeps the common case at one or two candidates.
+      if (best > SAFE_SPAWN_CLEARANCE) break;
+    }
+
+    // Nothing acceptable in 20 random draws — sweep a ring instead of accepting a spawn that
+    // is known to be inside something. A spawn is rare enough to afford the search, and
+    // "spawned inside a body" is the exact failure this function exists to prevent.
+    if (best < SAFE_SPAWN_CLEARANCE) {
+      const rings = [0.45, 0.62, 0.78, 0.30];
+      outer:
+      for (const frac of rings) {
+        const rad = this.s.arenaRadius * frac;
+        for (let k = 0; k < 24; k++) {
+          const a = (k / 24) * Math.PI * 2;
+          const px = Math.cos(a) * rad, py = Math.sin(a) * rad;
+          const nearest = clearance(px, py);
+          if (nearest > best) { best = nearest; bx = px; by = py; }
+          if (best > SAFE_SPAWN_CLEARANCE) break outer;
+        }
+      }
     }
 
     sn.x = bx;
@@ -983,6 +1055,14 @@ function round(v: number, dp = 0): number {
 // faster (more points per body) and pushed the frame past its ceiling. Precision nobody can
 // see is the right thing to spend.
 const PATH_STEP = 3;
+
+/**
+ * Clearance a spawn point must have from any body, head or lethal hazard.
+ *
+ * Comfortably outside the kill radius (a start-mass head plus a grown body radius is ~35), with
+ * room for both snakes to have moved by the time invulnerability ends.
+ */
+const SAFE_SPAWN_CLEARANCE = 90;
 
 /** Body points nearest the head sent at full resolution; the tail beyond is halved. */
 // Reduced from 24 alongside the speed increase.

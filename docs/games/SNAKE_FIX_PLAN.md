@@ -4,8 +4,12 @@
 **Scope:** the two live bugs, the invisible hazards, the growth/levels rework, a full audit
 of Snake across iOS, Android and the backend, and a bigger arena.
 
-**Audit status: done.** Part 5 lists 4 P0s, 4 P1s and 3 P2s, plus what was checked and found
+**Audit status: done.** Part 5 lists 6 P0s, 4 P1s and 3 P2s, plus what was checked and found
 correct. Part 6 answers the arena question with measurements.
+
+**P0-5 and P0-6 were added during implementation, not during the audit,** and P0-5 invalidates
+every bandwidth number written here — including Part 6's. The corrections are inline where the
+affected numbers appear.
 
 Everything below that states a number was measured, not estimated. Where I could not prove
 something, it says so explicitly rather than guessing.
@@ -149,6 +153,11 @@ Halves the tick component of the error and improves interpolation everywhere.
 this cannot happen without that budget moving. That is a product decision, not an engineering
 one. If the budget can move, this is the single highest-quality fix on the list and it
 compounds with A.
+
+> **CORRECTION (P0-5):** the 29 was measured on the restore path. Production is at **54 KB/s**
+> against that 30 budget today, and at **17.4** once P0-5 is fixed. So this tradeoff is wrong
+> in both directions: B3 is impossible right now, and affordable after P0-5 — 17.4 doubled is
+> ~35, still over 30, but that is a real budget conversation rather than a non-starter.
 
 ### Decision rule after playtesting
 
@@ -377,6 +386,78 @@ never got the same treatment.
 against the **segment** between sampled points rather than the points themselves (cheaper, and
 correct at any stride). The second is preferable: `segmentSegmentDist2` already exists.
 
+### P0-5 — In production, every frame sends a full food snapshot. Bandwidth is 54 KB/s, not 29.
+
+**Found while implementing P0-3. It invalidates every bandwidth number in this document.**
+
+`sinceFull` is incremented in `tick()` and reset by `serialize()` — but `serialize()` resets it
+only in the **payload it returns** (`sinceFull: willSendFull ? 0 : this.s.sinceFull`), never on
+the instance. That is correct if and only if the engine is rebuilt from that payload every tick.
+
+**It is not.** `backend/games/src/index.ts:337-341` caches one engine per match in `liveEngines`
+and ticks that same instance for the life of the match; it is rebuilt only by `stopLoop`, a
+process restart or a cold match. So on the live path `this.s.sinceFull` climbs forever, passes
+`FOOD_FULL_INTERVAL` at tick 120, and never comes back down.
+
+Measured, seed 999, one live engine, the runtime's own call order:
+
+```
+tick 118   sinceFull=119   foodFull= no   1.7 KB
+tick 119   sinceFull=120   foodFull=YES   6.5 KB
+tick 120   sinceFull=121   foodFull=YES   6.6 KB     <- and every frame thereafter
+full-food frames: 181 of 300 (100% of every frame after tick 119; the intent is 3)
+```
+
+This is the exact failure the comment in `serializeForWire()` says was already fixed — *"every
+single frame sent a full snapshot, and the delta encoding silently did nothing at all."* It was
+fixed for the restore path. Production runs the live path, where it was never fixed.
+
+Six seeds, 2 humans + 4 bots, 30 s each:
+
+| | live (production) | restore (what `snake.test.ts` drives) |
+|---|---|---|
+| bandwidth | **53.6 KB/s** | 28.7 KB/s |
+| food deltas | 0.1 KB/s | 10.1 KB/s |
+
+**We are not at 29 KB/s against a 30 KB/s budget. We are at 54 against 30, and have been.**
+
+**Fix:** reset the counter on the instance in `serializeForWire()` when a full frame goes out,
+so the decision and its consequence live in the same place on both paths. Measured with the
+reset applied: **53.6 → 17.4 KB/s**, full frames back to 1%.
+
+**And the test must drive the production path.** `runRoundTripped` and the wire-size check
+restore every tick, which is the recovery path, not the steady state. As long as the only
+bandwidth measurement we have runs a path production never runs, this class of bug is
+invisible to us by construction — which is how it survived an audit.
+
+### P0-6 — Food deltas accumulate on the restore path; each pellet is re-announced ~60 times
+
+The mirror image of P0-5, same root shape: `serializeForWire()` clears `added`/`removed` on the
+instance, but `serialize()` has already written the *unconsumed* lists into the persisted state.
+On the restore path the next tick reads them back, appends, and re-broadcasts the whole backlog —
+which only ever drains when a full-food frame resets it.
+
+Measured, seed 999, 200 restore-per-tick frames:
+
+```
+distinct pellets announced   194
+total announcements        11656
+avg times each pellet sent    60.1      worst 105
+avg times each removal sent   54.9      worst 105
+```
+
+Not a correctness bug — re-applying an add or a removal is idempotent, so a client stays right.
+It is a cost, and it is confined to the restore path, so production does not pay it. But it is
+**why the test reads the way it does**: it inflates `foodAdd` from 0.4 items/frame to 61, which
+is 35% of the payload the wire-size check is measuring.
+
+It also distorts every comparison made through that test. P0-3 (eating during invulnerability)
+measures as **+2.4 KB/s** on the restore path and **+0.6 KB/s** on the live path — the same
+one-line correctness fix, reported as a budget breach by one path and as noise by the other.
+
+**Fix:** persist `added`/`removed` as consumed whenever the wire frame carries them, so the two
+serializers agree about what has been sent — the same invariant P0-5 needs for `sinceFull`.
+
 ### P1-1 — Bot avoidance always assumes base speed, including while boosting
 
 `bot.ts:88`: `const speed = TUNING.BASE_SPEED;` — used to derive `turnRadius`, `awareness`,
@@ -487,6 +568,20 @@ per process so nothing leaks between runs:
 | 2000 | 530 | 24.4 KB/s |
 | 2400 | 764 | 24.8 KB/s |
 | **2800 (2× today)** | 1040 | **25.1 KB/s** |
+
+> **CORRECTION — the table above is measured on the restore path, which production never
+> runs. See P0-5.** On the live path, as the engine ships today, the arena is not cheap and
+> not free: **1400 = 54.2 KB/s, 2000 = 82.2, 2800 = 143.4.** A doubled arena is 2.6x more
+> expensive, not cheaper, because `FOOD_TARGET` scales with area and every frame is a full
+> food snapshot.
+>
+> With P0-5 fixed, the conclusion below **does hold**, and holds more cleanly than stated:
+> **1400 = 17.4, 2000 = 17.2, 2400 = 17.5, 2800 = 17.8 KB/s.** A doubled arena costs the same,
+> rather than measurably less — the "cheaper" reading was noise from the broken measurement.
+> The reasoning in points 1 and 2 below is right; the numbers it was resting on were not.
+>
+> **Part 6 must not ship before P0-5.** On today's engine it would put a 2000-unit arena at
+> 82 KB/s.
 
 **A doubled arena is cheaper than the arena we ship.** That is not a rounding artifact, and
 the mechanism is clear:

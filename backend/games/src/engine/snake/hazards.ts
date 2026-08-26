@@ -106,7 +106,18 @@ export function generateHazards(rng: Rng, arenaRadius: number, density = 1): Haz
   // Single-seed readings swung between 27 and 34 KB/s and sent two rounds of tuning chasing
   // noise. Averaged over six seeds the count barely matters — 8/10/12/14 hazards all land
   // between 27 and 28.5 — so 12 is chosen for the arena it makes, not for the bytes.
-  const target = Math.round(12 * density * (arenaRadius / 1400) ** 2);
+  // RAISED FROM 12 to 26 after playtesting reported "I never see any rocks or water".
+  //
+  // The field was not broken — instrumenting the renderer showed all 12 hazards arriving every
+  // frame and their geometry being built correctly (726 triangles). They were simply never
+  // NEAR the player: the nearest hazard sat 695 world units from the camera against a visible
+  // half-extent of roughly 470, so they rendered perfectly, off screen, all match.
+  //
+  // 12 hazards covered 2% of the arena. A player can cross a 2%-covered arena for three
+  // minutes and meet nothing, which makes geography that exists feel absent — and geography
+  // nobody meets is not geography, it is bandwidth. 26 roughly doubles coverage while staying
+  // well short of an obstacle course.
+  const target = Math.round(26 * density * (arenaRadius / 1400) ** 2);
 
   const minR = arenaRadius * SPAWN_CLEARANCE;
   const maxR = arenaRadius * WALL_CLEARANCE;
