@@ -237,6 +237,8 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     /// on flat opaque fills reads as blur, not glow, and would soften the very shapes the
     /// player needs to judge collisions against.
     private var bloomCircles: [CircleInstance] = []
+    /// The blur kernel, built once. See `blurBloom`.
+    private var bloomBlur: MPSImageGaussianBlur?
     private var bloomTexture: MTLTexture?
     private var bloomBlurred: MTLTexture?
     private var bloomSize: CGSize = .zero
@@ -488,11 +490,21 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         let h = max(1, Int(size.height / 2))
         bloomSize = CGSize(width: w, height: h)
 
+        // The two targets do NOT share a usage mask, and getting that wrong is fatal rather
+        // than merely slow: `bloomTexture` is rendered into and then read by the blur, but
+        // `bloomBlurred` is the blur's DESTINATION — MPS writes it from a compute kernel, so it
+        // needs `.shaderWrite`. Without it, Metal's validation layer asserts inside
+        // `dispatchThreadgroups` and aborts the process from within `draw(in:)`; the arena goes
+        // black, the SwiftUI HUD above it keeps rendering, and the app cannot even be
+        // terminated because it is wedged in the crash handler.
         let desc = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: Self.bloomPixelFormat, width: w, height: h, mipmapped: false)
-        desc.usage = [.renderTarget, .shaderRead]
         desc.storageMode = .private
+
+        desc.usage = [.renderTarget, .shaderRead]
         bloomTexture = device.makeTexture(descriptor: desc)
+
+        desc.usage = [.shaderRead, .shaderWrite]
         bloomBlurred = device.makeTexture(descriptor: desc)
     }
 
@@ -683,9 +695,11 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     /// food edges the player needs to judge collisions against.
     private func blurBloom(commands: MTLCommandBuffer) {
         guard let bloomTexture, let bloomBlurred else { return }
-        let blur = MPSImageGaussianBlur(device: device, sigma: 2.5)
-        blur.encode(commandBuffer: commands, sourceTexture: bloomTexture,
-                    destinationTexture: bloomBlurred)
+        // Built ONCE and held. Constructing an MPS kernel compiles and caches shader state, so
+        // rebuilding it inside the draw call put that work on the display link every frame.
+        if bloomBlur == nil { bloomBlur = MPSImageGaussianBlur(device: device, sigma: 2.5) }
+        bloomBlur?.encode(commandBuffer: commands, sourceTexture: bloomTexture,
+                          destinationTexture: bloomBlurred)
     }
 
     /// PASS 4: draw the blurred bloom texture as one full-screen quad, additive, into the
