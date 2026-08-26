@@ -873,6 +873,9 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
 
         var heads: [String: CGPoint] = [:]
         var headings: [String: Double] = [:]
+        /// Signed turn rate, radians per second, per snake. This is the only INTENT signal a
+        /// remote snake carries: the server sends where it points, never where it is steering.
+        var turnRates: [String: Double] = [:]
         for snake in state.snakes {
             let prev = from.snakes.first { $0.id == snake.id }
             let px = prev?.x ?? snake.x, py = prev?.y ?? snake.y
@@ -887,6 +890,12 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
             }
             heads[snake.id] = head
             headings[snake.id] = heading
+            // Measured across the whole server interval rather than the interpolated slice, so
+            // it does not scale with how far between frames this particular draw landed.
+            let span = max(to.time - from.time, 1e-4)
+            if let prev {
+                turnRates[snake.id] = Self.angleDifference(prev.heading, snake.heading) / span
+            }
         }
 
         // THE LOCAL SNAKE IS PREDICTED, not interpolated.
@@ -1005,6 +1014,7 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
             buildSnake(snake: snake,
                        head: heads[snake.id] ?? .zero,
                        heading: headings[snake.id] ?? 0,
+                       turnRate: turnRates[snake.id] ?? 0,
                        isMe: snake.id == me,
                        time: state.time,
                        rank: rankOf[snake.id] ?? 0,
@@ -1194,11 +1204,21 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         return CGPoint(x: px / worldScale, y: py / worldScale)
     }
 
+    /// How far ahead of its current heading a remote snake looks, in seconds of its own turn
+    /// rate. Long enough to read as anticipation, short enough that the eyes never leave the
+    /// head they belong to.
+    private static let gazeLead: Double = 0.18
+
     private static func lerpAngle(_ a: Double, _ b: Double, _ t: Double) -> Double {
+        a + angleDifference(a, b) * t
+    }
+
+    /// Shortest signed rotation from `a` to `b`, in -pi...pi.
+    private static func angleDifference(_ a: Double, _ b: Double) -> Double {
         var d = b - a
         while d > .pi { d -= 2 * .pi }
         while d < -.pi { d += 2 * .pi }
-        return a + d * t
+        return d
     }
 
     // MARK: Geometry builders
@@ -1419,7 +1439,7 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     }
 
     private func buildSnake(
-        snake: SnakeState.Snake, head: CGPoint, heading: Double,
+        snake: SnakeState.Snake, head: CGPoint, heading: Double, turnRate: Double,
         isMe: Bool, time: Double, rank: Int, scale: Float
     ) {
         let points = trails.points(for: snake.id)
@@ -1482,8 +1502,21 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         circles.append(CircleInstance(centre: hc, radius: r, softness: 0,
                                       colour: SIMD4(c.x, c.y, c.z, alpha)))
 
+        // GAZE LEADS THE TURN. Eyes that point exactly where the head already points are inert;
+        // eyes that look where the snake is STEERING read as an animal deciding, and they warn
+        // you which way an opponent is about to cut in front of you a moment before it does.
+        //
+        // The local snake has the real signal — the thumb — so it uses it directly. A remote
+        // snake carries no intent on the wire: the server sends where it points, never where it
+        // is turning toward. Its turn RATE is the next best thing, and leading the heading by a
+        // fraction of a second of that turn is what the desired heading would have been.
         var look = heading
-        if isMe, stick != .zero { look = atan2(stick.dy, stick.dx) }
+        if isMe, stick != .zero {
+            look = atan2(stick.dy, stick.dx)
+        } else {
+            // Clamped, so a snake spinning at its turn cap does not end up cross-eyed.
+            look += max(-0.55, min(0.55, turnRate * Self.gazeLead))
+        }
 
         let eyeR = r * 0.32
         for side in [Float(-1), Float(1)] {
@@ -1539,15 +1572,27 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     ) {
         guard points.count >= 2, !skin.bands.isEmpty else { return }
 
+        // TAIL FALLOFF. The far end of a body sits slightly darker than the head, which reads
+        // as depth — the body receding — without costing a shader or a second pass. Kept small
+        // deliberately: this is a depth cue, and a tail faded far enough to notice as a fade
+        // starts to hide the part of the snake that can still kill you.
+        let bodyLength = Self.polylineLength(points)
+        func fadeAt(_ d: Float) -> Float {
+            1 - Self.tailFalloff * min(d / max(bodyLength, 1e-4), 1)
+        }
+
         // A single-band skin is the fallback path, and one ribbon is cheaper and smoother
         // than a one-colour band walk.
         if skin.bands.count == 1 {
             let b = skin.bands[0]
-            appendRibbon(points: points, width: width, colour: SIMD4(b.x, b.y, b.z, alpha))
+            appendRibbon(points: points, width: width, colour: SIMD4(b.x, b.y, b.z, alpha),
+                         fade: (fadeAt(0), fadeAt(bodyLength)))
             return
         }
 
         var span: [CGPoint] = [points[0]]
+        /// Distance from the head to the START of the current span.
+        var walked: Float = 0
         var bandIndex = 0
         var used: Float = 0
         var cursor = points[0]
@@ -1574,7 +1619,10 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
             span.append(cut)
 
             let b = skin.bands[bandIndex % skin.bands.count]
-            appendRibbon(points: span, width: width, colour: SIMD4(b.x, b.y, b.z, alpha))
+            let spanLength = Self.polylineLength(span)
+            appendRibbon(points: span, width: width, colour: SIMD4(b.x, b.y, b.z, alpha),
+                         fade: (fadeAt(walked), fadeAt(walked + spanLength)))
+            walked += spanLength
 
             bandIndex += 1
             used = 0
@@ -1584,8 +1632,21 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
 
         if span.count >= 2 {
             let b = skin.bands[bandIndex % skin.bands.count]
-            appendRibbon(points: span, width: width, colour: SIMD4(b.x, b.y, b.z, alpha))
+            appendRibbon(points: span, width: width, colour: SIMD4(b.x, b.y, b.z, alpha),
+                         fade: (fadeAt(walked), fadeAt(walked + Self.polylineLength(span))))
         }
+    }
+
+    /// How much darker the far end of a body sits than the head, as a fraction of its alpha.
+    private static let tailFalloff: Float = 0.18
+
+    private static func polylineLength(_ points: [CGPoint]) -> Float {
+        guard points.count >= 2 else { return 0 }
+        var acc: Float = 0
+        for i in 1..<points.count {
+            acc += Float(hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y))
+        }
+        return acc
     }
 
     /// Triangulate a polyline into a thick ribbon.
@@ -1593,9 +1654,30 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     /// Two triangles per segment, with the joint offset along each point's averaged normal so
     /// corners do not pinch. Round caps are drawn as circle instances instead of geometry —
     /// far cheaper than fanning every joint, and visually identical at these widths.
-    private func appendRibbon(points: [CGPoint], width: Float, colour: SIMD4<Float>) {
+    /// - Parameter fade: alpha multipliers at the START and END of this span, interpolated
+    ///   across it by arc length. `(1, 1)` — the default — leaves the colour untouched.
+    private func appendRibbon(
+        points: [CGPoint], width: Float, colour: SIMD4<Float>,
+        fade: (from: Float, to: Float) = (1, 1)
+    ) {
         guard points.count >= 2 else { return }
         let half = width * 0.5
+
+        // Arc length up to each point, so the fade tracks DISTANCE rather than point index —
+        // trail points are not evenly spaced (the head end is resampled far more finely than a
+        // decimated tail), so fading by index would bunch the gradient at the head.
+        var lengths: [Float] = [0]
+        lengths.reserveCapacity(points.count)
+        var acc: Float = 0
+        for i in 1..<points.count {
+            acc += Float(hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y))
+            lengths.append(acc)
+        }
+        let total = max(acc, 1e-4)
+        func shade(_ i: Int) -> SIMD4<Float> {
+            let k = fade.from + (fade.to - fade.from) * (lengths[i] / total)
+            return SIMD4(colour.x, colour.y, colour.z, colour.w * k)
+        }
 
         var normals: [SIMD2<Float>] = []
         normals.reserveCapacity(points.count)
@@ -1618,20 +1700,22 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
             let a0 = a + na, a1 = a - na
             let b0 = b + nb, b1 = b - nb
 
-            ribbon.append(RibbonVertex(world: a0, colour: colour))
-            ribbon.append(RibbonVertex(world: a1, colour: colour))
-            ribbon.append(RibbonVertex(world: b0, colour: colour))
+            let ca = shade(i), cb = shade(i + 1)
 
-            ribbon.append(RibbonVertex(world: a1, colour: colour))
-            ribbon.append(RibbonVertex(world: b1, colour: colour))
-            ribbon.append(RibbonVertex(world: b0, colour: colour))
+            ribbon.append(RibbonVertex(world: a0, colour: ca))
+            ribbon.append(RibbonVertex(world: a1, colour: ca))
+            ribbon.append(RibbonVertex(world: b0, colour: cb))
+
+            ribbon.append(RibbonVertex(world: a1, colour: ca))
+            ribbon.append(RibbonVertex(world: b1, colour: cb))
+            ribbon.append(RibbonVertex(world: b0, colour: cb))
         }
 
         // Round off the tail so a body does not end in a hard chisel.
         if let tail = points.last {
             circles.append(CircleInstance(
                 centre: SIMD2(Float(tail.x), Float(tail.y)),
-                radius: half, softness: 0, colour: colour))
+                radius: half, softness: 0, colour: shade(points.count - 1)))
         }
     }
 
