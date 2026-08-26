@@ -17,6 +17,7 @@
 import { TUNING } from './index';
 import {
   arenaSdf,
+  segmentSegmentDist2,
   shortestAngle,
   type ArenaShape,
   type Rng,
@@ -180,9 +181,16 @@ export function stepBot(
   for (const other of all) {
     if (!other.alive || other.id === sn.id) continue;
     const path = other.path;
-    for (let i = 0; i < path.length; i += 8) {
-      const dx = path[i] - lookX, dy = path[i + 1] - lookY;
-      if (dx * dx + dy * dy < 40 * 40) { blocked = true; break; }
+    // TESTED AGAINST THE SEGMENT, NOT THE SAMPLED POINTS. The stride is kept for speed, but
+    // checking only the points it lands on left ~120-unit gaps between samples against a
+    // 40-unit test radius — so a body crossing between two samples was invisible and the bot
+    // drove straight through something it never saw. Same tunnelling problem the collision
+    // code solves with swept tests; the bot never got the same treatment.
+    for (let i = 0; i + 3 < path.length; i += 8) {
+      if (segmentSegmentDist2(lookX, lookY, lookX, lookY,
+                              path[i], path[i + 1], path[i + 2], path[i + 3]) < 40 * 40) {
+        blocked = true; break;
+      }
     }
     if (blocked) break;
   }
@@ -212,8 +220,9 @@ export function stepBot(
       for (const other of all) {
         if (!other.alive || other.id === sn.id) continue;
         const path = other.path;
-        for (let i = 0; i < path.length; i += 8) {
-          const d = Math.hypot(path[i] - px, path[i + 1] - py);
+        for (let i = 0; i + 3 < path.length; i += 8) {
+          const d = Math.sqrt(segmentSegmentDist2(px, py, px, py,
+                                                  path[i], path[i + 1], path[i + 2], path[i + 3]));
           if (d < clear) clear = d;
         }
       }

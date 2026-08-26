@@ -107,8 +107,22 @@ export const TUNING = {
   // mouth costs nothing on the wire and, because a bigger mouth clears pellets sooner, it
   // actually LOWERS sustained bandwidth: 30 KB/s to 28 KB/s in the wire-size check below.
   EAT_RADIUS: 28,
-  ARENA_RADIUS: 1400,
-  FOOD_TARGET: 260,
+  // 2000, up from 1400 — twice the play area.
+  //
+  // Measured over six seeds, one config per process: 1400 cost 28.7 KB/s and 2000 cost 24.4.
+  // A BIGGER ARENA IS CHEAPER, which is not the obvious result. Two reasons: body points are
+  // delta-encoded, so arena size does not change the size of a delta and a wider world costs
+  // nothing per point; and more space means less tangling, so snakes stay shorter and bodies
+  // ARE the payload. Bandwidth was never the constraint here — match length and bot count are.
+  ARENA_RADIUS: 2000,
+  // Scaled by AREA, not radius. Holding the old 260 over twice the area would have made the
+  // arena barren, which is the actual risk of growing it.
+  //
+  // BOT COUNT IS NOT SCALED WITH IT, deliberately. Measured in this arena over six seeds:
+  // 4 bots = 30.3 KB/s, 6 = 46.9, 8 = 67.1. Bots are what the payload is made of — every one
+  // is a body on the wire every tick — so the obvious "bigger arena, more bots" would have
+  // spent four times what the arena itself cost. The arena is free; the population is not.
+  FOOD_TARGET: 530,
   RESPAWN_DELAY: 2.5,       // seconds
   INVULN: 1.5,              // seconds
   MAX_MASS: 600,
