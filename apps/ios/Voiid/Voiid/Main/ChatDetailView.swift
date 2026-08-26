@@ -1163,6 +1163,22 @@ struct MessageBubble: View {
                                                 : VoiidColor.fieldFill.opacity(0.7)))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
+                // Quoted MOMENT — the story this reply answers. Deliberately built from the
+                // same parts as the quoted-message block directly above (accent rail, author
+                // line in the accent, secondary body, the same translucent-white-on-teal /
+                // fieldFill-on-card scrim, the same corner radius), plus a leading thumbnail,
+                // so a story quote and a message quote read as two of one thing rather than as
+                // two separate inventions. Without it a tapped reaction landed here as a lone
+                // "❤️" with nothing saying which moment it answered.
+                if let sid = message.storyQuoteId {
+                    StoryQuoteView(storyId: sid,
+                                   authorId: message.storyQuoteAuthorId,
+                                   createdAt: message.storyQuoteAt,
+                                   accent: bubbleAccent,
+                                   secondary: bubbleTextSecondary,
+                                   fill: message.isMine ? Color.white.opacity(0.16)
+                                                        : VoiidColor.fieldFill.opacity(0.7))
+                }
                 // Sender identity (group, incoming only): the saved name (or phone) coloured
                 // per sender, with the @username in a lighter tone so you know exactly who's
                 // texting who.
@@ -1191,6 +1207,15 @@ struct MessageBubble: View {
                     // unreachable for the only messages that needed it, which is why the invite
                     // showed as `voiid:game/...` plus a wall of JSON.
                     content
+                    metaRow.padding(.top, 2)
+                } else if message.isStoryReaction {
+                    // A tapped reaction, not prose. Set at 34pt so it reads as the gesture it
+                    // was — the same emoji in 15pt body type looks like someone typed a heart
+                    // by accident. `metaRow` still rides beneath it so the bubble keeps its
+                    // timestamp and delivery word like every other outgoing message.
+                    Text(message.text)
+                        .font(.system(size: 34))
+                        .padding(.vertical, 2)
                     metaRow.padding(.top, 2)
                 } else if message.kind == .text {
                     textWithMeta

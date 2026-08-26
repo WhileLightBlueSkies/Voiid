@@ -73,6 +73,18 @@ struct VMessage: Identifiable, Hashable {
     // Quoted reply: snapshot of the replied-to message
     var replyToSender: String? = nil
     var replyToText: String? = nil
+    /// Quoted MOMENT: a reply sent from the Stories viewer quotes the story it answers,
+    /// the sibling of `replyToText` above and rendered by the same bubble in the same
+    /// place. Only the identity travels — the media is looked up in StoryStore at render
+    /// time, because a story is a 24h object and a snapshot of it would be a lie within a
+    /// day. `storyQuoteAt` is the moment's own creation time, not the reply's.
+    var storyQuoteId: String? = nil
+    var storyQuoteAuthorId: String? = nil
+    var storyQuoteAt: Date? = nil
+    /// True when this bubble's whole body is a single emoji reaction tapped on the story
+    /// rail, rather than typed prose. It is drawn large and unbubbled, the way a reaction
+    /// reads everywhere else — a 30pt "❤️" set in body type looks like a typo.
+    var isStoryReaction: Bool = false
     /// For media messages (.image/.voice): the E2EE reference used to fetch +
     /// decrypt the blob on demand. nil for text/local-echo messages.
     var mediaRef: MediaRef? = nil
@@ -81,6 +93,19 @@ struct VMessage: Identifiable, Hashable {
     var location: LocationRef? = nil
     /// Set when kind == .call: the finished call this bubble reports. Local-only.
     var call: VCallLog? = nil
+
+    /// True when `s` is one to three emoji and nothing else — the shape of a tapped
+    /// reaction rather than a typed sentence. Grapheme-based, not scalar-based: "👏🏽" and
+    /// "❤️" are each ONE Character but several scalars, so counting scalars would reject
+    /// the exact emoji the story rail sends.
+    static func isSoloEmoji(_ s: String) -> Bool {
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty, t.count <= 3 else { return false }
+        return t.allSatisfy { ch in
+            ch.unicodeScalars.contains { $0.properties.isEmoji && $0.properties.isEmojiPresentation }
+                || ch.unicodeScalars.contains { $0.properties.isEmojiModifierBase }
+        }
+    }
 
     /// Stable per-sender accent color for group sender names (WhatsApp-style).
     var senderColor: Color {
