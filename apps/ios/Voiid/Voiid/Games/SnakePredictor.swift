@@ -38,6 +38,8 @@ enum SnakeMotion {
     static let turnRate: Double = 400 * .pi / 180
     static let turnRateBoost: Double = 440 * .pi / 180
     static let minBoostMass: Double = 12
+    /// Speed multiplier inside a slick. Mirrors HAZARD_TUNING.SLICK_SPEED on the server.
+    static let slickSpeed: Double = 0.62
 }
 
 /// Predicted state for the local snake, advanced every render frame.
@@ -46,6 +48,19 @@ final class SnakePredictor {
     private(set) var position: CGPoint = .zero
     /// The heading we believe we are travelling on.
     private(set) var heading: Double = 0
+
+    /// Server time this snake stays slowed by a slick until, and the server clock it is
+    /// compared against. Both are pushed in by the renderer each frame from the newest frame —
+    /// the predictor has no clock of its own, and comparing a server deadline against a local
+    /// timestamp would be meaningless.
+    private var slickUntil: Double = 0
+    private var serverTime: Double = 0
+
+    /// Called each frame with the newest server frame's clock and this snake's slick deadline.
+    func setSlick(until: Double, serverTime now: Double) {
+        slickUntil = until
+        serverTime = now
+    }
 
     /// What the player is currently asking for. Written by the joystick, read every frame.
     var desiredHeading: Double?
@@ -134,7 +149,12 @@ final class SnakePredictor {
             heading += max(-rate * dt, min(rate * dt, delta))
         }
 
-        let speed = boosting ? SnakeMotion.boostSpeed : SnakeMotion.baseSpeed
+        // SLICKS SLOW THE PREDICTION TOO. The server multiplies speed by SLICK_SPEED while a
+        // snake is in one; if the predictor did not, the local head would run ahead at full
+        // speed and be dragged back every frame for as long as the player stayed in the slick —
+        // a rubber-band exactly where the game is asking them to steer carefully.
+        var speed = boosting ? SnakeMotion.boostSpeed : SnakeMotion.baseSpeed
+        if serverTime < slickUntil { speed *= SnakeMotion.slickSpeed }
         position.x += cos(heading) * speed * dt
         position.y += sin(heading) * speed * dt
 

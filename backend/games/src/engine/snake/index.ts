@@ -649,7 +649,10 @@ class SnakeEngine implements GameEngine {
     sn.boost = false;
     sn.respawnAt = this.s.t + TUNING.RESPAWN_DELAY;
 
-    this.s.events.push({ k: 'death', x: sn.x, y: sn.y, id: sn.id, c: cause });
+    // `id` is the VICTIM and `v` carries the KILLER — the inverse of the 'kill' event below,
+    // which spends `id` on the killer. Without this a client could not attribute a death, and
+    // no test could assert "X killed Y" from the death event alone.
+    this.s.events.push({ k: 'death', x: sn.x, y: sn.y, id: sn.id, c: cause, v: killerId ?? undefined });
 
     // The whole body becomes food. Not a fraction — a long snake dying next to you is the
     // single biggest opportunity in the game, and scaling it down would remove the reason to
@@ -864,7 +867,8 @@ class SnakeEngine implements GameEngine {
   private finish(): GameOutcome {
     this.s.finished = true;
 
-    // Highest mass wins. Bots are excluded from being the winner: a practice match is the
+    // Highest SCORE wins — score, not mass, because score rewards kills and eating while mass
+    // alone would reward turtling. Bots are excluded from being the winner: a practice match is the
     // human's to win or lose, and recording "bot:2 won" in game_matches would corrupt the
     // results table with a user id that does not exist.
     let winner: SnakeState | null = null;
@@ -1029,6 +1033,14 @@ class SnakeEngine implements GameEngine {
         // without having to reason about the server's clock.
         cr: !sn.alive && this.s.t >= sn.respawnAt,
         iv: sn.invulnUntil,
+        // SLICK EXPIRY. Not cosmetic: the engine rebuilds itself from this payload every tick,
+        // so a field missing here is silently reset before it can ever be read. `slickUntil`
+        // was set and read but never serialized, which meant slicks did NOTHING — a snake
+        // parked in one moved the full 30 units per tick instead of 18.6, for the entire life
+        // of the feature. It is on the wire as well as in persistence because the client's
+        // predictor has to apply the same slowdown or the local snake fights a correction for
+        // as long as the player is in a slick.
+        sl: sn.slickUntil ?? 0,
         c: sn.color,
       })),
       // Food is deliberately absent here: serialize() and serializeForWire() each add their
@@ -1147,6 +1159,7 @@ function restoreState(state: GameStatePayload): State {
     score: sn.s as number,
     respawnAt: sn.ra as number,
     invulnUntil: sn.iv as number,
+    slickUntil: (sn.sl as number | undefined) ?? 0,
     color: sn.c as number,
   }));
 

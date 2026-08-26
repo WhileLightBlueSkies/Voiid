@@ -499,6 +499,45 @@ console.log('\nSnake engine\n');
     `nearest lethal body = ${justPastNeck.toFixed(1)}`);
 }
 
+// --- 10b-quater. Slicks actually slow a snake ------------------------------------------------
+//
+// `slickUntil` was set and read but never serialized or restored, and the engine rebuilds
+// itself from the payload every tick — so the field was wiped before it could ever apply and
+// slicks did NOTHING for the life of the feature. A snake parked in one moved the full
+// distance. This asserts the round trip, not just the multiplier.
+{
+  let state: GameStatePayload = snake.create(['u1'], { bots: 0, seed: 7 }).serialize();
+  const slick = (state.hazards as any[]).find((h) => h.k === 'slick');
+
+  // Park the snake inside the slick, driving straight along +x, past invulnerability.
+  (state.snakes as any[])[0].x = slick.x;
+  (state.snakes as any[])[0].y = slick.y;
+  (state.snakes as any[])[0].h = 0;
+  (state.snakes as any[])[0].th = 0;
+  (state.snakes as any[])[0].iv = 0;
+
+  // First tick ENTERS the slick (the slow is applied from the next one), so measure the second.
+  let e = snake.restore(state);
+  e.tick!();
+  state = e.serialize();
+  const xAfterFirst = (state.snakes as any[])[0].x;
+
+  e = snake.restore(state);
+  e.tick!();
+  state = e.serialize();
+  const moved = (state.snakes as any[])[0].x - xAfterFirst;
+
+  const full = TUNING.BASE_SPEED / TUNING.TICK_HZ;
+  const expected = full * 0.62;
+
+  check('slickUntil survives the serialize/restore round trip',
+    ((state.snakes as any[])[0].sl ?? 0) > 0,
+    `sl=${(state.snakes as any[])[0].sl}`);
+  check('a snake inside a slick is actually slowed',
+    Math.abs(moved - expected) < 1.5,
+    `moved ${moved.toFixed(1)}, expected ~${expected.toFixed(1)} (full speed is ${full.toFixed(1)})`);
+}
+
 // --- 10c. Mass-scaled radius --------------------------------------------------------------
 // The drawn width comes from `hr`, so if this stops scaling the client silently goes back to
 // a fixed-width snake whose hitbox no longer matches what is on screen.

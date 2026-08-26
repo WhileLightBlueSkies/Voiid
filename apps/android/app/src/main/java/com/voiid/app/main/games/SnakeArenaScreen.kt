@@ -1160,6 +1160,7 @@ private fun DrawScope.drawArena(
         // prediction is to be AHEAD of the render clock, so correcting toward a
         // deliberately-stale position would drag it back into the past.
         frames.lastOrNull()?.state?.snakes?.firstOrNull { it.id == me }?.let { newest ->
+            predictor.setSlick(newest.slickUntil, frames.last().state.time)
             predictor.reconcile(
                 Offset(newest.x.toFloat(), newest.y.toFloat()), newest.heading, newest.alive)
         }

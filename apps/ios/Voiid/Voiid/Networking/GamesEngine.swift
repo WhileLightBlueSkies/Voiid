@@ -251,6 +251,8 @@ struct SnakeState {
         let deaths: Int
         let score: Int
         let invulnUntil: Double
+        /// Server time until which this snake is slowed by a slick; 0 when it is not.
+        let slickUntil: Double
         /// Dead AND past the respawn delay: the client may offer its Respawn button.
         let canRespawn: Bool
         let colorIndex: Int
@@ -392,6 +394,7 @@ struct SnakeState {
                 deaths: (s["d"] as? Int) ?? 0,
                 score: (s["s"] as? Int) ?? 0,
                 invulnUntil: (s["iv"] as? Double) ?? 0,
+                slickUntil: (s["sl"] as? Double) ?? 0,
                 canRespawn: (s["cr"] as? Bool) ?? false,
                 colorIndex: (s["c"] as? Int) ?? 0)
         }

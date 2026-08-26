@@ -87,7 +87,15 @@ export function stepBot(
   // existed: they began braking far too late and drove into the boundary. A bot that dies to
   // a wall it "saw" reads as broken, and the numbers must not be able to drift from the
   // simulation's again.
-  const speed = TUNING.BASE_SPEED;
+  // THE SPEED IT IS ACTUALLY TRAVELLING AT, not always the base speed.
+  //
+  // This drove turnRadius, awareness, the one-second lookahead and the hunt lead — every
+  // margin the bot uses to not die. A boosting bot moves at 510 u/s, 1.7x base, so all of
+  // them were 40% short exactly when it was moving fastest. The comment above already records
+  // this failure happening once before, when these were literals from a slower game.
+  const speed = sn.boost && sn.mass > TUNING.MIN_BOOST_MASS
+    ? TUNING.BOOST_SPEED
+    : TUNING.BASE_SPEED;
 
   // --- Survival: border ---------------------------------------------------------------
   // The awareness distance is derived from the turn radius, not picked by feel. A bot must

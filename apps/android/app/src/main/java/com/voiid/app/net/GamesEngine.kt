@@ -248,6 +248,8 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
             val deaths: Int,
             val score: Int,
             val invulnUntil: Double,
+            /** Server time this snake stays slowed by a slick until; 0 when it is not. */
+            val slickUntil: Double,
             /** Dead AND past the respawn delay: the client may offer its Respawn button. */
             val canRespawn: Boolean,
             val colorIndex: Int,
@@ -552,6 +554,7 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
                 deaths = o.int("d") ?: 0,
                 score = o.int("s") ?: 0,
                 invulnUntil = o.dbl("iv") ?: 0.0,
+                slickUntil = o.dbl("sl") ?: 0.0,
                 canRespawn = o.bool("cr") ?: false,
                 colorIndex = o.int("c") ?: 0,
             )

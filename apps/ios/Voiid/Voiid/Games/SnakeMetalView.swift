@@ -961,6 +961,8 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
             // deliberately-stale position would drag it back into the past.
             let newestMine = frames.last?.state.snakes.first { $0.id == me }
             if let newestMine {
+                predictor.setSlick(until: newestMine.slickUntil,
+                                   serverTime: frames.last?.state.time ?? state.time)
                 predictor.reconcile(
                     serverPosition: CGPoint(x: newestMine.x, y: newestMine.y),
                     serverHeading: newestMine.heading,

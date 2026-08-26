@@ -21,6 +21,8 @@ object SnakeMotion {
     const val BOOST_SPEED = 510.0
     val TURN_RATE = 400.0 * PI / 180.0
     val TURN_RATE_BOOST = 440.0 * PI / 180.0
+    /** Speed multiplier inside a slick. Mirrors HAZARD_TUNING.SLICK_SPEED on the server. */
+    const val SLICK_SPEED = 0.62
 
     /**
      * Below this mass the engine IGNORES a boost input entirely (snake/index.ts
@@ -51,6 +53,21 @@ object SnakeMotion {
  * Mirrors iOS `SnakePredictor.swift`.
  */
 class SnakePredictor {
+    /**
+     * Server time this snake stays slowed by a slick until, and the server clock it is compared
+     * against. Both are pushed in by the renderer each frame from the newest frame — the
+     * predictor has no clock of its own, and comparing a server deadline against a local
+     * timestamp would be meaningless.
+     */
+    private var slickUntil = 0.0
+    private var serverTime = 0.0
+
+    /** Called each frame with the newest server frame's clock and this snake's slick deadline. */
+    fun setSlick(until: Double, now: Double) {
+        slickUntil = until
+        serverTime = now
+    }
+
     var position = Offset.Zero
         private set
     var heading = 0.0
@@ -129,7 +146,12 @@ class SnakePredictor {
             heading += max(-rate * dt, min(rate * dt, delta))
         }
 
-        val speed = if (boosting) SnakeMotion.BOOST_SPEED else SnakeMotion.BASE_SPEED
+        // SLICKS SLOW THE PREDICTION TOO. The server multiplies speed by SLICK_SPEED while a
+        // snake is in one; if the predictor did not, the local head would run ahead at full
+        // speed and be dragged back every frame for as long as the player stayed in the slick —
+        // a rubber-band exactly where the game is asking them to steer carefully.
+        var speed = if (boosting) SnakeMotion.BOOST_SPEED else SnakeMotion.BASE_SPEED
+        if (serverTime < slickUntil) speed *= SnakeMotion.SLICK_SPEED
         position = Offset(
             position.x + (cos(heading) * speed * dt).toFloat(),
             position.y + (sin(heading) * speed * dt).toFloat(),
