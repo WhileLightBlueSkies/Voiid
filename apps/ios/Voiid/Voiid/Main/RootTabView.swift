@@ -47,6 +47,15 @@ struct RootTabView: View {
     // one truth — there is no story tray above the chat grid (§8.1).
     @ObservedObject private var storyEngine = StoryEngine.shared
     @State private var tab: Tab = .chat
+    /// True while a swipe is driving the tab change, so the crossfade stands down and the
+    /// swipe's own slide is the only motion on screen.
+    @State private var swipingTabs = false
+    /// Live drag offset, published by the swipe modifier so the carousel can move both
+    /// pages together rather than the modifier offsetting one from outside.
+    @State private var tabDrag: CGFloat = 0
+    /// The tab a drag is heading for, or nil when no drag is in flight. Non-nil is what
+    /// mounts the second page.
+    @State private var draggingToward: Tab?
     @Namespace private var indicator
     /// True for the moment the indicator is travelling between tabs — drives its stretch.
     @State private var isSliding = false
@@ -108,10 +117,19 @@ struct RootTabView: View {
         }
     }
 
-    var body: some View {
-        ZStack(alignment: .bottom) {
-            Group {
-                switch tab {
+    /// One tab's screen. Extracted from `body` so a NEIGHBOUR can be rendered during a
+    /// swipe: previously only the selected tab existed, so dragging the page aside revealed
+    /// the window behind it — the black flash.
+    ///
+    /// Construction is unchanged for every tab; the switch is the same one that was inline.
+    /// The cost of building a neighbour is low because every tab defers its real work to
+    /// `.onAppear`/`.task`, which SwiftUI fires when the view actually appears rather than
+    /// when it is constructed.
+    @ViewBuilder
+    func page(_ t: Tab) -> some View {
+        Group {
+
+                switch t {
                 case .chat:    ChatsHomeView()
                 case .ai:      AIChatView()
                 case .stories: StoriesHomeView()
@@ -125,7 +143,48 @@ struct RootTabView: View {
                 // it reuses and is now unreferenced — kept until someone decides to retire it.
                 case .games:   GamesScreen()
                 }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            // Both the current tab and, DURING A SWIPE, the one being dragged toward are
+            // rendered — see `page(_:)`.
+            //
+            // THE BLACK FLASH WAS A MISSING PAGE, NOT A TIMING BUG. Only the selected tab
+            // existed, so sliding it aside uncovered the window itself. No easing fixes
+            // that: something has to be there. The neighbour is mounted only while a drag
+            // is in flight, so the steady state is exactly one tab as before.
+            GeometryReader { geo in
+                let w = geo.size.width
+                ZStack {
+                    page(tab)
+                        .offset(x: tabDrag)
+
+                    // The tab being dragged TOWARD, parked exactly one screen away on the
+                    // side it will arrive from, so the pair moves as one strip.
+                    if let neighbour = draggingToward {
+                        page(neighbour)
+                            .offset(x: tabDrag + (tabDrag < 0 ? w : -w))
+                    }
+                }
+                .frame(width: w, height: geo.size.height)
+                // The pair is clipped to the screen so a neighbour parked off-side cannot
+                // extend the layout or paint over the tab bar.
+                .clipped()
             }
+            // THE GEOMETRYREADER MUST NOT EAT THE SAFE AREA.
+            //
+            // Before the carousel, the page was a direct child of the ZStack and could draw
+            // into the top inset — which is how the profile cover bled under the status bar
+            // and every header sat where it was designed to. A GeometryReader honours the
+            // safe area by default, so wrapping the page in one silently inset every tab
+            // from the top and the designed headers vanished behind a blank strip.
+            //
+            // Ignoring it here restores the previous geometry exactly: the pages own the
+            // full screen again, and each one applies its own insets as it always did.
+            .ignoresSafeArea()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             // THE BAR ANIMATED AND THE PAGE TELEPORTED.
             //
@@ -144,8 +203,22 @@ struct RootTabView: View {
             // frequent transition in the app — and anything slower turns navigation into
             // waiting. Under Reduce Motion it stays: an opacity fade is not vestibular, and
             // removing it would put the hard cut back.
+            // The crossfade owns TAPS only. A swipe already carries the page bodily across
+            // the screen, and fading one page out while another slides in reads as two
+            // events describing one gesture. `swipingTabs` is set by the swipe modifier for
+            // the duration of its own transition.
             .transition(.opacity)
-            .animation(.easeInOut(duration: 0.18), value: tab)
+            .animation(swipingTabs ? nil : .easeInOut(duration: 0.18), value: tab)
+            // Swipe the CONTENT to move one tab. The crossfade above still owns taps: a tap
+            // can jump an arbitrary distance and a direction would have to be invented for
+            // it, whereas a swipe moves exactly one step in the direction of the gesture.
+            //
+            // The "reorderable" half of the note above is not actually true — the bar renders
+            // `Tab.allCases` in a fixed compile-time order and nothing permutes it — so a
+            // stable left-of/right-of does exist for a one-step move.
+            .tabSwipeNavigation(selection: $tab, ordered: Tab.allCases,
+                                swiping: $swipingTabs,
+                                drag: $tabDrag, toward: $draggingToward)
 
             if !session.hideTabBar {
                 tabBar
