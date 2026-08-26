@@ -30,6 +30,7 @@ import {
   clamp,
   pathLength,
   samplePath,
+  movingPointsMinDist2,
   segmentSegmentDist2,
   shortestAngle,
   trimPath,
@@ -525,12 +526,24 @@ class SnakeEngine implements GameEngine {
       if (hazardDeath) continue;
 
       // Head-to-head: longer survives; within 5% both die.
+      //
+      // TESTED IN TIME, NOT JUST IN SPACE. This used to sweep our head against the other head's
+      // END position held still, which is wrong in both directions: it missed a head that moved
+      // INTO us during the tick, and — far more visibly — it killed pairs whose paths merely
+      // CROSSED at different moments. Two snakes passing through the same point a fraction of a
+      // tick apart never touched, and reporting that as a mutual kill is exactly the "there was
+      // a gap and we both died" case. Both heads are now advanced by the same t.
       let resolved = false;
       for (const other of this.s.snakes) {
         if (other.id === sn.id || !other.alive) continue;
         if (this.s.t < other.invulnUntil) continue;
         const rr = headR + radiusFor(other.mass, TUNING.HEAD_RADIUS);
-        if (segmentSegmentDist2(prevX, prevY, sn.x, sn.y, other.x, other.y, other.x, other.y) <= rr * rr) {
+        // The other head's own start-of-tick position. A snake that has not moved yet this tick
+        // (a fresh spawn with a short path) falls back to its current position, which is where
+        // it has been all tick anyway.
+        const oPrevX = other.path.length >= 4 ? other.path[2] : other.x;
+        const oPrevY = other.path.length >= 4 ? other.path[3] : other.y;
+        if (movingPointsMinDist2(prevX, prevY, sn.x, sn.y, oPrevX, oPrevY, other.x, other.y) <= rr * rr) {
           const ratio = Math.abs(sn.mass - other.mass) / Math.max(sn.mass, other.mass);
           if (ratio <= 0.05) {
             doomed.push({ snake: sn, cause: 'head', killer: null });
@@ -572,13 +585,45 @@ class SnakeEngine implements GameEngine {
       if (dx * dx + dy * dy > reach * reach) continue;
 
       const rr = headR + radiusFor(other.mass, TUNING.BODY_RADIUS);
+
+      // SKIP THE NECK. path[0..1] is the other snake's HEAD, and the segments closest behind it
+      // are underneath that head. Testing from index 0 meant brushing the side of someone's head
+      // counted as hitting their BODY — so the toucher died and the touched snake walked away,
+      // when the head-to-head rule above (longer survives) is the one that should have decided
+      // it. That is the "they touched the side of my mouth and I died too" case.
+      //
+      // The head-to-head test has already run for this pair by the time we get here, so anything
+      // genuinely head-on has been resolved; skipping the neck here cannot let a real head
+      // collision through, it only stops the body rule from stealing one.
+      const neck = radiusFor(other.mass, TUNING.HEAD_RADIUS) + headR;
+      let walked = 0;
       for (let i = 0; i + 3 < path.length; i += 2) {
-        if (segmentSegmentDist2(
-          prevX, prevY, sn.x, sn.y,
-          path[i], path[i + 1], path[i + 2], path[i + 3]
-        ) <= rr * rr) {
-          return other.id;
+        let ax = path[i], ay = path[i + 1];
+        const bx = path[i + 2], by = path[i + 3];
+        const segLen = Math.hypot(bx - ax, by - ay);
+
+        // CLIP THE NECK MID-SEGMENT, do not skip whole segments. Path points are laid down one
+        // per tick — about 30 units apart at cruise — while the neck is only ~22, so a
+        // segment-granular skip would clear the neck on the very first segment and protect
+        // nothing. Advancing the segment's START past the neck keeps the rest of that same
+        // segment lethal, which is what makes this a head-footprint exclusion rather than a
+        // free first tick of body.
+        if (walked + segLen > neck) {
+          if (walked < neck && segLen > 1e-6) {
+            const t = (neck - walked) / segLen;
+            ax = ax + (bx - ax) * t;
+            ay = ay + (by - ay) * t;
+          }
+
+          if (segmentSegmentDist2(
+            prevX, prevY, sn.x, sn.y,
+            ax, ay, bx, by
+          ) <= rr * rr) {
+            return other.id;
+          }
         }
+
+        walked += segLen;
       }
     }
     return null;

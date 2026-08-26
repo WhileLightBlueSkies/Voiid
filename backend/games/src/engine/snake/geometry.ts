@@ -113,6 +113,38 @@ export function segmentSegmentDist2(
 export { Rng } from '../rng';
 
 /**
+ * Closest distance squared between two points that move SIMULTANEOUSLY over one tick.
+ *
+ * `segmentSegmentDist2` answers "do these two swept paths come near each other at any point",
+ * which is the wrong question for two moving heads: two snakes whose paths CROSS during a tick
+ * but pass through the crossing at different moments never actually met. Treating that as a
+ * collision is what produces "there was a gap and we both died" — the classic time-blind
+ * sweep bug.
+ *
+ * This solves for the minimum of |(a0 + t*da) - (b0 + t*db)| over t in 0..1: the two heads are
+ * advanced by the SAME t, so it can only report contact if they were in the same place at the
+ * same instant.
+ */
+export function movingPointsMinDist2(
+  a0x: number, a0y: number, a1x: number, a1y: number,
+  b0x: number, b0y: number, b1x: number, b1y: number
+): number {
+  // Relative motion: the problem reduces to one point moving against a fixed origin.
+  const rx = a0x - b0x, ry = a0y - b0y;
+  const vx = (a1x - a0x) - (b1x - b0x);
+  const vy = (a1y - a0y) - (b1y - b0y);
+
+  const vv = vx * vx + vy * vy;
+  // No relative motion: the gap is constant across the tick.
+  if (vv < 1e-9) return rx * rx + ry * ry;
+
+  // Minimise |r + t*v|^2 -> t* = -(r.v)/(v.v), clamped to the tick.
+  const t = clamp(-(rx * vx + ry * vy) / vv, 0, 1);
+  const cx = rx + vx * t, cy = ry + vy * t;
+  return cx * cx + cy * cy;
+}
+
+/**
  * Sample a point at arc distance `d` back from the head along a path polyline.
  *
  * `path` is [x0,y0, x1,y1, ...] with index 0 being the NEWEST point. Walks segment by

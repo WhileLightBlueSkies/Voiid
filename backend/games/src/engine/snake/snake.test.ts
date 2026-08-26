@@ -7,6 +7,7 @@
 // trip is what these assertions are mostly about.
 
 import { snake, TUNING } from './index';
+import { movingPointsMinDist2, segmentSegmentDist2 } from './geometry';
 import type { GameEngine, GameStatePayload } from '../GameEngine';
 
 let failures = 0;
@@ -338,6 +339,110 @@ console.log('\nSnake engine\n');
   check('delta frames actually occur', sawDelta);
   check('skin survives the restore round-trip',
     (st.snakes as any[])[0].sk !== undefined);
+}
+
+// --- 10b-bis. Collision is tested in TIME, not just in space -------------------------------
+//
+// Three reported bugs, all one root cause or its neighbour. These are cheap, exact tests
+// against the geometry rather than simulations, because a seeded match cannot reliably
+// reproduce "two snakes crossed a fifth of a tick apart".
+{
+  // Two heads whose swept paths CROSS but which are never in the same place at the same time:
+  // A runs left-to-right along y=0; B runs bottom-to-top through x=20, but B starts 60 units
+  // away and only reaches the crossing at the very end of the tick, long after A has passed.
+  const crossing = {
+    a: [0, 0, 40, 0] as const,
+    b: [20, -60, 20, 60] as const,
+  };
+
+  // The OLD test says these touched. Kept as a check so the difference is documented, not
+  // assumed: if this ever stops being 0, the two functions have converged and the guard below
+  // is no longer testing anything.
+  check('static sweep reports a false contact on crossing paths',
+    segmentSegmentDist2(...crossing.a, ...crossing.b) < 1,
+    `${segmentSegmentDist2(...crossing.a, ...crossing.b)}`);
+
+  // The NEW test knows they missed, and the bar is the RULE rather than a round number: two
+  // start-mass heads kill at headR + headR = 22 units.
+  //
+  // At 10 Hz a cruising head covers 30 units per tick — nearly 3x its own diameter — so the
+  // scenario is sized in real per-tick motion rather than contrived distances. B is a full
+  // tick's travel below the crossing, i.e. it is where A's path will be but a tick behind.
+  const killRadius = 2 * 11;
+  const timed = Math.sqrt(movingPointsMinDist2(0, 0, 30, 0, 15, -60, 15, -30));
+  check('time-aware sweep does not kill snakes that merely crossed paths',
+    timed > killRadius, `minDist=${timed.toFixed(1)} vs killRadius=${killRadius}`);
+
+
+  // And it must still catch a real simultaneous collision: two heads driving into each other.
+  const headOn = movingPointsMinDist2(0, 0, 30, 0, 60, 0, 30, 0);
+  check('time-aware sweep still catches a genuine head-on', headOn < 1, `${headOn}`);
+
+  // A head that moves INTO a stationary one is also a real hit — the old form could miss this
+  // direction because it only swept one of the two.
+  const intoStill = movingPointsMinDist2(0, 0, 40, 0, 40, 0, 40, 0);
+  check('time-aware sweep catches moving-into-stationary', intoStill < 1, `${intoStill}`);
+}
+
+// --- 10b-ter. Brushing a head is a HEAD collision, not a body one ---------------------------
+//
+// The body walk used to start at path[0] — the other snake's HEAD. Brushing the side of
+// someone's head therefore counted as hitting their BODY: the toucher died and the touched
+// snake was unharmed, when the head-to-head rule (longer survives) should have decided it.
+//
+// Asserted against the geometry rather than a simulation. A seeded match cannot be steered
+// into "graze the side of that head", and the post-tick snapshot cannot say who killed whom —
+// the death event carries no killer id, and the survivor keeps moving into the space the
+// victim just vacated, so positions read after the tick prove nothing either way.
+{
+  // A body path laid down at real spacing: one point per tick, ~30 units apart, running left
+  // from the head at the origin. path[0..1] is the head.
+  const path: number[] = [];
+  for (let i = 0; i < 8; i++) path.push(-30 * i, 0);
+
+  const headR = 11;
+  const otherHeadR = 11;
+  const bodyR = 10;
+  const neck = otherHeadR + headR;
+
+  // Walk the same clipped loop the engine now uses, and report the nearest point on the
+  // LETHAL portion of the body — i.e. everything past the head's own footprint.
+  const nearestLethal = (px: number, py: number): number => {
+    let walked = 0;
+    let best = Infinity;
+    for (let i = 0; i + 3 < path.length; i += 2) {
+      let ax = path[i], ay = path[i + 1];
+      const bx = path[i + 2], by = path[i + 3];
+      const segLen = Math.hypot(bx - ax, by - ay);
+      if (walked + segLen > neck) {
+        if (walked < neck && segLen > 1e-6) {
+          const t = (neck - walked) / segLen;
+          ax = ax + (bx - ax) * t;
+          ay = ay + (by - ay) * t;
+        }
+        best = Math.min(best, Math.sqrt(segmentSegmentDist2(px, py, px, py, ax, ay, bx, by)));
+      }
+      walked += segLen;
+    }
+    return best;
+  };
+
+  // Directly beside the head, just outside its own radius. This is the reported case: a graze
+  // on the side of the mouth. It must NOT be within body-kill range of the lethal portion.
+  const besideHead = nearestLethal(0, otherHeadR + headR - 1);
+  check('grazing the side of a head is not a body hit',
+    besideHead > headR + bodyR,
+    `nearest lethal body = ${besideHead.toFixed(1)}, kill range ${headR + bodyR}`);
+
+  // Well down the body, past the neck, must still kill — the skip must not disarm the body.
+  const onBody = nearestLethal(-90, 0);
+  check('the body past the neck is still lethal', onBody < headR + bodyR,
+    `nearest lethal body = ${onBody.toFixed(1)}`);
+
+  // The neck exclusion must be bounded: a point just past the neck along the body is lethal.
+  const justPastNeck = nearestLethal(-(neck + 5), 0);
+  check('the exclusion ends at the neck', justPastNeck < headR + bodyR,
+    `nearest lethal body = ${justPastNeck.toFixed(1)}`);
 }
 
 // --- 10c. Mass-scaled radius --------------------------------------------------------------
