@@ -1,8 +1,11 @@
 # Snake — Fix & Rework Plan
 
 **Status:** plan only. Nothing in here is implemented yet.
-**Scope:** the two live bugs, the invisible hazards, the growth/levels rework, and a
-line-by-line audit of Snake across iOS, Android and the backend.
+**Scope:** the two live bugs, the invisible hazards, the growth/levels rework, a full audit
+of Snake across iOS, Android and the backend, and a bigger arena.
+
+**Audit status: done.** Part 5 lists 4 P0s, 4 P1s and 3 P2s, plus what was checked and found
+correct. Part 6 answers the arena question with measurements.
 
 Everything below that states a number was measured, not estimated. Where I could not prove
 something, it says so explicitly rather than guessing.
@@ -302,46 +305,251 @@ aggression is a route to levelling, not just eating.
 
 ## Part 5 — Full audit
 
-> **Status of this section: NOT YET DONE.** You asked for a line-by-line audit of Snake
-> across iOS, Android and the backend. That is a large piece of work and it deserves to be
-> done properly rather than sketched. Doing it honestly means reading:
->
-> - `backend/games/src/engine/snake/` — `index.ts` (~1200 lines), `bot.ts`, `hazards.ts`,
->   `geometry.ts`
-> - `apps/ios/.../Games/Snake*.swift` + `Snake.metal` — ~3,900 lines
-> - `apps/android/.../games/snake/` — the mirror
->
-> and cross-checking every shared constant and rule for parity in three places.
->
-> **What I will do:** work through it file by file and append findings here, each with a
-> concrete cause and fix, ranked by severity. I have not done it yet, so this section is
-> empty rather than padded with things I have not actually checked.
+Worked through `backend/games/src/engine/snake/` (1,900 lines), the iOS client (~3,900) and
+the Android mirror (~3,200). Every claim below was verified by reading the code and, where a
+number appears, by running it.
 
-### Already found (from the work so far, carried forward)
+Ranked by severity. **P0** = wrong behaviour players will hit; **P1** = real but bounded;
+**P2** = correctness debt that has not bitten yet.
 
-| # | Severity | Where | Issue | Fix |
-|---|---|---|---|---|
-| 1 | **High** | `snake/index.ts` `spawnSnake` | Spawn checks heads only; ignores bodies and hazards. ~3% of spawns unsafe, worst 13.4u. | Part 1 |
-| 2 | **High** | `SnakeMetalView` netcode | Remote snakes 250 ms / 75–128 units stale vs local prediction. | Part 2 |
-| 3 | **High** | `snake/index.ts` growth | Body length linear and unbounded (3× arena at max); head radius silently caps at ~146 mass. | Part 4 |
-| 4 | Medium | `snake/hazards.ts` | 2% arena coverage — hazards can go a whole match unmet even when rendering correctly. | Part 3.3 |
-| 5 | Medium | `snake/index.ts` `kill()` | Death event carries no killer id, so no client can attribute a kill or show "X ate Y" reliably from the event alone. | Add `killer` to the death event; it is one field and the kill feed already wants it. |
-| 6 | Low | `SnakeMetalView` | `interpDelay` and `maxExtrapolation` are duplicated as constants on both platforms with a comment asserting they match. Nothing enforces it. | Move to a shared fixture like Ludo's `ludo_board_v3.json`, or add a parity test. |
+### P0-1 — Slicks do nothing at all. A third of the hazard field is inert.
 
-*(Items 5 and 6 were observed in passing while working on 1–4; both are real but neither is
-urgent.)*
+`index.ts:525` sets `sn.slickUntil`, `index.ts:428` reads it to apply `SLICK_SPEED` (0.62).
+But `slickUntil` is **never serialized and never restored** — it does not appear in
+`serialize()`, `serializeForWire()` or `restoreState()`.
+
+The engine rebuilds itself from the payload on every tick, so the field is wiped every tick
+before it can ever be read. Measured directly:
+
+```
+snake parked inside a slick, one tick:
+moved = 30.0 units        <- full speed
+expected in slick = 18.6 units
+sl (on the wire) = undefined
+```
+
+3 of 12 hazards are slicks. They render, they are documented, they cost bandwidth, and they
+have no effect on the game.
+
+**Fix:** add `sl: sn.slickUntil` to the serialized snake and read it back in `restoreState`.
+One field each way. Then re-check the bandwidth budget (it is one small number per snake).
+
+**Also:** once slicks work, the client predictor must know about them — see P0-2.
+
+### P0-2 — The predictor does not model slicks, so prediction will desync inside one
+
+`SnakePredictor` (iOS `SnakePredictor.swift:137`, Android `SnakePredictor.kt`) computes
+`speed = boosting ? boostSpeed : baseSpeed`. There is no slick term on either platform, and
+`slickUntil` is not on the wire for it to read (P0-1).
+
+Today this is masked *because* slicks are inert. The moment P0-1 is fixed, the local snake
+will predict at full speed while the server moves it at 62%, and the player will fight a
+constant correction for as long as they are in the slick — the exact "rubber-banding" that
+prediction exists to prevent.
+
+**Fix:** P0-1 and P0-2 must ship together. Put `sl` on the wire, have the predictor apply
+`SLICK_SPEED` while `now < sl`, on both platforms.
+
+### P0-3 — You cannot eat during spawn invulnerability
+
+`resolveEating` (`index.ts:672`) skips any snake with `t < invulnUntil`, the same guard
+`resolveCollisions` uses. Collisions should be skipped; eating should not.
+
+For the first **1.5 seconds** of every life, pellets you drive over are ignored. They stay on
+the board, they do not feed you, and nothing explains why. It reads as the game not
+registering input.
+
+**Fix:** drop the invulnerability check from `resolveEating`. Invulnerability is protection
+from harm, not from food.
+
+### P0-4 — Bot body avoidance samples too coarsely to see a body
+
+`bot.ts:175` and `bot.ts:207` walk another snake's path with `i += 8` over a flat
+`[x,y,x,y,…]` array — every **4th point**. Points are laid down one per tick, ~30 units apart
+at cruise, so the bot samples the body every **~120 units** while testing against a **40-unit**
+radius.
+
+A body crossing the bot's path between two samples is invisible to it. This is the same class
+of tunnelling bug the collision code documents at length and fixes with swept tests — the bot
+never got the same treatment.
+
+**Fix:** either sample at `i += 2` with the existing radius, or keep the stride and test
+against the **segment** between sampled points rather than the points themselves (cheaper, and
+correct at any stride). The second is preferable: `segmentSegmentDist2` already exists.
+
+### P1-1 — Bot avoidance always assumes base speed, including while boosting
+
+`bot.ts:88`: `const speed = TUNING.BASE_SPEED;` — used to derive `turnRadius`, `awareness`,
+the one-second lookahead, and the hunt lead.
+
+A boosting bot travels at 510 u/s, 1.7× the assumed speed, so every one of those margins is
+40% short exactly when it is moving fastest. The file's own comment warns about this precise
+failure ("calibrated for the old, slower game … they began braking far too late").
+
+**Fix:** `const speed = sn.boost && sn.mass > TUNING.MIN_BOOST_MASS ? TUNING.BOOST_SPEED :
+TUNING.BASE_SPEED;`
+
+### P1-2 — The death event carries no killer id
+
+`index.ts:639` emits `{ k: 'death', x, y, id, c }`. `id` is the victim. There is no killer.
+
+`kill()` receives `killerId` and uses it to award score, then discards it. The separate
+`'kill'` event does carry both, but it is only emitted on some paths, so a client cannot
+reliably attribute a death, and no test can assert "X killed Y" from the death event alone —
+which is exactly what blocked a regression test during the collision work.
+
+**Fix:** add the killer to the death event. One field; the kill feed already wants it.
+
+### P1-3 — S3/S4 shipped on iOS only
+
+The gaze-lead and tail-falloff work (commit `2efdd53`) landed in `SnakeMetalView.swift` and
+was never mirrored into `SnakeArenaScreen.kt`. Confirmed: Android has no `TAIL_FALLOFF` and no
+`GAZE_LEAD`.
+
+Snake is supposed to be pixel-parity across platforms. **This one is mine** — I should have
+mirrored it in the same commit.
+
+**Fix:** port both to Android.
+
+### P1-4 — Netcode constants are duplicated with nothing enforcing the match
+
+`INTERP_DELAY` (0.25) and `MAX_EXTRAPOLATION` (0.10) exist independently on both platforms,
+each with a comment asserting it matches the other. They currently do. Nothing stops the next
+edit from changing one.
+
+Same shape for `SnakeMotion` (iOS) / the Android equivalent: `baseSpeed`, `boostSpeed`,
+`turnRate`, `turnRateBoost`, `minBoostMass` are hand-copied from `TUNING`. They match today.
+The engine's own history records the last time these drifted, in `bot.ts`: *"These were
+literals … calibrated for the old, slower game."*
+
+**Fix:** publish the shared numbers as a fixture the way Ludo does with
+`ludo_board_v3.json`, and add a parity test on each platform. Failing that, at minimum add a
+test that reads the values and compares them to a checked-in expected set.
+
+### P2-1 — `finish()` comment contradicts the code
+
+`index.ts:782` says *"Highest mass wins"*; the loop compares `sn.score`. The code is almost
+certainly right (score rewards kills and eating; mass alone would reward turtling), so the
+comment is stale. **Fix:** correct the comment.
+
+### P2-2 — Head-to-head invulnerability check is asymmetric in an unexpected way
+
+`index.ts:539` skips the pair if **the other** snake is invulnerable, and `index.ts:451`
+already skipped if **this** snake is. Combined that is correct — neither can die — but it is
+expressed as two unrelated guards in two places, and the pairing is not obvious to a reader.
+
+Not a bug. Worth a comment saying the two together mean "invulnerable snakes are inert to each
+other in both directions", so a future edit does not remove one half.
+
+### P2-3 — `_d.ts` and `_x.ts`
+
+Two files, 12 and 9 lines, single-letter names, in the engine directory. `_d.ts` is a
+bandwidth-debug harness. Neither is imported by the engine.
+
+**Fix:** move to a `tools/` or `scripts/` location, or delete. A single-letter file in an
+engine folder is an invitation to accidental import.
+
+### Verified correct (checked, no action)
+
+Recording these so the audit is not just a list of complaints, and so nobody re-checks them:
+
+- **Delta path encoding** (`encodePath`) — quantises the delta then advances the reference by
+  the *quantised* amount, so rounding cannot accumulate along a body. Correct, and the comment
+  explains why.
+- **`t` is deliberately unrounded** while every other float is rounded, because it is fed back
+  into itself on every restore. The reasoning is sound and the drift maths in the comment is
+  right.
+- **Spike state is derived from `t`**, never stored, so it cannot desync across restore. This
+  is the pattern P0-1 should have followed.
+- **Hazards are generated from a derived seed** (`seed ^ 0x51ed270b`) so adding them does not
+  shift the food layout of an existing seed. Careful and correct.
+- **`resolveCollisions` decides all deaths against one pre-move world**, so outcomes do not
+  depend on array order. Correct, and load-bearing.
+- **`hr` and `br` are both sent** rather than derived client-side. The comment records a real
+  past bug where only `hr` went out and the lethal zone was twice the drawn body.
+- **Food deltas** — `added`/`removed` with a periodic full snapshot, and the client reconciles.
+  The `delta-applied food matches the server exactly` test covers it.
+
+---
+
+## Part 6 — A bigger arena
+
+You asked for this, and it is the cheapest item in the document.
+
+### Measured
+
+Same six-seed methodology the bandwidth test uses (2 humans, 4 bots, 30 s each), one config
+per process so nothing leaks between runs:
+
+| Arena radius | Food target | Bandwidth |
+|---|---|---|
+| **1400 (today)** | 260 | **28.7 KB/s** |
+| 2000 | 530 | 24.4 KB/s |
+| 2400 | 764 | 24.8 KB/s |
+| **2800 (2× today)** | 1040 | **25.1 KB/s** |
+
+**A doubled arena is cheaper than the arena we ship.** That is not a rounding artifact, and
+the mechanism is clear:
+
+1. **Body points are delta-encoded.** `encodePath` sends the head absolutely and every
+   subsequent point as a small delta in `PATH_STEP` units. Arena size does not change the size
+   of a delta, so a bigger world costs nothing per body point.
+2. **More space means fewer collisions**, so snakes die less, but they also *grow* less
+   aggressively into each other's paths — and bodies are the payload. The 1400 arena is
+   crowded enough that bots tangle, die, respawn, and churn food.
+
+The `FOOD_TARGET` must scale with **area** (radius²) or a bigger arena is a barren one. The
+numbers above scale it that way: 260 × (r/1400)².
+
+### The catch
+
+Bandwidth is not the constraint. These are:
+
+- **Match length.** A 2× arena at the same 180 s means players may never meet. Either raise
+  `MATCH_SECONDS` or keep the arena moderate. **2000 is probably the sweet spot** — 2× the
+  area, not 4×.
+- **Hazard count** scales with area already (`generateHazards` uses `(arenaRadius/1400)²`), so
+  that is handled.
+- **Bot count.** 5 bots in a 2800 arena is empty. Bot count should scale with area too, and
+  more bots *does* cost bandwidth — that is the coupling `TICK_HZ`'s comment documents.
+- **The camera** zooms with mass, not with arena size, so a bigger arena does not change what
+  is on screen. It only changes how long it takes to cross. This is fine, but it means the
+  arena rim stops being a visible landmark, and the minimap (if any) matters more.
+
+### Recommendation
+
+Go to **`ARENA_RADIUS = 2000`** with `FOOD_TARGET = 530` and bot count scaled to ~8.
+That is 2× the play area, measured *cheaper* than today on bandwidth, and leaves headroom to
+go further after playtesting. Re-measure with the new bot count before committing — bots, not
+arena, are what actually moves the number.
 
 ---
 
 ## Suggested order of execution
 
-1. **Part 1** — spawn safety. Small, no tradeoff, removes pure-frustration deaths.
-2. **Part 3.1** — re-test hazards now the bloom fix is in. One match, may close the item.
-3. **Part 2 Plan A** — extrapolate remote snakes. The big one.
-4. **Part 5** — the full audit, so Part 4 is built on top of known-good code rather than
-   on top of unknowns.
-5. **Part 4** — the levels rework. Last, because it changes balance and wants a clean base.
+**Round 1 — correctness. Cheap, no design risk.**
 
-Parts 1–3 are corrections. Part 4 is a design change. Doing the corrections first means the
-rework is tested against a game that is behaving, which is the only way to tell whether the
-new curve actually feels right.
+1. **P0-3** — let snakes eat during invulnerability. One line.
+2. **Part 1** — spawn safety (bodies + hazards). Removes pure-frustration deaths.
+3. **P0-1 + P0-2 together** — put `slickUntil` on the wire, restore it, teach both
+   predictors about it. These MUST ship together: fixing the first without the second turns
+   a dead feature into a rubber-banding one.
+4. **P1-1, P1-2, P2-1** — bot boost speed, killer id on the death event, stale comment.
+5. **P0-4** — bot body sampling, via a segment test rather than a finer stride.
+
+**Round 2 — the feel work.**
+
+6. **Part 3.1** — re-test hazards now the bloom fix is in. One match, may close the item.
+7. **Part 2 Plan A** — extrapolate remote snakes. The big one, and the one you are feeling.
+8. **P1-3** — mirror S3/S4 to Android, so the platforms match before more is layered on.
+
+**Round 3 — scope changes. Only on a game that is behaving.**
+
+9. **Part 6** — the bigger arena. Cheap on bandwidth; re-measure with the new bot count.
+10. **Part 4** — the levels rework.
+11. **P1-4** — shared constants fixture, so the parity all of this depends on stops being a
+    promise in a comment.
+
+Rounds 1 and 2 are corrections. Round 3 changes the game. Doing the corrections first means
+the rework is tested against a game that is behaving, which is the only way to tell whether
+the new curve actually feels right.
