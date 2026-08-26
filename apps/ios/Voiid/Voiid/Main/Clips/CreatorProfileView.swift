@@ -239,11 +239,18 @@ struct CreatorProfileView: View {
     ///
     /// STILL NOT BUTTONS. There is no followers list to open, and a control that presses but
     /// goes nowhere is exactly the dead affordance this screen was fixed for.
+    ///
+    /// Followers/Following are HIDDEN behind `ClipsFeatureFlags.showSocialCounts` rather
+    /// than deleted: the columns are populated, the API returns them, and the layout is
+    /// finished — flipping the flag to `true` is the whole of turning them back on. They
+    /// are commented out nowhere, so they keep compiling and cannot rot.
     private func counts(_ p: CreatorService.Profile) -> some View {
         HStack(spacing: 18) {
             countItem(ClipCount.compact(p.clip_count), "Clips")
-            countItem(ClipCount.compact(p.follower_count), "Followers")
-            countItem(ClipCount.compact(p.following_count), "Following")
+            if ClipsFeatureFlags.showSocialCounts {
+                countItem(ClipCount.compact(p.follower_count), "Followers")
+                countItem(ClipCount.compact(p.following_count), "Following")
+            }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, VoiidSpacing.md)

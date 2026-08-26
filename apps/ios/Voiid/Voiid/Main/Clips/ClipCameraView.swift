@@ -82,6 +82,14 @@ struct ClipCameraView: View {
     @State private var pendingImport: PhotosPickerItem?
 
     // Shutter gesture bookkeeping — see `shutterPressChanged`.
+    @State private var showGrid = false
+    /// Self-timer in seconds. 0 = off. Applies to the NEXT take only — it is a framing aid
+    /// for getting into shot, not a mode you leave armed and forget.
+    @State private var timerSeconds = 0
+    /// Live countdown while the timer runs; nil when idle.
+    @State private var countdown: Int?
+    @State private var countdownTask: Task<Void, Never>?
+
     @State private var pressActive = false
     @State private var pressBegan = Date()
     @State private var pressConsumed = false
@@ -98,6 +106,20 @@ struct ClipCameraView: View {
                               onFocus: { cam.focus(atNormalizedViewPoint: $0) },
                               onFlip: { if !cam.isRecording { Haptics.tap(); cam.flip() } })
                 .ignoresSafeArea()
+
+            if showGrid { gridOverlay }
+
+            // The countdown owns the whole screen while it runs: you are looking at the
+            // frame, not at a control, so a number in a corner would be missed.
+            if let countdown {
+                Text("\(countdown)")
+                    .font(.system(size: 96, weight: .bold, design: .rounded))
+                    .foregroundColor(.white)
+                    .shadow(radius: 12)
+                    .transition(.scale(scale: 1.4).combined(with: .opacity))
+                    .id(countdown)   // re-triggers the transition on each tick
+                    .allowsHitTesting(false)
+            }
 
             VStack(spacing: 0) {
                 topBar
@@ -117,7 +139,16 @@ struct ClipCameraView: View {
                         .padding(.horizontal, VoiidSpacing.lg)
                 }
                 Spacer(minLength: 0)
-                if !cam.isRecording { speedRail }
+                // Zoom is ALWAYS available, recording included: framing is something you
+                // do both before and during a take.
+                //
+                // The SPEED rail is deliberately not here. It rendered "1×/2×/3×" — the
+                // same strings as zoom, stacked directly above it — and did not work in
+                // testing. `ClipTakeJoiner` still applies `take.speed`, and `selectedSpeed`
+                // still defaults to 1, so removing the control changes nothing downstream;
+                // re-adding it is one line once the behaviour is fixed.
+                zoomRail
+                faceRail
                 filterRail
                 bottomBar
             }
@@ -138,7 +169,12 @@ struct ClipCameraView: View {
             cam.start()
             loadGalleryThumb()
         }
-        .onDisappear { cam.stop() }
+        .onDisappear {
+            // The countdown Task outlives the view unless it is cancelled here — otherwise
+            // it fires `startRecording()` against a session `cam.stop()` just tore down.
+            cancelCountdown()
+            cam.stop()
+        }
         .onChange(of: pickerItem) { _, item in
             guard let item else { return }
             pickerItem = nil
@@ -196,6 +232,24 @@ struct ClipCameraView: View {
                     cam.toggleTorch()
                 }
             }
+            // Cycles 0 → 3 → 10 → 0. A cycling button rather than a menu: three states are
+            // faster to tap through than to pick from, and the icon carries the current one.
+            // One symbol plus a text badge, rather than the `N.circle.fill` numeric
+            // glyphs: those exist only for some N and have moved between SF Symbols
+            // releases, and a missing symbol renders as an EMPTY button — a control that
+            // silently disappears is worse than one that is a little plainer.
+            roundButton("timer",
+                        label: timerSeconds == 0 ? "Self-timer off" : "Self-timer \(timerSeconds) seconds",
+                        active: timerSeconds != 0,
+                        badge: timerSeconds == 0 ? nil : "\(timerSeconds)") {
+                guard !cam.isRecording else { return }
+                Haptics.tap()
+                timerSeconds = timerSeconds == 0 ? 3 : (timerSeconds == 3 ? 10 : 0)
+            }
+            roundButton("square.grid.3x3", label: "Grid", active: showGrid) {
+                Haptics.tap()
+                showGrid.toggle()
+            }
             roundButton("arrow.triangle.2.circlepath.camera", label: "Flip camera") {
                 // Flipping mid-take would have to cut the segment; simply not offered while
                 // recording, which is what the Android camera does too.
@@ -244,17 +298,135 @@ struct ClipCameraView: View {
                     Haptics.selection()
                     cam.selectedSpeed = s
                 } label: {
-                    Text(ClipSpeed.label(s))
-                        .font(VoiidFont.rounded(13, .semibold))
+                    HStack(spacing: 3) {
+                        // Names the control. Without it this rail renders "1×/2×/3×" — the
+                        // identical strings the zoom rail shows — and the two read as one
+                        // repeated control stacked on itself.
+                        Image(systemName: "speedometer")
+                            .font(.system(size: 9, weight: .bold))
+                        Text(ClipSpeed.label(s))
+                            .font(VoiidFont.rounded(13, .semibold))
+                    }
                         .foregroundColor(cam.selectedSpeed == s ? .black : .white)
-                        .frame(minWidth: 48, minHeight: 44)
+                        .frame(minWidth: 58, minHeight: 44)
                         .background(cam.selectedSpeed == s ? Color.white : Color.black.opacity(0.35))
                         .clipShape(Capsule())
                 }
                 .buttonStyle(SoftPressStyle())
+                .accessibilityLabel("Speed \(ClipSpeed.label(s))")
+                .accessibilityAddTraits(cam.selectedSpeed == s ? [.isSelected] : [])
             }
         }
         .padding(.bottom, VoiidSpacing.sm)
+    }
+
+    /// Zoom presets plus a live readout, the way the system camera does it.
+    ///
+    /// The presets exist because a pinch is imprecise: getting exactly 2× by feel is
+    /// fiddly, and "back to 1×" was previously only reachable by pinching all the way
+    /// down. Tapping the ACTIVE preset is not a no-op — it reads the current factor, so a
+    /// pinched 2.4× shows "2.4×" and tapping 2× snaps it clean.
+    private var zoomRail: some View {
+        HStack(spacing: 6) {
+            ForEach(cam.availableZoomPresets, id: \.self) { factor in
+                let active = abs(cam.currentZoom - factor) < 0.05
+                Button {
+                    Haptics.selection()
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                        cam.setZoom(factor)
+                    }
+                } label: {
+                    // The active pill shows the REAL factor to one decimal when it is not a
+                    // round number, so the readout never lies about where the pinch landed.
+                    HStack(spacing: 3) {
+                        // The glyph is what separates this rail from the SPEED rail above,
+                        // which renders the identical strings "1×/2×/3×". Without it the two
+                        // are indistinguishable stacked on top of each other.
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 9, weight: .bold))
+                        Text(active ? liveZoomLabel(factor) : Self.zoomLabel(factor))
+                            .font(VoiidFont.rounded(active ? 13 : 12, .semibold))
+                    }
+                        .foregroundColor(active ? .black : .white)
+                        .frame(minWidth: active ? 56 : 46, minHeight: 34)
+                        .background(active ? Color.white : Color.black.opacity(0.4))
+                        .clipShape(Capsule())
+                        // 44pt of target around a 34pt pill — the pills sit close together
+                        // and a mis-tap changes the shot.
+                        .padding(.vertical, 5)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(SoftPressStyle())
+                .accessibilityLabel("\(Self.zoomLabel(factor)) zoom")
+                .accessibilityAddTraits(active ? [.isSelected] : [])
+            }
+        }
+        .padding(.bottom, VoiidSpacing.sm)
+    }
+
+    private func liveZoomLabel(_ factor: CGFloat) -> String {
+        Self.zoomLabel(cam.currentZoom)
+    }
+
+    /// `Int(factor)` truncates, which rendered the 0.5× ultra-wide preset as "0×".
+    private static func zoomLabel(_ v: CGFloat) -> String {
+        v.rounded() == v ? "\(Int(v))×" : String(format: "%.1f×", v)
+    }
+
+    /// Rule-of-thirds guides. Off by default: they are a framing aid, not decoration, and
+    /// permanent lines over every shot is noise for the majority who never want them.
+    private var gridOverlay: some View {
+        GeometryReader { geo in
+            Path { p in
+                for i in 1...2 {
+                    let x = geo.size.width * CGFloat(i) / 3
+                    p.move(to: CGPoint(x: x, y: 0))
+                    p.addLine(to: CGPoint(x: x, y: geo.size.height))
+                    let y = geo.size.height * CGFloat(i) / 3
+                    p.move(to: CGPoint(x: 0, y: y))
+                    p.addLine(to: CGPoint(x: geo.size.width, y: y))
+                }
+            }
+            .stroke(Color.white.opacity(0.28), lineWidth: 0.5)
+        }
+        .allowsHitTesting(false)
+        .ignoresSafeArea()
+    }
+
+    /// Face effects, on their own rail above the colour filters.
+    ///
+    /// Deliberately NOT merged into the colour rail: the two are independent — a dog filter
+    /// in black and white is a legitimate combination — so one shared rail would force a
+    /// choice the pipeline does not actually impose.
+    private var faceRail: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: VoiidSpacing.sm) {
+                ForEach(ClipFaceEffect.allCases) { e in
+                    let on = cam.faceEffect == e
+                    Button {
+                        Haptics.selection()
+                        cam.faceEffect = e
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: e.symbol).font(.system(size: 13, weight: .semibold))
+                            Text(e.label).font(VoiidFont.rounded(13, .semibold))
+                        }
+                        .foregroundColor(on ? .black : .white)
+                        .padding(.horizontal, VoiidSpacing.md)
+                        .frame(minHeight: 38)
+                        .background(on ? Color.white : Color.black.opacity(0.35))
+                        .clipShape(Capsule())
+                        .padding(.vertical, 3)   // 44pt of target around a 38pt pill
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(SoftPressStyle())
+                    .accessibilityAddTraits(on ? [.isSelected] : [])
+                }
+            }
+            .padding(.horizontal, VoiidSpacing.md)
+        }
+        .frame(height: 44)
+        .padding(.bottom, VoiidSpacing.xs)
     }
 
     private var filterRail: some View {
@@ -396,11 +568,24 @@ struct ClipCameraView: View {
                 // A second press ends a take that is running locked.
                 cam.stopRecording()
                 pressConsumed = true
+            } else if countdown != nil {
+                // Pressing during a countdown CANCELS it. Without this the only escape from
+                // a 10-second timer you triggered by accident is to close the camera.
+                cancelCountdown()
+                pressConsumed = true
             } else {
                 guard !full else { return }
                 pressConsumed = false
                 pressBegan = Date()
-                cam.startRecording()
+                if timerSeconds > 0 {
+                    // A timed take is always LOCKED: you set a timer to get into shot, so
+                    // there is no finger on the shutter to release. `pressConsumed` stops
+                    // the release handler below from stopping the take we have not begun.
+                    pressConsumed = true
+                    startCountdown()
+                } else {
+                    cam.startRecording()
+                }
             }
             return
         }
@@ -409,6 +594,33 @@ struct ClipCameraView: View {
         // holds a finger down for ninety seconds. A real press-and-hold ends on release,
         // which is how a burst of short segments gets banked.
         if Date().timeIntervalSince(pressBegan) >= 0.35 { cam.stopRecording() }
+    }
+
+    /// Counts down, then starts a locked take. Driven by a Task rather than a Timer so it
+    /// cancels cleanly — `cancelCountdown` tears the task down, and leaving the screen
+    /// cancels it with the view.
+    private func startCountdown() {
+        countdownTask?.cancel()
+        countdownTask = Task {
+            for remaining in stride(from: timerSeconds, through: 1, by: -1) {
+                withAnimation(.spring(response: 0.28, dampingFraction: 0.7)) {
+                    countdown = remaining
+                }
+                Haptics.tap()
+                try? await Task.sleep(for: .seconds(1))
+                if Task.isCancelled { return }
+            }
+            countdown = nil
+            guard !full else { return }
+            Haptics.selection()
+            cam.startRecording()
+        }
+    }
+
+    private func cancelCountdown() {
+        countdownTask?.cancel()
+        countdownTask = nil
+        withAnimation { countdown = nil }
     }
 
     // MARK: Commit
@@ -435,8 +647,13 @@ struct ClipCameraView: View {
 
     // MARK: Chrome helpers
 
+    /// `badge` rides on the corner for a control whose state is a NUMBER (the self-timer).
+    /// The alternative — swapping in a numeric SF Symbol per value — depends on glyphs that
+    /// exist only for some values and have moved between SF Symbols releases; a missing one
+    /// renders as an empty circle.
     private func roundButton(_ systemName: String, label: String,
-                             active: Bool = false, action: @escaping () -> Void) -> some View {
+                             active: Bool = false, badge: String? = nil,
+                             action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 18, weight: .semibold))
@@ -444,6 +661,19 @@ struct ClipCameraView: View {
                 .frame(width: 44, height: 44)
                 .background(active ? Color.white : Color.black.opacity(0.35))
                 .clipShape(Circle())
+                .overlay(alignment: .topTrailing) {
+                    if let badge {
+                        Text(badge)
+                            .font(VoiidFont.rounded(10, .bold))
+                            .foregroundColor(.black)
+                            .padding(.horizontal, 4)
+                            .frame(minWidth: 16, minHeight: 16)
+                            .background(Color.white)
+                            .clipShape(Capsule())
+                            .overlay(Capsule().stroke(Color.black.opacity(0.35), lineWidth: 1))
+                            .offset(x: 2, y: -2)
+                    }
+                }
         }
         .buttonStyle(SoftPressStyle())
         .accessibilityLabel(label)
@@ -666,6 +896,17 @@ final class ClipCameraController: NSObject, ObservableObject,
         }
     }
 
+    /// The face-tracked effect. Same lock as `filter`: both are read on the capture queue
+    /// and written from the UI, and they are read together on every frame.
+    @Published var faceEffect: ClipFaceEffect = .none {
+        didSet {
+            filterLock.lock(); liveFaceEffect = faceEffect; filterLock.unlock()
+            // Drop stale faces when switching off, so re-enabling cannot flash the ears at
+            // wherever a face was several seconds ago.
+            if faceEffect == .none { faceDetector.reset() }
+        }
+    }
+
     /// Re-derived from what is on disk rather than accumulated, so undo can never drift.
     var bankedSeconds: Double { takes.reduce(0) { $0 + $1.outputSeconds } }
 
@@ -673,6 +914,16 @@ final class ClipCameraController: NSObject, ObservableObject,
 
     private let filterLock = NSLock()
     private var liveFilter: ClipFilter = .none
+    private var liveFaceEffect: ClipFaceEffect = .none
+    private let faceDetector = ClipFaceDetector()
+    private var writerPixelAdaptor: AVAssetWriterInputPixelBufferAdaptor?
+
+    /// ONE context for the whole session. A CIContext compiles and caches Metal shaders on
+    /// creation; building one per frame is the classic way to turn a 30 fps capture into a
+    /// slideshow. Explicitly told not to hold a colour space it does not need.
+    private lazy var writerCIContext: CIContext = {
+        CIContext(options: [.cacheIntermediates: false])
+    }()
 
     // MARK: Writer state — writerQueue only
 
@@ -745,7 +996,18 @@ final class ClipCameraController: NSObject, ObservableObject,
 
     private func attachCamera(position: AVCaptureDevice.Position) {
         if let cameraInput { session.removeInput(cameraInput) }
-        guard let dev = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position),
+        // Prefer a VIRTUAL multi-lens device (triple → dual-wide → dual) over the bare wide
+        // angle. A virtual device exposes the ultra-wide and telephoto as one continuous
+        // zoom range and switches lenses itself, which is what makes a real 0.5× possible —
+        // `builtInWideAngleCamera` alone has no ultra-wide to reach, so 0.5× would have been
+        // a button that could never work. Falls back to the wide angle on devices (and the
+        // front camera) that have nothing richer.
+        let preferred: [AVCaptureDevice.DeviceType] = [
+            .builtInTripleCamera, .builtInDualWideCamera, .builtInDualCamera, .builtInWideAngleCamera,
+        ]
+        let discovery = AVCaptureDevice.DiscoverySession(deviceTypes: preferred,
+                                                         mediaType: .video, position: position)
+        guard let dev = discovery.devices.first,
               let input = try? AVCaptureDeviceInput(device: dev),
               session.canAddInput(input) else {
             DispatchQueue.main.async { self.errorText = "Couldn't start the camera." }
@@ -755,9 +1017,67 @@ final class ClipCameraController: NSObject, ObservableObject,
         cameraInput = input
         device = dev
         let torch = dev.hasTorch
+        // Only offer a preset the device can actually reach. The front camera's ceiling is
+        // much lower than the back's, so this is recomputed per attach rather than once.
+        let ceiling = min(Self.maxUsableZoom,
+                          min(dev.activeFormat.videoMaxZoomFactor, dev.maxAvailableVideoZoomFactor))
+
+        // ── PRESETS COME FROM THE HARDWARE, NOT A HARD-CODED LIST ──────────────────
+        // On a virtual device, `virtualDeviceSwitchOverVideoZoomFactors` are the exact
+        // points where AVFoundation swaps physical lenses — i.e. the real optical stops.
+        // On a triple camera the ultra-wide is lens 0, so 1.0 in the device's own scale is
+        // the ULTRA-WIDE, and the "1×" a user expects is the first switch-over point.
+        //
+        // Deriving them means a 2-lens phone shows 0.5/1/2 and a 1-lens phone shows just 1,
+        // instead of every device claiming the same three buttons.
+        let switchOvers = dev.virtualDeviceSwitchOverVideoZoomFactors.map { CGFloat(truncating: $0) }
+        let base = switchOvers.first ?? 1        // device units per user 1×
+        let userCeiling = ceiling / base
+
+        // OPTICAL stops first — the real lenses. On a dual-wide iPhone the switch-overs are
+        // [2.0], meaning device 2.0 is the wide lens: that is the user's 1×, and device 1.0
+        // (the ultra-wide) is user 0.5×.
+        var presets: [CGFloat] = []
+        if !switchOvers.isEmpty {
+            presets.append(1 / base)                        // the ultra-wide
+            presets.append(contentsOf: switchOvers.map { $0 / base })
+        } else {
+            presets.append(1)                               // single lens: 1× only
+        }
+
+        // Then the useful DIGITAL stops above the longest lens. A dual-wide phone has no
+        // telephoto, but 2× on it is still a real, useful crop — omitting it would leave
+        // that phone with only 0.5× and 1×, which is fewer options than the camera app
+        // itself offers. Only added where they clear the longest optical stop, so a
+        // telephoto phone never gets a digital "2×" duplicating its optical one.
+        // At most TWO digital stops. Every optical stop is kept — those are real lenses —
+        // but a rail of six pills does not fit a phone width, and the pinch still reaches
+        // the full ceiling for anything between or beyond them.
+        let opticalTop = presets.max() ?? 1
+        for stop in [CGFloat(2), 3, 5, 10] where stop > opticalTop {
+            if presets.count >= (switchOvers.isEmpty ? 3 : switchOvers.count + 3) { break }
+            presets.append(stop)
+        }
+
+        presets = presets.map { ($0 * 10).rounded() / 10 }.filter { $0 <= userCeiling }
+        // De-duplicate in order: a dual-wide device can report a switch-over that rounds
+        // onto a value already in the list, and two identical pills is exactly the repeat
+        // this rail is being fixed for.
+        var seen = Set<CGFloat>()
+        presets = presets.filter { seen.insert($0).inserted }
+        // Flipping to a camera with a lower ceiling must not leave the indicator reading a
+        // factor the new device cannot hold — AVFoundation clamps it silently otherwise.
+        // `base` (above) is the one conversion between the device's zoom scale and the
+        // user's: on a phone with an ultra-wide, device 1.0 IS the ultra-wide, so a
+        // user-facing 1× is `switchOvers[0]` in device units.
+        let userScaleBase = base
+        let clampedZoom = min(dev.videoZoomFactor / userScaleBase, ceiling / userScaleBase)
         DispatchQueue.main.async {
             self.hasTorch = torch
             if !torch { self.torchOn = false }
+            self.zoomScaleBase = userScaleBase
+            self.availableZoomPresets = presets
+            self.currentZoom = clampedZoom
         }
     }
 
@@ -782,6 +1102,9 @@ final class ClipCameraController: NSObject, ObservableObject,
 
     func flip() {
         guard !isRecording else { return }
+        // The previous camera's faces do not apply to the new one, and a stale box would
+        // park the ears mid-air until the next detection lands.
+        faceDetector.reset()
         position = (position == .back) ? .front : .back
         sessionQueue.async { [weak self] in
             guard let self else { return }
@@ -808,15 +1131,104 @@ final class ClipCameraController: NSObject, ObservableObject,
 
     private var zoomAtGestureStart: CGFloat = 1
 
+    /// Ceiling in USER units (so 10 means 10× as the camera app labels it).
+    ///
+    /// `videoMaxZoomFactor` reports 100×+ on modern iPhones — almost all of it unusable
+    /// digital crop, and leaving it uncapped squeezed the whole useful range into a sliver
+    /// of the pinch. 10× matches what the system camera offers on this hardware, so the
+    /// pinch spends itself across a range that is actually worth having.
+    static let maxUsableZoom: CGFloat = 10
+
+    /// Drives the on-screen zoom pill. Main-actor published so the indicator and the preset
+    /// buttons read the same value the gesture is writing.
+    @Published var currentZoom: CGFloat = 1
+
+    /// Which presets this device can actually reach. Recomputed on every camera attach,
+    /// because the front camera's ceiling is far lower than the back's — offering a 3×
+    /// button that the front camera cannot honour would be a dead control.
+    @Published var availableZoomPresets: [CGFloat] = [1]
+
+    /// Device-zoom units per 1 user-facing ×. On a phone with an ultra-wide the device's
+    /// own 1.0 is the ULTRA-WIDE, so the "1×" a person means is this value in device units.
+    /// 1 on single-lens devices, where the two scales are the same.
+    private(set) var zoomScaleBase: CGFloat = 1
+
+    /// Pinch zoom.
+    ///
+    /// Three things make this feel like the system camera rather than a slider:
+    ///
+    /// 1. **The gesture start is captured on the MAIN actor, not the session queue.** It was
+    ///    hopping to `sessionQueue` to read `videoZoomFactor` when the pinch began — but the
+    ///    first `.changed` often lands before that async block runs, so the gesture multiplied
+    ///    against a STALE start value and the image jumped at the moment you touched it.
+    ///
+    /// 2. **The ceiling is capped for usability, not by the hardware.** `videoMaxZoomFactor`
+    ///    is often 100–150× on modern iPhones; past ~8× the frame is unusable mush, and the
+    ///    whole useful range was crammed into the first few percent of the gesture. Capping
+    ///    at 8× spends the gesture where the picture is real.
+    ///
+    /// 3. **Zoom is applied with a RAMP while recording.** Setting `videoZoomFactor` directly
+    ///    snaps between values, which reads as a stutter in the recorded file. `ramp(toVideoZoomFactor:)`
+    ///    interpolates in hardware. Outside recording the direct set is right — it must track
+    ///    the finger 1:1 with no lag.
+    @MainActor
     func zoom(scale: CGFloat, began: Bool) {
+        if began {
+            zoomAtGestureStart = currentZoom
+            return
+        }
+
+        // Floor is the widest preset (0.5× on an ultra-wide phone), not a hard 1 — clamping
+        // to 1 would make the ultra-wide unreachable by pinch on exactly the devices that
+        // have one.
+        let floor = availableZoomPresets.first ?? 1
+        let target = min(max(zoomAtGestureStart * scale, floor), Self.maxUsableZoom)
+        // Published immediately so the on-screen indicator tracks the finger rather than
+        // waiting on the session queue.
+        currentZoom = target
+
+        // Read on main and captured, NOT read inside the block: `isRecording` is @Published
+        // and reading it from the session queue is the same data race the type's note warns
+        // about, just in the other direction.
+        let recording = isRecording
+        let deviceTarget = target * zoomScaleBase   // user units → device units
         sessionQueue.async { [weak self] in
             guard let self, let dev = self.device else { return }
-            if began { self.zoomAtGestureStart = dev.videoZoomFactor; return }
-            let ceiling = min(dev.activeFormat.videoMaxZoomFactor, dev.maxAvailableVideoZoomFactor)
-            let target = min(max(self.zoomAtGestureStart * scale, dev.minAvailableVideoZoomFactor),
-                             ceiling)
+            let ceiling = min(Self.maxUsableZoom * self.zoomScaleBase,
+                              min(dev.activeFormat.videoMaxZoomFactor, dev.maxAvailableVideoZoomFactor))
+            let clamped = min(max(deviceTarget, dev.minAvailableVideoZoomFactor), ceiling)
             guard (try? dev.lockForConfiguration()) != nil else { return }
-            dev.videoZoomFactor = target
+            if recording {
+                // 8×/second: fast enough to feel immediate, slow enough that the recorded
+                // file shows a glide instead of a staircase.
+                dev.ramp(toVideoZoomFactor: clamped, withRate: 8)
+            } else {
+                dev.videoZoomFactor = clamped
+            }
+            dev.unlockForConfiguration()
+        }
+    }
+
+    /// Jump to a preset (the 1× / 2× / 3× buttons), animated rather than snapped.
+    ///
+    /// @MainActor like `zoom`: both write `currentZoom`, and this class is deliberately not
+    /// main-isolated (see the type's note), so the isolation has to be stated per method or
+    /// the @Published write lands on whatever queue the caller happened to be on.
+    @MainActor
+    func setZoom(_ factor: CGFloat) {
+        let floor = availableZoomPresets.first ?? 1
+        let target = min(max(factor, floor), Self.maxUsableZoom)
+        currentZoom = target
+        let deviceTarget = target * zoomScaleBase
+        sessionQueue.async { [weak self] in
+            guard let self, let dev = self.device else { return }
+            let ceiling = min(Self.maxUsableZoom * self.zoomScaleBase,
+                              min(dev.activeFormat.videoMaxZoomFactor, dev.maxAvailableVideoZoomFactor))
+            let clamped = min(max(deviceTarget, dev.minAvailableVideoZoomFactor), ceiling)
+            guard (try? dev.lockForConfiguration()) != nil else { return }
+            // Always ramped: a preset tap is a deliberate jump, and snapping 1× → 3× is
+            // jarring in the preview even when nothing is recording.
+            dev.ramp(toVideoZoomFactor: clamped, withRate: 12)
             dev.unlockForConfiguration()
         }
     }
@@ -908,11 +1320,41 @@ final class ClipCameraController: NSObject, ObservableObject,
             .appendingPathComponent("clip_seg_\(UUID().uuidString).mp4")
         do {
             let assetWriter = try AVAssetWriter(outputURL: url, fileType: .mp4)
+            let videoSettings = portraitVideoSettings()
             let videoInput = AVAssetWriterInput(mediaType: .video,
-                                                outputSettings: portraitVideoSettings())
+                                                outputSettings: videoSettings)
             videoInput.expectsMediaDataInRealTime = true
             guard assetWriter.canAdd(videoInput) else { throw ClipCameraError.writerRejectedInput }
             assetWriter.add(videoInput)
+
+            // An adaptor so a FACE EFFECT can be burned into the recording.
+            //
+            // Colour filters do not need this — they are re-applied losslessly at export via
+            // AVVideoComposition, which is why the writer takes the untouched buffer. A face
+            // effect cannot take that route: the export has no per-frame face positions, and
+            // re-running detection over the finished file would be both slow and a different
+            // result. So the ears are composited HERE, at capture, where the tracking data
+            // actually exists. Colour still stays out of the file.
+            //
+            // WIDTH AND HEIGHT ARE REQUIRED. Without them the adaptor cannot build its
+            // pixel-buffer pool, `pixelBufferPool` stays nil, and every frame silently
+            // falls back to the unfiltered path — the effect would show in the preview and
+            // be absent from the recording, with no error anywhere to explain why.
+            // They are taken from the writer's OWN settings so the buffer we render into
+            // always matches what the encoder expects.
+            let settings = videoSettings
+            var adaptorAttrs: [String: Any] = [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:],
+            ]
+            if let w = settings?[AVVideoWidthKey] as? NSNumber,
+               let h = settings?[AVVideoHeightKey] as? NSNumber {
+                adaptorAttrs[kCVPixelBufferWidthKey as String] = w
+                adaptorAttrs[kCVPixelBufferHeightKey as String] = h
+            }
+            let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+                assetWriterInput: videoInput,
+                sourcePixelBufferAttributes: adaptorAttrs)
 
             var audioInput: AVAssetWriterInput?
             if let audioSettings = audioOut.recommendedAudioSettingsForAssetWriter(writingTo: .mp4)
@@ -929,6 +1371,7 @@ final class ClipCameraController: NSObject, ObservableObject,
 
             writer = assetWriter
             writerVideoInput = videoInput
+            writerPixelAdaptor = adaptor
             writerAudioInput = audioInput
             takeURL = url
             takeSpeed = speed
@@ -961,6 +1404,7 @@ final class ClipCameraController: NSObject, ObservableObject,
         writerAudioInput?.markAsFinished()
         writer = nil
         writerVideoInput = nil
+        writerPixelAdaptor = nil
         writerAudioInput = nil
         takeURL = nil
 
@@ -995,10 +1439,26 @@ final class ClipCameraController: NSObject, ObservableObject,
                        from connection: AVCaptureConnection) {
         if output === videoOut {
             if let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) {
-                filterLock.lock(); let active = liveFilter; filterLock.unlock()
-                // The FILTER IS PREVIEW-ONLY. The buffer handed to the writer below is the
-                // untouched one, so the colour is baked exactly once, at export.
-                renderer.submit(active.apply(to: CIImage(cvPixelBuffer: pixels)))
+                filterLock.lock()
+                let active = liveFilter
+                let face = liveFaceEffect
+                filterLock.unlock()
+
+                // Fire-and-forget: the detector copies the buffer and returns immediately,
+                // so the capture queue is never blocked. It now TRACKS on every frame
+                // (cheap) and only re-detects periodically, which is what makes the effect
+                // move at video rate instead of stepping.
+                if face != .none { faceDetector.submit(pixels) }
+
+                // BOTH the colour filter and the face effect are PREVIEW-ONLY. The buffer
+                // handed to the writer below is the untouched one, so a look is baked
+                // exactly once, at export.
+                var preview = active.apply(to: CIImage(cvPixelBuffer: pixels))
+                if face != .none {
+                    preview = ClipFaceRenderer.apply(face, to: preview,
+                                                     faces: faceDetector.latest)
+                }
+                renderer.submit(preview)
             }
             writerQueue.async { [weak self] in self?.appendVideo(sampleBuffer) }
         } else if output === audioOut {
@@ -1018,11 +1478,46 @@ final class ClipCameraController: NSObject, ObservableObject,
             firstPTS = pts
         }
         lastPTS = pts
-        if input.isReadyForMoreMediaData { input.append(sample) }
+
+        filterLock.lock(); let face = liveFaceEffect; filterLock.unlock()
+        let faces = face == .none ? [] : faceDetector.latest
+
+        if input.isReadyForMoreMediaData {
+            if face != .none, !faces.isEmpty,
+               let adaptor = writerPixelAdaptor,
+               let source = CMSampleBufferGetImageBuffer(sample),
+               let rendered = renderFaceEffect(face, faces: faces, source: source,
+                                               adaptor: adaptor) {
+                adaptor.append(rendered, withPresentationTime: pts)
+            } else {
+                // No face in frame, or the effect is off: append the ORIGINAL buffer. This
+                // path is also the fallback if the render fails — a take that records
+                // unadorned is recoverable; a dropped frame is not.
+                input.append(sample)
+            }
+        }
 
         let recorded = (pts - firstPTS).seconds
         publishLive(recorded / takeSpeed)
         if recorded >= recordBudget { finishTake() }
+    }
+
+    /// Composite the face effect into a fresh buffer from the adaptor's pool.
+    ///
+    /// Returns nil on any failure, and the caller falls back to appending the untouched
+    /// sample — an unadorned take beats a dropped frame.
+    private func renderFaceEffect(_ effect: ClipFaceEffect, faces: [TrackedFace],
+                                  source: CVPixelBuffer,
+                                  adaptor: AVAssetWriterInputPixelBufferAdaptor) -> CVPixelBuffer? {
+        guard let pool = adaptor.pixelBufferPool else { return nil }
+        var out: CVPixelBuffer?
+        guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &out) == kCVReturnSuccess,
+              let buffer = out else { return nil }
+
+        let composed = ClipFaceRenderer.apply(effect, to: CIImage(cvPixelBuffer: source),
+                                              faces: faces)
+        writerCIContext.render(composed, to: buffer)
+        return buffer
     }
 
     private func appendAudio(_ sample: CMSampleBuffer) {
