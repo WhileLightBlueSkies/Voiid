@@ -1,5 +1,8 @@
 # Reference Parity — Snake & Ludo
 
+> **Status: implemented.** See "What actually shipped" at the end for where the
+> plan below survived contact and where it did not.
+
 Comparing the standalone reference builds in `~/Downloads/Snake` and `~/Downloads/Ludo`
 against Voiid's shipping implementations, and deciding what to actually adopt.
 
@@ -171,3 +174,69 @@ together**, and L1–L4 additionally need the `ludo_board_v3.json` fixture and
 
 **Not doing:** any rendering-architecture swap, any move of rules to the client, and any
 iOS-only visual technique.
+
+
+---
+
+## What actually shipped
+
+Implemented across four commits. Three proposals did not survive contact with the
+codebase, and the reasons are worth keeping.
+
+### Landed
+
+| ID | Change | Platforms |
+|---|---|---|
+| L1 | Board corner radius, as a fraction of the board side rather than an absolute value | iOS + Android |
+| L2 | Cell corner radius (0.08 factor, still clamped to 2pt) | iOS + Android |
+| L3 | Die face: diagonal gradient, bevel, outline ordering | iOS + Android |
+| L4 | Die depth slabs at rest | iOS + Android |
+| L5 | Token specular highlight (contact shadow already existed) | iOS + Android |
+| L7 | Hop arc + landing overshoot on the final leg | iOS + Android |
+| L8 | Move hints — destination marks, heavier ring on a capture | iOS + Android |
+| S1 | Eat radius scales with mass | server |
+| S3 | Gaze leads the turn on remote snakes | iOS |
+| S4 | Tail alpha falloff by arc length | iOS |
+
+### Dropped, with cause
+
+**S1 was not implemented as magnetism.** The plan called for pellets sliding toward the
+head. The food protocol sends only *adds and removals* — food was once 59% of a 7 KB
+payload — so moving a pellet has no representation on the wire, and giving it one would
+undo that optimisation. The real defect turned out to be adjacent and better: `EAT_RADIUS`
+was a fixed 28 while `radiusFor` grows a head to 2.2x, so eating got *harder* as you grew.
+Scaling the mouth on the same curve buys the same "a near miss still rewards you" feel,
+and because a wider mouth clears pellets sooner it *lowered* sustained bandwidth from
+30 KB/s to 28 KB/s.
+
+**S5 (corpse pop) was dropped** for the same wire reason. Corpse food already scatters
+along the body with jitter, and already returns the *whole* body rather than the
+reference's 62%, so the remaining gain was an outward drift that only per-tick pellet
+positions could express.
+
+**S2 (camera easing) was audited and deliberately left alone.** Ours eases on an 80 ms
+time constant; the reference's `lerp(t: dt * 9)` works out to ~103 ms at 60 fps. Ours is
+already the tighter of the two, its value carries a written rationale, and it has
+look-ahead the reference has no equivalent for. The audit was the deliverable and its
+answer was "already correct".
+
+**L6 (expanding halo) was rejected.** Our marching dashes carry the same "you can tap
+this" signal and survive colour-blindness and dark mode, which a ring that reads only as
+motion-plus-hue does not.
+
+**S6 (drag-anywhere steering) was not implemented** — it is an added control scheme and a
+product decision, not a parity fix.
+
+### Found along the way
+
+- **Android's perimeter path** never inset by half its stroke and never clamped its radius.
+  Invisible at radius 0; at a real radius the border straddled the board edge and chewed
+  its own corners. iOS already did both.
+- **`yardPocketRadiusFactor` is 0.72 on iOS and 0f on Android**, and Android never reads
+  it — the yard pockets genuinely differ between platforms. Left as-is: out of scope here,
+  but it is a real parity gap.
+- **The radius-scaling test was fragile.** It filtered to snakes still alive at 45 s, which
+  is a property of the seed rather than of radius scaling — on seed 88 a bot reaches 453
+  mass then dies before the end, so it reported "nothing grew" while the thing under test
+  worked. Now tracks the fattest snake seen at any point, and still fails, legibly, when
+  radius scaling is stubbed out.
