@@ -347,15 +347,24 @@ console.log('\nSnake engine\n');
   let state: GameStatePayload = snake.create(['u1'], { bots: 3, seed: 88 }).serialize();
   const startHr = (state.snakes as any[])[0].hr;
 
-  // Run long enough for something to eat.
+  // Run long enough for something to eat, sampling AS WE GO.
+  //
+  // The end-of-run snapshot alone is not enough: whether the biggest snake is still alive at
+  // the 45 s mark is a property of the seed, not of radius scaling. On seed 88 a bot reaches
+  // 453 mass and then dies before the end, so a check that filtered to survivors reported
+  // "nothing grew" while the thing under test was working perfectly. Track the fattest snake
+  // observed at any point instead — that is what "radius scales with mass" actually claims.
+  let grown: any;
   for (let i = 0; i < TUNING.TICK_HZ * 45; i++) {
     const e = snake.restore(state);
     e.tick!();
     state = e.serialize();
+    for (const s of state.snakes as any[]) {
+      if (s.m > TUNING.START_MASS + 5 && (grown === undefined || s.m > grown.m)) grown = s;
+    }
   }
 
   const snakes = (state.snakes as any[]).filter((s) => s.a);
-  const grown = snakes.find((s) => s.m > TUNING.START_MASS + 5);
 
   check('head radius is on the wire', typeof startHr === 'number' && startHr > 0);
   check('a grown snake is thicker than it started',

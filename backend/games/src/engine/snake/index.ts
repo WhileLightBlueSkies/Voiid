@@ -82,6 +82,16 @@ export const TUNING = {
   HEAD_RADIUS: 11,
   BODY_RADIUS: 10,
   SEGMENT_SPACING: 14,
+  // Base mouth radius, scaled by mass exactly like the head is. A FIXED value here was the
+  // bug: `radiusFor` grows a head to 2.2x, so a heavy snake's drawn head overlapped a pellet
+  // well before its mouth did, and eating went from generous to fiddly as you grew — the
+  // opposite of the reward curve the rest of the tuning builds.
+  //
+  // A reference implementation solves the same feel problem with MAGNETISM — pellets slide
+  // toward the head — but that needs pellet positions on the wire every tick, and this protocol
+  // deliberately sends only adds and removals (food was once 59% of the payload). Scaling the
+  // mouth costs nothing on the wire and, because a bigger mouth clears pellets sooner, it
+  // actually LOWERS sustained bandwidth: 30 KB/s to 28 KB/s in the wire-size check below.
   EAT_RADIUS: 28,
   ARENA_RADIUS: 1400,
   FOOD_TARGET: 260,
@@ -613,11 +623,13 @@ class SnakeEngine implements GameEngine {
   }
 
   private resolveEating(): void {
-    const r = TUNING.EAT_RADIUS;
-    const r2 = r * r;
-
     for (const sn of this.s.snakes) {
       if (!sn.alive || this.s.t < sn.invulnUntil) continue;
+
+      // Per-snake, because the mouth scales with the head. Same `radiusFor` curve the hitbox
+      // and the drawn head use, so a snake's reach can never disagree with its own size.
+      const r = radiusFor(sn.mass, TUNING.EAT_RADIUS);
+      const r2 = r * r;
 
       // Iterate backwards so swap-removal below cannot skip an item.
       for (let i = this.s.food.length - 1; i >= 0; i--) {
