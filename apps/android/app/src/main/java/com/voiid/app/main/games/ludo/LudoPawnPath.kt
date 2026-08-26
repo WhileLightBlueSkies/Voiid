@@ -142,8 +142,20 @@ object LudoPawnPath {
             drawPath(base, fill)
             drawPath(pin, fill)
 
-            // Hollow centre, in the border colour so it reads as a hole punched through.
             val hole = holeRect(width, height)
+
+            // Specular: small, off-centre, up-left, sitting on the dome ABOVE the hole. Placement
+            // matters more than size — centred it reads as a blemish, offset it reads as a curved
+            // surface catching a light, which is what turns a flat disc into a moulded piece.
+            // Drawn before the hole so the hole punches through it rather than the other way
+            // round. Mirrors iOS `LudoPawnShape.draw`.
+            drawOval(
+                Color.White.copy(alpha = .38f),
+                Offset(hole.center.x - width * .26f, hole.center.y - height * .20f),
+                androidx.compose.ui.geometry.Size(width * .20f, height * .10f),
+            )
+
+            // Hollow centre, in the border colour so it reads as a hole punched through.
             drawOval(
                 colors.c(colors.pawnBorder),
                 Offset(hole.left, hole.top),

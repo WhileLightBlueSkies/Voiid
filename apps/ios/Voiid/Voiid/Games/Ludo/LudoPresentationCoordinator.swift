@@ -149,9 +149,30 @@ final class LudoPresentationCoordinator: ObservableObject {
             if i > 1 { try? await Task.sleep(nanoseconds: 92_000_000) }
             let from = centers[i - 1]
             let to = centers[i]
+            let isLast = i == centers.count - 1
+
+            // One cell, measured from the leg itself: adjacent centres are exactly a unit apart,
+            // and the coordinator never sees the board's geometry. Legs that turn a corner or
+            // enter a home lane are still ~1 unit, so this stays stable along a whole walk.
+            let unit = max(hypot(to.x - from.x, to.y - from.y), 0.001)
+
             await tween(ms: LudoMotion.hopMs, easing: hopEasing) { t in
                 let cx = from.x + (to.x - from.x) * t
-                let cy = from.y + (to.y - from.y) * t
+                var cy = from.y + (to.y - from.y) * t
+
+                // ARC. A half-sine peaks at the midpoint and returns to zero at both ends, so
+                // the token leaves the board and comes back to exactly its mark — no drift to
+                // correct at the end of the leg.
+                cy -= sin(CGFloat(t) * .pi) * unit * LudoMotion.hopArcFactor
+
+                // LANDING OVERSHOOT, final leg only: the token dips a little past its mark in
+                // the second half of the hop and settles back, so it lands with weight instead
+                // of stopping dead. Scaled by (1-t) so it is exactly zero on arrival.
+                if isLast, t > 0.5 {
+                    let settle = (CGFloat(t) - 0.5) * 2          // 0 -> 1 over the back half
+                    cy += sin(settle * .pi) * unit * LudoMotion.hopLandOvershootFactor
+                }
+
                 self.hopOverride = (actorSeat, tokenId, CGPoint(x: cx, y: cy))
             }
         }

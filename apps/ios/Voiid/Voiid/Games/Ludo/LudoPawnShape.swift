@@ -110,8 +110,17 @@ enum LudoPawnShape {
         ctx.fill(base, with: .color(fill))
         ctx.fill(pin, with: .color(fill))
 
+        // Specular: small, off-centre, up-left, sitting on the dome ABOVE the hole. Placement
+        // matters more than size — centred it reads as a blemish, offset it reads as a curved
+        // surface catching a light, which is what turns a flat disc into a moulded piece.
+        // Drawn before the hole so the hole punches through it rather than the other way round.
+        let hole = holeRect(width: w, height: h)
+        let spec = CGRect(x: hole.midX - w * 0.26, y: hole.midY - h * 0.20,
+                          width: w * 0.20, height: h * 0.10)
+        ctx.fill(Path(ellipseIn: spec), with: .color(.white.opacity(0.38)))
+
         // Hollow centre, in the border colour so it reads as a hole punched through.
-        ctx.fill(Path(ellipseIn: holeRect(width: w, height: h)), with: .color(colors.pawnBorder))
+        ctx.fill(Path(ellipseIn: hole), with: .color(colors.pawnBorder))
 
         // Marching dashes around a playable token. Motion is what makes it read as an
         // invitation rather than decoration, and it survives colour-blindness and dark mode in

@@ -655,9 +655,28 @@ private fun BoardArea(
                         initialValue = 0f, targetValue = 1f,
                         animationSpec = androidx.compose.animation.core.tween(LudoRules.HOP_MS, easing = easing),
                     ) { v, _ ->
+                        val from = prev
+                        // One cell, measured from the leg itself: adjacent centres are exactly a
+                        // unit apart, and this scope never sees the board's geometry.
+                        val unit = kotlin.math.max(
+                            kotlin.math.hypot(stop.x - from.x, stop.y - from.y), 0.001f)
+                        val isLast = i == stops.size - 1
+
+                        var y = from.y + (stop.y - from.y) * v
+                        // ARC. A half-sine peaks at the midpoint and returns to zero at both
+                        // ends, so the token leaves the board and comes back to exactly its mark.
+                        y -= kotlin.math.sin(v * Math.PI.toFloat()) * unit * LudoRules.HOP_ARC_FACTOR
+                        // LANDING OVERSHOOT, final leg only: dips a little past the mark in the
+                        // back half and settles back, so it lands with weight. Zero on arrival.
+                        if (isLast && v > 0.5f) {
+                            val settle = (v - 0.5f) * 2f
+                            y += kotlin.math.sin(settle * Math.PI.toFloat()) *
+                                unit * LudoRules.HOP_LAND_OVERSHOOT_FACTOR
+                        }
+
                         hopOverride = Triple(
                             seat, move.tokenId,
-                            Offset(prev.x + (stop.x - prev.x) * v, prev.y + (stop.y - prev.y) * v),
+                            Offset(from.x + (stop.x - from.x) * v, y),
                         )
                     }
                     prev = stop

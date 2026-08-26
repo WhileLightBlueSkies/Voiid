@@ -189,6 +189,14 @@ enum LudoMotion {
     static let pipCrossFadeMs: Double = 120
     static let hopMs: Double = 120
     static let hopStaggerMs: Double = 92
+    /// Peak height of a single hop's arc, as a fraction of one cell. A pure position lerp makes
+    /// a token SLIDE between squares; lifting it off the board is what reads as a hop, and it is
+    /// what tells you a piece is being MOVED rather than teleported.
+    static let hopArcFactor: CGFloat = 0.32
+    /// Overshoot on the LAST leg only, as a fraction of one cell, so a token lands with weight
+    /// instead of stopping dead on its mark. Applied to the final leg alone: an overshoot on
+    /// every intermediate square would read as wobble, not as arrival.
+    static let hopLandOvershootFactor: CGFloat = 0.10
     static let fastForwardMs: Double = 90
     static let haloBreatheMs: Double = 520
     static let captureScaleMs: Double = 150

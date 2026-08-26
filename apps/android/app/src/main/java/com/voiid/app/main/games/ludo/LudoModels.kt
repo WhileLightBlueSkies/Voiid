@@ -42,6 +42,21 @@ object LudoRules {
     const val CAPTURE_RETURN_TOTAL_MS = 520
     const val CAPTURE_LEG_MIN_MS = 26
     const val HOP_STAGGER_MS = 92
+
+    /**
+     * Peak height of a single hop's arc, as a fraction of one cell. A pure position lerp makes a
+     * token SLIDE between squares; lifting it off the board is what reads as a hop, and it is
+     * what tells you a piece is being MOVED rather than teleported. Mirrors iOS
+     * `LudoMotion.hopArcFactor`.
+     */
+    const val HOP_ARC_FACTOR = 0.32f
+
+    /**
+     * Overshoot on the LAST leg only, as a fraction of one cell, so a token lands with weight
+     * instead of stopping dead on its mark. Applied to the final leg alone: an overshoot on every
+     * intermediate square would read as wobble, not as arrival.
+     */
+    const val HOP_LAND_OVERSHOOT_FACTOR = 0.10f
     const val CAPTURE_EXTRA_MS = 480
     const val FINISH_EXTRA_MS = 550
 
