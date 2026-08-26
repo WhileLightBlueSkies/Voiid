@@ -580,6 +580,13 @@ private class Sample(
 private const val MAX_EXTRAPOLATION = 0.10
 
 /**
+ * How much of [INTERP_DELAY] a remote snake is carried forward when travelling perfectly
+ * straight. Below 1 on purpose: a snake can still turn, and being a little behind is a smaller
+ * lie than being ahead of a snake that braked. Identical to iOS `extrapolationTrust`.
+ */
+private const val EXTRAPOLATION_TRUST = 0.75
+
+/**
  * Pick the two frames to draw between.
  *
  * The render instant comes from the free-running [advanceClock] above, in the SERVER's own time
@@ -617,6 +624,14 @@ private fun pickSample(
 private fun lerp(a: Double, b: Double, t: Double) = a + (b - a) * t
 
 /** Short-arc angular interpolation, so crossing the -pi/pi wrap does not spin the long way. */
+/** Shortest signed rotation from [a] to [b], in -PI..PI. */
+private fun angleDifference(a: Double, b: Double): Double {
+    var delta = b - a
+    while (delta > Math.PI) delta -= 2 * Math.PI
+    while (delta < -Math.PI) delta += 2 * Math.PI
+    return delta
+}
+
 private fun lerpAngle(a: Double, b: Double, t: Double): Double {
     var delta = b - a
     while (delta > Math.PI) delta -= 2 * Math.PI
@@ -1100,6 +1115,35 @@ private fun DrawScope.drawArena(
             x += cos(heading) * speed * s.overshoot
             y += sin(heading) * speed * s.overshoot
         }
+
+        // LEAD EXTRAPOLATION — draw remote snakes closer to WHERE THEY ARE, not where they
+        // were.
+        //
+        // Every snake but yours is rendered INTERP_DELAY in the past so arrival jitter moves
+        // the offset instead of the snake. Your own is predicted at now. That gap is the single
+        // biggest source of "there was a gap and I still died": at 300 u/s a remote snake is
+        // drawn ~60 units behind truth against a 22-unit kill radius, so the screen and the
+        // server genuinely disagree about where everyone is.
+        //
+        // CONFIDENCE IS SCALED BY TURN RATE. A snake going straight will still be on that line
+        // in 200 ms, so it is extrapolated fully; one at its turn cap could be anywhere, so it
+        // is barely extrapolated and degrades to the old behaviour. Guessing hardest where the
+        // guess is safest is the whole idea — a flat lead would be most wrong exactly when a
+        // snake is cutting across you, which is when it matters most.
+        //
+        // Mirrors iOS SnakeMetalView's lead-extrapolation block.
+        if (sn.alive && sn.id != me) {
+            val span = (s.to.time - s.from.time).coerceAtLeast(1e-4)
+            val turn = if (prev != null) angleDifference(prev.heading, sn.heading) / span else 0.0
+            val straightness = (1.0 - abs(turn) / SnakeMotion.TURN_RATE_BOOST).coerceAtLeast(0.0)
+            val lead = INTERP_DELAY * EXTRAPOLATION_TRUST * straightness
+            if (lead > 0.0) {
+                val speed = if (sn.boosting) SnakeMotion.BOOST_SPEED else SnakeMotion.BASE_SPEED
+                x += cos(heading) * speed * lead
+                y += sin(heading) * speed * lead
+            }
+        }
+
         heads[sn.id] = Offset(x.toFloat(), y.toFloat())
         headings[sn.id] = heading
     }

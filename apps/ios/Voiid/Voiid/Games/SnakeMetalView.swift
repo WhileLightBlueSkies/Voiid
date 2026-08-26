@@ -812,6 +812,11 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     /// Android (`MAX_EXTRAPOLATION`).
     private static let maxExtrapolation: Double = 0.10
 
+    /// How much of `interpDelay` a remote snake is carried forward when it is travelling
+    /// perfectly straight. Below 1 on purpose: a snake can still turn, and being a little
+    /// behind is a smaller lie than being ahead of a snake that braked.
+    private static let extrapolationTrust: Double = 0.75
+
     /// The instant to draw the world at, in SERVER time.
     ///
     /// NEVER anchored to a frame's ARRIVAL time. Arrival jitter is precisely what the frame
@@ -902,14 +907,45 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
                 head.x += cos(heading) * speed * overshoot
                 head.y += sin(heading) * speed * overshoot
             }
-            heads[snake.id] = head
-            headings[snake.id] = heading
             // Measured across the whole server interval rather than the interpolated slice, so
             // it does not scale with how far between frames this particular draw landed.
             let span = max(to.time - from.time, 1e-4)
-            if let prev {
-                turnRates[snake.id] = Self.angleDifference(prev.heading, snake.heading) / span
+            let turn = prev.map { Self.angleDifference($0.heading, snake.heading) / span } ?? 0
+            if prev != nil { turnRates[snake.id] = turn }
+
+            // LEAD EXTRAPOLATION — draw remote snakes closer to WHERE THEY ARE, not where they
+            // were.
+            //
+            // Every snake but yours is rendered `interpDelay` in the past so arrival jitter
+            // moves the offset instead of the snake. Your own is predicted at now. That gap is
+            // the single biggest source of "there was a gap and I still died": at 300 u/s a
+            // remote snake is drawn ~60 units behind truth, against a 22-unit kill radius, so
+            // the screen and the server genuinely disagree about where everyone is.
+            //
+            // The fix is to carry each remote head forward along its own heading, exactly as
+            // the buffer-dry path above does, but as a normal part of drawing rather than only
+            // as a stall guard.
+            //
+            // CONFIDENCE IS SCALED BY TURN RATE, and that is what keeps it honest. A snake
+            // going straight will still be on that line in 200 ms, so it is extrapolated fully.
+            // A snake at its turn cap could be anywhere, so it is barely extrapolated at all
+            // and degrades to today's behaviour. Guessing hardest where the guess is safest is
+            // the whole idea; the alternative — a flat lead — is most wrong exactly when a
+            // snake is cutting across you, which is when it matters most.
+            if snake.alive, snake.id != me {
+                // TURN_RATE_BOOST in rad/s is the most a snake can turn, so this is 0 for a
+                // snake at full lock and 1 for one going perfectly straight.
+                let straightness = max(0, 1 - abs(turn) / SnakeMotion.turnRateBoost)
+                let lead = Self.interpDelay * Self.extrapolationTrust * straightness
+                if lead > 0 {
+                    let speed = snake.boosting ? SnakeMotion.boostSpeed : SnakeMotion.baseSpeed
+                    head.x += cos(heading) * speed * lead
+                    head.y += sin(heading) * speed * lead
+                }
             }
+
+            heads[snake.id] = head
+            headings[snake.id] = heading
         }
 
         // THE LOCAL SNAKE IS PREDICTED, not interpolated.

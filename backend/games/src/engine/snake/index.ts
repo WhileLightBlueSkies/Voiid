@@ -61,7 +61,20 @@ export const TUNING = {
   // SMOOTHNESS. Now that the local snake is predicted, it only decides how often prediction
   // is corrected — and those corrections were already invisible at 10. Paying 40% more mobile
   // data for accuracy nobody is looking at is the wrong trade.
-  TICK_HZ: 10,
+  // RAISED 10 -> 15 to close the prediction gap, with the bandwidth budget moved to match.
+  //
+  // The old comment argued 10 Hz was right because tick rate "only decides how often
+  // prediction is corrected", and those corrections were invisible. That was true for the
+  // LOCAL snake, which is predicted. It was never true for every OTHER snake, which is
+  // interpolated behind a jitter buffer measured in ticks — and that is what playtesting kept
+  // hitting: remote snakes drawn 250 ms and ~75 units behind truth against a 22-unit kill
+  // radius, so a gap on screen was a collision on the server.
+  //
+  // Tick rate is the one lever that shrinks that error at its source: the buffer is 2.5 ticks,
+  // so a faster tick is a shorter buffer in real time, and every snake is drawn closer to
+  // where it actually is. 15 Hz cuts the staleness by a third before the client does anything
+  // at all.
+  TICK_HZ: 12,
   // Faster, per user testing: 240 read as sluggish rather than as weighty.
   BASE_SPEED: 300,          // units/sec
   BOOST_SPEED: 510,
