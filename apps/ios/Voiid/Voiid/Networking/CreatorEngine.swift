@@ -76,6 +76,19 @@ final class CreatorEngine: ObservableObject {
         return p
     }
 
+    /// Privacy settings. Separate from `updateProfile` deliberately: that one can carry a
+    /// handle, and a handle change burns a 30-day rename window the server enforces. A
+    /// privacy toggle must never be able to touch it by accident.
+    func updatePrivacy(gridVisibility: String? = nil, showCounts: Bool? = nil,
+                       discoverable: Bool? = nil, allowFollows: Bool? = nil,
+                       allowComments: Bool? = nil) async throws {
+        let p = try await svc.update(gridVisibility: gridVisibility, showCounts: showCounts,
+                                     discoverable: discoverable, allowFollows: allowFollows,
+                                     allowComments: allowComments)
+        me = p
+        cache[p.handle.lowercased()] = p
+    }
+
     func uploadAvatar(jpeg: Data) async throws -> CreatorService.Profile {
         let p = try await svc.uploadAvatar(jpeg: jpeg)
         me = p
@@ -170,7 +183,9 @@ final class CreatorEngine: ObservableObject {
         let wasFollowing = p.following
 
         p.following = !wasFollowing
-        p.follower_count = max(0, p.follower_count + (wasFollowing ? -1 : 1))
+        // `map` so a HIDDEN count (nil) stays nil: bumping it would fabricate a number
+        // the server deliberately withheld.
+        p.follower_count = p.follower_count.map { max(0, $0 + (wasFollowing ? -1 : 1)) }
         cache[key] = p
 
         do {
@@ -186,7 +201,8 @@ final class CreatorEngine: ObservableObject {
         } catch {
             if var reverted = cache[key] {
                 reverted.following = wasFollowing
-                reverted.follower_count = max(0, reverted.follower_count + (wasFollowing ? 1 : -1))
+                reverted.follower_count = reverted.follower_count
+                    .map { max(0, $0 + (wasFollowing ? 1 : -1)) }
                 cache[key] = reverted
             }
         }

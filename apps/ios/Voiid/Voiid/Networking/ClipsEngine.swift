@@ -63,6 +63,10 @@ struct Clip: Identifiable, Hashable {
         commentCount = row.comment_count
         likedByMe = row.liked_by_me
         createdAt = ISO8601DateFormatter.voiidParse(row.created_at) ?? Date()
+        // Present now that the feed left-joins creator_profiles. Still optional: an author
+        // without a creator profile has no handle, and the tile falls back to authorName.
+        authorHandle = row.author_handle
+        authorVerified = row.author_verified ?? false
     }
 
     /// A row from a creator's grid or the Following feed.

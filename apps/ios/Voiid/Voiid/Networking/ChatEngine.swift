@@ -111,6 +111,23 @@ struct DecryptedMessage: Codable {
     var quotedId: String? = nil
     var quotedPreview: String? = nil
     var quotedSender: String? = nil
+    /// STORY-quote snapshot — the sibling of the three fields above, for a reply sent from
+    /// the Moments viewer (§5.2). A story reply used to decode to `reaction ?? text` and drop
+    /// everything else on the floor, so the recipient got a lone "❤️" with no idea which
+    /// moment it answered. These three carry the context the envelope already contained.
+    ///
+    /// The id is the ONLY handle on the media: a story is 24h and E2EE, so the bubble looks
+    /// the moment up in StoryStore at RENDER time and shows a thumbnail if the blob is still
+    /// on disk, an honest "Moment expired" if it is not. Nothing about the media is snapshotted
+    /// here — a copy would either rot or duplicate ciphertext into the message store, and
+    /// re-downloading an expired story is impossible by design.
+    ///
+    /// `storyQuoteCreatedAt` is epoch MS, matching the envelope, so it survives the JSON
+    /// round-trip identically on both platforms. Optional like every field added after v1:
+    /// an older persisted record simply decodes without them.
+    var storyQuoteId: String? = nil
+    var storyQuoteAuthorId: String? = nil
+    var storyQuoteCreatedAt: Int64? = nil
     /// "Forwarded" tag.
     var forwarded: Bool? = nil
     /// A control message (reaction/delete signal): kept in the store so its id counts as
@@ -911,12 +928,22 @@ final class ChatEngine {
                 // message is just the string. Detect via the server's content_type
                 // hint, falling back to the decoded shape.
                 let parsed = decodeEnvelope(plain, contentType: m.content_type)
-                replace(id: m.id, with:
-                        DecryptedMessage(id: m.id, senderId: m.sender_id,
-                                         text: parsed.caption,
-                                         createdAt: parseDate(m.created_at), isMine: false,
-                                         media: parsed.media),
-                       to: conversationId)
+                var inbound = DecryptedMessage(id: m.id, senderId: m.sender_id,
+                                               text: parsed.caption,
+                                               createdAt: parseDate(m.created_at), isMine: false,
+                                               media: parsed.media)
+                // Story reply: keep the quoted moment's identity on the record so the bubble
+                // renders a quote instead of a context-free emoji. Set AFTER init rather than
+                // through the initialiser for the same reason the quoted-message fields are
+                // (sendReply above) — DecryptedMessage's memberwise init already has a long
+                // tail of optionals and threading three more through every call site is worse
+                // than assigning the two or three that actually apply.
+                if let q = parsed.storyQuote {
+                    inbound.storyQuoteId = q.storyId
+                    inbound.storyQuoteAuthorId = q.storyAuthorId
+                    inbound.storyQuoteCreatedAt = q.storyCreatedAt
+                }
+                replace(id: m.id, with: inbound, to: conversationId)
             } catch {
                 NSLog("[VOIID] ❌ inbound decrypt FAILED id=\(m.id) senderDev=\(m.sender_device_id ?? "nil"): \(error)")
                 // Tombstone it (failed==true) so the chat shows a placeholder, asks the
@@ -1541,7 +1568,8 @@ final class ChatEngine {
     /// decoded ADDITIVELY here so their JSON body is never rendered as raw text (§5.3) —
     /// plus a defensive fallback: any plaintext that parses as a JSON object carrying a
     /// recognised `"t"` is decoded, not shown verbatim.
-    private func decodeEnvelope(_ plain: String, contentType: String?) -> (caption: String, media: MediaRef?) {
+    private func decodeEnvelope(_ plain: String, contentType: String?)
+        -> (caption: String, media: MediaRef?, storyQuote: StoryReplyEnvelope?) {
         let data = plain.data(using: .utf8)
         // MEDIA — decode by SHAPE, not just the content_type hint. A cross-platform message
         // (e.g. Android → iOS) whose hint didn't round-trip must STILL render as media, not
@@ -1549,19 +1577,26 @@ final class ChatEngine {
         if let data,
            let env = try? JSONDecoder().decode(MediaEnvelope.self, from: data),
            !env.media.mediaUrl.isEmpty {
-            return (env.caption, env.media)
+            return (env.caption, env.media, nil)
         }
-        // Story reply: render its body (reaction or text), never the raw JSON.
+        // Story reply: render its body (reaction or text) AND hand the caller the whole
+        // envelope, so the bubble can quote the moment above it.
+        //
+        // This used to `return (reply.reaction ?? reply.text ?? "", nil)` — the storyId,
+        // authorId and createdAt were decoded one line earlier and then thrown away, which is
+        // exactly why a reaction arrived as a bare emoji in a chat with no context. The body
+        // resolution is unchanged (a reaction reply carries no text, and vice versa); the only
+        // difference is that the context now survives the function.
         if let data, let probe = try? JSONDecoder().decode(EnvelopeProbe.self, from: data),
            probe.t == "story_reply",
            let reply = try? JSONDecoder().decode(StoryReplyEnvelope.self, from: data) {
-            return (reply.reaction ?? reply.text ?? "", nil)
+            return (reply.reaction ?? reply.text ?? "", nil, reply)
         }
         // A reply envelope reaching here (no probe upstream): show its text, not JSON.
         if let data, let probe = try? JSONDecoder().decode(EnvelopeProbe.self, from: data),
            probe.t == MessageActionContentType.reply,
            let reply = try? JSONDecoder().decode(MessageReplyEnvelope.self, from: data) {
-            return (reply.text, nil)
+            return (reply.text, nil, nil)
         }
         // Plain text is the normal case (NOT a JSON object). But if the plaintext looks like
         // a JSON object we don't recognise, NEVER leak it into a bubble — show a safe
@@ -1570,9 +1605,9 @@ final class ChatEngine {
         let trimmed = plain.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.hasPrefix("{"), trimmed.hasSuffix("}"),
            (try? JSONSerialization.jsonObject(with: Data(trimmed.utf8))) != nil {
-            return ("Unsupported message", nil)
+            return ("Unsupported message", nil, nil)
         }
-        return (plain, nil)
+        return (plain, nil, nil)
     }
 
     /// Peeks only at an envelope's discriminator so we can decode the right concrete type.
@@ -1803,9 +1838,17 @@ final class ChatEngine {
                                      sender_device_id: E2EManager.shared.deviceId,
                                      messages: messages, content_type: "story_reply"))
             let body = envelope.reaction ?? envelope.text ?? ""
-            let echo = DecryptedMessage(id: res.message_id, senderId: TokenStore.shared.userId ?? "me",
+            var echo = DecryptedMessage(id: res.message_id, senderId: TokenStore.shared.userId ?? "me",
                                         text: body, createdAt: res.created_at.map(parseDate) ?? Date(),
                                         isMine: true)
+            // BOTH directions carry the quote. The sender's own chat previously showed the
+            // same bare emoji the recipient got — you could not tell which of your friend's
+            // moments you had reacted to either. This echo is the only copy the sender ever
+            // has (their own send is never re-decoded from the server), so the context has to
+            // be stamped here or it exists only on the far end.
+            echo.storyQuoteId = envelope.storyId
+            echo.storyQuoteAuthorId = envelope.storyAuthorId
+            echo.storyQuoteCreatedAt = envelope.storyCreatedAt
             append(echo, to: conversationId)
             return echo
         }

@@ -214,9 +214,12 @@ final class StoryEngine: ObservableObject {
     ///
     /// `mediaData` is the ALREADY size-capped, re-encoded plaintext (JPEG ≤10MB / H.264
     /// 720p ≤50MB, §8.2) — the caller enforces the caps before handing bytes here.
+    /// `archive` keeps the author's OWN copy past expiry. It writes no new bytes: the
+    /// plaintext cached just below is the archived copy, so archiving is only a decision
+    /// not to delete it. Nothing extra is uploaded and the audience is unaffected.
     func postStory(mediaData: Data, mime: String, caption: String,
                    width: Int?, height: Int?, durationMs: Int?,
-                   audienceUserIds: [String]) async {
+                   audienceUserIds: [String], archive: Bool) async {
         guard let myUserId else { return }
         let storyId = UUID().uuidString
         let createdMs = Int64(Date().timeIntervalSince1970 * 1000)
@@ -274,9 +277,13 @@ final class StoryEngine: ObservableObject {
                                   ?? Date().addingTimeInterval(24 * 3600),
                               media: ref, caption: caption, durationMs: durationMs,
                               width: width, height: height, allowsReplies: true,
-                              viewedAt: Date(), localPath: localPath, downloadState: .ready)
+                              viewedAt: Date(), localPath: localPath, downloadState: .ready,
+                              archivedAt: archive ? Date() : nil)
             StoryStore.upsert(story)
             StoryStore.setDownload(storyId, state: .ready, localPath: localPath)
+            // `upsert` deliberately never writes archived_at (it is local state a re-sync
+            // must not clobber), so the author's choice is applied explicitly here.
+            if archive { StoryStore.setArchived(storyId, true) }
             StoryStore.saveAudience(storyId: storyId, userIds: audienceUserIds)
             posting.remove(storyId)
             // WHO, not just how many. "posted to 3 devices" cannot distinguish "reached the

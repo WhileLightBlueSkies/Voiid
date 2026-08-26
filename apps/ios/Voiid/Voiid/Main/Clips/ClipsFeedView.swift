@@ -22,6 +22,7 @@ struct ClipsFeedView: View {
     @State private var openFollowingIndex: Int?
     @State private var showComposer = false
     @State private var showHandleSheet = false
+    @State private var showMine = false
     @State private var scope: FeedScope = .explore
     /// The creator page pushed on top of the grid, by handle.
     @State private var openHandle: String?
@@ -34,17 +35,32 @@ struct ClipsFeedView: View {
     /// would break keyset pagination.
     enum FeedScope: String, CaseIterable { case explore = "Explore", following = "Following" }
 
-    /// 3 columns, 2pt gutters, edge-to-edge — the reference layout. Uniform 9:16 tiles;
-    /// a staggered grid is deliberately avoided (it needs per-tile aspect data before
-    /// first paint and reflows constantly as pages append).
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 2), count: 3)
+    /// 3 columns, 8pt gutters — the Voiid Ui reference layout. Cards need a gutter to read
+    /// as cards; the old 2pt edge-to-edge grid was a mosaic of bare thumbnails. Uniform
+    /// 0.72 tiles; a staggered grid is deliberately avoided (it needs per-tile aspect data
+    /// before first paint and reflows constantly as pages append).
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                header
-                scopePicker
+                // The scope pills and the action cluster share ONE row, so they are laid
+                // out against each other and cannot drift. They were a scrolling strip and
+                // a fixed top-trailing overlay before — two elements on the same visual
+                // line with no knowledge of each other, which is exactly why the pills and
+                // the avatar never shared a baseline and the strip slid underneath the
+                // cluster on scroll.
+                //
+                // The reference has no header, and this is not one: it is the scope control
+                // the reference lacks (it has one static sample array, so no second source)
+                // plus the actions its floating avatar stood for, on the single line they
+                // both already occupied.
+                topBar
                 content
+            }
+            .toolbar(.hidden, for: .navigationBar)
+            .navigationDestination(isPresented: $showMine) {
+                MyClipsView().environmentObject(engine)
             }
             .navigationDestination(item: $openHandle) { handle in
                 CreatorProfileView(handle: handle)
@@ -150,19 +166,19 @@ struct ClipsFeedView: View {
 
     /// Explore / Following. A pill pair rather than a top tab bar: there are exactly two
     /// sources and they share one grid, so a full tab bar would imply more structure than
-    /// exists.
+    /// exists. The reference has no rail at all, but it also has no second source — its
+    /// grid is one static sample array. Following is a genuinely separate endpoint with its
+    /// own cursor, and dropping the switch would strand it.
     ///
-    /// This was a stock UIKit segmented `Picker` — the one control on the screen that looked
-    /// like it belonged to a different app, and the one Android had already replaced with
-    /// branded pills. The filled capsule slides between the two labels via
-    /// `matchedGeometryEffect` so the switch reads as one object moving, not two redrawing.
+    /// It now scrolls WITH the grid instead of being pinned above it, which is how the
+    /// reference's "land straight in the feed" holds: the first thing on screen is clips,
+    /// and the switch is there when you reach for it rather than occupying the top strip
+    /// permanently.
     ///
-    /// The two pills now share ONE recessed track rather than each carrying its own capsule
-    /// fill. Two separately-filled capsules read as two independent toggles that happen to sit
-    /// together; a single track reads as one control with two positions, which is what this is.
-    /// It also gives the sliding capsule something to slide *within* — previously it appeared
-    /// to travel across bare background.
-    private var scopePicker: some View {
+    /// The two pills share ONE recessed track. Two separately-filled capsules read as two
+    /// independent toggles that happen to sit together; a single track reads as one control
+    /// with two positions, and gives the sliding capsule something to slide *within*.
+    private var scopeStrip: some View {
         HStack(spacing: 0) {
             ForEach(FeedScope.allCases, id: \.self) { option in
                 Button {
@@ -172,18 +188,22 @@ struct ClipsFeedView: View {
                     }
                 } label: {
                     Text(option.rawValue)
-                        .font(VoiidFont.rounded(14, .semibold))
+                        .font(VoiidFont.rounded(15, .semibold))
                         .foregroundColor(scope == option
                                          ? VoiidColor.textOnPrimary : VoiidColor.textSecondary)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 36)
+                        // Horizontal padding, not maxWidth: the strip is fixedSize now, so
+                        // `maxWidth: .infinity` collapses to the label's intrinsic width and
+                        // the text sits hard against the capsule edge. This is what sets the
+                        // pill's width, and it is why the control read as cramped.
+                        .padding(.horizontal, 18)
+                        .frame(height: 38)
                         .background {
                             if scope == option {
                                 Capsule().fill(VoiidColor.primary)
                                     .matchedGeometryEffect(id: "scope", in: scopePill)
                             }
                         }
-                        .padding(.vertical, 4)   // 44pt of hit height around a 36pt pill
+                        .padding(.vertical, 3)   // 44pt of hit height around a 38pt pill
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(SoftPressStyle())
@@ -195,14 +215,9 @@ struct ClipsFeedView: View {
             Capsule().fill(VoiidColor.fieldFill)
                 .overlay(Capsule().stroke(VoiidColor.divider, lineWidth: 1))
         )
-        // Held to the width of a real segmented control rather than the full bleed: at
-        // full width two words float in the middle of an enormous track.
-        .frame(maxWidth: 280)
-        // The second frame is what CENTRES the first: a 280pt box in a full-width parent
-        // sits at the leading edge otherwise.
-        .frame(maxWidth: .infinity, alignment: .center)
-        .padding(.horizontal, VoiidSpacing.md)
-        .padding(.bottom, VoiidSpacing.sm)
+        // Sized to its content, not stretched: it shares a row with the actions now, so a
+        // maxWidth would push them off the trailing edge. The two labels set the width.
+        .fixedSize(horizontal: true, vertical: false)
         .onChange(of: scope) { _, new in
             // Loaded on first switch only; afterwards the cached page is reused so toggling
             // back and forth is instant rather than a round-trip each way.
@@ -250,95 +265,30 @@ struct ClipsFeedView: View {
             .refreshable { await creators.refreshFollowing() }
         } else {
             ScrollView {
-                LazyVGrid(columns: columns, spacing: 2) {
+                LazyVGrid(columns: columns, spacing: 8) {
                     ForEach(Array(creators.following.enumerated()),
                             id: \.element.id) { index, clip in
-                        Button {
-                            Haptics.tap()
-                            openFollowingIndex = index
-                        } label: {
-                            followingTile(clip)
-                        }
-                        .buttonStyle(.plain)
+                        // Same tile as Explore. The creator page is a real target on the
+                        // handle row now rather than a long-press affordance nothing
+                        // advertised.
+                        ClipTile(
+                            clip: Clip(creatorRow: clip),
+                            onOpen: { openFollowingIndex = index },
+                            onCreator: { if let h = clip.author_handle { openHandle = h } }
+                        )
                         .matchedTransitionSource(id: clip.id, in: zoom)
                         .clipTileFadeIn(index: index)
-                        // The creator page is no longer the tap target, so it gets the
-                        // platform's own "act on this item" gesture instead of vanishing.
-                        .contextMenu {
-                            if let h = clip.author_handle {
-                                Button {
-                                    Haptics.tap()
-                                    openHandle = h
-                                } label: {
-                                    Label("View @\(h)", systemImage: "person.crop.circle")
-                                }
-                            }
-                        }
                         .task { await creators.loadMoreFollowingIfNeeded(currentItem: clip) }
                     }
                 }
-                .padding(.top, 2)
+                .padding(.horizontal, VoiidSpacing.md)
+                .padding(.top, 4)
                 Color.clear.frame(height: 100)
             }
             .refreshable { await creators.refreshFollowing() }
         }
     }
 
-    private func followingTile(_ clip: CreatorService.CreatorClipRow) -> some View {
-        // Aspect ratio on the CELL, not the image — see the note in CreatorProfileView.
-        // scaledToFill reports an unbounded ideal height, so a tile that constrains only the
-        // image depends on its container handing down a definite size. That holds here today
-        // and does not in a VStack, which is exactly how the profile grid came to overlap.
-        ZStack(alignment: .bottomLeading) {
-            ClipThumbnail(url: clip.thumb_url)
-                .scaledToFill()
-            LinearGradient(colors: [.clear, .black.opacity(0.72)],
-                           startPoint: .center, endPoint: .bottom)
-            VStack(alignment: .leading, spacing: 1) {
-                if let h = clip.author_handle {
-                    HStack(spacing: 2) {
-                        Text("@\(h)")
-                            .font(VoiidFont.rounded(10, .semibold))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.8)
-                        // Real field on the joined author row — shown only when the server
-                        // says so, never as a default.
-                        if clip.author_verified == true {
-                            Image(systemName: "checkmark.seal.fill")
-                                .font(.system(size: 8.5))
-                                .foregroundColor(VoiidColor.accentSoft)
-                                // The seal must not be the thing that gets compressed when a
-                                // long handle runs out of room — the Text shrinks, the badge
-                                // keeps its size.
-                                .layoutPriority(1)
-                        }
-                        Spacer(minLength: 0)
-                    }
-                }
-                HStack(spacing: 3) {
-                    Image(systemName: "play.fill").font(.system(size: 8))
-                    Text(ClipCount.compact(clip.view_count))
-                        .font(VoiidFont.rounded(10, .semibold))
-
-                    Spacer(minLength: 4)
-
-                    if let text = ClipDuration.label(clip.duration_ms) {
-                        Text(text)
-                            .font(VoiidFont.rounded(10, .semibold))
-                            .monospacedDigit()
-                    }
-                }
-            }
-            .foregroundColor(.white)
-            .shadow(radius: 2)
-            .padding(.horizontal, 6)
-            .padding(.bottom, 6)
-        }
-        .frame(maxWidth: .infinity)
-        .aspectRatio(9.0 / 16.0, contentMode: .fit)
-        .clipped()
-        .contentShape(Rectangle())
-    }
 
     @ViewBuilder
     private var exploreContent: some View {
@@ -364,32 +314,29 @@ struct ClipsFeedView: View {
 
     private var grid: some View {
         ScrollView {
-            LazyVGrid(columns: columns, spacing: 2) {
+            LazyVGrid(columns: columns, spacing: 8) {
                 ForEach(Array(engine.clips.enumerated()), id: \.element.id) { index, clip in
-                    Group {
-                        if clip.uploadState == .none {
-                            Button {
-                                Haptics.tap()
-                                openIndex = index
-                            } label: {
-                                tile(clip)
-                            }
-                            .buttonStyle(.plain)
-                            .matchedTransitionSource(id: clip.id, in: zoom)
-                        } else {
-                            // An in-flight or failed tile is NOT wrapped in the open-player
-                            // button. It has no server row to play, and more importantly a
-                            // Button's label swallows every touch inside it — the failed
-                            // tile's own Retry and Dismiss controls were unreachable while
-                            // they lived in there.
-                            tile(clip)
-                        }
-                    }
+                    // ClipTile carries its own open/creator/retry targets, so an in-flight
+                    // or failed tile no longer needs different wrapping: a Button's label
+                    // swallows every touch inside it, which is how the failed tile's Retry
+                    // and Dismiss became unreachable when the whole tile was one button.
+                    ClipTile(
+                        clip: clip,
+                        onOpen: { if clip.uploadState == .none { openIndex = index } },
+                        onCreator: { if let h = clip.authorHandle { openHandle = h } },
+                        onRetry: { engine.retryUpload(clip.id) },
+                        onDismissFailed: { engine.discardFailedUpload(clip.id) },
+                        canRetry: engine.canRetryUpload(clip.id)
+                    )
+                    .matchedTransitionSource(id: clip.id, in: zoom)
                     .clipTileFadeIn(index: index)
                     .task { await engine.loadMoreIfNeeded(currentItem: clip) }
                 }
             }
-            .padding(.top, 2)
+            .padding(.horizontal, VoiidSpacing.md)
+            // Clears the floating avatar, which would otherwise sit on the corner of the
+            // top-right tile and hide its view count.
+            .padding(.top, 4)
 
             if engine.loadingMore {
                 ProgressView()
@@ -402,174 +349,89 @@ struct ClipsFeedView: View {
         .refreshable { await engine.refresh() }
     }
 
-    // MARK: - Tile
+    // MARK: - Top bar
 
-    private func tile(_ clip: Clip) -> some View {
-        ZStack(alignment: .bottomLeading) {
-            ClipThumbnail(url: clip.thumbURL, localPath: clip.localThumbPath)
-                .aspectRatio(9.0 / 16.0, contentMode: .fill)
-                .clipped()
-
-            // Scrim: the view count sits on arbitrary user video, so it needs its own
-            // contrast floor rather than relying on the frame being dark.
-            LinearGradient(colors: [.clear, .black.opacity(0.7)],
-                           startPoint: .center, endPoint: .bottom)
-
-            switch clip.uploadState {
-            case .uploading(let progress):
-                uploadOverlay(progress: progress)
-            case .failed(let message):
-                failedOverlay(clip: clip, message: message)
-            case .none:
-                // Views left, runtime right — the two facts you actually scan a grid for.
-                // Duration is real data (`durationMs` on the row), not decoration, and it is
-                // hidden rather than faked when the row predates the column being populated.
-                HStack(spacing: 3) {
-                    Image(systemName: "play.fill").font(.system(size: 9))
-                    Text(ClipCount.compact(clip.viewCount))
-                        .font(VoiidFont.rounded(11, .semibold))
-
-                    Spacer(minLength: 4)
-
-                    if let text = ClipDuration.label(clip.durationMs) {
-                        Text(text)
-                            .font(VoiidFont.rounded(11, .semibold))
-                            .monospacedDigit()
-                    }
-                }
-                .foregroundColor(.white)
-                .shadow(radius: 2)
-                .padding(.horizontal, 6)
-                .padding(.bottom, 6)
-            }
+    /// The scope pills and the actions on one line.
+    ///
+    /// EVERY control here is 44pt tall and centre-aligned, so their centres line up exactly,
+    /// and every VISIBLE shape is 38pt — the pills' track, the action circles, the avatar.
+    /// Matching the visible height is what makes the row read as aligned; matching only the
+    /// 44pt targets would leave the visible pieces off by their differing insets.
+    ///
+    /// If one of these changes, they all change. A pill at 38 beside a circle at 36 is the
+    /// misalignment this row was built to fix.
+    private var topBar: some View {
+        HStack(spacing: 8) {
+            scopeStrip
+            Spacer(minLength: VoiidSpacing.sm)
+            actions
         }
-        .contentShape(Rectangle())
+        // The row owns the horizontal inset, so the pills' leading edge and the grid's
+        // first column share one margin — they were on VoiidSpacing.md and the grid on its
+        // own padding before, which is why the pills did not line up with the tiles.
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.top, VoiidSpacing.xs)
+        .padding(.bottom, VoiidSpacing.sm)
     }
 
-    private func uploadOverlay(progress: Double) -> some View {
-        ZStack {
-            Color.black.opacity(0.45)
-            VStack(spacing: 6) {
-                ProgressView(value: progress)
-                    .progressViewStyle(.linear)
-                    .tint(VoiidColor.primary)
-                    .frame(width: 56)
-                Text("Uploading")
-                    .font(VoiidFont.rounded(10, .medium))
-                    .foregroundColor(.white)
-            }
-        }
-    }
+    // MARK: - Actions
 
-    /// THE ONE TILE WHERE A MIS-TAP COSTS THE USER A VIDEO. Retry and Dismiss sit millimetres
-    /// apart inside a third of a phone width, and Dismiss deletes an export the user has
-    /// already waited through — so both get a real ≥44pt frame rather than the 10pt text
-    /// buttons this had, and Retry gets the visible capsule so the two do not read alike.
-    private func failedOverlay(clip: Clip, message: String) -> some View {
-        ZStack {
-            Color.black.opacity(0.55)
-            VStack(spacing: 2) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 16)).foregroundColor(VoiidColor.error)
-                Text("Upload failed")
-                    .font(VoiidFont.rounded(10, .semibold)).foregroundColor(.white)
+    /// The reference puts ONE floating avatar in the top-right and nothing else, so the tab
+    /// is the grid and nothing but the grid. Compose and My Clips still have to be reachable,
+    /// so they ride the same floating cluster rather than reinstating a header bar.
+    ///
+    /// Each control sits on its own blurred circle: they float over arbitrary user video, and
+    /// a bare glyph on a bright frame is unreadable. The scope switch that used to live here
+    /// moved into the grid as a scrolling pill pair (see `scopeStrip`) — it belongs to the
+    /// content, not to the chrome.
+    private var actions: some View {
+        HStack(spacing: 8) {
+            floatingButton("square.grid.3x3", label: "My clips") { showMine = true }
 
-                // Retry comes FIRST and Dismiss is the quiet one: the video has already cost
-                // the user an export, and offering only "Dismiss" (as this did) threw that
-                // away as the single available action.
-                if engine.canRetryUpload(clip.id) {
-                    Button {
-                        Haptics.tap()
-                        engine.retryUpload(clip.id)
-                    } label: {
-                        Text("Retry")
-                            .font(VoiidFont.rounded(12, .semibold))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, VoiidSpacing.md)
-                            .frame(height: 30)
-                            .background(Capsule().fill(VoiidColor.fieldFill))
-                            .padding(.vertical, 7)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(SoftPressStyle())
-                }
+            floatingButton("plus", label: "New clip") { startCompose() }
 
-                Button {
-                    Haptics.tap()
-                    engine.discardFailedUpload(clip.id)
-                } label: {
-                    Text("Dismiss")
-                        .font(VoiidFont.rounded(12, .medium))
-                        .foregroundColor(.white.opacity(0.7))
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 44)
-                        .contentShape(Rectangle())
-                }
-            }
-            .padding(.horizontal, VoiidSpacing.xs)
-        }
-        .accessibilityLabel("Upload failed. \(message)")
-    }
-
-    // MARK: - Header
-
-    private var header: some View {
-        HStack(spacing: VoiidSpacing.xs) {
-            Text("Clips")
-                .font(VoiidFont.rounded(28, .bold))
-                .foregroundColor(VoiidColor.textPrimary)
-            Spacer()
-            // `square.grid.3x3` because that is literally what the destination is. The old
-            // `person.crop.square.filled.and.at.rectangle` was unreadable at 22pt and named
-            // nothing a user would recognise.
-            NavigationLink {
-                MyClipsView().environmentObject(engine)
-            } label: {
-                Image(systemName: "square.grid.3x3")
-                    .font(.system(size: 20))
-                    .foregroundColor(VoiidColor.textPrimary)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .accessibilityLabel("My clips")
-
-            // Shown only once a creator profile exists — before that there is no page to
-            // open, and the handle picker belongs to the compose flow, not to a stray
-            // toolbar button.
+            // Shown only once a creator profile exists: before that there is no page to open,
+            // and the handle picker belongs to the compose flow, not to a stray button.
             if let mine = creators.me {
                 Button {
                     Haptics.tap()
                     openHandle = mine.handle
                 } label: {
-                    // The user's own face is the identity anchor for the whole surface; a
-                    // generic `person.circle` told them nothing about whose clips these are.
                     myAvatar(mine)
-                        .frame(width: 28, height: 28)
+                        .frame(width: 38, height: 38)
                         .clipShape(Circle())
                         // The accent ring marks this one avatar as YOURS. Every other avatar
-                        // on the surface (tiles, creator pages) is unringed, so the ring is
-                        // the only thing distinguishing "me" from "someone" at 28pt.
-                        .overlay(Circle().stroke(VoiidColor.accent, lineWidth: 1.5).padding(-2.5))
+                        // on the surface is unringed, so the ring is the only thing telling
+                        // "me" from "someone" at 36pt.
+                        .overlay(Circle().stroke(VoiidColor.accent, lineWidth: 2).padding(-3))
                         .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
                 }
-                .accessibilityLabel("My creator profile")
+                .buttonStyle(SoftPressStyle())
+                .accessibilityLabel("Your creator profile, @\(mine.handle)")
             }
-
-            Button {
-                Haptics.tap()
-                startCompose()
-            } label: {
-                Image(systemName: "plus.circle.fill")
-                    .font(.system(size: 28))
-                    .foregroundColor(VoiidColor.primary)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .accessibilityLabel("New clip")
         }
-        .padding(.horizontal, VoiidSpacing.md)
-        .padding(.vertical, VoiidSpacing.xs)
+    }
+
+    private func floatingButton(_ icon: String, label: String,
+                                _ action: @escaping () -> Void) -> some View {
+        Button {
+            Haptics.tap()
+            action()
+        } label: {
+            Image(systemName: icon)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(VoiidColor.textPrimary)
+                .frame(width: 38, height: 38)
+                // A material, not a flat fill: this floats over video, and the reference's
+                // own chrome reads as a layer above the content rather than a hole in it.
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay(Circle().stroke(VoiidColor.divider, lineWidth: 0.5))
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(SoftPressStyle())
+        .accessibilityLabel(label)
     }
 
     /// Reuses ClipThumbnail — an avatar is the same problem as a cover frame: a presigned
@@ -577,12 +439,13 @@ struct ClipsFeedView: View {
     @ViewBuilder
     private func myAvatar(_ p: CreatorService.Profile) -> some View {
         if let url = p.avatar_url {
-            ClipThumbnail(url: url).scaledToFill()
+            // ClipThumbnail fills internally; a second scaledToFill leaves it unbounded.
+            ClipThumbnail(url: url)
         } else {
             ZStack {
                 Circle().fill(VoiidColor.fieldFill)
                 Text(String(p.handle.prefix(1)).uppercased())
-                    .font(VoiidFont.rounded(13, .semibold))
+                    .font(VoiidFont.rounded(15, .semibold))
                     .foregroundColor(VoiidColor.textSecondary)
             }
         }

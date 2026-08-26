@@ -239,11 +239,28 @@ struct CreatorProfileView: View {
     ///
     /// STILL NOT BUTTONS. There is no followers list to open, and a control that presses but
     /// goes nowhere is exactly the dead affordance this screen was fixed for.
+    ///
+    /// Followers/Following are HIDDEN behind `ClipsFeatureFlags.showSocialCounts` rather
+    /// than deleted: the columns are populated, the API returns them, and the layout is
+    /// finished — flipping the flag to `true` is the whole of turning them back on. They
+    /// are commented out nowhere, so they keep compiling and cannot rot.
     private func counts(_ p: CreatorService.Profile) -> some View {
         HStack(spacing: 18) {
-            countItem(ClipCount.compact(p.clip_count), "Clips")
-            countItem(ClipCount.compact(p.follower_count), "Followers")
-            countItem(ClipCount.compact(p.following_count), "Following")
+            // A nil count means the server WITHHELD it (the creator hides their counts, or
+            // the grid is hidden so clip_count would leak what was withheld). The item is
+            // omitted entirely rather than shown as 0 — 0 is a factual claim, and this
+            // profile is not making it.
+            if let clips = p.clip_count {
+                countItem(ClipCount.compact(clips), "Clips")
+            }
+            if ClipsFeatureFlags.showSocialCounts {
+                if let followers = p.follower_count {
+                    countItem(ClipCount.compact(followers), "Followers")
+                }
+                if let following = p.following_count {
+                    countItem(ClipCount.compact(following), "Following")
+                }
+            }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, VoiidSpacing.md)
@@ -456,6 +473,22 @@ struct CreatorProfileView: View {
                     Haptics.tap()
                     showEdit = true
                 }
+                // Owner-only, and next to Edit rather than buried in Settings: these control
+                // THIS surface, and the reference keeps account settings in a separate sheet
+                // precisely because the public profile and the private account are not the
+                // same identity.
+                NavigationLink {
+                    CreatorPrivacyView().environmentObject(creators)
+                } label: {
+                    Image(systemName: "lock")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(VoiidColor.textPrimary)
+                        .frame(width: 38, height: 38)
+                        .background(VoiidColor.fieldFill)
+                        .clipShape(Circle())
+                        .overlay(Circle().stroke(VoiidColor.divider, lineWidth: 1))
+                }
+                .accessibilityLabel("Profile privacy")
             } else {
                 followButton(p)
             }

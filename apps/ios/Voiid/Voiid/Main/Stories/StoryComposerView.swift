@@ -31,6 +31,9 @@ struct StoryComposerView: View {
 
     // Audience: pre-selected with every contact you can reach (§2.2), or the last custom set.
     @State private var audience: Set<String> = []
+    /// Seeded from the setting in `.onAppear`, then overridable for THIS post only —
+    /// flipping it here never rewrites the default.
+    @State private var keepThis = true
 
     /// Everyone reachable — the directory UNION 1:1 conversation peers. Using the directory
     /// alone silently excluded anyone you chat with but never saved as a contact, so their
@@ -50,6 +53,7 @@ struct StoryComposerView: View {
                 if hasMedia {
                     VoiidTextField(placeholder: "Add a caption…", text: $caption)
                     audienceChip
+                    keepChip
                 }
                 if let errorText {
                     Text(errorText).font(VoiidFont.caption).foregroundColor(VoiidColor.error)
@@ -63,7 +67,10 @@ struct StoryComposerView: View {
             .background(VoiidColor.background.ignoresSafeArea())
             .navigationTitle("New Moment").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } } }
-            .onAppear { if audience.isEmpty { audience = Set(StorySettings.shared.lastCustomAudience ?? Array(everyoneIds)) } }
+            .onAppear {
+                if audience.isEmpty { audience = Set(StorySettings.shared.lastCustomAudience ?? Array(everyoneIds)) }
+                keepThis = StorySettings.shared.archiveByDefault
+            }
             .onChange(of: pickerItem) { _, item in Task { await loadPicked(item) } }
             .fullScreenCover(isPresented: $showCamera) {
                 StoryCameraView { photo, video in Task { await handleCamera(photo: photo, video: video) } }
@@ -101,6 +108,28 @@ struct StoryComposerView: View {
                 Image(systemName: icon).font(.system(size: 40)).foregroundColor(VoiidColor.primary)
                 Text(label).font(VoiidFont.headline).foregroundColor(VoiidColor.textPrimary)
             })
+    }
+
+    /// Deliberately a Toggle, not a navigation chip: it is a binary with no second
+    /// screen behind it, so a chevron would promise a destination that does not exist.
+    /// Same 52pt height and surface as `audienceChip` so the two read as one stack.
+    private var keepChip: some View {
+        HStack(spacing: VoiidSpacing.sm) {
+            Image(systemName: "archivebox").foregroundColor(VoiidColor.primary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Keep in my archive").foregroundColor(VoiidColor.textPrimary)
+                // States the boundary at the point of decision, where it actually
+                // matters — this is the author's copy, not a change to the audience.
+                Text("Only you, on this device")
+                    .font(VoiidFont.caption).foregroundColor(VoiidColor.textSecondary)
+            }
+            Spacer()
+            Toggle("", isOn: $keepThis).labelsHidden().tint(VoiidColor.primary)
+        }
+        .padding(.horizontal, VoiidSpacing.md).frame(height: 52)
+        .background(VoiidColor.surfaceCard).clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md))
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Keeps your own copy of this moment after it expires")
     }
 
     private var audienceChip: some View {
@@ -155,11 +184,13 @@ struct StoryComposerView: View {
                 if let img = previewImage {
                     let (data, w, h) = try encodeImage(img)
                     await StoryEngine.shared.postStory(mediaData: data, mime: "image/jpeg", caption: cap,
-                                                       width: w, height: h, durationMs: nil, audienceUserIds: ids)
+                                                       width: w, height: h, durationMs: nil, audienceUserIds: ids,
+                                                       archive: keepThis)
                 } else if let video = pickedVideoURL {
                     let (data, w, h, ms) = try await encodeVideo(video)
                     await StoryEngine.shared.postStory(mediaData: data, mime: "video/mp4", caption: cap,
-                                                       width: w, height: h, durationMs: ms, audienceUserIds: ids)
+                                                       width: w, height: h, durationMs: ms, audienceUserIds: ids,
+                                                       archive: keepThis)
                 }
                 dismiss()
             } catch let e as CapError {

@@ -78,5 +78,30 @@ enum StoriesSchema {
                 t.primaryKey(["story_id", "viewer_user_id"])
             }
         }
+
+        // --- v3_story_archive ------------------------------------------------
+        // Append-only, per the rule at the top of this file: v2_stories above is
+        // never edited.
+        //
+        // Archiving is AUTHOR-ONLY and that is a privacy decision, not a
+        // limitation. A moment's promise is "these people, 24 hours"; the keys
+        // expire with it. Keeping the VIEWER's copy alive past expiry would
+        // quietly retract that promise for content someone else authored, so
+        // only `is_mine` rows are ever spared by the sweep.
+        //
+        // No new blob is written: `postStory` already caches the plaintext it
+        // just encrypted (StoryEngine, "Optimistic local row"), so archiving is
+        // purely a decision NOT to delete that file. Nothing extra is uploaded
+        // and the server is not involved — an archived moment is local to the
+        // author's device.
+        m.registerMigration("v3_story_archive") { db in
+            try db.alter(table: "stories") { t in
+                // NULL = not archived. Set to epoch seconds when the author keeps it.
+                t.add(column: "archived_at", .integer)
+            }
+            // The archive grid reads "mine, archived, newest first".
+            try db.create(index: "idx_stories_archived", on: "stories",
+                          columns: ["archived_at"])
+        }
     }
 }

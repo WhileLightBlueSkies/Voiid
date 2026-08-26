@@ -259,8 +259,12 @@ struct PrivacySettingsView: View {
             VoiidCardSection(
                 "Moments",
                 footer: """
-                    If you turn this off, people won’t know when you’ve viewed their moment — \
+                    If you turn receipts off, people won’t know when you’ve viewed their moment — \
                     and you won’t see who viewed yours.
+
+                    Kept moments stay on this device only, after the 24 hours are up. \
+                    Nobody else can see them, and moments other people share with you \
+                    always expire.
                     """
             ) {
                 VoiidSettingsRow(icon: "eye.circle", title: "Moment view receipts") {
@@ -269,6 +273,19 @@ struct PrivacySettingsView: View {
                         .tint(VoiidColor.primary)
                 }
                 .accessibilityHint("Lets people see that you viewed their moment, and shows you who viewed yours")
+
+                VoiidRowDivider()
+
+                // Author-only, and the footer says so plainly: this keeps YOUR copy of
+                // YOUR moment and changes nothing about who could see it. Kept in the
+                // same card as receipts because both are "what happens to a moment after
+                // it is posted", but they are independent switches.
+                VoiidSettingsRow(icon: "archivebox", title: "Keep my moments") {
+                    Toggle("", isOn: $storySettings.archiveByDefault)
+                        .labelsHidden()
+                        .tint(VoiidColor.primary)
+                }
+                .accessibilityHint("Saves your own moments to your archive on this device after they expire")
             }
 
             // MARK: Map location

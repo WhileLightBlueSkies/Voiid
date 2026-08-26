@@ -658,6 +658,20 @@ final class ChatStore: ObservableObject {
             vm.deletedForEveryone = d.deletedForEveryone ?? false
             vm.forwarded = d.forwarded ?? false
             if let q = d.quotedPreview { vm.replyToText = q; vm.replyToSender = d.quotedSender }
+            // Quoted moment (story reply). Carried through exactly like the quoted-message
+            // snapshot above so the bubble treats the two as siblings; the thumbnail itself
+            // is resolved from StoryStore inside the view, never cached onto the VM, because
+            // the story can expire between one render and the next.
+            if let sid = d.storyQuoteId {
+                vm.storyQuoteId = sid
+                vm.storyQuoteAuthorId = d.storyQuoteAuthorId
+                vm.storyQuoteAt = d.storyQuoteCreatedAt.map { Date(timeIntervalSince1970: TimeInterval($0) / 1000) }
+                // A story REACTION is a body that is nothing but emoji — the quick-tap rail
+                // sends `text: ""` with the emoji in `reaction`, and ChatEngine resolves the
+                // body to that emoji. Detecting it by shape (rather than adding a wire flag)
+                // keeps this working for Android senders too, whose envelope is identical.
+                vm.isStoryReaction = VMessage.isSoloEmoji(d.text)
+            }
             // Reactions: display the peer's reaction if any, else our own. (Per-user map is
             // persisted in the engine; single-emoji display is a UI simplification.)
             if let reactions = d.reactions, !reactions.isEmpty {

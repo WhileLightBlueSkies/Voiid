@@ -62,6 +62,15 @@ struct StoryViewerView: View {
             .scrollTargetBehavior(.paging)
             .scrollPosition(id: $scrolledID)
             .scrollIndicators(.hidden)
+            // THE OFF-CENTRE BUG. `.ignoresSafeArea()` below expands this view's layout
+            // REGION, but a ScrollView independently re-inserts the safe area as content
+            // insets on its own content (the default `automatic` behaviour). So each page —
+            // already sized to the FULL screen height by the `.frame` above — was pushed down
+            // by the top inset and clipped by the same amount at the bottom: on a notched
+            // phone the whole story sat ~59pt low with its last ~59pt cut off, which is the
+            // "not centred" report. Zeroing the scroll content margins is what actually makes
+            // a page's frame and the screen the same rectangle.
+            .contentMargins(.all, 0, for: .scrollContent)
             .onChange(of: scrolledID) { _, newValue in
                 if let newValue, newValue != authorIndex { authorIndex = newValue }
             }
@@ -118,11 +127,19 @@ private struct StoryContextPlayer: View {
     let onDismiss: () -> Void
 
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var engine = StoryEngine.shared
     @StateObject private var players = StoryPlayerPool()
     @State private var index: Int = 0
     @State private var progress: Double = 0
-    @State private var paused = false
+    /// Held down by the LONG-PRESS only. Every other reason to stop is derived — see `paused`.
+    @State private var pressPaused = false
+    /// The app is not frontmost. AVPlayer is stopped by the system when we background, but
+    /// nothing was stopping the 30 Hz progress timer: a story backgrounded mid-playback kept
+    /// burning progress against a frozen frame and could auto-advance — or auto-CLOSE the
+    /// viewer — entirely off screen, so the user came back to a different story or to no
+    /// viewer at all.
+    @State private var scenePaused = false
     @State private var chromeHidden = false
     @State private var muted = true
     @State private var image: UIImage?
@@ -144,21 +161,53 @@ private struct StoryContextPlayer: View {
     private var current: Story? { stories.indices.contains(index) ? stories[index] : nil }
     private var activePlayer: AVPlayer? { current.flatMap { players.player(for: $0.id) } }
 
+    /// THE single source of truth for "the story is not running".
+    ///
+    /// This was a stored flag that four different places wrote by hand, and one of them —
+    /// the viewers sheet — never wrote it back. Opening Views paused the timer and the video
+    /// and then had no `.onDisappear` to undo either, so the story sat frozen forever: no
+    /// auto-advance, no auto-close. The reply sheet's own resume had the mirror-image defect,
+    /// `if isActive && !paused { play() }` evaluated while `paused` was still true, so video
+    /// never actually resumed there either — only the progress bar did.
+    ///
+    /// Deriving it means a sheet cannot leak a pause: `showViewers`/`showReply` go false when
+    /// the sheet dismisses BY ANY ROUTE — the Done button, an interactive swipe-down, or a
+    /// programmatic dismiss — and `paused` follows on its own with nothing to forget.
+    ///
+    /// `progress` is deliberately NOT reset by any of this. It accumulates in
+    /// `advanceProgress`, so a resume picks the segment up exactly where it stopped rather
+    /// than restarting it.
+    private var paused: Bool {
+        pressPaused || scenePaused || showViewers || showReply
+    }
+
     var body: some View {
         GeometryReader { geo in
             ZStack {
                 Color.black
+                // The canvas is pinned to the PAGE, explicitly, before anything is drawn on
+                // it. `maxWidth/maxHeight: .infinity` only offers to grow — it does not stop
+                // an oversized child from growing the ZStack past the page and dragging the
+                // centre of the layout off screen with it, which is exactly what the
+                // unbounded `.scaledToFill()` backdrop was doing (see `backdropLayer`).
                 content
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(width: geo.size.width, height: geo.size.height)
                     .clipped()
 
                 // Tap zones: left third = back, right two-thirds = forward.
+                //
+                // They stop short of the footer. Previously they ran the full page height, so
+                // the invisible forward-tap sheet sat directly ON TOP of the emoji rail and
+                // the reply field — a near-miss on a heart advanced the story instead, and the
+                // rail's own 44pt targets were unreachable at their edges. The reserved strip
+                // is the footer's real height, so the controls own their own space.
                 HStack(spacing: 0) {
                     Color.clear.contentShape(Rectangle()).frame(width: geo.size.width / 3)
                         .onTapGesture { back() }
                     Color.clear.contentShape(Rectangle())
                         .onTapGesture { forward() }
                 }
+                .padding(.bottom, chromeHidden ? 0 : footerReserve)
 
                 scrim(pageHeight: geo.size.height)
                     .opacity(chromeHidden ? 0 : 1)
@@ -186,9 +235,11 @@ private struct StoryContextPlayer: View {
             }
             // Long-press pauses the timer and fades the chrome; release resumes.
             .onLongPressGesture(minimumDuration: 0.25, maximumDistance: 24, pressing: { pressing in
-                paused = pressing
+                pressPaused = pressing
                 withAnimation { chromeHidden = pressing }
-                if pressing { players.pauseAll() } else if isActive { activePlayer?.play() }
+                // Release resumes through the same one path every other resume uses, so a
+                // release while a sheet is somehow still up cannot start playback under it.
+                if pressing { players.pauseAll() } else { syncPlayback() }
             }, perform: {})
             // Swipe down dismisses.
             .simultaneousGesture(
@@ -197,6 +248,11 @@ private struct StoryContextPlayer: View {
                 }
             )
         }
+        // ONE place turns playback on and off, for every reason there is to pause: the
+        // long-press, the two sheets, and backgrounding. Two `.onDisappear` closures doing it
+        // by hand is what drifted apart and produced the stuck-paused bug.
+        .onChange(of: paused) { _, _ in syncPlayback() }
+        .onChange(of: scenePhase) { _, phase in scenePaused = (phase != .active) }
         .onChange(of: isActive) { _, active in if active { start() } else { stop() } }
         .onChange(of: index) { _, _ in loadCurrent() }
         .onAppear { index = context.firstUnviewedIndex; if isActive { start() } }
@@ -222,7 +278,15 @@ private struct StoryContextPlayer: View {
             } else if let image {
                 ZStack {
                     backdropLayer
-                    Image(uiImage: image).resizable().scaledToFit()
+                    // FULL-BLEED for anything shot roughly in the screen's shape, letterboxed
+                    // for anything that isn't. `.scaledToFit()` alone was the "cropped it up"
+                    // report: a 9:16 story on a 19.5:9 phone is only a few percent off the
+                    // page, yet it still drew bands and let the blurred backdrop bleed through
+                    // at the top and bottom of what should read as an edge-to-edge photo.
+                    //
+                    // But fill is not free — it crops the overflowing axis — so it is applied
+                    // only where the crop is a sliver. See `mediaFills`.
+                    storyImage(image)
                 }
             } else {
                 failureText("This moment couldn't be loaded")
@@ -231,6 +295,59 @@ private struct StoryContextPlayer: View {
             failureText("This moment couldn't be loaded")
         case .gone:
             failureText("This moment is no longer available")
+        }
+    }
+
+    /// How far from the page's own aspect ratio a story may be before filling it would cost
+    /// real content. 0.25 is a quarter off the page's ratio: on a 19.5:9 phone (0.462) that
+    /// admits everything from ~0.35 to ~0.58 — the whole band of portrait capture, 9:16
+    /// included, where the crop is a sliver off one axis. A 4:3 photo (1.333) and a square are
+    /// nowhere near it, and a landscape frame filled to a 19.5:9 page would lose two thirds of
+    /// its width: that is the "vertical sliver" this threshold exists to refuse.
+    private static let fillRatioTolerance: Double = 0.25
+
+    /// True when `image` is close enough to the page's shape that filling it crops only an
+    /// edge. Compared as a RELATIVE difference so the same tolerance means the same thing on
+    /// an SE (0.562) and on a Dynamic Island phone (0.462) instead of being generous on one
+    /// and strict on the other.
+    private func mediaFills(_ image: UIImage) -> Bool {
+        let page = pageSize
+        guard page.width > 0, page.height > 0, image.size.width > 0, image.size.height > 0
+        else { return false }
+        let pageRatio = page.width / page.height
+        let mediaRatio = image.size.width / image.size.height
+        return abs(mediaRatio - pageRatio) / pageRatio <= Self.fillRatioTolerance
+    }
+
+    /// The story frame itself.
+    ///
+    /// Near-page-ratio media fills; everything else keeps its true aspect over the blurred
+    /// backdrop, because a caption burned into the bottom of a 4:3 photo or a face at the edge
+    /// of a landscape shot is exactly what an unconditional fill would cut off.
+    ///
+    /// EITHER branch is explicitly bounded to the page and clipped, for the same reason the
+    /// backdrop is (see below): `.scaledToFill()` deliberately overflows, and an unbounded
+    /// overflow reports its OVERSIZED shape as the layer's size, grows the enclosing stack and
+    /// drags the centre of the layout off screen. The `.frame` is what stops that; the fill
+    /// still happens inside it.
+    @ViewBuilder private func storyImage(_ image: UIImage) -> some View {
+        if mediaFills(image) {
+            Color.clear
+                .overlay {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                }
+                .frame(width: pageSize.width, height: pageSize.height)
+                .clipped()
+        } else {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFit()
+                // Bounded too. `.scaledToFit()` cannot overflow, but stating the page keeps
+                // both branches sizing identically so a swap between them never shifts the
+                // centre by a point.
+                .frame(width: pageSize.width, height: pageSize.height)
         }
     }
 
@@ -244,9 +361,21 @@ private struct StoryContextPlayer: View {
     /// untouched — this adds a layer, it does not crop the story.
     @ViewBuilder private var backdropLayer: some View {
         if let backdrop {
-            Image(uiImage: backdrop)
-                .resizable()
-                .scaledToFill()
+            // `.scaledToFill()` DELIBERATELY overflows — that is what filling means — so it
+            // must be clamped to the page and clipped, or it reports its overflowed size as
+            // the layer's size. Unclamped it grew the enclosing ZStack, and the
+            // `.scaledToFit()` media stacked on top then centred itself against that larger
+            // rectangle instead of against the screen: a portrait photo behind a landscape
+            // one pushed the story visibly off-centre. `.frame` here sizes the layer; the
+            // fill still happens inside it.
+            Color.clear
+                .overlay {
+                    Image(uiImage: backdrop)
+                        .resizable()
+                        .scaledToFill()
+                }
+                .frame(width: pageSize.width, height: pageSize.height)
+                .clipped()
                 .blur(radius: 28, opaque: true)
                 .overlay(Color.black.opacity(0.4))
                 .allowsHitTesting(false)
@@ -277,9 +406,16 @@ private struct StoryContextPlayer: View {
                 .frame(height: safeArea.top + 120)
             Spacer(minLength: 0)
             // Deep enough for the caption plus the emoji row and the reply field beneath it.
+            //
+            // A flat 35% of the page is 298pt on a 6.7" phone but only 233pt on a 667pt SE —
+            // and the chrome it has to cover is very nearly the SAME height on both, because
+            // the rail and the capsule are fixed sizes. So on the small screen the gradient
+            // ran out before the controls did and the top of the emoji rail sat on raw media.
+            // `footerReserve` is the real measured height of that chrome; taking the larger of
+            // the two makes the scrim proportional on big screens and sufficient on small ones.
             LinearGradient(colors: [.clear, .black.opacity(0.75)],
                            startPoint: .top, endPoint: .bottom)
-                .frame(height: pageHeight * 0.35)
+                .frame(height: max(pageHeight * 0.35, footerReserve + 96))
         }
         .allowsHitTesting(false)
     }
@@ -322,6 +458,13 @@ private struct StoryContextPlayer: View {
             Text(s.caption)
                 .font(VoiidFont.rounded(15, .regular))
                 .foregroundColor(.white)
+                // BOUNDED. The caption shares one VStack with the footer, so an unbounded
+                // caption at AX5 on a 667pt SE grew until it pushed the reply field off the
+                // bottom of the screen — the controls simply left. Four lines is enough for
+                // any caption worth reading at a glance on a 5s story, and the tail truncates
+                // rather than evicting the interface.
+                .lineLimit(4)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, VoiidSpacing.md)
                 .padding(.bottom, VoiidSpacing.sm)
@@ -330,7 +473,9 @@ private struct StoryContextPlayer: View {
 
     @ViewBuilder private var footer: some View {
         if context.isMine {
-            Button { paused = true; players.pauseAll(); showViewers = true } label: {
+            // No hand-written `paused = true` here any more: `showViewers` IS the pause (see
+            // `paused`), and `.onChange(of: paused)` drives the player. One flag, one flip.
+            Button { showViewers = true } label: {
                 let s = current
                 let count = s.map { StoryStore.viewers(storyId: $0.id).count } ?? 0
                 Label(StorySettings.shared.sendViewReceipts ? "\(count) views" : "Views",
@@ -342,21 +487,49 @@ private struct StoryContextPlayer: View {
             .padding(.bottom, safeArea.bottom + VoiidSpacing.sm)
         } else if current?.allowsReplies == true {
             VStack(spacing: VoiidSpacing.sm) {
-                HStack(spacing: VoiidSpacing.md) {
+                // A 30pt glyph is a ~30pt target; six of them in a row on a phone is a
+                // gauntlet. The height comes from PADDING around each emoji rather than from a
+                // `.frame` stretching one — a frame would give the button a 44pt box while the
+                // glyph still drew at 30pt in the middle of it, which looks identical and
+                // hit-tests identically only if `contentShape` agrees. Padding + an explicit
+                // contentShape makes the whole 44pt genuinely tappable.
+                //
+                // `spacing: 0` because the padding now supplies the gaps; keeping VoiidSpacing.md
+                // on top of it would overflow six 44pt targets past a 320pt-wide SE.
+                HStack(spacing: 0) {
                     ForEach(["❤️","😂","😮","😢","👏","🔥"], id: \.self) { emoji in
-                        Button { sendReaction(emoji) } label: { Text(emoji).font(.system(size: 30)) }
-                            .buttonStyle(BouncyEmojiStyle())
+                        Button { sendReaction(emoji) } label: {
+                            Text(emoji)
+                                .font(.system(size: 30))
+                                // NOT scaled by Dynamic Type: at AX5 a 30pt emoji becomes ~90pt
+                                // and six of them cannot share a row on any iPhone. The rail is
+                                // a row of targets, and the target size is what accessibility
+                                // actually needs here — which the 44pt below already guarantees.
+                                .frame(minWidth: 44, minHeight: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(BouncyEmojiStyle())
+                        .accessibilityLabel("React \(emoji)")
                     }
                 }
-                Button { paused = true; players.pauseAll(); showReply = true } label: {
+                .frame(maxWidth: .infinity)
+                Button { showReply = true } label: {
                     HStack {
                         Text("Reply to \(UserDirectory.shared.displayName(context.authorId))…")
                             .foregroundColor(.white.opacity(0.7))
-                        Spacer()
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
                     }
-                    .padding(.horizontal, VoiidSpacing.md).frame(height: 48)
+                    .padding(.horizontal, VoiidSpacing.md)
+                    // `minHeight`, not `height`. A hard 48 clipped the label the moment
+                    // Dynamic Type grew it past the capsule — the field kept its shape and
+                    // ate its own text. A minimum keeps the 44pt+ target on the default size
+                    // and lets the capsule grow with the type instead of cropping it.
+                    .padding(.vertical, VoiidSpacing.sm)
+                    .frame(minHeight: 48)
                     .background(.white.opacity(0.12)).clipShape(Capsule())
                     .overlay(Capsule().stroke(.white.opacity(0.3), lineWidth: 1))
+                    .contentShape(Capsule())
                 }
             }
             .padding(.horizontal, VoiidSpacing.md)
@@ -381,7 +554,6 @@ private struct StoryContextPlayer: View {
         .padding(VoiidSpacing.lg)
         .background(VoiidColor.background.ignoresSafeArea())
         .presentationDetents([.height(260)])
-        .onDisappear { if isActive && !paused { activePlayer?.play() }; paused = false }
     }
 
     private func sendReaction(_ emoji: String) {
@@ -391,6 +563,16 @@ private struct StoryContextPlayer: View {
     }
 
     // MARK: - Playback lifecycle
+
+    /// Makes the video match `paused`. The progress timer needs no equivalent — it reads
+    /// `paused` directly in `advanceProgress` — so this is the whole of the resume path.
+    private func syncPlayback() {
+        guard isActive, !paused, loadState == .ready else {
+            players.pauseAll()
+            return
+        }
+        activePlayer?.play()
+    }
 
     private func start() {
         index = min(max(context.firstUnviewedIndex, 0), max(stories.count - 1, 0))
@@ -440,6 +622,20 @@ private struct StoryContextPlayer: View {
             guard current?.id == target else { return }
             backdrop = filler
         }
+    }
+
+    /// Vertical strip at the bottom of the page that the invisible forward/back tap sheet must
+    /// NOT cover, so the emoji rail and the reply field own their own hit area.
+    ///
+    /// Computed from the same parts the footer is actually built from — the 44pt reaction row,
+    /// the 48pt reply capsule, the spacing between them and the bottom inset — rather than a
+    /// magic number, so it stays correct on an SE (bottom inset 0) and on a Dynamic Island
+    /// phone (34) without a second value to keep in sync. The "views" footer on your OWN story
+    /// is shorter, so this over-reserves slightly there; over-reserving costs a strip of
+    /// forward-tap at the very bottom edge, while under-reserving costs a mis-sent reaction.
+    private var footerReserve: CGFloat {
+        guard !context.isMine else { return 44 + safeArea.bottom + VoiidSpacing.sm }
+        return 44 + VoiidSpacing.sm + 48 + safeArea.bottom + VoiidSpacing.sm
     }
 
     /// Bound the decode to what the screen can actually show — a 12MP still resampled to

@@ -65,6 +65,10 @@ final class ClipService {
         let created_at: String
         var author_name: String?
         var author_photo_url: String?
+        /// LEFT joined from `creator_profiles`, so null for an author with no creator
+        /// profile. The tile falls back to the display name rather than blanking.
+        var author_handle: String?
+        var author_verified: Bool?
         let liked_by_me: Bool
         /// Which renditions exist. Defaulted so a pre-021 backend still decodes.
         var has_sd: Bool = false
