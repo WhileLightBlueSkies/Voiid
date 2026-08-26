@@ -47,6 +47,17 @@ async function publicProfile(row: any, viewerId: string) {
                      where follower_id = $1 and followee_id = $2) as following`,
     [viewerId, row.user_id]
   );
+  const isSelf = row.user_id === viewerId;
+  // The owner always sees their own profile in full — a privacy setting hides you from
+  // OTHER people, and a settings screen that cannot show you your own counts is broken.
+  const hideCounts = row.show_counts === false && !isSelf;
+
+  // Whether the viewer may see the grid. Computed here rather than at each call site so
+  // there is ONE definition of the rule; /:handle/clips reads this same helper.
+  const canSeeGrid = isSelf
+    || row.grid_visibility === 'everyone'
+    || (row.grid_visibility === 'followers' && following);
+
   return {
     handle: row.handle,
     display_name: row.display_name,
@@ -55,12 +66,31 @@ async function publicProfile(row: any, viewerId: string) {
     avatar_url: r2Configured() && row.avatar_r2_key
       ? await presignGet(row.avatar_r2_key).catch(() => null)
       : null,
-    follower_count: row.follower_count,
-    following_count: row.following_count,
-    clip_count: row.clip_count,
+    // Nulled, not zeroed: 0 is a factual claim ("no followers") and would be a lie. null
+    // says "not shown", and the client renders nothing rather than a false number.
+    follower_count: hideCounts ? null : row.follower_count,
+    following_count: hideCounts ? null : row.following_count,
+    // clip_count follows the GRID's visibility, not show_counts: withholding the grid while
+    // still advertising "47 clips" leaks exactly what was being withheld.
+    clip_count: canSeeGrid ? row.clip_count : null,
     is_verified: row.is_verified,
-    is_self: row.user_id === viewerId,
+    is_self: isSelf,
     following,
+
+    // Settings the OWNER needs to render their own controls. Sent only to the owner —
+    // another viewer has no business knowing which switches are set.
+    grid_visibility: isSelf ? row.grid_visibility : undefined,
+    show_counts: isSelf ? row.show_counts : undefined,
+    discoverable: isSelf ? row.discoverable : undefined,
+    allow_follows: isSelf ? row.allow_follows : undefined,
+    allow_comments: isSelf ? row.allow_comments : undefined,
+
+    // Derived, for every viewer: what this profile will let them do. The client should not
+    // re-derive these — the server is the authority, and duplicating the rule is how the
+    // two drift apart.
+    can_see_grid: canSeeGrid,
+    can_follow: isSelf ? false : row.allow_follows !== false,
+    can_comment: row.allow_comments !== false,
   };
 }
 
@@ -188,6 +218,24 @@ router.patch('/me', requireAuth, asyncHandler(async (req, res) => {
     }
   }
 
+  // Privacy settings. Booleans are coerced strictly — `Boolean("false")` is true, which
+  // would turn every "off" sent as a string into "on".
+  for (const field of ['show_counts', 'discoverable', 'allow_follows', 'allow_comments'] as const) {
+    if (req.body?.[field] !== undefined) {
+      vals.push(req.body[field] === true || req.body[field] === 'true');
+      sets.push(`${field} = $${vals.length}`);
+    }
+  }
+
+  if (req.body?.grid_visibility !== undefined) {
+    const v = String(req.body.grid_visibility);
+    if (!['everyone', 'followers', 'nobody'].includes(v)) {
+      return res.status(400).json({ error: 'invalid grid_visibility' });
+    }
+    vals.push(v);
+    sets.push(`grid_visibility = $${vals.length}`);
+  }
+
   if (!sets.length) {
     return res.json({ profile: await publicProfile(existing[0], user_id) });
   }
@@ -271,8 +319,33 @@ router.get('/:handle', requireAuth, asyncHandler(async (req, res) => {
 
 /** GET /creators/:handle/clips — that creator's public grid. */
 router.get('/:handle/clips', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id } = (req as any).auth;
   const limit = clampLimit(req.query.limit, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX);
   const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
+
+  // Enforced HERE too, not only on the profile. Hiding the grid in the profile response
+  // while this endpoint still served it would be a privacy setting that protects nothing —
+  // the grid is one direct call away.
+  const owner = await query<any>(
+    `select user_id, grid_visibility from creator_profiles
+      where lower(handle) = $1 and suspended_at is null`,
+    [String(req.params.handle).toLowerCase()]);
+  if (!owner[0]) return res.status(404).json({ error: 'not found' });
+
+  if (owner[0].user_id !== user_id && owner[0].grid_visibility !== 'everyone') {
+    let allowed = false;
+    if (owner[0].grid_visibility === 'followers') {
+      const [{ following }] = await query<{ following: boolean }>(
+        `select exists (select 1 from creator_follows
+                         where follower_id = $1 and followee_id = $2) as following`,
+        [user_id, owner[0].user_id]);
+      allowed = following;
+    }
+    // 200 with an empty page, not 403: the profile already told the client it cannot see
+    // the grid, and an error here would make a deliberate setting look like a failure.
+    if (!allowed) return res.json({ clips: [], next_cursor: null, hidden: true });
+  }
+
   const rows = await query<any>(
     `select c.id, c.thumb_r2_key, c.caption, c.duration_ms, c.width, c.height,
             c.view_count, c.like_count, c.comment_count, c.created_at
@@ -310,14 +383,20 @@ router.get('/:handle/clips', requireAuth, asyncHandler(async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────────
 router.post('/:handle/follow', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
-  const target = await query<{ user_id: string }>(
-    `select user_id from creator_profiles
+  const target = await query<{ user_id: string; allow_follows: boolean }>(
+    `select user_id, allow_follows from creator_profiles
       where lower(handle) = $1 and suspended_at is null`,
     [String(req.params.handle).toLowerCase()]
   );
   if (!target[0]) return res.status(404).json({ error: 'not found' });
   if (target[0].user_id === user_id) {
     return res.status(400).json({ error: 'cannot follow yourself' });
+  }
+  // Refuses NEW follows only. Existing followers are untouched — removing an audience
+  // someone already built is destructive and must be its own explicit action, never a side
+  // effect of flipping a switch.
+  if (target[0].allow_follows === false) {
+    return res.status(403).json({ error: 'this creator is not accepting new followers' });
   }
 
   // on conflict do nothing makes the call idempotent: a double-tap, or a retry after a

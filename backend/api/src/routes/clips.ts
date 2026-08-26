@@ -569,13 +569,17 @@ router.get('/:id/comments', requireAuth, asyncHandler(async (req, res) => {
   const limit = clampLimit(req.query.limit, COMMENTS_LIMIT_DEFAULT, COMMENTS_LIMIT_MAX);
   const cursor = parseCursor(req.query.cursor);
 
+  // Comments are WITHHELD, never deleted, when the author turns them off — so switching
+  // back on restores the conversation. The join carries the flag so this is one query.
   const rows = await query<any>(
     `select cc.id, cc.clip_id, cc.author_id, cc.text, cc.created_at,
             u.full_name as author_name, u.photo_url as author_photo_url
        from clip_comments cc
        join users u on u.id = cc.author_id
        join clips c on c.id = cc.clip_id and c.removed_at is null
+       left join creator_profiles cp on cp.user_id = c.author_id
       where cc.clip_id = $1 and cc.deleted_at is null
+        and coalesce(cp.allow_comments, true)
         ${cursor ? 'and (cc.created_at, cc.id) > ($2::timestamptz, $3::uuid)' : ''}
       order by cc.created_at asc, cc.id asc
       limit ${limit + 1}`,
@@ -602,6 +606,17 @@ router.post('/:id/comments', requireAuth, asyncHandler(async (req, res) => {
   if (!text) return res.status(400).json({ error: 'text is required' });
   if (text.length > MAX_COMMENT_LEN) {
     return res.status(400).json({ error: `text must be under ${MAX_COMMENT_LEN} chars` });
+  }
+
+  // The author's `allow_comments` gates new comments. Existing ones are withheld from
+  // reads rather than deleted (see GET /:id/comments), so turning this back on restores the
+  // conversation instead of having destroyed it.
+  const openToComments = await query<{ allowed: boolean }>(
+    `select coalesce(cp.allow_comments, true) as allowed
+       from clips c left join creator_profiles cp on cp.user_id = c.author_id
+      where c.id = $1`, [clipId]);
+  if (openToComments[0] && openToComments[0].allowed === false) {
+    return res.status(403).json({ error: 'comments are turned off for this creator' });
   }
 
   const live = await query<{ one: number }>(

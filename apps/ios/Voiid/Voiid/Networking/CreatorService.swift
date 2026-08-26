@@ -39,12 +39,35 @@ final class CreatorService {
         var link_url: String?
         /// Short-lived presigned GET, or null when R2 is unconfigured / the fetch failed.
         var avatar_url: String?
-        var follower_count: Int
-        var following_count: Int
-        var clip_count: Int
+        // Optional: null means "not shown", which is different from 0. See the privacy
+        // note below.
+        var follower_count: Int?
+        var following_count: Int?
+        var clip_count: Int?
         var is_verified: Bool
         var is_self: Bool
         var following: Bool
+
+        // ── Privacy ───────────────────────────────────────────────────────────
+        // Counts are OPTIONAL now, not Int: the server sends null for "hidden" rather
+        // than 0, because 0 is a factual claim the profile would be making falsely.
+        // (follower_count / following_count / clip_count above are optional for the
+        // same reason.)
+        //
+        // These five are sent ONLY to the owner — another viewer has no business knowing
+        // which switches are set — so they are nil on anyone else's profile.
+        var grid_visibility: String?
+        var show_counts: Bool?
+        var discoverable: Bool?
+        var allow_follows: Bool?
+        var allow_comments: Bool?
+
+        // Derived by the server for every viewer: what THIS viewer may do here. The client
+        // must not re-derive these — the server is the authority and duplicating the rule
+        // is how the two drift apart.
+        var can_see_grid: Bool?
+        var can_follow: Bool?
+        var can_comment: Bool?
 
         /// The handle is unique server-side, so it is a stable identity for SwiftUI.
         var id: String { handle }
@@ -134,17 +157,31 @@ final class CreatorService {
     /// handle the user did not touch — which matters because a handle change burns the
     /// 30-day rename window (the server answers 429 if one was used recently).
     func update(handle: String? = nil, displayName: String? = nil,
-                bio: String? = nil, linkURL: String? = nil) async throws -> Profile {
+                bio: String? = nil, linkURL: String? = nil,
+                gridVisibility: String? = nil, showCounts: Bool? = nil,
+                discoverable: Bool? = nil, allowFollows: Bool? = nil,
+                allowComments: Bool? = nil) async throws -> Profile {
+        // Swift's synthesized Encodable uses encodeIfPresent for optionals, so a nil field
+        // is OMITTED rather than sent as an explicit null. That is what makes every
+        // parameter independently optional — sending null would clear the column.
         struct Body: Encodable {
             var handle: String?
             var display_name: String?
             var bio: String?
             var link_url: String?
+            var grid_visibility: String?
+            var show_counts: Bool?
+            var discoverable: Bool?
+            var allow_follows: Bool?
+            var allow_comments: Bool?
         }
         let resp: ProfileResp = try await api.request(
             "PATCH", "creators/me",
             body: Body(handle: handle, display_name: displayName,
-                       bio: bio, link_url: linkURL))
+                       bio: bio, link_url: linkURL,
+                       grid_visibility: gridVisibility, show_counts: showCounts,
+                       discoverable: discoverable, allow_follows: allowFollows,
+                       allow_comments: allowComments))
         return resp.profile
     }
 
