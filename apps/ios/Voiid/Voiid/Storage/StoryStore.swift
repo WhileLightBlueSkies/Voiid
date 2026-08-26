@@ -33,9 +33,10 @@ enum StoryStore {
 
     // MARK: - Upsert (from feed sync or optimistic local post)
 
-    /// Insert or refresh a story. `viewed_at`/`local_path`/`download_state` are NOT
-    /// overwritten by a re-sync — they are this device's local state and the server has
-    /// no opinion on them.
+    /// Insert or refresh a story. `viewed_at`/`local_path`/`download_state`/`archived_at`
+    /// are NOT overwritten by a re-sync — they are this device's local state and the
+    /// server has no opinion on them. (`archived_at` is absent from both the column list
+    /// and the DO UPDATE SET clause, so a refetch of an archived moment leaves it kept.)
     static func upsert(_ s: Story) {
         let mediaJSON = (try? JSONEncoder().encode(s.media)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
         db.write { database in
@@ -167,21 +168,57 @@ enum StoryStore {
     /// legitimately supports a TTL sweep.
     static func sweepExpired() {
         let now = Int64(Date().timeIntervalSince1970)
+
+        // `archived_at IS NULL` guards EVERY statement below. An archived moment is one
+        // the author chose to keep, so it survives its own expiry — but only the author's
+        // own row is ever archivable (see `archive`), so this can never keep someone
+        // else's expired moment alive.
+        let live = "expires_at <= ? AND archived_at IS NULL"
+
         let expired = db.read { database -> [Row] in
-            try Row.fetchAll(database, sql: "SELECT id, local_path FROM stories WHERE expires_at <= ?", arguments: [now])
+            try Row.fetchAll(database, sql: "SELECT id, local_path FROM stories WHERE \(live)", arguments: [now])
         } ?? []
         for row in expired {
             if let path: String = row["local_path"] { try? FileManager.default.removeItem(atPath: path) }
         }
         db.write { database in
             try database.execute(sql: """
-                DELETE FROM story_audience WHERE story_id IN (SELECT id FROM stories WHERE expires_at <= ?)
+                DELETE FROM story_audience WHERE story_id IN (SELECT id FROM stories WHERE \(live))
                 """, arguments: [now])
+            // story_views is kept for archived moments: it is who saw it at the time, and
+            // the archive shows that back to the author. It is author-side local state and
+            // never leaves this device.
             try database.execute(sql: """
-                DELETE FROM story_views WHERE story_id IN (SELECT id FROM stories WHERE expires_at <= ?)
+                DELETE FROM story_views WHERE story_id IN (SELECT id FROM stories WHERE \(live))
                 """, arguments: [now])
-            try database.execute(sql: "DELETE FROM stories WHERE expires_at <= ?", arguments: [now])
+            try database.execute(sql: "DELETE FROM stories WHERE \(live)", arguments: [now])
         }
+    }
+
+    // MARK: - Archive (author-only)
+
+    /// Keep this moment past its expiry, or stop keeping it.
+    ///
+    /// Un-archiving an ALREADY-EXPIRED moment deletes it outright rather than leaving a
+    /// row the sweep would only collect later: the author asked for it gone, so it goes
+    /// now, plaintext file included.
+    static func setArchived(_ id: String, _ archived: Bool) {
+        guard let s = story(id), s.isMine else { return }   // author-only, enforced at the store
+        if !archived, s.isExpired { delete(id); return }
+        db.write { database in
+            try database.execute(sql: "UPDATE stories SET archived_at = ? WHERE id = ?",
+                                 arguments: [archived ? Int64(Date().timeIntervalSince1970) : nil, id])
+        }
+    }
+
+    /// The author's kept moments, newest first. Drives the archive grid.
+    static func archived() -> [Story] {
+        (db.read { database -> [Row] in
+            try Row.fetchAll(database, sql: """
+                SELECT * FROM stories WHERE is_mine = 1 AND archived_at IS NOT NULL
+                ORDER BY created_at DESC
+                """)
+        } ?? []).compactMap(decode)
     }
 
     // MARK: - Audience (author-side only)
@@ -254,7 +291,8 @@ enum StoryStore {
             allowsReplies: row["allows_replies"] ?? true,
             viewedAt: viewedAt.map { Date(timeIntervalSince1970: TimeInterval($0)) },
             localPath: row["local_path"],
-            downloadState: StoryDownloadState(rawValue: row["download_state"] ?? "none") ?? .none
+            downloadState: StoryDownloadState(rawValue: row["download_state"] ?? "none") ?? .none,
+            archivedAt: (row["archived_at"] as Int64?).map { Date(timeIntervalSince1970: TimeInterval($0)) }
         )
     }
 }

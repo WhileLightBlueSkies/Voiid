@@ -85,8 +85,12 @@ struct Story: Identifiable, Equatable {
     var viewedAt: Date?
     var localPath: String?
     var downloadState: StoryDownloadState
+    /// Non-nil = the author chose to keep this past its 24h expiry. Author-only: a
+    /// viewer's copy always expires, so this is nil on anything `!isMine`.
+    var archivedAt: Date? = nil
 
     var isExpired: Bool { expiresAt <= Date() }
+    var isArchived: Bool { archivedAt != nil }
     var isViewed: Bool { viewedAt != nil }
 
     /// Segment duration for the viewer's timer (§8.4). Static images get 5s; video
@@ -96,7 +100,7 @@ struct Story: Identifiable, Equatable {
         return 5.0
     }
 
-    static func == (l: Story, r: Story) -> Bool { l.id == r.id && l.viewedAt == r.viewedAt && l.downloadState == r.downloadState && l.localPath == r.localPath }
+    static func == (l: Story, r: Story) -> Bool { l.id == r.id && l.viewedAt == r.viewedAt && l.downloadState == r.downloadState && l.localPath == r.localPath && l.archivedAt == r.archivedAt }
 }
 
 /// An author's set of unexpired stories — one row/cell in the tray, never one per story.

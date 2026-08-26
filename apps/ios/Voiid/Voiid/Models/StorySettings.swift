@@ -25,6 +25,7 @@ final class StorySettings: ObservableObject {
         static let sendViewReceipts = "voiid.stories.sendViewReceipts"
         static let defaultAudience  = "voiid.stories.defaultAudience"   // [user_id] or empty = "My Contacts"
         static let audienceIsCustom = "voiid.stories.audienceIsCustom"
+        static let archiveByDefault = "voiid.stories.archiveByDefault"
     }
 
     /// OFF by default. Reciprocal: off means you send no receipts AND see no viewer names.
@@ -32,10 +33,23 @@ final class StorySettings: ObservableObject {
         didSet { UserDefaults.standard.set(sendViewReceipts, forKey: Key.sendViewReceipts) }
     }
 
+    /// ON by default. This keeps only YOUR OWN copy of YOUR OWN moment past its expiry,
+    /// on this device — it is not a change to who can see it, and a viewer's copy still
+    /// expires either way. Defaulting it on is safe for that reason: the only person who
+    /// gains access to anything is the author, to their own content. Every post can still
+    /// override it from the composer, and anything kept can be deleted from the archive.
+    @Published var archiveByDefault: Bool {
+        didSet { UserDefaults.standard.set(archiveByDefault, forKey: Key.archiveByDefault) }
+    }
+
     private init() {
         // Absent key → false (the privacy-preserving default), so this uses the plain bool
         // read, NOT PrivacySettings' "absent = true" read.
         sendViewReceipts = UserDefaults.standard.bool(forKey: Key.sendViewReceipts)
+        // Absent key → true, so an upgrading user starts keeping their own moments rather
+        // than silently losing them. Uses object(forKey:) because plain `bool` reads a
+        // missing key as false, which would be the wrong default here.
+        archiveByDefault = (UserDefaults.standard.object(forKey: Key.archiveByDefault) as? Bool) ?? true
     }
 
     // MARK: - Remembered audience (§2.2)
