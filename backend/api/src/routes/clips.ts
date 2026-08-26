@@ -125,7 +125,19 @@ const CLIP_COLUMNS = `
   c.byte_size_sd, c.byte_size_hd, c.byte_size_fhd,
   u.full_name  as author_name,
   u.photo_url  as author_photo_url,
+  -- The creator identity, LEFT joined: a clip's author may have no creator profile (the
+  -- gate is enforced at POST, but rows predate it and a profile can be removed). The grid
+  -- tile falls back to the display name when this is null rather than showing a blank row.
+  cp.handle      as author_handle,
+  cp.is_verified as author_verified,
   exists (select 1 from clip_likes l where l.clip_id = c.id and l.user_id = $1) as liked_by_me
+`;
+
+// Every query using CLIP_COLUMNS must carry this join. Kept beside the columns so the two
+// cannot drift — a column referencing `cp` with no join is a runtime 500, not a type error.
+const CLIP_JOINS = `
+       join users u on u.id = c.author_id
+       left join creator_profiles cp on cp.user_id = c.author_id
 `;
 
 // ─────────────────────────────────────────────────────────────────────────────────
@@ -320,7 +332,7 @@ router.get('/feed', requireAuth, asyncHandler(async (req, res) => {
   const rows = await query<any>(
     `select ${CLIP_COLUMNS}
        from clips c
-       join users u on u.id = c.author_id
+       ${CLIP_JOINS}
       where c.deleted_at is null and c.removed_at is null and c.status = 'ready'
         ${cursor ? 'and (c.created_at, c.id) < ($2::timestamptz, $3::uuid)' : ''}
       order by c.created_at desc, c.id desc
@@ -351,7 +363,7 @@ router.get('/mine', requireAuth, asyncHandler(async (req, res) => {
   const rows = await query<any>(
     `select ${CLIP_COLUMNS}
        from clips c
-       join users u on u.id = c.author_id
+       ${CLIP_JOINS}
       where c.author_id = $1 and c.deleted_at is null
         ${cursor ? 'and (c.created_at, c.id) < ($2::timestamptz, $3::uuid)' : ''}
       order by c.created_at desc, c.id desc
@@ -769,7 +781,7 @@ router.patch('/:id', requireAuth, asyncHandler(async (req, res) => {
   // Return the full updated row in the same shape as every other endpoint, so the
   // client can replace its local model wholesale instead of patching fields by hand.
   const updated = await query<any>(
-    `select ${CLIP_COLUMNS} from clips c join users u on u.id = c.author_id where c.id = $2`,
+    `select ${CLIP_COLUMNS} from clips c ${CLIP_JOINS} where c.id = $2`,
     [user_id, clipId]
   );
   await attachThumbUrls(updated);
