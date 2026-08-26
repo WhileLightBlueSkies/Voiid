@@ -186,3 +186,67 @@ object SeaBattleShipArt {
     /** A sunk hull desaturates and darkens rather than vanishing — the wreck is information. */
     val HullSunk = Color(0.20f, 0.18f, 0.18f)
 }
+
+/**
+ * Which side of the board a hull belongs to.
+ *
+ * Keyed by SEAT, not by "mine" and "theirs": the server stamps the seat on every frame, so both
+ * clients paint the same fleet the same colour without negotiating anything, and a screenshot
+ * pasted into the chat means the same thing to both players. Seat 0 is blue, seat 1 is red.
+ *
+ * Colour is a SECOND channel and never the only one — the five silhouettes still differ in shape,
+ * and your fleet is always the board you are not firing at, so the board still works in greyscale.
+ *
+ * Mirrors iOS `SeaBattleTeam`.
+ */
+enum class SeaBattleTeam {
+    BLUE,
+    RED;
+
+    /**
+     * One class rather than six loose constants, so a caller can never pick up half a palette — a
+     * hull with one team's body and another's stripe is the exact bug this shape prevents.
+     */
+    data class Palette(
+        /** Hull mass, and the darker stop of the body gradient. */
+        val body: Color,
+        /** The lit stop of that gradient — where the light falls. */
+        val lit: Color,
+        /** Deck plate, drawn over the body. */
+        val deck: Color,
+        /** Outlines and panel lines. */
+        val ink: Color,
+        /** The team band. The strongest colour cue on the ship, so it is the most saturated. */
+        val stripe: Color,
+        /** A sunk hull desaturates and darkens rather than vanishing — the wreck is information. */
+        val sunk: Color,
+    )
+
+    val palette: Palette
+        get() = when (this) {
+            BLUE -> Palette(
+                body = Color(0.21f, 0.31f, 0.44f),
+                lit = Color(0.34f, 0.47f, 0.62f),
+                deck = Color(0.45f, 0.55f, 0.66f),
+                ink = Color(0.07f, 0.11f, 0.17f),
+                stripe = Color(0.36f, 0.62f, 0.90f),
+                sunk = Color(0.16f, 0.19f, 0.24f),
+            )
+            RED -> Palette(
+                body = Color(0.44f, 0.24f, 0.24f),
+                lit = Color(0.60f, 0.36f, 0.34f),
+                deck = Color(0.68f, 0.48f, 0.45f),
+                ink = Color(0.17f, 0.08f, 0.08f),
+                stripe = Color(0.90f, 0.38f, 0.34f),
+                sunk = Color(0.24f, 0.17f, 0.17f),
+            )
+        }
+
+    companion object {
+        /**
+         * Seats past the two players fall back to blue rather than throwing: a bad seat should
+         * mispaint a hull, never take down the board.
+         */
+        fun ofSeat(seat: Int): SeaBattleTeam = if (seat == 1) RED else BLUE
+    }
+}

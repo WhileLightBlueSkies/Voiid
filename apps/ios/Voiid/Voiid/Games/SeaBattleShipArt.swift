@@ -210,3 +210,60 @@ enum SeaBattleShipArt {
     /// A sunk hull desaturates and darkens rather than vanishing — the wreck is information.
     static let hullSunk = Color(red: 0.20, green: 0.18, blue: 0.18)
 }
+
+/// Which side of the board a hull belongs to.
+///
+/// Keyed by SEAT, not by "mine" and "theirs": the server stamps the seat on every frame, so both
+/// clients paint the same fleet the same colour without negotiating anything, and a screenshot
+/// pasted into the chat means the same thing to both players. Seat 0 is blue, seat 1 is red.
+///
+/// Colour is a SECOND channel and never the only one — the five silhouettes still differ in shape,
+/// and your fleet is always the board you are not firing at, so the board still works in greyscale.
+///
+/// Mirrors Android `SeaBattleTeam`.
+enum SeaBattleTeam: Int, CaseIterable {
+    case blue = 0
+    case red = 1
+
+    /// Seats past the two players fall back to blue rather than trapping: a bad seat should
+    /// mispaint a hull, never take down the board.
+    init(seat: Int) { self = seat == 1 ? .red : .blue }
+
+    /// One struct rather than seven loose constants, so a caller can never pick up half a palette
+    /// — a hull with one team's body and another's stripe is the exact bug this shape prevents.
+    struct Palette {
+        /// Hull mass, and the darker stop of the body gradient.
+        let body: Color
+        /// The lit stop of that gradient — where the light falls.
+        let lit: Color
+        /// Deck plate, drawn over the body.
+        let deck: Color
+        /// Outlines and panel lines.
+        let ink: Color
+        /// The team band. The strongest colour cue on the ship, so it is the most saturated.
+        let stripe: Color
+        /// A sunk hull desaturates and darkens rather than vanishing — the wreck is information.
+        let sunk: Color
+    }
+
+    var palette: Palette {
+        switch self {
+        case .blue:
+            return Palette(
+                body:   Color(red: 0.21, green: 0.31, blue: 0.44),
+                lit:    Color(red: 0.34, green: 0.47, blue: 0.62),
+                deck:   Color(red: 0.45, green: 0.55, blue: 0.66),
+                ink:    Color(red: 0.07, green: 0.11, blue: 0.17),
+                stripe: Color(red: 0.36, green: 0.62, blue: 0.90),
+                sunk:   Color(red: 0.16, green: 0.19, blue: 0.24))
+        case .red:
+            return Palette(
+                body:   Color(red: 0.44, green: 0.24, blue: 0.24),
+                lit:    Color(red: 0.60, green: 0.36, blue: 0.34),
+                deck:   Color(red: 0.68, green: 0.48, blue: 0.45),
+                ink:    Color(red: 0.17, green: 0.08, blue: 0.08),
+                stripe: Color(red: 0.90, green: 0.38, blue: 0.34),
+                sunk:   Color(red: 0.24, green: 0.17, blue: 0.17))
+        }
+    }
+}
