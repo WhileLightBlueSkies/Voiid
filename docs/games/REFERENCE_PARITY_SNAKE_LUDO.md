@@ -197,6 +197,7 @@ codebase, and the reasons are worth keeping.
 | S1 | Eat radius scales with mass | server |
 | S3 | Gaze leads the turn on remote snakes | iOS |
 | S4 | Tail alpha falloff by arc length | iOS |
+| — | Yard pocket corner radius + inset now read from tokens (parity fix) | Android |
 
 ### Dropped, with cause
 
@@ -232,9 +233,12 @@ product decision, not a parity fix.
 - **Android's perimeter path** never inset by half its stroke and never clamped its radius.
   Invisible at radius 0; at a real radius the border straddled the board edge and chewed
   its own corners. iOS already did both.
-- **`yardPocketRadiusFactor` is 0.72 on iOS and 0f on Android**, and Android never reads
-  it — the yard pockets genuinely differ between platforms. Left as-is: out of scope here,
-  but it is a real parity gap.
+- **`yardPocketRadiusFactor` was 0.72 on iOS and 0f on Android**, and Android never read
+  it — it passed `CornerRadius.Zero` directly, so the yards were the one part of the board
+  that genuinely differed between platforms from the same fixture: square pockets on
+  Android, rounded on iOS. The pocket inset was hardcoded there too, at exactly the value
+  its own token already held. **Fixed** in its own commit: both platforms now read the
+  tokens, and nothing about the geometry moves, so the fixture test is unaffected.
 - **The radius-scaling test was fragile.** It filtered to snakes still alive at 45 s, which
   is a property of the seed rather than of radius scaling — on seed 88 a bot reaches 453
   mass then dies before the end, so it reported "nothing grew" while the thing under test
