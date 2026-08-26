@@ -28,6 +28,36 @@ object LudoBoardDraw {
      * "seat:pawn" keys for every token the CURRENT roll can legally move. Empty between turns,
      * so nothing glows while there is no decision to make.
      */
+    /**
+     * Where each legal token would LAND, as cell keys mapped to whether that landing captures.
+     *
+     * This is the destination, not the source: the source highlight says "this token can move",
+     * which still leaves the player to work out where it goes. Taken from the server's own `to`
+     * and `capture` on each legal move, so the hint is never a client-side guess about legality.
+     *
+     * Pawns that finish (`to` past the home lane) have no cell to point at and are skipped.
+     * Mirrors iOS `LudoBoardCanvas.legalDestinations`.
+     */
+    fun legalDestinations(state: LudoGameState): Map<String, Boolean> {
+        val turn = state.turn ?: return emptyMap()
+        if (state.isFinished || turn.phase != "awaitingMove") return emptyMap()
+        val out = HashMap<String, Boolean>()
+        for (move in turn.legalMoves) {
+            val c = when {
+                move.to in 0 until LudoRules.TRACK_COUNT -> LudoBoardGeometry.TRACK_COORDS[move.to]
+                move.to in LudoRules.HOME_LANE_BASE until
+                    LudoRules.HOME_LANE_BASE + LudoRules.HOME_LANE_COUNT ->
+                    LudoBoardGeometry.HOME_LANE_COORDS[turn.seat][move.to - LudoRules.HOME_LANE_BASE]
+                else -> null
+            } ?: continue
+            // A capturing landing wins the key: if two tokens can land on the same cell and one
+            // of them takes a pawn, that is the fact worth showing.
+            val key = "cell-${c.first}-${c.second}"
+            out[key] = (out[key] ?: false) || (move.capture != null)
+        }
+        return out
+    }
+
     fun activePawnKeys(state: LudoGameState): Set<String> {
         val turn = state.turn ?: return emptySet()
         if (state.isFinished || turn.phase != "awaitingMove") return emptySet()
@@ -150,6 +180,38 @@ object LudoBoardDraw {
             val hue = highlightHue(state, node, colors)
             drawRoundRect(hue.copy(alpha = 0.45f), r.topLeft, r.size, CornerRadius(3f),
                 style = Stroke(2.dp.toPx()))
+        }
+
+        // 7b) MOVE HINTS: where each legal token would land.
+        //
+        // The source highlight above says "this token can move" and leaves the player to work out
+        // where it goes — which on a 52-cell track with a home lane is real arithmetic done under
+        // a turn clock. Marking the DESTINATION turns choosing a move into reading the board. A
+        // capture landing gets a heavier, solid ring, because taking a pawn is the one move worth
+        // never missing. Mirrors iOS `LudoBoardCanvas`.
+        val destinations = legalDestinations(state)
+        if (destinations.isNotEmpty()) {
+            val hue = colors.hue(state.turn?.seat ?: 0)
+            for (node in LudoBoardGeometry.CELLS) {
+                val captures = destinations[node.id] ?: continue
+                val r = layout.rectOf(node).inflate(-unit * 0.14f)
+                val d = androidx.compose.ui.geometry.Size(r.width, r.height)
+
+                // A filled disc under the ring, so the hint reads at a glance on a cell that
+                // already carries a colour of its own.
+                drawOval(hue.copy(alpha = if (captures) 0.34f else 0.22f), r.topLeft, d)
+                drawOval(
+                    if (captures) hue else hue.copy(alpha = 0.85f),
+                    r.topLeft, d,
+                    style = Stroke(
+                        width = if (captures) unit * 0.09f else unit * 0.055f,
+                        pathEffect = if (captures) null else
+                            androidx.compose.ui.graphics.PathEffect.dashPathEffect(
+                                floatArrayOf(unit * 0.16f, unit * 0.12f),
+                                -dashPhase * unit * 0.5f),
+                    ),
+                )
+            }
         }
 
         // 8) Pawns — pin silhouettes tinted per seat; finished pawns already sit in their

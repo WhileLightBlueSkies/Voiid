@@ -37,6 +37,38 @@ enum LudoBoardCanvas {
         return Set(turn.legalTokenIds.map { "\(turn.seat):\($0)" })
     }
 
+    /// Where each legal token would LAND, as cell keys mapped to whether that landing captures.
+    ///
+    /// This is the destination, not the source: the source highlight says "this token can move",
+    /// which still leaves the player to work out where it goes. Taken from the server's own
+    /// `to` and `capture` on each legal move, so the hint is never a client-side guess about
+    /// legality — the same rule the rest of this renderer follows.
+    ///
+    /// Pawns that finish (`to` past the home lane) have no cell to point at and are skipped.
+    static func legalDestinations(_ state: LudoGameStateV2) -> [String: Bool] {
+        guard !state.isFinished, let turn = state.turn, turn.phase == "awaitingMove" else {
+            return [:]
+        }
+        var out: [String: Bool] = [:]
+        for move in turn.legalMoves {
+            let coord: (Int, Int)?
+            if move.to >= 0 && move.to < LudoRules.trackCount {
+                coord = LudoBoardGeometry.trackCoords[move.to]
+            } else if move.to >= LudoRules.homeLaneBase,
+                      move.to < LudoRules.homeLaneBase + LudoRules.homeLaneCount {
+                coord = LudoBoardGeometry.homeLaneCoords[turn.seat][move.to - LudoRules.homeLaneBase]
+            } else {
+                coord = nil
+            }
+            guard let c = coord else { continue }
+            // A capturing landing wins the key: if two tokens can land on the same cell and one
+            // of them takes a pawn, that is the fact worth showing.
+            let key = "cell-\(c.0)-\(c.1)"
+            out[key] = (out[key] ?? false) || (move.capture != nil)
+        }
+        return out
+    }
+
     /// Cell keys under server-legal tokens — the halo/highlight set.
     static func legalCellHighlights(_ state: LudoGameStateV2) -> Set<String> {
         guard !state.isFinished, let turn = state.turn else { return [] }
@@ -153,6 +185,33 @@ enum LudoBoardCanvas {
                 ctx.stroke(RoundedRectangle(cornerRadius: 3).path(in: r),
                            with: .color(colors.hue(state.turn?.seat ?? 0).opacity(0.45)),
                            lineWidth: 2.5)
+            }
+        }
+
+        // 7b) MOVE HINTS: where each legal token would land.
+        //
+        // The source highlight above says "this token can move" and leaves the player to work
+        // out where it goes — which on a 52-cell track with a home lane is real arithmetic done
+        // under a turn clock. Marking the DESTINATION turns choosing a move into reading the
+        // board. A capture landing is drawn in the victim's terms: a heavier ring, because
+        // taking a pawn is the one move worth never missing.
+        do {
+            let destinations = legalDestinations(state)
+            if !destinations.isEmpty {
+                let hue = colors.hue(state.turn?.seat ?? 0)
+                for node in LudoBoardGeometry.cells {
+                    guard let captures = destinations[node.id] else { continue }
+                    let r = layout.rect(of: node).insetBy(dx: unit * 0.14, dy: unit * 0.14)
+
+                    // A filled disc under the ring, so the hint reads at a glance on a cell that
+                    // already carries a colour of its own.
+                    ctx.fill(Path(ellipseIn: r), with: .color(hue.opacity(captures ? 0.34 : 0.22)))
+                    ctx.stroke(Path(ellipseIn: r),
+                               with: .color(captures ? hue : hue.opacity(0.85)),
+                               style: StrokeStyle(lineWidth: captures ? unit * 0.09 : unit * 0.055,
+                                                  dash: captures ? [] : [unit * 0.16, unit * 0.12],
+                                                  dashPhase: -dashPhase * unit * 0.5))
+                }
             }
         }
 
