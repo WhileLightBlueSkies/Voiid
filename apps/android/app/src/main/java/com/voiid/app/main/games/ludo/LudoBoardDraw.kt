@@ -107,11 +107,17 @@ object LudoBoardDraw {
         }
         for (seat in 0..3) {
             val origin = when (seat) { 0 -> 0 to 9; 1 -> 0 to 0; 2 -> 9 to 0; else -> 9 to 9 }
-            val inset = unit * .80f
+            val inset = unit * LudoDimens.yardPocketInsetFactor
             val topLeft = Offset(origin.first * unit + inset, origin.second * unit + inset)
             val pocketSize = Size(unit * 4.4f, unit * 4.4f)
-            drawRoundRect(tok(colors.yardPocket), topLeft, pocketSize, CornerRadius.Zero)
-            drawRoundRect(tok(colors.yardPocketBorder), topLeft, pocketSize, CornerRadius.Zero,
+            // Rounded, matching iOS. Both the inset and the radius were hardcoded here — the
+            // inset to the same value the token already held, and the radius to Zero against a
+            // token of 0.72 that was never read — so the yards were the one part of the board
+            // that genuinely differed between platforms: square pockets on Android, rounded on
+            // iOS, from the same fixture.
+            val pocketRadius = CornerRadius(unit * LudoDimens.yardPocketRadiusFactor)
+            drawRoundRect(tok(colors.yardPocket), topLeft, pocketSize, pocketRadius)
+            drawRoundRect(tok(colors.yardPocketBorder), topLeft, pocketSize, pocketRadius,
                 style = Stroke(maxOf(.75.dp.toPx(), unit * .04f)))
 
             // Four resting circles, one per pawn, ringed on the pocket centre. They give a pawn

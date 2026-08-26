@@ -45,7 +45,8 @@ object LudoDimens {
      * at the call site, so this only bites on large cells.
      */
     const val cellCornerRadiusFactor = 0.08f
-    const val yardPocketRadiusFactor = 0f
+    const val yardPocketInsetFactor = 0.80f
+    const val yardPocketRadiusFactor = 0.72f
     /** Resting-circle radius for a yard slot, as a fraction of one cell. */
     const val yardSlotRadiusFactor = 0.46f
     const val safeStarRadiusFactor = 0.27f
