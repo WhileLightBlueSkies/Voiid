@@ -154,9 +154,55 @@ enum LudoDieView {
         pipColor: Color,
         colors: LudoColors,
     ) {
+        let corner = 0.18 * s
         let rect = CGRect(x: 0, y: 0, width: s, height: s)
-        let body = RoundedRectangle(cornerRadius: 0.18 * s).path(in: rect)
-        ctx.fill(body, with: .color(colors.dieBody))
+
+        // DEPTH SLABS (§14.3). At rest exactly one face points at the camera, and a single face
+        // is a square, not a die — the projection in `drawCube` is what carries the volume while
+        // the die is turning, and it is switched off here so the number stays legible.
+        //
+        // Rather than tilt the resting pose — which costs legibility at the one moment the
+        // result matters — the depth is DRAWN: two slabs stepped down-right, so the cube has a
+        // visible bottom and right edge under a number that is still flat on. They are laid down
+        // first, so the face itself covers everything but the exposed lip.
+        for slab in [(offset: 0.055 * s, tone: 0.30), (offset: 0.028 * s, tone: 0.16)] {
+            let r = rect.offsetBy(dx: slab.offset, dy: slab.offset)
+            ctx.fill(RoundedRectangle(cornerRadius: corner).path(in: r),
+                     with: .color(colors.dieEdge.opacity(slab.tone)))
+        }
+
+        let body = RoundedRectangle(cornerRadius: corner).path(in: rect)
+
+        // A diagonal gradient rather than a flat fill, so the face has a direction to it. The
+        // stops stay within a few percent of `dieBody` in both themes: the die is ONE neutral
+        // token (§1), and this must read as light falling across it, never as a second colour.
+        ctx.fill(body, with: .linearGradient(
+            Gradient(colors: [
+                GameSurface.lighten(colors.dieBody, colors.isDark ? 0.10 : 0.06),
+                colors.dieBody,
+                GameSurface.darken(colors.dieBody, colors.isDark ? 0.06 : 0.08),
+            ]),
+            startPoint: .zero,
+            endPoint: CGPoint(x: s, y: s)))
+
+        // BEVEL (§14.2): bright along the top-left lip, dark along the bottom-right. This is the
+        // layer that reads as a moulded edge rather than a printed square — without it the face
+        // is a rounded rect with pips on it. Inset by half its own width so the stroke sits
+        // inside the silhouette instead of straddling the outline below.
+        let bevelWidth = 0.045 * s
+        ctx.stroke(
+            RoundedRectangle(cornerRadius: corner - bevelWidth / 2)
+                .path(in: rect.insetBy(dx: bevelWidth / 2, dy: bevelWidth / 2)),
+            with: .linearGradient(
+                Gradient(colors: [.white.opacity(colors.isDark ? 0.34 : 0.85),
+                                  .clear,
+                                  .black.opacity(colors.isDark ? 0.34 : 0.22)]),
+                startPoint: .zero,
+                endPoint: CGPoint(x: s, y: s)),
+            style: StrokeStyle(lineWidth: bevelWidth))
+
+        // The outline that separates the die from whatever is behind it — drawn LAST so the
+        // bevel cannot bleed past the silhouette.
         ctx.stroke(body, with: .color(colors.dieEdge),
                    style: StrokeStyle(lineWidth: colors.isDark ? 1.25 : 1.0))
 

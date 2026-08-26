@@ -25,13 +25,26 @@ object VoiidRadius {
  * `LudoDimens`/`LudoMotion` and packages/design-tokens/tokens.json → dimension/motion.
  */
 object LudoDimens {
-    val boardCornerRadius = 0.dp
+    /**
+     * Board corner radius as a FRACTION of the board side, so the softening holds at every size
+     * the board draws at. An absolute dp value would read as a heavy chamfer on the small
+     * walkthrough board and as a barely visible nick on a tablet. Mirrors iOS
+     * `LudoDimens.boardCornerRadiusFactor`.
+     */
+    const val boardCornerRadiusFactor = 0.035f
+
+    /** Resolve the fraction against a concrete board side, in px. */
+    fun boardCornerRadiusPx(sidePx: Float) = sidePx * boardCornerRadiusFactor
     const val perimeterStrokeLightDp = 3f
     const val perimeterStrokeDarkDp = 3.5f
     val boardContentInset = 0.dp
     const val cellBorderLightDp = 0.75f
     const val cellBorderDarkDp = 1f
-    const val cellCornerRadiusFactor = 0f
+    /**
+     * Softens the printed grid without losing the board's read as ruled squares. Clamped to 2dp
+     * at the call site, so this only bites on large cells.
+     */
+    const val cellCornerRadiusFactor = 0.08f
     const val yardPocketRadiusFactor = 0f
     /** Resting-circle radius for a yard slot, as a fraction of one cell. */
     const val yardSlotRadiusFactor = 0.46f

@@ -77,7 +77,7 @@ enum LudoBoardCanvas {
 
         // 1) Flat board backing; the contract requires zero board elevation.
         let boardRect = CGRect(origin: .zero, size: CGSize(width: side, height: side))
-        let boardShape = RoundedRectangle(cornerRadius: LudoDimens.boardCornerRadius)
+        let boardShape = RoundedRectangle(cornerRadius: LudoDimens.boardCornerRadius(side: side))
         ctx.fill(boardShape.path(in: boardRect), with: .color(colors.boardSurface))
 
         // 2+3) Yard fields then pockets.
@@ -189,7 +189,7 @@ enum LudoBoardCanvas {
         // 9) Perimeter LAST — the turn border sweeps OVER everything (§12).
         let stroke = LudoDimens.perimeterStroke(dark: colors.isDark)
         let perimeter = LudoTurnBorder.perimeterPath(
-            side: side, cornerRadius: LudoDimens.boardCornerRadius, stroke: stroke)
+            side: side, cornerRadius: LudoDimens.boardCornerRadius(side: side), stroke: stroke)
 
         if state.isFinished || state.turn == nil {
             // Game end changes INSTANTLY to podBorder; winner presentation belongs to the

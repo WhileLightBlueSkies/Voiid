@@ -143,7 +143,7 @@ private struct WalkthroughBoard: View {
             LudoBoardCanvas.draw(&ctx, size: CGSize(width: size.height, height: size.height),
                                  colors: LudoColors.resolve(scheme), state: state, sweep: nil)
         }
-        .clipShape(RoundedRectangle(cornerRadius: LudoDimens.boardCornerRadius))
+        .modifier(LudoBoardClip())
         .accessibilityHidden(true)
     }
 }

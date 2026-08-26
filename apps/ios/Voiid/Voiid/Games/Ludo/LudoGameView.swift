@@ -701,7 +701,7 @@ struct NeutralBoardSkeleton: View {
         let colors = LudoColors.resolve(scheme)
         Canvas { ctx, size in
             ctx.fill(Path(roundedRect: CGRect(origin: .zero, size: size),
-                           cornerRadius: LudoDimens.boardCornerRadius),
+                           cornerRadius: LudoDimens.boardCornerRadius(side: size.width)),
                      with: .color(colors.boardSurface))
             let unit = size.width / CGFloat(LudoBoardGeometry.side)
             for node in LudoBoardGeometry.cells {
@@ -718,7 +718,9 @@ struct NeutralBoardSkeleton: View {
             }
         }
         .aspectRatio(1, contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: LudoDimens.boardCornerRadius))
+        // The clip has to know the resolved side, and the Canvas above only learns it at draw
+        // time — so the radius is measured here rather than baked in as a constant.
+        .modifier(LudoBoardClip())
     }
 }
 #endif

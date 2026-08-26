@@ -445,7 +445,7 @@ internal fun NeutralBoardSkeleton() {
     Canvas(Modifier.fillMaxWidth(0.92f).aspectRatio(1f)) {
         drawRoundRect(
             colors.c(colors.boardSurface),
-            cornerRadius = CornerRadius(LudoDimens.boardCornerRadius.toPx()),
+            cornerRadius = CornerRadius(LudoDimens.boardCornerRadiusPx(size.width)),
         )
         val u = size.width / LudoBoardGeometry.SIDE
         for (node in LudoBoardGeometry.CELLS) {
@@ -962,6 +962,10 @@ private fun DieFace(
     val pipSeat = dieSeat ?: state.turn?.seat
     val pipsNeutral = pipSeat == null || state.isFinished
 
+    // Read in composition, not inside the Canvas lambda: `isLightTheme()` is @Composable and a
+    // draw scope is not a composable scope.
+    val dieDarkTheme = !com.voiid.app.ui.theme.isLightTheme()
+
     // The die keeps its footprint in the pod row but DRAWS on a larger surface, so a thrown die
     // is never clipped by the row it lives in. Compose does not clip children unless asked, so
     // the overflow simply paints over the space above.
@@ -987,6 +991,7 @@ private fun DieFace(
                     pipColor = pipColor,
                     edgeStrokePx = 1.25f,
                     colors = dColors,
+                    darkTheme = dieDarkTheme,
                 )
             } else {
                 drawDie(

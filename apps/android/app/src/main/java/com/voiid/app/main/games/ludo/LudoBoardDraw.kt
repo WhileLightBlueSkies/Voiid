@@ -62,7 +62,7 @@ object LudoBoardDraw {
             color = LudoBoardDraw.tok(colors.boardSurface),
             topLeft = Offset.Zero,
             size = Size(side, side),
-            cornerRadius = CornerRadius(LudoDimens.boardCornerRadius.toPx()),
+            cornerRadius = CornerRadius(LudoDimens.boardCornerRadiusPx(side)),
         )
 
         // 2+3) Yard fields then pockets.
@@ -182,9 +182,9 @@ object LudoBoardDraw {
         }
 
         // 9) Perimeter stroke LAST — the turn border sweeps OVER everything (§12).
-        val perimeter = roundedPerimeterPath(side, LudoDimens.boardCornerRadius.toPx())
         val strokePx = if (darkTheme) LudoDimens.perimeterStrokeDarkDp.dp.toPx()
                        else LudoDimens.perimeterStrokeLightDp.dp.toPx()
+        val perimeter = roundedPerimeterPath(side, LudoDimens.boardCornerRadiusPx(side), strokePx)
         val restingColor = restingBorderColor(state, colors)
         if (sweep == null || reduceMotion) {
             // The perimeter IS the clock. It carries the active seat's hue and shortens from
@@ -243,12 +243,19 @@ object LudoBoardDraw {
         else -> colors.hue(state.turn?.seat ?: 0)
     }
 
-    fun roundedPerimeterPath(side: Float, cornerRadius: Float): Path =
+    fun roundedPerimeterPath(side: Float, cornerRadius: Float, strokePx: Float = 0f): Path =
         Path().apply {
+            // Inset by half the stroke so the border sits INSIDE the board rather than straddling
+            // its edge — matching iOS `LudoTurnBorder.perimeterPath`. At radius 0 this was
+            // invisible; once the corners round, a straddling stroke clips against the board's
+            // own rounded backing and the corners read as chewed.
+            val inset = strokePx / 2f
             addRoundRect(
                 androidx.compose.ui.geometry.RoundRect(
-                    rect = Rect(0f, 0f, side, side),
-                    cornerRadius = CornerRadius(cornerRadius),
+                    rect = Rect(inset, inset, side - inset, side - inset),
+                    // Clamp: a radius past half the side is not a rounded square any more, and
+                    // Compose's behaviour there is not worth relying on.
+                    cornerRadius = CornerRadius(cornerRadius.coerceAtMost(side / 2f)),
                 )
             )
         }

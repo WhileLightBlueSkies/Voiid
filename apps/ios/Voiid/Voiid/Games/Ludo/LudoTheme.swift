@@ -137,11 +137,20 @@ struct LudoColors {
 }
 
 enum LudoDimens {
-    static let boardCornerRadius: CGFloat = 0
+    /// Board corner radius as a FRACTION of the board side, so the softening holds at every
+    /// size the board is asked to draw at — phone, tablet, and the walkthrough's small demo.
+    /// An absolute point value would read as a heavy chamfer on the demo board and as a barely
+    /// visible nick on a tablet. Mirrored by Android `LudoDimens.boardCornerRadiusFactor`.
+    static let boardCornerRadiusFactor: CGFloat = 0.035
+
+    /// Resolve the fraction against a concrete board side.
+    static func boardCornerRadius(side: CGFloat) -> CGFloat { side * boardCornerRadiusFactor }
     static func perimeterStroke(dark: Bool) -> CGFloat { dark ? 3.5 : 3 }
     static let boardContentInset: CGFloat = 0
     static func cellBorder(dark: Bool) -> CGFloat { 0.75 }
-    static let cellCornerRadiusFactor: CGFloat = 0
+    /// Softens the printed grid without losing the board's read as ruled squares. Clamped to
+    /// 2pt at the call site, so this only bites on large cells.
+    static let cellCornerRadiusFactor: CGFloat = 0.08
     static let yardPocketInsetFactor: CGFloat = 0.80
     /// Resting-circle radius for a yard slot, as a fraction of one cell.
     static let yardSlotRadiusFactor: CGFloat = 0.46
@@ -189,4 +198,40 @@ enum LudoMotion {
     static let captureReturnMs: Double = 260
     static let finishShrinkMs: Double = 240
     static let resultRippleMs: Double = 420
+}
+
+/// Clips a board-sized view to the board's corner radius.
+///
+/// The radius is a fraction of the board side (`LudoDimens.boardCornerRadiusFactor`), and a
+/// `clipShape` modifier does not know that side — only the layout does. Reading it back with a
+/// `GeometryReader` in an overlay keeps the clip correct at every board size without forcing
+/// every caller to thread a width through. The overlay carries no hit testing, so it cannot
+/// steal taps from the board underneath.
+struct LudoBoardClip: ViewModifier {
+    func body(content: Content) -> some View {
+        content.overlay {
+            GeometryReader { geo in
+                Color.clear.preference(key: LudoBoardSideKey.self, value: geo.size.width)
+            }
+            .allowsHitTesting(false)
+        }
+        .modifier(LudoBoardClipApply())
+    }
+}
+
+private struct LudoBoardSideKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
+private struct LudoBoardClipApply: ViewModifier {
+    @State private var side: CGFloat = 0
+
+    func body(content: Content) -> some View {
+        content
+            .onPreferenceChange(LudoBoardSideKey.self) { side = $0 }
+            .clipShape(RoundedRectangle(
+                cornerRadius: LudoDimens.boardCornerRadius(side: side),
+                style: .continuous))
+    }
 }

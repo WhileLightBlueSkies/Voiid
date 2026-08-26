@@ -4,6 +4,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeJoin
@@ -13,6 +14,7 @@ import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
+import com.voiid.app.main.games.GameSurface
 import com.voiid.app.ui.theme.LudoThemeColors
 import kotlin.math.cos
 import kotlin.math.sin
@@ -161,14 +163,87 @@ object LudoDie {
         pipColor: Color,
         edgeStrokePx: Float,
         colors: LudoThemeColors,
+        /** Bevel and gradient strengths differ per theme; `LudoThemeColors` carries no flag. */
+        darkTheme: Boolean,
     ) {
         translate(center.x - sidePx / 2, center.y - sidePx / 2) {
+            val corner = .18f * sidePx
+
+            // DEPTH SLABS (§14.3). At rest exactly one face points at the camera, and a single
+            // face is a square, not a die — the projection in `drawProjectedDie` carries the
+            // volume while the die turns, and is switched off here so the number stays legible.
+            //
+            // Rather than tilt the resting pose — which costs legibility at the one moment the
+            // result matters — the depth is DRAWN: two slabs stepped down-right, so the cube has
+            // a visible bottom and right edge under a number that is still flat on. Laid down
+            // first, so the face itself covers everything but the exposed lip.
+            // Mirrors iOS `LudoDieView.drawFlatFace`.
+            for ((offset, tone) in listOf(.055f * sidePx to .30f, .028f * sidePx to .16f)) {
+                val slab = Path().apply {
+                    addRoundRect(
+                        androidx.compose.ui.geometry.RoundRect(
+                            left = offset, top = offset,
+                            right = sidePx + offset, bottom = sidePx + offset,
+                            cornerRadius = CornerRadius(corner),
+                        )
+                    )
+                }
+                drawPath(slab, colors.c(colors.dieEdge).copy(alpha = tone))
+            }
+
             val body = androidx.compose.ui.geometry.RoundRect(
                 left = 0f, top = 0f, right = sidePx, bottom = sidePx,
-                cornerRadius = CornerRadius(.18f * sidePx),
+                cornerRadius = CornerRadius(corner),
             )
             val path = Path().apply { addRoundRect(body) }
-            drawPath(path, colors.c(colors.dieBody))
+
+            // A diagonal gradient rather than a flat fill, so the face has a direction to it. The
+            // stops stay within a few percent of `dieBody` in both themes: the die is ONE neutral
+            // token (§1), and this must read as light falling across it, never as a second colour.
+            val bodyColor = colors.c(colors.dieBody)
+            drawPath(
+                path,
+                brush = Brush.linearGradient(
+                    colors = listOf(
+                        GameSurface.lighten(bodyColor, if (darkTheme) .10f else .06f),
+                        bodyColor,
+                        GameSurface.darken(bodyColor, if (darkTheme) .06f else .08f),
+                    ),
+                    start = Offset.Zero,
+                    end = Offset(sidePx, sidePx),
+                ),
+            )
+
+            // BEVEL (§14.2): bright along the top-left lip, dark along the bottom-right. This is
+            // the layer that reads as a moulded edge rather than a printed square — without it
+            // the face is a rounded rect with pips on it. Inset by half its own width so the
+            // stroke sits inside the silhouette instead of straddling the outline below.
+            val bevelWidth = .045f * sidePx
+            val bevelPath = Path().apply {
+                addRoundRect(
+                    androidx.compose.ui.geometry.RoundRect(
+                        left = bevelWidth / 2f, top = bevelWidth / 2f,
+                        right = sidePx - bevelWidth / 2f, bottom = sidePx - bevelWidth / 2f,
+                        cornerRadius = CornerRadius(corner - bevelWidth / 2f),
+                    )
+                )
+            }
+            drawPath(
+                bevelPath,
+                brush = Brush.linearGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = if (darkTheme) .34f else .85f),
+                        Color.Transparent,
+                        Color.Black.copy(alpha = if (darkTheme) .34f else .22f),
+                    ),
+                    start = Offset.Zero,
+                    end = Offset(sidePx, sidePx),
+                ),
+                style = Stroke(bevelWidth),
+            )
+
+            // The outline that separates the die from whatever is behind it — drawn LAST so the
+            // bevel cannot bleed past the silhouette.
             drawPath(path, colors.c(colors.dieEdge), style = Stroke(edgeStrokePx))
 
             val layout = PIPS[value] ?: return@translate
