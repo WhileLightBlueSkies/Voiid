@@ -791,7 +791,9 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
 
     /// How far behind the newest frame to render.
     ///
-    /// TWO AND A HALF ticks, not one and a half.
+    /// TWO AND A HALF ticks, not one and a half — and it is expressed in SECONDS, so it has to
+    /// move whenever TICK_HZ does. At 20 Hz that is 125 ms, half what it was at 10 Hz, and that
+    /// halving is most of what makes remote snakes agree with the server about collisions.
     ///
     /// At 1.5 ticks the buffer ran dry on any frame that arrived even slightly late — and on
     /// a mobile network that is most of them — so the render clock repeatedly caught up with
@@ -805,7 +807,7 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     /// no longer touches it at all. Prediction did not make a smaller delay affordable, it
     /// made a LARGER one free. What is left behind the clock is other snakes and the food
     /// field, where 100 ms of extra staleness is invisible and a stall is not.
-    private static let interpDelay: Double = 0.25   // 2.5 ticks at tickHz 10
+    private static let interpDelay: Double = 0.125  // 2.5 ticks at tickHz 20
 
     /// How far past the newest buffered frame a head may be carried on its last heading before
     /// the world simply holds. See the `overshoot` call site in `buildFrame`. Identical on

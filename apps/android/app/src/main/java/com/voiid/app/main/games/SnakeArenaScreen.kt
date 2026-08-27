@@ -496,7 +496,7 @@ private fun labelFor(snake: GamesEngine.SnakeState.Snake, me: String?): String =
  *
  * Identical to iOS `SnakeMetalView.interpDelay`.
  */
-private const val INTERP_DELAY = 0.25   // 2.5 ticks at tickHz 10
+private const val INTERP_DELAY = 0.125  // 2.5 ticks at tickHz 20
 
 /** A gap longer than this ends an eating streak — grazing stays flat, real runs climb. */
 private const val EAT_STREAK_GAP_MS = 600L

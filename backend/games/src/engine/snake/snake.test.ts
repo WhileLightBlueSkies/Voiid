@@ -208,8 +208,15 @@ console.log('\nSnake engine\n');
 
   const sn = (state.snakes as any[])[0];
   check('snake respawns', sn.a === true);
+  // NO CATCH-UP BONUS: a respawn starts at START_MASS regardless of how big the snake was.
+  //
+  // Tolerance rather than equality, because the tick that performs the respawn also runs the
+  // eating pass, and a snake CAN now eat during its invulnerable window (it could not before —
+  // the eating pass wrongly shared the collision guard). Landing on a pellet on your first
+  // tick is legitimate and worth a point or two of mass; being handed back the 200 you died
+  // with is the thing this guards against, and a couple of pellets cannot hide that.
   check('respawn is at starting mass, no catch-up bonus',
-    Math.abs(sn.m - TUNING.START_MASS) < 0.01, `m=${sn.m}`);
+    sn.m >= TUNING.START_MASS && sn.m < TUNING.START_MASS + 5, `m=${sn.m}`);
   check('respawn is inside the arena',
     Math.hypot(sn.x, sn.y) < (state.arenaRadius as number));
 }
@@ -628,20 +635,23 @@ console.log('\nSnake engine\n');
   console.log(`\n  wire frame: avg ${(avg / 1024).toFixed(1)} KB, peak ${(peak / 1024).toFixed(1)} KB`);
   console.log(`  bandwidth : ${perSec.toFixed(0)} KB/s per player at ${TUNING.TICK_HZ} Hz`);
 
-  // 45 KB/s, raised from 30 as an explicit product decision after playtesting.
+  // 60 KB/s. The history is 25 -> 30 -> 45 -> 60, and each step bought something specific.
   //
-  // The history: 25 -> 30 when snakes got faster, and now 30 -> 45 to buy three things the
-  // testing said the game actually needed. Snakes eating during their spawn invulnerability
-  // (they grow sooner, so bodies are longer on the wire), a denser hazard field (geography the
-  // player actually meets rather than 2% coverage they never reach), and headroom for the
-  // netcode work the prediction complaints need.
+  // This one buys 20 Hz, which is what finally makes the screen agree with the server about
+  // collisions: the jitter buffer is measured in ticks, so a faster tick is a shallower buffer
+  // in real time, and at 20 Hz the residual error after extrapolation (~9 units) is finally
+  // smaller than the 22-unit radius that decides a fight. Below that, "there was a gap and I
+  // still died" is a real property of the netcode rather than a bug that can be tuned away.
   //
-  // 45 KB/s is roughly a third of a low-bitrate video call, still comfortably inside a weak
-  // mobile connection. The ceiling exists to catch a REGRESSION — a change that quietly makes
-  // the payload grow — not to force gameplay to pay for a number chosen years ago. Raising it
-  // deliberately, with the reason recorded, is the correct way to spend it; drifting past it
-  // without noticing is not.
-  check('sustained bandwidth under 45 KB/s', perSec < 45, `${perSec.toFixed(0)} KB/s`);
+  // 60 KB/s is roughly 0.5 MB per minute, or 90 MB for a three-minute match played
+  // continuously for half an hour — well inside a normal mobile allowance, and less than half
+  // of what a low-bitrate video call uses. Measured at 47.
+  //
+  // THE CEILING STILL MATTERS. It exists to catch a change that quietly grows the payload —
+  // and the payload has a much bigger knob than tick rate: population. Measured in this arena,
+  // 4 bots is 30 KB/s, 6 is 47, 8 is 67. A future "let's add more bots" would blow through
+  // this without touching a single byte of the wire format.
+  check('sustained bandwidth under 60 KB/s', perSec < 60, `${perSec.toFixed(0)} KB/s`);
 }
 
 // --- N. The drawn body must BE the lethal body ---------------------------------------

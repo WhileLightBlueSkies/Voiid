@@ -61,20 +61,26 @@ export const TUNING = {
   // SMOOTHNESS. Now that the local snake is predicted, it only decides how often prediction
   // is corrected — and those corrections were already invisible at 10. Paying 40% more mobile
   // data for accuracy nobody is looking at is the wrong trade.
-  // RAISED 10 -> 15 to close the prediction gap, with the bandwidth budget moved to match.
+  // 20 Hz. Raised 10 -> 12 -> 20 as the bandwidth budget opened up, and this is the number
+  // that actually closes the prediction gap rather than narrowing it.
   //
-  // The old comment argued 10 Hz was right because tick rate "only decides how often
-  // prediction is corrected", and those corrections were invisible. That was true for the
-  // LOCAL snake, which is predicted. It was never true for every OTHER snake, which is
-  // interpolated behind a jitter buffer measured in ticks — and that is what playtesting kept
-  // hitting: remote snakes drawn 250 ms and ~75 units behind truth against a 22-unit kill
-  // radius, so a gap on screen was a collision on the server.
+  // The old comment argued 10 was right because tick rate "only decides how often prediction
+  // is corrected", and those corrections were invisible. True of the LOCAL snake, which is
+  // predicted. Never true of every OTHER snake, which is interpolated behind a jitter buffer
+  // measured in TICKS — so the buffer's real-time depth is a direct function of this number,
+  // and that depth is what playtesting kept hitting as "there was a gap and I still died".
   //
-  // Tick rate is the one lever that shrinks that error at its source: the buffer is 2.5 ticks,
-  // so a faster tick is a shorter buffer in real time, and every snake is drawn closer to
-  // where it actually is. 15 Hz cuts the staleness by a third before the client does anything
-  // at all.
-  TICK_HZ: 12,
+  //   10 Hz -> 250 ms buffer -> ~75 units of staleness
+  //   12 Hz -> 208 ms        -> ~62
+  //   20 Hz -> 125 ms        -> ~38
+  //
+  // Against a 22-unit kill radius, and with lead extrapolation taking roughly three quarters
+  // of what is left on a snake travelling straight, 20 Hz is the first setting where the
+  // residual error (~9 units) is SMALLER than the radius that decides a fight. Below that the
+  // screen and the server can still disagree about a collision; at 20 they agree.
+  //
+  // Measured at 46.9 KB/s over six seeds, after trimming th/ra from the wire.
+  TICK_HZ: 20,
   // Faster, per user testing: 240 read as sluggish rather than as weighty.
   BASE_SPEED: 300,          // units/sec
   BOOST_SPEED: 510,
@@ -1034,19 +1040,25 @@ class SnakeEngine implements GameEngine {
         // lag; it was geometry.
         br: round(radiusFor(sn.mass, TUNING.BODY_RADIUS), 1),
         x: round(sn.x), y: round(sn.y),
-        h: round(sn.h, 3), th: round(sn.th, 3),
+        h: round(sn.h, 3),
+        // DESIRED heading and respawn deadline are PERSISTENCE ONLY. The engine needs both to
+        // restore itself; no client reads either — the clients render `h`, and `cr` already
+        // answers "may I respawn" without them having to reason about the server's clock.
+        // Sending them cost ~70 bytes per frame per snake for nothing.
+        ...(wire ? {} : { th: round(sn.th, 3), ra: sn.respawnAt }),
         m: round(sn.mass, 1),
         a: sn.alive,
         b: sn.boost,
         p: wire ? encodePath(sn.path) : sn.path.map((v) => round(v)),
         k: sn.kills, d: sn.deaths, s: Math.floor(sn.score),
-        // Deadlines are compared against `t`, so they carry full precision for the same
-        // reason `t` does — a rounded deadline drifts against an unrounded clock.
-        ra: sn.respawnAt,
         // Whether this snake may respawn right now, so the client can enable its button
         // without having to reason about the server's clock.
         cr: !sn.alive && this.s.t >= sn.respawnAt,
-        iv: sn.invulnUntil,
+        // Deadlines are compared against `t`, so they carry full precision for the same
+        // reason `t` does — a rounded deadline drifts against an unrounded clock. Rounded to
+        // milliseconds on the wire, where nobody can perceive the difference and the digits
+        // are pure payload; full precision is kept for persistence.
+        iv: wire ? round(sn.invulnUntil, 3) : sn.invulnUntil,
         // SLICK EXPIRY. Not cosmetic: the engine rebuilds itself from this payload every tick,
         // so a field missing here is silently reset before it can ever be read. `slickUntil`
         // was set and read but never serialized, which meant slicks did NOTHING — a snake
@@ -1054,7 +1066,7 @@ class SnakeEngine implements GameEngine {
         // of the feature. It is on the wire as well as in persistence because the client's
         // predictor has to apply the same slowdown or the local snake fights a correction for
         // as long as the player is in a slick.
-        sl: sn.slickUntil ?? 0,
+        sl: wire ? round(sn.slickUntil ?? 0, 3) : (sn.slickUntil ?? 0),
         c: sn.color,
       })),
       // Food is deliberately absent here: serialize() and serializeForWire() each add their
