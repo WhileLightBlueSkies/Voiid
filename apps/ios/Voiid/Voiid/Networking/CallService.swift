@@ -1899,6 +1899,17 @@ final class CallService: NSObject, ObservableObject {
         pendingIncomingOfferSDP = nil
         LKRTCAudioSession.sharedInstance().isAudioEnabled = false
 
+        // The stats sampler runs on a 3-second Timer that nothing was stopping. `pc` is
+        // weak inside the collector so it leaked no peer connection, but the timer itself
+        // survived every call and kept waking the process for the rest of its life.
+        stats.stop()
+
+        // Tell the conference layer this call is over. `callEnded` is a no-op unless the
+        // id matches, so calling it unconditionally is safe — and without it an escalated
+        // call left its roster poll hitting GET /calls/:id/participants every 3 seconds
+        // forever, and its per-call keys uncleared.
+        CallConferenceService.shared.callEnded(callId: call.id)
+
         var ended = call; ended.state = .ended
         active = ended
         // Clear after a beat so the UI can show "ended".

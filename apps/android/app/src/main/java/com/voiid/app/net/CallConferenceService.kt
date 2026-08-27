@@ -617,6 +617,25 @@ object ConferenceManager {
             return
         }
 
+        // Claim the foreground service BEFORE the room goes live.
+        //
+        // Started here rather than at accept time because this is the point where media
+        // actually gets published — and it must be running before that, or Android may
+        // suspend capture the moment the app backgrounds. `startGroup` is the same call the
+        // group engine makes; the conference is a multi-party room by the same rules.
+        appContext?.let { c ->
+            runCatching {
+                // ConferenceState carries no title — the roster is @usernames only by
+                // design (see CallRosterEntry.displayName), so there is no name to show
+                // that would not leak an identity the roster deliberately withholds.
+                CallForegroundService.startGroup(
+                    c,
+                    "Voiid call",
+                    video = _state.value?.kind == CallKind.VIDEO
+                )
+            }
+        }
+
         val e2eeOptions = runCatching {
             // CRITICAL ORDERING, inherited verbatim from the group engine: E2EEOptions() eagerly
             // constructs a native FrameCryptor key provider via JNI, and that native library is
@@ -900,11 +919,38 @@ object ConferenceManager {
      * ESCALATING the 1:1 stack (and, when it took the call, Telecom) owns the route, and two
      * owners fighting over it produces device-specific bugs that never reproduce on a dev machine.
      */
+    /** The device's audio mode before this call touched it, so teardown can put it back. */
+    @Volatile private var savedAudioMode: Int? = null
+
+    /**
+     * Undo everything [applySpeaker] did. See the twin in GroupCallService — the 1:1 engine
+     * has always restored the route correctly and both LiveKit engines simply never did, so
+     * the device stayed in MODE_IN_COMMUNICATION after every conference call.
+     */
+    private fun restoreAudioRoute() {
+        val mode = savedAudioMode ?: return   // never configured; nothing to undo
+        savedAudioMode = null
+        val ctx = appContext ?: return
+        val am = ctx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching { am.clearCommunicationDevice() }
+        }
+        @Suppress("DEPRECATION")
+        runCatching {
+            am.isBluetoothScoOn = false
+            am.stopBluetoothSco()
+            am.isSpeakerphoneOn = false
+        }
+        runCatching { am.mode = mode }
+    }
+
     private fun applySpeaker(on: Boolean) {
         if (_state.value?.stage == Stage.ESCALATING) return
         val ctx = appContext ?: return
         val am = ctx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
         runCatching {
+            // Captured BEFORE the first override, and only once.
+            if (savedAudioMode == null) savedAudioMode = am.mode
             am.mode = AudioManager.MODE_IN_COMMUNICATION
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 val devices = am.availableCommunicationDevices
@@ -996,6 +1042,14 @@ object ConferenceManager {
 
     /** Release the room. Never throws — this runs on error paths. */
     private fun teardownRoom() {
+        restoreAudioRoute()
+        // The conference engine never started or stopped a foreground service — the only
+        // FGS was the 1:1 one, and CallManager's teardown actively STOPS that. So an
+        // invitee who accepted an ad-hoc conference had a live room and a published mic
+        // with no foreground service at all: backgrounding the app let Android suspend
+        // capture, and on 12+ kill the process. Stopping here is half of the fix; the
+        // start is in connectRoom.
+        appContext?.let { runCatching { CallForegroundService.stop(it) } }
         eventJob?.cancel(); eventJob = null
         rekeyJob?.cancel(); rekeyJob = null
         cutoverJob?.cancel(); cutoverJob = null

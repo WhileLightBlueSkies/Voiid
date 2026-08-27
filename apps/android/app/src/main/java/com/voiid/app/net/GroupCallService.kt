@@ -415,10 +415,43 @@ object GroupCallManager {
     }
 
     /** Assert the route. Called on join too, so the default actually takes effect. */
+    /** The device's audio mode before this call touched it, so teardown can put it back. */
+    @Volatile private var savedAudioMode: Int? = null
+
+    /**
+     * Undo everything [applySpeaker] did.
+     *
+     * This was missing entirely, and the 1:1 engine has always done it correctly
+     * (`CallService.restoreAudioRoute`) — so it was a straight port omission with a nasty
+     * symptom: the device stayed in MODE_IN_COMMUNICATION with a forced communication
+     * device after every group call. Music, video and notifications then played at in-call
+     * volume out of the earpiece, and the next ringtone routed wrongly. Nothing short of a
+     * reboot fixed it.
+     */
+    private fun restoreAudioRoute() {
+        val mode = savedAudioMode ?: return   // never configured; nothing to undo
+        savedAudioMode = null
+        val ctx = appContext ?: return
+        val am = ctx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching { am.clearCommunicationDevice() }
+        }
+        @Suppress("DEPRECATION")
+        runCatching {
+            am.isBluetoothScoOn = false
+            am.stopBluetoothSco()
+            am.isSpeakerphoneOn = false
+        }
+        runCatching { am.mode = mode }
+    }
+
     private fun applySpeaker(on: Boolean) {
         val ctx = appContext ?: return
         val am = ctx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
         runCatching {
+            // Captured BEFORE the first override, and only once — re-reading it later would
+            // save MODE_IN_COMMUNICATION over the real previous mode.
+            if (savedAudioMode == null) savedAudioMode = am.mode
             am.mode = AudioManager.MODE_IN_COMMUNICATION
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 val devices = am.availableCommunicationDevices
@@ -558,6 +591,8 @@ object GroupCallManager {
     private var presenceConversationId: String? = null
 
     private fun teardown() {
+        // Put the device's audio mode back before anything else — see restoreAudioRoute.
+        restoreAudioRoute()
         // Belt and braces: the call is over, so the invitation must not survive it. A push
         // that raced the hang-up would otherwise leave a permanent "join" notification for a
         // call nobody is on.

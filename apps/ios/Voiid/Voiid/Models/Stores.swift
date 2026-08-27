@@ -879,6 +879,21 @@ final class ChatStore: ObservableObject {
         // Call signaling: wire the WebRTC engine's inbound handlers (call_offer/answer/
         // ice/hangup) + CallKit onto the same socket.
         CallService.shared.configure(socket: WebSocketClient.shared)
+        // AND the conference engine, which owns `onCallKey`.
+        //
+        // This line was missing, and it was not a conference-only bug: `configure` is the
+        // ONLY place `socket.onCallKey` is assigned (CallConference.swift:236), so inbound
+        // `call_key` frames were dropped on the floor for every call, 1:1 included.
+        //
+        // The frame cryptor fails CLOSED by design (`discardFrameWhenCryptorNotReady: true`,
+        // CallKeyExchange.swift:158) — the right choice, since the alternative is sending
+        // media in the clear. But it meant the callee never received the per-call secret,
+        // never attached a cryptor, and discarded every frame: calls reached "Connected"
+        // with a running timer and SILENCE on both ends.
+        //
+        // It also left call_invite / call_migrate / accept / decline unhandled, so
+        // escalating a 1:1 to a conference could never work over a live socket.
+        CallConferenceService.shared.configure(socket: WebSocketClient.shared)
         // We're authenticated by the time realtime starts, so this is the point where
         // a VoIP token captured before login (or on a fresh install) gets uploaded.
         VoIPPushManager.shared.uploadTokenIfNeeded()
