@@ -166,6 +166,10 @@ final class CallService: NSObject, ObservableObject {
     /// it". Those are different facts about another person and the difference is the whole
     /// content of the moment.
     @Published private(set) var lastEndReason: CallEndReason = .unknown
+
+    /// Set when a call could not start because the microphone is denied. The UI shows a
+    /// prompt to Settings; nothing else can fix it from inside the app.
+    @Published var micPermissionDenied = false
     private var everConnected = false
 
     // MARK: WebRTC
@@ -657,6 +661,18 @@ final class CallService: NSObject, ObservableObject {
         guard !GroupCallService.shared.isActive else { return }
         let callId = UUID().uuidString
         let uuid = UUID()
+        // Checked BEFORE any state is built: a call with no microphone is not a call, and
+        // refusing it with a reason beats placing one that connects to silence. Assigning
+        // `active` first and then nil-ing it would briefly publish a call that never was.
+        guard micAvailable else {
+            NSLog("[VOIID] microphone permission denied — cannot place call")
+            micPermissionDenied = true
+            return
+        }
+        // A denied camera downgrades a video call to voice rather than refusing it — a
+        // voice call is far more useful than an error.
+        let isVideo = isVideo && cameraAvailable
+
         let convId = conversationId ?? LocalStore.conversationId(forPeer: peerUserId)
         active = ActiveCall(id: callId, uuid: uuid, peerUserId: peerUserId, title: title,
                             isVideo: isVideo, isOutgoing: true, state: .outgoingRinging,
@@ -1131,6 +1147,27 @@ final class CallService: NSObject, ObservableObject {
             self.pendingEndReason = .timeout
             self.endActiveCall(notifyPeer: true, fromCallKit: false)
         }
+    }
+
+    /// Is the microphone actually available to us?
+    ///
+    /// Nothing in the call path checked this. Permissions are requested once at onboarding
+    /// and never re-examined — but a user can revoke the microphone in Settings at any
+    /// time, and iOS does not notify the app. The call then connected, reached CONNECTED,
+    /// ran its timer, and the peer heard SILENCE with no error shown anywhere. From the
+    /// user's side the app was simply broken.
+    ///
+    /// Checked rather than requested: at this point the user is trying to take a call, and
+    /// a permission prompt over a ringing screen is both jarring and likely to be dismissed
+    /// by someone reaching for Answer.
+    private var micAvailable: Bool {
+        AVAudioApplication.shared.recordPermission == .granted
+    }
+
+    /// The camera, for a video call. A denied camera is NOT fatal — the call continues as
+    /// voice, which is far better than refusing it — so this only downgrades.
+    private var cameraAvailable: Bool {
+        AVCaptureDevice.authorizationStatus(for: .video) == .authorized
     }
 
     /// Hard bound on how long an OUTGOING call may ring unanswered.

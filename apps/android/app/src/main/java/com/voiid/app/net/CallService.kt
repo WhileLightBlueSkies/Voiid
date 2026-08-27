@@ -273,6 +273,9 @@ object CallManager {
         // Route inbound call signaling from the WS relay to us. Distinct callback slot
         // from ChatStore's message/typing handlers, so both coexist on the one socket.
         WebSocketClient.get(appContext).onCallSignal = { sig -> onSignal(sig) }
+        WebSocketClient.get(appContext).onCallTaken = { callId, reason ->
+            mainHandler.post { onCallTakenElsewhere(callId, reason) }
+        }
         // Names for the call UI come from the local directory, never from signaling — see
         // [com.voiid.app.store.UserDirectory]. Load it before the first ring can arrive.
         com.voiid.app.store.UserDirectory.init(appContext)
@@ -782,6 +785,39 @@ object CallManager {
      */
     private fun announceRinging(callerId: String, callId: String) {
         runCatching { WebSocketClient.get(appContext).sendCallRinging(callerId, callId) }
+    }
+
+    /**
+     * This call was answered or declined on ANOTHER of your own devices.
+     *
+     * The server fans a ring to every device you have signed in and, on the first verdict,
+     * emits `call_taken` back to your own channel. Android ignored it entirely, and the
+     * failure was not merely a stray ring: the sibling device kept alerting, reached its
+     * 45-second ring cap, and sent `endInternal(notifyPeer = true)` — a hangup carrying the
+     * SAME call_id the answered call is using. The caller's guard matches on call_id, so a
+     * live conversation was torn down 45 seconds in. The sibling also filed a false
+     * "missed" row for a call that was answered.
+     *
+     * Mirrors iOS `handleCallTakenElsewhere`.
+     */
+    private fun onCallTakenElsewhere(callId: String, reason: String) {
+        // A waiting call resolved elsewhere: drop the second-call banner, send no busy —
+        // the sibling is handling it.
+        if (_waiting.value?.callId == callId) {
+            clearWaiting()
+            return
+        }
+        val s = _state.value ?: return
+        if (s.callId != callId || !s.incoming) return
+        // WE are the device that answered — this is the echo of our own verdict coming back
+        // off our own channel, and ending here would end the call we just took.
+        if (s.phase != Phase.RINGING_IN) return
+
+        android.util.Log.i("VOIID", "call $callId ${reason}ed on another device — stopping this ring")
+        // notifyPeer = false is the whole point: the sibling device is talking to them, so a
+        // hangup from here would end THEIR live call. Nothing was missed either — the
+        // outcome is recorded as handled rather than as a missed call.
+        endInternal(notifyPeer = false, reason = if (reason == "answer") "answered-elsewhere" else "declined-elsewhere")
     }
 
     private fun onRemoteOffer(sig: WebSocketClient.CallSignal) {

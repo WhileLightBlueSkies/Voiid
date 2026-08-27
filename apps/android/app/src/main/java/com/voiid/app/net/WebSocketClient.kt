@@ -96,6 +96,12 @@ class WebSocketClient private constructor(context: Context) {
     var onStorySignal: (() -> Unit)? = null
     /** A call-signaling frame (offer/answer/ice/hangup/decline/busy/ringing/hold) was relayed to us. */
     var onCallSignal: ((CallSignal) -> Unit)? = null
+    /**
+     * Another of YOUR devices answered or declined this call. `(callId, reason)`.
+     *
+     * Server-originated on your own channel, so it has no peer — see the dispatch branch.
+     */
+    var onCallTaken: ((String, String) -> Unit)? = null
 
     /** One inbound call-signaling frame. `from_user_id` is server-stamped (authenticated). */
     data class CallSignal(
@@ -559,6 +565,21 @@ class WebSocketClient private constructor(context: Context) {
                         ?.takeIf { it.isNotBlank() },
                     ciphertextB64 = obj["ciphertext"]?.jsonPrimitive?.contentOrNull,
                 )
+            }
+            // ANSWERED (or DECLINED) ON ANOTHER OF YOUR OWN DEVICES.
+            //
+            // Deliberately its own branch: this frame comes from the SERVER on your own
+            // channel, not from a peer, so it carries no `from_user_id` — the shared branch
+            // below would have dropped it on `?: return` even if it were listed there.
+            //
+            // Android was not handling it at all, and the consequence was severe: a sibling
+            // device kept ringing after you answered elsewhere, hit its 45s ring cap, and
+            // sent a hangup carrying the SAME call_id the live call is using — tearing down
+            // an answered call mid-conversation, and filing a false "missed" row.
+            "call_taken" -> {
+                val callId = obj["call_id"]?.jsonPrimitive?.contentOrNull ?: return
+                val reason = obj["reason"]?.jsonPrimitive?.contentOrNull ?: "answer"
+                onCallTaken?.invoke(callId, reason)
             }
             "call_offer", "call_answer", "call_ice", "call_hangup", "call_decline", "call_busy",
             "call_ringing", "call_hold", "call_unhold",

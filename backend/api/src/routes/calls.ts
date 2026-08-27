@@ -55,10 +55,21 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // of a large group name that conversation_id and ring a stranger who is also in it.
 // ─────────────────────────────────────────────────────────────────────────────────
 async function sharesConversation(a: string, b: string, conversationId: string): Promise<boolean> {
+  // BOTH SIDES MUST HAVE ACCEPTED.
+  //
+  // `request_state` was not checked here, so a PENDING message request could ring you —
+  // turning the request inbox into a ringing channel and undoing the point of 020. The
+  // conference path (`canReachForCall`) has always required 'accepted' on both sides and
+  // says so in its own comment; the 1:1 ring, which matters far more, did not.
+  //
+  // 020_reachability.sql:47 defaults this to 'accepted', so every pre-existing membership
+  // keeps working and only genuine pending requests are newly refused.
   const rows = await query<{ n: string }>(
     `select count(distinct user_id)::text as n
        from conversation_members
-      where conversation_id = $1 and left_at is null and user_id in ($2, $3)`,
+      where conversation_id = $1 and left_at is null
+        and request_state = 'accepted'
+        and user_id in ($2, $3)`,
     [conversationId, a, b]
   );
   return rows[0]?.n === '2';
@@ -118,6 +129,20 @@ router.post('/ring', requireAuth, asyncHandler(async (req, res) => {
   // reaches the callee's device.
   if (to_user_id === user_id) {
     return res.status(400).json({ error: 'cannot call yourself' });
+  }
+  // BLOCKING GATES THE RING.
+  //
+  // `isBlockedEitherWay` was imported into this file and used at exactly ONE site — the
+  // conference path — so a blocked user could still ring the person who blocked them.
+  // Blocking does not delete the conversation row, and `sharesConversation` only checks
+  // membership, so the ring sailed straight through the one guard that was supposed to
+  // stop it.
+  //
+  // 403 with the SAME message as the membership failure below, deliberately: telling a
+  // blocked caller "you are blocked" confirms the block, which is exactly what a blocked
+  // person should not be able to learn by probing.
+  if (await isBlockedEitherWay(user_id, to_user_id)) {
+    return res.status(403).json({ error: 'not permitted to call this user' });
   }
   if (!(await sharesConversation(user_id, to_user_id, conversation_id))) {
     // 403 rather than 404: the caller supplied a real conversation id, they are simply not
