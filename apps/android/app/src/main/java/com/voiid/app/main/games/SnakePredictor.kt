@@ -19,8 +19,8 @@ import kotlin.math.sin
 object SnakeMotion {
     const val BASE_SPEED = 300.0
     const val BOOST_SPEED = 510.0
-    val TURN_RATE = 400.0 * PI / 180.0
-    val TURN_RATE_BOOST = 440.0 * PI / 180.0
+    val TURN_RATE = 500.0 * PI / 180.0
+    val TURN_RATE_BOOST = 540.0 * PI / 180.0
     /** Speed multiplier inside a slick. Mirrors HAZARD_TUNING.SLICK_SPEED on the server. */
     const val SLICK_SPEED = 0.62
 

@@ -88,14 +88,21 @@ export const TUNING = {
   // time"). At 260 deg/s a half-turn took 0.7 s — long enough that a player stops believing
   // the control is connected to the snake. 400 puts it at 0.45 s, which still arcs (this is
   // not a grid game) but answers the thumb.
-  TURN_RATE: 400,           // degrees/sec
+  // 500, up from 400, after playtesting: "it feels like I have to try hard to turn".
+  //
+  // 400 put a 180 at 0.45 s, which is fine when you are choosing a route and too slow when you
+  // are reacting to something already close. 500 puts it at 0.36 s and leaves the cruise turn
+  // radius at 34 units — still comfortably above the 22-unit kill radius, which is the line
+  // that matters: below about 30 a snake could turn tighter than its own body and the game
+  // stops being about commitment.
+  TURN_RATE: 500,           // degrees/sec
   // Boosting turns FASTER, not slower.
   //
   // The original 195 made boost a commitment you could not steer out of, which is one valid
   // design — but it reads as the controls going vague exactly when the player is paying most
   // attention. Turning up with speed keeps the turn RADIUS roughly constant instead of
   // ballooning, so a boosting snake still feels like it is being steered.
-  TURN_RATE_BOOST: 440,
+  TURN_RATE_BOOST: 540,
   START_MASS: 10,
   MIN_BOOST_MASS: 12,
   BOOST_DRAIN: 3.57,        // mass/sec

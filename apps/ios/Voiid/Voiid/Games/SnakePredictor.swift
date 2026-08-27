@@ -35,8 +35,8 @@ import QuartzCore
 enum SnakeMotion {
     static let baseSpeed: Double = 300
     static let boostSpeed: Double = 510
-    static let turnRate: Double = 400 * .pi / 180
-    static let turnRateBoost: Double = 440 * .pi / 180
+    static let turnRate: Double = 500 * .pi / 180
+    static let turnRateBoost: Double = 540 * .pi / 180
     static let minBoostMass: Double = 12
     /// Speed multiplier inside a slick. Mirrors HAZARD_TUNING.SLICK_SPEED on the server.
     static let slickSpeed: Double = 0.62

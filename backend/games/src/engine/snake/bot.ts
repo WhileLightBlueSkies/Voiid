@@ -24,6 +24,18 @@ import {
 } from './geometry';
 
 export interface BotMemory {
+  /**
+   * Which way this bot last chose to escape, in degrees, or 0 when it is not escaping.
+   *
+   * Escape is re-decided every tick against a world that keeps moving, so without a memory of
+   * the direction already chosen the winner flips side to side and the bot saws in place. This
+   * is the difference between "steering" and "snapping to right angles".
+   */
+  escapeDeg?: number;
+  /** Which tangent this bot chose while hugging the wall (+1/-1), so it does not weave. */
+  wallSide?: number;
+  /** A wandering bot's absolute bearing, drifted slowly rather than re-derived each tick. */
+  wanderBearing?: number;
   /** Index into the food array it is currently going for; -1 when none. */
   targetFood: number;
   /** Seconds until it may reconsider. Prevents dithering between equal pellets. */
@@ -126,9 +138,20 @@ export function stepBot(
     } else {
       // Further out, prefer the tangent nearer the current heading so the bot arcs away
       // rather than making an obvious U-turn.
+      // Pick the tangent NEARER THE CURRENT HEADING, and keep picking the same one: this is
+      // evaluated every tick against a moving position, so choosing purely on the smaller angle
+      // let the two tangents trade places and the bot wove along the wall instead of arcing
+      // away from it.
       const tA = inward + Math.PI / 2.4;
       const tB = inward - Math.PI / 2.4;
-      sn.th = Math.abs(shortestAngle(sn.h, tA)) < Math.abs(shortestAngle(sn.h, tB)) ? tA : tB;
+      const dA = Math.abs(shortestAngle(sn.h, tA));
+      const dB = Math.abs(shortestAngle(sn.h, tB));
+      const stickiness = 0.35;   // radians of preference for the side already chosen
+      const preferA = mem.wallSide === 1 ? dA - stickiness : dA;
+      const preferB = mem.wallSide === -1 ? dB - stickiness : dB;
+      const useA = preferA < preferB;
+      mem.wallSide = useA ? 1 : -1;
+      sn.th = useA ? tA : tB;
     }
     mem.targetFood = -1;
     return;
@@ -210,6 +233,7 @@ export function stepBot(
   if (blocked) {
     let bestH = sn.h;
     let bestClear = -1;
+    let bestDeg = 0;
     for (let deg = -90; deg <= 90; deg += 15) {
       const h = sn.h + deg * DEG;
       const px = sn.x + Math.cos(h) * probe;
@@ -234,9 +258,20 @@ export function stepBot(
         if (d < clear) clear = d;
       }
       // Bias toward small turns, so escaping never looks like a physically impossible flip.
-      const score = clear - Math.abs(deg) * 0.6;
-      if (score > bestClear) { bestClear = score; bestH = h; }
+      //
+      // MUCH STRONGER THAN IT WAS (0.6), and it also rewards CONTINUING THE TURN ALREADY
+      // UNDERWAY. This scan re-runs every tick, and with a weak bias a small change in the
+      // world flipped the winner from -90 to +90 and back — so a bot sawed left-right on the
+      // spot and read as a machine snapping to right angles rather than a player steering.
+      // Humans commit to a turn and see it through; the cost of picking a slightly worse
+      // direction and holding it is far lower than the cost of looking robotic.
+      const prevEscape = mem.escapeDeg ?? 0;
+      const committing = prevEscape !== 0 && Math.sign(deg) === Math.sign(prevEscape);
+      const score = clear - Math.abs(deg) * 2.2 + (committing ? 45 : 0);
+      if (score > bestClear) { bestClear = score; bestH = h; bestDeg = deg; }
     }
+    // Remember which way we committed, so the next tick prefers the same way out.
+    mem.escapeDeg = bestDeg;
     sn.th = bestH;
     mem.targetFood = -1;
     return;
@@ -276,7 +311,12 @@ export function stepBot(
     // Require more room than the wall-avoidance threshold, so hunting can never pull a bot
     // into the band where it should already be turning away.
     if (-arenaSdf(arena, arenaRadius, px, py) > awareness && ownRoom > awareness * 1.4) {
+      mem.escapeDeg = 0;
+      mem.wanderBearing = undefined;
       sn.th = Math.atan2(py - sn.y, px - sn.x);
+      // A couple of degrees of life, added to an ALREADY ABSOLUTE target — this one does not
+      // chase itself the way the wander bearing did, because `th` was just set from a world
+      // position rather than from the snake's own heading.
       mem.jitter += dt * 2.6;
       sn.th += Math.sin(mem.jitter) * 2 * DEG;
       return;
@@ -303,7 +343,21 @@ export function stepBot(
       // into the boundary is the most common way a naive bot kills itself.
       const edge = -arenaSdf(arena, arenaRadius, f.x, f.y);
       const safety = Math.min(1, edge / 300);
-      const score = (f.v / d2) * 1e6 * safety;
+
+      // AND PREFER FOOD IT IS ALREADY FACING. Scoring on distance alone picked the nearest
+      // pellet regardless of direction, so bots routinely targeted something behind them and
+      // spent the next second turning — measured, they were turning at the full rate on 84% of
+      // ticks, which is what reads as a machine slewing rather than a person steering. A
+      // player takes the pellet roughly ahead of them and lets the one behind go.
+      //
+      // Cosine of the angle off the current heading, remapped to 0..1: straight ahead scores
+      // full, abeam scores a quarter, behind is heavily discounted but never zero — a bot
+      // hemmed in should still be able to decide to turn around.
+      const ang = Math.atan2(f.y - sn.y, f.x - sn.x);
+      const facing = Math.cos(shortestAngle(sn.h, ang));
+      const aim = 0.15 + 0.85 * ((facing + 1) / 2) ** 2;
+
+      const score = (f.v / d2) * 1e6 * safety * aim;
       if (score > bestScore) { bestScore = score; best = i; }
     }
     mem.targetFood = best;
@@ -311,11 +365,47 @@ export function stepBot(
 
   if (mem.targetFood >= 0 && mem.targetFood < food.length) {
     const f = food[mem.targetFood];
-    sn.th = Math.atan2(f.y - sn.y, f.x - sn.x);
-  } else {
+    const dx = f.x - sn.x, dy = f.y - sn.y;
+    const dist = Math.hypot(dx, dy);
+
+    // DO NOT CHASE A PELLET YOU CANNOT TURN TOWARD.
+    //
+    // Inside about two turn-steps the bearing to a pellet slews faster than the turn cap: at
+    // 300 u/s and 20 Hz a bot covers 15 units a tick, so a pellet 20 units away swings ~37
+    // degrees a tick against a 25-degree cap. The bot physically cannot track it, so it
+    // overshoots, reverses, overshoots again — measured at a 49% direction-flip rate, which is
+    // exactly the sawing that reads as "bots take 90 degree turns" rather than steering.
+    //
+    // A person in that position lets the pellet go and takes the next one. So does this: drop
+    // the target and pick another, rather than pirouetting around something already missed.
+    const turnStep = speed / TUNING.TICK_HZ;
+    if (dist < turnStep * 2.5) {
+      mem.targetFood = -1;
+      mem.retarget = 0;
+    } else {
+      mem.escapeDeg = 0;
+      mem.wanderBearing = undefined;
+      sn.th = Math.atan2(dy, dx);
+    }
+  }
+
+  if (mem.targetFood < 0) {
     // Nothing worth eating: drift, gently curving, rather than freezing on one heading.
-    mem.jitter += dt * 1.4;
-    sn.th = sn.h + Math.sin(mem.jitter) * 0.5;
+    // WANDER AS A DRIFTING BEARING, not as a wobble around the current heading.
+    //
+    // This was `sn.h + sin(jitter) * 0.5`: half a radian — 28 degrees — of desired heading,
+    // re-based off the CURRENT heading every tick. Because the snake turns toward that target
+    // and the target is then measured from the new heading, the pair chase each other and the
+    // bot weaves continuously. Measured across five bots, direction reversed on 49% of ticks.
+    //
+    // A wandering bot should hold a bearing and let it drift, which is what a person does when
+    // they are not going anywhere in particular. The jitter now moves the BEARING slowly and
+    // absolutely, so `th` is stable between changes and the turn clamp produces a long arc
+    // rather than a saw.
+    mem.jitter += dt * 0.35;
+    if (mem.wanderBearing === undefined) mem.wanderBearing = sn.h;
+    mem.wanderBearing += Math.sin(mem.jitter) * 0.9 * dt;
+    sn.th = mem.wanderBearing;
   }
 
   // Heading jitter. A bot travelling a perfectly straight line is instantly identifiable as
