@@ -1350,7 +1350,14 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
     }
 
     /// Base rock colour, before the per-facet shade.
-    private static let rockBody = SIMD3<Float>(0.34, 0.34, 0.42)
+    ///
+    /// MUCH BRIGHTER THAN IT LOOKS IT SHOULD BE, and the reason is the background. The arena
+    /// floor is near-black, so the old 0.34/0.34/0.42 shaded down to RGB 62-107 out of 255 —
+    /// a dark grey-blue object on a dark background. Playtesting reported rocks as invisible
+    /// and it was not a rendering bug: 2,994 triangles were uploaded and drawn every frame,
+    /// with a rock ten units from the head, and the player still could not see it. A lethal
+    /// object has to read at a glance or it is a trap rather than terrain.
+    private static let rockBody = SIMD3<Float>(0.62, 0.60, 0.70)
 
     private func buildRock(index: Int, centre: SIMD2<Float>, radius r: Float) {
         let variant = ((index % SnakeHazardArt.rockVariants) + SnakeHazardArt.rockVariants)
@@ -1378,6 +1385,26 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
                 SIMD2(centre.x + Float(a.x) * r, centre.y + Float(a.y) * r),
                 SIMD2(centre.x + Float(b.x) * r, centre.y + Float(b.y) * r),
                 colour: SIMD4(c.x, c.y, c.z, 1))
+        }
+
+        // RIM. A bright edge around the silhouette, drawn as a thin ring of triangles just
+        // outside the body. Shading alone does not separate a rock from a dark floor — an
+        // outline does, and it is the same reason the lethal arena edge is drawn as a line
+        // rather than a gradient.
+        for i in 0..<outline.count {
+            let a = outline[i]
+            let b = outline[(i + 1) % outline.count]
+            let outer: Float = 1.06
+            appendTriangle(
+                SIMD2(centre.x + Float(a.x) * r, centre.y + Float(a.y) * r),
+                SIMD2(centre.x + Float(b.x) * r, centre.y + Float(b.y) * r),
+                SIMD2(centre.x + Float(a.x) * r * outer, centre.y + Float(a.y) * r * outer),
+                colour: SIMD4(0.82, 0.84, 0.95, 0.9))
+            appendTriangle(
+                SIMD2(centre.x + Float(b.x) * r, centre.y + Float(b.y) * r),
+                SIMD2(centre.x + Float(b.x) * r * outer, centre.y + Float(b.y) * r * outer),
+                SIMD2(centre.x + Float(a.x) * r * outer, centre.y + Float(a.y) * r * outer),
+                colour: SIMD4(0.82, 0.84, 0.95, 0.9))
         }
     }
 
@@ -1423,7 +1450,7 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
         let variant = ((index % 4) + 4) % 4
         let outline = SnakeHazardArt.slickOutline(variant: variant)
         appendFan(centre: centre, points: outline, radius: r,
-                  colour: SIMD4(0.35, 0.70, 0.95, 0.16))
+                  colour: SIMD4(0.30, 0.62, 0.95, 0.46))
 
         // A SHEEN BAND sweeping across on a 4-second cycle, so it reads as WET. Same barely-there
         // amplitude as the Sea Battle caustics — it must prove the surface is liquid without ever
@@ -1433,7 +1460,7 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
             centre: SIMD2(centre.x + sweep * r, centre.y),
             points: outline.map { CGPoint(x: $0.x * 0.5, y: $0.y * 0.62) },
             radius: r,
-            colour: SIMD4(0.62, 0.88, 1.0, 0.10))
+            colour: SIMD4(0.70, 0.92, 1.0, 0.30))
     }
 
     // MARK: - Triangle helpers

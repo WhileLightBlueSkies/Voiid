@@ -1093,6 +1093,14 @@ function round(v: number, dp = 0): number {
 // difference between 2 and 3 units is well under a pixel at play zoom — while the snakes got
 // faster (more points per body) and pushed the frame past its ceiling. Precision nobody can
 // see is the right thing to spend.
+/**
+ * How many snakes an arena wants in it, humans and bots together.
+ *
+ * 6, because that is what the bandwidth budget affords: in the 2000-unit arena, 6 snakes costs
+ * about 47 KB/s and 8 costs 67. The arena is free to grow; the population is not.
+ */
+const TARGET_SNAKES = 6;
+
 const PATH_STEP = 3;
 
 /**
@@ -1217,8 +1225,24 @@ export const snake: GameFactory = {
 
   create(playerIds: string[], options?: Record<string, unknown>): GameEngine {
     // Options come from the client that created the match, so every value is clamped.
+    // BOTS TOP UP TO A TARGET POPULATION rather than being an absolute count.
+    //
+    // The arena wants roughly the same number of snakes in it however many humans turned up:
+    // six snakes is a busy arena, and whether five of them are bots or one of them is does not
+    // change how it plays. So the client asks for a population, and the engine fills whatever
+    // the humans did not.
+    //
+    // WHY A CAP MATTERS MORE THAN THE TARGET. Measured over six seeds in the 2000-unit arena:
+    // 4 bots = 30.3 KB/s, 6 = 46.9, 8 = 67.1. Every snake is a body on the wire every tick, so
+    // population is the single most expensive knob in the game — far more than arena size,
+    // which is free. TARGET_SNAKES is chosen for that budget, not for how full the arena looks.
     const rawBots = Number(options?.bots);
-    const bots = Number.isFinite(rawBots) ? clamp(Math.floor(rawBots), 0, 12) : 0;
+    const requested = Number.isFinite(rawBots) ? clamp(Math.floor(rawBots), 0, 12) : 0;
+    // A match that asked for no bots gets none — solo practice and real multiplayer both rely
+    // on that. Otherwise fill the gap the humans left, never below zero.
+    const bots = requested === 0
+      ? 0
+      : clamp(TARGET_SNAKES - playerIds.length, 0, requested);
     const rawSeconds = Number(options?.seconds);
     const duration = Number.isFinite(rawSeconds)
       ? clamp(Math.floor(rawSeconds), 60, 600)

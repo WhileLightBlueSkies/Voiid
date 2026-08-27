@@ -538,6 +538,27 @@ console.log('\nSnake engine\n');
     `moved ${moved.toFixed(1)}, expected ~${expected.toFixed(1)} (full speed is ${full.toFixed(1)})`);
 }
 
+// --- 10b-quinquies. Bots top up to a target population ---------------------------------------
+//
+// The arena wants about the same number of snakes in it however many humans turned up, and
+// population is the most expensive knob in the game — 4 bots cost 30 KB/s, 8 cost 67. So the
+// client asks for a population and the engine fills whatever the humans did not.
+{
+  const totals: number[] = [];
+  for (const humans of [1, 2, 3, 6]) {
+    const ids = Array.from({ length: humans }, (_, i) => `u${i}`);
+    const st = snake.create(ids, { bots: 5, seed: 5 }).serialize();
+    totals.push((st.snakes as any[]).length);
+  }
+  check('population is stable however many humans joined',
+    totals.every((n) => n === totals[0]), `totals ${totals.join(',')}`);
+
+  // Asking for no bots still means no bots: solo practice and real multiplayer both rely on it.
+  const solo = snake.create(['u0'], { bots: 0, seed: 5 }).serialize();
+  check('bots: 0 still means no bots',
+    (solo.snakes as any[]).filter((s) => s.bot).length === 0);
+}
+
 // --- 10c. Mass-scaled radius --------------------------------------------------------------
 // The drawn width comes from `hr`, so if this stops scaling the client silently goes back to
 // a fixed-width snake whose hitbox no longer matches what is on screen.

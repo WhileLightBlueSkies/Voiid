@@ -1385,8 +1385,17 @@ private fun DrawScope.drawHazards(state: GamesEngine.SnakeState) {
     }
 }
 
-/** Base rock colour, before the per-facet shade. */
-private val RockBody = Color(0.34f, 0.34f, 0.42f)
+/**
+ * Base rock colour, before the per-facet shade.
+ *
+ * MUCH BRIGHTER THAN IT LOOKS IT SHOULD BE, and the reason is the background. The arena floor
+ * is near-black, so the old 0.34/0.34/0.42 shaded down to RGB 62-107 out of 255 — a dark
+ * grey-blue object on a dark background. Playtesting reported rocks as invisible and it was not
+ * a rendering bug: the geometry was uploaded and drawn every frame, with a rock ten units from
+ * the head, and the player still could not see it. A lethal object has to read at a glance or
+ * it is a trap rather than terrain. Mirrors iOS `rockBody`.
+ */
+private val RockBody = Color(0.62f, 0.60f, 0.70f)
 
 private fun DrawScope.drawRock(index: Int, centre: Offset, r: Float) {
     val variant = ((index % SnakeHazardArt.ROCK_VARIANTS) + SnakeHazardArt.ROCK_VARIANTS) %
@@ -1423,6 +1432,15 @@ private fun DrawScope.drawRock(index: Int, centre: Offset, r: Float) {
             ),
         )
     }
+
+    // RIM. A bright edge around the silhouette. Shading alone does not separate a rock from a
+    // dark floor — an outline does, which is the same reason the lethal arena edge is drawn as
+    // a line rather than a gradient. Mirrors iOS.
+    drawPath(
+        polygonPath(centre, outline, r * 1.06f),
+        Color(0.82f, 0.84f, 0.95f, 0.9f),
+        style = androidx.compose.ui.graphics.drawscope.Stroke(width = r * 0.06f),
+    )
 }
 
 private fun DrawScope.drawSpike(
@@ -1470,7 +1488,9 @@ private fun DrawScope.drawSpike(
 private fun DrawScope.drawSlick(index: Int, centre: Offset, r: Float, time: Double) {
     val variant = ((index % 4) + 4) % 4
     val outline = SnakeHazardArt.slickOutline(variant)
-    drawPath(polygonPath(centre, outline, r), Color(0.35f, 0.70f, 0.95f, 0.16f))
+    // Raised from alpha 0.16 — a slick you cannot see is not terrain, it is an unexplained
+    // slowdown. Mirrors iOS.
+    drawPath(polygonPath(centre, outline, r), Color(0.30f, 0.62f, 0.95f, 0.46f))
 
     // A SHEEN BAND sweeping across on a 4-second cycle, so it reads as WET. Same barely-there
     // amplitude as the Sea Battle caustics — it must prove the surface is liquid without ever
@@ -1482,7 +1502,7 @@ private fun DrawScope.drawSlick(index: Int, centre: Offset, r: Float, time: Doub
             outline.map { Offset(it.x * 0.5f, it.y * 0.62f) },
             r,
         ),
-        Color(0.62f, 0.88f, 1.0f, 0.10f),
+        Color(0.70f, 0.92f, 1.0f, 0.30f),
     )
 }
 
