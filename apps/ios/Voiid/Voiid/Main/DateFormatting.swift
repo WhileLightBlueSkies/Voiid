@@ -53,3 +53,45 @@ enum VoiidDate {
         return full.string(from: date)
     }
 }
+
+/// Display-name shortening.
+///
+/// Lives here rather than in each screen because three files had already grown their own
+/// copy of `split(separator: " ").first` and they were starting to disagree about the edge
+/// cases below.
+enum VoiidName {
+
+    /// The first name, for surfaces where the full name will not fit.
+    ///
+    /// A chat grid tile is ~110pt wide, so "Priyanshu Bhattacharya" either wrapped to two
+    /// lines and crowded out the photo, or shrank to an unreadable size. The first name is
+    /// what people actually call each other anyway.
+    ///
+    /// Four cases the naive `split(" ").first` gets wrong, and why each is handled:
+    ///
+    ///  * **A group or Note to Self.** These are titles, not people — "Design Team" must not
+    ///    become "Design". The caller decides by passing `isPerson: false`.
+    ///  * **A phone number or @handle.** "+91 98765 43210" would truncate to "+91", which
+    ///    identifies nobody. Anything that does not start with a letter is returned whole.
+    ///  * **A one-word name.** Returned unchanged — the guard exists so the result is never
+    ///    empty.
+    ///  * **A leading title.** "Dr Nehal" reads better shortened to "Dr Nehal" than to "Dr",
+    ///    so a very short first token is kept with the one after it.
+    static func short(_ full: String, isPerson: Bool = true) -> String {
+        let trimmed = full.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isPerson, !trimmed.isEmpty else { return trimmed }
+
+        // Not a person's name in the usual sense: a number, a handle, an emoji-led label.
+        guard let first = trimmed.unicodeScalars.first,
+              CharacterSet.letters.contains(first) else { return trimmed }
+
+        let parts = trimmed.split(separator: " ", omittingEmptySubsequences: true)
+        guard let head = parts.first else { return trimmed }
+
+        // "Dr", "Mr", "Sr" — a two-letter opener is a title, not a name.
+        if head.count <= 2, parts.count > 1 {
+            return "\(head) \(parts[1])"
+        }
+        return String(head)
+    }
+}

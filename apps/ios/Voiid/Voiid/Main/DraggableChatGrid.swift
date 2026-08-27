@@ -24,14 +24,21 @@ struct DraggableChatGrid: View {
 
     enum Zone { case call, delete }
 
-    // Smaller squares: cap card width so the avatars are a bit smaller with more spacing.
-    private let columns = [GridItem(.adaptive(minimum: 88, maximum: 104), spacing: VoiidSpacing.lg)]
+    // EXACTLY THREE COLUMNS, 18pt gutters — the reference's grid.
+    //
+    // `.adaptive(88...104)` let the column count float with screen width: a Pro Max drew
+    // four columns and an SE three, so the home screen was a different layout per device
+    // and the card proportions changed with it. Three flexible columns give every device
+    // the same composition and let the tile grow with the screen instead of multiplying.
+    private let columns = [GridItem(.flexible(), spacing: 18),
+                           GridItem(.flexible(), spacing: 18),
+                           GridItem(.flexible(), spacing: 18)]
 
     var body: some View {
         ZStack {
             // The grid
             ScrollView {
-                LazyVGrid(columns: columns, spacing: VoiidSpacing.lg) {
+                LazyVGrid(columns: columns, spacing: 18) {
                     ForEach(items) { conv in
                         cell(conv)
                             .opacity(dragItem?.id == conv.id ? 0.001 : 1)   // hide original while dragging
@@ -153,59 +160,107 @@ struct DraggableChatGrid: View {
 
     // MARK: card visual (shared by grid cell + floating drag)
     private func cardView(_ conv: VConversation) -> some View {
-        VStack(spacing: VoiidSpacing.sm) {
-            ZStack(alignment: .topTrailing) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous).fill(VoiidColor.fieldFill)
-                    if conv.type == .self {
-                        // NOTE TO SELF gets its own mark, not a profile photo. It is the one
-                        // chat with no other person in it, and rendering your own face there
-                        // reads as a conversation with someone else. A bookmark on brand tint
-                        // says "saved" at a glance and is findable without reading the label.
-                        RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
-                            .fill(VoiidColor.primary.opacity(0.12))
-                        Image(systemName: "bookmark.fill")
-                            .font(.system(size: 28, weight: .medium))
-                            .foregroundStyle(VoiidColor.primary)
-                    } else {
-                        // Show the peer's REAL profile photo (conv.photoURL is an R2 key or URL),
-                        // resolved through the shared cache — falling back to a bundled asset, then
-                        // the wordmark. Previously the grid only ever showed bundled/dummy assets.
-                        GridPeerImage(photoURL: conv.photoURL, photoName: conv.photoName)
-                    }
-                }
-                .aspectRatio(1, contentMode: .fit)
-                .clipped()
-                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
-
-                // Badges sit INSIDE the tile. They were pushed OUT past its edge
-                // (offset x: 6, y: -6), which broke the grid's alignment and let a badge
-                // overlap the tile beside it. Online goes bottom-leading so the two can
-                // never collide.
-                if conv.isOnline {
-                    Circle().fill(VoiidColor.success)
-                        .frame(width: 12, height: 12)
-                        .overlay(Circle().stroke(VoiidColor.background, lineWidth: 2))
-                        .padding(6)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-                }
-                if conv.unreadCount > 0 {
-                    // Spark, not error-red: a count is not a failure state.
-                    Text("\(conv.unreadCount)")
-                        .font(VoiidFont.rounded(11, .bold))
-                        // textOnAccent, NOT textOnPrimary — the latter flips to near-white in
-                        // light mode, where it measured 3.31:1 on amber. Same fix as the
-                        // static grid card and the list row; this is the drag layer's copy.
-                        .foregroundColor(VoiidColor.textOnAccent)
-                        .frame(minWidth: 20, minHeight: 20)
-                        .background(VoiidColor.accent)
-                        .clipShape(Circle())
-                        .overlay(Circle().stroke(VoiidColor.background, lineWidth: 1.5))
-                        .padding(5)
+        ZStack(alignment: .bottom) {
+            // THE PHOTO IS THE CARD.
+            //
+            // This drew a square photo tile with the title as a caption BELOW it. The
+            // reference gives the image the whole card and floats everything on top, and
+            // its note gives the reason: the reading order is image → name → unread → time
+            // → status, and that order is enforced by letting the picture own the tile.
+            ZStack {
+                VoiidColor.fieldFill
+                if conv.type == .self {
+                    // NOTE TO SELF gets its own mark, not a profile photo. It is the one
+                    // chat with no other person in it, and rendering your own face there
+                    // reads as a conversation with someone else.
+                    VoiidColor.primary.opacity(0.12)
+                    Image(systemName: "bookmark.fill")
+                        .font(.system(size: 28, weight: .medium))
+                        .foregroundStyle(VoiidColor.primary)
+                } else {
+                    GridPeerImage(photoURL: conv.photoURL, photoName: conv.photoName)
                 }
             }
-            Text(conv.title).font(VoiidFont.rounded(13, .regular)).foregroundColor(VoiidColor.textPrimary).lineLimit(1)
+
+            // Without this the white name sits on whatever the photo happens to be and is
+            // unreadable on a light frame. Bottom-weighted so it darkens the label area
+            // without dimming the face above it.
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.15), .black.opacity(0.82)],
+                startPoint: .top, endPoint: .bottom
+            )
+
+            HStack(spacing: 4) {
+                // THE FULL NAME, over up to two lines — what the reference renders
+                // ("Ananya Sharma" in its own sample). One line is the intent; the second
+                // exists so a long group name is shortened by the scale factor rather than
+                // truncated with an ellipsis.
+                Text(conv.title)
+                    .font(VoiidFont.rounded(13.5, .semibold))
+                    .foregroundColor(.white)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.8)
+                    .multilineTextAlignment(.leading)
+                    .shadow(color: .black.opacity(0.5), radius: 3, y: 1)
+
+                // Replaces the word "Online" entirely, and pairs with the tile's border —
+                // the border is visible at a glance across the grid, the dot confirms it
+                // next to the name you are actually reading.
+                if conv.isOnline {
+                    Circle()
+                        .fill(VoiidColor.accent)
+                        .frame(width: 7, height: 7)
+                }
+
+                Spacer(minLength: 0)
+            }
+            // Clears the unread badge in the opposite corner.
+            .padding(.trailing, conv.unreadCount > 0 ? 26 : 0)
+            .padding(.horizontal, 9)
+            .padding(.bottom, 9)
         }
+        .frame(maxWidth: .infinity)
+        .aspectRatio(1, contentMode: .fit)
+        .overlay(alignment: .topTrailing) {
+            if let at = conv.lastMessageAt {
+                // The SAME formatter the list row uses, so one conversation reads
+                // identically in either layout.
+                Text(VoiidDate.listPreview(at))
+                    .font(VoiidFont.rounded(11, .medium))
+                    .foregroundColor(.white.opacity(0.9))
+                    .shadow(color: .black.opacity(0.5), radius: 2, y: 1)
+                    .padding(.horizontal, 9)
+                    .padding(.top, 9)
+            }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if conv.unreadCount > 0 {
+                Text(conv.unreadCount > 99 ? "99+" : "\(conv.unreadCount)")
+                    .font(VoiidFont.rounded(11, .bold))
+                    // textOnAccent, NOT textOnPrimary — the latter flips to near-white in
+                    // light mode, where it measured 3.31:1 on the accent fill.
+                    .foregroundColor(VoiidColor.textOnAccent)
+                    .monospacedDigit()
+                    .contentTransition(.numericText())
+                    .padding(.horizontal, 6)
+                    .frame(minWidth: 21, minHeight: 21)
+                    .background(Capsule().fill(VoiidColor.accent))
+                    .padding(8)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        // ONE SIGNAL, ONE MEANING: the border means online. Unread is the badge, and the
+        // time is the time. Offline draws NO border rather than a grey one — a neutral ring
+        // on every other card is still a ring, and the accent stops standing out.
+        //
+        // Replaces a 12pt green dot in the tile's corner, which competed with the badge for
+        // the same reading.
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(conv.isOnline ? VoiidColor.accent : .clear, lineWidth: 1.5)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .animation(.spring(response: 0.3, dampingFraction: 0.72), value: conv.unreadCount)
     }
 
     // record each cell's center in grid space

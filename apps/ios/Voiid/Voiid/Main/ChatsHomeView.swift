@@ -24,6 +24,9 @@ struct ChatsHomeView: View {
     @ObservedObject private var layoutPref = ChatLayoutPreference.shared
     @State private var showCallLog = false
     @State private var showNewChat = false
+    /// Search is revealed by the header's magnifier rather than occupying the band always —
+    /// see `referenceHeader`.
+    @State private var searching = false
     @State private var showFindByUsername = false
     @State private var showRequests = false
     /// Inbound requests waiting to be accepted. Drives the banner below the header; a count of
@@ -42,14 +45,24 @@ struct ChatsHomeView: View {
 
     enum Tab: String { case chats = "Chats", groups = "Groups" }
 
-    private let columns = [GridItem(.flexible(), spacing: VoiidSpacing.md),
-                           GridItem(.flexible(), spacing: VoiidSpacing.md),
-                           GridItem(.flexible(), spacing: VoiidSpacing.md)]
+    // 18pt, the reference's gutter — and the SAME value for rows below, so the grid reads
+    // as an even mesh. Ours was 16 across and 24 down, which banded the tiles into rows.
+    private let columns = [GridItem(.flexible(), spacing: 18),
+                           GridItem(.flexible(), spacing: 18),
+                           GridItem(.flexible(), spacing: 18)]
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                compactHeader
+                // The reference's two-band head: identity + wordmark + controls, then a
+                // large title with the New-chat pill. See `referenceHeader` / `titleRow`.
+                referenceHeader
+                titleRow
+                // Search is a FIELD here rather than the reference's button-to-sheet: it is
+                // already wired to live filtering over conversations AND undiscovered
+                // contacts, and demoting it to a sheet would throw that away. It only
+                // occupies the row when the user is actually searching.
+                if searching { searchField }
                 tabs
                 // "You are sharing your location" — pinned below the tabs, visible from the
                 // home screen, one-tap Stop (docs/LOCATION.md §8). Renders nothing when idle.
@@ -103,7 +116,7 @@ struct ChatsHomeView: View {
                         requestsBanner
                         if !items.isEmpty {
                             sectionLabel("Chats")
-                            LazyVGrid(columns: columns, spacing: VoiidSpacing.lg) {
+                            LazyVGrid(columns: columns, spacing: 18) {
                                 ForEach(items) { conv in
                                     Button { Haptics.tap(); openConversation = conv } label: { gridCard(conv) }
                                         .buttonStyle(SoftPressStyle(scale: 0.94))
@@ -362,48 +375,143 @@ struct ChatsHomeView: View {
     /// Search is the most-used control on a chat list and it now sits at thumb height rather
     /// than under a title, and the row that held two small buttons and a lot of empty space
     /// earns its height.
-    private var compactHeader: some View {
-        HStack(spacing: VoiidSpacing.sm) {
+    /// Identity · wordmark · controls — the reference's header band (ChatsScreen.header).
+    ///
+    /// The wordmark in the middle is the point of this row. Ours had none: the top of the
+    /// home screen was an avatar, a search field and a menu, which is a toolbar rather than
+    /// a masthead. The reference puts the mark where the eye lands first.
+    ///
+    /// The controls are DRAWN, not `.glass`. The system styles pad their own capsule around
+    /// whatever label they are given, so the smallest circle they will draw is larger than
+    /// 36pt — matching a specific size is exactly what they do not allow. These are still
+    /// real Buttons and a real Menu; only the chrome is ours.
+    private var referenceHeader: some View {
+        HStack {
             Button { Haptics.tap(); showSettings = true } label: {
-                // 40, matching the glass buttons opposite it — a 38pt avatar beside 40pt
-                // controls reads as a misalignment rather than a smaller element.
                 ProfileAvatarButton(photoURL: session.profile.photoURL,
-                                    name: session.profile.fullName, size: 40)
+                                    name: session.profile.fullName, size: 38)
+                    .overlay(alignment: .bottomTrailing) {
+                        Circle()
+                            .fill(VoiidColor.success)
+                            .frame(width: 12, height: 12)
+                            .overlay(Circle().stroke(VoiidColor.background, lineWidth: 2))
+                    }
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Profile and settings")
+            .accessibilityLabel("Your profile")
+
+            Spacer(minLength: 0)
+
+            // `color:` explicitly — BrandWordmark defaults to `primary`, which paints the
+            // LETTERS teal. The mark is ink letters with teal DOTS: the two i-dots are the
+            // only accent, and that is what makes them read as the mark rather than as
+            // punctuation. All-teal made the wordmark a coloured logo competing with the
+            // New chat pill directly below it.
+            BrandWordmark(size: 26, color: VoiidColor.textPrimary)
+
+            Spacer(minLength: 0)
 
             HStack(spacing: VoiidSpacing.sm) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundColor(VoiidColor.placeholder)
-                TextField("", text: $search,
-                          prompt: Text("Search").foregroundColor(VoiidColor.placeholder))
-                    .font(VoiidFont.rounded(15, .regular))
-                    .foregroundColor(VoiidColor.textPrimary)
-                if !search.isEmpty {
-                    Button {
-                        Haptics.tap(); search = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 15))
-                            .foregroundColor(VoiidColor.placeholder)
-                    }
-                    .buttonStyle(.plain)
+                Button {
+                    Haptics.tap()
+                    withAnimation(.easeOut(duration: 0.18)) { searching.toggle() }
+                    if !searching { search = "" }
+                } label: {
+                    headerControl("magnifyingglass")
                 }
-            }
-            .padding(.horizontal, VoiidSpacing.md)
-            // 40pt, down from 52 — it no longer has a whole band to itself, so it can match
-            // the height of the controls beside it instead of towering over them.
-            .frame(height: 40)
-            .background(VoiidColor.fieldFill)
-            .clipShape(Capsule())
+                .buttonStyle(.plain)
+                .accessibilityLabel(searching ? "Close search" : "Search")
 
-            composeButton
+                composeButton
+            }
         }
         .padding(.horizontal, VoiidSpacing.md)
-        .padding(.top, VoiidSpacing.sm)
-        .padding(.bottom, VoiidSpacing.xs)
+        .padding(.vertical, VoiidSpacing.sm)
+    }
+
+    /// "Chats" + the New-chat pill + the grid/list toggle.
+    ///
+    /// The large title was removed from this screen at some point and the New-chat action
+    /// went into the overflow menu — which made the commonest action on the home screen the
+    /// hardest one to reach. Both come back.
+    private var titleRow: some View {
+        HStack(spacing: VoiidSpacing.sm) {
+            Text(tab == .groups ? "Groups" : "Chats")
+                .font(VoiidFont.rounded(26, .bold))
+                .foregroundColor(VoiidColor.textPrimary)
+
+            Spacer(minLength: 0)
+
+            Button {
+                Haptics.tap()
+                showNewChat = true
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "plus").font(.system(size: 15, weight: .bold))
+                    Text("New chat").font(VoiidFont.rounded(14, .semibold))
+                }
+                .foregroundColor(VoiidColor.textOnAccent)
+                .padding(.horizontal, 14)
+                .frame(height: 38)
+                .background(Capsule().fill(VoiidColor.accent))
+            }
+            .buttonStyle(SoftPressStyle())
+
+            Button {
+                Haptics.selection()
+                layoutPref.layout = layoutPref.layout == .grid ? .list : .grid
+            } label: {
+                headerControl(layoutPref.layout == .grid ? "square.grid.3x3.fill" : "list.bullet")
+            }
+            .buttonStyle(.plain)
+            // States what the button DOES, not what is currently shown — the classic
+            // toggle-labelling mistake, and the one VoiceOver users hit hardest.
+            .accessibilityLabel(layoutPref.layout == .grid ? "Switch to list view" : "Switch to grid view")
+        }
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.bottom, VoiidSpacing.sm)
+    }
+
+    /// 36pt circle, `surfaceCard` with a hairline — the reference's control chrome.
+    private func headerControl(_ icon: String) -> some View {
+        Image(systemName: icon)
+            .font(.system(size: 15, weight: .medium))
+            .foregroundColor(VoiidColor.textPrimary)
+            .frame(width: 36, height: 36)
+            .background(Circle().fill(VoiidColor.surfaceCard))
+            .overlay(Circle().stroke(VoiidColor.divider, lineWidth: 1))
+            // 44pt of target around a 36pt circle.
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+    }
+
+    /// The live search field, shown only while searching.
+    private var searchField: some View {
+        HStack(spacing: VoiidSpacing.sm) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundColor(VoiidColor.placeholder)
+            TextField("", text: $search,
+                      prompt: Text("Search").foregroundColor(VoiidColor.placeholder))
+                .font(VoiidFont.rounded(15, .regular))
+                .foregroundColor(VoiidColor.textPrimary)
+                .submitLabel(.search)
+            if !search.isEmpty {
+                Button { Haptics.tap(); search = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 15))
+                        .foregroundColor(VoiidColor.placeholder)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, VoiidSpacing.md)
+        .frame(height: 40)
+        .background(VoiidColor.fieldFill)
+        .clipShape(Capsule())
+        .padding(.horizontal, VoiidSpacing.md)
+        .padding(.bottom, VoiidSpacing.sm)
+        .transition(.move(edge: .top).combined(with: .opacity))
     }
 
     /// ONE menu, not a button whose meaning changes with the tab.
@@ -415,9 +523,9 @@ struct ChatsHomeView: View {
     /// more options.
     private var composeButton: some View {
         Menu {
-            Button { Haptics.tap(); showNewChat = true } label: {
-                Label("New chat", systemImage: "person.crop.circle")
-            }
+            // "New chat" is NOT here any more — it is the accent pill in the title row, one
+            // tap instead of two. Duplicating it in the overflow would teach two paths to
+            // the same action and make neither feel canonical.
             Button { Haptics.tap(); showFindByUsername = true } label: {
                 Label("Find by username", systemImage: "at")
             }
@@ -436,7 +544,7 @@ struct ChatsHomeView: View {
                 Label("Settings", systemImage: "gearshape")
             }
         } label: {
-            headerGlyph("ellipsis")
+            headerControl("ellipsis")
         }
         .accessibilityLabel("More")
     }
@@ -727,58 +835,93 @@ struct ChatsHomeView: View {
         .frame(maxWidth: .infinity)
     }
 
+    /// A chat-home grid tile, to the Voiid Ui reference (ChatsScreen.ConversationCard).
+    ///
+    /// ── THE CARD *IS* THE PHOTO ─────────────────────────────────────────────────
+    /// Previously this drew an avatar inside a `fieldFill` plate with the name as a
+    /// separate caption underneath. The reference gives the image the WHOLE card and floats
+    /// everything else on top of it, and its note says why: the reading order is
+    /// image → name → unread → time → status, and that order is enforced by letting the
+    /// picture own the tile.
+    ///
+    /// ── ONE SIGNAL, ONE MEANING ─────────────────────────────────────────────────
+    /// Online is the accent BORDER, not a corner dot. Unread is the badge, pinned is the
+    /// pin. Offline draws no border at all rather than a grey one — a neutral outline on
+    /// every other card is still a ring around the photo, and the accent stops standing out.
     private func gridCard(_ conv: VConversation) -> some View {
-        VStack(spacing: VoiidSpacing.sm) {
-            ZStack(alignment: .topTrailing) {
-                // Avatar fills the column width as a square (scales per device).
-                // The avatar is clipped to the tile HERE, before anything is layered on top.
-                // `scaledToFill` deliberately overflows its frame to cover the square, so
-                // without a clip bound to the tile itself the photo spilled past the rounded
-                // corners and over the neighbouring column.
-                ZStack {
-                    RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
-                        .fill(VoiidColor.fieldFill)
-                    GridCardAvatar(conv: conv)
-                }
-                .aspectRatio(1, contentMode: .fit)
-                .clipped()
-                .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
-
-                // Badges sit INSIDE the tile. They used to be pushed OUT past its edge
-                // (offset x: 6, y: -6), which broke the grid's alignment and let a badge
-                // overlap the tile beside it.
-                if conv.isOnline {
-                    Circle().fill(VoiidColor.success)
-                        .frame(width: 12, height: 12)
-                        .overlay(Circle().stroke(VoiidColor.background, lineWidth: 2))
-                        .padding(6)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-                }
-                if conv.unreadCount > 0 {
-                    Text("\(conv.unreadCount)")
-                        // textOnAccent, NOT textOnPrimary: amber is a light fill in both
-                        // themes, and textOnPrimary flips to near-white in light mode, where
-                        // it measured 3.31:1 here — the least legible text on this screen.
-                        .font(VoiidFont.rounded(11, .bold)).foregroundColor(VoiidColor.textOnAccent)
-                        // Same rolling digit and same arrival as the list row's badge — the
-                        // two layouts must teach one vocabulary, so the badge behaves
-                        // identically whichever you have chosen.
-                        .contentTransition(.numericText())
-                        .frame(minWidth: 20, minHeight: 20)
-                        .background(VoiidColor.accent).clipShape(Circle())
-                        .overlay(Circle().stroke(VoiidColor.background, lineWidth: 1.5))
-                        .padding(5)
-                        .transition(.scale(scale: 0.5, anchor: .topTrailing)
-                            .combined(with: .opacity))
-                }
+        ZStack(alignment: .bottom) {
+            // The photo, edge to edge. `GridCardAvatar` already resolves a real peer photo
+            // through AvatarCache and falls back to the wordmark for groups.
+            ZStack {
+                VoiidColor.fieldFill
+                GridCardAvatar(conv: conv)
             }
-            // On the ZStack, which outlives the badge — a modifier on the badge itself has
-            // nothing left to drive its exit when it is removed.
-            .animation(.spring(response: 0.3, dampingFraction: 0.72), value: conv.unreadCount)
-            Text(conv.title)
-                .font(VoiidFont.rounded(13, .regular)).foregroundColor(VoiidColor.textPrimary)
-                .lineLimit(1)
+
+            // Without this the white name sits on whatever the photo happens to be and is
+            // unreadable on a light frame. Bottom-weighted so it darkens the label area
+            // without dimming the face above it.
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.15), .black.opacity(0.82)],
+                startPoint: .top, endPoint: .bottom
+            )
+
+            HStack(spacing: 4) {
+                Text(conv.title)
+                    .font(VoiidFont.rounded(13.5, .semibold))
+                    .foregroundColor(.white)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .shadow(color: .black.opacity(0.4), radius: 2, y: 1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 9)
+            .padding(.bottom, 9)
         }
+        .frame(maxWidth: .infinity)
+        .aspectRatio(1, contentMode: .fit)
+        // NO PIN OVERLAY. The reference draws one, but pinning does not exist as a feature
+        // here — there is no `isPinned` on VConversation and nothing that could set it. A
+        // pin that never appears is dead layout; one that always appears is a lie. It goes
+        // in the day pinning ships.
+        .overlay(alignment: .topTrailing) {
+            if let at = conv.lastMessageAt {
+                // The SAME formatter the list row uses, so a conversation reads identically
+                // in either layout rather than the two drifting into different time formats.
+                Text(VoiidDate.listPreview(at))
+                    .font(VoiidFont.rounded(11, .medium))
+                    .foregroundColor(.white.opacity(0.9))
+                    .shadow(color: .black.opacity(0.5), radius: 2, y: 1)
+                    .padding(8)
+            }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if conv.unreadCount > 0 {
+                Text("\(conv.unreadCount)")
+                    // textOnAccent, NOT textOnPrimary: the accent is a light fill in both
+                    // themes, and textOnPrimary flips to near-white in light mode where it
+                    // measured 3.31:1 — the least legible text on this screen.
+                    .font(VoiidFont.rounded(11, .bold))
+                    .foregroundColor(VoiidColor.textOnAccent)
+                    // Same rolling digit as the list row's badge: the two layouts must teach
+                    // one vocabulary, so it behaves identically whichever you have chosen.
+                    .contentTransition(.numericText())
+                    .padding(.horizontal, 6)
+                    .frame(minWidth: 21, minHeight: 21)
+                    .background(VoiidColor.accent)
+                    .clipShape(Capsule())
+                    .padding(8)
+                    .transition(.scale(scale: 0.5, anchor: .bottomTrailing)
+                        .combined(with: .opacity))
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(conv.isOnline ? VoiidColor.accent : .clear, lineWidth: 1.5)
+        )
+        // The whole tile is the target — nobody should have to hit the badge or the pin.
+        .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .animation(.spring(response: 0.3, dampingFraction: 0.72), value: conv.unreadCount)
     }
 }
 

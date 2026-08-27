@@ -4,7 +4,7 @@
 //
 //  Main app shell — the custom bottom nav.
 //
-//  The bar renders `Tab.allCases`: adding a tab is one enum case plus one line in the body's
+//  The bar renders `Tab.visible`: adding a tab is one enum case plus one line in the body's
 //  switch. Five tabs are visible at a time and the row scrolls horizontally past that, so
 //  every item keeps a constant width however many destinations exist — growth costs a scroll
 //  rather than squeezing the glyphs together.
@@ -53,6 +53,8 @@ struct RootTabView: View {
     /// Live drag offset, published by the swipe modifier so the carousel can move both
     /// pages together rather than the modifier offsetting one from outside.
     @State private var tabDrag: CGFloat = 0
+    /// The carousel's own page width, handed to the swipe modifier so both use one number.
+    @State private var tabPageWidth: CGFloat = 0
     /// The tab a drag is heading for, or nil when no drag is in flight. Non-nil is what
     /// mounts the second page.
     @State private var draggingToward: Tab?
@@ -68,6 +70,17 @@ struct RootTabView: View {
     // The asset/label ternaries were hardcoded for exactly three cases; with a 4th tab they
     // become switches so a future 5th tab is a compile error to omit, not a silent wrong icon.
     enum Tab: CaseIterable { case ai, chat, stories, communities, map, games, clips
+
+        /// The tabs the bar actually shows, and the order the swipe moves through.
+        ///
+        /// `ai` is HIDDEN for now — its screens are mid-refactor and it should not ship in
+        /// a state the user can reach. Kept as a case rather than deleted so the work in
+        /// `Main/AI/` still compiles and re-enabling it is one line.
+        ///
+        /// Everything reads this instead of `allCases`: the bar renders it, the swipe steps
+        /// through it, and the default tab is its first entry — so a hidden tab cannot be
+        /// reached by any route.
+        static var visible: [Tab] { allCases.filter { $0 != .ai } }
 
         /// SF Symbols, OUTLINE weight — the inactive state.
         ///
@@ -131,7 +144,7 @@ struct RootTabView: View {
 
                 switch t {
                 case .chat:    ChatsHomeView()
-                case .ai:      AIChatView()
+                case .ai:      AIHubView()
                 case .stories: StoriesHomeView()
                 case .map:     MapTabView()
                 case .clips:   ClipsFeedView()
@@ -157,6 +170,17 @@ struct RootTabView: View {
             // that: something has to be there. The neighbour is mounted only while a drag
             // is in flight, so the steady state is exactly one tab as before.
             GeometryReader { geo in
+                // ONE width, shared with the swipe modifier.
+                //
+                // The carousel parked the neighbour at the width IT measured, while the
+                // modifier animated `tabDrag` to the width IT measured — two independent
+                // GeometryReaders, one of which ignores the safe area. Any disagreement,
+                // even a single point, means the strip lands just short of its destination
+                // and the swap snaps it into place: a blip on every commit, on every
+                // screen, which is exactly what survived the geometry and timing fixes.
+                //
+                // Publishing this one upward means both sides animate to and park at the
+                // same number by construction.
                 let w = geo.size.width
                 ZStack {
                     page(tab)
@@ -164,15 +188,31 @@ struct RootTabView: View {
 
                     // The tab being dragged TOWARD, parked exactly one screen away on the
                     // side it will arrive from, so the pair moves as one strip.
-                    if let neighbour = draggingToward {
+                    //
+                    // THE SIDE IS DERIVED FROM THE TARGET, NOT FROM `tabDrag`.
+                    //
+                    // It used to read `tabDrag < 0 ? w : -w`, and that sign flips the instant
+                    // `tabDrag` is zeroed at the swap — so on the very frame the strip lands,
+                    // the neighbour teleported a full screen width to the opposite side. That
+                    // is the blip: not a timing error but a one-frame jump baked into the
+                    // geometry, which is why fixing the swap's timing did not remove it.
+                    //
+                    // Comparing tab positions instead gives a side that is constant for the
+                    // whole gesture and does not depend on a value the commit is about to
+                    // reset.
+                    if let neighbour = draggingToward,
+                       let here = Tab.visible.firstIndex(of: tab),
+                       let there = Tab.visible.firstIndex(of: neighbour) {
                         page(neighbour)
-                            .offset(x: tabDrag + (tabDrag < 0 ? w : -w))
+                            .offset(x: tabDrag + (there > here ? w : -w))
                     }
                 }
                 .frame(width: w, height: geo.size.height)
                 // The pair is clipped to the screen so a neighbour parked off-side cannot
                 // extend the layout or paint over the tab bar.
                 .clipped()
+                .onAppear { tabPageWidth = w }
+                .onChange(of: w) { _, new in tabPageWidth = new }
             }
             // THE GEOMETRYREADER MUST NOT EAT THE SAFE AREA.
             //
@@ -214,11 +254,12 @@ struct RootTabView: View {
             // it, whereas a swipe moves exactly one step in the direction of the gesture.
             //
             // The "reorderable" half of the note above is not actually true — the bar renders
-            // `Tab.allCases` in a fixed compile-time order and nothing permutes it — so a
+            // `Tab.visible` in a fixed compile-time order and nothing permutes it — so a
             // stable left-of/right-of does exist for a one-step move.
-            .tabSwipeNavigation(selection: $tab, ordered: Tab.allCases,
+            .tabSwipeNavigation(selection: $tab, ordered: Tab.visible,
                                 swiping: $swipingTabs,
-                                drag: $tabDrag, toward: $draggingToward)
+                                drag: $tabDrag, toward: $draggingToward,
+                                pageWidth: tabPageWidth)
 
             if !session.hideTabBar {
                 tabBar
@@ -266,7 +307,7 @@ struct RootTabView: View {
         .onAppear { _ = MapPresenceEngine.shared }
     }
 
-    /// The bar renders `Tab.allCases`, so ADDING A TAB IS ONE LINE — a new case in the enum
+    /// The bar renders `Tab.visible`, so ADDING A TAB IS ONE LINE — a new case in the enum
     /// with its two symbols and a label, plus its screen in the switch above.
     ///
     /// FIVE TABS FIT, THE REST SCROLL. With seven destinations an equal-width row squeezed
@@ -280,7 +321,7 @@ struct RootTabView: View {
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 0) {
-                        ForEach(Tab.allCases, id: \.self) { t in
+                        ForEach(Tab.visible, id: \.self) { t in
                             tabItem(t)
                                 .frame(width: slotW)
                                 .id(t)
@@ -358,7 +399,7 @@ struct RootTabView: View {
     /// practically not — half of it is under the curve of the screen or the neighbouring
     /// slot's padding, and leaving it there reads as "the bar refused to move".
     private func tabIsOffScreen(_ t: Tab, slotW: CGFloat, viewport: CGFloat) -> Bool {
-        guard let index = Tab.allCases.firstIndex(of: t) else { return false }
+        guard let index = Tab.visible.firstIndex(of: t) else { return false }
         let leading = CGFloat(index) * slotW
         let trailing = leading + slotW
         let tolerance: CGFloat = 8
@@ -391,7 +432,7 @@ struct RootTabView: View {
             // the same idea applied to the axis SwiftUI gives us.
             //
             // Clamped at 2.2 so a seven-tab jump does not smear into a line.
-            let order = Tab.allCases
+            let order = Tab.visible
             let from = order.firstIndex(of: tab) ?? 0
             let to = order.firstIndex(of: t) ?? 0
             let distance = abs(to - from)

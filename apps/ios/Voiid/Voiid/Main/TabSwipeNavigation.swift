@@ -57,7 +57,12 @@ struct TabSwipeNavigation<T: Hashable>: ViewModifier {
     @Binding var dragX: CGFloat
     /// The tab being dragged toward. Publishing it is what mounts the neighbour.
     @Binding var toward: T?
-    @State private var width: CGFloat = 1
+    /// The carousel's measured page width. See the note at its source — the two must not
+    /// measure independently, or the strip lands short of where the neighbour is parked.
+    let pageWidth: CGFloat
+    /// Falls back to its own measurement only until the carousel reports one.
+    @State private var measured: CGFloat = 1
+    private var width: CGFloat { pageWidth > 1 ? pageWidth : measured }
 
     private var index: Int { ordered.firstIndex(of: selection) ?? 0 }
 
@@ -66,8 +71,8 @@ struct TabSwipeNavigation<T: Hashable>: ViewModifier {
             .background(
                 GeometryReader { geo in
                     Color.clear
-                        .onAppear { width = max(geo.size.width, 1) }
-                        .onChange(of: geo.size.width) { _, w in width = max(w, 1) }
+                        .onAppear { measured = max(geo.size.width, 1) }
+                        .onChange(of: geo.size.width) { _, w in measured = max(w, 1) }
                 }
             )
 
@@ -81,10 +86,23 @@ struct TabSwipeNavigation<T: Hashable>: ViewModifier {
                 PanCatcher(
                     onChange: { translation in
                         let x = rubberBanded(translation)
-                        // Published BEFORE the offset moves far, so the neighbour is already
-                        // mounted and laid out by the time any of it is on screen.
-                        let next = x < 0 ? index + 1 : index - 1
-                        toward = ordered.indices.contains(next) ? ordered[next] : nil
+
+                        // THE NEIGHBOUR IS DECIDED ONCE, ON THE FIRST MOVED FRAME.
+                        //
+                        // This recomputed it every frame from the sign of `x`, so a finger
+                        // that wobbled back across zero — which happens constantly at the
+                        // start of a drag, and on any drag that hesitates — UNMOUNTED the
+                        // neighbouring page and mounted the one on the other side. On a
+                        // heavy tab like Map that is a full view construction mid-gesture,
+                        // and it lands as a stutter.
+                        //
+                        // Once committed, the side is held for the whole gesture: the strip
+                        // has two pages and dragging back simply slides them, exactly as a
+                        // scroll view does. `toward` is cleared only at the end.
+                        if toward == nil, abs(x) > 1 {
+                            let next = x < 0 ? index + 1 : index - 1
+                            toward = ordered.indices.contains(next) ? ordered[next] : nil
+                        }
                         dragX = x
                     },
                     onEnd: { translation, velocity in
@@ -151,18 +169,35 @@ struct TabSwipeNavigation<T: Hashable>: ViewModifier {
 
         let destination = goingLeft ? -width : width
         let remaining = max(abs(destination - dragX), 1)
-        withAnimation(.interpolatingSpring(stiffness: 340, damping: 34,
-                                           initialVelocity: abs(velocity) / remaining)) {
-            dragX = destination
-        }
 
-        Task {
-            // Matched to the spring's settle time. Swapping earlier cuts the motion short;
-            // later leaves the strip parked off-centre.
-            try? await Task.sleep(for: .milliseconds(380))
+        // THE SWAP RIDES THE ANIMATION'S OWN COMPLETION, not a stopwatch.
+        //
+        // This used to sleep a fixed 380ms and then swap. An interpolating spring has no
+        // fixed duration — its settle time varies with the release velocity — so the guess
+        // was early on a slow drag and late on a fast flick. Early swaps mid-glide (the
+        // page visibly jumps the last few points); late leaves the strip parked off-centre
+        // for a frame before it snaps. Either way: a blip, every time, at the one moment
+        // the user is watching.
+        //
+        // `completion:` fires when the spring actually finishes, so the swap lands on the
+        // exact frame the motion ends. `.logicallyComplete` rather than the default: the
+        // value has reached its target and only imperceptible settling remains, which is
+        // the moment to swap rather than waiting out the tail.
+        withAnimation(.interpolatingSpring(stiffness: 340, damping: 34,
+                                           initialVelocity: abs(velocity) / remaining),
+                      completionCriteria: .logicallyComplete) {
+            dragX = destination
+        } completion: {
+            // Both pages are already exactly where they need to be, so this is invisible:
+            // the strip stops, and the page that was the neighbour becomes the current one.
             var t = Transaction()
             t.disablesAnimations = true
             withTransaction(t) {
+                // ALL THREE IN ONE TRANSACTION, and the order inside it does not matter —
+                // SwiftUI evaluates the body once after the closure returns, so the frame
+                // that gets drawn already has the new tab centred at dragX 0 with no
+                // neighbour. Splitting these across separate writes would publish an
+                // intermediate state (new tab, old offset) and draw it — a visible jump.
                 selection = ordered[target]
                 dragX = 0
                 toward = nil
@@ -249,6 +284,15 @@ private struct PanCatcher: UIViewRepresentable {
             if let nav = view.nearestNavigationController, nav.viewControllers.count > 1 {
                 return false
             }
+            // Also refuse when a pushed screen exists ANYWHERE in the key window's stack.
+            //
+            // The check above reads the stack this recogniser's own view belongs to. A tab
+            // whose content is hosted in a separate controller — which is how a pushed game
+            // board, a match view or a lobby is presented — can leave that stack at depth 1
+            // while a screen is genuinely on top. The window-level walk catches those.
+            if let window = view.window, window.rootViewController?.anyPushedScreen == true {
+                return false
+            }
             // Nor while anything is presented over the tab (a sheet, a full-screen cover).
             if let root = view.window?.rootViewController, root.presentedViewController != nil {
                 return false
@@ -286,6 +330,20 @@ private struct PanCatcher: UIViewRepresentable {
                 return false
             }
 
+            // ── AN EXPLICIT OPT-OUT, FOR CONTENT THAT OWNS ITS OWN DRAGS ────────
+            //
+            // The guards above catch pushed screens, sheets and scroll views. They do NOT
+            // catch a view that is none of those and still owns horizontal movement — a
+            // game board, a canvas, a slider, a card someone drags. Those live INSIDE a tab
+            // as plain views, so a swipe on them changed the tab out from under whatever
+            // the user was doing.
+            //
+            // A view marks itself with `.voiidBlocksTabSwipe()` and every ancestor chain
+            // through it is refused. Opt-OUT rather than opt-in: tab swiping should work by
+            // default across a page, and only the small number of surfaces that genuinely
+            // conflict need to say so.
+            if blocksSwipe(under: pan.location(in: view), in: view) { return false }
+
             return true
         }
 
@@ -298,6 +356,16 @@ private struct PanCatcher: UIViewRepresentable {
 
         /// Walks the real view hierarchy at the touch point looking for a horizontally
         /// scrollable scroll view.
+        /// Walks up from the touch looking for a view that has claimed horizontal drags.
+        private func blocksSwipe(under point: CGPoint, in root: UIView) -> Bool {
+            var hit = root.hitTest(point, with: nil)
+            while let v = hit {
+                if v.voiidBlocksTabSwipe { return true }
+                hit = v.superview
+            }
+            return false
+        }
+
         /// Any scroll view under the point, paging or not.
         private func anyScroll(under point: CGPoint, in root: UIView) -> UIScrollView? {
             var hit = root.hitTest(point, with: nil)
@@ -325,12 +393,22 @@ extension View {
     func tabSwipeNavigation<T: Hashable>(selection: Binding<T>, ordered: [T],
                                          swiping: Binding<Bool>,
                                          drag: Binding<CGFloat>,
-                                         toward: Binding<T?>) -> some View {
+                                         toward: Binding<T?>,
+                                         pageWidth: CGFloat) -> some View {
         modifier(TabSwipeNavigation(selection: selection, ordered: ordered, swiping: swiping,
-                                    dragX: drag, toward: toward))
+                                    dragX: drag, toward: toward, pageWidth: pageWidth))
     }
 }
 
+
+private extension UIViewController {
+    /// True when any navigation controller in this hierarchy has something pushed.
+    var anyPushedScreen: Bool {
+        if let nav = self as? UINavigationController, nav.viewControllers.count > 1 { return true }
+        if let presented = presentedViewController, presented.anyPushedScreen { return true }
+        return children.contains { $0.anyPushedScreen }
+    }
+}
 
 private extension UIView {
     /// The navigation controller this view sits inside, if any.
@@ -356,5 +434,45 @@ private extension UIView {
             responder = r.next
         }
         return nil
+    }
+}
+
+
+// MARK: - Opt-out
+
+private var blocksTabSwipeKey: UInt8 = 0
+
+extension UIView {
+    /// Set on a hosted view to refuse the tab-swipe gesture for anything inside it.
+    var voiidBlocksTabSwipe: Bool {
+        get { (objc_getAssociatedObject(self, &blocksTabSwipeKey) as? Bool) ?? false }
+        set { objc_setAssociatedObject(self, &blocksTabSwipeKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC) }
+    }
+}
+
+private struct BlocksTabSwipe: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView {
+        let v = UIView()
+        v.isUserInteractionEnabled = false
+        v.backgroundColor = .clear
+        // Marked on the SUPERVIEW, not on this zero-sized marker: the marker itself is
+        // never the hit view, so flagging it would never be seen by the walk above. Its
+        // parent is the container that actually holds the content.
+        DispatchQueue.main.async { v.superview?.voiidBlocksTabSwipe = true }
+        return v
+    }
+    func updateUIView(_ v: UIView, context: Context) {
+        v.superview?.voiidBlocksTabSwipe = true
+    }
+}
+
+extension View {
+    /// Refuse the tab-swipe gesture inside this view.
+    ///
+    /// For content that owns horizontal drags but is neither a scroll view nor a pushed
+    /// screen — a game board, a canvas, a draggable card. Without it, a drag on such a
+    /// surface changes the tab out from under the user.
+    func voiidBlocksTabSwipe() -> some View {
+        background(BlocksTabSwipe().frame(width: 0, height: 0).accessibilityHidden(true))
     }
 }

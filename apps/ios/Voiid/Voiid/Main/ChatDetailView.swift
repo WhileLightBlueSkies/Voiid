@@ -350,13 +350,19 @@ struct ChatDetailView: View {
             // button that opens an empty screen is worse than a label that does nothing.
             Button { guard conversation.type != .self else { return }; Haptics.tap(); showInfo = true } label: {
                 HStack(spacing: VoiidSpacing.sm) {
+                    // 36pt and 16pt — the reference's header metrics. The FULL name stays
+                    // here, deliberately: unlike a grid tile this row has the width for it,
+                    // and the one place you should be certain who you are talking to is the
+                    // conversation itself. `minimumScaleFactor` handles the long ones rather
+                    // than truncating an identity.
                     ProfileAvatarButton(photoURL: conversation.photoURL,
-                                        name: conversation.title, size: 34)
-                    VStack(alignment: .leading, spacing: 1) {
+                                        name: conversation.title, size: 36)
+                    VStack(alignment: .leading, spacing: 0) {
                         Text(conversation.title)
-                            .font(VoiidFont.rounded(17, .semibold))
+                            .font(VoiidFont.rounded(16, .semibold))
                             .foregroundColor(VoiidColor.textPrimary)
                             .lineLimit(1)
+                            .minimumScaleFactor(0.85)
                         if let presenceText {
                             // 12pt MEDIUM, not 11pt regular.
                             //
@@ -397,12 +403,21 @@ struct ChatDetailView: View {
             .accessibilityLabel(conversation.type == .group ? "Group info" : "Contact profile")
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
+            // DRAWN 36pt circles, not bare toolbar glyphs — the reference's header chrome.
+            //
+            // Two reasons the bare version read as unfinished next to the design: a system
+            // toolbar glyph has no bounds, so the two sat as floating ink beside a 36pt
+            // avatar with nothing to align to; and it took the tint colour, which made the
+            // call buttons the loudest thing in a header whose subject is a person.
+            //
+            // OUTLINE glyphs rather than `.fill`, also the reference's: these are controls,
+            // not statuses, and the filled pair read as active-call indicators.
             Button { Haptics.tap(); startCall(.voice) } label: {
-                Image(systemName: "phone.fill")
+                headerCircle("phone")
             }
             .accessibilityLabel("Voice call")
             Button { Haptics.tap(); startCall(.video) } label: {
-                Image(systemName: "video.fill")
+                headerCircle("video")
             }
             .accessibilityLabel("Video call")
             // NO OVERFLOW MENU. Every item it held now has a better home:
@@ -489,11 +504,18 @@ struct ChatDetailView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: VoiidSpacing.sm) {
-                    // Shown ONCE, at the very top of the transcript — the same place and the
-                    // same moment WhatsApp puts it. It scrolls away with the history rather
-                    // than pinning, because it is a fact about the conversation, not a
-                    // persistent status bar.
-                    if showsEncryptionNotice { encryptionNotice }
+                    // THE START OF THE CHAT, not the header.
+                    //
+                    // This is where the guarantee belongs: it is the first thing in the
+                    // conversation's history, above the first message, and it scrolls away
+                    // with everything else. Pinning it under the header made it a permanent
+                    // status bar — 34pt of chrome restating the same sentence on every
+                    // screen of every conversation forever, competing with the header for
+                    // the top of the screen.
+                    //
+                    // It reads once, at the moment it means something: when you open a
+                    // conversation and scroll to its beginning.
+                    if showsEncryptionNotice { encryptionBand }
 
                     ForEach(groupedByDay, id: \.0) { day, msgs in
                         DateSeparator(text: day)
@@ -511,7 +533,8 @@ struct ChatDetailView: View {
                 // sat beneath the bar and was clipped — visible in the screenshot as a
                 // half-hidden call log. The bar's own material still blurs whatever passes
                 // behind it; this just stops content STARTING there.
-                .padding(.top, VoiidSpacing.xl)
+                // 8, not 32: the first bubble sat a full extra 24pt down the screen.
+            .padding(.top, VoiidSpacing.sm)
                 .padding(.bottom, VoiidSpacing.md)
             }
             .onChange(of: chat.messages(for: conversation.id).count) { _, _ in
@@ -521,21 +544,121 @@ struct ChatDetailView: View {
                 withAnimation { proxy.scrollTo("typing", anchor: .bottom) }
             }
             .onAppear { proxy.scrollTo(lastID, anchor: .bottom) }
+            // The scrollbar is noise on a transcript nobody scrubs by handle.
+            .scrollIndicators(.hidden)
+            // Dragging the thread dismisses the keyboard — the gesture every messaging app
+            // has, and its absence is felt every time you want to read back while typing.
+            .scrollDismissesKeyboard(.interactively)
+            // Lands AT THE BOTTOM on first layout rather than laying out at the top and
+            // then visibly scrolling down to the newest message.
+            .defaultScrollAnchor(.bottom)
         }
+    }
+
+    /// The reference's encryption band: one centred line between two hairlines.
+    ///
+    /// Drawn at the START OF THE CHAT — first item in the transcript, above the first
+    /// message, scrolling away with everything else. It is not header chrome: pinned under
+    /// the header it became a permanent status bar restating the same sentence on every
+    /// screen of every conversation forever. See `showsEncryptionNotice` for why that
+    /// placement also means it retires once a conversation is established.
+    ///
+    /// Keeps OUR tap target — the verification sheet behind it is real anti-MITM
+    /// functionality the reference has no equivalent for, and dropping it to match a
+    /// mockup would trade a security feature for a layout.
+    ///
+    /// The copy is the reference's, naming the person: "Only you and <first name> can read
+    /// these messages" is concrete in a way that "not even Voiid can read them" is not —
+    /// it says who CAN rather than only who cannot.
+    private var encryptionBand: some View {
+        Button {
+            guard conversation.peerUserId != nil else { return }
+            Haptics.tap()
+            showSafetyNumber = true
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 11))
+                Text(encryptionLine)
+                    .font(VoiidFont.rounded(12))
+                    .multilineTextAlignment(.center)
+            }
+            .foregroundColor(VoiidColor.textSecondary)
+            .padding(.horizontal, VoiidSpacing.md)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(conversation.peerUserId == nil)
+        .overlay(alignment: .top) {
+            Rectangle().fill(VoiidColor.divider).frame(height: 0.5)
+        }
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(VoiidColor.divider).frame(height: 0.5)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityHint(conversation.peerUserId != nil
+                           ? "Verify this conversation with a safety number" : "")
+    }
+
+    private var encryptionLine: String {
+        // A group has no single "and <name>", and Note to Self has no second party at all
+        // (that case never reaches here — see showsEncryptionNotice).
+        guard conversation.type == .direct else {
+            return "End-to-end encrypted. Only members of this group can read these messages."
+        }
+        let first = VoiidName.short(conversation.title)
+        return "End-to-end encrypted. Only you and \(first) can read these messages."
+    }
+
+    /// A header action: 32pt `surfaceCard` circle with a hairline, 14pt medium glyph.
+    ///
+    /// SIZED DOWN FROM THE REFERENCE'S 36, deliberately. The reference draws its own header
+    /// as a plain HStack, so it can spend 36pt twice and lay the identity out beside it.
+    /// Ours is a NATIVE toolbar, where the identity is the `.principal` item — and the
+    /// system centres that against the whole bar, then shrinks and shifts it to clear
+    /// whatever the trailing group occupies. Two 36pt circles pushed the avatar and name
+    /// visibly right of centre.
+    ///
+    /// 32pt keeps the drawn chrome the reference asks for while leaving the identity where
+    /// it belongs. The tap target is unchanged — the 44pt frame below is what the finger
+    /// hits, not the circle.
+    private func headerCircle(_ icon: String) -> some View {
+        Circle()
+            .fill(VoiidColor.surfaceCard)
+            .frame(width: 32, height: 32)
+            .overlay(Circle().stroke(VoiidColor.divider, lineWidth: 1))
+            .overlay {
+                Image(systemName: icon)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(VoiidColor.textPrimary)
+            }
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
     }
 
     /// Whether to draw the end-to-end encryption notice.
     ///
-    /// ONLY ON A NEW CHAT. Once there is real history the notice is just a line of text
-    /// pushed a thousand messages up where nobody will ever scroll — the moment it is worth
-    /// reading is the moment you open a conversation for the first time. Six messages is the
-    /// cutoff: enough that a couple of exchanged greetings still show it, few enough that an
-    /// established chat does not.
-    ///
-    /// Note to Self is excluded: a note you wrote to yourself has no second party for the
-    /// guarantee to be ABOUT, and claiming one there is noise.
+    /// ONLY ON A NEW CHAT — see the body for why the placement forces that.
     private var showsEncryptionNotice: Bool {
-        conversation.type != .self && chat.messages(for: conversation.id).count < 6
+        // Note to Self is excluded: a note you wrote to yourself has no second party for the
+        // guarantee to be about.
+        guard conversation.type != .self else { return false }
+
+        // The band sits at the START OF THE CHAT, inside the transcript — so it is subject
+        // to the constraint that placement implies: in a long conversation it would be
+        // pushed a thousand messages up where nobody will ever scroll. Showing it there
+        // unconditionally does not make it visible, it just makes it unreachable.
+        //
+        // The moment it is worth reading is the moment you open a conversation for the
+        // first time. Six messages is the cutoff: enough that a couple of exchanged
+        // greetings still show it, few enough that an established chat does not.
+        //
+        // Verification does NOT depend on this. The safety number is reachable for the life
+        // of the conversation from the header menu and from the contact screen, so retiring
+        // the band costs the user nothing they cannot still get to.
+        return chat.messages(for: conversation.id).count < 6
     }
 
     /// The E2EE notice.
@@ -757,18 +880,29 @@ struct ChatDetailView: View {
             // The mic. ALWAYS in the tree, at the same position — this is what keeps the
             // gesture alive across the state change. Hidden (not removed) while recording,
             // because the bar shows the state and a second mic beside it would be noise.
+            //
+            // IT ALSO COLLAPSES WHEN THERE IS TEXT, which gives the reference's mic↔send
+            // SWAP — one slot, one control, the state told by which glyph is there — without
+            // the `if/else` that would destroy the button. Removing it from the tree is
+            // exactly the bug described above: the active gesture dies with the instance.
+            // Collapsing to zero width is indistinguishable on screen and keeps identity.
             micButton
-                .opacity(isRecording ? 0 : 1)
-                .frame(width: isRecording ? 0 : 32)
-                .allowsHitTesting(true)
+                .opacity(isRecording || hasText ? 0 : 1)
+                .frame(width: isRecording || hasText ? 0 : 46)
+                .allowsHitTesting(!hasText)
         }
         .padding(.horizontal, VoiidSpacing.md)
         .padding(.top, 6)
         .padding(.bottom, 6)
-        // `.bar` material + a hairline, so the transcript blurs UNDER the composer as it
-        // scrolls instead of sliding behind a flat opaque slab.
-        .background(.bar)
-        .overlay(VoiidColor.divider.opacity(0.6).frame(height: 0.5), alignment: .top)
+        // OPAQUE, not `.bar` — the reference's choice, and it removed the material for a
+        // reason we had reintroduced: a translucent composer lets the last bubble and the
+        // typing indicator bleed through it as they scroll under, so the newest message
+        // reads as cut in half by the control you are about to type into.
+        //
+        // The transcript ends at the composer rather than passing behind it, which is what
+        // makes the bottom of the thread legible.
+        .background(VoiidColor.background)
+        .overlay(VoiidColor.divider.frame(height: 0.5), alignment: .top)
         .animation(.easeOut(duration: 0.18), value: isRecording)
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: hasText)
     }
@@ -801,11 +935,15 @@ struct ChatDetailView: View {
             // glyphs sitting beside two filled circles, which is what made the row look
             // unbalanced — four actions, two of them shapes and two of them floating ink.
             Image(systemName: "plus")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(VoiidColor.textSecondary)
-                .frame(width: 32, height: 32)
-                .background(VoiidColor.textSecondary.opacity(0.10))
+                // 44pt, 20pt glyph, accent ink on a fieldFill disc with a divider stroke —
+                // the reference's composer chrome. At 32/15 in faint grey this was both
+                // under the touch minimum and visually incidental next to the send button.
+                .font(.system(size: 20, weight: .medium))
+                .foregroundStyle(VoiidColor.accentInk)
+                .frame(width: 44, height: 44)
+                .background(VoiidColor.fieldFill)
                 .clipShape(Circle())
+                .overlay(Circle().stroke(VoiidColor.divider, lineWidth: 1))
         }
         .photosPicker(isPresented: $pickPhoto, selection: $photoItem, matching: .images)
         .onChange(of: photoItem) { _, item in
@@ -865,11 +1003,13 @@ struct ChatDetailView: View {
             showGifPicker = true
         } label: {
             Image(systemName: "face.smiling")
-                .font(.system(size: 15, weight: .semibold))
+                // Matches the attach button's metrics so the two read as one pair.
+                .font(.system(size: 19, weight: .medium))
                 .foregroundStyle(VoiidColor.textSecondary)
-                .frame(width: 32, height: 32)
-                .background(VoiidColor.textSecondary.opacity(0.10))
+                .frame(width: 44, height: 44)
+                .background(VoiidColor.fieldFill)
                 .clipShape(Circle())
+                .overlay(Circle().stroke(VoiidColor.divider, lineWidth: 1))
         }
         .buttonStyle(.plain)
     }
@@ -893,10 +1033,9 @@ struct ChatDetailView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 9)
             .background(VoiidColor.fieldFill)
-            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .clipShape(Capsule())
             .overlay(
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .stroke(VoiidColor.fieldBorder, lineWidth: 1)
+                Capsule().stroke(VoiidColor.divider, lineWidth: 1)
             )
             // KEYED ON THE BOOLEAN, not on `draft`.
             //
@@ -941,9 +1080,11 @@ struct ChatDetailView: View {
                 // A FILLED circle: send is the primary action here and should look like a
                 // button, not a loose glyph with no tap target to aim at.
                 Image(systemName: "arrow.up")
-                    .font(.system(size: 15, weight: .bold))
+                    .font(.system(size: 19, weight: .semibold))
                     .foregroundColor(VoiidColor.textOnPrimary)
-                    .frame(width: 32, height: 32)
+                    // 46pt, the reference's size. At 32 every composer control was ~30%
+                    // smaller than the design and the send target was below the 44pt minimum.
+                    .frame(width: 46, height: 46)
                     .background(VoiidColor.primary)
                     .clipShape(Circle())
             }
@@ -1130,7 +1271,7 @@ struct MessageBubble: View {
 
     private var bubble: some View {
         HStack(alignment: .bottom, spacing: 6) {
-            if message.isMine { Spacer(minLength: 56) }
+            if message.isMine { Spacer(minLength: 24) }
             // Group, incoming: the sender's real profile photo beside the bubble, so you can
             // see at a glance who's texting (WhatsApp-style).
             if isGroup && !message.isMine {
@@ -1146,22 +1287,34 @@ struct MessageBubble: View {
                 }
                 // Quoted reply
                 if let rt = message.replyToText {
-                    HStack(spacing: 6) {
+                    // 13/13 with an 8pt rail gap and 2pt line spacing — the reference's
+                    // numbers. At 11/12 the quote read as fine print rather than as the
+                    // message being answered.
+                    HStack(spacing: 8) {
                         RoundedRectangle(cornerRadius: 2).fill(bubbleAccent).frame(width: 3)
-                        VStack(alignment: .leading, spacing: 1) {
+                        VStack(alignment: .leading, spacing: 2) {
                             if let s = message.replyToSender, !s.isEmpty {
-                                Text(s).font(VoiidFont.rounded(11, .semibold)).foregroundColor(bubbleAccent)
+                                Text(s).font(VoiidFont.rounded(13, .semibold)).foregroundColor(bubbleAccent)
                             }
-                            Text(rt).font(VoiidFont.rounded(12, .regular)).foregroundColor(bubbleTextSecondary).lineLimit(2)
+                            Text(rt).font(VoiidFont.rounded(13, .regular)).foregroundColor(bubbleTextSecondary).lineLimit(2)
                         }
                     }
-                    .padding(6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    // NO `maxWidth: .infinity`. It made every bubble containing a quote
+                    // inflate to the full available width, so a two-word reply became a
+                    // full-width slab. The block hugs its content and the BUBBLE decides its
+                    // own width, which is the reference's behaviour — it removed a Spacer
+                    // here for exactly this reason.
+                    .frame(alignment: .leading)
                     // A translucent white scrim reads correctly on BOTH the filled teal and
                     // the light card; `fieldFill` is a light token and vanished on teal.
-                    .background((message.isMine ? Color.white.opacity(0.16)
-                                                : VoiidColor.fieldFill.opacity(0.7)))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    // A DIM, not a plate. `fieldFill.opacity(0.7)` is near-solid on the
+                    // received bubble and drew a hard inset panel; the reference dims the
+                    // passage instead, so the quote reads as quieter text inside the same
+                    // bubble rather than a second surface stacked on it.
+                    .background((message.isMine ? Color.black.opacity(0.10)
+                                                : Color.primary.opacity(0.06)))
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
                 // Quoted MOMENT — the story this reply answers. Deliberately built from the
                 // same parts as the quoted-message block directly above (accent rail, author
@@ -1224,8 +1377,10 @@ struct MessageBubble: View {
                     metaRow.padding(.top, 2)
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            // 14/10, the reference's numbers. At 12/8 the text sat tight against the fill
+            // and the bubbles read smaller-set than the design.
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
             // YOUR bubble is filled peacock teal; theirs is the quiet card surface. This was
             // backwards — `isMine` drew `bubbleReceived` (white) and theirs drew `surfaceCard`
             // (also white), so the two sides were nearly indistinguishable and the eye could
@@ -1239,11 +1394,34 @@ struct MessageBubble: View {
                 message.isMine ? nil :
                     BubbleShape(isMine: false).stroke(VoiidColor.divider, lineWidth: 0.5)
             )
-            .overlay(alignment: message.isMine ? .bottomLeading : .bottomTrailing) {
+            // A HARD 300pt CAP — AFTER the background, which is the whole point.
+            //
+            // Applied BEFORE it, `.frame(maxWidth:)` proposes 300pt to the content, so the
+            // FILL stretched to 300 and every one-word message drew as a 300pt slab with
+            // the text tucked in one corner. That is the "not proper" bubble.
+            //
+            // Outside the fill it constrains only how wide the bubble may GROW: a short
+            // message stays as wide as its text, a long one stops at 300 and wraps. Ours
+            // was previously bounded only by the opposite gutter, so width scaled with the
+            // device — 305pt on a 393pt screen, 342pt on a 430pt one.
+            .frame(maxWidth: 300, alignment: message.isMine ? .trailing : .leading)
+            // ON THE SPEAKER'S OWN SIDE, not the opposite corner — the reference aligns the
+            // chip with `isMine`, so a reaction reads as attached to the bubble it belongs
+            // to rather than floating off its far edge.
+            .overlay(alignment: message.isMine ? .bottomTrailing : .bottomLeading) {
                 if let r = message.reaction {
-                    Text(r).font(.system(size: 15))
-                        .padding(3).background(VoiidColor.background).clipShape(Circle())
-                        .overlay(Circle().stroke(VoiidColor.divider.opacity(0.5), lineWidth: 0.5))
+                    // A CAPSULE with a 2pt knock-out ring in the page colour — the
+                    // reference's chip. A circle with a hairline read as a sticker dropped
+                    // on the bubble; the thick background-coloured ring is what lifts it off
+                    // and keeps it legible over either fill.
+                    //
+                    // 13pt, not 15: the chip sits ON the bubble and competed with the text
+                    // beneath it at the larger size.
+                    Text(r).font(.system(size: 13))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4)
+                        .background(Capsule().fill(VoiidColor.surfaceCard))
+                        .overlay(Capsule().stroke(VoiidColor.background, lineWidth: 2))
                         .offset(x: message.isMine ? -8 : 8, y: 10)
                         .transition(.scale.combined(with: .opacity))
                 }
@@ -1292,28 +1470,50 @@ struct MessageBubble: View {
             .sheet(isPresented: $showEmojiPicker) {
                 EmojiPickerSheet { e in onReact(e) }
             }
-            if !message.isMine { Spacer(minLength: 56) }
+            if !message.isMine { Spacer(minLength: 24) }
         }
         .padding(.vertical, message.reaction != nil ? 8 : 1)
+        // A reacted row draws ABOVE its neighbours. The chip is offset 10pt below the
+        // bubble, outside its bounds, so the following row would otherwise paint over it.
+        .zIndex(message.reaction == nil ? 0 : 1)
         // Swipe-to-reply
         .overlay(alignment: message.isMine ? .trailing : .leading) {
+            // A chip that FILLS as the pull crosses the threshold, not a bare fading glyph.
+            // The bare arrow said "something is happening"; the chip says how close you are
+            // to the thing happening, and confirms the moment it will fire.
+            let progress = Double(min(abs(swipeX) / 44, 1))
+            let armed = abs(swipeX) > 44
             Image(systemName: "arrowshape.turn.up.left.fill")
-                .foregroundColor(VoiidColor.primary)
-                .opacity(Double(min(abs(swipeX) / 60, 1)))
-                .padding(.horizontal, VoiidSpacing.lg)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(armed ? VoiidColor.textOnAccent : VoiidColor.textSecondary)
+                .frame(width: 32, height: 32)
+                .background(Circle().fill(armed ? VoiidColor.accent : VoiidColor.surfaceCard))
+                .scaleEffect(0.6 + 0.4 * progress)
+                .opacity(progress)
+                .animation(.spring(response: 0.22, dampingFraction: 0.7), value: armed)
+                .padding(.horizontal, VoiidSpacing.md)
         }
         .offset(x: swipeX)
         .gesture(selectionMode ? nil :
-            DragGesture(minimumDistance: 20)
+            // minimumDistance 32, not 20: at 20 a slightly diagonal scroll flick started
+            // dragging bubbles sideways down the whole transcript.
+            DragGesture(minimumDistance: 32)
                 .onChanged { v in
                     // received: swipe right (+), sent: swipe left (-)
-                    let dx = v.translation.width
-                    if message.isMine { swipeX = min(0, max(dx, -80)) }
-                    else { swipeX = max(0, min(dx, 80)) }
+                    //
+                    // DAMPED to 0.55, the reference's constant. Tracking 1:1 let the bubble
+                    // run the full 80pt for 80pt of finger, which reads as the bubble having
+                    // come loose. Resistance says "this moves, but it is going to spring
+                    // back" — the same thing a UIScrollView says at its edge.
+                    let dx = v.translation.width * 0.55
+                    if message.isMine { swipeX = min(0, max(dx, -58)) }
+                    else { swipeX = max(0, min(dx, 58)) }
                 }
                 .onEnded { _ in
-                    if abs(swipeX) > 50 { Haptics.tap(); onReply() }
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { swipeX = 0 }
+                    // 58pt of DAMPED travel ≈ 105pt of finger, so the threshold is a
+                    // deliberate pull rather than something a scroll can trip.
+                    if abs(swipeX) > 44 { Haptics.tap(); onReply() }
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { swipeX = 0 }
                 }
         )
         .transition(.asymmetric(
@@ -1361,7 +1561,9 @@ struct MessageBubble: View {
                 let space = i == 0 ? "" : " "
                 let isMention = word.hasPrefix("@") && word.count > 1
                 let piece = Text(space + String(word))
-                    .font(VoiidFont.rounded(15, isMention ? .semibold : .regular))
+                    // 16pt — the reference's body size. 15 read noticeably smaller against
+                    // the same bubble geometry.
+                    .font(VoiidFont.rounded(16, isMention ? .semibold : .regular))
                     .foregroundColor(isMention ? mention : base)
                 return acc + piece
             }
@@ -1389,7 +1591,7 @@ struct MessageBubble: View {
     private var metaRow: some View {
         HStack(spacing: 5) {
             Text(VoiidDate.bubbleTime(message.createdAt))
-                .font(VoiidFont.rounded(10, .regular))
+                .font(VoiidFont.rounded(11, .regular))
                 .foregroundColor(bubbleTextSecondary)
             if message.isMine { statusView }
         }
@@ -1428,14 +1630,14 @@ struct MessageBubble: View {
             // Seen steps up in WEIGHT rather than changing colour, so the distinction survives
             // for a colour-blind user and in bright sunlight.
             Text("Seen")
-                .font(VoiidFont.rounded(10, .bold))
+                .font(VoiidFont.rounded(10.5, .bold))
                 .foregroundColor(message.isMine ? VoiidColor.textOnBubble : VoiidColor.primary)
         }
     }
 
     private func statusLabel(_ s: String) -> some View {
         Text(s)
-            .font(VoiidFont.rounded(10, .medium))
+            .font(VoiidFont.rounded(10.5, .medium))
             .foregroundColor(bubbleTextSecondary)
     }
 
@@ -1557,7 +1759,7 @@ private struct GameInviteBubble: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("GAME INVITE")
-                    .font(VoiidFont.rounded(10, .bold))
+                    .font(VoiidFont.rounded(10.5, .bold))
                     .foregroundStyle(VoiidColor.primary)
                 Text(invite.meta?.game.isEmpty == false
                      ? invite.meta!.game
@@ -1682,50 +1884,82 @@ struct DateSeparator: View {
     let text: String
     var body: some View {
         Text(text)
-            .font(VoiidFont.rounded(11, .medium))
+            // 12/14/6 on an OPAQUE capsule — the reference's numbers. At 11pt on a 70%
+            // fill the pill read as washed out, and the transcript showed through it.
+            .font(VoiidFont.rounded(12, .medium))
             .foregroundColor(VoiidColor.textSecondary)
-            .padding(.horizontal, VoiidSpacing.md).padding(.vertical, 4)
-            .background(VoiidColor.surfaceCard.opacity(0.7))
+            .padding(.horizontal, 14).padding(.vertical, 6)
+            .background(VoiidColor.surfaceCard)
             .clipShape(Capsule())
-            .padding(.vertical, VoiidSpacing.sm)
+            .padding(.vertical, VoiidSpacing.xs)
     }
 }
 
 // MARK: - Typing indicator bubble
 
 struct TypingBubble: View {
-    @State private var phase = 0.0
+    @State private var step = 0
+    @State private var timer: Timer?
+
+    /// 380ms per dot — the reference's cadence. Fast enough to read as active, slow enough
+    /// that the eye can follow which dot is lit.
+    private func advance() {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 0.38, repeats: true) { _ in
+            withAnimation(.easeInOut(duration: 0.25)) { step = (step + 1) % 3 }
+        }
+    }
     var body: some View {
         HStack {
             HStack(spacing: 4) {
                 ForEach(0..<3) { i in
-                    Circle().fill(VoiidColor.textSecondary)
+                    // COLOUR steps between dots rather than opacity fading across all three.
+                    // A continuous opacity ramp reads as one pulsing blob; stepping the
+                    // accent from dot to dot reads as three dots taking turns, which is what
+                    // says "still typing".
+                    Circle()
+                        .fill(step == i ? VoiidColor.accent : VoiidColor.textSecondary)
                         .frame(width: 7, height: 7)
-                        .opacity(phase == Double(i) ? 1 : 0.3)
                 }
             }
-            .padding(.horizontal, VoiidSpacing.md).padding(.vertical, 12)
+            .padding(.horizontal, 14).padding(.vertical, 10)
             .background(VoiidColor.bubbleReceived)
             .clipShape(BubbleShape(isMine: false))
-            Spacer()
+            Spacer(minLength: 40)
         }
-        .onAppear {
-            withAnimation(.easeInOut(duration: 0.5).repeatForever()) { phase = 2 }
-        }
+        .onAppear { advance() }
+        .onDisappear { timer?.invalidate(); timer = nil }
     }
 }
 
 // MARK: - Bubble shape (tail on the correct side)
 
+/// 20pt corners, with the SPEAKER-SIDE bottom corner tightened to 7 rather than squared off.
+///
+/// Two changes from the previous shape, both from the Voiid Ui reference:
+///
+///  * The speaker corner was 0 — a hard right angle. A fully square corner reads as a
+///    rendering error next to three 16pt ones; tightening it to ~35% of the radius keeps the
+///    bubble pointing at its sender without looking broken.
+///  * `UIBezierPath(byRoundingCorners:)` draws CIRCULAR arcs. SwiftUI's `.continuous` style
+///    is the squircle the rest of the system uses, and at 20pt the difference between the
+///    two is visible — circular corners read harder.
 struct BubbleShape: Shape {
     let isMine: Bool
+
+    private let r: CGFloat = 20
+    /// The speaker-side corner. 35% of the radius: present enough to read as a corner,
+    /// tight enough to read as directional.
+    private var tight: CGFloat { r * 0.35 }
+
     func path(in rect: CGRect) -> Path {
-        let r: CGFloat = 16
-        let corners: UIRectCorner = isMine
-            ? [.topLeft, .topRight, .bottomLeft]
-            : [.topLeft, .topRight, .bottomRight]
-        return Path(UIBezierPath(roundedRect: rect, byRoundingCorners: corners,
-                                 cornerRadii: CGSize(width: r, height: r)).cgPath)
+        UnevenRoundedRectangle(
+            topLeadingRadius: r,
+            bottomLeadingRadius: isMine ? r : tight,
+            bottomTrailingRadius: isMine ? tight : r,
+            topTrailingRadius: r,
+            style: .continuous
+        ).path(in: rect)
     }
 }
 
@@ -1906,7 +2140,7 @@ struct AsyncVoiceNote: View {
             VStack(alignment: .leading, spacing: 5) {
                 waveform
                 Text(timeLabel)
-                    .font(VoiidFont.rounded(10, .medium))
+                    .font(VoiidFont.rounded(10.5, .medium))
                     .monospacedDigit()
                     .foregroundColor(metaTint)
             }

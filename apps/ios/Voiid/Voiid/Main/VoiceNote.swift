@@ -36,13 +36,17 @@ struct VoiceRecordButton: View {
     @State private var holdTimer: Timer?
 
     var body: some View {
-        // A 32pt CIRCLE, matching send and the other composer actions. It was a bare
-        // `mic.fill` glyph — no shape, no bounds — so it sat visually misaligned next to the
-        // filled send button and had a vague tap target.
+        // A 46pt CIRCLE, matching send — the two now SHARE one slot in the composer and
+        // swap, so any size difference would show as a jump the moment you type a character.
+        // (It was 32 to match the older, smaller send button; both moved to the reference's
+        // 46 together.)
+        //
+        // It was a bare `mic.fill` glyph — no shape, no bounds — so it sat visually
+        // misaligned next to the filled send button and had a vague tap target.
         Image(systemName: "mic.fill")
-            .font(.system(size: 15, weight: .semibold))
+            .font(.system(size: 19, weight: .semibold))
             .foregroundColor(VoiidColor.primary)
-            .frame(width: 32, height: 32)
+            .frame(width: 46, height: 46)
             .background(VoiidColor.primary.opacity(0.12))
             .clipShape(Circle())
             .overlay(alignment: .top) {
