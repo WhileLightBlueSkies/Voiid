@@ -486,17 +486,29 @@ private fun labelFor(snake: GamesEngine.SnakeState.Snake, me: String?): String =
  * newest frame, held, and jumped. That hold-jump cycle IS the jitter. 2.5 ticks means a frame
  * can be 150 ms late before the buffer runs dry instead of 50 ms.
  *
- * THIS WAS CUT TO 0.15 ONCE, AND THE ARGUMENT FOR CUTTING IT WAS BACKWARDS. The reasoning was
- * that the delay made the controls feel remote — true when it was written, because back then it
- * applied to every snake including the one the player is steering. But the LOCAL snake is
- * predicted now, not interpolated (see [SnakePredictor]): this constant no longer touches it at
- * all. Prediction did not make a smaller delay affordable, it made a LARGER one free. What is
- * left behind the clock is other snakes and the food field, where 100 ms of extra staleness is
- * invisible and a stall is not.
+ * THIS IS A NETWORK-LATENESS TOLERANCE, NOT A TICK COUNT, and confusing the two is a bug that
+ * shipped once. Raising TICK_HZ to 20 while "keeping it at 2.5 ticks" halved it to 125 ms —
+ * which halved how late a frame may arrive before the buffer runs dry. On a mobile network most
+ * frames are later than that, so the render clock repeatedly caught up with the newest frame,
+ * held, and jumped. That hold-jump cycle IS the jitter, and playtesting reported it at once:
+ * "the whole game pauses and continues".
+ *
+ * Ticks got faster; the network did not. What this covers is jitter in ARRIVAL TIMES, in
+ * milliseconds, and that does not shrink because the server ticks more often. 200 ms tolerates
+ * a frame arriving 200 ms late — better than the 10 Hz build's 250 ms bought, because at 20 Hz
+ * this is four buffered ticks rather than two and a half.
+ *
+ * THE COST IS PAID BY EXTRAPOLATION, NOT BY THE PLAYER. A deeper buffer draws remote snakes
+ * further behind truth (60 units raw at 200 ms), but lead extrapolation takes about three
+ * quarters of that back on a snake going straight, leaving ~15 units against a 22-unit kill
+ * radius — still inside the radius that decides a fight.
+ *
+ * THE LOCAL SNAKE IS UNAFFECTED EITHER WAY: it is predicted, not interpolated (see
+ * [SnakePredictor]), so this never touches the thing the player is steering.
  *
  * Identical to iOS `SnakeMetalView.interpDelay`.
  */
-private const val INTERP_DELAY = 0.125  // 2.5 ticks at tickHz 20
+private const val INTERP_DELAY = 0.20   // 4 ticks at tickHz 20
 
 /** A gap longer than this ends an eating streak — grazing stays flat, real runs climb. */
 private const val EAT_STREAK_GAP_MS = 600L

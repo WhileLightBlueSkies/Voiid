@@ -791,23 +791,28 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
 
     /// How far behind the newest frame to render.
     ///
-    /// TWO AND A HALF ticks, not one and a half — and it is expressed in SECONDS, so it has to
-    /// move whenever TICK_HZ does. At 20 Hz that is 125 ms, half what it was at 10 Hz, and that
-    /// halving is most of what makes remote snakes agree with the server about collisions.
+    /// THIS IS A NETWORK-LATENESS TOLERANCE, NOT A TICK COUNT, and confusing the two is a bug
+    /// I shipped once. Raising TICK_HZ to 20 I "kept it at 2.5 ticks" and halved it to 125 ms —
+    /// which halved how late a frame may arrive before the buffer runs dry. On a mobile network
+    /// most frames are late by more than that, so the render clock repeatedly caught up with
+    /// the newest frame, held, and jumped. That hold-jump cycle IS the jitter, and playtesting
+    /// reported it immediately: "the whole game pauses and continues".
     ///
-    /// At 1.5 ticks the buffer ran dry on any frame that arrived even slightly late — and on
-    /// a mobile network that is most of them — so the render clock repeatedly caught up with
-    /// the newest frame, held, and jumped. That hold-jump cycle IS the jitter. 2.5 ticks means
-    /// a frame can be 150 ms late before the buffer runs dry instead of 50 ms.
+    /// Ticks got faster; the network did not. What this constant has to cover is jitter in
+    /// arrival times, measured in milliseconds, and that number does not shrink because the
+    /// server ticks more often. 200 ms tolerates a frame arriving 200 ms late — better than the
+    /// 10 Hz build managed at 250 ms per 2.5 ticks, because at 20 Hz that is four ticks of
+    /// buffered frames rather than two and a half.
     ///
-    /// THIS WAS CUT TO 0.15 ONCE, AND THE ARGUMENT FOR CUTTING IT WAS BACKWARDS. The reasoning
-    /// was that the delay made the controls feel remote — true when it was written, because
-    /// back then it applied to every snake including the one the player is steering. But the
-    /// LOCAL snake is predicted now, not interpolated (see `predictor` below): this constant
-    /// no longer touches it at all. Prediction did not make a smaller delay affordable, it
-    /// made a LARGER one free. What is left behind the clock is other snakes and the food
-    /// field, where 100 ms of extra staleness is invisible and a stall is not.
-    private static let interpDelay: Double = 0.125  // 2.5 ticks at tickHz 20
+    /// THE COST IS PAID BY EXTRAPOLATION, NOT BY THE PLAYER. A deeper buffer means remote
+    /// snakes are drawn further behind truth — 60 units raw at 200 ms — but lead extrapolation
+    /// takes roughly three quarters of that back on a snake travelling straight, leaving ~15
+    /// units against a 22-unit kill radius. Still inside the radius that decides a fight, which
+    /// is the property that mattered, and without the stutter.
+    ///
+    /// THE LOCAL SNAKE IS UNAFFECTED EITHER WAY: it is predicted, not interpolated, so this
+    /// constant never touches the thing the player is steering.
+    private static let interpDelay: Double = 0.20   // 4 ticks at tickHz 20
 
     /// How far past the newest buffered frame a head may be carried on its last heading before
     /// the world simply holds. See the `overshoot` call site in `buildFrame`. Identical on
