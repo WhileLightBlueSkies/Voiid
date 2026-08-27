@@ -1010,27 +1010,44 @@ router.post('/:id/escalate', requireAuth, asyncHandler(async (req, res) => {
     [callId, user_id, device_id ?? null]
   );
 
-  // Room-size cap, checked AFTER seeding so it counts the real roster.
-  const before = await liveParticipantIds(callId);
-  if (!before.includes(invitee_user_id) && before.length >= MAX_CALL_PARTICIPANTS) {
+  // Upsert the invitee as `invited`, WITH THE CAP ENFORCED IN THE SAME STATEMENT.
+  //
+  // This was a read-then-write: count the roster, compare to the cap, then insert. Two
+  // people adding someone to a 7-person call at the same moment both read 7, both passed
+  // the check, and both inserted — a 9-person room on an 8-person cap. Not hypothetical:
+  // "add someone" is exactly the action several people take at once when a call is getting
+  // going.
+  //
+  // The count now lives inside the INSERT's own WHERE, so Postgres evaluates it against
+  // the same snapshot that performs the write and the second racer inserts nothing.
+  //
+  // The CASE keeps an already-`joined` participant joined: re-inviting someone who is in
+  // the room must not demote them to "Ringing…". `not exists` lets a RE-invite through
+  // regardless of the cap — that adds nobody, and refusing it would break re-inviting the
+  // eighth person after a dropped connection.
+  const inserted = await query<{ user_id: string }>(
+    `insert into call_participants (call_id, user_id, state, invited_by, state_changed_at)
+     select $1, $2, 'invited', $3, now()
+      where exists (select 1 from call_participants
+                     where call_id = $1 and user_id = $2 and left_at is null)
+         or (select count(*) from call_participants
+              where call_id = $1 and left_at is null) < $4
+     on conflict (call_id, user_id) do update
+        set state = case when call_participants.state = 'joined' then 'joined' else 'invited' end,
+            invited_by = coalesce(call_participants.invited_by, excluded.invited_by),
+            left_at = null,
+            state_changed_at = now()
+     returning user_id`,
+    [callId, invitee_user_id, user_id, MAX_CALL_PARTICIPANTS]
+  );
+
+  // No row means the WHERE refused it: the room was full at write time.
+  if (!inserted[0]) {
     return res.status(409).json({
       error: `a call can hold at most ${MAX_CALL_PARTICIPANTS} participants`,
       max_participants: MAX_CALL_PARTICIPANTS,
     });
   }
-
-  // Upsert the invitee as `invited`. The CASE keeps an already-`joined` participant
-  // joined: re-inviting someone who is in the room must not demote them to "Ringing…".
-  await query(
-    `insert into call_participants (call_id, user_id, state, invited_by, state_changed_at)
-     values ($1, $2, 'invited', $3, now())
-     on conflict (call_id, user_id) do update
-        set state = case when call_participants.state = 'joined' then 'joined' else 'invited' end,
-            invited_by = coalesce(call_participants.invited_by, excluded.invited_by),
-            left_at = null,
-            state_changed_at = now()`,
-    [callId, invitee_user_id, user_id]
-  );
 
   const participants = await refreshCallGrant(call);
   const room = adhocRoomName(callId);

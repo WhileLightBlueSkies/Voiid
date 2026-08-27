@@ -172,6 +172,22 @@ const GAMES_INPUT_CHANNEL = 'channel:games:input';
 // 1800/min = 30/s clears Snake with 2x headroom and leaves room for the 20-30 Hz games in
 // GAMES.md §4 (Air Hockey, Ping Pong, Pool). See docs/GAMES_SNAKE_BUGS.md Part A.
 const GAME_MAX_FRAMES_PER_WINDOW = Number(process.env.VOIID_GAME_WS_RATE) || 1800;
+
+// --- Call signalling flood guard ------------------------------------------------------
+// Location frames get 12/min and game frames 1800/min; call frames had NO limit at all,
+// and each one costs several Redis operations plus a fan-out to every recipient device.
+//
+// Sized off what a real call actually sends. The expensive burst is ICE: trickle
+// candidates arrive in a clump at setup and again on every ICE restart — a few dozen per
+// negotiation, times up to 3 restarts, plus offer/answer and the hold/ringing/hangup
+// frames. 600/min is roughly ten times that, so it cannot throttle a legitimate call even
+// on a network that is renegotiating constantly, while still bounding a client that has
+// come loose.
+//
+// Keyed per USER rather than per call: a client flooding across many call ids is the case
+// a per-call bucket would miss entirely.
+const CALL_MAX_FRAMES_PER_WINDOW = Number(process.env.VOIID_CALL_WS_RATE) || 600;
+const CALL_RATE_WINDOW_MS = 60_000;
 const GAME_RATE_WINDOW_MS = 60_000;
 // A move is tiny (a cell index, an angle/power pair). Generous, but bounded.
 const GAME_MAX_PAYLOAD_CHARS = 2048;
@@ -297,7 +313,20 @@ sub.on('pmessage', (_pattern, channel, payload) => {
   }
 });
 
-const wss = new WebSocketServer({ port });
+// A HARD CEILING ON ANY SINGLE FRAME.
+//
+// There was none, so `ws` accepted a frame of any size. SDP and ICE candidates relay
+// VERBATIM — the relay deliberately does not parse them — so a client could hand this
+// process an arbitrarily large string and have it buffered, published to Redis and fanned
+// out to every recipient device.
+//
+// 256 KB is far above any real signalling frame (a large SDP with many codecs and
+// candidates runs a few tens of KB) and far below anything that threatens the process.
+// `ws` closes the connection itself when a frame exceeds this, which is the right outcome:
+// nothing legitimate produces one.
+const WS_MAX_PAYLOAD_BYTES = Number(process.env.VOIID_WS_MAX_PAYLOAD) || 256 * 1024;
+
+const wss = new WebSocketServer({ port, maxPayload: WS_MAX_PAYLOAD_BYTES });
 
 wss.on('connection', (ws, req) => {
   // JWT via ?token= or Sec-WebSocket-Protocol; reject if absent/invalid.
@@ -351,6 +380,12 @@ wss.on('connection', (ws, req) => {
   // game_input rate state for THIS socket, keyed by match_id. Socket-local for the same
   // reason as locRate — it dies with the connection, so there is no cross-socket map to
   // leak or to clean up.
+  // Per CONNECTION, not module-level: a map keyed by user id at module scope would retain
+  // an entry for every user who ever connected, for the life of the process. Scoped here it
+  // dies with the socket, and a client reconnecting to dodge the limit has to pay a new TLS
+  // handshake and auth for each attempt — which is its own throttle.
+  const callRate = new Map<string, { count: number; windowStart: number; warned: boolean }>();
+
   const gameRate = new Map<
     string,
     { count: number; windowStart: number; warned: boolean }
@@ -609,6 +644,33 @@ wss.on('connection', (ws, req) => {
         typeof msg.to_user_id === 'string' &&
         typeof msg.call_id === 'string'
       ) {
+        // FLOOD GUARD. Every frame below costs several Redis operations plus a fan-out
+        // to each of the recipient's devices, and this branch had no limit of any kind
+        // while location and game frames both did. Keyed per user, so a client spraying
+        // across many call ids is caught too. See CALL_MAX_FRAMES_PER_WINDOW for sizing.
+        //
+        // Silent to the client — a rate-limit reply would tell a prober something — but
+        // logged once per window so a real throttle is nameable rather than invisible.
+        {
+          const now = Date.now();
+          const bucket = callRate.get(userId);
+          if (!bucket || now - bucket.windowStart >= CALL_RATE_WINDOW_MS) {
+            callRate.set(userId, { count: 1, windowStart: now, warned: false });
+          } else if (bucket.count >= CALL_MAX_FRAMES_PER_WINDOW) {
+            if (!bucket.warned) {
+              bucket.warned = true;
+              console.warn(
+                `[ws] call frame rate limit hit: user=${userId} ` +
+                  `limit=${CALL_MAX_FRAMES_PER_WINDOW}/${CALL_RATE_WINDOW_MS}ms — ` +
+                  `dropping until the window rolls`
+              );
+            }
+            return;
+          } else {
+            bucket.count += 1;
+          }
+        }
+
         // Rebuild the outbound frame from KNOWN fields only (never echo client
         // extras) and stamp the authenticated sender. Undefined fields are dropped
         // by JSON.stringify, so e.g. a hangup without `reason` simply omits it.

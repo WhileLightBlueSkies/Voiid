@@ -2298,6 +2298,27 @@ object CallManager {
      * add/remove, so the mode survives backgrounding and mid-call route changes.
      */
     private fun applyAudioRoute(speaker: Boolean) {
+        // AUDIO FOCUS IS OURS EITHER WAY — requested BEFORE the Telecom branch below.
+        //
+        // It was requested further down, past the early return, so on every device where
+        // Telecom accepted the call (the common path on API 26+) the request never ran:
+        // music still played over the caller and an interruption still left the call with
+        // no audio. Telecom owns the ROUTE, not focus — a self-managed app is expected to
+        // take focus itself — so this belongs above the split, where both paths reach it.
+        //
+        // Idempotent: CallAudioFocus.request returns immediately if focus is already held,
+        // and this function runs again on every route change.
+        CallAudioFocus.request(appContext) { interrupted ->
+            exec.execute {
+                runCatching {
+                    localAudioTrack?.setEnabled(
+                        !interrupted && !(_state.value?.muted ?: false)
+                            && !(_state.value?.onHold ?: false)
+                    )
+                }
+            }
+        }
+
         // TELECOM OWNS THE ROUTE WHEN IT OWNS THE CALL, and the two must never both act.
         // A self-managed app that also calls setCommunicationDevice()/startBluetoothSco()
         // fights the platform: the symptoms are device-specific and will not reproduce on a
@@ -2318,19 +2339,6 @@ object CallManager {
         val am = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
         if (!audioConfigured) { savedAudioMode = am.mode; audioConfigured = true }
         runCatching { am.mode = AudioManager.MODE_IN_COMMUNICATION }
-        // Take audio focus so other apps PAUSE, and so we are told when something takes the
-        // device away from us. Without this, music played over the caller and a cellular
-        // call left this one running with no audio and no way back.
-        CallAudioFocus.request(appContext) { interrupted ->
-            exec.execute {
-                runCatching {
-                    localAudioTrack?.setEnabled(
-                        !interrupted && !(_state.value?.muted ?: false)
-                            && !(_state.value?.onHold ?: false)
-                    )
-                }
-            }
-        }
         registerRouteWatcher(am)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
