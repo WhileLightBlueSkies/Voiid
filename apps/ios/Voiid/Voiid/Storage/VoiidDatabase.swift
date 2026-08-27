@@ -206,6 +206,11 @@ final class VoiidDatabase {
         // (`v2_location`), appended independently; body in Storage/LocationSchema.swift.
         LocationSchema.register(&m)
 
+        // Voiid AI's stored transcripts (`ai_v1_threads`). Device-only and never synced —
+        // the model runs on-device, so these rows exist nowhere else. Body in
+        // Storage/AISchema.swift.
+        AISchema.register(&m)
+
         // Denormalized last-message preview on the conversation row, so the chat LIST renders
         // instantly from SQLite alone — it never has to load or decode the message store to
         // show each chat's snippet. Kept fresh at write time (LocalStore.updatePreview).

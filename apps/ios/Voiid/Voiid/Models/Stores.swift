@@ -1082,25 +1082,11 @@ final class ChatStore: ObservableObject {
 }
 
 // MARK: - AI store
-
-@MainActor
-final class AIStore: ObservableObject {
-    @Published var messages: [VAIMessage] = DummyData.aiMessages
-    @Published var thinking = false
-
-    func send(_ text: String) {
-        messages.append(VAIMessage(id: UUID().uuidString, text: text, isUser: true))
-        Task {
-            thinking = true
-            try? await Task.sleep(nanoseconds: 1_200_000_000)
-            thinking = false
-            let canned = "Whats good? How can i Help you today?"
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                messages.append(VAIMessage(id: UUID().uuidString, text: canned, isUser: false))
-            }
-        }
-    }
-}
+//
+// REMOVED. Voiid AI is a real on-device assistant now — see Main/AI/AIModels.swift
+// (`AIConversation`, streaming from Apple's Foundation Models) and Storage/AIStore.swift
+// (persisted transcripts). The store here held three DummyData messages and answered every
+// prompt with the same hardcoded sentence.
 
 // MARK: - Clips store
 //

@@ -142,8 +142,5 @@ struct VConversation: Identifiable, Hashable {
 // models are `Clip` and `ClipComment` in Networking/ClipsEngine.swift, built from the
 // server rows in ClipService.
 
-struct VAIMessage: Identifiable, Hashable {
-    let id: String
-    var text: String
-    var isUser: Bool
-}
+// VAIMessage REMOVED — superseded by `AIMessage` in Main/AI/AIModels.swift, which carries
+// an author enum, a timestamp, streaming state and a failure reason.

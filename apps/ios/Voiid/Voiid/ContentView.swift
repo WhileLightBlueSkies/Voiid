@@ -10,7 +10,6 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var session = AppSession()
     @StateObject private var chat = ChatStore()
-    @StateObject private var ai = AIStore()
     @ObservedObject private var call = CallService.shared
     /// Drives the app-wide Light / Dark / System choice (Settings → Appearance).
     @ObservedObject private var theme = ThemePreference.shared
@@ -40,7 +39,6 @@ struct ContentView: View {
         }
         .environmentObject(session)
         .environmentObject(chat)
-        .environmentObject(ai)
         .tint(VoiidColor.primary)
         // The app is no longer pinned to light: every VoiidColor token resolves per theme
         // (Peacock), so this follows the user's Light / Dark / System choice. `.system`

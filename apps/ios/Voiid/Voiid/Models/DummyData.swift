@@ -112,10 +112,4 @@ enum DummyData {
         .init(id: "o2", text: "Beach", votes: 5),
         .init(id: "o3", text: "Home", votes: 1),
     ])
-
-    static let aiMessages: [VAIMessage] = [
-        VAIMessage(id: "ai1", text: "Whats good? How can i Help you today?", isUser: false),
-        VAIMessage(id: "ai2", text: "Yoooo", isUser: true),
-        VAIMessage(id: "ai3", text: "YooYooooo", isUser: true),
-    ]
 }
