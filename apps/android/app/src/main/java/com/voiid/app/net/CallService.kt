@@ -208,6 +208,8 @@ object CallManager {
      * the iOS `offerTimeout`, and sits well inside the 45s ring window both platforms use.
      */
     private const val OFFER_TIMEOUT_MS = 30_000L
+    /** Matches iOS's `incomingRingCap`, so the two platforms give up at the same moment. */
+    private const val INCOMING_RING_CAP_MS = 45_000L
     /** TURN credentials are short-lived; re-fetch rather than restart with expired ones. */
     private const val ICE_SERVER_TTL_MS = 4 * 60_000L
 
@@ -229,6 +231,8 @@ object CallManager {
     private var restartWatchdog: Runnable? = null
     /** Armed by a ring push, cancelled by the offer it is waiting for. See [startOfferTimeout]. */
     private var offerTimeout: Runnable? = null
+    /** Bounds how long an inbound call may ring. See [startIncomingRingCap]. */
+    private var ringCap: Runnable? = null
     /**
      * The call we rang from a push and have not yet seen a `call_offer` for. Read from the
      * main thread by the timeout below, so it cannot be inferred from [pc] — that lives on
@@ -485,6 +489,7 @@ object CallManager {
             phase = Phase.RINGING_IN, videoEnabled = kind == CallKind.VIDEO,
             speaker = kind == CallKind.VIDEO,
         )
+        startIncomingRingCap(callId)
         // Written before the user has done anything: a call ignored until the process dies
         // is exactly the one that must still show up as missed.
         recordCall(_state.value!!, outcome = "missed")
@@ -550,6 +555,7 @@ object CallManager {
             speaker = kind == CallKind.VIDEO,
             isConferenceInvite = true,
         )
+        startIncomingRingCap(callId)
         // Logged as missed up front for the same reason a 1:1 ring is: an invite ignored until
         // the process dies is exactly the one that must still appear in the log.
         recordCall(_state.value!!, outcome = "missed")
@@ -616,6 +622,40 @@ object CallManager {
         awaitingOfferCallId = null
         offerTimeout?.let { mainHandler.removeCallbacks(it) }
         offerTimeout = null
+    }
+
+    /**
+     * Hard bound on how long an inbound call may ALERT.
+     *
+     * [startOfferTimeout] only covers the push-rang-but-no-offer window, and it is cancelled
+     * the moment the offer lands — so an offer-backed incoming call had no local bound at
+     * all. A caller who never hung up rang the callee's phone indefinitely: ringtone loop,
+     * vibration and a full-screen notification the user could only silence by hand.
+     *
+     * iOS has always had both (`startIncomingRingCap`), and its comment names the reason
+     * this matters beyond battery: the cap is what makes a scheduled missed-call
+     * notification safe, because the ring is guaranteed to be over before the banner is due.
+     */
+    private fun startIncomingRingCap(callId: String) {
+        cancelIncomingRingCap()
+        val r = Runnable {
+            ringCap = null
+            val s = _state.value ?: return@Runnable
+            if (s.callId != callId) return@Runnable
+            // Only while still ringing — a connected call must never be cut off by this.
+            if (s.phase != Phase.RINGING_IN) return@Runnable
+            android.util.Log.w("VOIID", "ring cap reached for $callId — treating as missed")
+            // notifyPeer = true, unlike the no-offer path: the caller DID reach us, so they
+            // deserve a verdict rather than ringing out blind.
+            endInternal(notifyPeer = true, reason = "missed")
+        }
+        ringCap = r
+        mainHandler.postDelayed(r, INCOMING_RING_CAP_MS)
+    }
+
+    private fun cancelIncomingRingCap() {
+        ringCap?.let { mainHandler.removeCallbacks(it) }
+        ringCap = null
     }
 
     /**
@@ -769,6 +809,7 @@ object CallManager {
             incoming = true, phase = Phase.RINGING_IN,
             videoEnabled = kind == CallKind.VIDEO, speaker = kind == CallKind.VIDEO,
         )
+        startIncomingRingCap(sig.callId)
         recordCall(_state.value!!, outcome = "missed")
         raiseIncomingAlert(_state.value!!)
         announceRinging(sig.fromUserId, sig.callId)
@@ -857,6 +898,8 @@ object CallManager {
         }
         // A restart answer must not drag a live call back to the CONNECTING spinner.
         if (!wasRestart && _state.value?.phase != Phase.CONNECTED) {
+            // Answered: the ring is over, so the cap must not fire on a live call.
+            cancelIncomingRingCap()
             update { it.copy(phase = Phase.CONNECTING) }
         }
     }
@@ -998,7 +1041,9 @@ object CallManager {
                     isConferenceInvite = true,
                 )
                 startForegroundService()
-                update { it.copy(phase = Phase.CONNECTING) }
+                // Answered: the ring is over, so the cap must not fire on a live call.
+            cancelIncomingRingCap()
+            update { it.copy(phase = Phase.CONNECTING) }
                 ConferenceManager.acceptInvite(
                     context = appContext, callId = w.callId, kind = w.kind,
                     inviterUserId = w.peerUserId,
@@ -1067,6 +1112,8 @@ object CallManager {
         // ad-hoc token — so falling through to the 1:1 answer path set acceptPending and
         // waited forever for an offer that was never coming (the escalation bug).
         if (s.isConferenceInvite) {
+            // Answered: the ring is over, so the cap must not fire on a live call.
+            cancelIncomingRingCap()
             update { it.copy(phase = Phase.CONNECTING) }
             CallForegroundService.cancelIncoming(appContext)
             startForegroundService()
@@ -1794,6 +1841,7 @@ object CallManager {
         cancelConnectTimeout()
         endReason = endReason ?: reason
         cancelOfferTimeout()
+        cancelIncomingRingCap()
         // Burn the frame cryptors and the call secret. Every teardown path funnels
         // through here, so this is the guarantee that keys die with the call.
         detachFrameCryptors()
@@ -2157,6 +2205,19 @@ object CallManager {
         val am = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
         if (!audioConfigured) { savedAudioMode = am.mode; audioConfigured = true }
         runCatching { am.mode = AudioManager.MODE_IN_COMMUNICATION }
+        // Take audio focus so other apps PAUSE, and so we are told when something takes the
+        // device away from us. Without this, music played over the caller and a cellular
+        // call left this one running with no audio and no way back.
+        CallAudioFocus.request(appContext) { interrupted ->
+            exec.execute {
+                runCatching {
+                    localAudioTrack?.setEnabled(
+                        !interrupted && !(_state.value?.muted ?: false)
+                            && !(_state.value?.onHold ?: false)
+                    )
+                }
+            }
+        }
         registerRouteWatcher(am)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -2277,6 +2338,8 @@ object CallManager {
     }
 
     private fun restoreAudioRoute() {
+        // Hand focus back FIRST so whatever we paused can resume as the call tears down.
+        runCatching { CallAudioFocus.abandon(appContext) }
         // Nothing to restore if Telecom held the route for this whole call: `audioConfigured`
         // is only ever set by the AudioManager path above. Tearing down a mode and a SCO
         // link we never established would stamp on whatever the platform is doing next.

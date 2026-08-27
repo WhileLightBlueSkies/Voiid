@@ -63,6 +63,9 @@ struct ActiveCall: Identifiable, Equatable {
     /// a conference is keyed on the CALL and belongs to no conversation, which is what keeps
     /// an invited stranger outside the contact-PIN gate in 020_reachability.sql.
     var isConferenceInvite: Bool = false
+    /// A ring for a GROUP conversation's room. Answering joins by conversation id, not by
+    /// the ad-hoc conference path.
+    var isGroupCallInvite: Bool = false
 
     /// THE CALLEE'S DEVICE IS GENUINELY ALERTING — set when their `call_ringing` arrives,
     /// never when we merely sent the offer.
@@ -978,6 +981,10 @@ final class CallService: NSObject, ObservableObject {
                                         conversationId: String?,
                                         displayName: String?,
                                         isConference: Bool = false,
+                                        /// A GROUP call ring. Like a conference invite there is
+                                        /// no SDP offer coming, but answering joins the
+                                        /// conversation's LiveKit room rather than an ad-hoc one.
+                                        isGroupCall: Bool = false,
                                         completion: @escaping () -> Void) {
         // The WS offer beat the push (app was alive), or this is a duplicate push —
         // the call is already ringing, nothing to do. Still must call completion.
@@ -1043,6 +1050,7 @@ final class CallService: NSObject, ObservableObject {
         // seconds in. The ring cap still applies: an unanswered invite must stop ringing.
         if isConference {
             active?.isConferenceInvite = true
+            active?.isGroupCallInvite = isGroupCall
             awaitingOfferCallIds.remove(callId)
         } else {
             startOfferTimeout(for: callId)
@@ -1510,7 +1518,20 @@ final class CallService: NSObject, ObservableObject {
             call.state = .connecting
             active = call
             Task { [weak self] in
-                let joined = await CallConferenceService.shared.acceptInvite()
+                // A GROUP ring joins the conversation's own room; an ad-hoc conference
+                // invite goes through the escalation engine. Both are "no offer is coming",
+                // which is why they share this branch, but they join by different keys.
+                let joined: Bool
+                if call.isGroupCallInvite, let convo = call.conversationId {
+                    await GroupCallService.shared.join(conversationId: convo,
+                                                      title: call.title,
+                                                      isVideo: call.isVideo)
+                    // `join` is async and leaves the engine in .connected/.connecting on
+                    // success and .failed on error, so the state IS the verdict.
+                    joined = GroupCallService.shared.state.isActive
+                } else {
+                    joined = await CallConferenceService.shared.acceptInvite()
+                }
                 guard joined else {
                     NSLog("[VOIID] conference accept failed — ending")
                     pendingEndReason = .setupFailed

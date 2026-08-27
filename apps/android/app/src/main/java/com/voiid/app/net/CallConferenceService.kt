@@ -928,6 +928,7 @@ object ConferenceManager {
      * the device stayed in MODE_IN_COMMUNICATION after every conference call.
      */
     private fun restoreAudioRoute() {
+        appContext?.let { runCatching { CallAudioFocus.abandon(it) } }
         val mode = savedAudioMode ?: return   // never configured; nothing to undo
         savedAudioMode = null
         val ctx = appContext ?: return
@@ -949,6 +950,15 @@ object ConferenceManager {
         val ctx = appContext ?: return
         val am = ctx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
         runCatching {
+            // Take focus so other apps pause, and so an interruption (a cellular call,
+            // an alarm) mutes this call instead of leaving it running with no audio.
+            CallAudioFocus.request(ctx) { interrupted ->
+                // setMicrophoneEnabled suspends, and the focus callback arrives on the
+                // AudioManager's thread — so it has to hop onto this engine's scope.
+                scope.launch {
+                    runCatching { room?.localParticipant?.setMicrophoneEnabled(!interrupted) }
+                }
+            }
             // Captured BEFORE the first override, and only once.
             if (savedAudioMode == null) savedAudioMode = am.mode
             am.mode = AudioManager.MODE_IN_COMMUNICATION

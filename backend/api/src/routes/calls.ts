@@ -446,13 +446,25 @@ router.post('/group/ring', requireAuth, asyncHandler(async (req, res) => {
   );
   if (!caller[0]) return res.status(403).json({ error: 'not a member of this conversation' });
 
-  // Every OTHER active member's push-capable devices.
-  const devices = await query<{ push_token: string; push_provider: string }>(
-    `select d.push_token, d.push_provider
+  // Every OTHER active member's push-capable devices — INCLUDING their VoIP tokens.
+  //
+  // This used to select only `push_token`, so an iOS member got a plain alert push for a
+  // group call: no CallKit screen, no lock-screen ring, no Recents entry. If they did not
+  // happen to tap the banner they missed the call silently. A 1:1 call from the same app
+  // rang properly, which made group calls look broken rather than different.
+  const devices = await query<{
+    platform: string;
+    push_token: string | null;
+    push_provider: string | null;
+    voip_token: string | null;
+  }>(
+    `select d.platform, d.push_token, d.push_provider, d.voip_token
        from devices d
        join conversation_members m on m.user_id = d.user_id
       where m.conversation_id = $1 and m.user_id <> $2 and m.left_at is null
-        and d.revoked_at is null and d.push_token is not null and d.push_provider is not null`,
+        and d.revoked_at is null
+        and (d.voip_token is not null
+             or (d.push_token is not null and d.push_provider is not null))`,
     [conversation_id, user_id]
   );
 
@@ -463,10 +475,27 @@ router.post('/group/ring', requireAuth, asyncHandler(async (req, res) => {
     caller_id: user_id,
   } as const;
 
-  const wakeTargets = devices.map((d) => ({ push_token: d.push_token, push_provider: d.push_provider }));
+  // Same routing rule as the 1:1 path: VoIP only when the server can actually send one,
+  // so a misconfigured server falls back to the alert push rather than silently skipping
+  // the device.
+  const voipTokens: string[] = [];
+  const wakeTargets: { push_token: string; push_provider: string }[] = [];
+  const useVoip = voipConfigured();
+  for (const d of devices) {
+    if (useVoip && d.platform === 'ios' && d.voip_token) {
+      voipTokens.push(d.voip_token);
+    } else if (d.push_token && d.push_provider) {
+      wakeTargets.push({ push_token: d.push_token, push_provider: d.push_provider });
+    }
+  }
+
+  if (voipTokens.length) void sendVoipPush(voipTokens, meta);
   if (wakeTargets.length) void sendWakePush(wakeTargets, meta);
 
-  return res.json({ rung_devices: wakeTargets.length });
+  return res.json({
+    rung_devices: voipTokens.length + wakeTargets.length,
+    voip_devices: voipTokens.length,
+  });
 }));
 
 // --- Anonymous call-quality metrics (Section 4.14) ---------------------------------

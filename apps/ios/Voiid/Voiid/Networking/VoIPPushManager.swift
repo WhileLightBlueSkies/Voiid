@@ -142,16 +142,29 @@ extension VoIPPushManager: PKPushRegistryDelegate {
         let isConference = (info["conference"] as? Bool) == true
             || (info["conference"] as? String) == "true"
 
+        // A GROUP call ring arrives on this same VoIP push so it gets a real CallKit screen
+        // instead of a tap-to-join banner. It differs from a 1:1 ring in two ways that
+        // matter here:
+        //
+        //  * There is no `call_id` — the room is keyed by conversation. A synthetic id is
+        //    minted from the conversation so CallKit has a stable UUID for this ring, and
+        //    so a second ring for the same conversation reconciles instead of stacking.
+        //  * No SDP offer is coming, exactly like a conference invite. It therefore takes
+        //    the `isConference` path, which suppresses the offer watchdog while keeping the
+        //    ring cap.
+        let isGroupCall = (info["type"] as? String) == "group_call"
+
         MainActor.assumeIsolated {
             // MUST report to CallKit before `completion()` — CallService does that
             // synchronously and invokes `completion` from the report callback.
             CallService.shared.reportIncomingCallFromVoIPPush(
-                callId: callId,
+                callId: isGroupCall ? "group:\(conversationId ?? callId)" : callId,
                 callerId: callerId,
                 kind: kind,
                 conversationId: conversationId,
                 displayName: displayName,
-                isConference: isConference,
+                isConference: isConference || isGroupCall,
+                isGroupCall: isGroupCall,
                 completion: completion
             )
         }
