@@ -180,7 +180,7 @@ struct CallScreen: View {
                 return String(format: "%02d:%02d", call.connectedSeconds / 60, call.connectedSeconds % 60)
             case .some(.incomingRinging): return request.kind == .video ? "Incoming video call" : "Incoming call"
             case .some(.connecting): return call.isReconnecting ? "Reconnecting…" : "Connecting…"
-            case .some(.ended), .none: return "Call ended"
+            case .some(.ended), .none: return endedText
             default:
                 // "CALLING…" UNTIL THEIR PHONE ACTUALLY RINGS. This said "Ringing…" from the
                 // instant you tapped call, claiming something we do not know — the callee may
@@ -193,6 +193,28 @@ struct CallScreen: View {
         }
         if !connected { return request.kind == .video ? "Ringing — Video" : "Ringing…" }   // simulated path
         return String(format: "%02d:%02d", seconds / 60, seconds % 60)
+    }
+
+    /// What actually happened, not just that something did.
+    ///
+    /// "Call ended" was shown for every outcome — they declined, they were on another call,
+    /// they have no device signed in, the network gave out. Those are different facts about
+    /// another person, and which one it was is the entire content of the moment for the
+    /// caller. WhatsApp and Signal both distinguish them; we were the only one that did not.
+    private var endedText: String {
+        switch call.lastEndReason {
+        case .declined:    return "Declined"
+        case .busy:        return "\(request.title) is on another call"
+        // No registered devices: nobody declined and nobody failed to answer — there was
+        // nowhere to ring at all.
+        case .unavailable: return "\(request.title) is unavailable"
+        case .timeout:     return "No answer"
+        // The distinction that matters on a bad connection: the call did not fail because
+        // of the other person.
+        case .iceFailed:   return "Connection lost"
+        case .setupFailed: return "Couldn't connect"
+        default:           return "Call ended"
+        }
     }
 
     var body: some View {

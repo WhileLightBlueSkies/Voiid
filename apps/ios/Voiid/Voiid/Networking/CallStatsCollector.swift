@@ -49,6 +49,10 @@ enum CallEndReason: String {
     case iceFailed = "ice_failed"
     case timeout = "timeout"
     case setupFailed = "setup_failed"
+    /// The callee has NO registered devices — signed out, or every device revoked. Distinct
+    /// from `timeout`: nobody declined and nobody failed to answer, there was nowhere to
+    /// ring. Showing this as "missed" told the caller the wrong thing about the other person.
+    case unavailable = "unavailable"
     case unknown = "unknown"
 }
 

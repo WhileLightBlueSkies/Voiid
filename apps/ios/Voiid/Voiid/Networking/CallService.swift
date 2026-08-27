@@ -158,6 +158,14 @@ final class CallService: NSObject, ObservableObject {
     private var callConnectedAt: Date?
     /// Set by whichever teardown path runs first; read when building metrics.
     private var pendingEndReason: CallEndReason = .unknown
+
+    /// Why the last call ended, for the brief window the ended screen is on show.
+    ///
+    /// The screen said "Call ended" for every outcome — declined, busy, nobody home,
+    /// network failure — so the caller could not tell "they said no" from "they never got
+    /// it". Those are different facts about another person and the difference is the whole
+    /// content of the moment.
+    @Published private(set) var lastEndReason: CallEndReason = .unknown
     private var everConnected = false
 
     // MARK: WebRTC
@@ -205,9 +213,14 @@ final class CallService: NSObject, ObservableObject {
 
     /// The longest we will alert for an inbound call before calling it missed.
     private static let incomingRingCap: Duration = .seconds(45)
+    /// Deliberately LONGER than the incoming cap: in the healthy case the callee's own
+    /// timeout fires first and the caller learns the real outcome. This is the fallback for
+    /// when that answer never arrives.
+    private static let outgoingRingCap: Duration = .seconds(60)
     /// Margin between the ring ending and the backstop notification firing.
     private static let missedNotificationSlack: TimeInterval = 2
     private var ringCapTask: Task<Void, Never>?
+    private var outgoingRingCapTask: Task<Void, Never>?
     /// The user tapped Answer (even if the SDP hadn't landed yet and the call later
     /// died before connecting). An answered call is NEVER a missed call, so this
     /// survives independently of `everConnected`.
@@ -651,6 +664,9 @@ final class CallService: NSObject, ObservableObject {
         videoEnabled = isVideo
         callUIMinimized = false
         beginCallTelemetry()
+        // Bound the ring from the caller's side too — see startOutgoingRingCap for why the
+        // callee's own cap is not enough on a bad network.
+        startOutgoingRingCap(for: callId)
 
         Task {
             await setupPeerConnection(isVideo: isVideo)
@@ -679,13 +695,37 @@ final class CallService: NSObject, ObservableObject {
                     let to_user_id: String; let call_id: String
                     let call_kind: String; let conversation_id: String
                 }
+                struct RingResult: Decodable {
+                    let ringing_devices: Int?
+                    let voip_devices: Int?
+                }
                 do {
-                    _ = try await api.request(
+                    let result = try await api.request(
                         "POST", "calls/ring",
                         body: RingBody(to_user_id: peerUserId, call_id: callId,
                                        call_kind: isVideo ? "video" : "voice",
                                        conversation_id: convId),
-                        as: EmptyResponse.self)
+                        as: RingResult.self)
+
+                    // ZERO DEVICES = NOBODY TO RING.
+                    //
+                    // The response has always carried this count and the client threw it
+                    // away, so calling someone who is signed out — or whose only device was
+                    // revoked — rang for the full 45 seconds against a phone that was never
+                    // going to light up, then filed itself as "missed" on both sides. The
+                    // caller had no way to tell that from a person who simply did not pick up.
+                    //
+                    // A push token is not proof of reachability (the device may be off, or
+                    // the token stale), so this is deliberately only the ZERO case: it means
+                    // the server has nowhere to send, which is a fact rather than a guess.
+                    if (result.ringing_devices ?? 1) == 0 {
+                        NSLog("[VOIID] callee has no registered devices — unavailable")
+                        await MainActor.run {
+                            self.pendingEndReason = .unavailable
+                            self.hangUp()
+                        }
+                        return
+                    }
                 } catch {
                     // The ring failed, so no grant exists and every frame we are about to
                     // send would be dropped in silence. Failing loudly here is the honest
@@ -752,6 +792,7 @@ final class CallService: NSObject, ObservableObject {
         everConnected = false
         localAnswerGiven = false
         pendingEndReason = .unknown
+        lastEndReason = .unknown
         iceRestartAttempts = 0
         iceRestartsTotal = 0
         restartInFlight = false
@@ -1088,6 +1129,37 @@ final class CallService: NSObject, ObservableObject {
             NSLog("[VOIID] incoming call \(callId) rang past the cap — treating as missed")
             // No decline frame: the user didn't refuse it, they just weren't there.
             self.pendingEndReason = .timeout
+            self.endActiveCall(notifyPeer: true, fromCallKit: false)
+        }
+    }
+
+    /// Hard bound on how long an OUTGOING call may ring unanswered.
+    ///
+    /// The incoming cap above stops the callee's phone; nothing stopped the caller's. That
+    /// asymmetry is invisible when both sides are healthy — the callee's cap fires, its
+    /// `call_hangup` arrives, and the caller stops. It matters exactly when the network is
+    /// bad, which is when calls matter most:
+    ///
+    ///  * The callee DECLINES on a weak connection and the `call_decline` frame never
+    ///    lands. The caller rings on, indefinitely.
+    ///  * The callee's phone never rang at all (push dropped, device offline). Nothing is
+    ///    coming back, ever.
+    ///  * The callee's app is killed while ringing, taking its queued decline with it.
+    ///
+    /// Given slightly MORE room than the incoming cap, so in the healthy case the callee's
+    /// own timeout always wins and the caller learns the real outcome rather than this
+    /// fallback. This fires only when the truthful answer failed to arrive.
+    private func startOutgoingRingCap(for callId: String) {
+        outgoingRingCapTask?.cancel()
+        outgoingRingCapTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.outgoingRingCap)
+            guard !Task.isCancelled, let self else { return }
+            guard let call = self.active, call.id == callId, call.isOutgoing,
+                  call.state == .outgoingRinging else { return }
+            NSLog("[VOIID] outgoing call \(callId) unanswered past the cap")
+            self.pendingEndReason = .timeout
+            // notifyPeer: their device may still be ringing on a stale offer, and a hangup
+            // is the only thing that stops it.
             self.endActiveCall(notifyPeer: true, fromCallKit: false)
         }
     }
@@ -1514,6 +1586,8 @@ final class CallService: NSObject, ObservableObject {
         if call.isConferenceInvite {
             localAnswerGiven = true
             ringCapTask?.cancel(); ringCapTask = nil
+        outgoingRingCapTask?.cancel(); outgoingRingCapTask = nil
+            outgoingRingCapTask?.cancel(); outgoingRingCapTask = nil
             MissedCallNotifier.cancel(callId: call.id)
             call.state = .connecting
             active = call
@@ -1548,6 +1622,7 @@ final class CallService: NSObject, ObservableObject {
         // failed call, never a missed one.
         localAnswerGiven = true
         ringCapTask?.cancel(); ringCapTask = nil
+        outgoingRingCapTask?.cancel(); outgoingRingCapTask = nil
         MissedCallNotifier.cancel(callId: call.id)
         guard let offerSDP = pendingIncomingOfferSDP else {
             // Answered from the lock screen after a VoIP push but the offer hasn't
@@ -1817,6 +1892,7 @@ final class CallService: NSObject, ObservableObject {
         guard let call = active else { return }
         offerTimeoutTask?.cancel(); offerTimeoutTask = nil
         ringCapTask?.cancel(); ringCapTask = nil
+        outgoingRingCapTask?.cancel(); outgoingRingCapTask = nil
         awaitingOfferCallIds.remove(call.id)
         ringingSentCallIds.remove(call.id)
         answerWhenOfferArrives = false
@@ -1931,6 +2007,7 @@ final class CallService: NSObject, ObservableObject {
         // forever, and its per-call keys uncleared.
         CallConferenceService.shared.callEnded(callId: call.id)
 
+        lastEndReason = pendingEndReason
         var ended = call; ended.state = .ended
         active = ended
         // Clear after a beat so the UI can show "ended".

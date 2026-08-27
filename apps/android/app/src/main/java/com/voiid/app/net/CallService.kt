@@ -210,6 +210,8 @@ object CallManager {
     private const val OFFER_TIMEOUT_MS = 30_000L
     /** Matches iOS's `incomingRingCap`, so the two platforms give up at the same moment. */
     private const val INCOMING_RING_CAP_MS = 45_000L
+    /** Longer than the incoming cap — see startOutgoingRingCap. Matches iOS. */
+    private const val OUTGOING_RING_CAP_MS = 60_000L
     /** TURN credentials are short-lived; re-fetch rather than restart with expired ones. */
     private const val ICE_SERVER_TTL_MS = 4 * 60_000L
 
@@ -233,6 +235,7 @@ object CallManager {
     private var offerTimeout: Runnable? = null
     /** Bounds how long an inbound call may ring. See [startIncomingRingCap]. */
     private var ringCap: Runnable? = null
+    private var outgoingRingCap: Runnable? = null
     /**
      * The call we rang from a push and have not yet seen a `call_offer` for. Read from the
      * main thread by the timeout below, so it cannot be inferred from [pc] — that lives on
@@ -353,6 +356,7 @@ object CallManager {
             phase = Phase.RINGING_OUT, videoEnabled = kind == CallKind.VIDEO,
             speaker = kind == CallKind.VIDEO,
         )
+        startOutgoingRingCap(callId)
         recordCall(_state.value!!, outcome = "missed")   // upgraded on teardown
         // Offer the call to Telecom so it lands in the system call log against the right
         // contact. Purely additive: the in-app call below runs identically whether this
@@ -392,10 +396,19 @@ object CallManager {
         scope.launch(Dispatchers.IO) {
             val rang = runCatching { CallApi(appContext).ring(peerUserId, callId, kind, conversationId) }
             if (rang.isFailure) {
+                val err = rang.exceptionOrNull()
+                // "No registered devices" is a DIFFERENT outcome from "the ring failed":
+                // nobody declined and nobody failed to answer — there was nowhere to ring.
+                // The UI says so rather than showing a generic failure.
+                if (err is CallApi.CalleeUnavailable) {
+                    android.util.Log.i("VOIID", "callee has no devices — unavailable")
+                    endInternal(notifyPeer = false, reason = "unavailable")
+                    return@launch
+                }
                 // No grant means every frame we are about to send dies in silence. Ending
                 // loudly is the honest outcome: a call that cannot possibly connect must not
                 // present as ringing forever.
-                android.util.Log.e("VOIID", "calls/ring failed — no grant, aborting call", rang.exceptionOrNull())
+                android.util.Log.e("VOIID", "calls/ring failed — no grant, aborting call", err)
                 endInternal(notifyPeer = false, reason = "ring-failed")
                 return@launch
             }
@@ -651,6 +664,39 @@ object CallManager {
         }
         ringCap = r
         mainHandler.postDelayed(r, INCOMING_RING_CAP_MS)
+    }
+
+    /**
+     * Hard bound on how long an OUTGOING call may ring unanswered.
+     *
+     * The incoming cap stops the callee's phone; nothing stopped the caller's. That
+     * asymmetry is invisible while both sides are healthy — the callee's cap fires and its
+     * hangup arrives — and it bites exactly when the network is bad, which is when calls
+     * matter most: a decline sent on a weak connection that never lands, a push that never
+     * arrived, or the callee's app being killed while ringing with its queued decline
+     * inside it. In all three the caller rang forever.
+     *
+     * Longer than the incoming cap so the callee's own timeout wins in the healthy case and
+     * the caller learns the REAL outcome; this fires only when that answer never came.
+     */
+    private fun startOutgoingRingCap(callId: String) {
+        cancelOutgoingRingCap()
+        val r = Runnable {
+            outgoingRingCap = null
+            val s = _state.value ?: return@Runnable
+            if (s.callId != callId || s.phase != Phase.RINGING_OUT) return@Runnable
+            android.util.Log.w("VOIID", "outgoing call $callId unanswered past the cap")
+            // notifyPeer: their device may still be ringing on a stale offer, and a hangup
+            // is the only thing that stops it.
+            endInternal(notifyPeer = true, reason = "no-answer")
+        }
+        outgoingRingCap = r
+        mainHandler.postDelayed(r, OUTGOING_RING_CAP_MS)
+    }
+
+    private fun cancelOutgoingRingCap() {
+        outgoingRingCap?.let { mainHandler.removeCallbacks(it) }
+        outgoingRingCap = null
     }
 
     private fun cancelIncomingRingCap() {
@@ -1842,6 +1888,7 @@ object CallManager {
         endReason = endReason ?: reason
         cancelOfferTimeout()
         cancelIncomingRingCap()
+        cancelOutgoingRingCap()
         // Burn the frame cryptors and the call secret. Every teardown path funnels
         // through here, so this is the guarantee that keys die with the call.
         detachFrameCryptors()
@@ -2429,8 +2476,22 @@ private class CallApi(context: Context) {
             append(",\"conversation_id\":").append(JsonPrimitive(conversationId))
             append("}")
         }
-        api.request("POST", "calls/ring", jsonBody = body)
+        val resp = api.request("POST", "calls/ring", jsonBody = body)
+        // ZERO DEVICES = NOBODY TO RING. The response has always carried this count and
+        // both clients threw it away, so calling someone who is signed out rang for the
+        // full cap against a phone that was never going to light up, then filed itself as
+        // "missed" — indistinguishable from a person who simply did not answer.
+        //
+        // Only the ZERO case: a push token is not proof a device is reachable, but zero
+        // registered devices means the server has nowhere to send, which is a fact.
+        val rung = runCatching {
+            org.json.JSONObject(resp).optInt("ringing_devices", 1)
+        }.getOrDefault(1)
+        if (rung == 0) throw CalleeUnavailable()
     }
+
+    /** Thrown by [ring] when the callee has no registered devices. */
+    class CalleeUnavailable : Exception("callee has no registered devices")
 
     suspend fun status(callId: String, status: String) {
         val body = "{\"status\":${JsonPrimitive(status)}}"
