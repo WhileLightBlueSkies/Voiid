@@ -291,4 +291,404 @@ class CommunityService(context: Context) {
         data class Envelope(val members: List<Member> = emptyList())
         return api.requestAs<Envelope>("GET", "communities/$communityId/members?state=$state").members
     }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    //  THE HOME TAB: posts, the pinned announcement, About links
+    //
+    //  Ported from iOS `CommunityService.swift`. Every type below mirrors the Swift one
+    //  FIELD FOR FIELD and keeps its optionality: the server may omit anything but `id`,
+    //  and with `ignoreUnknownKeys = true` a client that ships ahead of the backend must
+    //  not throw on a missing column. The computed helpers (`text`, `likes`, `displayName`)
+    //  exist so the UI never writes `?: 0` at the call site.
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    @Serializable
+    data class Post(
+        val id: String,
+        val author_id: String? = null,
+        val author_name: String? = null,
+        val author_username: String? = null,
+        val author_photo_url: String? = null,
+        val body: String? = null,
+        val media_url: String? = null,
+        val like_count: Int? = null,
+        val comment_count: Int? = null,
+        val liked_by_me: Boolean? = null,
+        val created_at: String? = null,
+        val edited_at: String? = null,
+    ) {
+        val text: String get() = body ?: ""
+        val likes: Int get() = like_count ?: 0
+        val comments: Int get() = comment_count ?: 0
+        val isLiked: Boolean get() = liked_by_me ?: false
+        /**
+         * A deleted author is a NORMAL row (047 sets author_id null on delete), so this
+         * never renders an empty byline. Falls back name → @username → "Deleted account".
+         */
+        val displayName: String get() = when {
+            !author_name.isNullOrEmpty() -> author_name
+            !author_username.isNullOrEmpty() -> "@$author_username"
+            else -> "Deleted account"
+        }
+    }
+
+    @Serializable
+    data class PostPage(
+        val posts: List<Post> = emptyList(),
+        val next_cursor: String? = null,
+    )
+
+    /** One page of the feed. `cursor` null loads the first page. */
+    suspend fun posts(communityId: String, cursor: String? = null, limit: Int = 20): PostPage {
+        val q = StringBuilder("communities/$communityId/posts?limit=$limit")
+        if (!cursor.isNullOrEmpty()) q.append("&cursor=").append(cursor)
+        return api.requestAs("GET", q.toString())
+    }
+
+    @Serializable
+    private data class CreatePostBody(val body: String, val media_url: String?)
+
+    suspend fun createPost(communityId: String, body: String, mediaUrl: String? = null): Post {
+        val payload = ApiClient.json.encodeToString(
+            CreatePostBody.serializer(), CreatePostBody(body, mediaUrl))
+        return api.requestAs("POST", "communities/$communityId/posts", payload)
+    }
+
+    suspend fun deletePost(communityId: String, postId: String): Boolean {
+        api.request("DELETE", "communities/$communityId/posts/$postId")
+        return true
+    }
+
+    /**
+     * The server returns the AUTHORITATIVE like count, not a delta. The UI applies an
+     * optimistic bump for responsiveness and then overwrites it with this — otherwise two
+     * devices liking at once drift apart and never reconcile.
+     */
+    @Serializable
+    data class LikeResult(val like_count: Int? = null, val liked: Boolean? = null) {
+        val count: Int get() = like_count ?: 0
+    }
+
+    suspend fun likePost(communityId: String, postId: String): LikeResult =
+        api.requestAs("POST", "communities/$communityId/posts/$postId/like")
+
+    suspend fun unlikePost(communityId: String, postId: String): LikeResult =
+        api.requestAs("DELETE", "communities/$communityId/posts/$postId/like")
+
+    @Serializable
+    data class Announcement(
+        val id: String,
+        val author_id: String? = null,
+        val author_name: String? = null,
+        val author_username: String? = null,
+        val author_photo_url: String? = null,
+        val title: String? = null,
+        val body: String? = null,
+        val pinned_at: String? = null,
+        val created_at: String? = null,
+    ) {
+        val headline: String get() = title ?: ""
+        val text: String get() = body ?: ""
+        val displayName: String get() = when {
+            !author_name.isNullOrEmpty() -> author_name
+            !author_username.isNullOrEmpty() -> "@$author_username"
+            else -> "Deleted account"
+        }
+    }
+
+    /**
+     * At most ONE announcement is pinned at a time. The route returns a list; taking the
+     * first is the contract, not a shortcut — pinning a second unpins the first server-side.
+     */
+    suspend fun announcement(communityId: String): Announcement? {
+        @Serializable
+        data class Envelope(val announcements: List<Announcement> = emptyList())
+        return api.requestAs<Envelope>("GET", "communities/$communityId/announcements")
+            .announcements.firstOrNull()
+    }
+
+    @Serializable
+    private data class AnnouncementBody(val title: String, val body: String)
+
+    suspend fun pinAnnouncement(communityId: String, title: String, body: String): Announcement {
+        val payload = ApiClient.json.encodeToString(
+            AnnouncementBody.serializer(), AnnouncementBody(title, body))
+        return api.requestAs("POST", "communities/$communityId/announcements", payload)
+    }
+
+    suspend fun unpinAnnouncement(communityId: String, announcementId: String): Boolean {
+        api.request("DELETE", "communities/$communityId/announcements/$announcementId")
+        return true
+    }
+
+    /**
+     * A link on the About tab. `value` is FREE TEXT, not a URL — a contact address and a
+     * "read the handbook" label both live there — so the UI must not assume it is openable.
+     * `icon` is a client-chosen symbol name; Android maps it in `CommunityIcons`.
+     */
+    @Serializable
+    data class AboutLink(
+        val id: String,
+        val label: String? = null,
+        val value: String? = null,
+        val icon: String? = null,
+        val position: Int? = null,
+    ) {
+        val title: String get() = label ?: ""
+        val subtitle: String get() = value ?: ""
+    }
+
+    suspend fun links(communityId: String): List<AboutLink> {
+        @Serializable
+        data class Envelope(val links: List<AboutLink> = emptyList())
+        return api.requestAs<Envelope>("GET", "communities/$communityId/links").links
+    }
+
+    @Serializable
+    private data class LinkBody(val label: String, val value: String, val icon: String?)
+
+    suspend fun createLink(
+        communityId: String, label: String, value: String, icon: String? = null,
+    ): AboutLink {
+        val payload = ApiClient.json.encodeToString(
+            LinkBody.serializer(), LinkBody(label, value, icon))
+        return api.requestAs("POST", "communities/$communityId/links", payload)
+    }
+
+    suspend fun deleteLink(communityId: String, linkId: String): Boolean {
+        api.request("DELETE", "communities/$communityId/links/$linkId")
+        return true
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    //  RULES — 046 has the table; the routes are live (GET/POST/PATCH/DELETE).
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    @Serializable
+    data class Rule(
+        val id: String,
+        val title: String? = null,
+        val detail: String? = null,
+        val position: Int? = null,
+    ) {
+        val text: String get() = title ?: ""
+        val explanation: String get() = detail ?: ""
+        val order: Int get() = position ?: 0
+    }
+
+    suspend fun rules(communityId: String): List<Rule> {
+        @Serializable
+        data class Envelope(val rules: List<Rule> = emptyList())
+        return api.requestAs<Envelope>("GET", "communities/$communityId/rules")
+            .rules.sortedBy { it.order }
+    }
+
+    @Serializable
+    private data class RuleBody(val title: String, val detail: String?, val position: Int?)
+
+    suspend fun createRule(
+        communityId: String, title: String, detail: String?, position: Int? = null,
+    ): Rule {
+        val payload = ApiClient.json.encodeToString(
+            RuleBody.serializer(), RuleBody(title, detail, position))
+        return api.requestAs("POST", "communities/$communityId/rules", payload)
+    }
+
+    suspend fun updateRule(
+        communityId: String, ruleId: String,
+        title: String?, detail: String?, position: Int? = null,
+    ): Rule {
+        val payload = ApiClient.json.encodeToString(
+            RuleBody.serializer(), RuleBody(title ?: "", detail, position))
+        return api.requestAs("PATCH", "communities/$communityId/rules/$ruleId", payload)
+    }
+
+    suspend fun deleteRule(communityId: String, ruleId: String): Boolean {
+        api.request("DELETE", "communities/$communityId/rules/$ruleId")
+        return true
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    //  HOST TOOLS — stats, the moderation queue, roster actions, leaving
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    /**
+     * THERE IS NO "ACTIVE TODAY" FIELD, and that is deliberate rather than an omission to
+     * fill in later: nothing in the schema records a per-user last-seen, so the number is
+     * not computable, and every way of faking it looks precise and is wrong. The server
+     * omits the key; do not add one here.
+     */
+    @Serializable
+    data class Stats(
+        val members: Int? = null,
+        val posts: Int? = null,
+        val pending_members: Int? = null,
+        val reported_posts: Int? = null,
+        val open_reports: Int? = null,
+    ) {
+        val memberCount: Int get() = members ?: 0
+        val postCount: Int get() = posts ?: 0
+        val pendingCount: Int get() = pending_members ?: 0
+        val reportedCount: Int get() = reported_posts ?: 0
+        val openReports: Int get() = open_reports ?: 0
+    }
+
+    suspend fun stats(communityId: String): Stats =
+        api.requestAs("GET", "communities/$communityId/stats")
+
+    /**
+     * `kind` is FREE TEXT on the wire, not an enum, so an unknown future kind decodes
+     * instead of failing the whole page. [resolvedKind] is where it becomes a case, and an
+     * unrecognised one is DROPPED by the caller rather than drawn as something it is not.
+     */
+    @Serializable
+    data class QueueItem(
+        val id: String,
+        val kind: String? = null,
+        val user_id: String? = null,
+        val post_id: String? = null,
+        val subject: String? = null,
+        val username: String? = null,
+        val detail: String? = null,
+        val reporter_count: Int? = null,
+        val reason: String? = null,
+        val at: String? = null,
+    ) {
+        enum class Kind(val wire: String) { JOIN_REQUEST("join_request"), REPORTED_POST("reported_post") }
+
+        val resolvedKind: Kind? get() = Kind.entries.firstOrNull { it.wire == kind }
+        val name: String get() = subject ?: "Someone"
+    }
+
+    suspend fun moderationQueue(communityId: String): List<QueueItem> {
+        @Serializable
+        data class Envelope(val items: List<QueueItem> = emptyList())
+        return api.requestAs<Envelope>("GET", "communities/$communityId/moderation-queue").items
+    }
+
+    suspend fun approveMember(communityId: String, userId: String) {
+        api.request("POST", "communities/$communityId/members/$userId/approve")
+    }
+
+    suspend fun removeMember(communityId: String, userId: String) {
+        api.request("POST", "communities/$communityId/members/$userId/remove")
+    }
+
+    suspend fun banMember(communityId: String, userId: String) {
+        api.request("POST", "communities/$communityId/members/$userId/ban")
+    }
+
+    suspend fun unbanMember(communityId: String, userId: String) {
+        api.request("POST", "communities/$communityId/members/$userId/unban")
+    }
+
+    @Serializable
+    private data class RoleBody(val role: String)
+
+    /** `role` is "admin" or "member". Only an owner may call this. */
+    suspend fun setRole(communityId: String, userId: String, role: String) {
+        val payload = ApiClient.json.encodeToString(RoleBody.serializer(), RoleBody(role))
+        api.request("POST", "communities/$communityId/members/$userId/role", payload)
+    }
+
+    suspend fun leave(communityId: String): Boolean {
+        api.request("POST", "communities/$communityId/leave")
+        return true
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    //  SETTINGS — PATCH /:id
+    //
+    //  PARTIAL UPDATE, AND WHY IT IS HAND-BUILT.
+    //  ApiClient.json sets `explicitNulls = false`, so a null property is DROPPED from the
+    //  wire rather than sent as JSON null. A settings body built from one data class with
+    //  five nullable fields would therefore omit whatever the host did not touch — which is
+    //  what a PATCH wants — but it gives no way to distinguish "leave this alone" from
+    //  "clear this", and it would send `{}` for a no-op save. So the body is assembled key
+    //  by key and only the keys the caller actually passed are written. Mirrors the iOS
+    //  `PartialBody` encoder, which exists for the same reason.
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    suspend fun update(
+        communityId: String,
+        name: String? = null,
+        description: String? = null,
+        joinPolicy: String? = null,
+        discoverable: Boolean? = null,
+        avatarUrl: String? = null,
+    ): CommunityCard {
+        val fields = mutableMapOf<String, kotlinx.serialization.json.JsonElement>()
+        fun put(k: String, v: String?) {
+            if (v != null) fields[k] = kotlinx.serialization.json.JsonPrimitive(v)
+        }
+        put("name", name)
+        put("description", description)
+        put("join_policy", joinPolicy)
+        put("avatar_url", avatarUrl)
+        if (discoverable != null) {
+            fields["discoverable"] = kotlinx.serialization.json.JsonPrimitive(discoverable)
+        }
+        val payload = kotlinx.serialization.json.JsonObject(fields).toString()
+        val env: CommunityEnvelope = api.requestAs("PATCH", "communities/$communityId", payload)
+        return env.merged(null)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    //  SPACES (channels) — create, rename, delete
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    @Serializable
+    private data class ChannelBody(val name: String, val kind: String?)
+
+    suspend fun createChannel(communityId: String, name: String, kind: String? = null): Channel {
+        val payload = ApiClient.json.encodeToString(
+            ChannelBody.serializer(), ChannelBody(name, kind))
+        return api.requestAs("POST", "communities/$communityId/channels", payload)
+    }
+
+    suspend fun renameChannel(communityId: String, conversationId: String, name: String): Channel {
+        val payload = ApiClient.json.encodeToString(
+            ChannelBody.serializer(), ChannelBody(name, null))
+        return api.requestAs("PATCH", "communities/$communityId/channels/$conversationId", payload)
+    }
+
+    suspend fun deleteChannel(communityId: String, conversationId: String): Boolean {
+        api.request("DELETE", "communities/$communityId/channels/$conversationId")
+        return true
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    //  INVITES
+    // ══════════════════════════════════════════════════════════════════════════════
+
+    @Serializable
+    data class Invite(
+        val token: String,
+        val uses: Int? = null,
+        val max_uses: Int? = null,
+        val expires_at: String? = null,
+        val created_at: String? = null,
+    )
+
+    suspend fun invites(communityId: String): List<Invite> {
+        @Serializable
+        data class Envelope(val invites: List<Invite> = emptyList())
+        return api.requestAs<Envelope>("GET", "communities/$communityId/invites").invites
+    }
+
+    @Serializable
+    private data class InviteBody(val max_uses: Int?, val expires_in_hours: Int?)
+
+    suspend fun createInvite(
+        communityId: String, maxUses: Int? = null, expiresInHours: Int? = null,
+    ): Invite {
+        val payload = ApiClient.json.encodeToString(
+            InviteBody.serializer(), InviteBody(maxUses, expiresInHours))
+        return api.requestAs("POST", "communities/$communityId/invites", payload)
+    }
+
+    suspend fun revokeInvite(communityId: String, token: String): Boolean {
+        api.request("DELETE", "communities/$communityId/invites/$token")
+        return true
+    }
 }

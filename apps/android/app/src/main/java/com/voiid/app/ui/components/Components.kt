@@ -5,6 +5,7 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -72,6 +73,46 @@ import com.voiid.app.ui.theme.VoiidSpacing
 object VoiidMotion {
     val softPress = spring<Float>(dampingRatio = 0.6f, stiffness = 440f)
     val tabPress = spring<Float>(dampingRatio = 0.7f, stiffness = 815f)
+
+    /**
+     * iOS `.easeOut(duration:)` is cubic-bezier(0, 0, 0.58, 1) — NOT Compose's
+     * `FastOutSlowInEasing`, which eases in as well and reads slower off the press.
+     */
+    val easeOut = androidx.compose.animation.core.CubicBezierEasing(0f, 0f, 0.58f, 1f)
+
+    /** The community tab bar and the member filter chips: `.easeOut(duration: 0.18)`. */
+    fun <T> easeOut180() = tween<T>(durationMillis = 180, easing = easeOut)
+}
+
+/**
+ * The Compose port of iOS `PressableButtonStyle` (Onboarding/OnboardingKit.swift:427):
+ * `scaleEffect(pressed ? 0.97 : 1)` with `.easeOut(duration: 0.16)`.
+ *
+ * DELIBERATELY NOT [softClickable], which is a different iOS style (`SoftPressStyle`) and
+ * differs in three ways that are visible side by side: it scales to 0.96 not 0.97, it dims
+ * to 90% alpha, and it fires a haptic on PRESS. `PressableButtonStyle` does none of those —
+ * the haptic belongs to the action, so callers fire it themselves inside [onClick].
+ */
+@Composable
+fun Modifier.pressableClickable(
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+): Modifier {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val s by animateFloatAsState(
+        targetValue = if (pressed) 0.97f else 1f,
+        animationSpec = tween(durationMillis = 160, easing = VoiidMotion.easeOut),
+        label = "pressableScale",
+    )
+    return this
+        .scale(s)
+        .clickable(
+            interactionSource = interaction,
+            indication = null,
+            enabled = enabled,
+            onClick = onClick,
+        )
 }
 
 @Composable

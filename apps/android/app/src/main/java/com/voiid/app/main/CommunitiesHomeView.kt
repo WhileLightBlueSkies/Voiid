@@ -31,6 +31,15 @@ import com.voiid.app.ui.theme.VoiidColor
 import com.voiid.app.ui.theme.VoiidFont
 import com.voiid.app.ui.theme.VoiidRadius
 import kotlinx.coroutines.launch
+import com.voiid.app.ui.theme.VoiidSpacing
+import com.voiid.app.ui.components.pressableClickable
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.alpha
+import androidx.compose.foundation.border
 
 /**
  * The Communities tab. Replaces the "coming soon" placeholder. Port of iOS
@@ -230,276 +239,373 @@ private fun CommunityDetailView(
     val context = androidx.compose.ui.platform.LocalContext.current
     var state by remember { mutableStateOf(card) }
     var busy by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
+    /** A failure from a TAP, kept apart from a failure to LOAD. */
+    var actionError by remember { mutableStateOf<String?>(null) }
     var tab by remember { mutableStateOf(CommunityTab.HOME) }
     var showHostInbox by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
     val myUserId = remember { com.voiid.app.net.TokenStore.get(context).userId }
+    /** The card carries `owner_id`, so this needs no extra request. */
     val amHost = state.owner_id != null && state.owner_id == myUserId
 
-    Column(Modifier.fillMaxSize().background(VoiidColor.background).statusBarsPadding()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("← Back", style = VoiidFont.rounded(15, FontWeight.Medium),
-                color = VoiidColor.primary, modifier = Modifier.softClickable(onClick = onBack))
-            Spacer(Modifier.weight(1f))
-            if (amHost) {
-                Text("Host inbox", style = VoiidFont.rounded(14, FontWeight.Medium),
-                    color = VoiidColor.primary,
-                    modifier = Modifier.softClickable { haptics.tap(); showHostInbox = true })
+    suspend fun reload() {
+        runCatching { service.resolve(com.voiid.app.net.CommunityLink(state.handle, null)) }
+            .onSuccess { state = it }
+    }
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(VoiidColor.background)
+            .verticalScroll(rememberScrollState()),
+    ) {
+        // ── The hero: a 132dp accent wash the identity mark overlaps ─────────────
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(132.dp)
+                .background(
+                    Brush.linearGradient(
+                        listOf(
+                            VoiidColor.accent.copy(alpha = 0.22f),
+                            VoiidColor.accent.copy(alpha = 0.05f),
+                            VoiidColor.background,
+                        ),
+                        start = Offset(Float.POSITIVE_INFINITY, 0f),
+                        end = Offset(0f, Float.POSITIVE_INFINITY),
+                    )
+                )
+                .statusBarsPadding(),
+        ) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    Modifier
+                        .size(34.dp)
+                        .clip(CircleShape)
+                        .background(VoiidColor.surfaceCard.copy(alpha = 0.9f))
+                        .softClickable(onClick = onBack)
+                        .semantics { contentDescription = "Back" },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CommunityGlyph(CommunityIcon.CHEVRON_RIGHT, size = 15.dp,
+                        tint = VoiidColor.textPrimary, rotate = 180f)
+                }
             }
         }
 
-        // Header
+        // ── Identity ─────────────────────────────────────────────────────────────
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-            Text(state.name ?: "@${state.handle}",
-                style = VoiidFont.rounded(24, FontWeight.Bold), color = VoiidColor.textPrimary)
-            Text("${state.member_count} member${if (state.member_count == 1) "" else "s"} · ${state.join_policy}",
-                style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
-            Spacer(Modifier.height(10.dp))
-
-            when {
-                state.isBanned -> Text("You can't join this community.",
-                    style = VoiidFont.rounded(15), color = VoiidColor.textSecondary)
-                state.isMember -> {}
-                state.isPending -> Text("Your request is waiting for approval.",
-                    style = VoiidFont.rounded(15), color = VoiidColor.textSecondary)
-                else -> Text(
-                    if (state.join_policy == "approval") "Request to join" else "Join",
-                    style = VoiidFont.rounded(16, FontWeight.SemiBold),
-                    color = VoiidColor.textOnPrimary,
-                    modifier = Modifier.fillMaxWidth().clip(CircleShape).background(VoiidColor.primary)
-                        .softClickable {
-                            if (busy) return@softClickable
-                            haptics.tap(); busy = true
-                            scope.launch {
-                                runCatching { service.join(state.id, null) }
-                                    .onSuccess {
-                                        state = state.copy(membership_state = it.state)
-                                        scope.launch { /* roster reloads per-tab */ }
-                                    }
-                                    .onFailure { error = it.message ?: "Couldn't join." }
-                                busy = false
-                            }
-                        }
-                        .padding(vertical = 12.dp),
+            // Pulled up over the hero by half its height, and the negative bottom padding
+            // cancels the space it vacated so the name sits directly beneath it.
+            Box(
+                Modifier
+                    .offset(y = (-34).dp)
+                    .padding(bottom = (-34).dp)
+                    .size(68.dp)
+                    .clip(CircleShape)
+                    .background(VoiidColor.accentTint)
+                    .border(4.dp, VoiidColor.background, CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    AvatarPalette.initialsFor(state.name.ifEmpty { state.handle }),
+                    style = VoiidFont.rounded(24, FontWeight.Bold), color = VoiidColor.accentInk,
                 )
             }
-            error?.let {
-                Spacer(Modifier.height(8.dp))
+
+            Spacer(Modifier.height(VoiidSpacing.sm))
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(state.name.ifEmpty { "@${state.handle}" },
+                    style = VoiidFont.rounded(24, FontWeight.Bold), color = VoiidColor.textPrimary)
+                if (amHost) {
+                    Pill("HOST", fill = VoiidColor.accent, textColor = VoiidColor.textOnAccent,
+                        fontSize = 9.5f, hPad = 6.dp, vPad = 2.dp)
+                }
+            }
+
+            Spacer(Modifier.height(VoiidSpacing.sm))
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CommunityGlyph(CommunityIcon.MEMBERS, size = 11.dp, tint = VoiidColor.textSecondary)
+                Text(memberCountText(state.member_count),
+                    style = VoiidFont.rounded(12.5f), color = VoiidColor.textSecondary)
+                Text("·", style = VoiidFont.rounded(12.5f), color = VoiidColor.textSecondary)
+                CommunityGlyph(JoinPolicyOption.icon(state.join_policy), size = 10.dp,
+                    tint = VoiidColor.textSecondary)
+                Text(JoinPolicyOption.shortLabel(state.join_policy),
+                    style = VoiidFont.rounded(12.5f), color = VoiidColor.textSecondary)
+            }
+
+            state.description?.takeIf { it.isNotBlank() }?.let {
+                Spacer(Modifier.height(VoiidSpacing.sm))
+                Text(it, style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
+            }
+
+            Spacer(Modifier.height(VoiidSpacing.sm))
+            Text("@${state.handle}", style = VoiidFont.rounded(12.5f),
+                color = VoiidColor.placeholder)
+
+            // ── Actions ──────────────────────────────────────────────────────────
+            Spacer(Modifier.height(VoiidSpacing.md))
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(VoiidSpacing.sm),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                JoinPill(
+                    state = state, busy = busy, modifier = Modifier.weight(1f),
+                    onJoin = {
+                        if (busy) return@JoinPill
+                        haptics.tap(); busy = true
+                        scope.launch {
+                            runCatching { service.join(state.id, null) }
+                                // A full reload, never an optimistic flip: whether a join
+                                // landed as active or pending is the server's to say.
+                                .onSuccess { reload() }
+                                .onFailure { actionError = it.message ?: "Couldn't join." }
+                            busy = false
+                        }
+                    },
+                    onCancelRequest = {
+                        if (busy) return@JoinPill
+                        haptics.tap(); busy = true
+                        scope.launch {
+                            runCatching { service.leave(state.id) }
+                                .onSuccess { reload() }
+                                .onFailure {
+                                    actionError = it.message ?: "Couldn't cancel that request."
+                                }
+                            busy = false
+                        }
+                    },
+                )
+
+                if (amHost) {
+                    OutlinePill("Inbox", CommunityIcon.INBOX, Modifier.weight(1f)) {
+                        haptics.tap(); showHostInbox = true
+                    }
+                } else if (state.isMember) {
+                    OutlinePill("Invite", CommunityIcon.PERSON_ADD, Modifier.weight(1f)) {
+                        haptics.tap()
+                    }
+                }
+
+                Box {
+                    Box(
+                        Modifier
+                            .size(width = 46.dp, height = 40.dp)
+                            .clip(RoundedCornerShape(VoiidRadius.pill))
+                            .background(VoiidColor.surfaceCard)
+                            .border(1.dp, VoiidColor.divider, RoundedCornerShape(VoiidRadius.pill))
+                            .pressableClickable { menuOpen = true }
+                            .semantics { contentDescription = "More community options" },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        CommunityGlyph(CommunityIcon.ELLIPSIS, size = 13.dp,
+                            tint = VoiidColor.textPrimary)
+                    }
+                    CommunityMenu(menuOpen, { menuOpen = false }) {
+                        if (amHost) {
+                            CommunityMenuItem("Community settings", CommunityIcon.GEAR) {
+                                menuOpen = false; haptics.tap(); showSettings = true
+                            }
+                            CommunityMenuDivider()
+                        }
+                        CommunityMenuItem("Share community", CommunityIcon.SHARE) {
+                            menuOpen = false; haptics.tap()
+                        }
+                        CommunityMenuItem("Report", CommunityIcon.WARNING) {
+                            menuOpen = false; haptics.tap()
+                        }
+                        if (state.isMember && !amHost) {
+                            CommunityMenuDivider()
+                            CommunityMenuItem("Leave community", CommunityIcon.MINUS_CIRCLE,
+                                destructive = true) {
+                                menuOpen = false
+                                haptics.tap()
+                                scope.launch {
+                                    runCatching { service.leave(state.id) }
+                                        .onSuccess { reload() }
+                                        .onFailure {
+                                            actionError = it.message ?: "Couldn't leave."
+                                        }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            actionError?.let {
+                Spacer(Modifier.height(VoiidSpacing.sm))
                 Text(it, style = VoiidFont.rounded(13), color = VoiidColor.error)
             }
         }
 
-        // Tabs
-        val tabs = CommunityTab.entries
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            tabs.forEach { t ->
-                val selected = tab == t
-                Box(
-                    Modifier
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(if (selected) VoiidColor.primary else VoiidColor.fieldFill)
-                        .softClickable(scale = 0.94f) { haptics.selection(); tab = t }
-                        .padding(horizontal = 12.dp, vertical = 7.dp),
-                ) {
-                    Text(t.name.lowercase().replaceFirstChar { it.uppercase() },
-                         style = VoiidFont.rounded(13, FontWeight.SemiBold),
-                         color = if (selected) VoiidColor.textOnPrimary else VoiidColor.textSecondary)
+        Spacer(Modifier.height(VoiidSpacing.md))
+        Box(Modifier.fillMaxWidth().height(1.dp).background(VoiidColor.divider))
+        Spacer(Modifier.height(VoiidSpacing.md))
+
+        // ── Tabs ─────────────────────────────────────────────────────────────────
+        // A non-member gets About only — there is nothing else they may read.
+        if (state.isMember) {
+            CommunityTabBar(selected = tab, onSelect = { tab = it })
+            Spacer(Modifier.height(VoiidSpacing.md))
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                when (tab) {
+                    CommunityTab.HOME -> {
+                        if (!amHost) {
+                            MessageHostButton(
+                                communityId = state.id,
+                                onOpenConversation = onOpenConversation,
+                            )
+                            Spacer(Modifier.height(VoiidSpacing.md))
+                        }
+                        CommunityHomeTab(communityId = state.id, isAdmin = amHost)
+                    }
+                    CommunityTab.SPACES ->
+                        CommunitySpacesTab(communityId = state.id, isAdmin = amHost)
+                    CommunityTab.EVENTS -> Column(
+                        verticalArrangement = Arrangement.spacedBy(VoiidSpacing.md),
+                    ) {
+                        CommunityEventsSection(communityId = state.id)
+                        CommunityTournamentsSection(communityId = state.id)
+                    }
+                    CommunityTab.MEMBERS ->
+                        CommunityMembersTab(communityId = state.id, isAdmin = amHost)
+                    CommunityTab.ABOUT ->
+                        CommunityAboutTab(card = state, isAdmin = amHost)
                 }
+            }
+        } else {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                CommunityAboutTab(card = state, isAdmin = false)
             }
         }
 
-        when (tab) {
-            CommunityTab.HOME -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
-                state.description?.takeIf { it.isNotBlank() }?.let {
-                    Text(it, style = VoiidFont.rounded(15), color = VoiidColor.textPrimary)
-                    Spacer(Modifier.height(16.dp))
-                }
-                if (state.isMember && !amHost) {
-                    MessageHostButton(
-                        communityId = state.id,
-                        onOpenConversation = onOpenConversation,
-                    )
-                    Spacer(Modifier.height(16.dp))
-                }
-                Text(
-                    "Channel messages inside a community are end-to-end encrypted. The community "
-                        + "itself — its name, members and invites — is not, so it can be searched and joined.",
-                    style = VoiidFont.rounded(12), color = VoiidColor.textSecondary,
-                )
-                Spacer(Modifier.height(20.dp))
-            }
-            CommunityTab.SPACES -> CommunitySpacesSection(
-                communityId = state.id,
-                enabled = state.isMember,
-            )
-            CommunityTab.EVENTS -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
-                if (!state.isMember) {
-                    Text("Join to see events.", style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
-                } else {
-                    CommunityTournamentsSection(communityId = state.id)
-                    Spacer(Modifier.height(20.dp))
-                    CommunityEventsSection(communityId = state.id)
-                }
-            }
-            CommunityTab.MEMBERS -> CommunityMembersSection(
-                communityId = state.id,
-                enabled = state.isMember,
-                amHost = amHost,
-                onOpenConversation = onOpenConversation,
-            )
-            CommunityTab.ABOUT -> AboutBody(state)
-        }
+        Spacer(Modifier.height(96.dp))
+    }
+
+    if (showSettings) {
+        CommunitySettingsScreen(
+            card = state,
+            onSaved = { state = it },
+            onClose = { showSettings = false },
+        )
     }
 
     if (showHostInbox) {
-        CommunityHostInboxView(onOpenConversation = onOpenConversation, onClose = { showHostInbox = false })
+        CommunityHostInboxView(
+            onOpenConversation = onOpenConversation,
+            onClose = { showHostInbox = false },
+        )
     }
 }
 
-private enum class CommunityTab { HOME, SPACES, EVENTS, MEMBERS, ABOUT }
-
-/** Spaces tab — channels list; announcement badges mark host-writes rows. */
+/**
+ * The join control. One switch over the caller's membership, mirroring iOS: three of the
+ * five states are dimmed labels rather than buttons, because there is nothing to press.
+ */
 @Composable
-private fun CommunitySpacesSection(communityId: String, enabled: Boolean) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    var channels by remember { mutableStateOf<List<CommunityService.Channel>?>(null) }
-    var error by remember { mutableStateOf<String?>(null) }
-    androidx.compose.runtime.LaunchedEffect(communityId, enabled) {
-        if (!enabled) return@LaunchedEffect
-        runCatching { CommunityService(context).channels(communityId) }
-            .onSuccess { channels = it }
-            .onFailure { error = "Couldn't load Spaces." }
-    }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
-        when {
-            !enabled -> Text("Join to browse Spaces.", style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
-            error != null -> Text(error!!, style = VoiidFont.rounded(14), color = VoiidColor.error)
-            channels == null -> Text("Loading…", style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
-            channels!!.isEmpty() -> Text("No Spaces yet.", style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
-            else -> channels!!.forEach { c ->
-                Row(
-                    Modifier.fillMaxWidth().padding(vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    Icon(Icons.Outlined.Groups, null, tint = VoiidColor.primary, modifier = Modifier.size(18.dp))
-                    Text(c.name ?: "space", style = VoiidFont.rounded(15, FontWeight.Medium), color = VoiidColor.textPrimary)
-                    if (c.isAnnouncement) {
-                        Text("announcements", style = VoiidFont.rounded(10, FontWeight.SemiBold),
-                            color = VoiidColor.primary,
-                            modifier = Modifier.clip(CircleShape)
-                                .background(VoiidColor.primary.copy(alpha = 0.1f))
-                                .padding(horizontal = 6.dp, vertical = 2.dp))
-                    }
-                }
-            }
-        }
-    }
-}
-
-/** Members tab — active roster with role badges; hosts also see pending requests. */
-@Composable
-private fun CommunityMembersSection(
-    communityId: String,
-    enabled: Boolean,
-    amHost: Boolean,
-    onOpenConversation: (String) -> Unit,
+private fun JoinPill(
+    state: CommunityService.CommunityCard,
+    busy: Boolean,
+    modifier: Modifier = Modifier,
+    onJoin: () -> Unit,
+    onCancelRequest: () -> Unit,
 ) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val store = com.voiid.app.store.UserDirectory
-    var members by remember { mutableStateOf<List<CommunityService.Member>?>(null) }
-    var pending by remember { mutableStateOf<List<CommunityService.Member>>(emptyList()) }
-    var error by remember { mutableStateOf<String?>(null) }
-    androidx.compose.runtime.LaunchedEffect(communityId, enabled) {
-        if (!enabled) return@LaunchedEffect
-        runCatching { CommunityService(context).members(communityId) }
-            .onSuccess { members = it }
-            .onFailure { error = "Couldn't load members." }
-        if (amHost) {
-            pending = runCatching { CommunityService(context).members(communityId, state = "pending") }.getOrDefault(emptyList())
-        }
-    }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
-        when {
-            !enabled -> Text("Join to see members.", style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
-            error != null -> Text(error!!, style = VoiidFont.rounded(14), color = VoiidColor.error)
-            members == null -> Text("Loading…", style = VoiidFont.rounded(14), color = VoiidColor.textSecondary)
-            else -> members!!.forEach { m ->
-                Row(
-                    Modifier.fillMaxWidth().padding(vertical = 9.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    com.voiid.app.ui.components.VoiidAvatar(size = 36.dp)
-                    Column(Modifier.weight(1f)) {
-                        Text(store.displayName(m.user_id), style = VoiidFont.rounded(15), color = VoiidColor.textPrimary)
-                    }
-                    if (m.isOwner) RoleBadge("owner", filled = true) else if (m.role == "admin") RoleBadge("admin", filled = false)
-                    if (m.user_id == com.voiid.app.net.TokenStore.get(context).userId) {
-                        Text("You", style = VoiidFont.rounded(12), color = VoiidColor.textSecondary)
-                    }
-                }
-            }
-        }
-        if (amHost && pending.isNotEmpty()) {
-            Spacer(Modifier.height(14.dp))
-            Text("Pending requests", style = VoiidFont.rounded(13, FontWeight.SemiBold), color = VoiidColor.textSecondary)
-            pending.forEach { m ->
-                Row(
-                    Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    com.voiid.app.ui.components.VoiidAvatar(size = 32.dp)
-                    Spacer(Modifier.width(10.dp))
-                    Text(store.displayName(m.user_id), style = VoiidFont.rounded(14), color = VoiidColor.textPrimary, modifier = Modifier.weight(1f))
-                    Text("requested", style = VoiidFont.rounded(11), color = VoiidColor.textSecondary)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun RoleBadge(label: String, filled: Boolean) {
-    Text(
-        label,
-        style = VoiidFont.rounded(11, FontWeight.SemiBold),
-        color = if (filled) VoiidColor.textOnPrimary else VoiidColor.primary,
-        modifier = Modifier
-            .clip(CircleShape)
-            .background(if (filled) VoiidColor.primary else VoiidColor.primary.copy(alpha = 0.12f))
-            .padding(horizontal = 7.dp, vertical = 2.dp),
-    )
-}
-
-/** About tab — the container facts, stated plainly. */
-@Composable
-private fun AboutBody(card: CommunityService.CommunityCard) {
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
-        card.description?.takeIf { it.isNotBlank() }?.let {
-            Text(it, style = VoiidFont.rounded(15), color = VoiidColor.textPrimary)
-            Spacer(Modifier.height(14.dp))
-        }
-        AboutRow("Handle", "@${card.handle}")
-        AboutRow("Category", "Community")
-        AboutRow("Joining", card.join_policy.replace('_', ' '))
-        AboutRow("In search", if (card.discoverable) "Yes" else "No")
-        Spacer(Modifier.height(14.dp))
-        Text(
-            "Channel messages are end-to-end encrypted. The community container is not.",
-            style = VoiidFont.rounded(12), color = VoiidColor.textSecondary,
+    when {
+        state.isBanned -> DimmedPill("You can't join", modifier)
+        state.suspended -> DimmedPill("Suspended", modifier)
+        state.isMember -> DimmedPill("Joined", modifier, icon = CommunityIcon.CHECK)
+        state.isPending -> FilledPill(
+            "Cancel request", CommunityIcon.CLOSE, filled = false,
+            enabled = !busy, modifier = modifier, onClick = onCancelRequest,
+        )
+        else -> FilledPill(
+            if (state.join_policy == "approval") "Request to join" else "Join",
+            CommunityIcon.PLUS, filled = true,
+            enabled = !busy, modifier = modifier, onClick = onJoin,
         )
     }
 }
 
 @Composable
-private fun AboutRow(label: String, value: String) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
-        Text(label, style = VoiidFont.rounded(13), color = VoiidColor.textSecondary)
-        Spacer(Modifier.weight(1f))
-        Text(value, style = VoiidFont.rounded(13, FontWeight.SemiBold), color = VoiidColor.textPrimary)
+private fun DimmedPill(
+    text: String, modifier: Modifier = Modifier, icon: CommunityIcon? = null,
+) {
+    Row(
+        modifier
+            .height(40.dp)
+            .clip(RoundedCornerShape(VoiidRadius.pill))
+            .background(VoiidColor.accent)
+            .alpha(0.75f),
+        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        icon?.let { CommunityGlyph(it, size = 13.dp, tint = VoiidColor.textOnAccent) }
+        Text(text, style = VoiidFont.rounded(15, FontWeight.SemiBold),
+            color = VoiidColor.textOnAccent)
     }
 }
+
+@Composable
+private fun FilledPill(
+    text: String, icon: CommunityIcon, filled: Boolean, enabled: Boolean,
+    modifier: Modifier = Modifier, onClick: () -> Unit,
+) {
+    Row(
+        modifier
+            .height(40.dp)
+            .clip(RoundedCornerShape(VoiidRadius.pill))
+            .background(if (filled) VoiidColor.accent else VoiidColor.surfaceCard)
+            .then(
+                if (filled) Modifier
+                else Modifier.border(1.dp, VoiidColor.divider, RoundedCornerShape(VoiidRadius.pill))
+            )
+            .pressableClickable(enabled = enabled, onClick = onClick),
+        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        CommunityGlyph(icon, size = 13.dp,
+            tint = if (filled) VoiidColor.textOnAccent else VoiidColor.textPrimary)
+        Text(text, style = VoiidFont.rounded(15, FontWeight.SemiBold),
+            color = if (filled) VoiidColor.textOnAccent else VoiidColor.textPrimary)
+    }
+}
+
+@Composable
+private fun OutlinePill(
+    text: String, icon: CommunityIcon, modifier: Modifier = Modifier, onClick: () -> Unit,
+) {
+    Row(
+        modifier
+            .height(40.dp)
+            .clip(RoundedCornerShape(VoiidRadius.pill))
+            .background(VoiidColor.surfaceCard)
+            .border(1.dp, VoiidColor.divider, RoundedCornerShape(VoiidRadius.pill))
+            .pressableClickable(onClick = onClick),
+        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        CommunityGlyph(icon, size = 13.dp, tint = VoiidColor.textPrimary)
+        Text(text, style = VoiidFont.rounded(15, FontWeight.SemiBold),
+            color = VoiidColor.textPrimary)
+    }
+}
+
+
+/** Spaces tab — channels list; announcement badges mark host-writes rows. */
+/** Members tab — active roster with role badges; hosts also see pending requests. */
+/** About tab — the container facts, stated plainly. */

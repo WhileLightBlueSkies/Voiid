@@ -45,6 +45,18 @@ object VoiidFont {
     fun rounded(size: Int, weight: FontWeight = FontWeight.Normal): TextStyle =
         TextStyle(fontFamily = Nunito, fontSize = size.sp, fontWeight = weight)
 
+    /**
+     * The same face at a FRACTIONAL size, for the handful of places iOS specifies one
+     * (`VoiidFont.rounded(12.5)` on the community write-error banner) and for sizes derived
+     * from a container — `CommunityAvatar` sets its initials at 0.38 × the circle.
+     *
+     * Rounding those to the nearest whole sp instead was the alternative and is worse: it
+     * makes a 26dp face pile and a 64dp card disagree about weight-to-size ratio, which is
+     * visible precisely where the two sit on the same screen.
+     */
+    fun rounded(size: Float, weight: FontWeight = FontWeight.Normal): TextStyle =
+        TextStyle(fontFamily = Nunito, fontSize = size.sp, fontWeight = weight)
+
     /** Urbanist Bold — ONLY for the "voiid" logo wordmark. */
     fun logo(size: Int): TextStyle =
         TextStyle(fontFamily = Urbanist, fontSize = size.sp, fontWeight = FontWeight.Bold)
