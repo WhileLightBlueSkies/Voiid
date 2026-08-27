@@ -1221,6 +1221,46 @@ final class CallService: NSObject, ObservableObject {
             }
             return
         }
+        // ── GLARE: we are calling THEM and their offer arrives ────────────────────
+        //
+        // Two people pressing call at the same instant. Without this branch, each side
+        // sees `active.id != callId` and falls into CALL WAITING below — reporting the
+        // person they are already calling as a SECOND, waiting call. Neither offer is ever
+        // answered, and both sides sit on "Calling…" until the ring cap. It is not rare:
+        // it happens every time two people react to the same message.
+        //
+        // Resolution is by deterministic tie-break on user id — the SAME rule the ICE
+        // restart path already uses (see the `iceRestart` offerer role) — so both devices
+        // independently reach the same verdict with no extra round trip:
+        //
+        //   * The peer with the LOWER user id is the caller. Their offer wins.
+        //   * The other side abandons its own outgoing call and answers theirs.
+        //
+        // Comparing ids rather than timestamps avoids trusting clocks that may disagree,
+        // and rather than call ids because both sides must derive the same answer from
+        // values they both already hold.
+        if let current = active, current.isOutgoing, current.peerUserId == from,
+           current.state == .outgoingRinging {
+            let myId = TokenStore.shared.userId ?? ""
+            let theirsWins = from < myId
+            if theirsWins {
+                NSLog("[VOIID] glare with \(from): yielding to their call \(callId)")
+                // End ours WITHOUT telling them — they are not on a call with us, they are
+                // calling us. A hangup would cancel the very call we are about to answer.
+                pendingEndReason = .localHangup
+                CallManager.shared.endCall(uuid: current.uuid)
+                endActiveCall(notifyPeer: false, fromCallKit: false)
+                // Fall through: with `active` cleared this offer now takes the normal
+                // incoming-call path below and rings properly.
+            } else {
+                NSLog("[VOIID] glare with \(from): ours wins, ignoring their offer \(callId)")
+                // Ours wins: drop their offer. Their side is running this same code and
+                // will yield to us, so saying nothing is correct — a decline would end the
+                // call they are about to abandon anyway and race our own offer.
+                return
+            }
+        }
+
         // Already on a different call → CALL WAITING (or attaching the SDP to a
         // waiting call a VoIP push already reported).
         if let active, active.id != callId {

@@ -827,6 +827,36 @@ object CallManager {
             return
         }
 
+        // ── GLARE: we are calling THEM and their offer arrives ────────────────────
+        //
+        // Two people pressing call at the same instant. Without this, each side sees a
+        // different call_id and falls into CALL WAITING below — raising the person they are
+        // already calling as a SECOND, waiting call. Neither offer is answered and both
+        // sides sit on "Calling…" until the ring cap. Not rare: it happens whenever two
+        // people react to the same message.
+        //
+        // Deterministic tie-break on user id, IDENTICAL to the iOS rule so the two
+        // platforms always reach the same verdict: the LOWER user id is the caller, their
+        // offer wins, the other side abandons its own outgoing call and answers theirs.
+        // Ids rather than timestamps because clocks disagree; both sides already hold both
+        // values, so no extra round trip is needed.
+        if (current != null && !current.incoming && current.peerUserId == sig.fromUserId &&
+            current.phase == Phase.RINGING_OUT) {
+            val myId = TokenStore.get(appContext).userId.orEmpty()
+            if (sig.fromUserId < myId) {
+                android.util.Log.i("VOIID", "glare with ${sig.fromUserId}: yielding")
+                // End ours WITHOUT notifying — they are not on a call with us, they are
+                // calling us, and a hangup would cancel the call we are about to answer.
+                endInternal(notifyPeer = false, reason = "glare-yield")
+                // Fall through: `_state` is clear, so this offer now rings normally below.
+            } else {
+                android.util.Log.i("VOIID", "glare with ${sig.fromUserId}: ours wins")
+                // Their side runs this same rule and will yield to us. Saying nothing is
+                // correct — a decline would end the call they are about to abandon anyway.
+                return
+            }
+        }
+
         // A second call while we're already on one.
         if (current != null && current.callId != sig.callId) {
             if (canOfferCallWaiting(current)) {
