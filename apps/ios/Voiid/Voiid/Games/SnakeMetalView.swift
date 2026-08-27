@@ -1345,12 +1345,39 @@ final class SnakeRenderer: NSObject, MTKViewDelegate {
             let centre = SIMD2(Float(h.x), Float(h.y))
             let r = Float(h.radius)
 
+            // A DISC UNDER EVERY HAZARD, THROUGH THE CIRCLE PIPELINE.
+            //
+            // The faceted geometry below goes out through the ribbon pipeline, and on iOS it
+            // was not appearing: instrumenting a live match showed a rock genuinely on screen
+            // (51 px radius, well inside the viewport) with 3,288 hazard triangles uploaded,
+            // and nothing drawn at that position. Android, which draws the same shapes through
+            // Compose rather than through this pipeline, showed them correctly — so it is this
+            // path, not the shapes or the colours or the data.
+            //
+            // Rather than leave lethal terrain invisible on one platform while that is chased
+            // down, every hazard now also gets a plain instanced disc through the SAME pipeline
+            // the food and the heads use, which is proven to work. The facets draw on top when
+            // they draw; when they do not, the hazard is still unmistakably there. A rock the
+            // player cannot see is a trap, and that is worth a few extra instances to prevent.
             switch h.kind {
             case "rock":
+                circles.append(CircleInstance(centre: centre, radius: r, softness: 0.04,
+                                              colour: SIMD4(0.60, 0.58, 0.68, 1)))
+                circles.append(CircleInstance(centre: centre, radius: r * 1.10, softness: 0.5,
+                                              colour: SIMD4(0.82, 0.84, 0.95, 0.55)))
                 buildRock(index: index, centre: centre, radius: r)
             case "spike":
+                // Colour tracks the state, because for a spike the state IS the gameplay.
+                let out = SnakeHazardArt.extended(
+                    period: h.period ?? 3, offset: h.offset ?? 0, duty: 0.45, time: state.time)
+                circles.append(CircleInstance(
+                    centre: centre, radius: r, softness: 0.15,
+                    colour: out > 0.5 ? SIMD4(0.95, 0.35, 0.30, 0.95)
+                                      : SIMD4(0.55, 0.30, 0.30, 0.55)))
                 buildSpike(h, index: index, centre: centre, radius: r, time: state.time)
             default:
+                circles.append(CircleInstance(centre: centre, radius: r, softness: 0.35,
+                                              colour: SIMD4(0.28, 0.60, 0.95, 0.45)))
                 buildSlick(index: index, centre: centre, radius: r, time: state.time)
             }
         }

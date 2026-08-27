@@ -613,7 +613,15 @@ final class GamesEngine: ObservableObject {
         set { snakeFramesLock.withLock { _snakeFramesSnapshot = newValue } }
     }
 
-    private static let SNAKE_BUFFER = 8
+    /// How many server frames to keep for interpolation.
+    ///
+    /// SIZED IN SECONDS OF HISTORY, NOT IN FRAMES. 8 was two thirds of a second at 10 Hz and
+    /// only 400 ms at 20 — barely more than the 200 ms the renderer deliberately sits behind,
+    /// so a short burst of late frames could evict a frame the render clock still needed and
+    /// the interpolator would fall off the end of its own buffer. 16 restores roughly 800 ms of
+    /// history at 20 Hz. The cost is a few hundred bytes of retained state, which is nothing
+    /// next to a stutter.
+    private static let SNAKE_BUFFER = 16
     /// Set when the join REST call fails, so the screen can show something truthful
     /// instead of an empty board that will never update.
     @Published private(set) var joinError: String?

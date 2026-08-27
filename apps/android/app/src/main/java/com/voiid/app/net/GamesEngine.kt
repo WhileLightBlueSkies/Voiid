@@ -53,7 +53,15 @@ class GamesEngine private constructor(context: Context) : GamesRelay.StateSink {
          * the end of the buffer and stalls — 8 frames is 800 ms of history against a 250 ms
          * render delay, so even a badly late frame still has something to interpolate toward.
          */
-        private const val SNAKE_BUFFER = 8
+        /**
+         * How many server frames to keep for interpolation.
+         *
+         * SIZED IN SECONDS OF HISTORY, NOT IN FRAMES. 8 was two thirds of a second at 10 Hz and
+         * only 400 ms at 20 — barely more than the 200 ms the renderer deliberately sits
+         * behind, so a burst of late frames could evict a frame the render clock still needed.
+         * 16 restores roughly 800 ms of history at 20 Hz. Identical to iOS.
+         */
+        private const val SNAKE_BUFFER = 16
         @Volatile private var instance: GamesEngine? = null
         fun get(context: Context): GamesEngine =
             instance ?: synchronized(this) {

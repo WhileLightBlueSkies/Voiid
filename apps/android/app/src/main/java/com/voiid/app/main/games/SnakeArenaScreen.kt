@@ -553,8 +553,24 @@ private fun advanceClock(clock: RenderClock, newest: GamesEngine.SnakeFrame, now
         clock.t = target
     } else {
         val drift = target - clock.t
-        val rate = 1.0 + (drift * 0.5).coerceIn(-0.10, 0.10)
-        clock.t += dt * rate
+
+        // A DEADZONE, so the clock stops hunting. Frames do not arrive on a metronome — a few
+        // milliseconds of arrival jitter is normal and permanent — and a purely proportional
+        // correction chases every bit of it, so the render rate never settles and the world is
+        // always very slightly speeding up or slowing down. Inside half a tick the clock
+        // free-runs at exactly 1x, which is what "smooth" actually means. Identical to iOS.
+        val deadzone = 0.025
+        if (abs(drift) <= deadzone) {
+            clock.t += dt
+        } else {
+            // Gentler than before (0.5 saturated the cap on any drift over 200 ms, so the clock
+            // spent its time pinned at one rail or the other) and capped tighter: 4% is
+            // imperceptible frame to frame but still closes a quarter-second of drift in a few
+            // seconds.
+            val corrected = drift - if (drift > 0) deadzone else -deadzone
+            val rate = 1.0 + (corrected * 0.25).coerceIn(-0.04, 0.04)
+            clock.t += dt * rate
+        }
     }
     return clock.t
 }
