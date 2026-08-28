@@ -6,7 +6,7 @@ import Shell from '../components/Shell';
 import { PageHeader, Async } from '../components/ui';
 import { AreaChart, BarRow, type Point } from '../components/Chart';
 import { DateRange, rangeQuery, rangeLabel, type Range } from '../components/DateRange';
-import { WorldMap, type GeoRegion } from '../components/WorldMap';
+import { CountryShares, type CountryShare } from '../components/CountryShares';
 import { api } from '../lib/api';
 
 type Stats = {
@@ -37,7 +37,7 @@ function Body() {
   const [actual, setActual] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [seriesError, setSeriesError] = useState<string | null>(null);
-  const [geo, setGeo] = useState<GeoRegion[]>([]);
+  const [geo, setGeo] = useState<CountryShare[]>([]);
   const [geoError, setGeoError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -62,8 +62,8 @@ function Body() {
   useEffect(() => {
     // Not date-filtered: this is a standing distribution of every live account, so it does
     // not move with the range control above it.
-    api<{ regions: GeoRegion[] }>('/geo')
-      .then((r) => { setGeo(r.regions); setGeoError(null); })
+    api<{ countries: CountryShare[] }>('/geo')
+      .then((r) => { setGeo(r.countries); setGeoError(null); })
       .catch((e) => setGeoError(e instanceof Error ? e.message : 'could not load the map'));
   }, []);
 
@@ -121,14 +121,14 @@ function Body() {
                       chart would have taken, so the section closes on a full row rather than
                       leaving a gap. */}
                   <div style={{ gridColumn: '1 / -1' }}>
-                    <Panel title="Where accounts registered">
+                    <Panel title="Top countries">
                       {geoError ? (
                         <div className="notice error">{geoError}</div>
                       ) : geo.length === 0 ? (
                         <div className="empty">No accounts with a phone number yet.</div>
                       ) : (
                         <>
-                          <WorldMap regions={geo} height={330} />
+                          <CountryShares countries={geo} limit={6} />
                           {/* The caveat sits UNDER the map, not in a tooltip. A world map is
                               read as "our users are here" by default, and this one cannot
                               support that reading. */}

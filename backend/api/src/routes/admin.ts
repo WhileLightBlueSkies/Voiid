@@ -490,61 +490,36 @@ router.get('/geo', requireAdmin, async (_req, res) => {
       order by users desc`,
   );
 
-  // Rolled up to REGIONS as well as countries. Dialling-prefix data cannot resolve finer
-  // than this anyway — +1 is a single prefix covering the whole NANP — so a regional
-  // choropleth is the honest resolution, while the country rows stay available beneath it.
-  const REGION_OF: Record<string, string> = {
-    NANP: 'North America', US: 'North America', CA: 'North America', MX: 'North America',
-    BR: 'South America', AR: 'South America', CL: 'South America', CO: 'South America',
-    PE: 'South America', VE: 'South America', EC: 'South America', BO: 'South America',
-    UY: 'South America', PY: 'South America',
-    GB: 'Europe', IE: 'Europe', FR: 'Europe', DE: 'Europe', IT: 'Europe', ES: 'Europe',
-    PT: 'Europe', NL: 'Europe', BE: 'Europe', CH: 'Europe', AT: 'Europe', SE: 'Europe',
-    NO: 'Europe', DK: 'Europe', FI: 'Europe', PL: 'Europe', CZ: 'Europe', GR: 'Europe',
-    RO: 'Europe', HU: 'Europe', UA: 'Europe', BG: 'Europe', HR: 'Europe', RS: 'Europe',
-    SK: 'Europe', SI: 'Europe', LT: 'Europe', LV: 'Europe', EE: 'Europe', IS: 'Europe',
-    RU: 'Russia & C. Asia', KZ: 'Russia & C. Asia', UZ: 'Russia & C. Asia',
-    BY: 'Russia & C. Asia', GE: 'Russia & C. Asia', AM: 'Russia & C. Asia',
-    AZ: 'Russia & C. Asia', KG: 'Russia & C. Asia', TJ: 'Russia & C. Asia',
-    IN: 'India', PK: 'India', BD: 'India', LK: 'India', NP: 'India', BT: 'India',
-    CN: 'China & E. Asia', JP: 'China & E. Asia', KR: 'China & E. Asia',
-    TW: 'China & E. Asia', HK: 'China & E. Asia', MN: 'China & E. Asia',
-    ID: 'Indonesia',
-    TH: 'SE Asia', VN: 'SE Asia', MY: 'SE Asia', SG: 'SE Asia', PH: 'SE Asia',
-    MM: 'SE Asia', KH: 'SE Asia', LA: 'SE Asia', BN: 'SE Asia',
-    AE: 'Middle East', SA: 'Middle East', QA: 'Middle East', KW: 'Middle East',
-    OM: 'Middle East', BH: 'Middle East', JO: 'Middle East', LB: 'Middle East',
-    IL: 'Middle East', IQ: 'Middle East', IR: 'Middle East', TR: 'Middle East',
-    YE: 'Middle East', SY: 'Middle East',
-    ZA: 'Africa', NG: 'Africa', KE: 'Africa', EG: 'Africa', GH: 'Africa', ET: 'Africa',
-    TZ: 'Africa', UG: 'Africa', MA: 'Africa', DZ: 'Africa', TN: 'Africa', SN: 'Africa',
-    CI: 'Africa', CM: 'Africa', ZW: 'Africa', ZM: 'Africa', RW: 'Africa', MZ: 'Africa',
-    AO: 'Africa', LY: 'Africa', SD: 'Africa', MG: 'Africa',
-    AU: 'Oceania', NZ: 'Oceania', FJ: 'Oceania', PG: 'Oceania',
+  // Named per COUNTRY. Names come from Node's own ICU data rather than a table checked in
+  // here: a hardcoded list of 200 names is one more thing to drift, and this one is
+  // already correct and already installed.
+  const display = new Intl.DisplayNames(['en'], { type: 'region' });
+  const nameOf = (code: string): string => {
+    if (code === 'UNKNOWN') return 'Unknown';
+    // The three ambiguous dialling prefixes cannot name a single country, so they are
+    // labelled by what they actually are. Calling +1 "United States" would invent a fact.
+    if (code === 'NANP') return 'US & Canada';
+    try {
+      // DisplayNames returns the input unchanged for a code it does not know, which would
+      // surface a bare "XX" — better than throwing, and rare enough to leave visible.
+      return display.of(code) ?? code;
+    } catch {
+      return code;
+    }
   };
 
-  const byRegion = new Map<string, number>();
-  for (const r of rows) {
-    // An unmapped country falls to 'Other' rather than being dropped, so the regions always
-    // sum to the same total the country rows do.
-    const region = r.code === 'UNKNOWN' ? 'Other' : (REGION_OF[r.code] ?? 'Other');
-    byRegion.set(region, (byRegion.get(region) ?? 0) + r.users);
-  }
-
   const total = rows.reduce((n, r) => n + r.users, 0);
-  const regions = [...byRegion.entries()]
-    .map(([region, users]) => ({
-      region,
-      users,
-      // Rounded to one decimal: whole percents make a 4-user database read as 25/25/25/25
-      // and hide everything smaller.
-      share: total > 0 ? Math.round((users / total) * 1000) / 10 : 0,
-    }))
-    .sort((a, b) => b.users - a.users);
+  const countries = rows.map((r) => ({
+    code: r.code,
+    name: nameOf(r.code),
+    users: r.users,
+    // One decimal: whole percents make a four-account database read as 25/25/25/25 and
+    // hide everything smaller.
+    share: total > 0 ? Math.round((r.users / total) * 1000) / 10 : 0,
+  }));
 
   res.json({
-    countries: rows,
-    regions,
+    countries,
     total,
     // Said explicitly so a caller cannot mistake this for presence data.
     basis: 'phone_country_code',
