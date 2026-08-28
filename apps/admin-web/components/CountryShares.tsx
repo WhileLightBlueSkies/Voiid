@@ -33,41 +33,26 @@ export function CountryShares({ countries, limit = 6 }: {
 
   return (
     <div>
-      <div
-        style={{
-          display: 'grid', gap: 12,
-          // 150px rather than 190: this panel is two grid cells wide, not the full page,
-          // and the wider minimum dropped it to a single column of very wide cards.
-          gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
-        }}
-      >
+      {/* Compact ROWS, not cards. This panel occupies two grid cells beside a chart, and
+          six bordered boxes with 22px numerals overwhelmed the slot — the question is a
+          ranking, and a ranking reads down a column faster than across a grid. */}
+      <div style={{ display: 'grid', gap: 9 }}>
         {top.map((c, i) => (
-          <div
-            key={c.code}
-            style={{
-              background: 'var(--surface-2)', border: '1px solid var(--border)',
-              borderRadius: 'var(--radius)', padding: '12px 14px',
-            }}
-          >
-            <div className="row" style={{ gap: 8, marginBottom: 8 }}>
-              <span style={{ fontSize: 17, lineHeight: 1 }}>{flag(c.code)}</span>
-              <span style={{ fontSize: 13, fontWeight: 600, minWidth: 0,
-                             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {c.name}
-              </span>
-            </div>
+          <div key={c.code} className="row" style={{ gap: 10 }}>
+            <span style={{ fontSize: 14, lineHeight: 1, width: 18 }}>{flag(c.code)}</span>
 
-            <div className="row" style={{ gap: 8, alignItems: 'baseline' }}>
-              <span className="mono" style={{ fontSize: 22, fontWeight: 650, letterSpacing: '-0.02em' }}>
-                {c.share}%
-              </span>
-              <span className="mute" style={{ fontSize: 12 }}>
-                {c.users} {c.users === 1 ? 'account' : 'accounts'}
-              </span>
-            </div>
+            <span
+              style={{
+                fontSize: 13, fontWeight: 500, width: 96, flex: '0 0 96px',
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }}
+              title={`${c.name} · ${c.users} ${c.users === 1 ? 'account' : 'accounts'}`}
+            >
+              {c.name}
+            </span>
 
-            <div style={{ height: 4, background: 'var(--surface-3)', borderRadius: 999,
-                          overflow: 'hidden', marginTop: 9 }}>
+            <div style={{ flex: 1, height: 5, background: 'var(--surface-3)',
+                          borderRadius: 999, overflow: 'hidden', minWidth: 0 }}>
               <div style={{
                 width: `${c.share}%`, height: '100%', borderRadius: 999,
                 background: PALETTE[i % PALETTE.length],
@@ -76,6 +61,11 @@ export function CountryShares({ countries, limit = 6 }: {
                 minWidth: c.users > 0 ? 3 : 0,
               }} />
             </div>
+
+            <span className="mono" style={{ fontSize: 12, fontWeight: 600,
+                                            width: 44, textAlign: 'right' }}>
+              {c.share}%
+            </span>
           </div>
         ))}
       </div>
