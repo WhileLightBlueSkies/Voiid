@@ -4,10 +4,10 @@
 // A regional choropleth: landmasses filled by share of accounts, with a percentage legend
 // beneath — the shape of the reference.
 //
-// No mapping library and no GeoJSON fetch. A world topology is megabytes and a strict CSP
-// would block a CDN anyway; this is ~4KB of simplified coastline, which is the right
-// resolution for "which regions, roughly where, what share". Coarse on purpose: a
-// distribution chart with a geographic axis, not an atlas.
+// Real Natural Earth cartography (world-atlas 110m, 177 countries), pre-projected to SVG
+// paths at BUILD time by scripts/build-land.mjs. The atlas and its decoder stay
+// devDependencies: the browser receives path strings, not an 8MB topology — real geography
+// with no runtime dependency and nothing fetched for a CSP to block.
 //
 // FILLED BY REGION, not by country, because the underlying data cannot resolve finer — +1
 // is a single dialling prefix spanning the whole NANP. Drawing country borders over
@@ -18,22 +18,7 @@
 //
 
 import { useState } from 'react';
-import { SHAPES } from './land';
-
-const W = 720;
-// Clipped at ±83: the poles carry no accounts, and an uncropped equirectangular spends a
-// third of its height on empty ice.
-const LAT_MAX = 83;
-const H = Math.round((W * (LAT_MAX * 2)) / 360);
-
-const px = (lon: number) => ((lon + 180) / 360) * W;
-const py = (lat: number) => ((LAT_MAX - lat) / (LAT_MAX * 2)) * H;
-
-/** Rewrites a lon/lat path into viewBox coordinates. */
-function project(d: string): string {
-  return d.replace(/(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/g, (_m, lon, lat) =>
-    `${px(Number(lon)).toFixed(1)},${py(Number(lat)).toFixed(1)}`);
-}
+import { SHAPES, MAP_W as W, MAP_H as H } from './land';
 
 export type GeoRegion = { region: string; users: number; share: number };
 
@@ -73,12 +58,12 @@ export function WorldMap({ regions, height = 320 }: {
         aria-label={`Accounts by region: ${total} total across ${present.size} regions`}
       >
         {SHAPES.map((s) => {
-          const on = present.has(s.region);
+          const on = s.region !== '' && present.has(s.region);
           const dim = hover !== null && hover !== s.region;
           return (
             <path
               key={s.id}
-              d={project(s.d)}
+              d={s.d}
               // A region with no accounts stays neutral grey. Tinting it faintly would put
               // it on the same scale as a real value and imply a share it does not have.
               fill={on ? (colorOf.get(s.region) ?? 'var(--accent)') : 'var(--surface-3)'}
