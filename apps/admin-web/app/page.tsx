@@ -117,10 +117,11 @@ function Body() {
                   <Panel title="Community posts"><AreaChart points={pts('posts')} label="Posts" color="var(--ok)" /></Panel>
                   <Panel title="New conversations"><AreaChart points={pts('conversations')} label="Threads started" color="var(--attention)" /></Panel>
 
-                  {/* Spans the full grid width — it occupies the two cells a fifth and sixth
-                      chart would have taken, so the section closes on a full row rather than
-                      leaving a gap. */}
-                  <div style={{ gridColumn: '1 / -1' }}>
+                  {/* Fills the gap the fourth chart leaves. `span 2` rather than `1 / -1`:
+                      at three columns it takes the two free cells and the row closes; at two
+                      columns it takes the full width; at one it simply stacks. Pinning it to
+                      `1 / -1` forced it onto a row of its own and left the hole visible. */}
+                  <div style={{ gridColumn: 'span 2' }}>
                     <Panel title="Top countries">
                       {geoError ? (
                         <div className="notice error">{geoError}</div>
@@ -129,9 +130,9 @@ function Body() {
                       ) : (
                         <>
                           <CountryShares countries={geo} limit={6} />
-                          {/* The caveat sits UNDER the map, not in a tooltip. A world map is
-                              read as "our users are here" by default, and this one cannot
-                              support that reading. */}
+                          {/* The caveat is stated on the panel rather than left implied:
+                              "top countries" is read as where people ARE, and dialling-prefix
+                              data cannot support that. */}
                           <p className="mute" style={{ fontSize: 12, margin: '12px 0 0' }}>
                             By phone dialling prefix — where each SIM was issued, not where
                             anyone is now. Voiid stores no user location: live shares are

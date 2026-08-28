@@ -36,7 +36,9 @@ export function CountryShares({ countries, limit = 6 }: {
       <div
         style={{
           display: 'grid', gap: 12,
-          gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))',
+          // 150px rather than 190: this panel is two grid cells wide, not the full page,
+          // and the wider minimum dropped it to a single column of very wide cards.
+          gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
         }}
       >
         {top.map((c, i) => (
