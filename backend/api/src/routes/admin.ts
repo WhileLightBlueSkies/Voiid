@@ -260,7 +260,12 @@ router.get('/stats', requireAdmin, async (_req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────
-// GET /admin/series?days=30 — daily counts for the dashboard's charts.
+// GET /admin/series?days=30   — the last N days, or
+// GET /admin/series?from=YYYY-MM-DD&to=YYYY-MM-DD — an explicit range.
+//
+// Both spellings exist because they answer different questions: "how are we doing lately"
+// wants a rolling window that stays current, while "what happened during the incident on
+// the 14th" wants fixed edges that do not move as the clock does.
 //
 // generate_series LEFT JOINed against each table, so a day with no signups comes back as a
 // zero rather than as a missing point. A chart built from present rows only silently
@@ -271,19 +276,56 @@ router.get('/stats', requireAdmin, async (_req, res) => {
 // slowest page in a tool people are supposed to keep open.
 // ─────────────────────────────────────────────────────────────────────────────────
 router.get('/series', requireAdmin, async (req, res) => {
-  // Capped at a quarter. This scans created_at across several tables with no index
-  // guarantee, and an operator typing days=100000 should not be able to table-scan the
-  // production database from a query string.
+  // A strict shape check, not a Date parse. `new Date('2026-02-31')` and
+  // `new Date('banana')` both produce something, and neither belongs in a SQL cast — the
+  // value is parameterised either way, but a malformed date should be a 400 with a reason
+  // rather than a 500 from Postgres.
+  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  const rawFrom = typeof req.query.from === 'string' ? req.query.from : null;
+  const rawTo = typeof req.query.to === 'string' ? req.query.to : null;
+  const custom = Boolean(rawFrom && rawTo);
+
+  if ((rawFrom || rawTo) && !custom) {
+    return res.status(400).json({ error: 'from and to must be given together' });
+  }
+  if (custom && (!DATE_RE.test(rawFrom!) || !DATE_RE.test(rawTo!))) {
+    return res.status(400).json({ error: 'dates must be YYYY-MM-DD' });
+  }
+  if (custom && rawFrom! > rawTo!) {
+    // String comparison is sound on zero-padded ISO dates, and says the useful thing rather
+    // than silently returning an empty series for a backwards range.
+    return res.status(400).json({ error: 'from must not be after to' });
+  }
+
+  // Capped at a year for an explicit range, a quarter for the rolling window. This scans
+  // created_at across several tables with no index guarantee, and an operator typing
+  // days=100000 should not be able to table-scan the production database from a query
+  // string. The cap is enforced in SQL below rather than trusted from the client.
+  const MAX_DAYS = 366;
   const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 90);
 
+  // The day-spine differs between the two modes; everything measured against it does not.
+  // Built as one string so the shared body is written once — a ternary spanning two template
+  // literals leaves the select clause dangling outside both.
+  const spine = custom
+    ? `with bounds as (
+         select $1::date as lo,
+                -- least() clamps the far edge instead of rejecting a wide range: an operator
+                -- who asks for five years gets the most recent year, which is more useful
+                -- than an error telling them to ask again.
+                least($2::date, ($1::date + ($3::int - 1) * interval '1 day')::date) as hi
+       ),
+       d as (select generate_series(lo, hi, interval '1 day')::date as day from bounds)`
+    : `with d as (
+         select generate_series(
+           (current_date - ($1::int - 1) * interval '1 day')::date,
+           current_date,
+           interval '1 day'
+         )::date as day
+       )`;
+
   const rows = await query<any>(
-    `with d as (
-       select generate_series(
-         (current_date - ($1::int - 1) * interval '1 day')::date,
-         current_date,
-         interval '1 day'
-       )::date as day
-     )
+    `${spine}
      select to_char(d.day, 'YYYY-MM-DD') as day,
        (select count(*) from users u
          where u.created_at::date = d.day and u.deleted_at is null)::int      as users,
@@ -296,10 +338,17 @@ router.get('/series', requireAdmin, async (req, res) => {
        (select count(*) from conversations v
          where v.created_at::date = d.day)::int                               as conversations
      from d order by d.day asc`,
-    [days],
+    custom ? [rawFrom, rawTo, MAX_DAYS] : [days],
   );
 
-  res.json({ days, series: rows });
+  res.json({
+    // Echoes the range actually used, not the one asked for — the far edge may have been
+    // clamped, and a chart that labelled itself with the request would then be lying.
+    from: rows[0]?.day ?? null,
+    to: rows[rows.length - 1]?.day ?? null,
+    days: rows.length,
+    series: rows,
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────
