@@ -116,30 +116,33 @@ function Body() {
                   <Panel title="New clips"><AreaChart points={pts('clips')} label="Clips posted" color="var(--info)" /></Panel>
                   <Panel title="Community posts"><AreaChart points={pts('posts')} label="Posts" color="var(--ok)" /></Panel>
                   <Panel title="New conversations"><AreaChart points={pts('conversations')} label="Threads started" color="var(--attention)" /></Panel>
+
+                  {/* Spans the full grid width — it occupies the two cells a fifth and sixth
+                      chart would have taken, so the section closes on a full row rather than
+                      leaving a gap. */}
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <Panel title="Where accounts registered">
+                      {geoError ? (
+                        <div className="notice error">{geoError}</div>
+                      ) : geo.length === 0 ? (
+                        <div className="empty">No accounts with a phone number yet.</div>
+                      ) : (
+                        <>
+                          <WorldMap rows={geo} height={340} />
+                          {/* The caveat sits UNDER the map, not in a tooltip. A world map is
+                              read as "our users are here" by default, and this one cannot
+                              support that reading. */}
+                          <p className="mute" style={{ fontSize: 12, margin: '12px 0 0' }}>
+                            By phone dialling prefix — where each SIM was issued, not where
+                            anyone is now. Voiid stores no user location: live shares are
+                            encrypted on-device and never persisted.
+                          </p>
+                        </>
+                      )}
+                    </Panel>
+                  </div>
                 </div>
               )}
-
-              <div style={{ marginTop: 12 }}>
-                <Panel title="Where accounts registered">
-                  {geoError ? (
-                    <div className="notice error">{geoError}</div>
-                  ) : geo.length === 0 ? (
-                    <div className="empty">No accounts with a phone number yet.</div>
-                  ) : (
-                    <>
-                      <WorldMap rows={geo} />
-                      {/* The caveat sits UNDER the map, not in a tooltip. A world map is
-                          read as "our users are here" by default, and this one cannot
-                          support that reading. */}
-                      <p className="mute" style={{ fontSize: 12, margin: '12px 0 0' }}>
-                        By phone dialling prefix — where each SIM was issued, not where
-                        anyone is now. Voiid stores no user location: live shares are
-                        encrypted on-device and never persisted.
-                      </p>
-                    </>
-                  )}
-                </Panel>
-              </div>
             </section>
 
             {/* ── Everything else, by module ──────────────────────────────────── */}
