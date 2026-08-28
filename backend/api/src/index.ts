@@ -228,6 +228,39 @@ api.use('/gifs', rateLimit({ max: 180, windowSeconds: 60, bucket: 'gifs' }), gif
 //
 // The rate limit is deliberately tight: this is a password endpoint, and the login route is
 // the one surface where an attacker would grind credentials.
+// CORS, and ONLY on /admin. The mobile apps are native clients with no origin, so the API
+// has never needed it — which is exactly why a browser panel could not log in: the request
+// reached the server and succeeded, and the browser then discarded the response for want of
+// an Access-Control-Allow-Origin header. curl saw 200; Chrome saw a failure.
+//
+// An ALLOWLIST, never a wildcard, and never a reflection of whatever Origin arrives. This
+// router can take content down and start account erasures; `*` would let any page on the
+// internet drive it with a logged-in operator's session.
+//
+// No Access-Control-Allow-Credentials, deliberately: the panel sends its token as an
+// explicit Authorization header rather than a cookie, so the browser never attaches
+// ambient credentials and there is no CSRF surface to protect.
+const ADMIN_ORIGINS = new Set(
+  (process.env.ADMIN_ALLOWED_ORIGINS ?? 'http://localhost:3100')
+    .split(',').map((o) => o.trim()).filter(Boolean),
+);
+
+app.use('/admin', (req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && ADMIN_ORIGINS.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    // The response varies by Origin, so any cache in front of this must key on it too.
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+    res.setHeader('Access-Control-Max-Age', '600');
+  }
+  // Preflight ends here. It carries no credentials and must not fall through to the login
+  // route, where it would burn a slot on the deliberately tight rate limit.
+  if (req.method === 'OPTIONS') return res.sendStatus(origin && ADMIN_ORIGINS.has(origin) ? 204 : 403);
+  next();
+});
+
 app.use('/admin', rateLimit({ max: 60, windowSeconds: 60, bucket: 'admin' }), adminRoutes);
 
 app.use('/v1', api);
