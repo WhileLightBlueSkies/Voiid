@@ -16,6 +16,7 @@ import PhotosUI
 import UIKit
 import CryptoKit
 import AVFoundation
+import AVKit
 
 struct ChatDetailView: View {
     let conversation: VConversation
@@ -28,7 +29,14 @@ struct ChatDetailView: View {
 
     @State private var draft = ""
     @State private var photoItem: PhotosPickerItem?
-    @State private var fullscreenImage: UIImage?
+    /// The message whose media opened the gallery. An id, not a decoded UIImage: the
+    /// viewer pages through the whole conversation, so it needs to know WHERE it started,
+    /// not just what was tapped.
+    @State private var galleryStartId: String?
+    /// Set by the viewer's "Jump to message". The transcript scrolls to it and flashes it.
+    @State private var jumpTargetId: String?
+    /// Briefly marks the message a jump landed on.
+    @State private var highlightedId: String?
     @State private var showInfo = false       // group info / contact profile
     @State private var showSafetyNumber = false
     @State private var showAttach = false     // attach menu (photo / poll)
@@ -36,6 +44,9 @@ struct ChatDetailView: View {
     @State private var showLocationCompose = false   // location share compose sheet
     @State private var showLudoSetup = false
     @State private var pickPhoto = false
+    /// Live capture, distinct from `pickPhoto` (the photo LIBRARY). The camera button was
+    /// wired to the library, so tapping it opened the picker rather than the camera.
+    @State private var showCamera = false
     @State private var showGifPicker = false
     /// Recording takes over the WHOLE composer row — see RecordingBar. Kept here rather than
     /// in the mic button because the bar is a sibling of the text field, not its child.
@@ -232,10 +243,16 @@ struct ChatDetailView: View {
             }
         }
         .fullScreenCover(item: Binding(
-            get: { fullscreenImage.map { ImageWrapper(image: $0) } },
-            set: { fullscreenImage = $0?.image })
-        ) { wrapper in
-            ImageViewer(image: wrapper.image) { fullscreenImage = nil }
+            get: { galleryStartId.map { IdWrapper(id: $0) } },
+            set: { galleryStartId = $0?.id })
+        ) { start in
+            ChatMediaViewer(chatId: conversation.id, startMessageId: start.id) { messageId in
+                // Jump to message: the viewer dismisses itself, then the thread scrolls to
+                // the message and flashes it. Set AFTER dismissal so the scroll happens on a
+                // visible transcript rather than behind a cover that is still on screen.
+                jumpTargetId = messageId
+            }
+            .environmentObject(chat)
         }
         // ChatStore injected by hand — see the note at the matching call site in
         // ChatsHomeView. A fullScreenCover does not reliably inherit environment objects and
@@ -420,6 +437,11 @@ struct ChatDetailView: View {
                 headerCircle("video")
             }
             .accessibilityLabel("Video call")
+            // NO GALLERY BUTTON HERE. The viewer is reached by tapping a photo in the
+            // thread, which is the intent people actually have — "show me this one, and let
+            // me look around from there". A header entry point competed with the call
+            // buttons for a bar whose subject is the person, and every chat's media is
+            // already one tap away from any of it.
             // NO OVERFLOW MENU. Every item it held now has a better home:
             //   * "View profile" duplicated the title, which already opens the profile;
             //   * "Select messages" moved onto the message long-press pill, because
@@ -520,7 +542,17 @@ struct ChatDetailView: View {
                     ForEach(groupedByDay, id: \.0) { day, msgs in
                         DateSeparator(text: day)
                         ForEach(msgs) { msg in
-                            messageRow(msg).id(msg.id)
+                            messageRow(msg)
+                                .id(msg.id)
+                                // A wash behind the row rather than a border on the bubble:
+                                // it reads at a glance while scrolling past and does not
+                                // change the bubble's own shape.
+                                .background(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .fill(VoiidColor.accent.opacity(
+                                            highlightedId == msg.id ? 0.16 : 0))
+                                        .padding(.horizontal, -6)
+                                )
                         }
                     }
                     if chat.typingConversations.contains(conversation.id) {
@@ -537,13 +569,50 @@ struct ChatDetailView: View {
             .padding(.top, VoiidSpacing.sm)
                 .padding(.bottom, VoiidSpacing.md)
             }
-            .onChange(of: chat.messages(for: conversation.id).count) { _, _ in
-                withAnimation { proxy.scrollTo(lastID, anchor: .bottom) }
+            .onChange(of: chat.messages(for: conversation.id).count) { old, new in
+                // The FIRST load is not an arrival — it is the transcript appearing. Landing
+                // on it without animation is what makes a chat open AT the newest message
+                // rather than at the top and then visibly scrolling down.
+                //
+                // `onAppear` alone could not do this: it fires before the cached messages
+                // are in the store, so `lastID` was still empty and the scroll targeted
+                // nothing. That is why opening a chat sat at the top.
+                if old == 0 {
+                    proxy.scrollTo(lastID, anchor: .bottom)
+                } else {
+                    // A real new message DOES animate — the movement is what tells you
+                    // something arrived.
+                    withAnimation { proxy.scrollTo(lastID, anchor: .bottom) }
+                }
             }
             .onChange(of: chat.typingConversations) { _, _ in
                 withAnimation { proxy.scrollTo("typing", anchor: .bottom) }
             }
-            .onAppear { proxy.scrollTo(lastID, anchor: .bottom) }
+            .onAppear {
+                // Covers the case where messages were ALREADY in the store when the view
+                // appeared (reopening a chat you just left), which the count change above
+                // will not fire for.
+                proxy.scrollTo(lastID, anchor: .bottom)
+            }
+            // JUMP TO MESSAGE, from the media viewer.
+            //
+            // A beat after the cover dismisses, or the scroll happens behind a view that is
+            // still on screen and lands you at the bottom instead.
+            .onChange(of: jumpTargetId) { _, id in
+                guard let id else { return }
+                Task {
+                    try? await Task.sleep(for: .milliseconds(320))
+                    withAnimation(.easeOut(duration: 0.3)) {
+                        proxy.scrollTo(id, anchor: .center)
+                    }
+                    // Flash it: after scrolling a long way, "which one was it" is the next
+                    // question, and a brief highlight answers it without a permanent mark.
+                    withAnimation(.easeIn(duration: 0.2)) { highlightedId = id }
+                    try? await Task.sleep(for: .milliseconds(1400))
+                    withAnimation(.easeOut(duration: 0.5)) { highlightedId = nil }
+                    jumpTargetId = nil
+                }
+            }
             // The scrollbar is noise on a transcript nobody scrubs by handle.
             .scrollIndicators(.hidden)
             // Dragging the thread dismisses the keyboard — the gesture every messaging app
@@ -731,7 +800,7 @@ struct ChatDetailView: View {
             MessageBubble(message: msg,
                           isGroup: conversation.type == .group,
                           isLastMine: msg.id == lastMineID,
-                          onTapImage: { img in fullscreenImage = img },
+                          onTapImage: { _ in galleryStartId = msg.id },
                           onVote: { optId in chat.vote(messageId: msg.id, optionId: optId, in: conversation.id) },
                           onReply: { withAnimation { replyingTo = msg } },
                           onForward: { forwardMessage = msg },
@@ -757,11 +826,45 @@ struct ChatDetailView: View {
     private var lastMineID: String { chat.messages(for: conversation.id).last(where: { $0.isMine })?.id ?? "" }
 
     /// Group messages by calendar day for separators.
+    /// The transcript, grouped by day.
+    ///
+    /// ── WHY THIS IS CACHED ──────────────────────────────────────────────────────
+    /// This is a computed property read by the LazyVStack, so SwiftUI evaluates it on EVERY
+    /// body pass — and the body re-runs on every keystroke, every typing-indicator tick,
+    /// every 4-second sync, every scroll-driven state change. Each evaluation did four
+    /// passes over the whole history: `messages(for:)` merges and sorts messages with call
+    /// logs, then this groups them, sorts the keys, and sorts inside every group again.
+    ///
+    /// On a thread of any length that is the roughness on open and while typing — not the
+    /// network, not decryption, just the same sort running dozens of times a second.
+    ///
+    /// The cache is keyed on a cheap fingerprint (count + the newest timestamp), so it
+    /// rebuilds when the transcript actually changes and is a dictionary lookup otherwise.
+    /// `Calendar.current` is hoisted out of the loop for the same reason: it is a computed
+    /// property that resolves the user's calendar on every access.
     private var groupedByDay: [(String, [VMessage])] {
         let msgs = chat.messages(for: conversation.id)
-        let groups = Dictionary(grouping: msgs) { Calendar.current.startOfDay(for: $0.createdAt) }
-        return groups.keys.sorted().map { (VoiidDate.separator($0), groups[$0]!.sorted { $0.createdAt < $1.createdAt }) }
+        let stamp = GroupCache.Stamp(count: msgs.count, newest: msgs.last?.createdAt)
+        if let hit = Self.groupCache[conversation.id], hit.stamp == stamp { return hit.value }
+
+        let cal = Calendar.current
+        let groups = Dictionary(grouping: msgs) { cal.startOfDay(for: $0.createdAt) }
+        // No inner sort: `messages(for:)` already returns them in time order, and
+        // `Dictionary(grouping:)` preserves the order it read them in.
+        let built = groups.keys.sorted().map { (VoiidDate.separator($0), groups[$0]!) }
+        Self.groupCache[conversation.id] = GroupCache(stamp: stamp, value: built)
+        return built
     }
+
+    private struct GroupCache {
+        struct Stamp: Equatable { let count: Int; let newest: Date? }
+        let stamp: Stamp
+        let value: [(String, [VMessage])]
+    }
+
+    /// Static so it survives the struct being recreated on every body pass — a SwiftUI View
+    /// is a value type and any instance storage would be thrown away with it.
+    private static var groupCache: [String: GroupCache] = [:]
 
     // MARK: input bar (text + attach image + voice note)
 
@@ -859,10 +962,15 @@ struct ChatDetailView: View {
         HStack(alignment: .bottom, spacing: 4) {
             // Everything except the mic collapses while recording — same slot, zero width, so
             // the view identities survive and only the layout changes.
-            HStack(alignment: .bottom, spacing: 4) {
+            HStack(alignment: .bottom, spacing: VoiidSpacing.sm) {
+                // ONE button outside the pill, not two.
+                //
+                // The reference puts a single 44pt attach circle beside the field and moves
+                // the secondary actions INSIDE the capsule (see `messageField`). Ours had a
+                // second 44pt disc for GIF sitting next to it, which gave the row a
+                // three-control left cluster and squeezed the field it exists to serve.
                 if !isRecording {
                     attachButton
-                    gifButton
                 }
                 ZStack(alignment: .leading) {
                     if isRecording {
@@ -946,6 +1054,20 @@ struct ChatDetailView: View {
                 .overlay(Circle().stroke(VoiidColor.divider, lineWidth: 1))
         }
         .photosPicker(isPresented: $pickPhoto, selection: $photoItem, matching: .images)
+        .fullScreenCover(isPresented: $showCamera) {
+            // `selfieMode: false` — rear camera and no forced square crop. The defaults are
+            // tuned for a profile photo; a chat photo is usually of what is in front of you,
+            // and cropping it square discards the framing the sender chose.
+            CameraPicker(onCapture: { image in
+                // Re-encoded rather than sent raw: a capture is a full-resolution HEIC/JPEG
+                // that can run to several MB, and the media path is the same encrypt-and-
+                // upload one every other image takes. 0.85 keeps it visually lossless at a
+                // fraction of the bytes.
+                guard let data = image.jpegData(compressionQuality: 0.85) else { return }
+                chat.sendMedia(data, mime: "image/jpeg", to: conversation.id)
+            }, selfieMode: false)
+            .ignoresSafeArea()
+        }
         .onChange(of: photoItem) { _, item in
             Task {
                 if let data = try? await item?.loadTransferable(type: Data.self) {
@@ -1014,7 +1136,52 @@ struct ChatDetailView: View {
         .buttonStyle(.plain)
     }
 
+    /// The pill: the field plus its inline actions.
+    ///
+    /// The reference carries GIF/emoji and camera INSIDE the capsule, beside the text, and
+    /// keeps only attach outside it. That is what lets the field own the row's width — two
+    /// 44pt discs outside the pill cost 88pt of a 393pt screen before a character is typed.
+    ///
+    /// They collapse while there is text so the field keeps its full width for what you are
+    /// writing, and reappear when it empties.
     private var messageField: some View {
+        HStack(alignment: .bottom, spacing: VoiidSpacing.sm) {
+            fieldText
+            if !hasText {
+                inlineAction("face.smiling", "GIFs and stickers") {
+                    Haptics.tap(); showGifPicker = true
+                }
+                inlineAction("camera", "Camera") {
+                    Haptics.tap(); showCamera = true
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(VoiidColor.fieldFill)
+        .clipShape(Capsule())
+        .overlay(Capsule().stroke(VoiidColor.divider, lineWidth: 1))
+        .animation(.easeOut(duration: 0.15), value: hasText)
+    }
+
+    /// A glyph inside the pill. Bare ink, not a disc — it sits ON the field's own fill, and
+    /// a second circle inside a capsule reads as a button stuck to a button.
+    private func inlineAction(_ icon: String, _ label: String,
+                              _ tap: @escaping () -> Void) -> some View {
+        Button(action: tap) {
+            Image(systemName: icon)
+                .font(.system(size: 19))
+                .foregroundColor(VoiidColor.textSecondary)
+                // 30pt of target inside the pill's own padding — the capsule's 10pt vertical
+                // padding brings the real touch area to 44pt.
+                .frame(width: 30, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+
+    private var fieldText: some View {
         TextField("Message", text: $draft, axis: .vertical)
             .font(VoiidFont.rounded(16, .regular))
             .foregroundColor(VoiidColor.textPrimary)
@@ -1030,13 +1197,7 @@ struct ChatDetailView: View {
             // blob with the buttons stranded in its bottom corners — visible in the
             // screenshot. Now the pill grows with the text and the buttons sit beside it,
             // fixed, exactly as they do when the field is one line.
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
-            .background(VoiidColor.fieldFill)
-            .clipShape(Capsule())
-            .overlay(
-                Capsule().stroke(VoiidColor.divider, lineWidth: 1)
-            )
+
             // KEYED ON THE BOOLEAN, not on `draft`.
             //
             // `onChange(of: draft)` fired on EVERY KEYSTROKE, and each one serialised a frame
@@ -1984,7 +2145,12 @@ struct BubbleShape: Shape {
     }()
 
     /// Stable, filesystem-safe filename for an R2 key (which may contain '/').
-    private func fileURL(_ key: String) -> URL? {
+    /// The on-disk path for a cached plaintext blob.
+    ///
+    /// Internal rather than private because AVPlayer CANNOT read from memory — a video has
+    /// to be handed a file URL, so the gallery needs the path after `setData` has written
+    /// it. Images do not: they decode straight from the in-memory Data.
+    func fileURL(_ key: String) -> URL? {
         guard let dir else { return nil }
         let digest = SHA256.hash(data: Data(key.utf8))
         let name = digest.map { String(format: "%02x", $0) }.joined()
@@ -2030,25 +2196,65 @@ struct BubbleShape: Shape {
 
 /// An image bubble that fetches + decrypts its blob via ChatEngine on appear.
 struct AsyncMediaImage: View {
+    /// One width for every photo in the thread, so bubbles line up rather than stepping in
+    /// and out with each image's shape.
+    private static let width: CGFloat = 240
+    /// A very wide panorama still needs enough height to be recognisable and tappable.
+    private static let minHeight: CGFloat = 120
+    /// And a very tall one must not run past the screen.
+    private static let maxHeight: CGFloat = 320
+
     let ref: MediaRef
     var onTap: (UIImage) -> Void
+    /// `true` draws the 220pt chat thumbnail; `false` fits the image to whatever space it
+    /// is given, which is what the full-screen gallery needs. Same decrypt-and-cache path
+    /// either way — the bytes are already in memory by the time the gallery opens.
+    var fill: Bool = true
     @State private var image: UIImage?
     @State private var failed = false
 
     var body: some View {
         Group {
             if let image {
-                Image(uiImage: image).resizable().scaledToFill()
-                    .frame(width: 220, height: 220).clipped()
-                    .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md))
-                    .onTapGesture { onTap(image) }
+                if fill {
+                    // THE PHOTO KEEPS ITS SHAPE.
+                    //
+                    // This was a forced 220×220 square with `scaledToFill`, so every image
+                    // was centre-cropped: a portrait photo lost its top and bottom, a
+                    // panorama became a slice of its middle, and a screenshot was
+                    // unreadable. WhatsApp and Iyour own eye read a thumbnail by its shape
+                    // as much as its content, and cropping to a square throws that away.
+                    //
+                    // The width is fixed so bubbles align down the thread; the HEIGHT
+                    // follows the image's own ratio, bounded so a tall panorama cannot
+                    // occupy the whole screen and a wide one stays tappable.
+                    let ratio = image.size.height / max(image.size.width, 1)
+                    let height = min(max(Self.width * ratio, Self.minHeight), Self.maxHeight)
+                    Image(uiImage: image).resizable().scaledToFill()
+                        .frame(width: Self.width, height: height)
+                        .clipped()
+                        .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous))
+                        .contentShape(Rectangle())
+                        .onTapGesture { onTap(image) }
+                } else {
+                    Image(uiImage: image).resizable().scaledToFit()
+                }
+            } else if !fill {
+                ProgressView().tint(.white)
             } else {
-                RoundedRectangle(cornerRadius: VoiidRadius.md)
-                    .fill(VoiidColor.accent.opacity(0.3))
-                    .frame(width: 220, height: 220)
+                // A 4:3 placeholder rather than a square: it is the commonest photo shape,
+                // so the bubble moves least when the real image lands.
+                RoundedRectangle(cornerRadius: VoiidRadius.md, style: .continuous)
+                    .fill(VoiidColor.fieldFill)
+                    .frame(width: Self.width, height: Self.width * 0.75)
                     .overlay {
-                        if failed { Image(systemName: "exclamationmark.triangle").font(.system(size: 30)).foregroundColor(VoiidColor.primary) }
-                        else { ProgressView() }
+                        if failed {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.system(size: 26))
+                                .foregroundColor(VoiidColor.textSecondary)
+                        } else {
+                            ProgressView().tint(VoiidColor.textSecondary)
+                        }
                     }
             }
         }
@@ -2097,11 +2303,24 @@ struct AsyncVoiceNote: View {
     /// message you are looking at visibly changes as the list scrolls. Seeding from the ref
     /// means one message always draws the same shape — and different messages differ, which is
     /// the only thing the pattern is really for.
+    /// The waveform's drawn width. Everything — bar count, hit testing, the playhead —
+    /// derives from this one number so they cannot disagree.
+    static let waveformWidth: CGFloat = 168
+    private static let barWidth: CGFloat = 2.5
+    private static let barGap: CGFloat = 2
+
+    /// As many bars as actually FIT, rather than a fixed 26 that overflowed the slot.
+    private var barCount: Int {
+        Int((Self.waveformWidth + Self.barGap) / (Self.barWidth + Self.barGap))
+    }
+
     private var bars: [CGFloat] {
         let seed = abs((ref?.mediaUrl ?? label).hashValue)
-        return (0..<26).map { i in
+        return (0..<barCount).map { i in
             let v = (seed &>> (i % 12)) &+ (i &* 37)
-            return CGFloat(6 + (v % 16))
+            // 5…22 against a 30pt track: tall enough to read as a waveform, short enough
+            // that the peaks do not touch the bubble's padding.
+            return CGFloat(5 + (v % 18))
         }
     }
 
@@ -2137,37 +2356,75 @@ struct AsyncVoiceNote: View {
             .buttonStyle(.plain)
             .disabled(data == nil)
 
-            VStack(alignment: .leading, spacing: 5) {
-                waveform
-                Text(timeLabel)
-                    .font(VoiidFont.rounded(10.5, .medium))
-                    .monospacedDigit()
-                    .foregroundColor(metaTint)
-            }
+            // ONE ROW, the reference's layout: play → waveform → time, all on the same
+            // baseline. Ours stacked the time UNDER the waveform, which made the bubble two
+            // rows tall for a control that is conceptually one strip, and left the time
+            // floating under a scrubber it was not aligned to.
+            waveform
+
+            // A FIXED-WIDTH, TRAILING-ALIGNED countdown.
+            //
+            // Two changes: the width stops the waveform resizing as the digits change —
+            // without it the whole strip jitters every second while playing — and it counts
+            // DOWN. Remaining time is the useful number ("11 seconds left"); elapsed time
+            // only answers a question you did not ask.
+            Text(timeLabel)
+                .font(VoiidFont.rounded(12, .medium))
+                .monospacedDigit()
+                .foregroundColor(metaTint)
+                .frame(width: 34, alignment: .trailing)
         }
-        .frame(minWidth: 168)
+        // A FIXED 168pt WAVEFORM, so the strip has a definite width.
+        //
+        // The bars were 26 × 2.5pt with 2pt gaps — 115pt of ink — laid inside a
+        // GeometryReader that was handed whatever the bubble had left. At the bubble's own
+        // minWidth that slot was 80pt, so the bars overflowed it by 35pt: clipped on screen,
+        // and the scrubber mapped taps against a width the bars did not actually occupy, so
+        // dragging to the middle jumped somewhere else.
+        //
+        // Sizing the waveform explicitly and letting the bubble total up from it means the
+        // ink, the hit area and the playhead all agree on one number.
         .task(id: ref?.mediaUrl) { await load() }
         .onDisappear { ticker?.invalidate(); player?.pause(); playing = false }
     }
 
     /// Tappable and draggable — the waveform IS the scrubber. Previously it was decoration.
     private var waveform: some View {
-        GeometryReader { geo in
-            HStack(alignment: .center, spacing: 2) {
+        // A DEFINITE width, not a GeometryReader that takes what it is given. The bars are
+        // sized to fit it exactly, so the ink, the scrub mapping and the playhead all
+        // measure against the same 168pt.
+        let w = Self.waveformWidth
+        return Group {
+            HStack(alignment: .center, spacing: Self.barGap) {
                 ForEach(bars.indices, id: \.self) { i in
                     Capsule()
                         .fill(Double(i) / Double(bars.count) <= progress ? tint : trackTint)
-                        .frame(width: 2.5, height: bars[i])
+                        .frame(width: Self.barWidth, height: bars[i])
                 }
             }
-            .frame(width: geo.size.width, height: 24, alignment: .leading)
+            .frame(width: w, height: 30, alignment: .leading)
+            // A PLAYHEAD, tracking progress across the bars.
+            //
+            // Coloured bars alone tell you roughly how far in you are; they do not give the
+            // eye a point to follow, and while scrubbing there is nothing under the finger
+            // to say exactly where it has landed. The reference draws a marker for both
+            // reasons. It only appears once there is something to track.
+            .overlay(alignment: .leading) {
+                if duration > 0 {
+                    Capsule()
+                        .fill(tint)
+                        .frame(width: 2, height: 30)
+                        .offset(x: max(0, min(w - 2, progress * w)))
+                        .opacity(playing || scrubbing ? 1 : 0)
+                }
+            }
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { v in
                         guard duration > 0 else { return }
                         scrubbing = true
-                        progress = min(1, max(0, v.location.x / geo.size.width))
+                        progress = min(1, max(0, v.location.x / w))
                         elapsed = progress * duration
                     }
                     .onEnded { _ in
@@ -2177,14 +2434,20 @@ struct AsyncVoiceNote: View {
                     }
             )
         }
-        .frame(height: 24)
+        .frame(width: w, height: 30)
     }
 
     /// Elapsed while playing or scrubbing, total otherwise — the same convention as the
     /// system music controls, and it means the bubble always shows a real number rather than
     /// the hardcoded "0:03" the old one fell back to.
+    /// REMAINING while playing, total while idle.
+    ///
+    /// It showed ELAPSED, which answers a question nobody asks of a voice note — you want
+    /// to know how much is left, not how far you have come. Idle still shows the full
+    /// length, so the bubble states its duration before you commit to listening.
     private var timeLabel: String {
-        let t = (playing || scrubbing) ? elapsed : (duration > 0 ? duration : elapsed)
+        let total = duration > 0 ? duration : elapsed
+        let t = (playing || scrubbing) ? max(0, total - elapsed) : total
         return String(format: "%d:%02d", Int(t) / 60, Int(t) % 60)
     }
 
@@ -2246,18 +2509,206 @@ struct AsyncVoiceNote: View {
 
 // MARK: - Image viewer
 
-struct ImageWrapper: Identifiable { let id = UUID(); let image: UIImage }
+/// Wraps a message id so `fullScreenCover(item:)` can drive the gallery. The old
+/// `ImageWrapper` carried a decoded UIImage, which is what limited the viewer to the single
+/// photo that was tapped.
+struct IdWrapper: Identifiable { let id: String }
 
-struct ImageViewer: View {
-    let image: UIImage
+/// A video in the gallery: decrypted to a local file, then played with system controls.
+///
+/// AVKit's `VideoPlayer` rather than a bare AVPlayerLayer, deliberately — unlike the Clips
+/// player this is a full-screen viewer where scrub, play/pause and volume are the whole
+/// point, and hand-rolling transport controls to avoid AVKit's would be work for nothing.
+///
+/// The bytes take the SAME encrypt/decrypt path as images: fetch, cache the plaintext, then
+/// hand AVPlayer a file URL. AVPlayer cannot read from memory, so the decrypted bytes must
+/// land on disk — inside the app group, under the same file protection as every other
+/// cached plaintext.
+private struct AsyncVideoPlayer: View {
+    let ref: MediaRef
+
+    @State private var url: URL?
+    @State private var failed = false
+
+    var body: some View {
+        Group {
+            if let url {
+                VideoPlayer(player: AVPlayer(url: url))
+            } else if failed {
+                VStack(spacing: VoiidSpacing.sm) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 28))
+                    Text("Couldn't load this video")
+                        .font(VoiidFont.rounded(14))
+                }
+                .foregroundColor(.white.opacity(0.8))
+            } else {
+                ProgressView().tint(.white)
+            }
+        }
+        .task(id: ref.mediaUrl) { await load() }
+    }
+
+    private func load() async {
+        // `fileURL` only computes a path; it does not prove the bytes are there. Checking
+        // first is what makes a second open instant instead of re-fetching.
+        if let cached = MediaCache.shared.fileURL(ref.mediaUrl),
+           FileManager.default.fileExists(atPath: cached.path) {
+            url = cached
+            return
+        }
+        do {
+            let data = try await ChatEngine.shared.fetchMedia(ref)
+            MediaCache.shared.setData(data, ref.mediaUrl)
+            url = MediaCache.shared.fileURL(ref.mediaUrl)
+            if url == nil { failed = true }
+        } catch {
+            failed = true
+        }
+    }
+}
+
+/// The media gallery: every image in the conversation, swipeable.
+///
+/// It used to show ONE decoded UIImage with a close button — no swiping between photos, no
+/// zoom, no drag-to-dismiss. Opening a picture was a dead end you had to back out of before
+/// you could see the next one, which is the opposite of how people actually look through a
+/// chat's photos.
+///
+/// Built from the transcript rather than from a separate media index, so what you page
+/// through is exactly what is in the conversation, in the order it was sent.
+struct MediaGallery: View {
+    let refs: [(id: String, ref: MediaRef)]
+    let startId: String
     let onClose: () -> Void
+
+    @State private var index: Int = 0
+    /// Vertical drag for the dismiss gesture. Horizontal belongs to the pager.
+    @State private var dragY: CGFloat = 0
+
+    private var dismissProgress: CGFloat { min(1, abs(dragY) / 220) }
+
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
-            Image(uiImage: image).resizable().scaledToFit()
-            VStack { HStack { Spacer()
-                Button { onClose() } label: { Image(systemName: "xmark").font(.title2).foregroundColor(.white).padding() }
-            }; Spacer() }
+            // Fades as you pull down, so the photo lifts off the page rather than the whole
+            // screen going with it.
+            Color.black.opacity(1 - dismissProgress * 0.85).ignoresSafeArea()
+
+            TabView(selection: $index) {
+                ForEach(refs.indices, id: \.self) { i in
+                    ZoomableMedia(ref: refs[i].ref)
+                        .tag(i)
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            .offset(y: dragY)
+            .scaleEffect(1 - dismissProgress * 0.12)
+            .gesture(
+                // minimumDistance keeps this from stealing the pager's horizontal drag; the
+                // axis check does the rest, so a diagonal swipe still pages.
+                DragGesture(minimumDistance: 18)
+                    .onChanged { v in
+                        guard abs(v.translation.height) > abs(v.translation.width) else { return }
+                        dragY = v.translation.height
+                    }
+                    .onEnded { v in
+                        // Velocity as well as distance: a quick flick dismisses without
+                        // having to drag the photo a third of the way down the screen.
+                        if abs(dragY) > 140 || abs(v.predictedEndTranslation.height) > 380 {
+                            onClose()
+                        } else {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                                dragY = 0
+                            }
+                        }
+                    }
+            )
+
+            VStack {
+                HStack {
+                    Button { onClose() } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(.white)
+                            .frame(width: 34, height: 34)
+                            .background(Circle().fill(.black.opacity(0.35)))
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    Spacer()
+                    // Position, only when there is more than one — "1 of 1" is noise.
+                    if refs.count > 1 {
+                        Text("\(index + 1) of \(refs.count)")
+                            .font(VoiidFont.rounded(14, .medium))
+                            .foregroundColor(.white.opacity(0.9))
+                            .monospacedDigit()
+                    }
+                    Spacer()
+                    // Balances the close button so the counter sits centred.
+                    Color.clear.frame(width: 34, height: 34)
+                }
+                .padding(.horizontal, VoiidSpacing.md)
+                Spacer()
+            }
+            .opacity(1 - dismissProgress)
         }
+        .statusBarHidden()
+        .onAppear { index = refs.firstIndex { $0.id == startId } ?? 0 }
+    }
+}
+
+/// One item in the gallery: pinch to zoom, double-tap to toggle, pan while zoomed.
+private struct ZoomableMedia: View {
+    let ref: MediaRef
+
+    @State private var scale: CGFloat = 1
+    @State private var lastScale: CGFloat = 1
+    @State private var offset: CGSize = .zero
+    @State private var lastOffset: CGSize = .zero
+
+    private var isVideo: Bool { ref.mime.hasPrefix("video/") }
+
+    var body: some View {
+        Group {
+            if isVideo {
+                // Video plays through the existing decrypt-and-cache path; the gallery only
+                // has to host it.
+                AsyncVideoPlayer(ref: ref)
+            } else {
+                AsyncMediaImage(ref: ref, onTap: { _ in }, fill: false)
+                    .scaleEffect(scale)
+                    .offset(offset)
+                    .gesture(
+                        MagnificationGesture()
+                            .onChanged { v in scale = max(1, min(5, lastScale * v)) }
+                            .onEnded { _ in
+                                lastScale = scale
+                                // Snapping home when barely zoomed stops the image drifting
+                                // slightly off-centre after every pinch.
+                                if scale <= 1.02 { reset() }
+                            }
+                    )
+                    .simultaneousGesture(
+                        // Only while zoomed, or this would fight the pager's own swipe.
+                        DragGesture()
+                            .onChanged { v in
+                                guard scale > 1 else { return }
+                                offset = CGSize(width: lastOffset.width + v.translation.width,
+                                                height: lastOffset.height + v.translation.height)
+                            }
+                            .onEnded { _ in lastOffset = offset }
+                    )
+                    .onTapGesture(count: 2) {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            if scale > 1 { reset() } else { scale = 2.5; lastScale = 2.5 }
+                        }
+                    }
+            }
+        }
+    }
+
+    private func reset() {
+        scale = 1; lastScale = 1
+        offset = .zero; lastOffset = .zero
     }
 }

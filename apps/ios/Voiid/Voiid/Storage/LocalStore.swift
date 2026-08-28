@@ -409,6 +409,44 @@ enum LocalStore {
                 Int64(m.createdAt.timeIntervalSince1970), m.isMine,
                 m.pending, m.failed, m.serverId, m.deliveryStatus, mediaJSON,
             ])
+
+        try indexMedia(m, conversationId: conversationId, mediaJSON: mediaJSON, into: database)
+    }
+
+    /// Keep `chat_media` in step with the message that produced it.
+    ///
+    /// Written HERE, in the one place every message lands, rather than at each call site
+    /// that sends media. An index maintained by its callers drifts the first time someone
+    /// adds a new send path and forgets — and a media viewer missing the photo you just sent
+    /// is worse than no viewer.
+    ///
+    /// Only images and video are indexed. Voice notes and documents share the same media
+    /// pipeline but belong to a different screen, so admitting them would put an unplayable
+    /// item in the pager.
+    private static func indexMedia(_ m: DecryptedMessage, conversationId: String,
+                                   mediaJSON: String?, into database: Database) throws {
+        guard let mediaJSON, let ref = m.media else { return }
+        let kind: String
+        if ref.mime.hasPrefix("image/") { kind = "image" }
+        else if ref.mime.hasPrefix("video/") { kind = "video" }
+        else { return }
+
+        // The caption rides in the message body for media messages. Empty is stored as NULL
+        // so the viewer's caption bar can test for presence rather than for emptiness.
+        let caption = m.text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        try database.execute(sql: """
+            INSERT INTO chat_media
+                (message_id, chat_id, type, media_json, sent_at, sender_id, is_outgoing, caption)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(message_id) DO UPDATE SET
+                caption    = excluded.caption,
+                media_json = excluded.media_json
+            """, arguments: [
+                m.id, conversationId, kind, mediaJSON,
+                Int64(m.createdAt.timeIntervalSince1970), m.senderId, m.isMine,
+                caption.isEmpty ? nil : caption,
+            ])
     }
 
     private static func decode(_ row: Row) -> DecryptedMessage? {

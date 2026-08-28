@@ -220,6 +220,47 @@ final class VoiidDatabase {
             }
         }
 
+        // --- chat_media --------------------------------------------------------------
+        // A DERIVED INDEX, not a second source of truth.
+        //
+        // The viewer needs "every photo and video in this chat, in order" as one cheap
+        // ordered read. Scanning `messages` for it means decoding `media_json` on every row
+        // of a long thread just to discover most of them are text.
+        //
+        // Every column is a projection of a message that already exists, so this table can
+        // be dropped and rebuilt at any time without losing anything — the property that
+        // keeps it safe alongside `voiid_messages.json`, the live store ChatEngine rewrites
+        // and the encrypted backup seals. It never becomes the place a message lives.
+        //
+        // `message_id` is the primary key, so re-inserting is idempotent and a deletion
+        // needs no lookup.
+        m.registerMigration("v4_chat_media") { db in
+            try db.create(table: "chat_media") { t in
+                t.primaryKey("message_id", .text)
+                t.column("chat_id", .text).notNull()
+                // 'image' | 'video'. Documents, audio and stickers are deliberately absent:
+                // they belong to a different screen, and admitting them would make the
+                // filmstrip a mixed list the pager cannot render.
+                t.column("type", .text).notNull()
+                t.column("thumb_path", .text)
+                t.column("file_path", .text)
+                t.column("media_json", .text).notNull()
+                t.column("sent_at", .integer).notNull()
+                t.column("sender_id", .text).notNull()
+                t.column("sender_name", .text)
+                t.column("is_outgoing", .boolean).notNull().defaults(to: false)
+                t.column("caption", .text)
+                t.column("duration_ms", .integer)
+            }
+            // THE viewer query: one chat, chronological.
+            try db.create(index: "idx_chat_media_chat_sent", on: "chat_media",
+                          columns: ["chat_id", "sent_at"])
+
+            // Backfill from what is already stored, so the viewer works on existing chats
+            // rather than only on messages sent after this migration.
+            try db.execute(sql: "insert or ignore into chat_media\n                    (message_id, chat_id, type, media_json, sent_at, sender_id, is_outgoing)\n                select id, conversation_id, 'image', media_json, created_at, sender_id, is_mine\n                  from messages\n                 where media_json is not null and media_json <> ''")
+        }
+
         return m
     }
 
