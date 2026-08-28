@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { api, setToken } from '../../lib/api';
+import { api, setToken, ApiError } from '../../lib/api';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -20,9 +20,21 @@ export default function Login() {
       setToken(r.token);
       router.replace('/');
     } catch (err) {
-      // One message for every failure mode. Distinguishing "no such admin" from "wrong
-      // password" tells an attacker which half they got right.
-      setError('Those details did not work.');
+      // ONE message for every CREDENTIAL outcome — distinguishing "no such admin" from
+      // "wrong password" tells an attacker which half they got right.
+      //
+      // But a transport failure is not a credential outcome, and folding the two together
+      // is how a 404 from a wrong HTTP method spent an afternoon looking like a bad
+      // password. Anything that is not a 401 says so, without saying anything about the
+      // account.
+      const status = err instanceof ApiError ? err.status : 0;
+      setError(
+        status === 401 || status === 403
+          ? 'Those details did not work.'
+          : status === 429
+            ? 'Too many attempts. Wait a minute and try again.'
+            : `Could not reach the server (${status || 'network error'}).`,
+      );
     } finally {
       setBusy(false);
     }

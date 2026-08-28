@@ -23,6 +23,10 @@ function Body() {
   const list = useList<User>('/users', 'users', q.trim() ? { search: q.trim() } : {});
   const [busy, setBusy] = useState<string | null>(null);
   const [writeError, setWriteError] = useState<string | null>(null);
+  /// Revealed numbers, held in component state ONLY — never written to storage. They vanish
+  /// on navigation, which is the correct lifetime for something each viewing of which is
+  /// separately audited.
+  const [revealed, setRevealed] = useState<Record<string, string>>({});
 
   async function revoke(u: User) {
     // Signing every device out is disruptive and not obviously reversible from the user's
@@ -41,11 +45,30 @@ function Body() {
     }
   }
 
+  async function reveal(u: User) {
+    const reason = window.prompt(
+      'Why do you need this number? (recorded in the audit log against your name)',
+    )?.trim();
+    if (!reason) return;
+    setBusy(u.id);
+    setWriteError(null);
+    try {
+      const r = await api<{ phone: string | null }>(`/users/${u.id}/reveal-phone`, {
+        method: 'POST', json: { reason },
+      });
+      setRevealed((prev) => ({ ...prev, [u.id]: r.phone ?? 'none on file' }));
+    } catch (e) {
+      setWriteError(e instanceof Error ? e.message : 'could not reveal that number');
+    } finally {
+      setBusy(null);
+    }
+  }
+
   return (
     <>
       <PageHeader
         title="Users & devices"
-        subtitle="Phone numbers are masked everywhere and there is no way to unmask them."
+        subtitle="Numbers are masked by default. Revealing one is logged against your name."
       />
 
       <input
@@ -75,7 +98,23 @@ function Body() {
               </div>
               {u.deleted_at && <Pill tone="danger">Deleted</Pill>}
             </td>
-            <td className="muted mono">{u.phone_masked ?? '—'}</td>
+            <td className="mono">
+              {revealed[u.id] ? (
+                <span style={{ color: 'var(--text)' }}>{revealed[u.id]}</span>
+              ) : (
+                <span className="row" style={{ gap: 8 }}>
+                  <span className="muted">{u.phone_masked ?? '—'}</span>
+                  {u.phone_masked && (
+                    <button
+                      className="ghost sm" disabled={busy === u.id}
+                      onClick={() => void reveal(u)}
+                    >
+                      Reveal
+                    </button>
+                  )}
+                </span>
+              )}
+            </td>
             <td className="mono">{u.device_count}</td>
             <td className="mono">{u.clip_count}</td>
             <td className="muted" style={{ fontSize: 13, whiteSpace: 'nowrap' }}>{when(u.created_at)}</td>

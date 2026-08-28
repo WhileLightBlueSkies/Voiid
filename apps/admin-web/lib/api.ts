@@ -45,6 +45,11 @@ export async function api<T>(
 
   const res = await fetch(`${BASE}/admin${path}`, {
     ...init,
+    // A body implies a POST. Without this, `api('/login', { json })` fetched with the
+    // DEFAULT method — GET — which 404s on a POST-only route and surfaced, through the
+    // deliberately vague catch-all on the login form, as "those details did not work"
+    // against a perfectly valid account. An explicit `method` in init still wins.
+    method: init.method ?? (init.json !== undefined || init.body ? 'POST' : 'GET'),
     headers,
     body: init.json !== undefined ? JSON.stringify(init.json) : init.body,
   });

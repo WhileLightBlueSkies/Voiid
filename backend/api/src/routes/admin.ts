@@ -943,6 +943,44 @@ router.post('/dpdp/:id/start-erasure', requireAdmin, requireRole('admin'), async
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────────
+// POST /admin/users/:id/reveal-phone   { reason }
+//
+// The ONE way to read a full phone number, and it is deliberately shaped so that reading
+// one is an ACT rather than a side effect of looking at a list.
+//
+// Every list on this router stays masked. That is the whole control: a stolen or careless
+// admin session can still confirm a number somebody already holds (via the users search),
+// but harvesting numbers it does not have costs one attributable, logged request each. Bulk
+// export stops being a scroll and becomes a thousand audit rows with a name on them.
+//
+// POST, not GET, for the same reason: a GET is prefetched, cached, logged in proxies, and
+// sits in browser history. Reading personal data should not be something a browser can do
+// on its own initiative.
+//
+// admin-role only, and a reason is required — "why did you look at this person's number"
+// is the question a DPDP audit asks, and an entry that cannot answer it is decoration.
+// ─────────────────────────────────────────────────────────────────────────────────
+router.post('/users/:id/reveal-phone', requireAdmin, requireRole('admin'), async (req, res) => {
+  const a = (req as any).admin as AdminAuth;
+  const reason = String(req.body?.reason ?? '').trim();
+  if (!reason) return res.status(400).json({ error: 'a reason is required' });
+
+  const rows = await query<{ phone_number: string | null; username: string | null }>(
+    `select phone_number, username from users where id = $1 limit 1`,
+    [req.params.id],
+  );
+  if (!rows[0]) return res.status(404).json({ error: 'not found' });
+
+  // Audited BEFORE the number is returned. If the write fails the read still proceeds —
+  // audit() swallows its own errors by design — but the ordering means there is no path
+  // where a number reaches a screen earlier than the record of it being asked for.
+  await audit(a.adminId, 'user.phone_revealed', 'user', req.params.id,
+              { reason, username: rows[0].username });
+
+  res.json({ phone: rows[0].phone_number });
+});
+
 // ═════════════════════════════════════════════════════════════════════════════════
 // COMMUNITIES
 //
