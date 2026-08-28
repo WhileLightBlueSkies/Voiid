@@ -260,6 +260,49 @@ router.get('/stats', requireAdmin, async (_req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────
+// GET /admin/series?days=30 — daily counts for the dashboard's charts.
+//
+// generate_series LEFT JOINed against each table, so a day with no signups comes back as a
+// zero rather than as a missing point. A chart built from present rows only silently
+// redraws its x-axis and turns a quiet week into a straight line between two busy days —
+// which reads as steady activity when the truth is none.
+//
+// One query, not six: six round trips to draw one screen is how a dashboard becomes the
+// slowest page in a tool people are supposed to keep open.
+// ─────────────────────────────────────────────────────────────────────────────────
+router.get('/series', requireAdmin, async (req, res) => {
+  // Capped at a quarter. This scans created_at across several tables with no index
+  // guarantee, and an operator typing days=100000 should not be able to table-scan the
+  // production database from a query string.
+  const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 90);
+
+  const rows = await query<any>(
+    `with d as (
+       select generate_series(
+         (current_date - ($1::int - 1) * interval '1 day')::date,
+         current_date,
+         interval '1 day'
+       )::date as day
+     )
+     select to_char(d.day, 'YYYY-MM-DD') as day,
+       (select count(*) from users u
+         where u.created_at::date = d.day and u.deleted_at is null)::int      as users,
+       (select count(*) from clips c
+         where c.created_at::date = d.day and c.removed_at is null)::int      as clips,
+       (select count(*) from communities m
+         where m.created_at::date = d.day)::int                               as communities,
+       (select count(*) from community_posts p
+         where p.created_at::date = d.day)::int                               as posts,
+       (select count(*) from conversations v
+         where v.created_at::date = d.day)::int                               as conversations
+     from d order by d.day asc`,
+    [days],
+  );
+
+  res.json({ days, series: rows });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────
 // GET /admin/clips?cursor=&limit=&removed=
 //
 // The moderation queue. Newest first, keyset-paginated on created_at rather than OFFSET:
