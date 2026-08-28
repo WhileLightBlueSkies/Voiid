@@ -80,7 +80,7 @@ final class CommunityService {
         case suspended
     }
 
-    struct CommunityCard: Decodable {
+    struct CommunityCard: Decodable, Identifiable {
         let id: String
         let handle: String
         let name: String
@@ -247,15 +247,47 @@ final class CommunityService {
         return env.channels
     }
 
-    /// One row of the roster. NO display name and no avatar: the server returns ids, and
-    /// resolving them is the directory's job, not this endpoint's.
+    /// Create a Space (a channel) inside a community.
+    ///
+    /// `POST /communities/:id/channels` has existed and worked since 032; nothing called it,
+    /// so the admin-only "Create a Space" row fired a haptic and returned. The endpoint
+    /// creates the backing group conversation and the channel row in one transaction, so
+    /// there is no half-made Space if the second insert fails.
+    func createChannel(communityId: String, name: String,
+                       kind: String = "chat") async throws -> Channel {
+        struct Body: Encodable { let name: String; let kind: String }
+        struct Envelope: Decodable { let channel: Channel }
+        let env: Envelope = try await api.request(
+            "POST", "communities/\(communityId)/channels",
+            body: Body(name: name, kind: kind))
+        return env.channel
+    }
+
+    /// One row of the roster.
+    ///
+    /// THE SERVER SENDS NAMES AND THIS TYPE DROPPED THEM. Its old comment claimed the
+    /// endpoint returned ids only and that resolving them was the directory's job — but
+    /// `GET /communities/:id/members` joins `users` and returns `full_name`, `username` and
+    /// `photo_url` (communities.ts:971). Because they were not decoded, the roster fell back
+    /// to a bundled sample array and showed FABRICATED names for real people, and the member
+    /// search filtered those samples — so searching someone's actual name found nothing.
     struct Member: Decodable, Identifiable {
         let user_id: String
         let role: String?
         let state: String?
         let joined_at: String?
+        let full_name: String?
+        let username: String?
+        let photo_url: String?
 
         var id: String { user_id }
+        /// What to show. Falls back through handle to a neutral label rather than to a
+        /// sample name — an unknown member should read as unknown.
+        var displayName: String {
+            if let n = full_name, !n.isEmpty { return n }
+            if let u = username, !u.isEmpty { return "@\(u)" }
+            return "Member"
+        }
         var isOwner: Bool { role == "owner" }
         var isAdmin: Bool { role == "admin" || role == "owner" }
     }
@@ -872,6 +904,34 @@ final class CommunityService {
     /// moderator has to choose the harsher one on purpose, and a queue's dismiss button is the
     /// last place a ban should be one tap away — a rejected applicant can ask again, which is
     /// the right default for someone whose only action so far was knocking.
+    /// Ban a member. `POST /communities/:id/members/:userId/ban` has existed since 030 with
+    /// full semantics in the schema and an `isBanned` case in the client model — and no way
+    /// to invoke it. Removal and banning are different acts: a removed member can rejoin, a
+    /// banned one cannot.
+    func banMember(communityId: String, userId: String) async throws {
+        struct EmptyBody: Encodable {}
+        _ = try await api.request(
+            "POST", "communities/\(communityId)/members/\(userId)/ban",
+            body: EmptyBody(), as: EmptyResponse.self)
+    }
+
+    func unbanMember(communityId: String, userId: String) async throws {
+        struct EmptyBody: Encodable {}
+        _ = try await api.request(
+            "POST", "communities/\(communityId)/members/\(userId)/unban",
+            body: EmptyBody(), as: EmptyResponse.self)
+    }
+
+    /// Promote or demote. Without this nobody could ever become an `admin`, which is why the
+    /// client's binary owner/member split has been invisible: the middle tier was
+    /// unreachable rather than unused.
+    func setRole(communityId: String, userId: String, role: String) async throws {
+        struct Body: Encodable { let role: String }
+        _ = try await api.request(
+            "POST", "communities/\(communityId)/members/\(userId)/role",
+            body: Body(role: role), as: EmptyResponse.self)
+    }
+
     func removeMember(communityId: String, userId: String) async throws {
         struct EmptyBody: Encodable {}
         _ = try await api.request(

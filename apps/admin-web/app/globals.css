@@ -1,57 +1,185 @@
 /*
- * Dark by default. A moderation panel is looked at for long stretches, often alongside
- * video, and a bright surface next to playing content is fatiguing. Voiid's own dark
- * tokens, so the panel reads as part of the product rather than a generic dashboard.
+ * Voiid Admin — internal operations console.
+ *
+ * DARK, and on Voiid's real brand. The previous build was purple (#b59be0), which is not a
+ * Voiid colour and never has been: the app and the marketing site are both TIDE #13828C.
+ * An internal tool that looks like a different product is one people stop trusting the
+ * numbers in.
+ *
+ * Dark because a moderation surface is stared at for long stretches next to playing video,
+ * where a bright ground is fatiguing. Teal is mid-tone, so it carries WHITE labels when
+ * filled and lightens to --accent-ink when it has to be read as text on the dark ground.
  */
 :root {
-  --bg: #0d0b14;
-  --surface: #1c1826;
-  --border: #2c2739;
-  --text: #e6e1ef;
-  --text-dim: #a79cbd;
-  --primary: #b59be0;
-  --danger: #ef7a6b;
-  --ok: #63c78d;
+  color-scheme: dark;
+
+  --bg: #080c0e;              /* Theme.swift background (dark) */
+  --surface: #111719;         /* surfaceCard (dark) */
+  --surface-2: #182124;       /* surfaceRaised (dark) */
+  --surface-3: #1f2a2e;       /* hover / pressed well */
+
+  --border: #263236;          /* divider (dark) */
+  --border-strong: #35454a;
+
+  --text: #f6f8f8;
+  --text-dim: #a6b0b2;
+  --text-mute: #7d8b90;
+
+  /* The fill and the ink are different jobs. #13828C on #080C0E is too dark to READ,
+   * so teal text uses the lighter ink — the same split the marketing site makes. */
+  --accent: #13828c;
+  --accent-hover: #16959f;
+  --accent-ink: #68b8bd;
+  --accent-quiet: rgba(19, 130, 140, 0.14);
+
+  /* Status is never carried by hue alone anywhere in this panel — always a word too. */
+  --ok: #2fa36b;
+  --danger: #e5484d;
+  --warning: #facc15;
+  --info: #3b82f6;
+
   --radius: 12px;
+  --radius-lg: 16px;
+  --sidebar: 232px;
 }
 
 * { box-sizing: border-box; }
+
+html, body { height: 100%; }
 
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
   font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
-a { color: var(--primary); }
+a { color: var(--accent-ink); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+h1 { font-size: 22px; font-weight: 650; letter-spacing: -0.02em; margin: 0; }
+h2 { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
+
+/* ── Controls ──────────────────────────────────────────────────────────────── */
 
 button {
   font: inherit;
+  font-weight: 600;
   cursor: pointer;
   border: 0;
   border-radius: 999px;
   padding: 9px 16px;
-  background: var(--primary);
-  color: #17121f;
-  font-weight: 600;
+  background: var(--accent);
+  color: #fff;
+  transition: background 120ms ease, opacity 120ms ease;
 }
-button:disabled { opacity: 0.5; cursor: default; }
-button.ghost { background: transparent; color: var(--text-dim); border: 1px solid var(--border); }
-button.danger { background: var(--danger); color: #241016; }
+button:hover:not(:disabled) { background: var(--accent-hover); }
+button:disabled { opacity: 0.45; cursor: default; }
+button.ghost {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+}
+button.ghost:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+button.danger { background: var(--danger); color: #fff; }
+button.danger:hover:not(:disabled) { background: #f2585d; }
+button.sm { padding: 6px 12px; font-size: 13px; }
 
-input {
+input, select, textarea {
   font: inherit;
   width: 100%;
-  padding: 11px 14px;
+  padding: 10px 13px;
   border-radius: var(--radius);
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
 }
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-quiet);
+}
+input::placeholder { color: var(--text-mute); }
+
+/* ── Surfaces ──────────────────────────────────────────────────────────────── */
 
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 18px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.muted { color: var(--text-dim); }
+.mute  { color: var(--text-mute); }
+.mono  { font-variant-numeric: tabular-nums; }
+
+/* ── Table ─────────────────────────────────────────────────────────────────── */
+
+table { width: 100%; border-collapse: collapse; }
+th {
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+td {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover { background: var(--surface-2); }
+
+/* ── Pill ──────────────────────────────────────────────────────────────────── */
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.pill.ok      { color: var(--ok);      border-color: rgba(47, 163, 107, 0.35); }
+.pill.danger  { color: var(--danger);  border-color: rgba(229, 72, 77, 0.35); }
+.pill.warning { color: var(--warning); border-color: rgba(250, 204, 21, 0.30); }
+.pill.accent  { color: var(--accent-ink); border-color: rgba(19, 130, 140, 0.40); }
+
+/* ── Notices ───────────────────────────────────────────────────────────────── */
+
+.notice {
   border-radius: var(--radius);
+  padding: 11px 14px;
+  font-size: 14px;
+  border: 1px solid;
+}
+.notice.error { color: var(--danger); border-color: rgba(229, 72, 77, 0.35); background: rgba(229, 72, 77, 0.08); }
+.notice.info  { color: var(--text-dim); border-color: var(--border); background: var(--surface); }
+
+.empty {
+  padding: 40px 18px;
+  text-align: center;
+  color: var(--text-mute);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
 }

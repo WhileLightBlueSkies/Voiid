@@ -24,6 +24,7 @@ struct CommunityDetailView: View {
     @State private var busy = false
     @State private var showInbox = false
     @State private var showSettings = false
+    @State private var adminCard: CommunityService.CommunityCard?
     @State private var tab: CommunityTab = .home
     @State private var openConversation: VConversation?
 
@@ -91,6 +92,11 @@ struct CommunityDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
         .sheet(isPresented: $showInbox) { CommunityInboxView() }
+        // Bound to the card rather than a bool: the console needs a community id, and the
+        // only proof we have one is the card that produced the menu the host just tapped.
+        .sheet(item: $adminCard) { c in
+            CommunityAdminPanel(communityId: c.id, communityName: c.name)
+        }
         // Presented on the loaded card rather than on the handle, so the settings screen opens
         // already holding the values it edits and never has to render its own second load of
         // something this screen has in hand.
@@ -299,6 +305,13 @@ struct CommunityDetailView: View {
             // signed-off layout, and settings is a rare, deliberate act rather than something
             // a host reaches for on every visit.
             if isOwner(c) {
+                // The console goes above settings because it is the thing a host opens to
+                // ACT — approve, moderate, promote — while settings is where they go to
+                // change what the community IS. Frequency, not importance, sets the order.
+                Button("Manage community", systemImage: "shield.lefthalf.filled") {
+                    Haptics.tap()
+                    adminCard = c
+                }
                 Button("Community settings", systemImage: "slider.horizontal.3") {
                     Haptics.tap()
                     showSettings = true

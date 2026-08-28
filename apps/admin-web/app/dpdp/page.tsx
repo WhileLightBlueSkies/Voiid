@@ -1,190 +1,123 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
-import Link from 'next/link';
-import { api, getToken } from '@/lib/api';
+//
+// Data rights requests (India's DPDP Act). The one queue on this console with a legal clock:
+// a request breaches its period by being FORGOTTEN, not by being refused, so overdue is
+// surfaced on the row and on the dashboard rather than behind a filter.
+//
 
-/*
- * THE DATA-PRINCIPAL REQUEST QUEUE (plan item 3.27).
- *
- * India's DPDP Act gives a person the right to ask what you hold about them, to have it
- * corrected, and to have it erased — and to get an answer within a statutory window. This
- * screen is how those requests get worked, and the ONE thing it must never do is let one
- * quietly age past its deadline. So it is ordered by due date ascending and overdue rows
- * are marked, rather than sorted newest-first like every other queue in this panel.
- *
- * WHAT IT CANNOT DO, deliberately: there is no "view their messages" affordance, because
- * there is nothing to view. An export is metadata only — we do not hold the keys, so
- * content cannot be produced by anyone, including us. That is a property of the system
- * rather than a policy this screen enforces.
- */
+import { useState } from 'react';
+import Shell from '../../components/Shell';
+import { PageHeader, Pill, when } from '../../components/ui';
+import { ListTable } from '../../components/List';
+import { useList } from '../../components/useList';
+import { api } from '../../lib/api';
 
-interface DpdpRequest {
-  id: string;
-  user_id: string;
-  kind: 'access' | 'correction' | 'erasure' | string;
-  status: string;
-  subject_note: string | null;
-  opened_at: string;
-  due_at: string;
-  overdue: boolean;
-  username: string | null;
-  phone_masked?: string | null;
-  subject_deleted_at: string | null;
-  handled_by_email: string | null;
-}
-
-const KIND_LABEL: Record<string, string> = {
-  access: 'Access',
-  correction: 'Correction',
-  erasure: 'Erasure',
+type Req = {
+  id: string; user_id: string; kind: string; status: string;
+  subject_note: string | null; opened_at: string; due_at: string;
+  closed_at: string | null; resolution: string | null; overdue: boolean;
+  phone_masked: string | null;
 };
 
-export default function DpdpPage() {
-  const router = useRouter();
-  const [rows, setRows] = useState<DpdpRequest[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [scope, setScope] = useState<'open' | 'closed'>('open');
-  const [loading, setLoading] = useState(true);
+export default function Dpdp() {
+  return <Shell>{() => <Body />}</Shell>;
+}
+
+function Body() {
+  const [closed, setClosed] = useState(false);
+  const list = useList<Req>('/dpdp', 'requests', { status: closed ? 'closed' : 'open' });
   const [busy, setBusy] = useState<string | null>(null);
+  const [writeError, setWriteError] = useState<string | null>(null);
 
-  const load = useCallback(async (reset: boolean) => {
-    setLoading(true);
-    const qs = new URLSearchParams({ status: scope });
-    if (!reset && cursor) qs.set('cursor', cursor);
+  async function run(id: string, path: string, json: unknown) {
+    setBusy(id);
+    setWriteError(null);
     try {
-      const res = await api<{ requests: DpdpRequest[]; next_cursor: string | null }>(`/dpdp?${qs}`);
-      setRows((prev) => (reset ? res.requests : [...prev, ...res.requests]));
-      setCursor(res.next_cursor);
+      await api(path, { method: 'POST', json });
+      await list.reload();
+    } catch (e) {
+      setWriteError(e instanceof Error ? e.message : 'that did not go through');
     } finally {
-      setLoading(false);
+      setBusy(null);
     }
-  }, [cursor, scope]);
-
-  useEffect(() => {
-    if (!getToken()) { router.replace('/login'); return; }
-    setCursor(null);
-    load(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scope]);
-
-  async function setStatus(id: string, status: string) {
-    // A note is required on close. "Why was this closed" is the question a regulator asks,
-    // and an empty audit row cannot answer it.
-    const note = window.prompt(`Note for marking this ${status}?`);
-    if (note === null) return;
-    if (!note.trim()) { alert('A note is required.'); return; }
-    setBusy(id);
-    try {
-      await api(`/dpdp/${id}/status`, { method: 'POST', json: { status, note } });
-      setRows((prev) => prev.filter((r) => r.id !== id));
-    } finally { setBusy(null); }
-  }
-
-  async function startErasure(id: string) {
-    // Deliberately blunt wording. This queues a real, irreversible purge — the worker
-    // deletes rows and R2 objects — so the confirmation should read like what it is.
-    if (!window.confirm(
-      'Queue a permanent erasure for this account?\n\n' +
-      'This cannot be undone. Their data and uploaded media will be deleted.'
-    )) return;
-    setBusy(id);
-    try {
-      await api(`/dpdp/${id}/start-erasure`, { method: 'POST' });
-      await load(true);
-    } finally { setBusy(null); }
   }
 
   return (
-    <main style={{ maxWidth: 1040, margin: '0 auto', padding: 32 }}>
-      <header style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 8 }}>
-        <Link href="/"><button className="ghost">← Back</button></Link>
-        <h1 style={{ margin: 0, fontSize: 22 }}>
-          {scope === 'open' ? 'Open requests' : 'Closed requests'}
-        </h1>
-        <div style={{ marginLeft: 'auto' }}>
-          <button className="ghost" onClick={() => setScope((s) => (s === 'open' ? 'closed' : 'open'))}>
-            {scope === 'open' ? 'Show closed' : 'Show open'}
+    <>
+      <PageHeader
+        title="Data requests"
+        subtitle="Access and erasure requests, with their statutory deadline."
+        right={
+          <button className="ghost" onClick={() => setClosed((c) => !c)}>
+            {closed ? 'Show open' : 'Show closed'}
           </button>
-        </div>
-      </header>
+        }
+      />
 
-      <p style={{ color: 'var(--text-dim)', fontSize: 13, margin: '0 0 20px', maxWidth: '68ch' }}>
-        Ordered by deadline, soonest first — not newest first like the other queues, because
-        the failure mode here is a request quietly ageing past its statutory window. An export
-        contains metadata only: message content is end-to-end encrypted and cannot be produced
-        by anyone, including us.
-      </p>
+      {writeError && <div className="notice error" style={{ marginBottom: 16 }}>{writeError}</div>}
 
-      {rows.length === 0 && !loading && (
-        <p style={{ color: 'var(--text-dim)' }}>
-          {scope === 'open' ? 'Nothing outstanding.' : 'Nothing closed yet.'}
-        </p>
-      )}
-
-      <div style={{ display: 'grid', gap: 10 }}>
-        {rows.map((r) => (
-          <div key={r.id} className="card" style={{
-            padding: 14,
-            borderLeft: r.overdue ? '3px solid var(--danger)' : '3px solid transparent',
-          }}>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
-              <strong>{KIND_LABEL[r.kind] ?? r.kind}</strong>
-              {r.overdue && (
-                <span style={{ color: 'var(--danger)', fontSize: 12, fontWeight: 600 }}>OVERDUE</span>
+      <ListTable
+        head={['Request', 'Subject', 'Opened', closed ? 'Closed' : 'Due', '']}
+        loading={list.loading}
+        error={list.error}
+        empty={list.rows.length === 0}
+        emptyText={closed ? 'Nothing closed yet.' : 'No open requests.'}
+        cursor={list.cursor}
+        onMore={list.more}
+      >
+        {list.rows.map((r) => (
+          <tr key={r.id}>
+            <td>
+              <Pill tone={r.kind === 'erasure' ? 'danger' : 'accent'}>{r.kind}</Pill>
+              <div className="mute" style={{ fontSize: 13, marginTop: 4 }}>{r.status}</div>
+              {r.subject_note && <div className="mute" style={{ fontSize: 13 }}>{r.subject_note}</div>}
+            </td>
+            <td className="muted mono">{r.phone_masked ?? r.user_id.slice(0, 8) + '…'}</td>
+            <td className="muted" style={{ fontSize: 13, whiteSpace: 'nowrap' }}>{when(r.opened_at)}</td>
+            <td style={{ whiteSpace: 'nowrap', fontSize: 13 }}>
+              {closed ? (
+                <span className="muted">{when(r.closed_at)}</span>
+              ) : r.overdue ? (
+                <Pill tone="danger">Overdue · {when(r.due_at)}</Pill>
+              ) : (
+                <span className="muted">{when(r.due_at)}</span>
               )}
-              <span style={{ color: 'var(--text-dim)', fontSize: 13 }}>
-                {r.username ? `@${r.username}` : r.user_id.slice(0, 8)}
-              </span>
-              {r.subject_deleted_at && (
-                <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>account already deleted</span>
-              )}
-              <span style={{ marginLeft: 'auto', color: 'var(--text-dim)', fontSize: 12 }}>
-                due {new Date(r.due_at).toLocaleDateString()}
-              </span>
-            </div>
-
-            {r.subject_note && (
-              <div style={{ marginTop: 6, fontSize: 13.5 }}>{r.subject_note}</div>
-            )}
-
-            <div style={{ marginTop: 6, color: 'var(--text-dim)', fontSize: 12 }}>
-              opened {new Date(r.opened_at).toLocaleString()}
-              {r.handled_by_email && ` · handled by ${r.handled_by_email}`}
-              {` · status ${r.status}`}
-            </div>
-
-            {scope === 'open' && (
-              <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
-                <Link href={`/users?id=${r.user_id}`}>
-                  <button className="ghost">Open profile</button>
-                </Link>
-                <button className="ghost" disabled={busy === r.id}
-                        onClick={() => setStatus(r.id, 'fulfilled')}>
-                  Mark fulfilled
-                </button>
-                <button className="ghost" disabled={busy === r.id}
-                        onClick={() => setStatus(r.id, 'rejected')}>
-                  Reject
-                </button>
-                {r.kind === 'erasure' && (
-                  <button className="danger" disabled={busy === r.id}
-                          onClick={() => startErasure(r.id)}>
-                    Queue erasure
+            </td>
+            <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+              {!closed && (
+                <div className="row" style={{ justifyContent: 'flex-end', gap: 8 }}>
+                  {r.kind === 'erasure' && (
+                    <button
+                      className="danger sm"
+                      disabled={busy === r.id}
+                      onClick={() => {
+                        // Erasure soft-deletes a real person's account. It confirms, and the
+                        // wording says what actually happens rather than "are you sure".
+                        if (window.confirm('Start erasure? This soft-deletes the account and the worker purges it after the grace period.')) {
+                          void run(r.id, `/dpdp/${r.id}/start-erasure`, {});
+                        }
+                      }}
+                    >
+                      Start erasure
+                    </button>
+                  )}
+                  <button
+                    className="ghost sm"
+                    disabled={busy === r.id}
+                    onClick={() => {
+                      const resolution = window.prompt('Close with what resolution?')?.trim();
+                      if (resolution) void run(r.id, `/dpdp/${r.id}/status`, { status: 'closed', resolution });
+                    }}
+                  >
+                    Close
                   </button>
-                )}
-              </div>
-            )}
-          </div>
+                </div>
+              )}
+            </td>
+          </tr>
         ))}
-      </div>
-
-      {cursor && (
-        <button className="ghost" onClick={() => load(false)} disabled={loading} style={{ marginTop: 16 }}>
-          {loading ? 'Loading…' : 'Load more'}
-        </button>
-      )}
-    </main>
+      </ListTable>
+    </>
   );
 }

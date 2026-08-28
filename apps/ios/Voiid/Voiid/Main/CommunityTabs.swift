@@ -54,6 +54,9 @@ struct CommunitySpacesTab: View {
 
     @State private var channels: [CommunityService.Channel] = []
     @State private var loading = true
+    @State private var showNewSpace = false
+    @State private var newSpaceName = ""
+    @State private var creatingSpace = false
     @State private var error: String?
 
     /// A real channel dressed in the reference's row. Name, announcement-vs-chat and order are
@@ -111,6 +114,16 @@ struct CommunitySpacesTab: View {
                 }
             }
         }
+        .alert("New Space", isPresented: $showNewSpace) {
+            TextField("Name", text: $newSpaceName)
+            Button("Cancel", role: .cancel) {}
+            Button("Create") { Task { await createSpace() } }
+                // A Space with no name is not a Space, and the server 400s on it — better to
+                // refuse here than round-trip for the same answer.
+                .disabled(newSpaceName.trimmingCharacters(in: .whitespaces).isEmpty)
+        } message: {
+            Text("Spaces are channels inside this community.")
+        }
         .task { await load() }
     }
 
@@ -124,9 +137,31 @@ struct CommunitySpacesTab: View {
         }
     }
 
+    private func createSpace() async {
+        let name = newSpaceName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty, !creatingSpace else { return }
+        creatingSpace = true
+        defer { creatingSpace = false }
+        do {
+            let channel = try await CommunityService.shared.createChannel(
+                communityId: communityId, name: name)
+            // Appended locally as well as persisted: the new Space appears immediately
+            // rather than after a round trip the user has no reason to wait through.
+            channels.append(channel)
+            Haptics.success()
+        } catch {
+            self.error = (error as? APIError)?.errorDescription ?? "Couldn’t create that Space."
+        }
+    }
+
     private func createRow(_ title: String, icon: String) -> some View {
         Button {
             Haptics.tap()
+            // WAS AN EMPTY CLOSURE. The row rendered, fired a haptic, and returned — so an
+            // admin got tactile confirmation and no sheet, no error and no Space. The
+            // endpoint behind it has worked since 032; only the caller was missing.
+            newSpaceName = ""
+            showNewSpace = true
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: icon)
@@ -292,27 +327,33 @@ struct CommunityMembersTab: View {
     @State private var filter: MemberFilter = .all
     @State private var query = ""
 
-    /// A real roster row dressed in the reference's row. Role, join date and membership are the
-    /// server's; the display name, handle and online dot are decoration — the endpoint returns
-    /// ids, and resolving them is the directory's job.
-    private func decorated(_ member: CommunityService.Member,
-                           index: Int) -> CommunityDirectoryMember {
-        let sample = CommunityDirectoryMember.samples[
-            index % CommunityDirectoryMember.samples.count]
-        return CommunityDirectoryMember(
+    /// A roster row, entirely from the server.
+    ///
+    /// THIS USED TO SHOW SAMPLE NAMES. It indexed a bundled `samples` array by array
+    /// position and used that person's name, handle and online dot — so every row displayed
+    /// a fabricated identity for a real member, and the search below filtered those
+    /// fabrications, meaning searching a member's actual name returned nothing.
+    ///
+    /// The real values were on the wire the whole time; `CommunityService.Member` simply did
+    /// not decode them.
+    private func decorated(_ member: CommunityService.Member) -> CommunityDirectoryMember {
+        CommunityDirectoryMember(
             id: member.id,
-            name: sample.name,
-            handle: sample.handle,
+            name: member.displayName,
+            handle: member.username.map { "@\($0)" } ?? "",
             isManager: member.isAdmin,
             roleLabel: member.isOwner ? "Owner" : (member.isAdmin ? "Admin" : "Member"),
             joined: joinedText(member),
-            isOnline: sample.isOnline,
-            isNew: sample.isNew
+            // Presence is NOT part of the roster response, and inventing it was the worst
+            // part of the old version — a green dot is a claim about someone being there
+            // right now. Absent until the endpoint carries it.
+            isOnline: false,
+            isNew: false
         )
     }
 
     private var directory: [CommunityDirectoryMember] {
-        members.enumerated().map { decorated($1, index: $0) }
+        members.map(decorated)
     }
 
     private var visible: [CommunityDirectoryMember] {
@@ -345,9 +386,9 @@ struct CommunityMembersTab: View {
             // and a plain member is not entitled to see who asked.
             if isAdmin && !pending.isEmpty {
                 sectionLabel("Requests", count: pending.count)
-                ForEach(Array(pending.enumerated()), id: \.element.id) { index, m in
+                ForEach(pending) { m in
                     MemberDirectoryRow(
-                        member: decorated(m, index: index),
+                        member: decorated(m),
                         isAdmin: isAdmin,
                         pendingRequest: true,
                         onApprove: { Task { await decide(m, approve: true) } },

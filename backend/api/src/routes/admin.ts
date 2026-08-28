@@ -224,7 +224,37 @@ router.get('/stats', requireAdmin, async (_req, res) => {
       -- so the overdue count belongs where somebody will see it without navigating to it.
       (select count(*) from dpdp_requests where closed_at is null)::int    as dpdp_open,
       (select count(*) from dpdp_requests
-        where closed_at is null and due_at < now())::int                  as dpdp_overdue
+        where closed_at is null and due_at < now())::int                  as dpdp_overdue,
+      -- Communities, split the way an operator reads them: how many exist, and how many are
+      -- currently taken down. A single total would hide the second number entirely.
+      (select count(*) from communities where suspended_at is null)::int     as communities,
+      (select count(*) from communities where suspended_at is not null)::int as communities_suspended,
+      (select count(*) from communities
+        where created_at > now() - interval '24 hours'
+          and suspended_at is null)::int                                     as communities_24h,
+
+      -- The rest of the platform. Every module Voiid ships gets a number here, because a
+      -- console that only counts what it can moderate leaves an operator unable to answer
+      -- "is games working" without a psql prompt.
+      --
+      -- These are VOLUMES AND CONTAINERS, never content: conversations counts threads, not
+      -- messages, and calls counts sessions, not audio. Both are E2EE and the server holds
+      -- no key, so the encryption stays a fact rather than a claim.
+      (select count(*) from stories)::int                                    as stories,
+      (select count(*) from creator_profiles)::int                           as creators,
+      (select count(*) from creator_highlights)::int                         as highlights,
+      (select count(*) from game_lobbies)::int                               as game_lobbies,
+      (select count(*) from game_lobbies
+        where created_at > now() - interval '24 hours')::int                 as game_lobbies_24h,
+      (select count(*) from tournaments)::int                                as tournaments,
+      (select count(*) from community_events)::int                           as events,
+      (select count(*) from event_tickets)::int                              as event_tickets,
+      (select count(*) from event_orders)::int                               as event_orders,
+      (select count(*) from conversations)::int                              as conversations,
+      (select count(*) from calls)::int                                      as calls,
+      (select count(*) from calls where ended_at is null)::int               as calls_active,
+      (select count(*) from devices)::int                                    as devices,
+      (select count(*) from user_blocks)::int                                as blocks
   `);
   res.json(rows[0] ?? {});
 });
@@ -911,6 +941,233 @@ router.post('/dpdp/:id/start-erasure', requireAdmin, requireRole('admin'), async
   } finally {
     client.release();
   }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════
+// COMMUNITIES
+//
+// The platform-wide view. Every existing /communities route is scoped to a caller's own
+// membership — correct for the app, useless for an operator, who needs to see the
+// communities they are NOT in, which is where the problems are.
+//
+// `communities.suspended_at` has existed since the table did and nothing has ever written
+// to it. The container-level takedown below is the first thing that can.
+//
+// WHAT THIS DELIBERATELY CANNOT DO: read messages. Community chat is E2EE and the server
+// holds no key; the counts here come from `community_posts`, the non-E2EE feed. An admin
+// plane that could read conversations would make the encryption a claim rather than a fact.
+// ═════════════════════════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// GET /admin/communities?cursor=&limit=&q=&state=
+//
+// Keyset-paginated on created_at for the same reason the clips queue is: OFFSET skips rows
+// when the set shifts under a scroll, and a moderation list that silently omits an entry is
+// worse than one that pages slowly.
+// ─────────────────────────────────────────────────────────────────────────────────
+router.get('/communities', requireAdmin, async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 30, 100);
+  const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
+  const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+  const state = req.query.state === 'suspended' ? 'suspended'
+              : req.query.state === 'active' ? 'active' : 'all';
+
+  const where: string[] = [];
+  const params: unknown[] = [];
+
+  if (cursor) { params.push(cursor); where.push(`c.created_at < $${params.length}`); }
+  if (state === 'suspended') where.push('c.suspended_at is not null');
+  if (state === 'active') where.push('c.suspended_at is null');
+  if (q) {
+    // Name OR handle: an operator chasing a report has one or the other, rarely both.
+    params.push(`%${q.toLowerCase()}%`);
+    where.push(`(lower(c.name) like $${params.length} or lower(c.handle) like $${params.length})`);
+  }
+  params.push(limit);
+
+  const rows = await query<any>(
+    `select c.id, c.handle, c.name, c.description, c.category,
+            c.discoverable, c.join_policy, c.member_count, c.max_members,
+            c.suspended_at, c.created_at, c.owner_id,
+            u.full_name as owner_name, u.username as owner_username,
+            (select count(*) from community_posts p where p.community_id = c.id)::int as post_count
+       from communities c
+       left join users u on u.id = c.owner_id
+       ${where.length ? `where ${where.join(' and ')}` : ''}
+      order by c.created_at desc
+      limit $${params.length}`,
+    params
+  );
+
+  res.json({
+    communities: rows,
+    // Null rather than a repeated cursor when the page is short: a client that keys "more"
+    // on presence cannot then loop forever on the last page.
+    next_cursor: rows.length === limit ? rows[rows.length - 1].created_at : null,
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// GET /admin/communities/:id — one community, with its roster split by state.
+// ─────────────────────────────────────────────────────────────────────────────────
+router.get('/communities/:id', requireAdmin, async (req, res) => {
+  const id = String(req.params.id);
+  if (!/^[0-9a-f-]{36}$/i.test(id)) {
+    return res.status(400).json({ error: 'community id must be a uuid' });
+  }
+
+  const rows = await query<any>(
+    `select c.id, c.handle, c.name, c.description, c.category,
+            c.discoverable, c.join_policy, c.member_count, c.max_members,
+            c.suspended_at, c.created_at, c.owner_id, c.members_can_invite,
+            u.full_name as owner_name, u.username as owner_username
+       from communities c
+       left join users u on u.id = c.owner_id
+      where c.id = $1`,
+    [id]
+  );
+  const community = rows[0];
+  if (!community) return res.status(404).json({ error: 'not found' });
+
+  // Counts by state in ONE pass rather than four queries, and the post total alongside, so
+  // the detail header cannot show numbers that disagree with each other.
+  const counts = await query<Record<string, number>>(
+    `select
+       count(*) filter (where state = 'active')::int  as active,
+       count(*) filter (where state = 'pending')::int as pending,
+       count(*) filter (where state = 'banned')::int  as banned,
+       count(*) filter (where state = 'left')::int    as left_,
+       count(*) filter (where role in ('owner','admin') and state = 'active')::int as managers
+     from community_members where community_id = $1`,
+    [id]
+  );
+
+  const members = await query<any>(
+    `select m.user_id, m.role, m.state, m.joined_at,
+            u.full_name, u.username
+       from community_members m
+       left join users u on u.id = m.user_id
+      where m.community_id = $1 and m.state <> 'left'
+      order by case m.role when 'owner' then 0 when 'admin' then 1 else 2 end,
+               m.joined_at asc
+      limit 200`,
+    [id]
+  );
+
+  const posts = await query<any>(
+    `select count(*)::int as total,
+            count(*) filter (where created_at > now() - interval '7 days')::int as last_7d
+       from community_posts where community_id = $1`,
+    [id]
+  );
+
+  res.json({
+    community,
+    counts: counts[0] ?? {},
+    posts: posts[0] ?? { total: 0, last_7d: 0 },
+    members,
+    // Said plainly so nobody reads the roster cap as the roster.
+    members_truncated: members.length === 200,
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// POST /admin/communities/:id/suspend   { reason }
+//
+// Container-level takedown, admin-role only — the same bar as deleting a clip, because it
+// takes down everyone's content at once rather than one person's.
+//
+// Suspend is REVERSIBLE and destroys nothing. It is deliberately not a delete: an operator
+// acting on a report needs to stop the harm now and be able to be wrong later.
+// ─────────────────────────────────────────────────────────────────────────────────
+router.post('/communities/:id/suspend', requireAdmin, requireRole('admin'), async (req, res) => {
+  const a = (req as any).admin as AdminAuth;
+  const id = String(req.params.id);
+  const reason = String(req.body?.reason ?? '').trim();
+  if (!/^[0-9a-f-]{36}$/i.test(id)) {
+    return res.status(400).json({ error: 'community id must be a uuid' });
+  }
+  // A takedown with no stated reason is one nobody can review later, and the audit row is
+  // the only account of why this happened.
+  if (!reason) return res.status(400).json({ error: 'a reason is required' });
+
+  const r = await query<any>(
+    `update communities set suspended_at = now()
+      where id = $1 and suspended_at is null
+      returning id, name, handle`,
+    [id]
+  );
+  if (!r[0]) {
+    // Distinguishes "no such community" from "already suspended" only in the message: both
+    // leave the operator with the same next step, and neither is a failure worth a 500.
+    return res.status(409).json({ error: 'not found, or already suspended' });
+  }
+
+  await audit(a.adminId, 'community.suspend', 'community', id,
+              { reason, name: r[0].name, handle: r[0].handle });
+  res.json({ ok: true, community: r[0] });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// POST /admin/communities/:id/restore   { reason }
+// ─────────────────────────────────────────────────────────────────────────────────
+router.post('/communities/:id/restore', requireAdmin, requireRole('admin'), async (req, res) => {
+  const a = (req as any).admin as AdminAuth;
+  const id = String(req.params.id);
+  const reason = String(req.body?.reason ?? '').trim();
+  if (!/^[0-9a-f-]{36}$/i.test(id)) {
+    return res.status(400).json({ error: 'community id must be a uuid' });
+  }
+
+  const r = await query<any>(
+    `update communities set suspended_at = null
+      where id = $1 and suspended_at is not null
+      returning id, name, handle`,
+    [id]
+  );
+  if (!r[0]) return res.status(409).json({ error: 'not found, or not suspended' });
+
+  // Reinstatement is audited as loudly as the takedown. A reversal nobody can see is how a
+  // moderation log stops being a record of what actually happened.
+  await audit(a.adminId, 'community.restore', 'community', id,
+              { reason: reason || null, name: r[0].name, handle: r[0].handle });
+  res.json({ ok: true, community: r[0] });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// GET /admin/communities/:id/posts?cursor=&limit=
+//
+// The feed as an operator sees it. Non-E2EE by design — this is the public wall, not chat.
+// ─────────────────────────────────────────────────────────────────────────────────
+router.get('/communities/:id/posts', requireAdmin, async (req, res) => {
+  const id = String(req.params.id);
+  const limit = Math.min(Number(req.query.limit) || 30, 100);
+  const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
+  if (!/^[0-9a-f-]{36}$/i.test(id)) {
+    return res.status(400).json({ error: 'community id must be a uuid' });
+  }
+
+  const params: unknown[] = [id];
+  let cursorClause = '';
+  if (cursor) { params.push(cursor); cursorClause = `and p.created_at < $${params.length}`; }
+  params.push(limit);
+
+  const rows = await query<any>(
+    `select p.id, p.author_id, p.body, p.media_url, p.like_count, p.comment_count,
+            p.created_at, p.edited_at,
+            u.full_name as author_name, u.username as author_username
+       from community_posts p
+       left join users u on u.id = p.author_id
+      where p.community_id = $1 ${cursorClause}
+      order by p.created_at desc
+      limit $${params.length}`,
+    params
+  );
+
+  res.json({
+    posts: rows,
+    next_cursor: rows.length === limit ? rows[rows.length - 1].created_at : null,
+  });
 });
 
 export default router;
