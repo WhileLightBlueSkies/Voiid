@@ -5,6 +5,7 @@ import Link from 'next/link';
 import Shell from '../components/Shell';
 import { PageHeader, Async } from '../components/ui';
 import { AreaChart, BarRow, type Point } from '../components/Chart';
+import { DateRange, rangeQuery, rangeLabel, type Range } from '../components/DateRange';
 import { api } from '../lib/api';
 
 type Stats = {
@@ -28,7 +29,11 @@ export default function Overview() {
 function Body() {
   const [s, setS] = useState<Stats | null>(null);
   const [series, setSeries] = useState<Series[]>([]);
-  const [days, setDays] = useState(30);
+  const [range, setRange] = useState<Range>({ kind: 'days', days: 30 });
+  /// The range the SERVER actually used. A request for five years comes back clamped to a
+  /// year, and a header echoing what was asked for would then disagree with the chart
+  /// beneath it.
+  const [actual, setActual] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [seriesError, setSeriesError] = useState<string | null>(null);
 
@@ -40,10 +45,16 @@ function Body() {
   useEffect(() => {
     // Kept separate from the totals: a failed chart must not blank the numbers above it,
     // which are the half an operator can act on.
-    api<{ series: Series[] }>(`/series?days=${days}`)
-      .then((r) => { setSeries(r.series); setSeriesError(null); })
+    api<{ series: Series[]; from: string | null; to: string | null; days: number }>(
+      `/series?${rangeQuery(range)}`,
+    )
+      .then((r) => {
+        setSeries(r.series);
+        setActual(r.from && r.to ? `${r.from} → ${r.to}` : null);
+        setSeriesError(null);
+      })
       .catch((e) => setSeriesError(e instanceof Error ? e.message : 'could not load the history'));
-  }, [days]);
+  }, [range]);
 
   const n = (v?: number) => v ?? 0;
   const pts = (k: keyof Series): Point[] =>
@@ -54,20 +65,7 @@ function Body() {
       <PageHeader
         title="Overview"
         subtitle="Everything on Voiid, at a glance."
-        right={
-          <div className="row" style={{ gap: 6 }}>
-            {[7, 30, 90].map((d) => (
-              <button
-                key={d}
-                className={d === days ? '' : 'ghost'}
-                onClick={() => setDays(d)}
-                style={{ padding: '5px 11px' }}
-              >
-                {d}d
-              </button>
-            ))}
-          </div>
-        }
+        right={<DateRange value={range} onChange={setRange} />}
       />
 
       <Async loading={!s} error={error} empty={false} emptyText="">
@@ -96,7 +94,9 @@ function Body() {
 
             {/* ── Growth ──────────────────────────────────────────────────────── */}
             <section>
-              <div className="section-label">Growth · last {days} days</div>
+              <div className="section-label">
+                Growth · {actual ?? rangeLabel(range)}
+              </div>
               {seriesError ? (
                 <div className="notice error">{seriesError}</div>
               ) : (
