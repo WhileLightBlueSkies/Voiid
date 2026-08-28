@@ -38,9 +38,22 @@
   --warning: #facc15;
   --info: #3b82f6;
 
-  --radius: 12px;
-  --radius-lg: 16px;
-  --sidebar: 232px;
+  /* Cloudflare's console reads TIGHT: 6/8px radii, not the 12/16 of a marketing page.
+   * Rounder corners make a data table look like a settings sheet. */
+  --radius: 6px;
+  --radius-lg: 8px;
+  --sidebar: 240px;
+
+  /* An elevation scale, because a console stacks: page < panel < popover. Dark UI cannot
+   * lean on shadow alone, so each step pairs a shadow with a lighter border. */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.32);
+  --shadow-2: 0 4px 12px rgba(0, 0, 0, 0.40);
+
+  /* Cloudflare's signature: the orange accent for attention states, used sparingly and
+   * NEVER as the primary action — teal stays the brand. */
+  --attention: #f6821f;
+
+  --row-h: 44px;
 }
 
 * { box-sizing: border-box; }
@@ -58,18 +71,43 @@ body {
 a { color: var(--accent-ink); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
-h1 { font-size: 22px; font-weight: 650; letter-spacing: -0.02em; margin: 0; }
-h2 { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
+/* Console typography is SMALLER and denser than a site's. 20/14 with tight tracking on the
+ * headings; the interface should read as an instrument panel, not an article. */
+h1 { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; margin: 0; }
+h2 { font-size: 14px; font-weight: 600; letter-spacing: -0.005em; margin: 0; }
+
+/* A section label with a rule running to the edge — the device Cloudflare uses to break a
+ * long dashboard into scannable bands without boxing every group. */
+.section-label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  margin: 0 0 12px;
+}
+.section-label::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
 
 /* ── Controls ──────────────────────────────────────────────────────────────── */
 
 button {
   font: inherit;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   border: 0;
-  border-radius: 999px;
-  padding: 9px 16px;
+  /* Rectangular, not pill. A pill button is a marketing control; a console button sits in
+   * a toolbar next to inputs and must share their geometry. */
+  border-radius: var(--radius);
+  padding: 7px 14px;
   background: var(--accent);
   color: #fff;
   transition: background 120ms ease, opacity 120ms ease;
@@ -108,8 +146,28 @@ input::placeholder { color: var(--text-mute); }
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: 18px;
+  padding: 16px;
+  box-shadow: var(--shadow-1);
 }
+
+/* A panel with its own titled header bar — the primary grouping unit of the Cloudflare
+ * dashboard, and the reason its long pages stay navigable. */
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
+  overflow: hidden;
+}
+.panel > header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.panel > .body { padding: 16px; }
 
 .row {
   display: flex;
@@ -126,7 +184,11 @@ input::placeholder { color: var(--text-mute); }
 table { width: 100%; border-collapse: collapse; }
 th {
   text-align: left;
-  font-size: 12px;
+  font-size: 11px;
+  background: var(--surface-2);
+  position: sticky;
+  top: 0;
+  z-index: 1;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -136,9 +198,11 @@ th {
   white-space: nowrap;
 }
 td {
-  padding: 12px;
+  padding: 9px 12px;
+  font-size: 13px;
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
+  height: var(--row-h);
 }
 tbody tr:last-child td { border-bottom: 0; }
 tbody tr:hover { background: var(--surface-2); }
@@ -149,10 +213,11 @@ tbody tr:hover { background: var(--surface-2); }
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
-  padding: 3px 9px;
-  border-radius: 999px;
+  padding: 2px 7px;
+  /* Slightly rounded, not a lozenge — matches the button geometry above. */
+  border-radius: 4px;
   background: var(--surface-2);
   color: var(--text-dim);
   border: 1px solid var(--border);
@@ -162,6 +227,7 @@ tbody tr:hover { background: var(--surface-2); }
 .pill.danger  { color: var(--danger);  border-color: rgba(229, 72, 77, 0.35); }
 .pill.warning { color: var(--warning); border-color: rgba(250, 204, 21, 0.30); }
 .pill.accent  { color: var(--accent-ink); border-color: rgba(19, 130, 140, 0.40); }
+.pill.attention { color: var(--attention); border-color: rgba(246, 130, 31, 0.35); }
 
 /* ── Notices ───────────────────────────────────────────────────────────────── */
 
