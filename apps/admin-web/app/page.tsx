@@ -6,6 +6,7 @@ import Shell from '../components/Shell';
 import { PageHeader, Async } from '../components/ui';
 import { AreaChart, BarRow, type Point } from '../components/Chart';
 import { DateRange, rangeQuery, rangeLabel, type Range } from '../components/DateRange';
+import { WorldMap, type GeoRow } from '../components/WorldMap';
 import { api } from '../lib/api';
 
 type Stats = {
@@ -36,6 +37,8 @@ function Body() {
   const [actual, setActual] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [seriesError, setSeriesError] = useState<string | null>(null);
+  const [geo, setGeo] = useState<GeoRow[]>([]);
+  const [geoError, setGeoError] = useState<string | null>(null);
 
   useEffect(() => {
     api<Stats>('/stats').then(setS)
@@ -55,6 +58,14 @@ function Body() {
       })
       .catch((e) => setSeriesError(e instanceof Error ? e.message : 'could not load the history'));
   }, [range]);
+
+  useEffect(() => {
+    // Not date-filtered: this is a standing distribution of every live account, so it does
+    // not move with the range control above it.
+    api<{ countries: GeoRow[] }>('/geo')
+      .then((r) => { setGeo(r.countries); setGeoError(null); })
+      .catch((e) => setGeoError(e instanceof Error ? e.message : 'could not load the map'));
+  }, []);
 
   const n = (v?: number) => v ?? 0;
   const pts = (k: keyof Series): Point[] =>
@@ -107,6 +118,28 @@ function Body() {
                   <Panel title="New conversations"><AreaChart points={pts('conversations')} label="Threads started" color="var(--attention)" /></Panel>
                 </div>
               )}
+
+              <div style={{ marginTop: 12 }}>
+                <Panel title="Where accounts registered">
+                  {geoError ? (
+                    <div className="notice error">{geoError}</div>
+                  ) : geo.length === 0 ? (
+                    <div className="empty">No accounts with a phone number yet.</div>
+                  ) : (
+                    <>
+                      <WorldMap rows={geo} />
+                      {/* The caveat sits UNDER the map, not in a tooltip. A world map is
+                          read as "our users are here" by default, and this one cannot
+                          support that reading. */}
+                      <p className="mute" style={{ fontSize: 12, margin: '12px 0 0' }}>
+                        By phone dialling prefix — where each SIM was issued, not where
+                        anyone is now. Voiid stores no user location: live shares are
+                        encrypted on-device and never persisted.
+                      </p>
+                    </>
+                  )}
+                </Panel>
+              </div>
             </section>
 
             {/* ── Everything else, by module ──────────────────────────────────── */}
