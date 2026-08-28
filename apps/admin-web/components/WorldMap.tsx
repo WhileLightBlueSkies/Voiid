@@ -67,6 +67,10 @@ export function WorldMap({ regions, height = 320 }: {
               // A region with no accounts stays neutral grey. Tinting it faintly would put
               // it on the same scale as a real value and imply a share it does not have.
               fill={on ? (colorOf.get(s.region) ?? 'var(--accent)') : 'var(--surface-3)'}
+              // Countries arrive as MultiPolygons whose inner rings are lakes and enclaves.
+              // With the default nonzero rule those inner rings fill solid, so the Caspian
+              // and the Great Lakes paint over as land. evenodd punches them out correctly.
+              fillRule="evenodd"
               fillOpacity={on ? (dim ? 0.35 : 0.92) : 1}
               stroke="var(--border-strong)"
               strokeWidth="0.7"

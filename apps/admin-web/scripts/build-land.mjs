@@ -6,13 +6,18 @@
 // path strings, not an 8MB topology plus a decoder. Real cartography, no runtime cost, and
 // nothing fetched at render time for a CSP to block.
 //
+// 50m, not 110m. At 110m India carries 136 vertices and its southern tip stops at 8.0°N —
+// Kanyakumari is simply absent, and the coastline reads as wrong to anyone who knows it.
+// 50m gives 1356 vertices and the true 6.7°N. The cost is ~2x the output, which is worth
+// it for a map whose whole job is being recognised.
+//
 // Run: node scripts/build-land.mjs
 //
 import { readFileSync, writeFileSync } from 'node:fs';
 import { feature } from 'topojson-client';
 
 const topo = JSON.parse(readFileSync(
-  new URL('../../../node_modules/world-atlas/countries-110m.json', import.meta.url), 'utf8'));
+  new URL('../../../node_modules/world-atlas/countries-50m.json', import.meta.url), 'utf8'));
 const fc = feature(topo, topo.objects.countries);
 
 // ISO 3166-1 NUMERIC -> region. Numeric because that is what Natural Earth keys on; mapping
@@ -74,12 +79,49 @@ const py = (lat) => ((LAT_MAX - lat) / (LAT_MAX * 2)) * H;
 /** One decimal is ~80m at the equator — far below a 720px render, and it halves the file. */
 const r1 = (n) => Math.round(n * 10) / 10;
 
+/**
+ * Ramer-Douglas-Peucker, applied AFTER projection so the tolerance is in pixels — the unit
+ * that actually decides whether a vertex is visible. Simplifying in lon/lat instead would
+ * over-thin the tropics and under-thin the north.
+ *
+ * 50m raw is ~975KB, which is not a thing to ship to a browser for one panel. At 0.35px
+ * the whole world comes down to ~200KB with no visible change at this size: the detail
+ * being removed is smaller than a pixel.
+ */
+function rdp(pts, eps) {
+  if (pts.length < 3) return pts;
+  let maxD = 0, idx = 0;
+  const [ax, ay] = pts[0], [bx, by] = pts[pts.length - 1];
+  const dx = bx - ax, dy = by - ay;
+  const len = Math.hypot(dx, dy);
+  for (let i = 1; i < pts.length - 1; i++) {
+    const [x, y] = pts[i];
+    // Perpendicular distance; degenerates to point distance when the span is a single point.
+    const d = len === 0
+      ? Math.hypot(x - ax, y - ay)
+      : Math.abs(dy * x - dx * y + bx * ay - by * ax) / len;
+    if (d > maxD) { maxD = d; idx = i; }
+  }
+  if (maxD <= eps) return [pts[0], pts[pts.length - 1]];
+  return [...rdp(pts.slice(0, idx + 1), eps).slice(0, -1), ...rdp(pts.slice(idx), eps)];
+}
+
+const EPS = 0.35;   // pixels
+
 function ring(coords) {
+  // Project first, then simplify in pixel space, then emit.
+  const projected = coords.map(([lon, lat]) => [
+    px(lon),
+    py(Math.max(-LAT_MAX, Math.min(LAT_MAX, lat))),
+  ]);
+  const simplified = rdp(projected, EPS);
   let d = '';
   let last = null;
-  for (const [lon, lat] of coords) {
-    if (lat > LAT_MAX || lat < -LAT_MAX) continue;   // clip the poles we do not draw
-    const x = r1(px(lon)), y = r1(py(lat));
+  for (const [pxx, pyy] of simplified) {
+    // Latitude was CLAMPED above, never skipped. Dropping a vertex mid-ring joins its
+    // neighbours with a straight chord — which is why northern Canada and Russia came out
+    // sliced flat. Clamping keeps the ring closed and flattens it against the crop edge.
+    const x = r1(pxx), y = r1(pyy);
     // Drop points that round to the same pixel — invisible detail, real bytes.
     if (last && last[0] === x && last[1] === y) continue;
     d += `${d ? 'L' : 'M'}${x},${y}`;
@@ -88,16 +130,44 @@ function ring(coords) {
   return d ? d + 'Z' : '';
 }
 
+/**
+ * A ring that wraps the antimeridian (Russia's Chukotka, Fiji) has consecutive vertices
+ * ~360° apart in longitude. Projected naively that draws a band straight across the map —
+ * the streak that made Russia span the full width.
+ *
+ * Rather than clipping properly against the seam, which needs real polygon clipping, the
+ * ring is BROKEN into runs that do not cross it. Each run is drawn as its own subpath, so
+ * the landmass appears on both edges as it should and nothing streaks between them.
+ */
+function breakAtSeam(coords) {
+  const runs = [];
+  let run = [coords[0]];
+  for (let i = 1; i < coords.length; i++) {
+    if (Math.abs(coords[i][0] - coords[i - 1][0]) > 180) {
+      runs.push(run);
+      run = [];
+    }
+    run.push(coords[i]);
+  }
+  runs.push(run);
+  return runs.filter((r) => r.length > 2);
+}
+
 function pathOf(geom) {
-  if (geom.type === 'Polygon') return geom.coordinates.map(ring).join('');
-  if (geom.type === 'MultiPolygon') return geom.coordinates.flat().map(ring).join('');
-  return '';
+  const rings = geom.type === 'Polygon' ? geom.coordinates
+              : geom.type === 'MultiPolygon' ? geom.coordinates.flat()
+              : [];
+  return rings.flatMap(breakAtSeam)
+              .map(ring)
+              .filter((d) => d.length > 8)   // discard slivers left by a seam break
+              .join('');
 }
 
 const shapes = [];
 let unmapped = [];
 for (const f of fc.features) {
   const region = REGION[Number(f.id)];
+  if (Number(f.id) === 10) continue;   // Antarctica: no accounts, and it eats the frame
   const d = pathOf(f.geometry);
   if (!d) continue;
   // A country with no region mapping is still DRAWN, as neutral geography. Dropping it
