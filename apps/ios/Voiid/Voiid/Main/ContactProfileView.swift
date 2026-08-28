@@ -24,7 +24,12 @@ struct ContactProfileView: View {
     /// Needed for Clear chat, which now lives in the danger card below.
     @EnvironmentObject var chat: ChatStore
     @Environment(\.dismiss) private var dismiss
-    @State private var muted = false
+    /// Seeded from `MuteStore` on appear — the old `muted` flag was view state that reset
+    /// on every open.
+    @State private var isMuted = false
+    /// Names what was just copied, for the confirmation toast. A copy with no feedback is
+    /// indistinguishable from a tap that did nothing.
+    @State private var copiedLabel: String?
     @State private var viewPhoto = false
     @State private var showAllMedia = false
     @State private var profile: UserProfile?
@@ -75,18 +80,29 @@ struct ContactProfileView: View {
                 // 20pt between sections, not 24 — with titles sitting outside the cards,
                 // each section already carries 8pt of its own leading space, and 24 opened
                 // gaps wide enough to read as unrelated screens stacked together.
-                VStack(spacing: 20) {
+                // THE REFERENCE'S ORDER AND SPACING: 10pt between sections, not 20.
+                //
+                // Encryption comes straight after the actions rather than sixth — it is a
+                // fact about this conversation, and burying it under About and Media made
+                // the page's most load-bearing statement its least prominent.
+                //
+                // 10pt reads as one continuous page; at 20 each card floated as its own
+                // screen. Calls and Settings have no reference equivalent and keep their
+                // place at the end, before the danger zone.
+                VStack(spacing: 10) {
                     quickActions
+                    contactDetailsCard
+                    encryptionCard
                     aboutCard
                     sharedMediaCard
                     callHistoryCard
-                    encryptionCard
                     settingsCard
                     dangerCard
                 }
                 // 20pt gutters: 24 left the cards floating in a wide margin on a 390pt phone.
-                .padding(.horizontal, 20)
-                .padding(.top, 20)
+                // 16pt gutters, the reference's `VoiidSpacing.md`.
+                .padding(.horizontal, VoiidSpacing.md)
+                .padding(.top, VoiidSpacing.md)
                 .padding(.bottom, VoiidSpacing.xl)
                 // SKELETON TO CONTENT IS A CROSSFADE, NOT A CUT.
                 //
@@ -107,36 +123,45 @@ struct ContactProfileView: View {
             }
         }
         // The photo extends past the top safe area; everything else respects it.
-        .ignoresSafeArea(edges: .top)
-        // A TINTED GROUND, not flat. Glass blurs whatever is behind it — over a single flat
-        // colour there is nothing to sample, so the cards render as grey slabs and the
-        // material is wasted. A soft wash of the brand colour under the top of the scroll
-        // gives them something to pick up, so the cards read as translucent rather than
-        // merely dim.
-        .background {
-            ZStack(alignment: .top) {
-                VoiidColor.background
-                LinearGradient(
-                    colors: [VoiidColor.primary.opacity(0.16), .clear],
-                    startPoint: .top, endPoint: .bottom
-                )
-                .frame(height: 520)
+        // A FLAT GROUND, and the safe area respected.
+        //
+        // Both the tinted wash and the `ignoresSafeArea` existed to serve the full-bleed
+        // portrait: the photo ran under the status bar, and the glass cards needed something
+        // to sample or they rendered as grey slabs. With a centred avatar on a plain ground
+        // there is no photo to bleed and nothing to sample, so the tint is now just a
+        // coloured haze over a details page.
+        .background(VoiidColor.background.ignoresSafeArea())
+        // Confirmation, bottom-anchored so it never covers the row just tapped. Auto-
+        // dismissing because it is status, and status that must be dismissed is a task.
+        .overlay(alignment: .bottom) {
+            if let copiedLabel {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill").font(.system(size: 14))
+                    Text("\(copiedLabel) copied").font(VoiidFont.rounded(14, .medium))
+                }
+                .foregroundColor(VoiidColor.textOnAccent)
+                .padding(.horizontal, VoiidSpacing.md)
+                .padding(.vertical, 10)
+                .background(Capsule().fill(VoiidColor.accent))
+                .padding(.bottom, VoiidSpacing.xl)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-            .ignoresSafeArea()
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
-        // WHITE back chevron, not the brand tint. The bar now floats over the portrait's
-        // scrim, and deep aubergine on a dark photo is very nearly invisible — the one
-        // control that must always be findable would have been the hardest thing to see.
-        // Forcing the dark colour scheme on the bar makes the system draw its chrome light.
-        .toolbarColorScheme(.dark, for: .navigationBar)
-        .tint(.white)
+        // The system's own chevron and tint. The forced-white version was correct while a
+        // dark photograph sat behind the bar; on the flat ground it is now white-on-light —
+        // the one control that must always be findable would be invisible.
         // Hide the bottom bar on this detail screen. We do NOT reset on disappear: when you
         // pop back to the CHAT (also a detail screen) its onAppear does not re-fire, so a
         // reset here would wrongly show the bar over the chat. The bar is restored only when
         // a ROOT tab page appears (each sets hideTabBar = false).
-        .onAppear { session.hideTabBar = true }
+        .onAppear {
+            session.hideTabBar = true
+            // Read from the store, not remembered in the view. A mute set here survives the
+            // app being killed, and one set on another screen shows up correctly here.
+            isMuted = MuteStore.isMuted(conversation.id)
+        }
         .task { await loadProfile() }
         .task { await loadLocalContent() }
         .fullScreenCover(isPresented: $viewPhoto) {
@@ -146,6 +171,24 @@ struct ContactProfileView: View {
             SafetyNumberView(peerUserId: conversation.peerUserId ?? "", peerName: displayName)
         }
         .sheet(isPresented: $showAllMedia) { SharedMediaSheet(title: conversation.title, conversationId: conversation.id) }
+        .sheet(isPresented: $showAllCalls) {
+            NavigationStack {
+                List(allCalls, id: \.id) { entry in
+                    callRow(entry)
+                        .listRowBackground(VoiidColor.surfaceCard)
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .background(VoiidColor.background)
+                .navigationTitle("Calls")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Done") { showAllCalls = false }
+                    }
+                }
+            }
+        }
         .confirmationDialog("Clear this chat?", isPresented: $showClearChatConfirm,
                             titleVisibility: .visible) {
             Button("Clear chat", role: .destructive) {
@@ -232,114 +275,101 @@ struct ContactProfileView: View {
     // So the photo goes edge-to-edge at the top, the name sits ON it in white, and the
     // scrim underneath guarantees the text is legible over ANY photo — a dark portrait, a
     // blown-out selfie, or no photo at all. Nothing is centered for its own sake.
-    private var headerCard: some View {
-        ZStack(alignment: .bottomLeading) {
-            portrait
-
-            // A bottom-anchored gradient, not a flat overlay. Flat dimming greys out the
-            // whole photo to protect two lines of text; a gradient leaves the face untouched
-            // and only darkens where the words actually are.
-            LinearGradient(
-                colors: [.clear, .black.opacity(0.15), .black.opacity(0.72)],
-                startPoint: .center, endPoint: .bottom
-            )
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(displayName)
-                    .font(VoiidFont.rounded(32, .bold))
-                    // Optical tightening — Apple negatively tracks large titles for the same
-                    // reason: default spacing reads loose above ~28pt.
-                    .kerning(-0.6)
-                    .foregroundStyle(.white)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.75)
-
-                identityRow
-            }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 18)
-            // Fixed white on the scrim, NOT a theme token: this text sits on a photo, so it
-            // must not follow the light/dark ground it is no longer standing on.
-            .shadow(color: .black.opacity(0.35), radius: 8, y: 1)
-        }
-        .frame(height: 360)
-        .frame(maxWidth: .infinity)
-        .clipped()
-        .contentShape(Rectangle())
-        .onTapGesture { Haptics.tap(); viewPhoto = true }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(displayName). Tap to view photo.")
-    }
-
-    /// The photo itself, or a generated placeholder when there is none.
-    @ViewBuilder
-    private var portrait: some View {
-        if let ref = photoRef, !ref.isEmpty {
-            // fillsFrame: the banner is a RECTANGLE. Without it the shared avatar view
-            // clipped the photo to a circle in the corner of the 360pt frame — which is
-            // exactly the "profile is showing rounded" problem.
-            ProfileAvatarButton(photoURL: ref, name: displayName, size: 360, fillsFrame: true)
-        } else {
-            // NO PHOTO IS A COMMON CASE, not an edge case, so it gets a real design rather
-            // than a grey box: the brand gradient with the person's initial. It reads as
-            // deliberate, and it keeps the same 360pt shape so the layout never jumps when
-            // a photo finally loads.
-            LinearGradient(
-                colors: [VoiidColor.primary.opacity(0.85), VoiidColor.primary.opacity(0.45)],
-                startPoint: .topLeading, endPoint: .bottomTrailing
-            )
-            .overlay {
-                Text(initial)
-                    .font(VoiidFont.rounded(96, .semibold))
-                    .foregroundStyle(.white.opacity(0.9))
-            }
-        }
-    }
-
-    private var initial: String {
-        String(displayName.trimmingCharacters(in: .whitespaces).first.map(String.init) ?? "?").uppercased()
-    }
-
-    /// The handle, the number, or both — resolved once so the header does not branch inline.
-    private var identityLine: (handle: String?, secondary: String?)? {
-        let handle = profile?.username.flatMap { $0.isEmpty ? nil : "@\($0)" }
-        let secondary = secondaryIdentity
-        guard handle != nil || secondary != nil else { return nil }
-        return (handle, secondary)
-    }
-
-    @ViewBuilder
-    private var identityRow: some View {
-        if let line = identityLine {
-            HStack(spacing: 6) {
-                if let handle = line.handle {
-                    Text(handle)
-                        .font(VoiidFont.rounded(15, .semibold))
-                        .foregroundStyle(.white)
-                }
-                if line.handle != nil && line.secondary != nil {
-                    Circle()
-                        .fill(.white.opacity(0.55))
-                        .frame(width: 3, height: 3)
-                }
-                if let secondary = line.secondary {
-                    Text(secondary)
-                        .font(VoiidFont.rounded(15, .regular))
-                        // 0.85 rather than a grey: on a photo, a desaturated white reads as
-                        // "quieter", where grey reads as "disabled".
-                        .foregroundStyle(.white.opacity(0.85))
-                }
-            }
-        }
-    }
-
-    /// Message / Call / Video, as three equal capsules.
+    /// Identity — the Voiid Ui reference's `ContactScreen.identity`.
     ///
-    /// They used to be one segmented block with hairline dividers — which reads as a PICKER,
-    /// a control where you choose a mode, not three separate things you can do. These are
-    /// three distinct actions, so they get three distinct buttons with real spacing between
-    /// them. Message leads on brand fill because it is what this screen is overwhelmingly
-    /// opened to do; call and video are secondary and tinted.
+    /// ── A CENTRED AVATAR, NOT A FULL-BLEED PORTRAIT ─────────────────────────────
+    /// This was a 360pt photograph running under the status bar with the name laid over a
+    /// scrim. It looked striking and it was the wrong screen: a contact page is a page of
+    /// DETAILS, and a photograph occupying the top third pushes every one of them below the
+    /// fold. The reference gives the face 88pt and lets the information start immediately.
+    ///
+    /// The reference's own note explains the ring: no glow, no double ring — those belong to
+    /// the call screen, where a ring reports live audio and earns its place. On a static
+    /// portrait it is decoration that makes the avatar the loudest thing on a screen whose
+    /// job is details.
+    private var headerCard: some View {
+        VStack(spacing: VoiidSpacing.sm) {
+            avatar
+                .overlay(Circle().stroke(VoiidColor.accent.opacity(0.6), lineWidth: 2))
+                // 16, not the reference's 52.
+                //
+                // The reference draws its OWN floating back button over the content, so it
+                // must reserve the full height of that chrome. Ours uses the system
+                // navigation bar, which already occupies that space — adding 52 on top of it
+                // pushed the avatar a bar's height down the screen and left a visible gap
+                // under the title.
+                //
+                // Copying the number without the layout it compensates for is how a value
+                // that is correct in one place becomes wrong in another.
+                .padding(.top, VoiidSpacing.md)
+
+            HStack(spacing: 6) {
+                Text(displayName)
+                    .font(VoiidFont.rounded(22, .bold))
+                    .foregroundColor(VoiidColor.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+
+                // NO VERIFIED SEAL. The reference draws one, but `UserProfile` carries no
+                // verification flag — a badge that is either always shown or never shown
+                // says nothing. It goes in the day the field exists.
+            }
+
+            // NO PRESENCE LINE. The reference shows "Online / Last seen recently", but this
+            // screen has never fetched presence — it is a profile read, not a live
+            // subscription — and inventing a status here would either be a guess or a lie.
+            //
+            // The chat header already carries it, live, where it belongs.
+
+            // The handle, which the old full-bleed header buried in a line over the photo.
+            if let handle = profile?.username, !handle.isEmpty {
+                Text("@\(handle)")
+                    .font(VoiidFont.rounded(14))
+                    .foregroundColor(VoiidColor.textSecondary)
+            }
+
+            encryptedPill
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    /// 88pt, no photo bleed. Falls back to initials on the brand gradient.
+    @ViewBuilder
+    private var avatar: some View {
+        if let url = profile?.photoURL, !url.isEmpty {
+            ClipThumbnail(url: url)
+                .frame(width: 88, height: 88)
+                .clipShape(Circle())
+        } else {
+            ZStack {
+                Circle().fill(
+                    LinearGradient(colors: [VoiidColor.primary.opacity(0.85),
+                                            VoiidColor.primary.opacity(0.45)],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing))
+                Text(AvatarPalette.initials(for: displayName))
+                    .font(VoiidFont.rounded(32, .semibold))
+                    .foregroundColor(.white)
+            }
+            .frame(width: 88, height: 88)
+        }
+    }
+
+    /// The encryption guarantee, stated on the identity block rather than only as a row far
+    /// down the page — it is a property of this contact, and the reference treats it as
+    /// identity rather than as a setting.
+    private var encryptedPill: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "lock.fill").font(.system(size: 12))
+            Text("End-to-end Encrypted").font(VoiidFont.rounded(13, .medium))
+        }
+        .foregroundColor(VoiidColor.accentInk)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .background(Capsule().fill(VoiidColor.accent.opacity(0.10)))
+        .overlay(Capsule().stroke(VoiidColor.accent.opacity(0.45), lineWidth: 1))
+        .accessibilityElement(children: .combine)
+    }
+
     private var quickActions: some View {
         HStack(spacing: VoiidSpacing.sm) {
             actionButton("message.fill", "Message", filled: true) { dismiss() }
@@ -499,6 +529,9 @@ struct ContactProfileView: View {
     /// changed. Same for `recentCalls`, which hit SQLite three times per render.
     @State private var sharedMedia: [MediaRef] = []
     @State private var recentCalls: [LocalStore.CallHistoryEntry] = []
+    /// The fuller list behind "See all". Held so expanding costs no query.
+    @State private var allCalls: [LocalStore.CallHistoryEntry] = []
+    @State private var showAllCalls = false
 
     /// Load both off the render path. Cheap enough to redo on appear (so a photo sent while
     /// the profile was open shows up), expensive enough that it must never sit in `body`.
@@ -510,7 +543,10 @@ struct ContactProfileView: View {
                 .filter { $0.mime.hasPrefix("image/") || $0.mime.hasPrefix("video/") }
                 .reversed()
         }.value
-        let calls = Array(LocalStore.callsForConversation(convId).reversed().prefix(4))
+        // Load more than the card shows, so "See all" has something to reveal without a
+        // second query. 40 bounds it — a card is not a call log.
+        allCalls = Array(LocalStore.callsForConversation(convId).reversed().prefix(40))
+        let calls = Array(allCalls.prefix(4))
         sharedMedia = media
         recentCalls = calls
     }
@@ -590,12 +626,167 @@ struct ContactProfileView: View {
     /// not an answer. Same data, different question.
 
 
+    /// Phone and @username — the reference's `contactDetails`, and the one section of that
+    /// screen we never had.
+    ///
+    /// ── EVERY VALUE IS COPYABLE, AND SAYS SO ────────────────────────────────────
+    /// A phone number on a profile exists to be USED: dialled, pasted into a message, sent
+    /// to someone else. Showing it as inert text means the only way to get it out is to
+    /// read it aloud. Tapping the value copies it and a toast confirms — feedback on the
+    /// causal event, not silence.
+    ///
+    /// The trailing button is the value's PRIMARY action, separate from copying: a phone
+    /// number calls, a username opens a chat. Two intentions, two targets, so neither has to
+    /// be guessed at.
+    @ViewBuilder
+    private var contactDetailsCard: some View {
+        // ── WHERE THE PHONE NUMBER COMES FROM, AND WHY IT IS OFTEN ABSENT ───────
+        //
+        // NOT from the profile. The server returns `phone_number` only to the account's
+        // OWNER (users.ts: `isOwner ? u.phone_number : undefined`) — a number is an
+        // account's identity and is never disclosed to anyone else. Reading it from
+        // `profile` would therefore always be nil for a contact, and the row would never
+        // appear at all.
+        //
+        // The number shown here is the one from YOUR OWN ADDRESS BOOK, matched during
+        // contact sync. That is the correct source and the correct behaviour: you see a
+        // number you already had, not one the app disclosed to you.
+        //
+        // So someone who reached you by @username, and whom you have never saved, shows
+        // only their handle — there is no number to show, and inventing one would leak
+        // exactly what the server is careful not to.
+        let phone = conversation.peerUserId
+            .flatMap { UserDirectory.shared.user($0)?.phoneE164 }?
+            .trimmingCharacters(in: .whitespaces)
+        let handle = profile?.username?.trimmingCharacters(in: .whitespaces)
+
+        if (phone?.isEmpty == false) || (handle?.isEmpty == false) {
+            card("Contact") {
+                if let phone, !phone.isEmpty {
+                    detailRow(icon: "phone.fill", label: "Phone", value: phone,
+                              trailingIcon: "phone.arrow.up.right",
+                              trailingLabel: "Call \(phone)") {
+                        pendingCall = .voice
+                        dismiss()
+                    }
+                }
+                if let handle, !handle.isEmpty {
+                    if phone?.isEmpty == false {
+                        VoiidRowDivider()
+                    }
+                    detailRow(icon: "at", label: "Username", value: "@\(handle)",
+                              trailingIcon: "message.fill",
+                              trailingLabel: "Message @\(handle)") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+
+    /// One detail row.
+    ///
+    /// ── MAPPING: THE CONTROL SITS BY WHAT IT AFFECTS ────────────────────────────
+    /// Three things live on this row and each has one job. The glyph names the KIND of
+    /// value. The label/value pair IS the value, and tapping it copies — the most common
+    /// thing anyone wants from a number on a screen. The trailing button is that value's
+    /// own action: a number calls, a handle messages.
+    ///
+    /// ── HIERARCHY: THE VALUE IS THE CONTENT ─────────────────────────────────────
+    /// The value is 15pt medium in primary ink; its label is 13pt secondary ABOVE it. That
+    /// order matters — reading down, you meet the category then the thing, which is how a
+    /// form reads. Reversing it makes the label the headline of a row whose subject is the
+    /// number.
+    ///
+    /// ── FEEDBACK ON THE CAUSAL EVENT ────────────────────────────────────────────
+    /// Copy fires a success haptic and a toast naming what was copied, on the same frame as
+    /// the tap. A copy with no feedback is indistinguishable from a tap that missed.
+    private func detailRow(icon: String, label: String, value: String,
+                           trailingIcon: String, trailingLabel: String,
+                           trailingAction: @escaping () -> Void) -> some View {
+        HStack(spacing: VoiidSpacing.md) {
+            Image(systemName: icon)
+                .font(.system(size: 17, weight: .medium))
+                .foregroundColor(VoiidColor.accentInk)
+                // A fixed column, so the two rows' text starts at the same x whatever the
+                // glyph's own width is.
+                .frame(width: 26)
+
+            Button {
+                UIPasteboard.general.string = value
+                Haptics.success()
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                    copiedLabel = label
+                }
+                Task {
+                    try? await Task.sleep(for: .seconds(1.6))
+                    withAnimation(.easeOut(duration: 0.25)) { copiedLabel = nil }
+                }
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(label)
+                        .font(VoiidFont.rounded(13))
+                        .foregroundColor(VoiidColor.textSecondary)
+                    Text(value)
+                        .font(VoiidFont.rounded(15, .medium))
+                        .foregroundColor(VoiidColor.textPrimary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        // Numbers align down the card whatever digits they contain.
+                        .monospacedDigit()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            // Presses on TOUCH-DOWN. `.plain` gives no feedback at all, so a copyable value
+            // read as inert text and nobody discovered it was tappable.
+            .buttonStyle(SoftPressStyle())
+            .accessibilityLabel("\(label), \(value)")
+            .accessibilityHint("Copies to the clipboard")
+
+            Button {
+                Haptics.tap()
+                trailingAction()
+            } label: {
+                Image(systemName: trailingIcon)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(VoiidColor.accentInk)
+                    // A TINTED DISC, not a bare glyph. Floating ink beside text reads as
+                    // decoration; a filled shape reads as a control, which is what tells
+                    // someone this row has a second, different action.
+                    .frame(width: 34, height: 34)
+                    .background(Circle().fill(VoiidColor.accent.opacity(0.12)))
+                    // 44pt of target around a 34pt disc.
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(SoftPressStyle())
+            .accessibilityLabel(trailingLabel)
+        }
+        .padding(.vertical, 8)
+    }
+
+    private var seeAllCallsButton: some View {
+        Button {
+            Haptics.tap()
+            showAllCalls = true
+        } label: {
+            Text("See all")
+                .font(VoiidFont.rounded(13, .medium))
+                .foregroundColor(VoiidColor.primary)
+        }
+        .buttonStyle(.plain)
+    }
+
     @ViewBuilder
     private var callHistoryCard: some View {
         // Hidden entirely when there are none: an empty "Calls" card on a contact you have
         // only ever texted is an affordance to nothing.
         if !recentCalls.isEmpty {
-            card("Calls") {
+            // "See all" only when there IS more — an accessory that reveals nothing is worse
+            // than none, and the count tells you whether it is worth the tap.
+            card("Calls", accessory: allCalls.count > recentCalls.count
+                 ? AnyView(seeAllCallsButton) : nil) {
                 ForEach(Array(recentCalls.enumerated()), id: \.element.id) { index, entry in
                     if index > 0 {
                         Divider().background(VoiidColor.divider.opacity(0.4))
@@ -687,13 +878,80 @@ struct ContactProfileView: View {
         }
     }
 
+    /// Mute, with real durations and real effect.
+    ///
+    /// ── WHAT THIS REPLACED ──────────────────────────────────────────────────────
+    /// A `Toggle` bound to `@State private var muted` — local view state, written nowhere.
+    /// It reset to off every time the screen opened and silenced precisely nothing. The
+    /// control existed, looked correct, and was decoration.
+    ///
+    /// ── WHY A MENU AND NOT A SWITCH ─────────────────────────────────────────────
+    /// "Mute" is not a binary anyone actually means. Silencing a group for the afternoon
+    /// and silencing it permanently are different intentions, and a switch forces the
+    /// second when the first is what is usually wanted — so people either never mute, or
+    /// mute forever and miss things. The durations make the temporary case reachable.
+    ///
+    /// A muted conversation still DELIVERS: it lands in Notification Centre and the badge,
+    /// without a sound or a banner. Muting means "stop interrupting me", not "hide this".
     private var settingsCard: some View {
         card {
-            Toggle(isOn: $muted) {
-                Label("Mute notifications", systemImage: "bell.slash")
-                    .font(VoiidFont.rounded(16, .regular)).foregroundColor(VoiidColor.textPrimary)
-            }.tint(VoiidColor.primary)
+            Menu {
+                if isMuted {
+                    Button(role: .destructive) { unmute() } label: {
+                        Label("Unmute", systemImage: "bell")
+                    }
+                    Divider()
+                }
+                ForEach(MuteStore.Duration.allCases) { d in
+                    Button { mute(for: d) } label: { Text(d.title) }
+                }
+            } label: {
+                HStack(spacing: VoiidSpacing.md) {
+                    Image(systemName: isMuted ? "bell.slash.fill" : "bell")
+                        .font(.system(size: 17))
+                        .foregroundColor(isMuted ? VoiidColor.primary : VoiidColor.textSecondary)
+                        .frame(width: 24)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Notifications")
+                            .font(VoiidFont.rounded(16, .regular))
+                            .foregroundColor(VoiidColor.textPrimary)
+                        // STATES THE CURRENT STATE, and when it ends. "Muted" alone leaves
+                        // the user wondering whether it is for an hour or forever.
+                        Text(muteSubtitle)
+                            .font(VoiidFont.rounded(12))
+                            .foregroundColor(VoiidColor.textSecondary)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(VoiidColor.placeholder)
+                }
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
         }
+    }
+
+    private var muteSubtitle: String {
+        guard isMuted else { return "On" }
+        guard let until = MuteStore.mutedUntil(conversation.id) else { return "Muted" }
+        return "Muted until \(VoiidDate.relative(until))"
+    }
+
+    private func mute(for duration: MuteStore.Duration) {
+        Haptics.tap()
+        MuteStore.mute(conversation.id, for: duration)
+        isMuted = true
+    }
+
+    private func unmute() {
+        Haptics.tap()
+        MuteStore.unmute(conversation.id)
+        isMuted = false
     }
 
     /// Block is live (043_user_blocks + /blocks, enforced server-side across messages,
@@ -879,32 +1137,25 @@ extension View {
         if condition { glassCard(cornerRadius: cornerRadius) } else { self }
     }
 
+    /// A card: flat `surfaceCard` with a hairline — the reference's treatment.
+    ///
+    /// ── WHY THE GLASS IS GONE ───────────────────────────────────────────────────
+    /// The material version existed to solve a problem that no longer exists. The page used
+    /// to sit on a tinted wash, `.regularMaterial` blurs toward neutral grey, and the two
+    /// read as different colour families — grey slabs on a coloured page. Every part of that
+    /// card (the material, the 0.06 primary tint pulling it back into the page's hue, the
+    /// white gradient hairline, the drop shadow) was compensation for the wash.
+    ///
+    /// With a flat ground there is nothing to blur and nothing to reconcile: a translucent
+    /// card over a single flat colour is just a slightly dimmer version of that colour, at
+    /// the cost of a blur pass per card. The reference draws these flat, and on a flat
+    /// ground that is both simpler and more legible.
+    ///
+    /// The name is kept so every call site stays untouched.
     func glassCard(cornerRadius: CGFloat = 20) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         return self
-            // MATERIAL, THEN A TINT OF THE GROUND'S OWN HUE.
-            //
-            // THE MISMATCH: the page sits on an aubergine wash (`primary` at 0.16 fading
-            // down), but `.regularMaterial` blurs toward a NEUTRAL grey — it samples what is
-            // behind it and then desaturates hard. So the cards read as grey slabs floating
-            // on a purple page: two different colour families, which is exactly the "card
-            // doesn't match the background" symptom.
-            //
-            // A whisper of `primary` over the material pulls the card back into the page's
-            // family without making it opaque. 0.06 is deliberately below the threshold where
-            // it reads as a coloured fill — at 0.12 it stops looking like glass and starts
-            // looking like a lilac box.
-            .background(.regularMaterial, in: shape)
-            .background(VoiidColor.primary.opacity(0.06), in: shape)
-            .overlay(
-                shape.strokeBorder(
-                    LinearGradient(
-                        colors: [.white.opacity(0.28), .white.opacity(0.04)],
-                        startPoint: .top, endPoint: .bottom
-                    ),
-                    lineWidth: 1
-                )
-            )
-            .shadow(color: .black.opacity(0.10), radius: 14, y: 6)
+            .background(VoiidColor.surfaceCard, in: shape)
+            .overlay(shape.stroke(VoiidColor.divider, lineWidth: 1))
     }
 }

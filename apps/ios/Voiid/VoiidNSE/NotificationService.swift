@@ -51,6 +51,20 @@ final class NotificationService: UNNotificationServiceExtension {
         // Thread the notification by conversation even before we decrypt.
         best.threadIdentifier = conversationId
 
+        // MUTED: DELIVER SILENTLY, DO NOT SUPPRESS.
+        //
+        // Muting means "stop interrupting me", not "hide this from me" — the message still
+        // belongs in Notification Centre and the badge, it simply must not make a sound or
+        // raise a banner. Dropping it entirely would lose a message the user has every right
+        // to find later.
+        //
+        // Checked here rather than after decryption: a muted conversation should cost as
+        // little work as possible, and the routing id is all this decision needs.
+        if Self.isMuted(conversationId) {
+            best.sound = nil
+            best.interruptionLevel = .passive
+        }
+
         Task { @MainActor in
             let preview = await ChatEngine.shared.notificationDecrypt(
                 messageId: messageId, conversationId: conversationId)
@@ -66,6 +80,25 @@ final class NotificationService: UNNotificationServiceExtension {
 
     // Called just before the extension is terminated for running out of time. Deliver
     // whatever we have (the placeholder if decrypt hasn't finished) — never nothing.
+    /// Is this conversation muted?
+    ///
+    /// Reads the SAME app-group defaults key the main app writes (`MuteStore`). The NSE is a
+    /// separate target and cannot import the app's sources; adding a shared framework to
+    /// carry nine lines of dictionary lookup would cost a build phase, a module and a
+    /// signing identity for no gain.
+    ///
+    /// READ-ONLY, deliberately. Expiry is cleaned up by the app when IT reads the table —
+    /// an extension that writes shared state while the app may also be running is a race
+    /// for no benefit, and an expired entry simply reads as not-muted here.
+    private static func isMuted(_ conversationId: String) -> Bool {
+        guard let store = UserDefaults(suiteName: "group.com.voiid.app"),
+              let table = store.dictionary(forKey: "voiid.muted.conversations") as? [String: Double],
+              let until = table[conversationId]
+        else { return false }
+        // 0 means "always".
+        return until == 0 || Date().timeIntervalSince1970 < until
+    }
+
     override func serviceExtensionTimeWillExpire() {
         if let best = bestAttemptContent { deliver(best) }
     }

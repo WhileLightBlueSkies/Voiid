@@ -115,6 +115,17 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
+        // A MUTED CONVERSATION IS SILENT IN THE FOREGROUND TOO.
+        //
+        // The NSE suppresses these while the app is backgrounded; this is the same rule for
+        // a notification that arrives while it is open. Delivered to the list but not
+        // banner-ed or sounded — muting means "stop interrupting me", not "hide it from me",
+        // so the message is still there when the user goes looking.
+        let convoId = notification.request.content.userInfo["conversation_id"] as? String
+        if let convoId, MuteStore.isMuted(convoId) {
+            completionHandler([.list])
+            return
+        }
         completionHandler([.banner, .sound, .list])
     }
 
