@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start -p 3100",
     "lint": "next lint",
-    "build:land": "node scripts/build-land.mjs"
+    "build:map": "node scripts/build-dots.mjs"
   },
   "dependencies": {
     "next": "^15.1.0",
@@ -17,8 +17,9 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@types/react": "^19.0.0",
+    "dotted-map": "^3.1.0",
+    "topojson-client": "^3.1.0",
     "typescript": "^5.7.0",
-    "world-atlas": "^2.0.2",
-    "topojson-client": "^3.1.0"
+    "world-atlas": "^2.0.2"
   }
 }
