@@ -73,24 +73,45 @@ struct CommunitySpacesTab: View {
     @State private var newSpaceName = ""
     @State private var creatingSpace = false
     @State private var error: String?
+    /// Non-nil IS the rename sheet's presented state, so it can never fire against a Space
+    /// the list has since reloaded away.
+    @State private var renaming: CommunityService.Channel?
+    @State private var renameText = ""
+    @State private var confirmingDelete: CommunityService.Channel?
+    @State private var busy: Set<String> = []
 
-    /// A real channel dressed in the reference's row. Name, announcement-vs-chat and order are
-    /// the server's; purpose, member count, unread and last-activity are decoration the
-    /// endpoint has no columns for.
-    private func decorated(_ channel: CommunityService.Channel, index: Int) -> CommunitySpace {
-        let sample = CommunitySpace.samples[index % CommunitySpace.samples.count]
+    @EnvironmentObject private var chat: ChatStore
+    /// Set by a row tap; the parent pushes the real chat. A Space is a conversation, so this
+    /// reuses the store the chat list already keeps rather than a second source of messages.
+    @Binding var openConversation: VConversation?
+
+    /// A real channel in the reference's row.
+    ///
+    /// EVERY FIELD HERE IS THE SERVER'S OR IS EMPTY. It previously filled purpose, icon,
+    /// member count, unread and last-activity from `CommunitySpace.samples` keyed by list
+    /// position — so each Space showed an invented description and a fake unread badge that
+    /// changed when the list reordered. A member count nobody counted is a wrong number, and
+    /// an unread badge for messages that do not exist is worse: it sends someone into a room
+    /// to find nothing.
+    ///
+    /// Unread and last-activity come from the conversation store, which is the only thing
+    /// that actually knows — a Space IS a conversation, so the same counter the chat list
+    /// uses is the right one here.
+    private func decorated(_ channel: CommunityService.Channel) -> CommunitySpace {
+        let conversation = chat.directConversations.first { $0.id == channel.id }
         return CommunitySpace(
             id: channel.id,
             name: channel.name ?? "Space",
-            purpose: channel.isAnnouncement ? "Official updates from the admin team."
-                                            : sample.purpose,
-            icon: channel.isAnnouncement ? "megaphone.fill" : sample.icon,
-            members: sample.members,
-            unread: sample.unread,
+            // The endpoint has no description column. An announcement channel's purpose is
+            // implied by what it IS; a chat channel gets nothing rather than a fiction.
+            purpose: channel.isAnnouncement ? "Official updates from the admin team." : "",
+            icon: channel.isAnnouncement ? "megaphone.fill" : "bubble.left.and.bubble.right.fill",
+            members: 0,
+            unread: conversation?.unreadCount ?? 0,
             posting: channel.isAnnouncement ? .adminsOnly : .everyone,
             isJoined: true,
             isPinned: channel.isAnnouncement,
-            lastActivity: sample.lastActivity
+            lastActivity: ""
         )
     }
 
@@ -103,8 +124,7 @@ struct CommunitySpacesTab: View {
                     ? (a.position ?? 0) < (b.position ?? 0)
                     : a.isAnnouncement
             }
-            .enumerated()
-            .map { decorated($1, index: $0) }
+            .map { decorated($0) }
     }
 
     var body: some View {
@@ -125,7 +145,33 @@ struct CommunitySpacesTab: View {
                                          : "The host hasn’t made any yet.")
             } else {
                 ForEach(spaces) { space in
-                    SpaceCard(space: space, isAdmin: isAdmin)
+                    // WAS NOT TAPPABLE. The rows rendered in a bare ForEach with no button,
+                    // link or gesture — so Spaces was a list you could read and not enter,
+                    // even though the conversation behind each row already existed.
+                    Button {
+                        Haptics.tap()
+                        open(space.id)
+                    } label: {
+                        SpaceCard(space: space, isAdmin: isAdmin)
+                    }
+                    .buttonStyle(PressableButtonStyle())
+                    .disabled(busy.contains(space.id))
+                    .contextMenu {
+                        if isAdmin, let channel = channels.first(where: { $0.id == space.id }) {
+                            Button("Rename", systemImage: "pencil") {
+                                renameText = channel.name ?? ""
+                                renaming = channel
+                            }
+                            // The announcement channel cannot be deleted server-side, so the
+                            // option is not drawn — a button that only ever 400s is worse
+                            // than no button.
+                            if !channel.isAnnouncement {
+                                Button("Delete", systemImage: "trash", role: .destructive) {
+                                    confirmingDelete = channel
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -139,13 +185,50 @@ struct CommunitySpacesTab: View {
         } message: {
             Text("Spaces are channels inside this community.")
         }
+        .alert("Rename Space", isPresented: .init(get: { renaming != nil },
+                                                  set: { if !$0 { renaming = nil } })) {
+            TextField("Name", text: $renameText)
+            Button("Cancel", role: .cancel) { renaming = nil }
+            Button("Save") { Task { await rename() } }
+                .disabled(renameText.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
+        .confirmationDialog(
+            confirmingDelete.map { "Delete \($0.name ?? "this Space")?" } ?? "",
+            isPresented: .init(get: { confirmingDelete != nil },
+                               set: { if !$0 { confirmingDelete = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) { Task { await deleteSpace() } }
+            Button("Cancel", role: .cancel) { confirmingDelete = nil }
+        } message: {
+            // Said plainly at the moment of choosing: this is not archiving.
+            Text("Everything posted in it goes too. This cannot be undone.")
+        }
         .task { await load() }
+    }
+
+    /// Resolve the Space's conversation and push the real chat. Same lookup the host thread
+    /// uses: it may not be in memory yet, so load before failing.
+    private func open(_ conversationId: String) {
+        Task { @MainActor in
+            if !chat.directConversations.contains(where: { $0.id == conversationId }) {
+                await chat.loadConversations()
+            }
+            if let conv = chat.directConversations.first(where: { $0.id == conversationId }) {
+                openConversation = conv
+            } else {
+                error = "That Space isn’t available on this device yet."
+            }
+        }
     }
 
     private func load() async {
         loading = true; defer { loading = false }
         do {
             channels = try await CommunityService.shared.channels(communityId: communityId)
+            // Conversations back the unread counts, so they are loaded alongside rather than
+            // left to whatever happened to be cached.
+            if chat.directConversations.isEmpty { await chat.loadConversations() }
             error = nil
         } catch {
             self.error = (error as? APIError)?.errorDescription ?? "Couldn’t load Spaces."
@@ -166,6 +249,41 @@ struct CommunitySpacesTab: View {
             Haptics.success()
         } catch {
             self.error = (error as? APIError)?.errorDescription ?? "Couldn’t create that Space."
+        }
+    }
+
+    private func rename() async {
+        guard let channel = renaming else { return }
+        let name = renameText.trimmingCharacters(in: .whitespaces)
+        renaming = nil
+        guard !name.isEmpty, !busy.contains(channel.id) else { return }
+        busy.insert(channel.id); defer { busy.remove(channel.id) }
+        do {
+            try await CommunityService.shared.renameChannel(
+                communityId: communityId, channelId: channel.id, name: name)
+            Haptics.success()
+            // Reloaded rather than patched locally: the server owns the name it accepted,
+            // including any trimming it applied.
+            await load()
+        } catch {
+            self.error = (error as? APIError)?.errorDescription ?? "Couldn’t rename that Space."
+        }
+    }
+
+    private func deleteSpace() async {
+        guard let channel = confirmingDelete else { return }
+        confirmingDelete = nil
+        guard !busy.contains(channel.id) else { return }
+        busy.insert(channel.id); defer { busy.remove(channel.id) }
+        do {
+            try await CommunityService.shared.deleteChannel(
+                communityId: communityId, channelId: channel.id)
+            Haptics.success()
+            await load()
+        } catch {
+            // The server refuses to delete the last remaining channel, and says so. That
+            // message is worth showing verbatim rather than replacing with a generic one.
+            self.error = (error as? APIError)?.errorDescription ?? "Couldn’t delete that Space."
         }
     }
 
@@ -257,14 +375,22 @@ private struct SpaceCard: View {
                     }
                 }
 
-                Text(space.purpose)
-                    .font(VoiidFont.rounded(12.5))
-                    .foregroundColor(VoiidColor.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                // Omitted rather than drawn empty. The endpoint has no description column,
+                // so a chat Space genuinely has nothing to say here — and a blank line where
+                // text belongs reads as a rendering fault rather than as absence.
+                if !space.purpose.isEmpty {
+                    Text(space.purpose)
+                        .font(VoiidFont.rounded(12.5))
+                        .foregroundColor(VoiidColor.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
                 HStack(spacing: 10) {
-                    metaLabel("person.2", space.membersText)
-                    metaLabel("clock", space.lastActivity)
+                    // Both of these were invented per list position. They are drawn only when
+                    // something actually knows the answer: "0 members" and a blank clock are
+                    // claims, not blanks.
+                    if space.members > 0 { metaLabel("person.2", space.membersText) }
+                    if !space.lastActivity.isEmpty { metaLabel("clock", space.lastActivity) }
 
                     Spacer(minLength: 0)
 

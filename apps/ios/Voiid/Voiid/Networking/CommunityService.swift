@@ -253,6 +253,23 @@ final class CommunityService {
     /// so the admin-only "Create a Space" row fired a haptic and returned. The endpoint
     /// creates the backing group conversation and the channel row in one transaction, so
     /// there is no half-made Space if the second insert fails.
+    /// Rename a Space. `PATCH /communities/:id/channels/:conversationId` has existed since
+    /// 032 with no caller: a Space could be created and never corrected.
+    func renameChannel(communityId: String, channelId: String, name: String) async throws {
+        struct Body: Encodable { let name: String }
+        _ = try await api.request(
+            "PATCH", "communities/\(communityId)/channels/\(channelId)",
+            body: Body(name: name), as: EmptyResponse.self)
+    }
+
+    /// Delete a Space. The server refuses to delete the announcement channel or the last
+    /// remaining one, so both of those come back as a 400 with a reason worth showing.
+    func deleteChannel(communityId: String, channelId: String) async throws {
+        _ = try await api.request(
+            "DELETE", "communities/\(communityId)/channels/\(channelId)",
+            as: EmptyResponse.self)
+    }
+
     func createChannel(communityId: String, name: String,
                        kind: String = "chat") async throws -> Channel {
         struct Body: Encodable { let name: String; let kind: String }

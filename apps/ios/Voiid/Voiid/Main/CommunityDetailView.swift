@@ -424,7 +424,8 @@ struct CommunityDetailView: View {
                     case .home:
                         CommunityHomeTab(communityId: c.id, isAdmin: isOwner(c))
                     case .spaces:
-                        CommunitySpacesTab(communityId: c.id, isAdmin: isOwner(c))
+                        CommunitySpacesTab(communityId: c.id, isAdmin: isOwner(c),
+                                           openConversation: $openConversation)
                     case .events:
                         // `isOwner` is the manager signal this screen already uses for every
                         // other tab — reused rather than re-derived, so there is one answer to
