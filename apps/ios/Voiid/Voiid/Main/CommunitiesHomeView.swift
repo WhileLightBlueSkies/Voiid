@@ -27,6 +27,7 @@ struct CommunitiesHomeView: View {
     @State private var mine: [CommunityService.CommunityCard] = []
     @State private var results: [CommunityService.CommunityCard] = []
     @State private var search = ""
+    @State private var showDiscover = false
     @State private var loading = false
     @State private var loadError: String?
     @State private var showCreate = false
@@ -53,6 +54,9 @@ struct CommunitiesHomeView: View {
                         }
                         .accessibilityLabel("Create a community")
                     }
+                }
+                .sheet(isPresented: $showDiscover) {
+                    CommunityDiscoverSheet { handle in openHandle = handle }
                 }
                 .sheet(isPresented: $showCreate) {
                     CommunityCreateFlow { created in
@@ -106,9 +110,61 @@ struct CommunitiesHomeView: View {
         }
     }
 
+    /// One row, not a carousel — the reference's call, and the right one. A shelf of suggested
+    /// communities would push the ones you actually belong to below the fold, and belonging is
+    /// what this tab is for.
+    private var discoveryRow: some View {
+        Button {
+            Haptics.tap()
+            showDiscover = true
+        } label: {
+            HStack(spacing: VoiidSpacing.sm + 2) {
+                Image(systemName: "safari.fill")
+                    .font(.system(size: 17))
+                    .foregroundColor(VoiidColor.textOnAccent)
+                    .frame(width: 38, height: 38)
+                    .background(RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(VoiidColor.accent))
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Discover communities")
+                        .font(VoiidFont.rounded(14.5, .semibold))
+                        .foregroundColor(VoiidColor.textPrimary)
+                    Text("Find people building what you build")
+                        .font(VoiidFont.rounded(12.5))
+                        .foregroundColor(VoiidColor.textSecondary)
+                }
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(VoiidColor.textSecondary)
+            }
+            .padding(VoiidSpacing.sm + 4)
+            .background(VoiidColor.surfaceCard)
+            .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
+                .stroke(VoiidColor.divider, lineWidth: 1))
+        }
+        .buttonStyle(PressableButtonStyle())
+    }
+
     private func list(_ cards: [CommunityService.CommunityCard], empty: String) -> some View {
         ScrollView {
             LazyVStack(spacing: 10) {
+                // Hidden while searching: the inline search is already a discovery act, and a
+                // second door to the same thing mid-query is noise.
+                if !isSearching {
+                    discoveryRow
+                        .padding(.bottom, VoiidSpacing.xs)
+
+                    Text("Your communities")
+                        .font(VoiidFont.rounded(15, .semibold))
+                        .foregroundColor(VoiidColor.textSecondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
                 ForEach(cards, id: \.id) { card in
                     Button {
                         Haptics.tap()
@@ -177,7 +233,9 @@ struct CommunitiesHomeView: View {
 
 // MARK: - Card
 
-private struct CommunityCardRow: View {
+/// Internal rather than private: the Discover sheet renders the same card, and a second copy
+/// would be two rows that drift apart the first time either is touched.
+struct CommunityCardRow: View {
     let card: CommunityService.CommunityCard
     /// Whether the signed-in user owns this community. Drives the HOST badge and the card's
     /// accent border — the reference marks what you administer, not what you belong to.

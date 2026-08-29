@@ -16,8 +16,9 @@
 //  Carried over from the reference because it still governs what belongs here:
 //
 //    * Settings       — YOUR ACCOUNT. Devices, privacy, the V PIN. Only you see it.
-//    * this screen    — a PUBLIC creator page. Follow, Message, the grid, highlights.
-//                       `is_self` swaps Follow/Message for Edit profile/Share and changes
+//    * this screen    — a PUBLIC creator page. Follow, the grid, highlights. NOT a route
+//                       to messaging: see the note in `actions`.
+//                       `is_self` swaps Follow for Edit profile/Share and changes
 //                       nothing else, which is the test that both states are one screen.
 //
 //  ── WHAT IS DELIBERATELY NOT THE REFERENCE ──────────────────────────────────────
@@ -415,23 +416,14 @@ struct CreatorProfileView: View {
                 .disabled(p.can_follow == false && !p.following)
                 .opacity(p.can_follow == false && !p.following ? 0.5 : 1)
 
-                Button {
-                    Haptics.tap()
-                    message(p)
-                } label: {
-                    Text("Message")
-                        .font(VoiidFont.rounded(14.5, .semibold))
-                        .foregroundColor(VoiidColor.textPrimary)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 38)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(VoiidColor.surfaceCard))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .stroke(VoiidColor.divider, lineWidth: 1))
-                }
-                .buttonStyle(PressableButtonStyle())
+                // NO MESSAGE BUTTON. Messaging a creator from their public page is not a
+                // feature Voiid offers: it would cross from the public creator identity into
+                // the E2EE messaging one, and reaching someone still goes through the
+                // contact-PIN gate by design (020_reachability). The reference draws one
+                // because its creator page is a mockup with no such boundary.
+                //
+                // It was here showing "coming soon", which is worse than absent — it
+                // advertises a route that does not exist and will not.
 
                 // One overflow, not two icon buttons — the reference's reasoning: a rare
                 // action does not earn a permanent 38pt square.
@@ -664,16 +656,6 @@ struct CreatorProfileView: View {
     private func copyLink(_ p: CreatorService.Profile) {
         UIPasteboard.general.string = "https://voiid.app/@\(p.handle)"
         Haptics.success()
-    }
-
-    private func message(_ p: CreatorService.Profile) {
-        // Messaging from a creator profile crosses from the PUBLIC identity into the E2EE
-        // one, which needs a resolved contact — not wired yet. It says so rather than
-        // failing silently: a button that does nothing visible is worse than one that
-        // explains why (Feedback — status, not silence).
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-            hintText = "Messaging a creator from their profile is coming soon."
-        }
     }
 
     // MARK: - Loading

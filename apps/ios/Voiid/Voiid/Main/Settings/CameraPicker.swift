@@ -21,6 +21,12 @@ struct CameraPicker: UIViewControllerRepresentable {
     /// Called with the captured image. Nil is never passed — a cancel simply dismisses.
     var onCapture: (UIImage) -> Void
 
+    /// Front camera and a square crop. Right for a PROFILE PHOTO, wrong for a chat message:
+    /// there you are usually photographing what is in front of you, and cropping it square
+    /// throws away framing the sender chose. Defaults preserve the avatar behaviour this
+    /// view was written for.
+    var selfieMode: Bool = true
+
     @Environment(\.dismiss) private var dismiss
 
     func makeUIViewController(context: Context) -> UIImagePickerController {
@@ -29,9 +35,14 @@ struct CameraPicker: UIViewControllerRepresentable {
         // asking for an unavailable source shows a black screen with no way out.
         picker.sourceType = UIImagePickerController.isSourceTypeAvailable(.camera)
             ? .camera : .photoLibrary
-        picker.cameraDevice = .front       // A profile photo is almost always a selfie.
-        picker.allowsEditing = true        // Square crop up front, so the avatar is not a
+        if selfieMode {
+            picker.cameraDevice = .front   // A profile photo is almost always a selfie.
+            picker.allowsEditing = true    // Square crop up front, so the avatar is not a
                                            // surprise crop of whatever was framed.
+        } else {
+            picker.cameraDevice = .rear
+            picker.allowsEditing = false
+        }
         picker.delegate = context.coordinator
         return picker
     }

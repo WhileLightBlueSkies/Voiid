@@ -304,6 +304,13 @@ struct RecordingBar: View {
 
     private var willCancel: Bool { dragX <= Self.cancelThreshold }
 
+    /// 0…1 across the cancel travel, for anything that should respond CONTINUOUSLY rather
+    /// than flipping at the threshold. A gesture that only shows its outcome once it is
+    /// decided gives the user no chance to change their mind.
+    private var cancelProgress: CGFloat {
+        min(1, max(0, dragX / Self.cancelThreshold))
+    }
+
     private var timeString: String {
         String(format: "%01d:%02d", Int(seconds) / 60, Int(seconds) % 60)
     }
@@ -340,12 +347,18 @@ struct RecordingBar: View {
             .offset(x: max(dragX * 0.35, -26))
         }
         .padding(.horizontal, VoiidSpacing.md)
-        .frame(height: 40)
+        // 52pt, the reference's height — the bar replaces a 46pt mic and a pill, so at 40
+        // the composer visibly SHRANK the moment recording began.
+        .frame(height: 52)
         .background(VoiidColor.fieldFill)
         .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.pill, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: VoiidRadius.pill)
-                .stroke(willCancel ? VoiidColor.error.opacity(0.6) : VoiidColor.fieldBorder, lineWidth: 1)
+                // The stroke DEEPENS with the drag rather than flipping at the threshold.
+                // A binary change gives no warning: you learn you are about to cancel at the
+                // moment it is already decided. Progressive tint makes the gesture legible
+                // while it is still reversible.
+                .stroke(VoiidColor.error.opacity(0.15 + cancelProgress * 0.75), lineWidth: 1.5)
         )
         .animation(.easeOut(duration: 0.15), value: willCancel)
         .accessibilityLabel("Recording, \(timeString). Slide left to cancel.")

@@ -420,12 +420,37 @@ final class ChatStore: ObservableObject {
     /// Merging HERE rather than inserting into the message list keeps call logs out of the
     /// message store, the chat-list preview and the unread count, while every existing caller
     /// picks them up for free. No dummy seeding — a chat with nothing decrypted shows empty.
+    /// The transcript: messages merged with call logs, in time order.
+    ///
+    /// MEMOISED, because this is read from SwiftUI body code and was doing a full merge and
+    /// sort on every call — seven call sites in ChatDetailView alone, re-evaluated on every
+    /// keystroke and every typing tick. The merge itself is cheap; running it dozens of
+    /// times a second over a long thread is not.
+    ///
+    /// The `calls.isEmpty` fast path already avoided the sort for most 1:1 chats. This
+    /// covers the rest: any conversation that has ever had a call in it.
     func messages(for id: String) -> [VMessage] {
         let msgs = messagesByConversation[id] ?? []
         let calls = callLogsByConversation[id] ?? []
         if calls.isEmpty { return msgs }
-        return (msgs + calls).sorted { $0.createdAt < $1.createdAt }
+
+        let stamp = MergeStamp(messages: msgs.count, calls: calls.count,
+                               newest: msgs.last?.createdAt)
+        if let hit = mergeCache[id], hit.stamp == stamp { return hit.value }
+
+        let merged = (msgs + calls).sorted { $0.createdAt < $1.createdAt }
+        mergeCache[id] = (stamp, merged)
+        return merged
     }
+
+    private struct MergeStamp: Equatable {
+        let messages: Int
+        let calls: Int
+        let newest: Date?
+    }
+    /// Not @Published: it is derived state, and publishing it would invalidate every view
+    /// that reads the transcript each time the cache filled — the opposite of the point.
+    private var mergeCache: [String: (stamp: MergeStamp, value: [VMessage])] = [:]
 
     /// Load this conversation's call history into the transcript. Call on chat open, and again
     /// whenever a call ends so a call placed from this chat leaves its bubble immediately.

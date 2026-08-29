@@ -440,7 +440,12 @@ struct CommunitySettingsView: View {
                     }
                 }
 
-                VStack(alignment: .leading, spacing: 2) {
+                // The label and its ACTION sit on the same line as the thumbnail. They were
+                // three stacked bands — photo, caption, then a button row underneath — which
+                // is why the card read as taller and looser than every other row on the
+                // screen. Proximity is the relationship: the control belongs beside the thing
+                // it changes, not in a strip below it.
+                VStack(alignment: .leading, spacing: 3) {
                     Text("Photo")
                         .font(VoiidFont.rounded(15, .semibold))
                         .foregroundStyle(VoiidColor.textPrimary)
@@ -454,9 +459,7 @@ struct CommunitySettingsView: View {
                 }
 
                 Spacer(minLength: 0)
-            }
 
-            HStack(spacing: VoiidSpacing.sm) {
                 PhotosPicker(selection: $avatarItem, matching: .images) {
                     Text(card.avatar_url == nil && avatarPreview == nil ? "Add photo" : "Change")
                         .font(VoiidFont.rounded(14, .semibold))
@@ -471,27 +474,25 @@ struct CommunitySettingsView: View {
                         .contentShape(Capsule())
                 }
                 .disabled(avatarBusy)
+            }
 
-                // Only offered when there is something to remove. `.some(nil)` on the PATCH is
-                // what clears the column — the whole reason `avatarKey` is doubly optional.
-                if card.avatar_url != nil || avatarPreview != nil {
-                    Button {
-                        Task { await writeAvatar(key: .some(nil), preview: nil) }
-                    } label: {
-                        Text("Remove")
-                            .font(VoiidFont.rounded(14, .semibold))
-                            .foregroundStyle(VoiidColor.textSecondary)
-                            .padding(.horizontal, 16)
-                            .frame(height: 34)
-                            .background(Capsule().fill(VoiidColor.surfaceRaised))
-                            .padding(.vertical, 5)
-                            .contentShape(Capsule())
-                    }
-                    .buttonStyle(PressableButtonStyle())
-                    .disabled(avatarBusy)
+            // Remove sits BELOW, and only when there is something to remove. Keeping it out
+            // of the trailing cluster means the primary action never shifts sideways the
+            // moment a photo exists — a control that moves when state changes is one you have
+            // to re-find every time.
+            if card.avatar_url != nil || avatarPreview != nil {
+                Button {
+                    Task { await writeAvatar(key: .some(nil), preview: nil) }
+                } label: {
+                    Text("Remove photo")
+                        .font(VoiidFont.rounded(13.5, .semibold))
+                        .foregroundStyle(VoiidColor.error)
+                        .frame(height: 30)
+                        .contentShape(Rectangle())
                 }
-
-                Spacer(minLength: 0)
+                .buttonStyle(PressableButtonStyle())
+                .disabled(avatarBusy)
+                .padding(.leading, 56 + VoiidSpacing.md)
             }
 
             if let avatarFailure {

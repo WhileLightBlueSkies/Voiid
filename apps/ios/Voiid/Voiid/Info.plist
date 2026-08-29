@@ -38,7 +38,7 @@
 	<!-- Taking a profile photo. Without this key iOS TERMINATES the app the instant the
 	     camera is presented — not a permission denial, a crash. -->
 	<key>NSCameraUsageDescription</key>
-	<string>Take a photo for your Voiid profile.</string>
+	<string>Take photos and videos to send in your chats, and to set your Voiid profile picture.</string>
 	<!-- Voice notes, and the audio half of a call. Same rule as the camera above: WITHOUT
 	     THIS KEY iOS TERMINATES THE APP the instant the microphone is requested. The
 	     onboarding permissions screen asks for this in sequence, so a missing key does not

@@ -326,9 +326,17 @@ final class CommunityService {
 
     /// Discovery. The server refuses a query under two characters rather than returning the
     /// whole directory, so this returns empty for a short term instead of round-tripping.
+    /// Search, or — with an empty term — TRENDING.
+    ///
+    /// The empty case is not a no-op. The server answers a blank query with communities
+    /// ranked by recent joins, which is what lets a discover surface open with something in
+    /// it. Returning `[]` here would have left that endpoint permanently unreachable.
+    ///
+    /// A ONE-character term is still refused, because the server treats it as blank and would
+    /// answer with trending — the list jumping back to the start mid-word.
     func search(_ term: String) async throws -> [CommunityCard] {
         let q = term.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard q.count >= 2 else { return [] }
+        guard q.isEmpty || q.count >= 2 else { return [] }
         struct Envelope: Decodable { let communities: [CommunityCard] }
         let env: Envelope = try await api.request(
             "GET", "communities/search?q=\(q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")")
