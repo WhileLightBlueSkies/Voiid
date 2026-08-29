@@ -44,6 +44,21 @@ enum CommunityTab: String, CaseIterable, Identifiable {
     case about = "About"
 
     var id: String { rawValue }
+
+    /// The tabs a given person sees.
+    ///
+    /// Members is a MANAGER tab: approving requests, promoting, removing and banning are the
+    /// reasons to open a roster, and none of them belong to an ordinary member. Everyone else
+    /// gets the four tabs they came for.
+    ///
+    /// THIS IS A UI SIMPLIFICATION, NOT A PRIVACY CONTROL. `GET /communities/:id/members` is
+    /// member-only server-side, not manager-only, and deliberately so — face piles and
+    /// mention pickers elsewhere read the same roster. Hiding the tab removes a door nobody
+    /// but a manager has a use for; it does not make the roster secret, and nothing here
+    /// should be written as though it does.
+    static func visible(isManager: Bool) -> [CommunityTab] {
+        isManager ? allCases : allCases.filter { $0 != .members }
+    }
 }
 
 // MARK: - Spaces

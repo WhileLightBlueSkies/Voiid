@@ -415,9 +415,12 @@ struct CommunityDetailView: View {
             // empty tab reads as "nothing here" rather than "not visible to you" — so a
             // non-member gets About, which is the tab whose content they are entitled to.
             if c.isMember {
-                tabBar
+                tabBar(managing: isOwner(c))
                 Group {
-                    switch tab {
+                    // A selection that is no longer visible — restored state, or a demotion
+                    // while the screen is open — falls back to Home rather than rendering a
+                    // tab the bar above no longer offers a way back from.
+                    switch (CommunityTab.visible(isManager: isOwner(c)).contains(tab) ? tab : .home) {
                     case .home:
                         CommunityHomeTab(communityId: c.id, isAdmin: isOwner(c))
                     case .spaces:
@@ -451,10 +454,10 @@ struct CommunityDetailView: View {
 
     /// Underlined, not filled. A filled pill here would compete with the Join button directly
     /// above it, and the tab row is navigation rather than an action.
-    private var tabBar: some View {
+    private func tabBar(managing: Bool) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 22) {
-                ForEach(CommunityTab.allCases) { option in
+                ForEach(CommunityTab.visible(isManager: managing)) { option in
                     let selected = tab == option
                     Button {
                         Haptics.selection()

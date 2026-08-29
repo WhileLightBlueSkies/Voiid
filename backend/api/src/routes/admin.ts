@@ -33,6 +33,7 @@ import { pool, query } from '../db';
 import { presignGet, deleteObject, r2Configured } from '../r2';
 import { clientIp } from '../security';
 import { invalidateAccountState } from '../auth';
+import { CAPABILITIES, isCapability } from '../communityEntitlements';
 
 const router = Router();
 
@@ -1530,6 +1531,112 @@ router.post('/communities/:id/restore', requireAdmin, requireRole('admin'), asyn
   await audit(a.adminId, 'community.restore', 'community', id,
               { reason: reason || null, name: r[0].name, handle: r[0].handle });
   res.json({ ok: true, community: r[0] });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// GET  /admin/communities/:id/entitlements
+// POST /admin/communities/:id/entitlements          { capability, note, expires_at? }
+// POST /admin/communities/:id/entitlements/:cap/revoke  { note }
+//
+// Paid capabilities, switched on per community on request. Creating and running a community
+// is free; this is only for what we sell separately, e-commerce first.
+//
+// admin-role only, and a note is REQUIRED on both grant and revoke — "why does this community
+// have e-commerce" is the question a dispute asks, and a grant nobody can explain later is a
+// grant nobody can defend.
+// ─────────────────────────────────────────────────────────────────────────────────
+router.get('/communities/:id/entitlements', requireAdmin, async (req, res) => {
+  const id = String(req.params.id);
+  if (!/^[0-9a-f-]{36}$/i.test(id)) {
+    return res.status(400).json({ error: 'community id must be a uuid' });
+  }
+
+  // History included, not just live rows: the revoked and expired grants ARE the record this
+  // table exists to keep, and an operator answering "did they ever have this" needs them.
+  const rows = await query<any>(
+    `select e.id, e.capability, e.granted_at, e.expires_at, e.revoked_at, e.note,
+            (e.revoked_at is null and (e.expires_at is null or e.expires_at > now())) as live,
+            a.email as granted_by_email
+       from community_entitlements e
+       left join admin_users a on a.id = e.granted_by
+      where e.community_id = $1
+      order by e.granted_at desc`,
+    [id],
+  );
+
+  res.json({ entitlements: rows, available: CAPABILITIES });
+});
+
+router.post('/communities/:id/entitlements', requireAdmin, requireRole('admin'), async (req, res) => {
+  const a = (req as any).admin as AdminAuth;
+  const id = String(req.params.id);
+  const capability = String(req.body?.capability ?? '');
+  const note = String(req.body?.note ?? '').trim();
+  const expiresAt = req.body?.expires_at ? String(req.body.expires_at) : null;
+
+  if (!/^[0-9a-f-]{36}$/i.test(id)) {
+    return res.status(400).json({ error: 'community id must be a uuid' });
+  }
+  // Checked against the server's own list rather than trusted from the body: the column is
+  // free text, so an unrecognised name would otherwise be stored and then grant nothing —
+  // an entitlement that looks live in the panel and fails at the call site.
+  if (!isCapability(capability)) {
+    return res.status(400).json({ error: 'unknown capability', available: CAPABILITIES });
+  }
+  if (!note) return res.status(400).json({ error: 'a note is required' });
+
+  const exists = await query<{ id: string }>(
+    `select id from communities where id = $1`, [id]);
+  if (!exists[0]) return res.status(404).json({ error: 'no such community' });
+
+  try {
+    const r = await query<any>(
+      `insert into community_entitlements
+         (community_id, capability, note, granted_by, expires_at)
+       values ($1, $2, $3, $4, $5)
+       returning id, capability, granted_at, expires_at, note`,
+      [id, capability, note, a.adminId, expiresAt],
+    );
+    await audit(a.adminId, 'community.entitlement_granted', 'community', id,
+                { capability, note, expires_at: expiresAt });
+    res.json({ ok: true, entitlement: r[0] });
+  } catch (err: any) {
+    // The partial unique index means one LIVE grant per capability. A duplicate is not an
+    // error worth a 500 — it means the thing the caller wanted is already true.
+    if (err?.code === '23505') {
+      return res.status(409).json({ error: 'this community already has that capability' });
+    }
+    throw err;
+  }
+});
+
+router.post('/communities/:id/entitlements/:cap/revoke',
+            requireAdmin, requireRole('admin'), async (req, res) => {
+  const a = (req as any).admin as AdminAuth;
+  const id = String(req.params.id);
+  const capability = String(req.params.cap);
+  const note = String(req.body?.note ?? '').trim();
+
+  if (!/^[0-9a-f-]{36}$/i.test(id)) {
+    return res.status(400).json({ error: 'community id must be a uuid' });
+  }
+  if (!note) return res.status(400).json({ error: 'a reason is required' });
+
+  // The row is kept and stamped, never deleted — see the migration header. Appending the
+  // revocation reason to the original note keeps both halves of the story on one row.
+  const r = await query<any>(
+    `update community_entitlements
+        set revoked_at = now(),
+            note = note || E'\n\nRevoked: ' || $3
+      where community_id = $1 and capability = $2 and revoked_at is null
+      returning id, capability`,
+    [id, capability, note],
+  );
+  if (!r[0]) return res.status(409).json({ error: 'not granted, or already revoked' });
+
+  await audit(a.adminId, 'community.entitlement_revoked', 'community', id,
+              { capability, note });
+  res.json({ ok: true });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────
