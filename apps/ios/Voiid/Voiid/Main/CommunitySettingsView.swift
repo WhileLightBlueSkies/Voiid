@@ -231,6 +231,7 @@ struct CommunitySettingsView: View {
     /// state, so the editor can never act on a rule the list has since reloaded away.
     @State private var editingRule: RuleDraft?
     /// The rule awaiting delete confirmation, same reasoning.
+    @State private var editingProfile = false
     @State private var pendingDelete: CommunityService.Rule?
     /// Rule ids with a write in flight, so a second tap cannot fire a duplicate.
     @State private var ruleBusy: Set<String> = []
@@ -302,7 +303,7 @@ struct CommunitySettingsView: View {
 
                     statusBanner
 
-                    identitySection
+                    profileCard
                     discoverySection
                     joiningSection
                     invitesSection
@@ -323,6 +324,31 @@ struct CommunitySettingsView: View {
                         // would leave the host believing nothing was saved while it lands.
                         .disabled(saving)
                 }
+            }
+            .sheet(isPresented: $editingProfile) {
+                // Identity behind one door, as the reference has it. The fields are the same
+                // ones the settings list used to hold inline; only where they live changed.
+                NavigationStack {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: VoiidSpacing.lg) {
+                            identitySection
+                        }
+                        .padding(VoiidSpacing.md)
+                    }
+                    .voiidSettingsPage()
+                    .navigationTitle("Edit community")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            // Closes the sheet only. The Save bar on the settings screen still
+                            // owns the write, so there is ONE commit for the whole screen
+                            // rather than two that could disagree about what was saved.
+                            Button("Done") { editingProfile = false }
+                                .fontWeight(.semibold)
+                        }
+                    }
+                }
+                .presentationDetents([.large])
             }
             .task { await loadRules() }
             .sheet(item: $editingRule) { draft in
@@ -385,6 +411,60 @@ struct CommunitySettingsView: View {
     }
 
     // MARK: Identity
+
+    /// A SUMMARY, not an editing surface — the reference's shape
+    /// (CommunitySettingsScreen.swift:116). Identity was inline fields sitting in the
+    /// settings list, which put a keyboard in the middle of a screen otherwise made of
+    /// toggles and pickers. Name, photo and description are one decision, taken together,
+    /// and they belong behind one door.
+    private var profileCard: some View {
+        Button {
+            Haptics.tap()
+            editingProfile = true
+        } label: {
+            HStack(spacing: VoiidSpacing.md) {
+                Group {
+                    if let avatarPreview {
+                        Image(uiImage: avatarPreview).resizable().scaledToFill()
+                    } else if let url = card.avatar_url, !url.isEmpty {
+                        ResolvedThumbnail(source: url)
+                    } else {
+                        VoiidColor.accentTint.overlay(
+                            Text(AvatarPalette.initials(for: card.name))
+                                .font(VoiidFont.rounded(19, .bold))
+                                .foregroundStyle(VoiidColor.accentInk))
+                    }
+                }
+                .frame(width: 54, height: 54)
+                .clipShape(Circle())
+                .overlay(Circle().stroke(VoiidColor.accent.opacity(0.3), lineWidth: 1))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name.isEmpty ? card.name : name)
+                        .font(VoiidFont.rounded(16, .semibold))
+                        .foregroundColor(VoiidColor.textPrimary)
+                        .lineLimit(1)
+                    // Handle and size on one line, as the reference does — the two facts a
+                    // host checks at a glance, neither of which they can edit here.
+                    Text("@\(card.handle) · \(card.members) \(card.members == 1 ? "member" : "members")")
+                        .font(VoiidFont.rounded(12))
+                        .foregroundColor(VoiidColor.textSecondary)
+                }
+
+                Spacer(minLength: 0)
+
+                Text("Edit")
+                    .font(VoiidFont.rounded(13, .semibold))
+                    .foregroundColor(VoiidColor.accentInk)
+            }
+            .padding(VoiidSpacing.md - 2)
+            .background(VoiidColor.surfaceCard)
+            .clipShape(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: VoiidRadius.lg, style: .continuous)
+                .stroke(VoiidColor.divider, lineWidth: 1))
+        }
+        .buttonStyle(PressableButtonStyle())
+    }
 
     private var identitySection: some View {
         VoiidCardSection(
