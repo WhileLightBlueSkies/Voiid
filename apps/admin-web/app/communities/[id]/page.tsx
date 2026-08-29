@@ -137,7 +137,11 @@ function Body({ me }: { me: Me }) {
             right={
               // Suspension is admin-role only server-side. Showing the button to a moderator
               // would only produce a 403 — the gate here is courtesy, not enforcement.
-              me.role === 'admin' ? (
+              <div className="row" style={{ gap: 8 }}>
+              <Link href={`/communities/${id}/analytics`}>
+                <button className="ghost">Analytics</button>
+              </Link>
+              {me.role === 'admin' ? (
                 d.community.suspended_at ? (
                   <button className="ghost" disabled={busy} onClick={() => void restore()}>
                     {busy ? 'Working…' : 'Lift suspension'}
@@ -147,7 +151,8 @@ function Body({ me }: { me: Me }) {
                     {busy ? 'Working…' : 'Suspend'}
                   </button>
                 )
-              ) : undefined
+              ) : null}
+              </div>
             }
           />
 
