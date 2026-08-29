@@ -98,7 +98,7 @@ struct CommunitySpacesTab: View {
     /// that actually knows — a Space IS a conversation, so the same counter the chat list
     /// uses is the right one here.
     private func decorated(_ channel: CommunityService.Channel) -> CommunitySpace {
-        let conversation = chat.directConversations.first { $0.id == channel.id }
+        let conversation = allConversations.first { $0.id == channel.id }
         return CommunitySpace(
             id: channel.id,
             name: channel.name ?? "Space",
@@ -207,14 +207,24 @@ struct CommunitySpacesTab: View {
         .task { await load() }
     }
 
-    /// Resolve the Space's conversation and push the real chat. Same lookup the host thread
-    /// uses: it may not be in memory yet, so load before failing.
+    /// Every conversation this device knows about, direct and group in one list.
+    ///
+    /// A Space is a GROUP conversation, so it lands in `groupConversations` — searching only
+    /// `directConversations`, which is what the host-thread lookup does, found nothing and
+    /// every tap failed. The host thread is a direct conversation, which is why that lookup
+    /// was right there and wrong here.
+    private var allConversations: [VConversation] {
+        chat.directConversations + chat.groupConversations
+    }
+
+    /// Resolve the Space's conversation and push the real chat. It may not be in memory yet,
+    /// so load before failing.
     private func open(_ conversationId: String) {
         Task { @MainActor in
-            if !chat.directConversations.contains(where: { $0.id == conversationId }) {
+            if !allConversations.contains(where: { $0.id == conversationId }) {
                 await chat.loadConversations()
             }
-            if let conv = chat.directConversations.first(where: { $0.id == conversationId }) {
+            if let conv = allConversations.first(where: { $0.id == conversationId }) {
                 openConversation = conv
             } else {
                 error = "That Space isn’t available on this device yet."
@@ -228,7 +238,7 @@ struct CommunitySpacesTab: View {
             channels = try await CommunityService.shared.channels(communityId: communityId)
             // Conversations back the unread counts, so they are loaded alongside rather than
             // left to whatever happened to be cached.
-            if chat.directConversations.isEmpty { await chat.loadConversations() }
+            if allConversations.isEmpty { await chat.loadConversations() }
             error = nil
         } catch {
             self.error = (error as? APIError)?.errorDescription ?? "Couldn’t load Spaces."
