@@ -459,11 +459,16 @@ struct CommunitySettingsView: View {
             HStack(spacing: VoiidSpacing.sm) {
                 PhotosPicker(selection: $avatarItem, matching: .images) {
                     Text(card.avatar_url == nil && avatarPreview == nil ? "Add photo" : "Change")
-                        .font(VoiidFont.rounded(13, .semibold))
+                        .font(VoiidFont.rounded(14, .semibold))
                         .foregroundStyle(VoiidColor.accentInk)
-                        .padding(.horizontal, 14)
-                        .frame(height: 32)
+                        .padding(.horizontal, 16)
+                        .frame(height: 34)
                         .background(Capsule().fill(VoiidColor.accentTint))
+                        // Draws at 34, taps at 44. The pill keeps the row's proportions while
+                        // the hit area meets the minimum — a control this small is otherwise
+                        // a miss for anyone not aiming carefully.
+                        .padding(.vertical, 5)
+                        .contentShape(Capsule())
                 }
                 .disabled(avatarBusy)
 
@@ -474,11 +479,13 @@ struct CommunitySettingsView: View {
                         Task { await writeAvatar(key: .some(nil), preview: nil) }
                     } label: {
                         Text("Remove")
-                            .font(VoiidFont.rounded(13, .semibold))
+                            .font(VoiidFont.rounded(14, .semibold))
                             .foregroundStyle(VoiidColor.textSecondary)
-                            .padding(.horizontal, 14)
-                            .frame(height: 32)
+                            .padding(.horizontal, 16)
+                            .frame(height: 34)
                             .background(Capsule().fill(VoiidColor.surfaceRaised))
+                            .padding(.vertical, 5)
+                            .contentShape(Capsule())
                     }
                     .buttonStyle(PressableButtonStyle())
                     .disabled(avatarBusy)
@@ -626,9 +633,14 @@ struct CommunitySettingsView: View {
                 .multilineTextAlignment(.leading)
             if !option.available {
                 Text("COMING SOON")
-                    .font(VoiidFont.rounded(9.5, .bold))
+                    .font(VoiidFont.rounded(10, .bold))
+                    // Tracking is size-specific: small text — and all-caps especially — reads
+                    // cramped without a positive bump, where a heading at this weight would
+                    // want the opposite. 9.5 with default tracking was the tightest type on
+                    // the screen and the hardest to read.
+                    .tracking(0.5)
                     .foregroundStyle(VoiidColor.textSecondary)
-                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .padding(.horizontal, 7).padding(.vertical, 3)
                     .background(Capsule().fill(VoiidColor.fieldFill))
             }
             Spacer(minLength: VoiidSpacing.sm)
@@ -720,10 +732,16 @@ struct CommunitySettingsView: View {
             Text(title)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(selected ? VoiidColor.textOnAccent : VoiidColor.textPrimary)
-                .padding(.horizontal, 15)
+                .padding(.horizontal, 16)
                 .frame(height: 36)
                 .background(Capsule().fill(selected ? VoiidColor.accent : VoiidColor.fieldFill))
                 .overlay(Capsule().stroke(selected ? .clear : VoiidColor.divider, lineWidth: 1))
+                // The chip DRAWS at 36 and is TAPPABLE at 44. Growing the frame instead would
+                // just make a taller pill; the padding plus contentShape extends the hit area
+                // without changing the shape, which is how a compact control can still meet
+                // the 44pt minimum.
+                .padding(.vertical, 4)
+                .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? [.isSelected] : [])

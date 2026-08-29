@@ -546,7 +546,37 @@ router.get(
     const q = String(req.query.q ?? '').trim();
     // Two characters minimum. A one-character query returns most of the directory sorted by
     // size, which is a scrape, not a search.
-    if (q.length < 2) return res.json({ communities: [] });
+    // An empty query returns TRENDING rather than nothing. A discover surface that opens
+    // blank until you type is a search box wearing a browse screen's clothes, and it gives a
+    // new user nothing to do on the one screen meant to show them the place.
+    //
+    // Trending is joins in the last 7 days, ranked ahead of raw size. `member_count desc`
+    // alone is "biggest", and the biggest communities are permanently the biggest — a list
+    // ordered that way never changes and stops being worth opening. Size is the tiebreak, so
+    // a young platform with no recent joins still returns something sensible rather than an
+    // empty screen.
+    if (q.length < 2) {
+      const limit = clampInt(req.query.limit, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX);
+      const trending = await query<CommunityRow>(
+        `select ${COMMUNITY_COLUMNS}
+           from communities c
+          where c.discoverable and c.suspended_at is null
+          order by (
+            select count(*) from community_members m
+             where m.community_id = c.id
+               and m.state = 'active'
+               and m.joined_at > now() - interval '7 days'
+          ) desc,
+          c.member_count desc, c.id
+          limit $1`,
+        [limit]
+      );
+      return res.json({
+        communities: await Promise.all(trending.map(publicCard)),
+        // Named so the client can label the list honestly instead of calling it "results".
+        kind: 'trending',
+      });
+    }
     const limit = clampInt(req.query.limit, SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX);
     const pattern = escapeLike(q.toLowerCase());
 
