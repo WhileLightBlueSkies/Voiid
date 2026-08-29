@@ -1640,6 +1640,137 @@ router.post('/communities/:id/entitlements/:cap/revoke',
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────
+// GET /admin/communities/:id/analytics?days=30
+//
+// Everything measurable about one community, in one request.
+//
+// WHAT IS MEASURED, AND WHAT CANNOT BE. Space content is end-to-end encrypted and the server
+// holds no key — `messages.ciphertext` is bytea and stays that way. But `conversation_id`,
+// `sender_id` and `created_at` are plaintext metadata, so VOLUME and PARTICIPATION are
+// computable while content is not. Every message number below counts envelopes, never words,
+// and the panel says so rather than letting an operator assume otherwise.
+//
+// One request, not eight. A dashboard that fires a query per tile is the slowest page in a
+// tool people are meant to keep open, and its tiles disagree with each other whenever a write
+// lands mid-render.
+// ─────────────────────────────────────────────────────────────────────────────────
+router.get('/communities/:id/analytics', requireAdmin, async (req, res) => {
+  const id = String(req.params.id);
+  if (!/^[0-9a-f-]{36}$/i.test(id)) {
+    return res.status(400).json({ error: 'community id must be a uuid' });
+  }
+  // Capped for the same reason /series is: this scans several tables on created_at with no
+  // index guarantee, and a query string should not be able to table-scan production.
+  const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 90);
+
+  const exists = await query<{ id: string }>(`select id from communities where id = $1`, [id]);
+  if (!exists[0]) return res.status(404).json({ error: 'no such community' });
+
+  // ── Totals ──────────────────────────────────────────────────────────────────
+  const totals = (await query<any>(
+    `select
+       (select count(*) filter (where state = 'active')
+          from community_members where community_id = $1)::int              as members,
+       (select count(*) filter (where state = 'pending')
+          from community_members where community_id = $1)::int              as pending,
+       (select count(*) filter (where state = 'banned')
+          from community_members where community_id = $1)::int              as banned,
+       -- Departures are counted separately from the live roster because churn is the number
+       -- a host acts on, and a member count alone hides it entirely.
+       (select count(*) from community_members
+         where community_id = $1 and left_at is not null)::int              as departed,
+       (select count(*) from community_members
+         where community_id = $1 and state = 'active'
+           and joined_at > now() - ($2 || ' days')::interval)::int          as joined_window,
+       (select count(*) from community_members
+         where community_id = $1 and left_at > now() - ($2 || ' days')::interval)::int as left_window,
+       (select count(*) from community_posts
+         where community_id = $1 and removed_at is null)::int               as posts,
+       (select count(*) from community_posts
+         where community_id = $1 and removed_at is not null)::int           as posts_removed,
+       (select coalesce(sum(like_count), 0) from community_posts
+         where community_id = $1 and removed_at is null)::int               as likes,
+       (select count(*) from community_channels where community_id = $1)::int as spaces,
+       (select count(*) from community_events where community_id = $1)::int   as events
+     `,
+    [id, days],
+  ))[0] ?? {};
+
+  // ── Daily series ────────────────────────────────────────────────────────────
+  // Zero-filled by generate_series: a day with nothing must come back as a zero, or the chart
+  // draws a straight line between two busy days and reads as steady activity.
+  const series = await query<any>(
+    `with d as (
+       select generate_series(
+         (current_date - ($2::int - 1) * interval '1 day')::date,
+         current_date, interval '1 day')::date as day
+     )
+     select to_char(d.day, 'YYYY-MM-DD') as day,
+       (select count(*) from community_members m
+         where m.community_id = $1 and m.joined_at::date = d.day)::int       as joined,
+       (select count(*) from community_members m
+         where m.community_id = $1 and m.left_at::date = d.day)::int         as departed,
+       (select count(*) from community_posts p
+         where p.community_id = $1 and p.created_at::date = d.day
+           and p.removed_at is null)::int                                    as posts,
+       -- Envelopes, not content. See the header.
+       (select count(*) from messages msg
+          join community_channels ch on ch.conversation_id = msg.conversation_id
+         where ch.community_id = $1 and msg.created_at::date = d.day)::int   as messages
+     from d order by d.day asc`,
+    [id, days],
+  );
+
+  // ── Per-Space activity ──────────────────────────────────────────────────────
+  // The join runs messages -> community_channels -> communities, which is sound because
+  // conversation_id is the PRIMARY KEY of community_channels: a conversation belongs to at
+  // most one community, so no message can be double-counted.
+  const spaces = await query<any>(
+    `select ch.conversation_id as id,
+            c.name,
+            ch.kind,
+            count(m.id)::int                                          as messages,
+            count(distinct m.sender_id)::int                          as participants,
+            max(m.created_at)                                         as last_message_at
+       from community_channels ch
+       join conversations c on c.id = ch.conversation_id
+       left join messages m on m.conversation_id = ch.conversation_id
+            and m.created_at > now() - ($2 || ' days')::interval
+      where ch.community_id = $1
+      group by ch.conversation_id, c.name, ch.kind, ch.position
+      order by ch.position asc`,
+    [id, days],
+  );
+
+  // ── Top contributors ────────────────────────────────────────────────────────
+  // Posts only, deliberately. Ranking people by encrypted message COUNT would turn metadata
+  // into a leaderboard about private conversations, which is a different thing from measuring
+  // whether a Space is alive.
+  const contributors = await query<any>(
+    `select p.author_id, u.full_name, u.username, count(*)::int as posts,
+            coalesce(sum(p.like_count), 0)::int as likes
+       from community_posts p
+       left join users u on u.id = p.author_id
+      where p.community_id = $1 and p.removed_at is null
+        and p.created_at > now() - ($2 || ' days')::interval
+      group by p.author_id, u.full_name, u.username
+      order by posts desc
+      limit 10`,
+    [id, days],
+  );
+
+  res.json({
+    days,
+    totals,
+    series,
+    spaces,
+    contributors,
+    // Stated in the payload, not only in the UI, so any future caller inherits the caveat.
+    note: 'Message figures count envelopes only. Space content is end-to-end encrypted and unreadable.',
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────
 // GET /admin/communities/:id/posts?cursor=&limit=
 //
 // The feed as an operator sees it. Non-E2EE by design — this is the public wall, not chat.
