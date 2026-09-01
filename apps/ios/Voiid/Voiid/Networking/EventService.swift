@@ -212,6 +212,57 @@ extension EventService {
     /// Throws `APIError` for a transport or auth failure; returns a `CheckIn` with `ok == nil`
     /// and a populated `reason` for a refusal, because a refused ticket is an ANSWER the door
     /// needs to read, not an exception it needs to recover from.
+    /// A ticket in the holder's own wallet.
+    struct Ticket: Decodable, Identifiable {
+        let id: String
+        let event_id: String
+        let state: String
+        let checked_in_at: String?
+        let title: String?
+        let starts_at: String?
+        let location_text: String?
+        let event_status: String?
+        let order_status: String?
+        let community_id: String?
+
+        var isCheckedIn: Bool { checked_in_at != nil }
+        /// The server refuses to mint a code for any of these, so the wallet must not offer
+        /// one either — a button that only ever 409s is worse than no button.
+        var canShowCode: Bool {
+            state == "valid" && order_status == "paid" && event_status != "cancelled"
+        }
+    }
+
+    /// Every ticket this account holds. `GET /my/event-tickets` shipped complete and had no
+    /// caller: an attendee could claim a ticket and never see it again.
+    func myTickets() async throws -> [Ticket] {
+        struct Envelope: Decodable { let tickets: [Ticket] }
+        let env: Envelope = try await api.request("GET", "my/event-tickets")
+        return env.tickets
+    }
+
+    /// A short-lived signed code for the door.
+    ///
+    /// Minted per request rather than stored, and the expiry is the server's — the wallet
+    /// re-mints as it approaches rather than showing a code that has quietly gone stale in
+    /// front of a scanner.
+    struct TicketCode: Decodable {
+        let code: String
+        let expires_at: String
+        let ticket_id: String
+    }
+
+    func code(ticketId: String) async throws -> TicketCode {
+        try await api.request("GET", "event-tickets/\(ticketId)/code")
+    }
+
+    /// Revoke a leaked code. The old one stops verifying the moment this returns.
+    func rotate(ticketId: String) async throws {
+        struct EmptyBody: Encodable {}
+        _ = try await api.request("POST", "event-tickets/\(ticketId)/rotate",
+                                  body: EmptyBody(), as: EmptyResponse.self)
+    }
+
     func checkIn(eventId: String, code: String) async throws -> CheckIn {
         struct Body: Encodable { let code: String }
         do {

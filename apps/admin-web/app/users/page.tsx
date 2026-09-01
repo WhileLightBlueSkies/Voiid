@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import Shell from '../../components/Shell';
 import { PageHeader, Pill, when, name } from '../../components/ui';
 import { ListTable } from '../../components/List';
@@ -92,7 +93,13 @@ function Body() {
         {list.rows.map((u) => (
           <tr key={u.id}>
             <td>
-              <div style={{ fontWeight: 600 }}>{name(u.full_name, u.username)}</div>
+              {/* The name is the way in. A row that shows an account but cannot open it
+                  leaves an operator with the summary and no way to answer the question the
+                  summary raised. */}
+              <Link href={`/users/${u.id}`}
+                    style={{ fontWeight: 600, color: 'var(--text)' }}>
+                {name(u.full_name, u.username)}
+              </Link>
               <div className="mute" style={{ fontSize: 12, fontFamily: 'ui-monospace, monospace' }}>
                 {u.id.slice(0, 8)}…
               </div>

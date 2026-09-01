@@ -24,6 +24,12 @@ type Detail = {
   members_truncated: boolean;
 };
 
+type Post = {
+  id: string; author_id: string; body: string | null; media_url: string | null;
+  like_count: number; comment_count: number; created_at: string; edited_at: string | null;
+  author_name: string | null; author_username: string | null;
+};
+
 type Entitlement = {
   id: string; capability: string; granted_at: string;
   expires_at: string | null; revoked_at: string | null;
@@ -43,6 +49,8 @@ function Body({ me }: { me: Me }) {
   const [ents, setEnts] = useState<Entitlement[]>([]);
   const [available, setAvailable] = useState<string[]>([]);
   const [entsError, setEntsError] = useState<string | null>(null);
+  const [posts, setPosts] = useState<Post[]>([]);
+  const [postsError, setPostsError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -67,7 +75,19 @@ function Body({ me }: { me: Me }) {
     }
   }, [id]);
 
-  useEffect(() => { void load(); void loadEnts(); }, [load, loadEnts]);
+  const loadPosts = useCallback(async () => {
+    try {
+      const r = await api<{ posts: Post[] }>(`/communities/${id}/posts?limit=20`);
+      setPosts(r.posts);
+      setPostsError(null);
+    } catch (e) {
+      // Apart from the community's own error: a feed that failed to load must not draw as
+      // "nothing posted", which would tell a moderator there is nothing to look at.
+      setPostsError(e instanceof Error ? e.message : 'could not load the feed');
+    }
+  }, [id]);
+
+  useEffect(() => { void load(); void loadEnts(); void loadPosts(); }, [load, loadEnts, loadPosts]);
 
   async function grant(capability: string) {
     const note = window.prompt(
@@ -225,6 +245,35 @@ function Body({ me }: { me: Me }) {
                   </div>
                 ))}
               </div>
+            )}
+          </div>
+
+          <h2 style={{ marginBottom: 10 }}>Recent posts</h2>
+          <div className="card" style={{ marginBottom: 22 }}>
+            {postsError ? (
+              <div className="notice error">{postsError}</div>
+            ) : posts.length === 0 ? (
+              <div className="empty" style={{ padding: '20px 0' }}>Nothing posted yet.</div>
+            ) : (
+              posts.map((p) => (
+                <div key={p.id} style={{ padding: '10px 0', borderBottom: '1px solid var(--border)' }}>
+                  <div className="row" style={{ gap: 8, marginBottom: 4 }}>
+                    <span style={{ fontSize: 13, fontWeight: 600 }}>
+                      {name(p.author_name, p.author_username)}
+                    </span>
+                    <span className="mute" style={{ fontSize: 12 }}>{when(p.created_at)}</span>
+                    {p.edited_at && <Pill>edited</Pill>}
+                    <span style={{ flex: 1 }} />
+                    <span className="mono mute" style={{ fontSize: 12 }}>{p.like_count} ♥</span>
+                  </div>
+                  {p.body && (
+                    <div style={{ fontSize: 14, color: 'var(--text-dim)', whiteSpace: 'pre-wrap' }}>
+                      {p.body}
+                    </div>
+                  )}
+                  {p.media_url && <Pill tone="accent">media</Pill>}
+                </div>
+              ))
             )}
           </div>
 

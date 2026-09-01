@@ -24,6 +24,42 @@ function Body({ me }: { me: Me }) {
   const list = useList<Clip>('/clips', 'clips', { removed: String(removed) });
   const [busy, setBusy] = useState<string | null>(null);
   const [writeError, setWriteError] = useState<string | null>(null);
+  /// The clip being watched. A moderator deciding on a takedown has to SEE the thing —
+  /// judging a video from its caption is not moderation. Held in state rather than opened in
+  /// a tab so the presigned URL never lands in browser history.
+  const [playing, setPlaying] = useState<{ id: string; url: string } | null>(null);
+
+  async function watch(id: string) {
+    setBusy(id);
+    setWriteError(null);
+    try {
+      const r = await api<{ url: string }>(`/clips/${id}/playback`);
+      setPlaying({ id, url: r.url });
+    } catch (e) {
+      setWriteError(e instanceof Error ? e.message : 'could not load that clip');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function destroy(id: string) {
+    // DELETE is not remove. Remove hides a clip and is reversible; this erases the object
+    // from storage and cannot be undone, so it asks — and says which of the two it is.
+    if (!window.confirm(
+      'Permanently delete this clip and its file? Removal is reversible; this is not.',
+    )) return;
+    setBusy(id);
+    setWriteError(null);
+    try {
+      await api(`/clips/${id}`, { method: 'DELETE' });
+      setPlaying(null);
+      await list.reload();
+    } catch (e) {
+      setWriteError(e instanceof Error ? e.message : 'that did not go through');
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function act(id: string, path: string, body?: unknown) {
     setBusy(id);
@@ -79,6 +115,10 @@ function Body({ me }: { me: Me }) {
             <td className="mono">{c.like_count}</td>
             <td className="muted" style={{ fontSize: 13, whiteSpace: 'nowrap' }}>{when(c.created_at)}</td>
             <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+              <button className="ghost sm" disabled={busy === c.id}
+                      onClick={() => void watch(c.id)} style={{ marginRight: 6 }}>
+                Watch
+              </button>
               {c.removed_at ? (
                 <button
                   className="ghost sm" disabled={busy === c.id}
@@ -103,6 +143,39 @@ function Body({ me }: { me: Me }) {
           </tr>
         ))}
       </ListTable>
+
+      {playing && (
+        <div
+          onClick={() => setPlaying(null)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 50,
+            background: 'rgba(0,0,0,0.72)',
+            display: 'grid', placeItems: 'center', padding: 24,
+          }}
+        >
+          <div onClick={(e) => e.stopPropagation()}
+               style={{ display: 'grid', gap: 12, justifyItems: 'center' }}>
+            {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+            <video
+              src={playing.url}
+              controls
+              autoPlay
+              style={{ maxWidth: '80vw', maxHeight: '70vh', borderRadius: 'var(--radius-lg)' }}
+            />
+            <div className="row" style={{ gap: 8 }}>
+              <button className="ghost" onClick={() => setPlaying(null)}>Close</button>
+              {/* Deletion lives HERE and nowhere else: an irreversible action should not be
+                  reachable from a list row, where it sits one mis-click from Remove. */}
+              {me.role === 'admin' && (
+                <button className="danger" disabled={busy === playing.id}
+                        onClick={() => void destroy(playing.id)}>
+                  Delete permanently
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

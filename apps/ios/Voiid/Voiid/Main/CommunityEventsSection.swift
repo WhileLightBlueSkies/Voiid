@@ -35,6 +35,7 @@ struct CommunityEventsSection: View {
     @State private var busyId: String?
     @State private var creating = false
     @State private var hosting: EventService.Event?
+    @State private var showTickets = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
@@ -43,6 +44,9 @@ struct CommunityEventsSection: View {
                     .font(VoiidFont.rounded(17, .semibold))
                     .foregroundColor(VoiidColor.textPrimary)
                 Spacer(minLength: 0)
+                // Everyone, not just hosts: the wallet is the ATTENDEE's half, and it was the
+                // half with no client at all.
+                ticketsButton
                 if isHost { createButton }
             }
 
@@ -70,11 +74,30 @@ struct CommunityEventsSection: View {
         // A SHEET, not a push. This section is rendered inside the community detail scroll
         // view and does not own a navigation stack, so a push would either do nothing or
         // escape into whichever stack happened to be above it.
+        .sheet(isPresented: $showTickets) {
+            EventTicketsView()
+        }
         .sheet(item: $hosting) { event in
             NavigationStack {
                 EventHostView(event: event) { Task { await load() } }
             }
         }
+    }
+
+    private var ticketsButton: some View {
+        Button {
+            Haptics.tap()
+            showTickets = true
+        } label: {
+            Image(systemName: "ticket")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(VoiidColor.accentInk)
+                // Draws small, taps at 44 — the same treatment the settings controls needed.
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(PressableButtonStyle())
+        .accessibilityLabel("My tickets")
     }
 
     /// Host only. The server gates the create route on adminship; this button is convenience.
