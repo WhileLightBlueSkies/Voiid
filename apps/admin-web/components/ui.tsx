@@ -23,8 +23,11 @@ export function PageHeader({ title, subtitle, right }: {
   );
 }
 
-export function Stat({ label, value, tone }: {
+export function Stat({ label, value, tone, sub }: {
   label: string; value: number | string; tone?: 'ok' | 'warning' | 'danger';
+  /// What the number is OF. A bare figure invites the wrong reading — "12" beside Tickets
+  /// means nothing until it says whether capacity is 12 or 1200.
+  sub?: string;
 }) {
   return (
     <div className="card" style={{ padding: 16 }}>
@@ -40,6 +43,7 @@ export function Stat({ label, value, tone }: {
       >
         {value}
       </div>
+      {sub && <div className="mute" style={{ fontSize: 12, marginTop: 2 }}>{sub}</div>}
     </div>
   );
 }
@@ -76,4 +80,19 @@ export function name(full?: string | null, username?: string | null, fallback = 
   if (full && full.trim()) return full;
   if (username && username.trim()) return `@${username}`;
   return fallback;
+}
+
+/// Minor units in, decimal string out. The server never divides — a float rupee is a
+/// rounding bug waiting for a reconciliation — so the decimal point is placed here, once.
+export function money(minor: number | string | null | undefined, currency = 'INR') {
+  const n = typeof minor === 'string' ? Number(minor) : minor;
+  if (n == null || Number.isNaN(n)) return '—';
+  try {
+    return new Intl.NumberFormat('en-IN', {
+      style: 'currency', currency, minimumFractionDigits: 2,
+    }).format(n / 100);
+  } catch {
+    // An unknown currency code should degrade to a readable number, not blank the cell.
+    return `${currency} ${(n / 100).toFixed(2)}`;
+  }
 }

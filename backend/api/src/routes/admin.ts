@@ -1806,5 +1806,116 @@ router.get('/communities/:id/posts', requireAdmin, async (req, res) => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Events and money.
+//
+// The panel could count events and orders on the dashboard and could see nothing
+// else about them: not what a ticket costs, not what an event took, not whether a
+// buyer's money actually settled. These are the read routes for that.
+//
+// Everything here is a MINOR unit as it is stored (paise, cents). No division
+// happens on the server: a float rupee is a rounding bug waiting for a
+// reconciliation, and the panel is the only place that needs the decimal point.
+// ---------------------------------------------------------------------------
+
+// GET /admin/events — every event, newest first, with what it has actually taken.
+router.get('/events', requireAdmin, async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 30, 100);
+  const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
+  const status = typeof req.query.status === 'string' ? req.query.status : null;
+  const paidOnly = req.query.paid === 'true';
+
+  const params: unknown[] = [limit];
+  const where: string[] = [];
+  if (cursor) { params.push(cursor); where.push(`e.created_at < $${params.length}`); }
+  if (status) { params.push(status); where.push(`e.status = $${params.length}`); }
+  if (paidOnly) where.push('e.price_minor > 0');
+
+  const rows = await query<any>(
+    `select e.id, e.community_id, e.title, e.starts_at, e.ends_at, e.location_text,
+            e.capacity, e.price_minor, e.currency, e.status, e.created_at,
+            c.name as community_name, c.handle as community_handle,
+            -- Revenue counts PAID orders only. Pending money is not money, and counting
+            -- it would overstate every figure on the page.
+            coalesce((select sum(o.amount_minor) from event_orders o
+                       where o.event_id = e.id and o.status = 'paid'), 0)::bigint
+              as revenue_minor,
+            coalesce((select sum(o.amount_minor) from event_orders o
+                       where o.event_id = e.id and o.status = 'refunded'), 0)::bigint
+              as refunded_minor,
+            (select count(*) from event_orders o
+              where o.event_id = e.id and o.status = 'paid')::int as paid_orders,
+            (select count(*) from event_orders o
+              where o.event_id = e.id and o.status = 'pending')::int as pending_orders,
+            (select count(*) from event_tickets t where t.event_id = e.id)::int as tickets,
+            (select count(*) from event_tickets t
+              where t.event_id = e.id and t.checked_in_at is not null)::int as checked_in
+       from community_events e
+       left join communities c on c.id = e.community_id
+      ${where.length ? `where ${where.join(' and ')}` : ''}
+      order by e.created_at desc
+      limit $1`,
+    params
+  );
+
+  res.json({
+    events: rows,
+    next_cursor: rows.length === limit ? rows[rows.length - 1].created_at : null,
+  });
+});
+
+// GET /admin/events/:id — one event, its orders, and the totals that reconcile against them.
+router.get('/events/:id', requireAdmin, async (req, res) => {
+  const { id } = req.params;
+
+  const [event] = await query<any>(
+    `select e.id, e.community_id, e.title, e.description, e.starts_at, e.ends_at,
+            e.location_text, e.capacity, e.price_minor, e.currency, e.status,
+            e.created_at, e.created_by,
+            c.name as community_name, c.handle as community_handle,
+            u.full_name as host_name, u.username as host_username
+       from community_events e
+       left join communities c on c.id = e.community_id
+       left join users u on u.id = e.created_by
+      where e.id = $1`,
+    [id]
+  );
+  if (!event) return res.status(404).json({ error: 'not_found' });
+
+  const [orders, totals, tickets] = await Promise.all([
+    query<any>(
+      `select o.id, o.buyer_id, o.quantity, o.unit_price_minor, o.amount_minor,
+              o.currency, o.provider, o.provider_ref, o.status, o.failure_reason,
+              o.created_at, o.settled_at,
+              u.full_name as buyer_name, u.username as buyer_username
+         from event_orders o
+         left join users u on u.id = o.buyer_id
+        where o.event_id = $1
+        order by o.created_at desc
+        limit 200`,
+      [id]
+    ),
+    // Grouped by status rather than summed into one number: "collected" and "refunded"
+    // answer different questions, and a single net figure hides both.
+    query<any>(
+      `select status, count(*)::int as orders,
+              coalesce(sum(quantity), 0)::int as seats,
+              coalesce(sum(amount_minor), 0)::bigint as amount_minor
+         from event_orders where event_id = $1
+        group by status`,
+      [id]
+    ),
+    query<any>(
+      `select count(*)::int as issued,
+              count(*) filter (where checked_in_at is not null)::int as checked_in,
+              count(*) filter (where state = 'void')::int as voided
+         from event_tickets where event_id = $1`,
+      [id]
+    ),
+  ]);
+
+  res.json({ event, orders, totals, tickets: tickets[0] });
+});
+
 export default router;
 export { requireAdmin, requireRole };

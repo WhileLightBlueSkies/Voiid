@@ -19,6 +19,7 @@ const NAV: { href: string; label: string; adminOnly?: boolean }[] = [
   { href: '/', label: 'Overview' },
   { href: '/communities', label: 'Communities' },
   { href: '/clips', label: 'Clips' },
+  { href: '/events', label: 'Events & revenue' },
   { href: '/reports', label: 'Reports' },
   { href: '/users', label: 'Users & devices', adminOnly: true },
   { href: '/dpdp', label: 'Data requests', adminOnly: true },
