@@ -67,10 +67,75 @@ final class EventService {
     /// Claim a ticket. Quantity is fixed at 1 here: multi-ticket ordering is a real server
     /// capability (up to 10) but it needs a quantity picker and a paid flow to be worth
     /// anything, and neither exists yet.
-    func rsvp(eventId: String) async throws {
+    /// What placing an order produced.
+    ///
+    /// A FREE event and a PAID one take the same route and differ in the response: free
+    /// settles inside the request and the ticket exists when it returns, paid comes back
+    /// with a checkout to present and nothing is owed until the webhook lands. The caller
+    /// has to tell those apart, so this type makes it impossible not to.
+    enum OrderOutcome {
+        /// Settled. A ticket exists now.
+        case ticketed
+        /// Money is owed. Present `checkout`, then poll — the ticket appears when Razorpay's
+        /// webhook reaches the server, NOT when the sheet closes.
+        case needsPayment(orderId: String, checkout: Checkout)
+    }
+
+    /// The provider's own payload, passed through untouched by the server.
+    ///
+    /// Decoded into named fields rather than a dictionary because these are what the SDK
+    /// requires, and a typo in a dictionary key is a runtime failure at the till.
+    struct Checkout: Decodable, Equatable {
+        let key: String
+        let order_id: String
+        let amount: Int
+        let currency: String
+        let name: String?
+        let description: String?
+    }
+
+    /// Place an order for one ticket.
+    ///
+    /// Idempotent by the server's design: 032 has a partial unique index on
+    /// (event_id, buyer_id) for live orders, so a double tap and a returning abandoned
+    /// checkout both come back as the SAME order rather than a second one to pay for.
+    @discardableResult
+    func placeOrder(eventId: String, quantity: Int = 1) async throws -> OrderOutcome {
         struct Body: Encodable { let quantity: Int }
-        _ = try await api.request("POST", "events/\(eventId)/orders",
-                                  body: Body(quantity: 1), as: EmptyResponse.self)
+        struct Order: Decodable { let id: String; let status: String }
+        struct Response: Decodable {
+            let order: Order
+            let checkout: Checkout?
+        }
+        let r = try await api.request("POST", "events/\(eventId)/orders",
+                                      body: Body(quantity: quantity), as: Response.self)
+        // A free order comes back already 'paid' and carries no checkout. Keyed on the
+        // checkout's presence rather than on the status string, because the server decides
+        // what needs paying and the client should not re-derive that from a label.
+        if let checkout = r.checkout, r.order.status != "paid" {
+            return .needsPayment(orderId: r.order.id, checkout: checkout)
+        }
+        return .ticketed
+    }
+
+    /// Kept for the free path's existing callers.
+    func rsvp(eventId: String) async throws {
+        _ = try await placeOrder(eventId: eventId)
+    }
+
+    /// Has this order settled yet?
+    ///
+    /// THE SHEET CLOSING IS NOT PAYMENT. Razorpay's callback says the customer finished at
+    /// the gateway; the money is only ours once the signed webhook has reached the server
+    /// and settleOrder has run. So the app asks the server, and the server's answer is the
+    /// only one that mints a ticket.
+    func orderStatus(eventId: String) async throws -> String? {
+        struct Order: Decodable { let id: String; let status: String; let tickets: Int? }
+        struct Response: Decodable { let order: Order? }
+        // /my-order, NOT /orders — the latter is the host's ledger and answers 403 for a
+        // member. A null order is a normal answer, not an error.
+        let r = try await api.request("GET", "events/\(eventId)/my-order", as: Response.self)
+        return r.order?.status
     }
 }
 

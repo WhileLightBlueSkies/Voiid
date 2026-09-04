@@ -746,6 +746,48 @@ router.get(
 );
 
 // ─────────────────────────────────────────────────────────────────────────────────
+// GET /events/:id/my-order — has MY order settled yet?
+//
+// Separate from GET /events/:id/orders, which is the HOST's ledger and shows every buyer by
+// name. A buyer waiting on their own payment needs one row — their own — and widening the
+// host route to serve them would mean either handing a member the whole guest list or
+// branching that query on who is asking, which is how a route ends up leaking the branch it
+// forgot.
+//
+// THIS IS THE ONLY HONEST ANSWER TO "DID MY PAYMENT WORK". Razorpay's checkout closing means
+// the customer finished at the gateway; the money is ours when the signed webhook has
+// reached us and settleOrder has run. So the app polls this, and 'paid' here is the fact
+// that mints a ticket — never the SDK's callback.
+// ─────────────────────────────────────────────────────────────────────────────────
+router.get(
+  '/events/:id/my-order',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { user_id: userId } = (req as any).auth;
+    // needsAdmin false: this is a member-facing route by definition.
+    const opened = await openEvent(req.params.id, userId, false);
+    if (!opened.ok) return res.status(opened.status).json({ error: opened.error });
+
+    const rows = await query(
+      `select o.id, o.quantity, o.amount_minor::text as amount_minor, o.currency,
+              o.status, o.provider, o.failure_reason, o.created_at, o.settled_at,
+              (select count(*) from event_tickets t
+                where t.order_id = o.id and t.state = 'valid')::int as tickets
+         from event_orders o
+        where o.event_id = $1 and o.buyer_id = $2
+        order by o.created_at desc
+        limit 1`,
+      [opened.event.id, userId]
+    );
+
+    // 200 with a null order, not a 404. "You have not ordered" is a normal answer to this
+    // question and a poller should not have to treat it as an error.
+    const row = rows[0] as any;
+    res.json({ order: row ? { ...row, amount_minor: minor(row.amount_minor) } : null });
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────────
 // GET /my/event-tickets — everything the caller can walk through a door with.
 // ─────────────────────────────────────────────────────────────────────────────────
 router.get(
