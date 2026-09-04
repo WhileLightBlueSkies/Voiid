@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Apple's privacy manifest. Required on upload since May 2024; without it App Store Connect
+  rejects the build after processing, which looks like a successful upload followed by an
+  email an hour later.
+
+  TWO CLAIMS ARE MADE HERE AND BOTH HAVE TO BE TRUE:
+
+  1. NSPrivacyTracking false. Voiid does not track — there is no advertising identifier, no
+     third-party analytics SDK, and nothing is linked to data from other companies' apps.
+     Setting this true would additionally require NSPrivacyTrackingDomains.
+
+  2. NSPrivacyAccessedAPITypes. UserDefaults is a "required reason" API. CA92.1 is the
+     reason for "access info from same app, per documentation" — this app reads and writes
+     only its own preferences, never another app's via an app group with a wider audience.
+
+  WHAT IS DELIBERATELY NOT LISTED. Contacts, photos, location, camera and microphone are
+  covered by the Info.plist usage strings and by App Store Connect's own privacy
+  questionnaire, not by this file. NSPrivacyCollectedDataTypes is the field for those and it
+  is left absent rather than guessed at: an inaccurate collection declaration is worse than
+  the questionnaire, because the questionnaire is reviewed and this is not.
+-->
+<plist version="1.0">
+<dict>
+    <key>NSPrivacyTracking</key>
+    <false/>
+    <key>NSPrivacyTrackingDomains</key>
+    <array/>
+    <key>NSPrivacyCollectedDataTypes</key>
+    <array/>
+    <key>NSPrivacyAccessedAPITypes</key>
+    <array>
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>CA92.1</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>

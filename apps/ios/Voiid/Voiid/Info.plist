@@ -2,106 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- ── THE LAUNCH SCREEN ────────────────────────────────────────────────────────
-	     There was NO launch screen configured at all, so iOS painted a blank frame
-	     between tap and first render — white in light mode, against a splash that is
-	     near-black. That flash was the ugliest moment in the app.
-
-	     UILaunchScreen (not a storyboard): the ground is LaunchBackground, pinned to
-	     #0B0B0B in BOTH appearances so it matches SplashScreen's ground exactly and the
-	     handoff is invisible.
-
-	     The mark is LaunchMark — the APP ICON's V, lifted off its black square into
-	     transparency so it composites onto the launch colour instead of showing a second
-	     black rectangle with its own edges. It is NOT VoiidLogoMark: that asset is the
-	     three-bar wordmark lockup, a different shape from the icon the user just tapped,
-	     and seeing one become the other reads as the wrong app opening.
-
-	     Keep this in step with SplashScreen. If its ground ever moves off #0B0B0B, this
-	     colorset moves with it or the flash comes back. -->
-	<key>UILaunchScreen</key>
-	<dict>
-		<key>UIColorName</key>
-		<string>LaunchBackground</string>
-		<key>UIImageName</key>
-		<string>LaunchMark</string>
-		<key>UIImageRespectsSafeAreaInsets</key>
-		<false/>
-	</dict>
-	<!-- Location. Feature (B) — the Map — is FOREGROUND-ONLY and needs only When-In-Use.
-	     In-conversation live sharing (Feature A) has now landed and adds the Always string
-	     below plus the `location` background mode (in UIBackgroundModes), so a user-started,
-	     timer-bounded share keeps updating while Voiid is backgrounded (docs/LOCATION.md §5).
-	     Apple rejects vague strings, so these are specific about WHAT is collected, WHEN, and
-	     that it is end-to-end encrypted. Both strings must be present before Always can ever
-	     be requested (iOS 11+). -->
-	<!-- Taking a profile photo. Without this key iOS TERMINATES the app the instant the
-	     camera is presented — not a permission denial, a crash. -->
-	<key>NSCameraUsageDescription</key>
-	<string>Take photos and videos to send in your chats, and to set your Voiid profile picture.</string>
-	<!-- Voice notes, and the audio half of a call. Same rule as the camera above: WITHOUT
-	     THIS KEY iOS TERMINATES THE APP the instant the microphone is requested. The
-	     onboarding permissions screen asks for this in sequence, so a missing key does not
-	     fail one row — it kills the app partway through the run. -->
-	<key>NSMicrophoneUsageDescription</key>
-	<string>Record voice notes and talk on Voiid calls. Audio is end-to-end encrypted — Voiid's servers never hear it.</string>
-	<!-- Contact discovery. Same termination rule.
-	     The string says what actually happens, because it is the most sensitive of the six:
-	     matching is done against HASHES and the address book is never uploaded. -->
-	<key>NSContactsUsageDescription</key>
-	<string>Find friends already on Voiid. Your contacts are matched privately on your device and are never uploaded.</string>
-	<!-- Reading from the library, to attach a photo or video to a chat. Same termination rule. -->
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Choose photos and videos to send on Voiid. Everything you send is end-to-end encrypted.</string>
-	<!-- Writing BACK to the library — saving a received photo, or a clip you recorded.
-	     A separate key from the one above: iOS treats read and add as different grants, and
-	     the add-only prompt is what appears when the app saves rather than picks. -->
-	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>Save photos and videos from Voiid to your library.</string>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Voiid uses your location only when you choose to share it in a chat or on the Map. Your location is end-to-end encrypted — Voiid's servers never see it.</string>
-	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>Allow Always so live location keeps updating while Voiid is in the background, for as long as you set. Sharing stops automatically when your timer ends.</string>
-	<!-- Contact/dialer linking. Declaring INStartCallIntent is what lets iOS hand a
-	     "call this person on Voiid" back to us: tapping a Voiid entry in Recents or
-	     inside a contact card resumes the app with this activity type, and Siri can
-	     act on "call <name> on Voiid". Without it the donated intents in CallManager
-	     produce suggestions the system cannot deliver anywhere.
-	     The two legacy types keep older call-back entries working. -->
-	<key>NSUserActivityTypes</key>
-	<array>
-		<string>INStartCallIntent</string>
-		<string>INStartAudioCallIntent</string>
-		<string>INStartVideoCallIntent</string>
-	</array>
-	<!-- Background modes for calls. NOTE: these must live here, not as
-	     INFOPLIST_KEY_UIBackgroundModes build settings — Xcode's generated-plist
-	     mechanism does not recognise UIBackgroundModes and silently drops it.
-	       voip                – PushKit wakes the app for an incoming call
-	       audio               – keep call audio alive in the background
-	       remote-notification – message pushes / NSE + Firebase Auth silent push
-	       location            – keep a user-started, timer-bounded live location share
-	                             updating while Voiid is backgrounded. allowsBackground-
-	                             LocationUpdates TRAPS without this key; the share is never
-	                             started on launch, only by an explicit user action with an
-	                             explicit end time (docs/LOCATION.md §5). -->
-	<key>UIBackgroundModes</key>
-	<array>
-		<string>voip</string>
-		<string>audio</string>
-		<string>remote-notification</string>
-		<string>location</string>
-	</array>
-	<!-- Firebase Phone Auth's reCAPTCHA fallback returns through this custom URL scheme.
-	     It is GOOGLE_APP_ID from GoogleService-Info.plist with ':' replaced by '-'.
-	
-	     IT MUST MATCH THE PLIST, and FirebaseAuth does not degrade gracefully when it does not:
-	     PhoneAuthProvider.swift:112 calls fatalError, so tapping Continue killed the app outright
-	     whenever silent APNs verification was unavailable and it fell back to reCAPTCHA.
-	
-	     The app briefly shipped GoogleService-Info.plist for the `voiid-prod` project while this
-	     scheme named `voiid-native`. The APNs key is registered against voiid-native, so that is
-	     the project the app uses and both values now name it. -->
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -113,5 +13,43 @@
 			</array>
 		</dict>
 	</array>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>NSCameraUsageDescription</key>
+	<string>Take photos and videos to send in your chats, and to set your Voiid profile picture.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>Find friends already on Voiid. Your contacts are matched privately on your device and are never uploaded.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Allow Always so live location keeps updating while Voiid is in the background, for as long as you set. Sharing stops automatically when your timer ends.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Voiid uses your location only when you choose to share it in a chat or on the Map. Your location is end-to-end encrypted — Voiid's servers never see it.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Record voice notes and talk on Voiid calls. Audio is end-to-end encrypted — Voiid's servers never hear it.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Save photos and videos from Voiid to your library.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Choose photos and videos to send on Voiid. Everything you send is end-to-end encrypted.</string>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>INStartCallIntent</string>
+		<string>INStartAudioCallIntent</string>
+		<string>INStartVideoCallIntent</string>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>voip</string>
+		<string>audio</string>
+		<string>remote-notification</string>
+		<string>location</string>
+	</array>
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
+		<key>UIImageName</key>
+		<string>LaunchMark</string>
+		<key>UIImageRespectsSafeAreaInsets</key>
+		<false/>
+	</dict>
 </dict>
 </plist>
