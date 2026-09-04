@@ -23,7 +23,7 @@ type EventRow = {
   id: string; community_id: string; title: string;
   starts_at: string; location_text: string | null;
   capacity: number | null; price_minor: number; currency: string;
-  status: string; created_at: string;
+  status: string; suspended_at: string | null; created_at: string;
   community_name: string | null; community_handle: string | null;
   revenue_minor: string | number; refunded_minor: string | number;
   paid_orders: number; pending_orders: number;
@@ -121,7 +121,14 @@ function Body() {
               <td className="muted" style={{ fontSize: 13, whiteSpace: 'nowrap' }}>
                 {when(e.starts_at)}
               </td>
-              <td><Pill tone={STATUS_TONE[e.status]}>{e.status}</Pill></td>
+              <td>
+                {/* Suspension is shown BESIDE the host's status, never instead of it: they are
+                    different people's decisions and collapsing them loses which is which. */}
+                <Pill tone={STATUS_TONE[e.status]}>{e.status}</Pill>
+                {e.suspended_at && (
+                  <div style={{ marginTop: 4 }}><Pill tone="danger">Off sale</Pill></div>
+                )}
+              </td>
             </tr>
           );
         })}

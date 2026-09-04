@@ -28,7 +28,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // 053 adds the last two. 'community_post' targets the POST, never its author — reporting a
 // person is what 'creator' and 'message_sender' are for, and those accumulate against an
 // account, which is a different fact from "this one post is bad".
-const TARGET_TYPES = ['clip', 'creator', 'message_sender', 'community_post', 'community'] as const;
+const TARGET_TYPES = ['clip', 'creator', 'message_sender', 'community_post', 'community', 'event'] as const;
 
 /**
  * Which target kinds name a USER rather than a piece of content.
@@ -124,6 +124,10 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
       exists = (await query(
         `select 1 from communities where id = $1 limit 1`, [target_id])).length > 0;
       break;
+    case 'event':
+      exists = (await query(
+        `select 1 from community_events where id = $1 limit 1`, [target_id])).length > 0;
+      break;
     default:
       // 'creator' and 'message_sender' — both name a user.
       exists = (await query(
@@ -140,6 +144,17 @@ router.post('/', requireAuth, asyncHandler(async (req, res) => {
   if (exists && target_type === 'community_post') {
     const own = await query(
       `select 1 from community_posts where id = $1 and author_id = $2 limit 1`,
+      [target_id, user_id]
+    );
+    if (own.length > 0) return res.status(202).json({ received: true });
+  }
+
+  // The same guard, for the host of an event. A host who wants their own listing gone can
+  // cancel it, so a self-report is only ever noise — and answering with the same 202 keeps
+  // this from being a way to probe who created an event the caller cannot see.
+  if (exists && target_type === 'event') {
+    const own = await query(
+      `select 1 from community_events where id = $1 and created_by = $2 limit 1`,
       [target_id, user_id]
     );
     if (own.length > 0) return res.status(202).json({ received: true });

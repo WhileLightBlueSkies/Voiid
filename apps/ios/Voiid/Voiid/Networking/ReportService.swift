@@ -43,6 +43,13 @@ enum ReportTarget {
     /// A whole community (communities.id, 030) — "this entire community is a scam", which is
     /// a different report from any one post inside it.
     case community(communityId: String)
+    /// An event LISTING (community_events.id, 032/056).
+    ///
+    /// Targets the listing, not the host, for the same reason `.communityPost` targets the
+    /// post: resolving this takes one listing off sale, while reporting a person accumulates
+    /// against their account. A host reporting their own event is refused server-side — they
+    /// can cancel it — and answered with the same 202 as everything else.
+    case event(eventId: String)
 
     /// The server's `target_type` vocabulary (routes/reports.ts TARGET_TYPES).
     var type: String {
@@ -52,6 +59,7 @@ enum ReportTarget {
         case .person: return "message_sender"
         case .communityPost: return "community_post"
         case .community: return "community"
+        case .event: return "event"
         }
     }
 
@@ -62,6 +70,7 @@ enum ReportTarget {
         case .person(let userId): return userId
         case .communityPost(let postId): return postId
         case .community(let communityId): return communityId
+        case .event(let eventId): return eventId
         }
     }
 }

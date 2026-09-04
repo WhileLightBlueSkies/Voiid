@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
-import Shell from '../../../components/Shell';
+import Shell, { type Me } from '../../../components/Shell';
 import { PageHeader, Async, Pill, Stat, when, name, money } from '../../../components/ui';
 import { api } from '../../../lib/api';
 
@@ -21,6 +21,7 @@ type Event = {
   capacity: number | null; price_minor: number; currency: string; status: string;
   created_at: string; community_name: string | null; community_handle: string | null;
   host_name: string | null; host_username: string | null;
+  suspended_at: string | null;
 };
 type Order = {
   id: string; buyer_id: string; quantity: number;
@@ -38,11 +39,13 @@ const ORDER_TONE: Record<string, 'ok' | 'danger' | 'warning' | 'accent' | undefi
 };
 
 export default function EventDetail() {
-  return <Shell>{() => <Body />}</Shell>;
+  return <Shell>{(me) => <Body me={me} />}</Shell>;
 }
 
-function Body() {
+function Body({ me }: { me: Me }) {
   const { id } = useParams<{ id: string }>();
+  const [busy, setBusy] = useState(false);
+  const [writeError, setWriteError] = useState<string | null>(null);
   const [d, setD] = useState<Payload | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -56,6 +59,29 @@ function Body() {
   }, [id]);
 
   useEffect(() => { void load(); }, [load]);
+
+  async function suspend() {
+    const reason = window.prompt(
+      'Why is this listing being taken off sale? (recorded in the audit log)')?.trim();
+    if (!reason) return;
+    setBusy(true); setWriteError(null);
+    try {
+      await api(`/events/${id}/suspend`, { method: 'POST', json: { reason } });
+      await load();
+    } catch (e) {
+      setWriteError(e instanceof Error ? e.message : 'that did not go through');
+    } finally { setBusy(false); }
+  }
+
+  async function restore() {
+    setBusy(true); setWriteError(null);
+    try {
+      await api(`/events/${id}/restore`, { method: 'POST', json: {} });
+      await load();
+    } catch (e) {
+      setWriteError(e instanceof Error ? e.message : 'that did not go through');
+    } finally { setBusy(false); }
+  }
 
   const by = (s: string) => d?.totals.find((t) => t.status === s);
   const cur = d?.event.currency ?? 'INR';
@@ -78,11 +104,35 @@ function Body() {
                 ? `@${d.event.community_handle} · ${when(d.event.starts_at)}`
                 : when(d.event.starts_at)
             }
-            right={<Pill tone={d.event.status === 'published' ? 'ok'
-                               : d.event.status === 'cancelled' ? 'danger' : undefined}>
-                     {d.event.status}
-                   </Pill>}
+            right={
+              <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+                <Pill tone={d.event.status === 'published' ? 'ok'
+                            : d.event.status === 'cancelled' ? 'danger' : undefined}>
+                  {d.event.status}
+                </Pill>
+                {d.event.suspended_at && <Pill tone="danger">Suspended</Pill>}
+                {me.role === 'admin' && (
+                  d.event.suspended_at
+                    ? <button className="ghost" disabled={busy}
+                              onClick={() => void restore()}>Put back on sale</button>
+                    : <button className="ghost" disabled={busy}
+                              onClick={() => void suspend()}>Take off sale</button>
+                )}
+              </div>
+            }
           />
+
+          {writeError && <div className="notice error" style={{ marginBottom: 16 }}>{writeError}</div>}
+
+          {/* Says what suspension DID and did not do. A moderator who thinks this voided the
+              tickets will not chase the refund that someone is actually owed. */}
+          {d.event.suspended_at && (
+            <div className="notice error" style={{ marginBottom: 16 }}>
+              Off sale since {when(d.event.suspended_at)}. No new orders are accepted.
+              Tickets already issued remain valid — voiding or refunding them is a separate
+              decision.
+            </div>
+          )}
 
           <div className="stats" style={{ marginBottom: 22 }}>
             <Stat label="Ticket price"

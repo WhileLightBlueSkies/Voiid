@@ -46,6 +46,10 @@ final class EventService {
         let is_free: Bool?
         /// Your existing order, if any: pending | paid | refunded | cancelled.
         let your_order_status: String?
+        /// Taken off sale by a moderator. SEPARATE from `status`, which is the host's own
+        /// decision — a suspended event is still 'published' and returns to sale unchanged.
+        /// Optional because an older server does not send it; absent means not suspended.
+        let suspended: Bool?
 
         /// Trust the server's own verdict when it sends one, and fall back to the price only
         /// when it does not — the two cannot disagree, but the server is the authority.

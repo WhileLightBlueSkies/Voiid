@@ -36,6 +36,9 @@ struct CommunityEventsSection: View {
     @State private var creating = false
     @State private var hosting: EventService.Event?
     @State private var showTickets = false
+    /// Owned by the SECTION, not the row — a sheet owned by a row in a lazy stack is torn
+    /// down when that row scrolls out, which can happen while the user is mid-report.
+    @State private var reporting: EventService.Event?
 
     var body: some View {
         VStack(alignment: .leading, spacing: VoiidSpacing.sm) {
@@ -76,6 +79,9 @@ struct CommunityEventsSection: View {
         // escape into whichever stack happened to be above it.
         .sheet(isPresented: $showTickets) {
             EventTicketsView()
+        }
+        .sheet(item: $reporting) { event in
+            ReportSheet(target: .event(eventId: event.id)) { reporting = nil }
         }
         .sheet(item: $hosting) { event in
             NavigationStack {
@@ -145,7 +151,20 @@ struct CommunityEventsSection: View {
             }
             .buttonStyle(.plain)
         } else {
+            // A member cannot open an event (there is no detail screen yet), so the report
+            // affordance is a context menu on the row itself rather than an action inside a
+            // screen that does not exist. A host is not offered it: reporting your own
+            // listing is refused server-side, and offering an action that always no-ops is
+            // worse than not offering it.
             rowBody(e)
+                .contextMenu {
+                    Button(role: .destructive) {
+                        Haptics.tap()
+                        reporting = e
+                    } label: {
+                        Label("Report event", systemImage: "flag")
+                    }
+                }
         }
     }
 
@@ -204,6 +223,16 @@ struct CommunityEventsSection: View {
             Text("Going")
                 .font(VoiidFont.rounded(12, .semibold))
                 .foregroundColor(VoiidColor.primary)
+        } else if e.suspended == true {
+            // Checked BEFORE status, because a suspended event is still 'published' and would
+            // otherwise fall through to an RSVP button the server refuses with a 409.
+            //
+            // "Unavailable", not "reported": the reason a listing is off sale is a moderation
+            // fact, and telling attendees a complaint was made invites them to guess who made
+            // it. What they can act on is that it cannot be booked.
+            Text("Unavailable")
+                .font(VoiidFont.rounded(12, .regular))
+                .foregroundColor(VoiidColor.textSecondary)
         } else if e.status != "published" {
             // Draft and cancelled events take no orders; the server 409s. Say which.
             Text(e.status == "cancelled" ? "Cancelled" : "Not open")

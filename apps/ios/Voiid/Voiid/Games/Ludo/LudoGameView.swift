@@ -693,7 +693,10 @@ enum LudoColorPaletteBridge {
     }
 }
 
-#if DEBUG
+// NOT #if DEBUG. This is the cold-start board every player sees before the first snapshot
+// arrives — load-bearing UI, not debug scaffolding. It was inside a DEBUG guard while being
+// used unconditionally at the top of this file, so Debug built and RELEASE DID NOT, which is
+// invisible until someone tries to archive for TestFlight.
 /// Cold-start skeleton: neutral generated board until the snapshot arrives (§9).
 struct NeutralBoardSkeleton: View {
     @Environment(\.colorScheme) private var scheme
@@ -723,7 +726,6 @@ struct NeutralBoardSkeleton: View {
         .modifier(LudoBoardClip())
     }
 }
-#endif
 
 /// Terminal sheet over scrim (§11.5): winner name, completion count, captures, restrained
 /// code-drawn ripple in the winner hue, Rematch + Back to chat. No avatars/coins/confetti.

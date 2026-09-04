@@ -60,6 +60,9 @@ interface EventRow {
   price_minor: string;
   currency: string;
   status: string;
+  /// Set by a moderator acting on a report. Distinct from status 'cancelled', which is the
+  /// HOST's final decision — this one is reversible and leaves the host's status untouched.
+  suspended_at: Date | null;
   created_by: string;
   created_at: Date;
 }
@@ -85,6 +88,10 @@ function eventCard(e: EventRow) {
     price_minor: minor(e.price_minor),
     currency: e.currency,
     status: e.status,
+    // A BOOLEAN, not the timestamp. When a listing was suspended is a moderation fact that
+    // belongs in the audit log; an attendee needs only to know that it is not on sale, and
+    // handing out the moment a complaint was actioned invites guessing about who complained.
+    suspended: e.suspended_at != null,
     created_by: e.created_by,
     created_at: e.created_at,
     is_free: minor(e.price_minor) === 0,
@@ -458,6 +465,14 @@ router.post(
       return res.status(409).json({ error: 'this event is not open for registration' });
     }
 
+    // A suspended listing takes no orders on either path. This is the cheap early refusal —
+    // it saves opening a checkout at the provider for something that cannot be sold — but it
+    // is NOT the one that makes the guarantee: the free path re-reads this inside the row
+    // lock, because between here and the insert a moderator may act.
+    if (event.suspended_at) {
+      return res.status(409).json({ error: 'this event is not currently available' });
+    }
+
     const quantity = req.body?.quantity == null ? 1 : Number(req.body.quantity);
     if (!Number.isInteger(quantity) || quantity < 1 || quantity > 10) {
       return res.status(400).json({ error: 'quantity must be between 1 and 10' });
@@ -550,14 +565,22 @@ router.post(
       // event rather than the orders works because the row being contended for does not exist
       // yet — the same shape the tournament registration route uses.
       const locked = (
-        await client.query<{ capacity: number | null; status: string }>(
-          `select capacity, status from community_events where id = $1 for update`,
+        await client.query<{ capacity: number | null; status: string; suspended_at: string | null }>(
+          `select capacity, status, suspended_at from community_events where id = $1 for update`,
           [event.id]
         )
       ).rows[0];
       if (!locked || locked.status !== 'published') {
         await client.query('rollback');
         return res.status(409).json({ error: 'this event is not open for registration' });
+      }
+      // Checked INSIDE the lock, next to the status, because it is the same kind of fact and
+      // must not be readable a moment before a moderator sets it and acted on a moment after.
+      // The message does not say "reported": telling a buyer that someone complained invites
+      // them to guess who, and the honest operational fact is that it is not on sale.
+      if (locked.suspended_at) {
+        await client.query('rollback');
+        return res.status(409).json({ error: 'this event is not currently available' });
       }
 
       if (locked.capacity !== null) {

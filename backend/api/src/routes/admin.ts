@@ -772,14 +772,25 @@ router.get('/reports', requireAdmin, async (req, res) => {
             tu.deleted_at      as target_deleted_at,
             c.caption          as clip_caption,
             c.removed_at       as clip_removed_at,
+            ev.title           as event_title,
+            ev.suspended_at    as event_suspended_at,
+            ev.community_id    as event_community_id,
             a.email            as resolved_by_email,
             (select count(*)::int from content_reports o
               where o.target_type = r.target_type and o.target_id = r.target_id
                 and o.status = 'open') as open_against_target
        from content_reports r
        left join users reporter on reporter.id = r.reporter_user_id
-       left join users tu       on tu.id = r.target_id and r.target_type <> 'clip'
+       -- Only the target kinds whose target_id IS a user id. This was a not-equals-clip
+       -- test, which also tried users against post, community and event ids — three
+       -- different id namespaces, so it could only ever return null, and it would start
+       -- returning the WRONG row the day any two of those namespaces collided.
+       left join users tu       on tu.id = r.target_id
+                               and r.target_type in ('creator', 'message_sender')
        left join clips c        on c.id  = r.target_id and r.target_type = 'clip'
+       -- Without this an event report renders as a bare uuid, and a moderator cannot tell
+       -- what they are being asked to judge.
+       left join community_events ev on ev.id = r.target_id and r.target_type = 'event'
        left join admin_users a  on a.id  = r.resolved_by
       where r.status = ${resolved ? "'resolved'" : "'open'"}
         ${cursor ? 'and r.created_at < $2::timestamptz' : ''}
@@ -1833,7 +1844,7 @@ router.get('/events', requireAdmin, async (req, res) => {
 
   const rows = await query<any>(
     `select e.id, e.community_id, e.title, e.starts_at, e.ends_at, e.location_text,
-            e.capacity, e.price_minor, e.currency, e.status, e.created_at,
+            e.capacity, e.price_minor, e.currency, e.status, e.suspended_at, e.created_at,
             c.name as community_name, c.handle as community_handle,
             -- Revenue counts PAID orders only. Pending money is not money, and counting
             -- it would overstate every figure on the page.
@@ -1871,7 +1882,7 @@ router.get('/events/:id', requireAdmin, async (req, res) => {
   const [event] = await query<any>(
     `select e.id, e.community_id, e.title, e.description, e.starts_at, e.ends_at,
             e.location_text, e.capacity, e.price_minor, e.currency, e.status,
-            e.created_at, e.created_by,
+            e.suspended_at, e.created_at, e.created_by,
             c.name as community_name, c.handle as community_handle,
             u.full_name as host_name, u.username as host_username
        from community_events e
@@ -1915,6 +1926,64 @@ router.get('/events/:id', requireAdmin, async (req, res) => {
   ]);
 
   res.json({ event, orders, totals, tickets: tickets[0] });
+});
+
+// POST /admin/events/:id/suspend — take a reported listing off sale, reversibly.
+//
+// NOT the same act as cancelling. Cancelling is the host's decision and it is final; this is
+// a moderator saying "off sale while we look at it", and it leaves community_events.status
+// exactly as the host set it so that clearing the suspension restores the real state rather
+// than guessing at one. See 056's header.
+//
+// EXISTING TICKETS ARE NOT VOIDED. Someone who already paid holds a valid ticket, and a
+// report — which at this point is an unreviewed allegation — is not grounds to invalidate
+// what they bought. Suspension stops NEW orders. Refunding or voiding is a separate decision
+// made after the review, by someone who has looked at it.
+router.post('/events/:id/suspend', requireAdmin, requireRole('admin'), async (req, res) => {
+  const a = (req as any).admin as AdminAuth;
+  const id = String(req.params.id);
+  const reason = String(req.body?.reason ?? '').trim();
+  if (!/^[0-9a-f-]{36}$/i.test(id)) {
+    return res.status(400).json({ error: 'event id must be a uuid' });
+  }
+  if (!reason) return res.status(400).json({ error: 'a reason is required' });
+
+  const r = await query<any>(
+    `update community_events set suspended_at = now(), updated_at = now()
+      where id = $1 and suspended_at is null
+      returning id, title, community_id, status`,
+    [id]
+  );
+  if (!r[0]) return res.status(409).json({ error: 'not found, or already suspended' });
+
+  await audit(a.adminId, 'event.suspend', 'event', id,
+              { reason, title: r[0].title, community_id: r[0].community_id });
+  res.json({ ok: true, event: r[0] });
+});
+
+// POST /admin/events/:id/restore — put it back on sale.
+//
+// The host's status was never touched, so there is nothing to reconstruct: an event that was
+// 'published' before is published again, and one the host cancelled while it was suspended
+// stays cancelled. That is the whole reason suspension is its own column.
+router.post('/events/:id/restore', requireAdmin, requireRole('admin'), async (req, res) => {
+  const a = (req as any).admin as AdminAuth;
+  const id = String(req.params.id);
+  if (!/^[0-9a-f-]{36}$/i.test(id)) {
+    return res.status(400).json({ error: 'event id must be a uuid' });
+  }
+
+  const r = await query<any>(
+    `update community_events set suspended_at = null, updated_at = now()
+      where id = $1 and suspended_at is not null
+      returning id, title, community_id, status`,
+    [id]
+  );
+  if (!r[0]) return res.status(409).json({ error: 'not found, or not suspended' });
+
+  await audit(a.adminId, 'event.restore', 'event', id,
+              { title: r[0].title, community_id: r[0].community_id });
+  res.json({ ok: true, event: r[0] });
 });
 
 export default router;

@@ -152,6 +152,14 @@ struct ReportSheet: View {
             // entitled to know that before they tap Send rather than to discover it afterwards.
             return "Posts and communities are not end-to-end encrypted, so we can see what you "
                 + "are reporting. This community's host and admins can see it too."
+        case .event:
+            // An event listing is server-readable like a post, but the audience differs and
+            // saying so matters: an event report goes to PLATFORM admins, not to the
+            // community's own host — who is usually the person being reported. Telling
+            // someone their complaint lands with the host they are complaining about, when it
+            // does not, would stop reports that ought to be made.
+            return "We can see the event listing you are reporting. This goes to Voiid, not "
+                + "to the event's host."
         }
     }
 

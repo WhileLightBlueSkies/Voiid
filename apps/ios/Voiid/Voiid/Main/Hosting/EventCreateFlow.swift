@@ -461,6 +461,6 @@ extension EventService.Event {
     static var placeholder: EventService.Event {
         .init(id: "", title: "", description: nil, starts_at: nil, ends_at: nil,
               location_text: nil, capacity: nil, price_minor: nil, currency: nil,
-              status: nil, is_free: nil, your_order_status: nil)
+              status: nil, is_free: nil, your_order_status: nil, suspended: nil)
     }
 }
