@@ -35,6 +35,8 @@ import blockRoutes from './routes/blocks';
 import dpdpRoutes from './routes/dpdp';
 import eventRoutes from './routes/events';
 import paymentRoutes from './routes/payments';
+import { register as registerPaymentProvider } from './payments/provider';
+import { razorpayFromEnv } from './payments/razorpay';
 import tournamentRoutes from './routes/tournaments';
 import communityRoutes from './routes/communities';
 import communityHostThreadRoutes from './routes/communityHostThreads';
@@ -69,6 +71,20 @@ app.set('trust proxy', /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProx
 // It is also the one endpoint in this API called by a stranger: no requireAuth, because the
 // caller is a payment provider. Its authenticity comes from the signature, and its
 // idempotency from an insert into payment_webhook_events — a provider WILL deliver twice.
+// Registered BEFORE the routes that ask for it. activeProvider() reads the registry on
+// every call, so ordering is not strictly required — but a provider registered after the
+// first request is a race nobody should have to reason about.
+//
+// Absent config is the supported state, not an error: with nothing registered, free events
+// work end to end and a paid one is refused with a 501 rather than half-working.
+{
+  const razorpay = razorpayFromEnv();
+  if (razorpay) {
+    registerPaymentProvider(razorpay);
+    console.log('[payments] razorpay registered');
+  }
+}
+
 app.use(paymentRoutes);
 
 app.use(express.json({ limit: '5mb' }));
