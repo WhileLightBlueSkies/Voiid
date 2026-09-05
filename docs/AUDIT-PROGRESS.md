@@ -8,7 +8,7 @@ This is the plain-language view. The
 authority and holds the full completion record for each item — files changed, how the failure was
 reproduced, what was verified and what was not.
 
-**Status: 13 fixed · 3 implemented but unverified · 35 open**
+**Status: 15 fixed · 4 implemented but unverified · 33 open**
 Baseline `a2e24e5` · 50 findings · last updated 2026-09-06
 
 **Every P0 is now closed except S04**, which its own spec calls a release gate needing a
@@ -19,6 +19,26 @@ cryptographic reviewer rather than an implementation.
 ## Fixed
 
 Newest first.
+
+### W01 / W02 / W03 — Console and site-header correctness
+`pending` · P1 · admin console + marketing site
+
+**W01:** cancelling the "add a note" dialog when resolving a report still **resolved the
+report**. Cancel and an empty note were the same empty string to the code. There is no undo on
+that screen.
+
+**W02:** typing in a console filter cleared a timer but not the request already in flight. A
+slow response for the old filter could land last and win — showing rows for a filter the
+operator had moved away from, with that query's cursor, so "load more" appended the wrong list.
+
+**W03:** the closed mobile menu was hidden from *sight* and from nothing else. Its links stayed
+in the keyboard order, so tabbing across the header dropped you into a menu you could not see;
+and the checkbox driving it could not announce "expanded" to a screen reader. It is a real
+button now, and the closed menu is properly inert — at the mobile breakpoint only, since the
+same element is the desktop navigation.
+
+**W03 not verified:** nothing was checked in a browser. Keyboard traversal, screen-reader
+announcement and focus behaviour across resize all need inspection that does not exist here.
 
 ### M03 — A long-offline device gets its backlog in pages
 `4d02fd9` · P1 · API

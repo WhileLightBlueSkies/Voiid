@@ -240,16 +240,15 @@
 
 /* ---- the mobile disclosure ------------------------------------------------ */
 
-.toggleInput {
-  position: absolute;
-  opacity: 0;
-  width: 1px;
-  height: 1px;
-  pointer-events: none;
-}
+/* The visually-hidden checkbox that used to drive this is gone (W03): a checkbox announces
+ * "checked", not "expanded", and cannot carry aria-expanded. The control is a button and the
+ * open state now lives on the header as a data attribute. */
 
 .toggle {
   display: none;
+  appearance: none;
+  border: 0;
+  padding: 0;
   align-items: center;
   justify-content: center;
   width: 38px;
@@ -278,7 +277,7 @@
   transition: transform var(--dur-base) var(--ease-spring), opacity var(--dur-fast) var(--ease-out);
 }
 
-.toggleInput:focus-visible + .toggle {
+.toggle:focus-visible {
   outline: 2px solid var(--color-primary);
   outline-offset: 3px;
 }
@@ -344,7 +343,9 @@
 
   /* The open menu reads as a second material layer under the capsule: a soft
    * inner well rather than a hard-edged dropdown. */
-  .toggleInput:checked ~ .nav {
+  /* Driven by the button's state on the header rather than a sibling checkbox (W03). The
+   * animation, its duration and its easing token are unchanged. */
+  .header[data-nav-open='true'] .nav {
     grid-template-rows: 1fr;
     margin-block-start: var(--space-2xs);
   }
@@ -354,13 +355,13 @@
   }
 
   /* Hamburger → X. Spring settle on the rotation. */
-  .toggleInput:checked ~ .toggle .bars span:nth-child(1) {
+  .header[data-nav-open='true'] .toggle .bars span:nth-child(1) {
     transform: translateY(6px) rotate(45deg);
   }
-  .toggleInput:checked ~ .toggle .bars span:nth-child(2) {
+  .header[data-nav-open='true'] .toggle .bars span:nth-child(2) {
     opacity: 0;
   }
-  .toggleInput:checked ~ .toggle .bars span:nth-child(3) {
+  .header[data-nav-open='true'] .toggle .bars span:nth-child(3) {
     transform: translateY(-6px) rotate(-45deg);
   }
 }

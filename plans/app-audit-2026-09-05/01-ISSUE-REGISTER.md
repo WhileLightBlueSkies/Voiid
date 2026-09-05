@@ -1,6 +1,6 @@
 # 01 — Issue register
 
-Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 13 DONE (Q01, S01, S02, S03, C01, R02, M01, M02, A02, S05, P03, A03, M03), 3 IMPLEMENTED_UNVERIFIED (Q02, A01, I03), 35 TODO.
+Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 15 DONE (Q01, S01, S02, S03, C01, R02, M01, M02, A02, S05, P03, A03, M03, W01, W02), 4 IMPLEMENTED_UNVERIFIED (Q02, A01, I03, W03), 33 TODO.
 
 Each ID belongs to exactly one implementation part. Read its dependency and acceptance sections before editing. Priority includes source-confirmed defects, runtime risks, and requested capability gaps; see the evidence column and task text.
 
@@ -40,9 +40,9 @@ Each ID belongs to exactly one implementation part. Read its dependency and acce
 | U02 | P1 | Correct sheet initial detents and entrance position | Confirmed | [09](09-MOTION-ACCESSIBILITY.md) | TODO |
 | U03 | P1 | Restore system Back in custom dialogs | Confirmed | [09](09-MOTION-ACCESSIBILITY.md) | TODO |
 | U04 | P1 | Finish the photo viewer's gesture lifecycle | Confirmed | [09](09-MOTION-ACCESSIBILITY.md) | TODO |
-| W01 | P1 | Respect Cancel when resolving a report | Confirmed | [10](10-WEB-ADMIN.md) | TODO |
-| W02 | P1 | Prevent stale admin list responses overwriting new filters | Confirmed race risk | [10](10-WEB-ADMIN.md) | TODO |
-| W03 | P1 | Remove closed mobile navigation from the focus order | Confirmed markup/style gap | [10](10-WEB-ADMIN.md) | TODO |
+| W01 | P1 | Respect Cancel when resolving a report | Confirmed | [10](10-WEB-ADMIN.md) | DONE |
+| W02 | P1 | Prevent stale admin list responses overwriting new filters | Confirmed race risk | [10](10-WEB-ADMIN.md) | DONE |
+| W03 | P1 | Remove closed mobile navigation from the focus order | Confirmed markup/style gap | [10](10-WEB-ADMIN.md) | IMPLEMENTED_UNVERIFIED |
 | A05 | P2 | Cancel network work when its coroutine is cancelled | Confirmed cancellation gap | [06](06-ANDROID-DURABILITY.md) | TODO |
 | C03 | P2 | Hold durable cleanup claims beyond the selection transaction | Confirmed multi-worker risk | [11](11-PAYMENTS-MEDIA-WORKERS.md) | TODO |
 | G02 | P2 | Reconcile design tokens before generating more variants | Confirmed drift | [08](08-LIQUID-GLASS.md) | TODO |
@@ -986,3 +986,50 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
   - `is_pending` remains the legacy branch's selector, so a legacy message is offered to a device
     until that device acknowledges it — correct, but it means the legacy backlog is bounded by
     acknowledgement rather than by the flag.
+
+## W01/W02/W03 — the admin console and the site header (2026-09-06)
+
+- **Status:** W01 and W02 DONE. W03 IMPLEMENTED_UNVERIFIED — its acceptance requires browser
+  accessibility inspection and an automated navigation interaction test, and neither exists here.
+- **Source/fix commit:** commit containing this record, parent `7b0a5c6`.
+- **Files:** `apps/admin-web/lib/latestOnly.ts` (new), `components/useList.ts`,
+  `app/reports/page.tsx`, `package.json`, `test/list.test.ts` (new);
+  `apps/web/components/SiteHeader.tsx`, `SiteHeader.module.css`.
+- **W01 — Cancel resolved the report anyway.** `window.prompt(...)?.trim() ?? ''` collapsed
+  Cancel and an empty note into the same empty string, and the caller then posted the
+  resolution: an irreversible moderation action taken after the operator declined to take it.
+  `null` now means do nothing, `''` means a deliberate empty note, the prompt happens BEFORE any
+  state is touched, and a second resolution cannot start while one is in flight.
+- **W02 — the debounce cleared a timer, not a request.** A fetch already in flight when the
+  filter changed still completed, and finishing last it won: the table showed rows for a filter
+  the operator had moved away from, with that query's cursor, so "load more" appended pages of
+  the wrong list. Fixed with BOTH an AbortController and a generation check before every state
+  write — the abort is not instantaneous and a response can already be queued when the next
+  filter arrives. `finally` is guarded too, or an obsolete response clears the spinner while the
+  current request is still running. Appends dedupe by id, load-more is serialised, and an abort
+  is no longer shown as a failure.
+- **W03 — the collapsed menu was invisible, not hidden.** `grid-template-rows: 0fr` plus
+  overflow clipping hides it from sight and from nothing else: the links stayed in the focus
+  order, so a keyboard user tabbing the header fell into a menu they could not see. The
+  checkbox-and-label control also cannot carry `aria-expanded` — a checkbox announces "checked".
+  It is a real button now, with `aria-expanded`, Escape-to-close and focus restoration, close on
+  route change, and `inert` on the collapsed menu. `inert` is applied ONLY at the mobile
+  breakpoint, read from the same media query the stylesheet uses, because at desktop that
+  element IS the navigation and marking it inert from stale mobile state would disable the
+  header. `isMobile` starts false and is corrected in an effect, so the server does not render
+  an inert nav and hydrate a mismatch. The 180ms entrance, its easing token and the
+  reduced-motion handling are untouched.
+- **Validation:** 10 new tests for the pure ordering rules, wired into the root suite (both web
+  apps are workspaces, so `npm test` now covers admin-web). Typecheck clean for both apps; both
+  `next build`s exit 0. Full `npm test` exit 0 across every workspace.
+- **Remaining limitations:**
+  - **Nothing was exercised in a browser.** The tested parts of W02 are the ordering rules
+    extracted into `latestOnly.ts`; the hook that uses them, the abort wiring and every part of
+    W03 are verified by typecheck and build only. There is no DOM test runner in either app.
+  - W03 specifically asks for keyboard traversal, screen-reader announcement, focus preservation
+    across resize, and no hydration warnings to be VERIFIED. None of that was done. `inert` is
+    also not supported by older browsers; no fallback was added and no browser matrix was checked.
+  - W01's acceptance says "test through the actual event handler". The decision `promptNote`
+    makes is tested; the handler that calls it is not.
+  - The other four console lists (clips, users, events, dpdp) get W02's fix for free through the
+    shared hook, but none of their pages was exercised.

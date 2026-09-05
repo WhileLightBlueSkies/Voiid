@@ -6,6 +6,7 @@ import { PageHeader, Pill, when } from '../../components/ui';
 import { ListTable } from '../../components/List';
 import { useList } from '../../components/useList';
 import { api } from '../../lib/api';
+import { promptNote } from '../../lib/latestOnly';
 
 type Report = {
   id: string; target_type: string; target_id: string;
@@ -29,13 +30,24 @@ function Body() {
   const [writeError, setWriteError] = useState<string | null>(null);
 
   async function resolve(id: string, resolution: string) {
+    // ASK FIRST, AND BEFORE TOUCHING ANY STATE (W01). `prompt(...)?.trim() ?? ''` collapsed
+    // Cancel and an empty note into the same empty string, so cancelling still resolved the
+    // report — an irreversible action taken after the operator declined to take it. `null` is
+    // Cancel or Escape and means do nothing at all; `''` is a deliberate empty note.
+    const note = promptNote(window.prompt('Note (optional)'));
+    if (note === null) return;
+
+    // One report at a time. Two resolutions in flight can finish out of order and leave the
+    // list showing the loser.
+    if (busy) return;
     setBusy(id);
     setWriteError(null);
     try {
-      const note = window.prompt('Note (optional)')?.trim() ?? '';
       await api(`/reports/${id}/resolve`, { method: 'POST', json: { resolution, note } });
       await list.reload();
     } catch (e) {
+      // The error stays on screen and the row is NOT reloaded away: an operator who sees
+      // nothing change needs to know the resolution did not land.
       setWriteError(e instanceof Error ? e.message : 'that did not go through');
     } finally {
       setBusy(null);
