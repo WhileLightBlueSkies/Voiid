@@ -310,7 +310,7 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
   default and closes only when an operator sets `VOIID_SESSION_CUTOFF`; until then an unbound
   legacy credential still bypasses device binding. That is the migration cost the issue asks for,
   not an unfinished part of it. S04 (recovery lockout) is now unblocked.
-- **Source/fix commit:** commit containing this record, parent `fb058cf`.
+- **Source/fix commit:** `a99cc2f`, parent `fb058cf`.
 - **Files:** `database/migrations/057_device_sessions.sql` (new); API `auth.ts`, `security.ts`,
   `routes/auth.ts`, `routes/devices.ts`, `routes/prekeys.ts`, `routes/linking.ts`; websocket
   `src/session.ts` (new), `src/index.ts`, `package.json`; tests
