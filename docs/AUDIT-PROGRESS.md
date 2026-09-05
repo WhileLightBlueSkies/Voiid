@@ -8,7 +8,7 @@ This is the plain-language view. The
 authority and holds the full completion record for each item — files changed, how the failure was
 reproduced, what was verified and what was not.
 
-**Status: 15 fixed · 4 implemented but unverified · 33 open**
+**Status: 16 fixed · 4 implemented but unverified · 32 open**
 Baseline `a2e24e5` · 50 findings · last updated 2026-09-06
 
 **Every P0 is now closed except S04**, which its own spec calls a release gate needing a
@@ -19,6 +19,20 @@ cryptographic reviewer rather than an implementation.
 ## Fixed
 
 Newest first.
+
+### S06 — Linking a companion device happens once
+`pending` · P1 · API
+
+The QR linking handshake lived in a cache, and every step was read-then-write across three
+separate round trips. Two people approving the same QR at once could both register a device —
+one account kept a device nobody would ever use, and which account the waiting browser got came
+down to whichever write finished last. Two polls could both collect the same session credential.
+A crash mid-way left a registered device and a QR stuck on "pending" forever. And a Redis
+restart lost every link in progress.
+
+It is a database row and one transaction now: the device, its session and the state change
+commit together, so there is no half-way to be stuck in, and the credential can be collected
+exactly once.
 
 ### W01 / W02 / W03 — Console and site-header correctness
 `2803a92` · P1 · admin console + marketing site

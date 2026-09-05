@@ -1,6 +1,6 @@
 # 01 — Issue register
 
-Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 15 DONE (Q01, S01, S02, S03, C01, R02, M01, M02, A02, S05, P03, A03, M03, W01, W02), 4 IMPLEMENTED_UNVERIFIED (Q02, A01, I03, W03), 33 TODO.
+Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 16 DONE (Q01, S01, S02, S03, C01, R02, M01, M02, A02, S05, P03, A03, M03, W01, W02, S06), 4 IMPLEMENTED_UNVERIFIED (Q02, A01, I03, W03), 32 TODO.
 
 Each ID belongs to exactly one implementation part. Read its dependency and acceptance sections before editing. Priority includes source-confirmed defects, runtime risks, and requested capability gaps; see the evidence column and task text.
 
@@ -35,7 +35,7 @@ Each ID belongs to exactly one implementation part. Read its dependency and acce
 | R03 | P1 | Authenticate before registering sockets; handle slow consumers | Confirmed sequence and resource gap | [05](05-REALTIME-CALLS-GAMES.md) | TODO |
 | R05 | P1 | Serialize conference admission under the participant cap | Static concurrency risk | [05](05-REALTIME-CALLS-GAMES.md) | TODO |
 | S05 | P1 | Verify database TLS identity | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | DONE |
-| S06 | P1 | Make device linking claims atomic | Confirmed race risk | [02](02-SECURITY-AND-RECOVERY.md) | TODO |
+| S06 | P1 | Make device linking claims atomic | Confirmed race risk | [02](02-SECURITY-AND-RECOVERY.md) | DONE |
 | U01 | P1 | Await Android sheet dismissal before removing it | Confirmed | [09](09-MOTION-ACCESSIBILITY.md) | TODO |
 | U02 | P1 | Correct sheet initial detents and entrance position | Confirmed | [09](09-MOTION-ACCESSIBILITY.md) | TODO |
 | U03 | P1 | Restore system Back in custom dialogs | Confirmed | [09](09-MOTION-ACCESSIBILITY.md) | TODO |
@@ -1033,3 +1033,48 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
     makes is tested; the handler that calls it is not.
   - The other four console lists (clips, users, events, dpdp) get W02's fix for free through the
     shared hook, but none of their pages was exercised.
+
+## S06 — device linking is atomic and durable (2026-09-06)
+
+- **Status:** DONE. The handshake moved from Redis to Postgres, which the issue explicitly
+  permits ("or durable database transaction") and which is what made it testable here.
+- **Source/fix commit:** commit containing this record, parent `a0cf3ea`.
+- **Files:** `database/migrations/061_device_link_requests.sql` (new);
+  `backend/api/src/routes/linking.ts` (rewritten);
+  `backend/api/test/linkingPostgres.test.ts` (new); `.github/workflows/ci.yml`.
+- **Failure reproduced:** yes, by reading the flow. Every transition was read-modify-write over
+  three round trips against a cache, and both endpoints are reachable concurrently by design —
+  the QR is on a screen, and the approving phone and the waiting browser are different clients.
+  Two approvals from different accounts both read "pending" and both registered a device, so one
+  account kept a device row nobody would use and which account the browser got came down to
+  whichever write landed last. Two polls both read "approved" before either deleted the key, so
+  the session credential could be handed out twice. A crash between the device insert and the
+  cache write left a registered device and a token stuck on "pending" forever. And a Redis
+  restart lost every link in flight.
+- **Implementation:** a `device_link_requests` row, `select ... for update`, and one transaction
+  that does the device upsert, the session and the state change together. That collapses the
+  pending → approving → approved → consumed machine the issue describes into two states: with
+  everything in one transaction there IS no half-way to be stuck in, so the intermediate state
+  was not implemented rather than being implemented and unused. Poll locks and DELETES in the
+  same transaction that reads the credential out, so exactly one caller can collect it. A
+  CHECK constraint makes "approved but missing its device or token" unrepresentable.
+- **Regression evidence, and a test that had to be rewritten:** the poll check bit immediately.
+  The approval-race check did NOT — the first version fired four concurrent requests and hoped
+  they would interleave, and it passed against a build with `for update` deleted. It now holds
+  the row from a blocker transaction, waits on `pg_stat_activity` until an approval is provably
+  blocked, and only then releases; removing the lock now fails it by name. A concurrency test
+  that has not been run against the broken code is decoration.
+- **Validation:** 9 scenarios against real PostgreSQL; full `npm test` exit 0 (API 302/302,
+  games 6/6, relay 27/27, workers 8/8, admin 10/10); typecheck clean; all 68 migrations apply.
+- **Remaining limitations:**
+  - **`session_token` is a live credential at rest** for the minutes between approval and
+    collection. That is not new — it sat in Redis for the same window — but it is now in a
+    database with backups, so it is written down in the retention policy rather than implicit.
+    The row is deleted on collection and bounded by `expires_at`.
+  - **No sweep deletes uncollected rows.** The policy says the retention worker owns them and
+    nothing implements it yet, so an abandoned QR leaves a row until someone adds that job.
+    `expires_at` makes them unusable, not absent.
+  - **No client exercises this.** There is no web companion app in the repo, so the flow is
+    verified end to end only by the test.
+  - Approval binds to whichever account approves first, which is the intended rule, but there is
+    no rate limit on `/linking/request` — an unauthenticated caller can still mint tokens.
