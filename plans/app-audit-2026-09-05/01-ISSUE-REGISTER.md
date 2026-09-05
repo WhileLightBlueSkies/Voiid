@@ -858,7 +858,7 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
 
 - **Status:** DONE for rejection handling and error mapping. The request-schema half of the fix
   (bounded arrays, enums, limits per route) is NOT done — see limitations.
-- **Source/fix commit:** commit containing this record, parent `d73c04f`.
+- **Source/fix commit:** `bd03787`, parent `d73c04f`.
 - **Files:** `backend/api/src/errors.ts` (new), `src/index.ts`, and 12 routers under `src/routes/`;
   `backend/api/test/errorHandling.test.ts` (new).
 - **Failure reproduced:** yes. The audit named four bare handlers; a route inventory found **67

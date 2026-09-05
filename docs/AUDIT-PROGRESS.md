@@ -21,7 +21,7 @@ cryptographic reviewer rather than an implementation.
 Newest first.
 
 ### P03 — A failing request now answers instead of hanging
-`pending` · P1 · API
+`bd03787` · P1 · API
 
 Express 4 does not catch a rejected promise from a route handler, so a handler that threw sent
 **no response at all** — the client waited until it timed out and the socket stayed open. The
