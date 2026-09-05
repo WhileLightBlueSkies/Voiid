@@ -21,7 +21,7 @@ cryptographic reviewer rather than an implementation.
 Newest first.
 
 ### I03 — Persistence that reports whether it persisted
-`pending` · P0 · both clients · **implemented, not verified**
+`d39a9e9` · P0 · both clients · **implemented, not verified**
 
 Writing a conversation to disk cleared the "needs writing" marker *before* writing, and
 swallowed every failure into a log line. A full disk or a permission error meant the

@@ -752,7 +752,7 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
   iOS half is the same design verified only by compilation, because the project has NO test
   target. The database-wrapper half of the fix is partial — see limitations. With M02 in place
   this was actively producing false acknowledgements, so it is fixed rather than deferred.
-- **Source/fix commit:** commit containing this record, parent `553e581`.
+- **Source/fix commit:** `d39a9e9`, parent `553e581`.
 - **Files:** Android `net/ShardStore.kt` (new), `net/ChatEngine.kt`,
   `app/src/test/java/com/voiid/app/ShardStoreTest.kt` (new); iOS `Networking/ChatEngine.swift`,
   `Storage/VoiidDatabase.swift`.
