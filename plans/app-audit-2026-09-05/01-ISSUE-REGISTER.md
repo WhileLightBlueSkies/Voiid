@@ -1,6 +1,6 @@
 # 01 — Issue register
 
-Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 12 DONE (Q01, S01, S02, S03, C01, R02, M01, M02, A02, S05, P03, A03), 3 IMPLEMENTED_UNVERIFIED (Q02, A01, I03), 36 TODO.
+Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 13 DONE (Q01, S01, S02, S03, C01, R02, M01, M02, A02, S05, P03, A03, M03), 3 IMPLEMENTED_UNVERIFIED (Q02, A01, I03), 35 TODO.
 
 Each ID belongs to exactly one implementation part. Read its dependency and acceptance sections before editing. Priority includes source-confirmed defects, runtime risks, and requested capability gaps; see the evidence column and task text.
 
@@ -24,7 +24,7 @@ Each ID belongs to exactly one implementation part. Read its dependency and acce
 | E01 | P1 | Reconcile crypto assurances with current code and executable gates | Confirmed assurance gap; exploitability unverified | [12](12-CRYPTO-ASSURANCE.md) | TODO |
 | G01 | P1 | Build a shared material contract and capability-based Android renderer | Requested capability gap | [08](08-LIQUID-GLASS.md) | TODO |
 | I01 | P1 | Move chat persistence off the main actor and page history | Confirmed synchronous work; frame impact unmeasured | [07](07-IOS-AND-STORAGE.md) | TODO |
-| M03 | P1 | Bound and authorize reconnect backlogs | Confirmed | [03](03-MESSAGE-RELIABILITY.md) | TODO |
+| M03 | P1 | Bound and authorize reconnect backlogs | Confirmed | [03](03-MESSAGE-RELIABILITY.md) | DONE |
 | P01 | P1 | Stop unrelated routes sharing the host-thread throttle | Confirmed | [04](04-API-PERFORMANCE.md) | TODO |
 | P03 | P1 | Handle every Express 4 async rejection and input error | Confirmed | [04](04-API-PERFORMANCE.md) | DONE |
 | Q01 | P1 | Repair the test baseline without hiding regressions | Observed failures | [13](13-RELEASE-AND-OPERATIONS.md) | DONE |
@@ -939,3 +939,50 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
     `java.lang.ref.Cleaner` (API 33). Those are unguarded-platform-API questions of their own,
     no issue tracks them, and the Cleaner one would throw on anything below API 33. Recorded in
     the lint baseline note so they are not lost.
+
+## M03 — the reconnect backlog drains in pages (2026-09-06)
+
+- **Status:** DONE for bounding, keyset pagination and read-time authorization. No memory or
+  latency measurement was taken — see limitations.
+- **Source/fix commit:** commit containing this record, parent `e255b14`.
+- **Files:** `backend/api/src/routes/messages.ts`;
+  `backend/api/test/pendingPaginationPostgres.test.ts` (new); `.github/workflows/ci.yml`.
+- **Failure reproduced:** yes, and **M02 made it worse rather than revealing it**. Fetching used
+  to stamp delivery, so a second fetch returned nothing and the missing page limit rarely
+  showed. Once M02 made the fetch non-destructive, every pending message came back on EVERY
+  poll until the device acknowledged — so a phone returning after a fortnight asked this process
+  to load, sort and serialise its whole backlog in application memory, repeatedly. That
+  interaction was introduced by my own earlier change in this sequence.
+- **Implementation:** the two branches (fan-out and legacy) became ONE statement with
+  `union all`, keyset-paginated by `(created_at, id)` with a `limit` and a continuation cursor,
+  replacing two unbounded queries merged and sorted in JS. A row cap (500, default 200) and a
+  total-byte cap (~4 MB) both apply, because 500 media envelopes and 500 short texts are not the
+  same response. An unusable `limit` or a cursor this endpoint did not issue is a 400 rather
+  than a guess.
+- **The transaction and row lock are gone,** deliberately. Both existed to hold membership stable
+  while this endpoint stamped delivery; since M02 it stamps nothing, so a share lock over every
+  conversation the caller belongs to was contention bought for a mutation that no longer happens.
+- **Authorization was already correct** from S02/M02 — active device, membership, revocation and
+  two-directional blocking — and those four scenarios passed before this change. They are kept in
+  the suite as regression cover rather than presented as new work.
+- **Regression evidence:** removing the page limit fails three scenarios. Ordering by
+  `created_at` alone — without the `id` tie-break — fails four, including a purpose-built case
+  where ten messages share a timestamp and the page boundary falls inside them. That second check
+  did NOT bite at first: the original fixture used timestamps one second apart, so it never
+  exercised the tie-break the cursor exists for. The clustered case was added for it.
+- **Validation:** 9 scenarios against real PostgreSQL over a 310-message backlog; full `npm test`
+  exit 0 (API 292/292, games 6/6, relay 27/27, workers 8/8); typecheck clean.
+- **Remaining limitations:**
+  - **No measurement.** M03 asks that a large backlog drain "with bounded memory". The bound is
+    now structural — a page is at most 500 rows or ~4 MB — but no memory or latency figure was
+    recorded at any backlog size, and 310 messages is not a large backlog.
+  - **The pre-removal history policy is still implicit.** The issue asks whether a removed member
+    may read history from before their removal, and for that answer to be applied consistently.
+    Pending fetch excludes them (`left_at is null`), history does not gate on it at all, and that
+    inconsistency is unchanged here — it needs a product decision, not a patch.
+  - **No client uses this endpoint yet.** Both apps sync via `/messages/conversation`, so the
+    cursor contract is unexercised outside tests, and `/messages/conversation` still has only its
+    own `limit`/`before` and no byte cap.
+  - `is_pending` remains the legacy branch's selector, so a legacy message is offered to a device
+    until that device acknowledges it — correct, but it means the legacy backlog is bounded by
+    acknowledgement rather than by the flag.

@@ -8,7 +8,7 @@ This is the plain-language view. The
 authority and holds the full completion record for each item — files changed, how the failure was
 reproduced, what was verified and what was not.
 
-**Status: 12 fixed · 3 implemented but unverified · 36 open**
+**Status: 13 fixed · 3 implemented but unverified · 35 open**
 Baseline `a2e24e5` · 50 findings · last updated 2026-09-06
 
 **Every P0 is now closed except S04**, which its own spec calls a release gate needing a
@@ -19,6 +19,21 @@ cryptographic reviewer rather than an implementation.
 ## Fixed
 
 Newest first.
+
+### M03 — A long-offline device gets its backlog in pages
+`pending` · P1 · API
+
+Fetching undelivered messages had no page limit at all: a phone returning after two weeks asked
+the server to load, sort and serialise its entire backlog in memory. **My own M02 change made
+this worse** — once fetching stopped marking messages delivered, that whole backlog came back on
+every poll until the device acknowledged it.
+
+It now arrives in pages with a cursor, capped by both row count and total size. The page boundary
+is keyed on time *and* id, so a burst of messages sharing a timestamp cannot be split in a way
+that drops or repeats them.
+
+**Not measured:** the bound is structural rather than observed — no memory or latency figure was
+recorded, and the 310-message test backlog is not a large one.
 
 ### A03 — Dates on Android 7 were silently all "now"
 `f18d8f9` · P1 · Android

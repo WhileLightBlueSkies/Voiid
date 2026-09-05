@@ -220,6 +220,7 @@ jobs:
            .then(()=>c.query('create database voiid_test_send'))
            .then(()=>c.query('create database voiid_test_outbox'))
            .then(()=>c.query('create database voiid_test_ack'))
+           .then(()=>c.query('create database voiid_test_pending'))
            .then(()=>c.end())"
 
       # S03. Both suites run HERE rather than in the node job because they need a real
@@ -268,6 +269,12 @@ jobs:
         env:
           ACK_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/voiid_test_ack
         run: npx tsx --test backend/api/test/deliveryAckPostgres.test.ts
+
+      # M03. A backlog large enough that "it fits in one response" stops being true.
+      - name: Reconnect backlog pagination against PostgreSQL
+        env:
+          PENDING_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/voiid_test_pending
+        run: npx tsx --test backend/api/test/pendingPaginationPostgres.test.ts
 
   # ── Android ────────────────────────────────────────────────────────────────────────────
   #

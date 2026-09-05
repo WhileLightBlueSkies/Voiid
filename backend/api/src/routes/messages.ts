@@ -598,81 +598,154 @@ router.get('/conversation/:id', requireAuth, asyncHandler(async (req, res) => {
 // GET /messages/pending/:user_id?device_id= — offline fetch on reconnect.
 // Returns ONLY the caller device's ciphertext for fan-out messages, plus legacy pending
 // (single-ciphertext) rows for the user's conversations. Marks fan-out rows delivered.
+
+/** One page of a reconnect backlog. Bounded so a fortnight offline is not one response. */
+const PENDING_DEFAULT_LIMIT = 200;
+const PENDING_MAX_LIMIT = 500;
+/** Roughly 4 MB of base64 ciphertext per page — see the trim in the handler for why rows alone
+ *  are not enough of a bound. */
+const PENDING_MAX_BYTES = Number(process.env.VOIID_PENDING_MAX_BYTES) || 4 * 1024 * 1024;
+
+interface PendingRow {
+  id: string;
+  conversation_id: string;
+  sender_id: string;
+  sender_device_id: string | null;
+  ciphertext: string;
+  content_type: string | null;
+  media_url: string | null;
+  media_mime: string | null;
+  created_at: string;
+}
+
+/** undefined = the client sent something that is not a usable limit. */
+function parsePendingLimit(raw: unknown): number | undefined {
+  if (raw === undefined) return PENDING_DEFAULT_LIMIT;
+  if (typeof raw !== 'string' || !/^\d+$/.test(raw)) return undefined;
+  const n = Number(raw);
+  if (n < 1) return undefined;
+  // A client asking for more than the cap gets the cap rather than an error: it is not wrong
+  // to want everything, and the cursor tells it how to get the rest.
+  return Math.min(n, PENDING_MAX_LIMIT);
+}
+
+/** null = start of the backlog. undefined = the client sent a cursor we did not issue. */
+function parsePendingCursor(raw: unknown): { createdAt: string; id: string } | null | undefined {
+  if (raw === undefined) return null;
+  if (typeof raw !== 'string' || !raw) return undefined;
+  try {
+    const [createdAt, id] = Buffer.from(raw, 'base64url').toString('utf8').split('|');
+    if (!createdAt || !id || !UUID_RE.test(id) || Number.isNaN(Date.parse(createdAt))) return undefined;
+    return { createdAt, id };
+  } catch {
+    return undefined;
+  }
+}
+
+function encodePendingCursor(row: PendingRow): string {
+  return Buffer.from(`${new Date(row.created_at).toISOString()}|${row.id}`, 'utf8').toString('base64url');
+}
+
 router.get('/pending/:user_id', requireAuth, asyncHandler(async (req, res) => {
-  const result = await withTransaction<{ status: number; body: any }>(async (query) => {
-    // IDENTITY, before anything reads or mutates a row. The path parameter used to flow
-    // straight into both queries below with no comparison to the authenticated caller,
-    // so any signed-in user could harvest another user's undelivered queue — and the
-    // legacy branch marks nothing delivered, so the harvest was repeatable forever.
-    const callerId: string = (req as any).auth.user_id;
-    if (req.params.user_id !== callerId) {
-      return { status: 403, body: { error: 'forbidden' } };
-    }
-    const deviceId = await resolveActiveDevice(req, callerId,
-      async (sql, params) => ({ rows: await query(sql, params) }), req.query.device_id, true);
-    if (deviceId === undefined) return { status: 403, body: { error: 'forbidden' } };
+  // IDENTITY, before anything reads a row. The path parameter used to flow straight into both
+  // queries with no comparison to the authenticated caller, so any signed-in user could
+  // harvest another user's undelivered queue.
+  const callerId: string = (req as any).auth.user_id;
+  if (req.params.user_id !== callerId) {
+    return res.status(403).json({ error: 'forbidden' });
+  }
 
-    // Keep active membership stable until this fetch's delivery mutations commit.
-    await query(`select conversation_id from conversation_members
-      where user_id = $1 and left_at is null order by conversation_id for share`, [callerId]);
+  const limit = parsePendingLimit(req.query.limit);
+  if (limit === undefined) {
+    return res.status(400).json({ error: `limit must be 1..${PENDING_MAX_LIMIT}`, code: 'invalid_limit' });
+  }
+  const cursor = parsePendingCursor(req.query.cursor);
+  if (cursor === undefined) {
+    return res.status(400).json({ error: 'cursor is not a cursor this endpoint issued', code: 'invalid_cursor' });
+  }
 
-    // A READ, not an update (M02). This was an `update ... returning`, so the act of
-    // serving the ciphertext marked it delivered and the transaction committed before the
-    // response left the process. A dropped socket, a killed app or a failed disk write then
-    // lost the message permanently: the next fetch skipped it and nothing anywhere knew.
-    // The device now acknowledges what it has actually stored, via POST /messages/ack.
-    const perDevice = deviceId
-      ? await query(
-          `select m.id, m.conversation_id, m.sender_id, m.sender_device_id,
-                  translate(encode(mc.ciphertext,'base64'), E'\n', '') as ciphertext,
-                  m.content_type, m.media_url, m.media_mime, m.created_at
-             from message_ciphertexts mc
-             join messages m on mc.message_id = m.id
-             join devices d on d.id = mc.recipient_device_id
-             join conversation_members cm
-               on cm.conversation_id = m.conversation_id and cm.user_id = $2::uuid
-            where d.id = $1::uuid and d.user_id = $2::uuid and d.revoked_at is null
-              and cm.left_at is null
-              and not exists (select 1 from user_blocks b
-                where (b.blocker_user_id = m.sender_id and b.blocked_user_id = $2)
-                   or (b.blocked_user_id = m.sender_id and b.blocker_user_id = $2))
-              and mc.delivered_at is null`,
-          [deviceId, req.params.user_id]
-        )
-      : [];
+  // NO TRANSACTION AND NO ROW LOCK ANY MORE. Both existed to hold membership stable while this
+  // endpoint STAMPED delivery; since M02 it stamps nothing, so a share lock over every
+  // conversation the caller belongs to would be contention bought for a mutation that no
+  // longer happens. This is a read.
+  const deviceId = await resolveActiveDevice(req, callerId,
+    async (sql, params) => ({ rows: await query(sql, params) }), req.query.device_id);
+  if (deviceId === undefined) return res.status(403).json({ error: 'forbidden' });
 
-    // Legacy: single-ciphertext rows still living on the message. `m.ciphertext is not null`
-    // excludes fan-out rows (whose canonical ciphertext is NULL) so they aren't leaked here.
-    const legacy = await query(
-      `select m.id, m.conversation_id, m.sender_id, m.sender_device_id,
-              translate(encode(m.ciphertext,'base64'), E'\n', '') as ciphertext,
-              m.content_type, m.media_url, m.media_mime, m.created_at
+  // ONE STATEMENT, KEYSET-PAGINATED. The two branches used to be separate queries merged and
+  // sorted in application memory, with no limit on either — so a device returning after a
+  // fortnight asked this process to load, sort and serialise its entire backlog at once. Since
+  // M02 made the fetch non-destructive, it did that on EVERY poll until the device
+  // acknowledged, rather than once.
+  //
+  // Ordered and paged by (created_at, id): created_at alone is not unique, and a page boundary
+  // falling inside a group of messages sharing a timestamp would drop or repeat them.
+  const rows = await query<PendingRow>(
+    `with fanout as (
+       select m.id, m.conversation_id, m.sender_id, m.sender_device_id,
+              mc.ciphertext as blob, m.content_type, m.media_url, m.media_mime, m.created_at
+         from message_ciphertexts mc
+         join messages m on mc.message_id = m.id
+         join devices d on d.id = mc.recipient_device_id
+         join conversation_members cm
+           on cm.conversation_id = m.conversation_id and cm.user_id = $2::uuid
+        where d.id = $1::uuid and d.user_id = $2::uuid and d.revoked_at is null
+          and cm.left_at is null
+          and mc.delivered_at is null
+          and not exists (select 1 from user_blocks b
+            where (b.blocker_user_id = m.sender_id and b.blocked_user_id = $2)
+               or (b.blocked_user_id = m.sender_id and b.blocker_user_id = $2))
+     ),
+     legacy as (
+       select m.id, m.conversation_id, m.sender_id, m.sender_device_id,
+              m.ciphertext as blob, m.content_type, m.media_url, m.media_mime, m.created_at
          from messages m
          join conversation_members cm on cm.conversation_id = m.conversation_id
-         where cm.user_id = $1 and cm.left_at is null
-           and m.is_pending = true and m.ciphertext is not null
-           and not exists (select 1 from user_blocks b
-             where (b.blocker_user_id = m.sender_id and b.blocked_user_id = $1)
-                or (b.blocked_user_id = m.sender_id and b.blocker_user_id = $1))
-           -- What THIS device has already acknowledged storing (M02). The old test was a
-           -- READ receipt, which is a different fact — and is_pending above is one shared
-           -- bit for every recipient, so one device clearing it emptied every queue.
-           and not exists (
-             select 1 from message_deliveries dl
-              where dl.message_id = m.id and dl.user_id = $1
-                and coalesce(dl.device_id, '00000000-0000-0000-0000-000000000000'::uuid)
-                    = coalesce($2::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
-           )
-         order by m.created_at asc`,
-      [req.params.user_id, deviceId]
-    );
+        where cm.user_id = $2::uuid and cm.left_at is null
+          and m.is_pending = true and m.ciphertext is not null
+          and not exists (select 1 from user_blocks b
+            where (b.blocker_user_id = m.sender_id and b.blocked_user_id = $2)
+               or (b.blocked_user_id = m.sender_id and b.blocker_user_id = $2))
+          and not exists (
+            select 1 from message_deliveries dl
+             where dl.message_id = m.id and dl.user_id = $2::uuid
+               and coalesce(dl.device_id, '00000000-0000-0000-0000-000000000000'::uuid)
+                   = coalesce($1::uuid, '00000000-0000-0000-0000-000000000000'::uuid))
+     )
+     select q.id, q.conversation_id, q.sender_id, q.sender_device_id,
+            translate(encode(q.blob,'base64'), E'\n', '') as ciphertext,
+            q.content_type, q.media_url, q.media_mime, q.created_at
+       from (select * from fanout union all select * from legacy) q
+      where $3::timestamptz is null
+         or (q.created_at, q.id) > ($3::timestamptz, $4::uuid)
+      order by q.created_at, q.id
+      limit $5`,
+    [deviceId, callerId, cursor?.createdAt ?? null, cursor?.id ?? null, limit + 1]
+  );
 
-    const merged = [...perDevice, ...legacy].sort(
-      (a: any, b: any) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-    );
-    return { status: 200, body: { messages: merged } };
+  // One row past the page tells us whether there is more without a second count query.
+  let page = rows.slice(0, limit);
+  let more = rows.length > limit;
+
+  // A ROW CAP IS NOT A MEMORY CAP. 500 media envelopes are a different size from 500 short
+  // texts, so the page is also trimmed by total ciphertext bytes — the response, not the row
+  // count, is what a phone on a bad connection has to receive.
+  let bytes = 0;
+  for (let i = 0; i < page.length; i++) {
+    bytes += page[i].ciphertext?.length ?? 0;
+    if (bytes > PENDING_MAX_BYTES && i > 0) {
+      page = page.slice(0, i);
+      more = true;
+      break;
+    }
+  }
+
+  const last = page[page.length - 1];
+  return res.json({
+    messages: page,
+    // Null means drained. A client follows this until it is null; it never has to guess.
+    next_cursor: more && last ? encodePendingCursor(last) : null,
   });
-  res.status(result.status).json(result.body);
 }));
 
 // ─────────────────────────────────────────────────────────────────────────────────
