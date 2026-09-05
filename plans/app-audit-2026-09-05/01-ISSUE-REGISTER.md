@@ -1082,7 +1082,7 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
 ## C02/C04 — workers that report what they actually did (2026-09-06)
 
 - **Status:** both DONE. C03 (durable claim ownership) remains TODO and is P2; see limitations.
-- **Source/fix commit:** commit containing this record, parent `bb6af0e`.
+- **Source/fix commit:** `0a70755`, parent `bb6af0e`.
 - **Files:** `backend/workers/src/health.ts` (new), `src/index.ts`, `src/reapStories.ts`;
   `backend/workers/test/reapHealth.test.ts` (new); `.github/workflows/ci.yml`.
 - **C02 — failures were returned, and nobody was reading them.** Every job catches its own

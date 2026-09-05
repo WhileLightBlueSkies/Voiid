@@ -21,7 +21,7 @@ cryptographic reviewer rather than an implementation.
 Newest first.
 
 ### C02 / C04 — Workers that report what they actually did
-`pending` · P1 · workers
+`0a70755` · P1 · workers
 
 **C04:** when the story reaper could not delete a file — no storage configured, or after
 repeated failures — it deleted the database row anyway. That row was the only thing that knew
