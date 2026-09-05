@@ -593,7 +593,7 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
 - **Status:** DONE for non-destructive fetch, device-scoped acknowledgement, per-recipient legacy
   delivery and declared retention. Fix point "persist incoming envelopes before advancing
   decryption state" is NOT implemented as an atomic guarantee; see limitations.
-- **Source/fix commit:** commit containing this record, parent `f15086d`.
+- **Source/fix commit:** `9f02a7d`, parent `f15086d`.
 - **Files:** `database/migrations/060_delivery_acknowledgement.sql` (new);
   `backend/api/src/routes/messages.ts`; `backend/api/test/deliveryAckPostgres.test.ts` (new) and
   `test/receiptPostgres.test.ts` (updated to the new contract); iOS `ChatEngine.swift`; Android
