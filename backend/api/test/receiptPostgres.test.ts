@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { Pool } from 'pg';
 import express from 'express';
@@ -17,7 +17,7 @@ redis.disconnect();
 publisher.disconnect();
 const url = process.env.RECEIPT_TEST_DATABASE_URL;
 
-test('receipt authorization against PostgreSQL', { skip: !url }, async (t) => {
+test('receipt and message authorization against PostgreSQL', { skip: !url }, async (t) => {
   const target = new URL(url!);
   assert.ok(['localhost', '127.0.0.1'].includes(target.hostname));
   assert.match(target.pathname, /^\/voiid_(?:test_[a-z_]+|migration_replay)$/);
@@ -58,14 +58,17 @@ test('receipt authorization against PostgreSQL', { skip: !url }, async (t) => {
   async function reset() {
     events.length = 0;
     await db.query('truncate message_read_receipts');
+    await db.query('delete from messages where id <> all($1::uuid[])', [[msg, fanout]]);
+    await db.query('update message_ciphertexts set delivered_at=null');
+    await db.query('delete from user_blocks');
+    await db.query("update conversations set type='direct' where id=$1", [conv]);
     await db.query('update devices set revoked_at = null');
     await db.query('update conversation_members set left_at = null');
   }
   try {
     // Use the real table definitions and NULL-device migration.
     const root = resolve(__dirname, '../../..');
-    for (const file of ['001_users.sql', '002_devices.sql', '005_conversations.sql', '006_messages.sql',
-      '007_message_read_receipts.sql', '013_message_ciphertexts.sql', '027_receipt_null_device.sql']) {
+    for (const file of (await readdir(resolve(root, 'database/migrations'))).filter(f => f.endsWith('.sql')).sort()) {
       await db.query(await readFile(resolve(root, 'database/migrations', file), 'utf8'));
     }
     for (const [i, id] of [ana, ben, mal].entries()) {
@@ -176,6 +179,114 @@ test('receipt authorization against PostgreSQL', { skip: !url }, async (t) => {
         assert.equal(result.status, 403);
         assert.equal((await db.query('select * from message_read_receipts')).rows.length, 0);
       } finally { await blocker.query('rollback'); blocker.release(); }
+    });
+
+    async function send(targets: string[], sender: unknown = anaDev, tokenDevice?: string, conversation = conv) {
+      return call('/messages/send', ana, tokenDevice, {
+        conversation_id: conversation, sender_device_id: sender,
+        messages: targets.map(recipient_device_id => ({recipient_device_id, ciphertext: Buffer.from('opaque').toString('base64')})),
+      });
+    }
+    await t.test('S02: forged sender and outside/revoked/removed targets fail before any insertion', async () => {
+      await reset();
+      for (const sender of [benDev, randomUUID(), '', 7]) assert.equal((await send([benDev], sender)).status, 403);
+      for (const target of [malDev, randomUUID()]) assert.equal((await send([benDev, target])).status, 403);
+      assert.equal((await send(['invalid'])).status, 400);
+      await db.query('update devices set revoked_at=now() where id=$1', [benDev]);
+      assert.equal((await send([benDev])).status, 403);
+      await db.query('update devices set revoked_at=null');
+      await db.query('update conversation_members set left_at=now() where user_id=$1', [ben]);
+      assert.equal((await send([benDev])).status, 403);
+      assert.equal((await db.query('select * from messages')).rows.length, 2);
+      assert.equal((await db.query('select * from message_ciphertexts')).rows.length, 1);
+      assert.equal(events.length, 0);
+    });
+    await t.test('S02: legitimate groups, sender-linked fanout, token precedence, and empty self fanout work', async () => {
+      await reset();
+      await db.query("update conversations set type='group' where id=$1", [conv]);
+      const sent = await send([benDev, benOther, anaDev, benDev.toUpperCase()], benDev, anaDev);
+      assert.equal(sent.status, 200, JSON.stringify(sent.body));
+      assert.equal(sent.body.delivered_devices, 3);
+      const {rows} = await db.query('select sender_device_id from messages where id=$1', [sent.body.message_id]);
+      assert.equal(rows[0].sender_device_id, anaDev);
+      const self = randomUUID();
+      await db.query("insert into conversations(id,type) values($1,'self')", [self]);
+      await db.query('insert into conversation_members(conversation_id,user_id) values($1,$2)', [self, ana]);
+      const empty = await send([], anaDev, undefined, self);
+      assert.equal(empty.status, 200); assert.equal(empty.body.delivered_devices, 0);
+    });
+    await t.test('S02: legacy sends validate sender ownership and retain device-less compatibility', async () => {
+      await reset();
+      const legacy = (device_id?: string, tokenDevice?: string) => call('/messages/send', ana, tokenDevice,
+        {conversation_id: conv, ciphertext: 'b3BhcXVl', device_id});
+      assert.equal((await legacy(benDev)).status, 403);
+      assert.equal((await legacy(anaDev)).status, 200);
+      assert.equal((await legacy()).status, 200);
+      await db.query('update devices set revoked_at=now() where id=$1', [anaDev]);
+      assert.equal((await legacy(benDev, anaDev)).status, 403);
+    });
+    await t.test('S02: history cannot read or acknowledge another device envelope', async () => {
+      await reset();
+      const foreign = await call(`/messages/conversation/${conv}?device_id=${benDev}`, ana);
+      assert.equal(foreign.status, 403);
+      assert.equal((await db.query('select delivered_at from message_ciphertexts')).rows[0].delivered_at, null);
+      assert.equal((await call(`/messages/conversation/${conv}?device_id=${benOther}`, ben, benDev)).status, 200);
+      await db.query('update devices set revoked_at=now() where id=$1', [benDev]);
+      assert.equal((await call(`/messages/conversation/${conv}?device_id=${benOther}`, ben, benDev)).status, 403);
+      assert.equal((await call(`/messages/conversation/${conv}?device_id=invalid`)).status, 403);
+    });
+    await t.test('S02: pending rejects foreign/revoked claims and withholds removed/blocked deliveries', async () => {
+      await reset();
+      assert.equal((await call(`/messages/pending/${ana}?device_id=${benDev}`, ana)).status, 403);
+      await db.query('update devices set revoked_at=now() where id=$1', [benDev]);
+      assert.equal((await call(`/messages/pending/${ben}`, ben, benDev)).status, 403);
+      await db.query('update devices set revoked_at=null');
+      await db.query('update conversation_members set left_at=now() where user_id=$1', [ben]);
+      const removed = await call(`/messages/pending/${ben}?device_id=${benDev}`);
+      assert.equal(removed.status, 200); assert.equal(removed.body.messages.length, 0);
+      await db.query('update conversation_members set left_at=null');
+      await db.query('insert into user_blocks(blocker_user_id,blocked_user_id) values($1,$2)', [ben, ana]);
+      const blocked = await call(`/messages/pending/${ben}?device_id=${benDev}`);
+      assert.equal(blocked.status, 200); assert.equal(blocked.body.messages.length, 0);
+      assert.equal((await db.query('select delivered_at from message_ciphertexts')).rows[0].delivered_at, null);
+    });
+    await t.test('S02: recipient removal during send authorization leaves no message', async () => {
+      await reset();
+      const blocker = await db.connect();
+      try {
+        await blocker.query('begin');
+        await blocker.query('update conversation_members set left_at=now() where user_id=$1 and conversation_id=$2', [ben, conv]);
+        const pending = send([benDev]);
+        let waiting = false;
+        const deadline = Date.now() + 3000;
+        while (Date.now() < deadline) {
+          const {rows} = await db.query(`select 1 from pg_stat_activity where datname=current_database()
+            and wait_event_type='Lock' and query like 'select d.id from devices d%'`);
+          if (rows.length) { waiting = true; break; }
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        await blocker.query('commit');
+        const response = await pending;
+        assert.ok(waiting, 'send reached membership lock');
+        assert.equal(response.status, 403);
+        assert.equal((await db.query('select * from messages')).rows.length, 2);
+        assert.equal(events.length, 0);
+      } finally { await blocker.query('rollback'); blocker.release(); }
+    });
+    await t.test('S02: ciphertext insertion failure leaves no orphan metadata or notifications', async () => {
+      await reset();
+      await db.query(`create function fail_ciphertext() returns trigger language plpgsql as $$
+        begin raise exception 'injected ciphertext failure'; end $$`);
+      await db.query(`create trigger fail_ciphertext before insert on message_ciphertexts
+        for each row execute function fail_ciphertext()`);
+      try {
+        assert.equal((await send([benDev])).status, 500);
+        assert.equal((await db.query('select * from messages')).rows.length, 2);
+        assert.equal(events.length, 0);
+      } finally {
+        await db.query('drop trigger fail_ciphertext on message_ciphertexts');
+        await db.query('drop function fail_ciphertext()');
+      }
     });
   } finally {
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));

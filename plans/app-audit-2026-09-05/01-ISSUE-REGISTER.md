@@ -1,6 +1,6 @@
 # 01 — Issue register
 
-Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 2 DONE (Q01, S01), 1 IMPLEMENTED_UNVERIFIED (Q02), 47 TODO.
+Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 3 DONE (Q01, S01, S02), 1 IMPLEMENTED_UNVERIFIED (Q02), 46 TODO.
 
 Each ID belongs to exactly one implementation part. Read its dependency and acceptance sections before editing. Priority includes source-confirmed defects, runtime risks, and requested capability gaps; see the evidence column and task text.
 
@@ -14,7 +14,7 @@ Each ID belongs to exactly one implementation part. Read its dependency and acce
 | M02 | P0 | Acknowledge only after durable client persistence | Confirmed | [03](03-MESSAGE-RELIABILITY.md) | TODO |
 | R02 | P0 | Authorize and bound typing, reset, and location frames | Confirmed | [05](05-REALTIME-CALLS-GAMES.md) | TODO |
 | S01 | P0 | Authorize receipt reads and writes | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | DONE |
-| S02 | P0 | Validate sender and recipient devices on all message paths | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | TODO |
+| S02 | P0 | Validate sender and recipient devices on all message paths | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | DONE |
 | S03 | P0 | Make revocation persistent and device-bound | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | TODO |
 | S04 | P0 | Replace the false recovery lockout security boundary | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | TODO |
 | A03 | P1 | Support java.time on API 24/25 | Confirmed configuration gap | [06](06-ANDROID-DURABILITY.md) | TODO |
@@ -82,7 +82,7 @@ Reviewer/date:
 ```text
 Issue ID:            Q01
 Status:              DONE
-Source/fix commit:   working tree on a2e24e5 (not yet committed)
+Source/fix commit:   a90e089
 Changed files:       backend/api/test/callConference.test.ts
                      backend/games/src/engine/registry.test.ts
                      backend/games/package.json
@@ -164,7 +164,7 @@ Reviewer/date: implemented 2026-09-05; awaiting review.
 ```text
 Issue ID:            Q02
 Status:              IMPLEMENTED_UNVERIFIED
-Source/fix commit:   working tree on a90e089
+Source/fix commit:   f0e116a
 Changed files:       .github/workflows/ci.yml (new)
                      .github/workflows/nightly.yml (new)
                      .github/workflows/deploy-dev.yml
@@ -275,7 +275,7 @@ Reviewer/date: implemented 2026-09-05; awaiting review and a first CI run.
 ## S01 — receipt authorization completed (2026-09-05)
 
 - **Status:** DONE for the receipt authorization contract. Device-bound sessions and durable acknowledgement remain S03/M02.
-- **Source/fix commit:** commit containing this record, parent `f0e116a`; continues the supplied uncommitted receipt patch.
+- **Source/fix commit:** `8629003`; continues the supplied uncommitted receipt patch.
 - **Files:** API `deviceAuthorization.ts`, `routes/receipts.ts`, legacy pending selection in `routes/messages.ts`; `test/receiptAuthorization.test.ts` and `test/receiptPostgres.test.ts`; Android/iOS `ChatEngine` receipt batching; PostgreSQL CI step.
 - **Fix:** verify active owned devices even for signed claims; reject unknown/malformed claims without falling back to NULL. Require active membership and the exact addressed envelope for fanout receipt writes. Sender access to receipt rosters remains supported. Device-less legacy ciphertext remains supported. Lock device/membership rows, validate the whole batch, and bulk-upsert in a transaction using 027's actual partial indexes. Preserve receipt timestamps and read status; publish only committed changes and exclude sender-owned progress. Database failures reach Express error middleware.
 - **Pending compatibility:** receipts no longer change the shared `messages.is_pending` flag. Legacy pending fetch excludes only the caller's read receipt for the selected device, so another device/member is not suppressed. This is not the durable-storage ACK required by M02 and does not repair previously cleared flags.
@@ -285,3 +285,20 @@ Reviewer/date: implemented 2026-09-05; awaiting review and a first CI run.
 - **CI:** the real database suite is wired into the existing disposable migration job. GitHub execution remains unverified under Q02.
 - **Limits:** no physical-device network run, production load measurement, or distributed notification ordering proof. Redis failure preserves committed receipts and polling can recover; durable realtime notifications are part of M01. User-only legacy JWTs cannot establish which physical device sent a request when no device claim is provided; S03 remains mandatory. M02 still owns premature fanout fetch acknowledgement and disk durability.
 - **Rollback:** no schema migration. Preserve authorization if rolling back; disable the endpoint rather than restoring the hole. Keep the legacy pending filter with removal of the shared pending mutation. Reverting client batching requires preserving compatible server request limits.
+
+
+## S02 — message device boundaries completed (2026-09-05)
+
+- **Status:** DONE for device/membership authorization. Session binding, idempotency/outbox, durable ACK, pagination, and production performance remain separate open tasks.
+- **Source/fix commit:** commit containing this record, parent `8629003`.
+- **Files:** `backend/api/src/db.ts`, `routes/messages.ts`, `test/receiptPostgres.test.ts`, CI database-test label, register and security part.
+- **Implementation:** reuse S01's active-device resolver for send/history/pending, checking signed claims against the database and preferring them to supplied IDs. Validate every fanout target against active conversation membership and active devices before inserting metadata. Normalize and deduplicate UUIDs. Preserve valid sender-linked targets, device-less legacy sends, and empty self fanout. Share locks hold sender/recipient device and membership authorization through database writes. Message metadata and ciphertext writes now share a transaction. Relay/push work starts only after commit and release of the transaction connection. History cannot fetch/acknowledge another device's envelope. Pending fetch checks membership/revocation and filters blocked senders in both fanout and legacy paths.
+- **Regression evidence:** replacing only `messages.ts` with the pre-S02 committed version makes all seven new S02 database scenarios fail (exit 1), while the seven S01 scenarios continue passing. Restoring the fixed route passes all 14 scenarios plus the parent (15/15).
+- **Real PostgreSQL checks:** synthetic three-account fixtures; forged sender IDs; outside/revoked/removed target devices; mixed valid/invalid fanout with no writes; token-over-body precedence; normal groups; sender-linked devices; empty Note-to-Self; legacy null-device path; foreign/revoked history/pending claims; blocked/removed pending recipients; recipient removal committed while send waits on its membership lock; injected ciphertext insert failure with no orphan metadata or notifications. Fixtures now replay all 63 repository migrations into a unique schema, rather than using a schema stand-in.
+- **Validation:** API typecheck passes. Full repository `npm test` with real database suite enabled passes: API 229/229, games 6/6 suites, Ludo asset guard. Native source was unchanged after the successful S01 Android/iOS builds. No production or real-account tests performed.
+- **Remaining limitations:** pending/history still mark fanout delivery before durable client persistence (M02); no stable send idempotency key/outbox (M01), so a publish failure after commit remains an ambiguous send response. User-only credentials are still legacy-compatible (S03). The pending query is still unbounded and locks active membership rows during its transaction; bounded paging and latency budgets remain M03/P04. No production throughput or physical-device messaging measurement claimed.
+- **Rollback:** no schema/wire migration. Never restore unchecked device IDs as a rollback; disable affected paths if necessary. Keep transaction boundaries with the authorization locks.
+
+## Q02 — additional local migration evidence (2026-09-05)
+
+The actual migration runner applied all 63 migrations to an empty, dedicated loopback PostgreSQL 16.15 database. A second run reported all 63 already applied and performed no work. The security integration suite also replays the complete migration set into disposable schemas. Q02 remains IMPLEMENTED_UNVERIFIED: these are local results, not GitHub-runner results; advisory gates and GitHub native jobs still need their required evidence. S01's native builds passed locally. The temporary test database server was stopped after validation; no system service was enabled.

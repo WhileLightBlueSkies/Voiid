@@ -16,3 +16,21 @@ export async function query<T = any>(text: string, params?: unknown[]): Promise<
   const res = await pool.query(text, params);
   return res.rows as T[];
 }
+
+// The callback must return its result before the caller sends a response or publishes
+// notifications. Row locks and writes use the same connection until commit.
+export async function withTransaction<T>(work: (execute: typeof query) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const execute: typeof query = async (sql, params) => (await client.query(sql, params)).rows;
+    const result = await work(execute);
+    await client.query('commit');
+    return result;
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}

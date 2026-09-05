@@ -193,7 +193,7 @@ jobs:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/voiid_migration_replay
         run: node infrastructure/deployment/migrate.mjs
 
-      - name: Receipt authorization against PostgreSQL
+      - name: Receipt and message authorization against PostgreSQL
         env:
           RECEIPT_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/voiid_migration_replay
         run: npx tsx --test backend/api/test/receiptPostgres.test.ts
