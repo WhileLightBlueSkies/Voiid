@@ -23,6 +23,10 @@ import { sendWakePush, PushMeta } from '../push';
 
 const router = Router();
 
+/** One reconnect's worth of acknowledgements. Bounded because it arrives from a client and
+ *  becomes an array parameter; the clients already page their fetches. */
+const ACK_MAX_BATCH = 500;
+
 // Content-free wake push to a set of devices (Section 4.14): the Redis relay only reaches
 // devices holding a live socket; a silent, data-only push nudges the rest to fetch pending +
 // decrypt locally. Fire-and-forget — the HTTP response must NOT wait on push delivery.
@@ -581,15 +585,11 @@ router.get('/conversation/:id', requireAuth, asyncHandler(async (req, res) => {
       before ? [req.params.id, limit, deviceId, before] : [req.params.id, limit, deviceId]
     );
 
-    // Mark this device's fan-out ciphertexts delivered as we serve them.
-    if (deviceId && rows.length) {
-      await query(
-        `update message_ciphertexts set delivered_at = now()
-           where recipient_device_id = $1::uuid and delivered_at is null
-             and message_id = any($2::uuid[])`,
-        [deviceId, rows.map((m) => m.id)]
-      );
-    }
+    // NOTHING IS MARKED DELIVERED HERE (M02). This used to stamp `delivered_at` for every
+    // row it served, so scrolling back through a conversation silently acknowledged messages
+    // the device had not stored — and a history fetch that never arrived acknowledged them
+    // anyway. Delivery is reported by POST /messages/ack, by the device, after it has the
+    // ciphertext on its own disk.
     return { status: 200, body: { messages: rows } };
   });
   res.status(result.status).json(result.body);
@@ -616,24 +616,27 @@ router.get('/pending/:user_id', requireAuth, asyncHandler(async (req, res) => {
     await query(`select conversation_id from conversation_members
       where user_id = $1 and left_at is null order by conversation_id for share`, [callerId]);
 
-    // Existing fanout fetch still stamps delivery here. M02 must replace this with
-    // a durable client ACK; committing before the HTTP response is not proof of delivery.
+    // A READ, not an update (M02). This was an `update ... returning`, so the act of
+    // serving the ciphertext marked it delivered and the transaction committed before the
+    // response left the process. A dropped socket, a killed app or a failed disk write then
+    // lost the message permanently: the next fetch skipped it and nothing anywhere knew.
+    // The device now acknowledges what it has actually stored, via POST /messages/ack.
     const perDevice = deviceId
       ? await query(
-          `update message_ciphertexts mc set delivered_at = now()
-             from messages m, devices d, conversation_members cm
-            where mc.message_id = m.id
-              and mc.recipient_device_id = d.id
-              and d.id = $1::uuid and d.user_id = $2::uuid and d.revoked_at is null
-              and cm.conversation_id = m.conversation_id and cm.user_id = $2::uuid
+          `select m.id, m.conversation_id, m.sender_id, m.sender_device_id,
+                  translate(encode(mc.ciphertext,'base64'), E'\n', '') as ciphertext,
+                  m.content_type, m.media_url, m.media_mime, m.created_at
+             from message_ciphertexts mc
+             join messages m on mc.message_id = m.id
+             join devices d on d.id = mc.recipient_device_id
+             join conversation_members cm
+               on cm.conversation_id = m.conversation_id and cm.user_id = $2::uuid
+            where d.id = $1::uuid and d.user_id = $2::uuid and d.revoked_at is null
               and cm.left_at is null
               and not exists (select 1 from user_blocks b
                 where (b.blocker_user_id = m.sender_id and b.blocked_user_id = $2)
                    or (b.blocked_user_id = m.sender_id and b.blocker_user_id = $2))
-              and mc.delivered_at is null
-            returning m.id, m.conversation_id, m.sender_id, m.sender_device_id,
-                      translate(encode(mc.ciphertext,'base64'), E'\n', '') as ciphertext,
-                      m.content_type, m.media_url, m.media_mime, m.created_at`,
+              and mc.delivered_at is null`,
           [deviceId, req.params.user_id]
         )
       : [];
@@ -651,10 +654,14 @@ router.get('/pending/:user_id', requireAuth, asyncHandler(async (req, res) => {
            and not exists (select 1 from user_blocks b
              where (b.blocker_user_id = m.sender_id and b.blocked_user_id = $1)
                 or (b.blocked_user_id = m.sender_id and b.blocker_user_id = $1))
+           -- What THIS device has already acknowledged storing (M02). The old test was a
+           -- READ receipt, which is a different fact — and is_pending above is one shared
+           -- bit for every recipient, so one device clearing it emptied every queue.
            and not exists (
-             select 1 from message_read_receipts r
-              where r.message_id = m.id and r.user_id = $1 and r.status = 'read'
-                and r.device_id is not distinct from $2::uuid
+             select 1 from message_deliveries dl
+              where dl.message_id = m.id and dl.user_id = $1
+                and coalesce(dl.device_id, '00000000-0000-0000-0000-000000000000'::uuid)
+                    = coalesce($2::uuid, '00000000-0000-0000-0000-000000000000'::uuid)
            )
          order by m.created_at asc`,
       [req.params.user_id, deviceId]
@@ -664,6 +671,92 @@ router.get('/pending/:user_id', requireAuth, asyncHandler(async (req, res) => {
       (a: any, b: any) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
     );
     return { status: 200, body: { messages: merged } };
+  });
+  res.status(result.status).json(result.body);
+}));
+
+// ─────────────────────────────────────────────────────────────────────────────────
+// POST /messages/ack  { device_id?, message_ids: [uuid, ...] }
+//
+// THE OTHER HALF OF DELIVERY (M02). Fetching used to mark a message delivered, which meant
+// the server was asserting something it could not know: that bytes it had written to a socket
+// reached a device AND were written to that device's disk. Everything between those points —
+// a dropped connection, an app killed on the walk to the platform, a failed write — silently
+// destroyed the message, because the next fetch skipped it and nothing raised an error.
+//
+// A device sends this only after the ciphertext is durably stored. Until then, every fetch
+// keeps returning it. That is the correct trade: a duplicate the client dedupes by id costs
+// nothing, and a lost message cannot be recovered by anyone.
+//
+// IDEMPOTENT, because it is retried. `delivered_at is null` and `on conflict do nothing` mean
+// a replayed batch is a no-op rather than a moved timestamp.
+// ─────────────────────────────────────────────────────────────────────────────────
+router.post('/ack', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id } = (req as any).auth;
+  const { message_ids, device_id: bodyDeviceId } = req.body ?? {};
+
+  // The whole batch is validated before anything is written: a partly-applied
+  // acknowledgement would leave the client believing it had settled messages it had not.
+  if (!Array.isArray(message_ids) || message_ids.length === 0 || message_ids.length > ACK_MAX_BATCH) {
+    return res.status(400).json({ error: `message_ids must be 1..${ACK_MAX_BATCH} ids` });
+  }
+  if (!message_ids.every((id: unknown) => typeof id === 'string' && UUID_RE.test(id))) {
+    return res.status(400).json({ error: 'message_ids must all be uuids' });
+  }
+  const ids = [...new Set<string>(message_ids.map((id: string) => id.toLowerCase()))];
+
+  // A body that names a DIFFERENT device than the token is refused rather than quietly
+  // resolved to the token's. The signed claim would win either way, so nothing unsafe could
+  // happen — but the caller would be told "acknowledged" for a device it did not name, and a
+  // client that believes it settled its tablet's queue from its phone will stop retrying.
+  const claimedDevice = (req as any).auth?.device_id;
+  if (typeof bodyDeviceId === 'string' && typeof claimedDevice === 'string' &&
+      bodyDeviceId.toLowerCase() !== claimedDevice.toLowerCase()) {
+    return res.status(403).json({ error: 'a device can only acknowledge its own messages' });
+  }
+
+  const result = await withTransaction<{ status: number; body: any }>(async (query) => {
+    // The acknowledging device is resolved the same way every other write path resolves it:
+    // a signed claim beats the body, and either way it must be a live device this account
+    // owns. Acknowledging on behalf of another device would let one device empty another
+    // device's queue — the shared-bit bug, re-created through the front door.
+    const deviceId = await resolveActiveDevice(req, user_id,
+      async (sql, params) => ({ rows: await query(sql, params) }), bodyDeviceId, true);
+    if (deviceId === undefined) return { status: 403, body: { error: 'forbidden' } };
+
+    // Fan-out: this device's own envelope, and only if it is still owed.
+    const fanout = deviceId
+      ? await query<{ message_id: string }>(
+          `update message_ciphertexts mc set delivered_at = now()
+             from devices d
+            where mc.recipient_device_id = d.id
+              and d.id = $1::uuid and d.user_id = $2::uuid and d.revoked_at is null
+              and mc.message_id = any($3::uuid[])
+              and mc.delivered_at is null
+            returning mc.message_id`,
+          [deviceId, user_id, ids]
+        )
+      : [];
+
+    // Legacy: one shared ciphertext, so delivery is recorded per (message, user, device).
+    // Membership is checked in the statement — an id the caller was never sent simply
+    // matches nothing rather than being reported as an error, because a client replaying a
+    // batch after being removed from a group is ordinary, not hostile.
+    const legacy = await query<{ message_id: string }>(
+      `insert into message_deliveries (message_id, user_id, device_id)
+       select m.id, $2::uuid, $1::uuid
+         from messages m
+         join conversation_members cm
+           on cm.conversation_id = m.conversation_id and cm.user_id = $2::uuid and cm.left_at is null
+        where m.id = any($3::uuid[]) and m.ciphertext is not null
+       on conflict do nothing
+       returning message_id`,
+      [deviceId, user_id, ids]
+    );
+
+    return { status: 200, body: {
+      acknowledged: new Set([...fanout, ...legacy].map((r) => r.message_id)).size,
+    } };
   });
   res.status(result.status).json(result.body);
 }));

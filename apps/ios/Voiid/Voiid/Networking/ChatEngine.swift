@@ -835,6 +835,12 @@ final class ChatEngine {
         // ("no matching session" cascade). So tombstone once, never retry.
         let seen = Set((store[conversationId] ?? []).map { $0.id })
         var newlyReceived: [String] = []
+        // Every id this device DURABLY RECORDED this pass, decrypted or tombstoned. This is
+        // what gets acknowledged (M02) — deliberately a superset of newlyReceived, because a
+        // tombstone is also a durable outcome: the client never retries that id (Olm messages
+        // decrypt once; recovery is the peer re-sending), so leaving it unacknowledged would
+        // make the server hold it forever and hand it back on every sync.
+        var stored: [String] = []
         for m in env.messages.reversed() {   // server DESC → process ASC
             // Our OWN sent message: we can't decrypt our ratchet output, but the server
             // tells us the recipient's receipt state — advance Sent→Delivered→Seen even
@@ -898,6 +904,7 @@ final class ChatEngine {
                     append(DecryptedMessage(id: m.id, senderId: m.sender_id, text: "",
                                             createdAt: parseDate(m.created_at), isMine: false,
                                             control: true), to: conversationId)
+                    stored.append(m.id)
                     continue
                 }
                 // A reply is a real bubble that also carries a quote.
@@ -952,6 +959,7 @@ final class ChatEngine {
                     inbound.storyQuoteCreatedAt = q.storyCreatedAt
                 }
                 replace(id: m.id, with: inbound, to: conversationId)
+                stored.append(m.id)
             } catch {
                 NSLog("[VOIID] ❌ inbound decrypt FAILED id=\(m.id) senderDev=\(m.sender_device_id ?? "nil"): \(error)")
                 // Tombstone it (failed==true) so the chat shows a placeholder, asks the
@@ -964,10 +972,16 @@ final class ChatEngine {
                                              createdAt: parseDate(m.created_at), isMine: false,
                                              failed: true),
                            to: conversationId)
+                    stored.append(m.id)
                 }
             }
         }
         persist()
+        // ACKNOWLEDGE ONLY AFTER persist() (M02). The server no longer marks a message
+        // delivered when it hands it over — it hands it over on every sync until this device
+        // says it is on disk. So this call must come after the write, never before: an ack
+        // sent first and then lost to a crash is a message nobody will ever be given again.
+        await acknowledgeStored(stored)
         // Mark just-received messages DELIVERED (double-grey tick on the sender) —
         // even if the chat isn't open. Read is marked separately when it's opened.
         if !newlyReceived.isEmpty { await markReceipts(newlyReceived, status: "delivered") }
@@ -1002,6 +1016,31 @@ final class ChatEngine {
             }
         }
         return nil
+    }
+
+    /// Tell the server this device has the ciphertext on disk, so it stops handing it back.
+    ///
+    /// SEPARATE FROM A RECEIPT, and the distinction is the point of M02. A receipt is a
+    /// statement about the USER ("delivered", "read") that drives the sender's ticks. This is
+    /// a statement about STORAGE, and until it arrives the server keeps the message queued.
+    ///
+    /// Best-effort and idempotent: a lost ack costs one redundant re-fetch that the store
+    /// already dedupes by id, so it is never worth failing a sync over.
+    private func acknowledgeStored(_ messageIds: [String]) async {
+        guard !messageIds.isEmpty, let device = E2EManager.shared.deviceId else { return }
+        struct Body: Encodable { let message_ids: [String]; let device_id: String }
+        for start in stride(from: 0, to: messageIds.count, by: 500) {
+            let ids = Array(messageIds[start..<min(start + 500, messageIds.count)])
+            do {
+                _ = try await api.request("POST", "messages/ack",
+                                          body: Body(message_ids: ids, device_id: device),
+                                          as: EmptyResponse.self)
+            } catch {
+                // The message stays queued and comes back on the next sync. That is the
+                // designed failure mode, not an error worth surfacing.
+                NSLog("[VOIID] ⚠️ ack failed for \(ids.count) ids: \(error)")
+            }
+        }
     }
 
     private func markReceipts(_ messageIds: [String], status: String) async {

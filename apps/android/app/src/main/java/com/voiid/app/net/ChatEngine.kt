@@ -334,6 +334,12 @@ class ChatEngine private constructor(context: Context) {
         // ("no matching session" cascade). So tombstone once, never retry.
         val seen = (store[conversationId] ?: emptyList()).map { it.id }.toHashSet().apply { addAll(controlSeenIds()) }
         val newlyReceived = mutableListOf<String>()
+        // Every id this device DURABLY RECORDED this pass, decrypted or tombstoned. This is
+        // what gets acknowledged (M02) — deliberately a superset of newlyReceived, because a
+        // tombstone is also a durable outcome: the client never retries that id (Olm messages
+        // decrypt once; recovery is the peer re-sending), so leaving it unacknowledged would
+        // make the server hold it forever and hand it back on every sync.
+        val stored = mutableListOf<String>()
         for (m in env.messages.asReversed()) {        // server DESC -> process ASC
             // Our OWN sent message: can't decrypt our ratchet output, but the server
             // reports the recipient's receipt state — advance Sent→Delivered→Seen even
@@ -418,7 +424,7 @@ class ChatEngine private constructor(context: Context) {
                 val (caption, ref) = decodeEnvelope(plain, m.content_type)
                 replace(conversationId, DecryptedMessage(m.id, m.sender_id, caption, parseIso(m.created_at), false, ref))
                 newlyReceived.add(m.id)
-            }.onFailure {
+            }.onSuccess { stored.add(m.id) }.onFailure {
                 android.util.Log.e("VOIID", "❌ inbound decrypt FAILED id=${m.id} senderDev=${m.sender_device_id}", it)
                 // Tombstone it (failed==true) so the chat shows a placeholder, asks the
                 // sender to re-establish the session, and RETRIES on the next sync.
@@ -426,10 +432,16 @@ class ChatEngine private constructor(context: Context) {
                     lastSyncHadDecryptFailure = true
                     replace(conversationId, DecryptedMessage(m.id, m.sender_id,
                         "🔒 Message couldn’t be decrypted", parseIso(m.created_at), false, failed = true))
+                    stored.add(m.id)
                 }
             }
         }
         persist()
+        // ACKNOWLEDGE ONLY AFTER persist() (M02). The server no longer marks a message
+        // delivered when it hands it over — it hands it over on every sync until this device
+        // says it is on disk. So this call must come after the write, never before: an ack
+        // sent first and then lost to a crash is a message nobody will ever be given again.
+        acknowledgeStored(stored)
         // Mark just-received messages DELIVERED (double-grey tick on the sender) —
         // even if the chat isn't open. Read is marked separately when it's opened.
         if (newlyReceived.isNotEmpty()) markReceipts(newlyReceived, "delivered")
@@ -476,6 +488,33 @@ class ChatEngine private constructor(context: Context) {
      */
     suspend fun markGroupDelivered(ids: List<String>) {
         if (ids.isNotEmpty()) markReceipts(ids, "delivered")
+    }
+
+    /**
+     * Tell the server this device has the ciphertext on disk, so it stops handing it back.
+     *
+     * SEPARATE FROM A RECEIPT, and the distinction is the point of M02. A receipt is a
+     * statement about the USER ("delivered", "read") that drives the sender's ticks. This is
+     * a statement about STORAGE, and until it arrives the server keeps the message queued.
+     *
+     * Best-effort and idempotent: a lost ack costs one redundant re-fetch that the store
+     * already dedupes by id, so it is never worth failing a sync over.
+     */
+    @Serializable private data class AckBody(val message_ids: List<String>, val device_id: String)
+
+    private suspend fun acknowledgeStored(messageIds: List<String>) {
+        val device = e2e.deviceId ?: return
+        if (messageIds.isEmpty()) return
+        for (chunk in messageIds.chunked(500)) {
+            runCatching {
+                api.request("POST", "messages/ack",
+                    jsonBody = ApiClient.json.encodeToString(AckBody.serializer(), AckBody(chunk, device)))
+            }.onFailure {
+                // The message stays queued and comes back on the next sync. That is the
+                // designed failure mode, not an error worth surfacing.
+                android.util.Log.w("VOIID", "⚠️ ack failed for ${chunk.size} ids", it)
+            }
+        }
     }
 
     private suspend fun markReceipts(messageIds: List<String>, status: String) {

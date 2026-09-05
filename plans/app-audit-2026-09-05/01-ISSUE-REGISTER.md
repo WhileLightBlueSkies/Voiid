@@ -1,6 +1,6 @@
 # 01 — Issue register
 
-Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 7 DONE (Q01, S01, S02, S03, C01, R02, M01), 1 IMPLEMENTED_UNVERIFIED (Q02), 42 TODO.
+Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 8 DONE (Q01, S01, S02, S03, C01, R02, M01, M02), 1 IMPLEMENTED_UNVERIFIED (Q02), 41 TODO.
 
 Each ID belongs to exactly one implementation part. Read its dependency and acceptance sections before editing. Priority includes source-confirmed defects, runtime risks, and requested capability gaps; see the evidence column and task text.
 
@@ -11,7 +11,7 @@ Each ID belongs to exactly one implementation part. Read its dependency and acce
 | C01 | P0 | Resume failed payment webhook processing | Confirmed | [11](11-PAYMENTS-MEDIA-WORKERS.md) | DONE |
 | I03 | P0 | Retain dirty state when local persistence fails | Confirmed failure path | [07](07-IOS-AND-STORAGE.md) | TODO |
 | M01 | P0 | Make message acceptance atomic and retry-safe | Confirmed | [03](03-MESSAGE-RELIABILITY.md) | DONE |
-| M02 | P0 | Acknowledge only after durable client persistence | Confirmed | [03](03-MESSAGE-RELIABILITY.md) | TODO |
+| M02 | P0 | Acknowledge only after durable client persistence | Confirmed | [03](03-MESSAGE-RELIABILITY.md) | DONE |
 | R02 | P0 | Authorize and bound typing, reset, and location frames | Confirmed | [05](05-REALTIME-CALLS-GAMES.md) | DONE |
 | S01 | P0 | Authorize receipt reads and writes | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | DONE |
 | S02 | P0 | Validate sender and recipient devices on all message paths | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | DONE |
@@ -586,3 +586,72 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
   and a new table). Do NOT roll back by dropping the client id while keeping the fingerprint
   check. If the outbox is reverted, revert the worker with it or it will sweep a table nothing
   writes to.
+
+
+## M02 — delivery acknowledgement completed (2026-09-06)
+
+- **Status:** DONE for non-destructive fetch, device-scoped acknowledgement, per-recipient legacy
+  delivery and declared retention. Fix point "persist incoming envelopes before advancing
+  decryption state" is NOT implemented as an atomic guarantee; see limitations.
+- **Source/fix commit:** commit containing this record, parent `f15086d`.
+- **Files:** `database/migrations/060_delivery_acknowledgement.sql` (new);
+  `backend/api/src/routes/messages.ts`; `backend/api/test/deliveryAckPostgres.test.ts` (new) and
+  `test/receiptPostgres.test.ts` (updated to the new contract); iOS `ChatEngine.swift`; Android
+  `ChatEngine.kt`; `.github/workflows/ci.yml`.
+- **Failure reproduced:** yes. All 10 scenarios failed against the committed source — there was no
+  `message_deliveries` table, no ack route, and both fetch paths stamped `delivered_at` as they read.
+- **Implementation:**
+  1. `GET /messages/pending` was an `update ... returning`: serving the ciphertext marked it
+     delivered and committed before the response left the process. It is now a plain select.
+  2. `GET /messages/conversation` marked every row it served, so SCROLLING acknowledged messages
+     the device had not stored. It marks nothing.
+  3. `POST /messages/ack` is the only writer of delivery. Scoped to the authenticated device,
+     idempotent (`delivered_at is null`, `on conflict do nothing`), whole-batch validation so a
+     malformed list cannot be partly applied, and a body naming a different device than the token
+     is refused rather than quietly resolved — a client told "acknowledged" for a device it did
+     not name would stop retrying.
+  4. `message_deliveries` gives legacy single-ciphertext messages a per-recipient dimension they
+     never had. Their delivery state was `messages.is_pending` — ONE bit shared by every
+     recipient, so one device clearing it emptied every other device's queue. The unique index
+     coalesces the nullable device id rather than including a NULL, which would never match.
+  5. Both clients acknowledge AFTER their durable write (`persist()`), never before, and
+     acknowledge tombstoned messages as well as decrypted ones: a client never retries a failed
+     Olm decrypt, so leaving those unacknowledged would make the server hold them forever.
+  6. Retention for `message_ciphertexts` and `message_deliveries` declared in
+     `data_retention_policy`, with the argument for why a time sweep would be wrong written down.
+- **Regression evidence:** restoring the destructive read fails 3 scenarios; removing the device
+  scoping from the legacy anti-join fails precisely the per-recipient one. Both return to green.
+- **Contract change to an existing test:** `receiptPostgres.test.ts`'s "one reader cannot suppress
+  another device or recipient legacy queue" asserted that a READ RECEIPT drops a message from that
+  device's queue — the interim behaviour S01 recorded and explicitly deferred to M02. It now
+  asserts the stronger fact: a read receipt does NOT settle delivery, and only the ack does. The
+  property the test protects is unchanged and is still asserted for both the sibling device and
+  the other recipient. No assertion was weakened to obtain green.
+- **Validation:** PostgreSQL 16.15 on a disposable loopback cluster, replaying all 67 migrations
+  into unique schemas. Full `npm test` with all seven database suites enabled: exit 0, API
+  267/267, games 6/6 suites, websocket 27/27, workers 8/8. Typecheck clean across all five
+  projects. Migration runner applied all 67 to an empty database and reported the second run a
+  no-op. Android `:app:compileDebugKotlin` and an unsigned iOS simulator build both exit 0. No
+  Supabase database, live account or real device was touched.
+- **Remaining limitations:**
+  - **The clients pull history, not `/messages/pending`.** Removing the history-fetch marking is
+    therefore what makes the ack load-bearing, and an OLD client that never acks would keep every
+    message pending forever and see it on every sync. There is no version gate: this pairs a
+    server change with a client change and they must ship together.
+  - **Storage and decryption are not atomic.** M02 asks for the envelope to be persisted before
+    the decryption state advances where atomic storage is unavailable. The clients still decrypt
+    and then persist, so a crash in that window loses the Olm ratchet step for a message that is
+    still queued server-side — it will be re-fetched and will fail to decrypt, landing as a
+    tombstone. That is a bounded, visible failure rather than silent loss, but it is not the
+    guarantee the issue asks for; it needs an inbound-envelope store on both platforms.
+  - **The acceptance scenarios were exercised against the API, not against a device.** Cutting a
+    real socket mid-response, killing the app between fetch and persist, and failing a real disk
+    write are all simulated at the boundary the server can see. No physical-device run was done.
+  - `is_pending` is still a shared bit, now unused for per-device queueing but still read as the
+    sender's "never picked up" flag. Retiring it belongs with M04.
+  - Retention is DECLARED, not enforced: both policies say `account_lifetime` / erasure worker,
+    and no time sweep exists or should.
+- **Rollback:** revert the code; leave migration 060 in place (a new table and two policy rows).
+  Do NOT roll back the server alone once session-aware clients are shipping — a client that acks
+  against a server that also marks on fetch is harmless, but a server that marks on fetch with
+  clients that rely on the queue is the original data-loss bug.

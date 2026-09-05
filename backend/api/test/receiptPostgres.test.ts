@@ -58,6 +58,7 @@ test('receipt and message authorization against PostgreSQL', { skip: !url }, asy
   async function reset() {
     events.length = 0;
     await db.query('truncate message_read_receipts');
+    await db.query('delete from message_deliveries');
     await db.query('delete from messages where id <> all($1::uuid[])', [[msg, fanout]]);
     await db.query('update message_ciphertexts set delivered_at=null');
     await db.query('delete from user_blocks');
@@ -124,15 +125,24 @@ test('receipt and message authorization against PostgreSQL', { skip: !url }, asy
     });
     await t.test('one reader cannot suppress another device or recipient legacy queue', async () => {
       await reset();
+      const queue = async (user: string, device: string) =>
+        (await call(`/messages/pending/${user}?device_id=${device}`, user, device)).body.messages
+          .some((m: any) => m.id === msg);
+
+      // READING IS NOT STORING (M02). A read receipt used to drop the message from this
+      // device's legacy queue, which conflated "a person looked at it" with "this device has
+      // it on disk" — and left nothing to re-deliver if the read arrived from a device that
+      // then lost the write.
       assert.equal((await mark()).status, 200);
       assert.equal((await db.query('select is_pending from messages where id=$1', [msg])).rows[0].is_pending, true);
-      const own = await call(`/messages/pending/${ben}?device_id=${benDev}`);
-      const other = await call(`/messages/pending/${ben}?device_id=${benOther}`);
-      const sender = await call(`/messages/pending/${ana}?device_id=${anaDev}`, ana);
-      assert.equal(own.status, 200); assert.equal(other.status, 200); assert.equal(sender.status, 200);
-      assert.ok(!own.body.messages.some((m: any) => m.id === msg));
-      assert.ok(other.body.messages.some((m: any) => m.id === msg));
-      assert.ok(sender.body.messages.some((m: any) => m.id === msg));
+      assert.ok(await queue(ben, benDev), 'a read receipt does not settle delivery');
+
+      // The acknowledgement does — for the acknowledging device, and nobody else.
+      const acked = await call('/messages/ack', ben, benDev, { device_id: benDev, message_ids: [msg] });
+      assert.equal(acked.status, 200);
+      assert.ok(!(await queue(ben, benDev)), 'settled for the device that stored it');
+      assert.ok(await queue(ben, benOther), 'and still owed to the other device');
+      assert.ok(await queue(ana, anaDev), 'and to the other recipient');
     });
     await t.test('statement failure rolls the entire batch back and publishes nothing', async () => {
       await reset();
