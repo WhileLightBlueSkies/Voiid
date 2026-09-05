@@ -33,6 +33,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'fs';
 import path from 'path';
 import http from 'http';
+import { randomUUID } from 'crypto';
 import express from 'express';
 import bcrypt from 'bcryptjs';
 
@@ -390,10 +391,20 @@ async function fakeQuery(text: string, params: any[] = []): Promise<{ rows: Row[
     return rows([]);
   }
 
-  // ── calls.ts: upsert invitee as invited
+  // ── calls.ts: upsert invitee as invited, WITH THE CAP IN THE SAME STATEMENT
+  //
+  // This models the real statement's three-part contract, because the route's 409 is driven
+  // entirely by whether it returns a row:
+  //   1. the WHERE admits a RE-invite (an existing, non-left row) regardless of the cap,
+  //   2. otherwise it admits only while the live roster is under the cap ($4),
+  //   3. and it `returning user_id` — an empty result means, and only means, "refused".
+  // Returning rows([]) unconditionally made every invite look like a full room.
   if (s.startsWith('insert into call_participants (call_id, user_id, state, invited_by, state_changed_at)')) {
-    const [callId, userId, invitedBy] = p;
+    const [callId, userId, invitedBy, maxParticipants] = p;
     const cp = db.call_participants.find((r) => r.call_id === callId && r.user_id === userId);
+    const reInvite = !!cp && cp.left_at === null;
+    const live = db.call_participants.filter((r) => r.call_id === callId && r.left_at === null).length;
+    if (!reInvite && !(live < maxParticipants)) return rows([]);
     if (cp) Object.assign(cp, {
       state: cp.state === 'joined' ? 'joined' : 'invited',
       invited_by: cp.invited_by ?? invitedBy, left_at: null, state_changed_at: now(),
@@ -402,7 +413,7 @@ async function fakeQuery(text: string, params: any[] = []): Promise<{ rows: Row[
       call_id: callId, user_id: userId, device_id: null, state: 'invited',
       invited_by: invitedBy, joined_at: now(), left_at: null, state_changed_at: now(),
     });
-    return rows([]);
+    return rows([{ user_id: userId }]);
   }
 
   // ── calls.ts: join / leave transitions
@@ -878,6 +889,49 @@ test('re-inviting someone who already joined does not demote them to "Ringing…
   const cara = db.call_participants.find((cp) => cp.user_id === C)!;
   assert.equal(cara.state, 'joined');
   assert.equal(db.call_participants.filter((cp) => cp.call_id === CALL).length, 3, 'no duplicate row');
+});
+
+// The cap is enforced inside the INSERT's own WHERE, and the route turns "no row returned"
+// into the 409. That means an invite-refusal and an invite-success differ ONLY by whether the
+// statement wrote a row — so this asserts both directions against the roster, not just the
+// status code. Before the fake modelled `returning user_id`, every invite looked refused and
+// a cap assertion would have passed for entirely the wrong reason.
+test('the cap refuses the seat past the last one, and only that seat', async () => {
+  await seedScenario();
+  // Fill the room to exactly the cap. Ana and Ben already hold two seats once seeded.
+  await call('POST', `/calls/${CALL}/escalate`, { user: A, device: DEV_A }, { invitee_user_id: C });
+  const filler: string[] = [];
+  while (db.call_participants.filter((cp) => cp.call_id === CALL && !cp.left_at).length < MAX_CALL_PARTICIPANTS) {
+    const id = randomUUID();
+    filler.push(id);
+    db.users.push({ id, username: `f${filler.length}`, full_name: 'Filler', deleted_at: null, contact_pin_hash: null, contact_pin_enc: null });
+    db.contact_sync.push({ owner_user_id: A, contact_user_id: id }, { owner_user_id: id, contact_user_id: A });
+    const res = await call('POST', `/calls/${CALL}/escalate`, { user: A, device: DEV_A }, { invitee_user_id: id });
+    assert.equal(res.status, 200, `seat ${filler.length} must be admitted: ${JSON.stringify(res.body)}`);
+  }
+  const atCap = db.call_participants.filter((cp) => cp.call_id === CALL && !cp.left_at).length;
+  assert.equal(atCap, MAX_CALL_PARTICIPANTS);
+
+  // One past the cap is refused — and writes nothing.
+  const over = randomUUID();
+  db.users.push({ id: over, username: 'over', full_name: 'Over', deleted_at: null, contact_pin_hash: null, contact_pin_enc: null });
+  db.contact_sync.push({ owner_user_id: A, contact_user_id: over }, { owner_user_id: over, contact_user_id: A });
+  const refused = await call('POST', `/calls/${CALL}/escalate`, { user: A, device: DEV_A }, { invitee_user_id: over });
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.equal(refused.body.max_participants, MAX_CALL_PARTICIPANTS);
+  assert.equal(db.call_participants.some((cp) => cp.user_id === over), false, 'a refused invite must write no roster row');
+  assert.equal(db.call_participants.filter((cp) => cp.call_id === CALL && !cp.left_at).length, MAX_CALL_PARTICIPANTS);
+
+  // A RE-invite of someone already in the full room still succeeds: it adds nobody, and
+  // refusing it would break re-inviting the last participant after a dropped connection.
+  const again = await call('POST', `/calls/${CALL}/escalate`, { user: A, device: DEV_A }, { invitee_user_id: C });
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.equal(db.call_participants.filter((cp) => cp.call_id === CALL && !cp.left_at).length, MAX_CALL_PARTICIPANTS);
+
+  // And a seat freed by someone leaving is reusable — the cap counts live seats, not history.
+  await call('POST', `/calls/${CALL}/leave`, { user: filler[0], device: DEV_A });
+  const readmitted = await call('POST', `/calls/${CALL}/escalate`, { user: A, device: DEV_A }, { invitee_user_id: over });
+  assert.equal(readmitted.status, 200, JSON.stringify(readmitted.body));
 });
 
 test('a second escalation does not resurrect a participant who left', async () => {

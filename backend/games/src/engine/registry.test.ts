@@ -71,11 +71,13 @@ ok('tictactoe move still broadcasts (silent unset)', !r.silent);
 
 // Snake is the only one that opts into the new behaviour.
 const snake = factoryFor('snake')!;
-// Checks the CONTRACT (it has a tick rate, in the band GAMES.md §80 allows), not a specific
-// number — the rate is a tuning value and pinning it here makes every tuning change look
-// like a regression.
-ok('snake is continuous (tickHz set, 10-15 Hz)',
-   typeof snake.tickHz === 'number' && snake.tickHz >= 10 && snake.tickHz <= 15);
+// Checks the CONTRACT (it has a tick rate, in the band GAMES.md §80 allows for a
+// continuous-tick arcade game), not a specific number — the rate is a tuning value and
+// pinning it here makes every tuning change look like a regression. Snake settled at 20 Hz
+// because that is the first rate whose residual interpolation error (~9 units) is smaller
+// than the 22-unit kill radius; see the TUNING.TICK_HZ note in engine/snake/index.ts.
+ok('snake is continuous (tickHz set, 10-30 Hz)',
+   typeof snake.tickHz === 'number' && snake.tickHz >= 10 && snake.tickHz <= 30);
 const s = snake.create(['a'], { bots: 1 });
 ok('snake has a wire projection', typeof s.serializeForWire === 'function');
 ok('snake steering is silent', s.applyInput('a', { h: 1 }).silent === true);
