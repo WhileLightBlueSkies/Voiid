@@ -1,6 +1,6 @@
 # 01 — Issue register
 
-Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 9 DONE (Q01, S01, S02, S03, C01, R02, M01, M02, A02), 2 IMPLEMENTED_UNVERIFIED (Q02, A01), 40 TODO.
+Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 9 DONE (Q01, S01, S02, S03, C01, R02, M01, M02, A02), 3 IMPLEMENTED_UNVERIFIED (Q02, A01, I03), 39 TODO.
 
 Each ID belongs to exactly one implementation part. Read its dependency and acceptance sections before editing. Priority includes source-confirmed defects, runtime risks, and requested capability gaps; see the evidence column and task text.
 
@@ -9,7 +9,7 @@ Each ID belongs to exactly one implementation part. Read its dependency and acce
 | A01 | P0 | Exclude current private stores from Android backup/transfer | Confirmed rules gap | [06](06-ANDROID-DURABILITY.md) | IMPLEMENTED_UNVERIFIED |
 | A02 | P0 | Stop automatically deleting shared encryption keys | Confirmed failure path | [06](06-ANDROID-DURABILITY.md) | DONE |
 | C01 | P0 | Resume failed payment webhook processing | Confirmed | [11](11-PAYMENTS-MEDIA-WORKERS.md) | DONE |
-| I03 | P0 | Retain dirty state when local persistence fails | Confirmed failure path | [07](07-IOS-AND-STORAGE.md) | TODO |
+| I03 | P0 | Retain dirty state when local persistence fails | Confirmed failure path | [07](07-IOS-AND-STORAGE.md) | IMPLEMENTED_UNVERIFIED |
 | M01 | P0 | Make message acceptance atomic and retry-safe | Confirmed | [03](03-MESSAGE-RELIABILITY.md) | DONE |
 | M02 | P0 | Acknowledge only after durable client persistence | Confirmed | [03](03-MESSAGE-RELIABILITY.md) | DONE |
 | R02 | P0 | Authorize and bound typing, reset, and location frames | Confirmed | [05](05-REALTIME-CALLS-GAMES.md) | DONE |
@@ -744,3 +744,61 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
     finished until something surfaces it.
   - Key-alias isolation per store (A02's "isolate future key aliases where justified") is NOT
     done. All stores still share one master key; the fix here is that nothing deletes it.
+
+
+## I03 — persistence that reports whether it persisted (2026-09-06)
+
+- **Status:** IMPLEMENTED_UNVERIFIED. The Android half is unit-tested against real files; the
+  iOS half is the same design verified only by compilation, because the project has NO test
+  target. The database-wrapper half of the fix is partial — see limitations. With M02 in place
+  this was actively producing false acknowledgements, so it is fixed rather than deferred.
+- **Source/fix commit:** commit containing this record, parent `553e581`.
+- **Files:** Android `net/ShardStore.kt` (new), `net/ChatEngine.kt`,
+  `app/src/test/java/com/voiid/app/ShardStoreTest.kt` (new); iOS `Networking/ChatEngine.swift`,
+  `Storage/VoiidDatabase.swift`.
+- **Failure reproduced:** yes, by reading both shipped paths, and three distinct bugs were found
+  rather than the one the issue describes:
+  1. `persist()` cleared the dirty set BEFORE writing and `persistShard` swallowed every failure
+     into a log line, so a disk-full or permission error meant the conversation was never written
+     and never retried — the app carried an in-memory copy that vanished at exit.
+  2. The Android atomic write fell back to overwriting the LIVE FILE in place when the rename
+     failed, which is the opposite of atomic: an interruption there destroys the good copy it was
+     replacing.
+  3. **Not in the issue text.** An undecodable shard was skipped on load, so the conversation came
+     back EMPTY — and the next persist wrote that emptiness over the file. One unreadable shard
+     silently replaced a whole conversation's history, with nothing left to recover from.
+- **Implementation:** `persist()` returns whether every claimed shard committed, and dirty
+  markers are removed only for those that did. `DirtyConversations` versions each marker, so a
+  conversation touched WHILE its write was in flight stays dirty — the bytes that landed are
+  already stale. `ShardStore.write` has no fallback: either the rename lands or the previous
+  shard is untouched and the failure is returned. An unreadable shard is quarantined (moved
+  aside, preserved) instead of skipped. Both clients now withhold the M02 acknowledgement when
+  persistence did not commit, which is the link the issue asks for: the device must not tell the
+  server it stored something it did not store.
+- **Regression evidence:** restoring the truncating fallback fails the replacement test; clearing
+  dirty markers at claim time fails three marker tests. Both return to green when restored.
+  NOTE: the first version of the fallback test did not bite — a read-only directory makes the
+  TEMP write fail, so the fallback never ran. `ShardStore.write` therefore takes an injectable
+  rename step, used only by that test, because POSIX rename needs directory permission rather
+  than file permission and the failure cannot otherwise be forced.
+- **Validation:** 76 Android unit tests pass, `:app:assembleDebug` succeeds, lint holds at its 116
+  baseline, unsigned iOS simulator build exits 0. Backend unchanged and still green (API 267/267,
+  relay 27/27, workers 8/8, games 6/6).
+- **Remaining limitations — WHY THIS IS NOT `DONE`:**
+  - **The iOS half has no tests at all.** `Voiid.xcodeproj` contains no test target, so the iOS
+    persistence path is verified by compilation and by being the same design as the tested
+    Android one. Adding an XCTest target is the honest next step and was not done here.
+  - **The acceptance scenarios were not produced.** Disk full, a permission error, an interrupted
+    replacement and process death were exercised through injected failures and a read-only
+    directory in unit tests — not on a device with a genuinely full disk or a killed process.
+  - **The database wrapper is only partly addressed.** iOS `VoiidDatabase.write` still returns
+    `T?`, where `nil` means either "failed" or "the block returned nil". A `writeCommitted`
+    variant with an unambiguous Bool was added and documented, but the EXISTING call sites were
+    not audited or migrated. They are cache updates re-synced from the server, so the exposure is
+    a stale screen rather than lost data — but that claim was reasoned about, not verified call
+    site by call site.
+  - Nothing surfaces quarantined shards to the user, so a corrupted conversation comes back empty
+    with its history preserved only on disk. Safe, but the recoverable UI state the issue asks
+    for does not exist.
+- **Rollback:** revert the code. No schema or wire change. Do NOT roll back the ack gating alone —
+  without it a failed write again tells the server the message is stored.

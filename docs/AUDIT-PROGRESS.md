@@ -8,14 +8,40 @@ This is the plain-language view. The
 authority and holds the full completion record for each item — files changed, how the failure was
 reproduced, what was verified and what was not.
 
-**Status: 9 fixed · 2 implemented but unverified · 40 open**
+**Status: 9 fixed · 3 implemented but unverified · 39 open**
 Baseline `a2e24e5` · 50 findings · last updated 2026-09-06
+
+**Every P0 is now closed except S04**, which its own spec calls a release gate needing a
+cryptographic reviewer rather than an implementation.
 
 ---
 
 ## Fixed
 
 Newest first.
+
+### I03 — Persistence that reports whether it persisted
+`pending` · P0 · both clients · **implemented, not verified**
+
+Writing a conversation to disk cleared the "needs writing" marker *before* writing, and
+swallowed every failure into a log line. A full disk or a permission error meant the
+conversation was never written and never retried — the app carried an in-memory copy that
+vanished when it exited. Since M02 that also made the client tell the server it had stored
+messages it had not, so the server stopped offering them.
+
+Two more found while fixing it. The Android write fell back to overwriting the live file when
+the atomic replace failed — the opposite of atomic, since an interruption there destroys the good
+copy. And an unreadable shard was skipped on load, so the conversation came back **empty** and the
+next write saved that emptiness over it: one bad file silently replaced a whole conversation's
+history.
+
+Writes now report success, markers survive failure, there is no in-place fallback, unreadable
+files are moved aside rather than skipped, and neither client acknowledges anything it did not
+actually store.
+
+**Not verified:** the iOS project has no test target, so the iOS half is verified by compilation
+and by being the same design as the tested Android half. The acceptance scenarios were produced
+through injected failures, not on a device with a genuinely full disk.
 
 ### A02 — SecurePrefs no longer destroys what it cannot read
 `537dcf5` · P0 · Android
@@ -122,6 +148,8 @@ early failure stopped five later suites from running at all.
 
 ## Implemented but not verified
 
+### I03 — see above
+
 ### Q02 — Quality gates before deployment
 `f0e116a` · P1
 
@@ -142,8 +170,11 @@ remaining are:
 
 | ID | Issue | Note |
 |---|---|---|
-| I03 | iOS keeps dirty state when local persistence fails | The iOS half of the durability work |
 | S04 | Replace the false recovery lockout security boundary | **Needs a cryptographic reviewer.** Its own spec calls this a release gate, not a task to be closed by an implementation alone |
+
+Everything else is P1 or below: API performance, the remaining realtime and worker items, Android
+API-24 compatibility, Liquid Glass, motion and accessibility, web admin, and the crypto assurance
+review.
 
 ---
 

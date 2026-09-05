@@ -301,12 +301,39 @@ final class VoiidDatabase {
         }
     }
 
+    /// Best-effort write. `nil` means EITHER the write failed OR the block returned nil, and
+    /// the caller cannot tell which — which is exactly why it must not be used anywhere that
+    /// needs to know whether something is durable (I03).
+    ///
+    /// It stays for the cache updates that make up most callers here: this database backs
+    /// chat and call lists that are re-synced from the server, so a failed write degrades a
+    /// screen rather than losing the only copy of anything. Use `writeCommitted` when the
+    /// answer matters.
     @discardableResult
     func write<T>(_ block: (Database) throws -> T) -> T? {
         guard let pool else { return nil }
         do { return try pool.write(block) } catch {
             NSLog("[VOIID] db write failed: \(error.localizedDescription)")
             return nil
+        }
+    }
+
+    /// A write whose outcome is unambiguous: `true` only if the transaction committed.
+    ///
+    /// For any caller that reports durability onwards — an acknowledgement, a dirty marker, a
+    /// "saved" indicator. `write` above cannot answer that question, because `Optional<Void>`
+    /// collapses "failed" and "returned nothing" into the same `nil`.
+    func writeCommitted(_ block: (Database) throws -> Void) -> Bool {
+        guard let pool else {
+            NSLog("[VOIID] db write skipped: no pool")
+            return false
+        }
+        do {
+            try pool.write(block)
+            return true
+        } catch {
+            NSLog("[VOIID] db write failed: \(error.localizedDescription)")
+            return false
         }
     }
 }

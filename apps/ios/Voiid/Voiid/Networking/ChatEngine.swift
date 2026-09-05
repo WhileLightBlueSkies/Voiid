@@ -976,12 +976,16 @@ final class ChatEngine {
                 }
             }
         }
-        persist()
-        // ACKNOWLEDGE ONLY AFTER persist() (M02). The server no longer marks a message
-        // delivered when it hands it over — it hands it over on every sync until this device
-        // says it is on disk. So this call must come after the write, never before: an ack
-        // sent first and then lost to a crash is a message nobody will ever be given again.
-        await acknowledgeStored(stored)
+        // ACKNOWLEDGE ONLY WHAT WAS ACTUALLY WRITTEN (M02 + I03). persist() reports whether
+        // every claimed shard reached the disk; when it did not, this device has NOT stored
+        // these messages and must not tell the server it has — the server would stop offering
+        // them and they would be gone at exit. They stay dirty, stay pending server-side, and
+        // arrive again on the next sync.
+        if persist() {
+            await acknowledgeStored(stored)
+        } else if !stored.isEmpty {
+            NSLog("[VOIID] 📂 withholding \(stored.count) acknowledgements — the store did not commit")
+        }
         // Mark just-received messages DELIVERED (double-grey tick on the sender) —
         // even if the chat isn't open. Read is marked separately when it's opened.
         if !newlyReceived.isEmpty { await markReceipts(newlyReceived, status: "delivered") }
@@ -1482,6 +1486,10 @@ final class ChatEngine {
             if let data = try? Data(contentsOf: url),
                let msgs = try? JSONDecoder().decode([DecryptedMessage].self, from: data) {
                 loaded[conv] = msgs
+            } else {
+                // QUARANTINE, do not skip — see quarantineShard. Skipping left the conversation
+                // empty in memory and let the next persist overwrite the file with nothing.
+                quarantineShard(url)
             }
         }
         store = loaded
@@ -1502,26 +1510,79 @@ final class ChatEngine {
         }
     }
 
-    private func persist() {
+    /// Write the conversations changed this turn, and report whether they all landed.
+    ///
+    /// RETURNS A RESULT because the caller cannot otherwise tell an in-memory update from a
+    /// durable one — and since M02 it must, or it acknowledges to the server messages that
+    /// were never written to this disk. The dirty markers of anything that failed are KEPT so
+    /// the next pass retries; this used to clear the whole set regardless and swallow every
+    /// write failure into a log line, so a disk-full or permission error lost the conversation
+    /// silently at exit.
+    @discardableResult
+    private func persist() -> Bool {
         guard storeLoaded else {
             NSLog("[VOIID] ⚠️ persist skipped — store not loaded (would clobber on-disk history)")
-            return
+            return false
         }
-        // Write ONLY the conversations changed this turn.
-        for conv in dirtyConversations { persistShard(conv) }
-        dirtyConversations.removeAll()
+        let claimed = dirtyConversations
+        guard !claimed.isEmpty else { return true }
+        var committed = Set<String>()
+        for conv in claimed where persistShard(conv) { committed.insert(conv) }
+        // Only what reached the disk is forgotten. A conversation touched again while its
+        // write was in flight is re-marked by `markDirty` and survives this subtraction.
+        dirtyConversations.subtract(committed)
+        if committed.count != claimed.count {
+            NSLog("[VOIID] ❌ persist INCOMPLETE: \(committed.count)/\(claimed.count) shards committed; the rest stay dirty")
+        }
+        return committed.count == claimed.count
     }
 
     /// Atomically write one conversation's shard, with the same file-protection class as the
     /// keychain items it's kept in step with (readable after first unlock, so the NSE works).
-    private func persistShard(_ convId: String) {
+    /// Returns true ONLY if the bytes reached the disk.
+    private func persistShard(_ convId: String) -> Bool {
         let arr = store[convId] ?? []
-        guard let data = try? JSONEncoder().encode(arr) else { return }
+        let data: Data
         do {
+            data = try JSONEncoder().encode(arr)
+        } catch {
+            // Nothing to write. Reported rather than silently skipped: the conversation stays
+            // dirty and nothing claims it was stored.
+            NSLog("[VOIID] ❌ shard ENCODE FAILED conv=\(convId): \(error)")
+            return false
+        }
+        do {
+            // `.atomic` writes to a temporary and replaces — there is no in-place fallback, so
+            // a failure here leaves the previous shard exactly as it was.
             try data.write(to: shardURL(convId),
                            options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            return true
         } catch {
             NSLog("[VOIID] ❌ shard WRITE FAILED conv=\(convId): \(error)")
+            return false
+        }
+    }
+
+    /// Move an unreadable shard aside, preserving it, and free the path for a fresh one.
+    ///
+    /// WHY: an undecodable shard used to be skipped on load, so the conversation came back
+    /// EMPTY — and the next persist wrote that emptiness over the file. One bad shard silently
+    /// replaced a whole conversation's history, with nothing left to recover from.
+    @discardableResult
+    private func quarantineShard(_ url: URL) -> URL? {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.path) else { return nil }
+        let dir = messagesDir.deletingLastPathComponent().appendingPathComponent("messages-quarantine")
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        let name = url.deletingPathExtension().lastPathComponent
+        let target = dir.appendingPathComponent("\(name).corrupt-\(Int(Date().timeIntervalSince1970 * 1000)).json")
+        do {
+            try fm.moveItem(at: url, to: target)
+            NSLog("[VOIID] 📂 quarantined unreadable shard \(name) → \(target.lastPathComponent)")
+            return target
+        } catch {
+            NSLog("[VOIID] ⚠️ could not quarantine shard \(name): \(error)")
+            return nil
         }
     }
 

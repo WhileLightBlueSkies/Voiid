@@ -436,12 +436,16 @@ class ChatEngine private constructor(context: Context) {
                 }
             }
         }
-        persist()
-        // ACKNOWLEDGE ONLY AFTER persist() (M02). The server no longer marks a message
-        // delivered when it hands it over — it hands it over on every sync until this device
-        // says it is on disk. So this call must come after the write, never before: an ack
-        // sent first and then lost to a crash is a message nobody will ever be given again.
-        acknowledgeStored(stored)
+        // ACKNOWLEDGE ONLY WHAT WAS ACTUALLY WRITTEN (M02 + I03). persist() reports whether
+        // every claimed shard reached the disk; when it did not, this device has NOT stored
+        // these messages and must not tell the server it has — the server would stop offering
+        // them and they would be gone at exit. They stay dirty, stay pending server-side, and
+        // arrive again on the next sync.
+        if (persist()) {
+            acknowledgeStored(stored)
+        } else if (stored.isNotEmpty()) {
+            android.util.Log.w("VOIID", "📂 withholding ${stored.size} acknowledgements — the store did not commit")
+        }
         // Mark just-received messages DELIVERED (double-grey tick on the sender) —
         // even if the chat isn't open. Read is marked separately when it's opened.
         if (newlyReceived.isNotEmpty()) markReceipts(newlyReceived, "delivered")
@@ -1322,8 +1326,8 @@ class ChatEngine private constructor(context: Context) {
     private val shardSerializer = ListSerializer(DecryptedMessage.serializer())
     private val messagesDir = java.io.File(appContext.filesDir, "messages").apply { mkdirs() }
     private fun shardFile(convId: String) = java.io.File(messagesDir, "$convId.json")
-    private val dirtyConversations = java.util.Collections.synchronizedSet(mutableSetOf<String>())
-    private fun markDirty(convId: String) { dirtyConversations.add(convId) }
+    private val dirtyConversations = DirtyConversations()
+    private fun markDirty(convId: String) { dirtyConversations.mark(convId) }
 
     private fun loadStore() {
         val shards = messagesDir.listFiles { f -> f.extension == "json" }?.toList() ?: emptyList()
@@ -1355,32 +1359,67 @@ class ChatEngine private constructor(context: Context) {
             val conv = f.nameWithoutExtension
             runCatching { ApiClient.json.decodeFromString(shardSerializer, f.readText()) }
                 .onSuccess { store[conv] = it.toMutableList() }
-                .onFailure { android.util.Log.e("VOIID", "📂 shard parse FAILED conv=$conv", it) }
+                .onFailure {
+                    // QUARANTINE, do not skip. Skipping left the conversation EMPTY in memory,
+                    // and the next persist wrote that emptiness over the file — one unreadable
+                    // shard silently replaced a whole conversation's history with nothing.
+                    // Moving it aside frees the path and keeps the bytes.
+                    val moved = ShardStore.quarantine(f, System.currentTimeMillis())
+                    android.util.Log.e(
+                        "VOIID",
+                        "📂 shard parse FAILED conv=$conv — quarantined to ${moved?.name ?: "(nothing to move)"}", it
+                    )
+                }
         }
         storeLoaded = true
         android.util.Log.i("VOIID", "📂 loadStore (sharded): ${store.values.sumOf { it.size }} msgs across ${store.size} convs")
     }
 
-    private fun persist() {
+    /**
+     * Write the conversations changed this turn, and report whether they all landed.
+     *
+     * RETURNS A RESULT because the caller cannot otherwise tell an in-memory update from a
+     * durable one — and since M02 it must, or it acknowledges to the server messages that were
+     * never written to this disk. The dirty markers of anything that failed are KEPT, so the
+     * next pass retries; the old code cleared them before writing and swallowed every failure,
+     * so a disk-full or permission error lost the conversation silently at exit.
+     */
+    private fun persist(): Boolean {
         if (!storeLoaded) {   // never let an unloaded store overwrite good on-disk history
             android.util.Log.w("VOIID", "📂 persist skipped — store not loaded")
-            return
+            return false
         }
-        // Write ONLY the conversations changed this turn.
-        val snapshot = synchronized(dirtyConversations) { dirtyConversations.toList().also { dirtyConversations.clear() } }
-        for (conv in snapshot) persistShard(conv)
+        val claimed = dirtyConversations.claim()
+        if (claimed.isEmpty()) return true
+        val committed = mutableSetOf<String>()
+        for (conv in claimed) if (persistShard(conv)) committed += conv
+        dirtyConversations.settle(committed)
+        if (committed.size != claimed.size) {
+            android.util.Log.e(
+                "VOIID",
+                "📂 persist INCOMPLETE: ${committed.size}/${claimed.size} shards committed; " +
+                    "the rest stay dirty and will be retried"
+            )
+        }
+        return committed.size == claimed.size
     }
 
-    /** Atomically write one conversation's shard (tmp + rename). */
-    private fun persistShard(convId: String) {
+    /** Atomically write one conversation's shard. True only if it reached the disk. */
+    private fun persistShard(convId: String): Boolean {
         val arr = store[convId]?.toList() ?: emptyList()
-        val raw = ApiClient.json.encodeToString(shardSerializer, arr)
-        runCatching {
-            val tmp = java.io.File(messagesDir, "$convId.json.tmp")
-            tmp.writeText(raw)
-            if (!tmp.renameTo(shardFile(convId))) { shardFile(convId).writeText(raw); tmp.delete() }
-        }.onFailure {
-            android.util.Log.e("VOIID", "📂 shard WRITE FAILED conv=$convId", it)
+        val raw = runCatching { ApiClient.json.encodeToString(shardSerializer, arr) }
+            .getOrElse {
+                // Encoding failed, so there is nothing to write. Reported rather than silently
+                // skipped: the conversation stays dirty and nothing claims it was stored.
+                android.util.Log.e("VOIID", "📂 shard ENCODE FAILED conv=$convId", it)
+                return false
+            }
+        return when (val result = ShardStore.write(shardFile(convId), raw)) {
+            is ShardStore.Write.Committed -> true
+            is ShardStore.Write.Failed -> {
+                android.util.Log.e("VOIID", "📂 shard WRITE FAILED conv=$convId", result.error)
+                false
+            }
         }
     }
 

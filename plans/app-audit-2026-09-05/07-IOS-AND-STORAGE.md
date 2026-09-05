@@ -1,6 +1,6 @@
 # 07 — iOS and shared local storage
 
-Baseline: `a2e24e5` · 2026-09-05 · All tasks TODO; fixes specified, not implemented.
+Baseline: `a2e24e5` · 2026-09-06 · I03 implemented-unverified locally; I01/I02 TODO. The issue register is the status authority.
 
 ## I01 — Move chat persistence off the main actor and page history
 
