@@ -1,6 +1,6 @@
 # 01 — Issue register
 
-Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 4 DONE (Q01, S01, S02, S03), 1 IMPLEMENTED_UNVERIFIED (Q02), 45 TODO.
+Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 5 DONE (Q01, S01, S02, S03, C01), 1 IMPLEMENTED_UNVERIFIED (Q02), 44 TODO.
 
 Each ID belongs to exactly one implementation part. Read its dependency and acceptance sections before editing. Priority includes source-confirmed defects, runtime risks, and requested capability gaps; see the evidence column and task text.
 
@@ -8,7 +8,7 @@ Each ID belongs to exactly one implementation part. Read its dependency and acce
 |---|---|---|---|---|---|
 | A01 | P0 | Exclude current private stores from Android backup/transfer | Confirmed rules gap | [06](06-ANDROID-DURABILITY.md) | TODO |
 | A02 | P0 | Stop automatically deleting shared encryption keys | Confirmed failure path | [06](06-ANDROID-DURABILITY.md) | TODO |
-| C01 | P0 | Resume failed payment webhook processing | Confirmed | [11](11-PAYMENTS-MEDIA-WORKERS.md) | TODO |
+| C01 | P0 | Resume failed payment webhook processing | Confirmed | [11](11-PAYMENTS-MEDIA-WORKERS.md) | DONE |
 | I03 | P0 | Retain dirty state when local persistence fails | Confirmed failure path | [07](07-IOS-AND-STORAGE.md) | TODO |
 | M01 | P0 | Make message acceptance atomic and retry-safe | Confirmed | [03](03-MESSAGE-RELIABILITY.md) | TODO |
 | M02 | P0 | Acknowledge only after durable client persistence | Confirmed | [03](03-MESSAGE-RELIABILITY.md) | TODO |
@@ -379,3 +379,74 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
   column, both harmless to unused code). Do NOT roll back by restoring the un-revoke in
   `routes/prekeys.ts` or the unbound `requireAuth`; disable the affected routes instead. If the relay
   must go back to being DB-free, revert it together with the API or revoked devices keep their sockets.
+
+
+## C01 — payment webhook inbox completed (2026-09-06)
+
+- **Status:** DONE for delivery recovery, concurrency, unmatched reconciliation and refund
+  ordering. No recovery sweep worker ships with it — recovery relies on provider retries, which
+  is what the issue's acceptance asks for; a sweep belongs with C02/C03 and the index it needs
+  is in place.
+- **Source/fix commit:** commit containing this record, parent `6c2ab92`.
+- **Files:** `database/migrations/058_payment_webhook_inbox.sql` (new);
+  `backend/api/src/payments/inbox.ts` (new); `backend/api/src/routes/payments.ts`,
+  `backend/api/src/routes/events.ts`; `backend/api/test/paymentInboxPostgres.test.ts` (new);
+  `.github/workflows/ci.yml`.
+- **Failure reproduced:** yes, before any edit. Four of eight new scenarios failed against the
+  committed source: a delivery that died mid-settlement was answered `duplicate: true` on retry
+  and the order stayed pending forever; concurrent deliveries left no usable ledger state; an
+  early webhook was marked processed and lost; a refund arriving before its payment did nothing
+  and the later payment then minted live tickets for returned money. The other four scenarios
+  passed and were kept as regression guards.
+- **Implementation:**
+  1. `payment_webhook_events` becomes an inbox: `status` (received/processing/processed/failed/
+     unmatched), `attempts`, `lease_until`, `last_error`, plus the normalised verdict
+     (`provider_ref`, `outcome`, `amount_minor`, `currency`, `outcome_reason`) so a held
+     delivery can be replayed later without re-running provider-specific parsing.
+  2. The effect and the record of the effect now commit in ONE transaction (`applyDelivery`),
+     with the order row locked `for update`. That is the whole fix: a failure leaves the
+     delivery `failed` and therefore re-claimable, instead of leaving a committed claim that
+     made every retry a no-op.
+  3. Claims carry a lease. A concurrent delivery gets 409 (come back) rather than 200, because
+     a 2xx would tell the provider never to send it again while the holder might still fail.
+  4. An event naming an unknown order reference is held as `unmatched`, not processed.
+     `reconcileUnmatched` replays held deliveries in arrival order the moment the matching order
+     is committed — closing the window `routes/events.ts` opens by creating the checkout at the
+     provider before inserting the order row. It never throws, so a held delivery cannot fail an
+     order that was just created.
+  5. **Refund ordering policy, explicit:** a refund is terminal whenever it lands. 032's state
+     machine allowed only `paid -> refunded`; `pending -> refunded` is now legal too. This does
+     not weaken what that trigger protects — `refunded` stays terminal and a late `paid` still
+     cannot move an order out of it — it adds one forward edge. `failed` and `cancelled` are
+     untouched.
+- **Regression evidence:** restoring the old ordering (mark processed, then settle) fails
+  precisely the mid-settlement recovery scenario; restoring `refund only from paid` fails
+  precisely the refund-ordering scenario. Both return to green when reverted.
+- **Validation:** PostgreSQL 16.15 on a disposable loopback cluster, replaying all 65 migrations
+  into unique schemas. Full `npm test` with all three database suites enabled: exit 0, API
+  247/247, games 6/6 suites, websocket 8/8. Typecheck clean across api, websocket, games,
+  workers, common-utils. Migration runner applied all 65 to an empty database and reported the
+  second run a no-op. Backfill verified on a deployed-shaped schema carrying a finished delivery
+  and an abandoned one: the finished row stays `processed`, the abandoned one becomes `failed`
+  and therefore retryable — which is the previously-lost payment becoming recoverable. No
+  Supabase database, live account, or real provider account was touched.
+- **Remaining limitations:**
+  - **Not exercised against a real provider sandbox.** The end-to-end scenarios run against a
+    fake provider; `razorpayWebhook.test.ts` covers real signature verification separately. The
+    issue asks for provider test mode, and that has NOT been done — it needs provider test
+    credentials this checkout does not have.
+  - No sweep. A delivery left `failed`, or `processing` with an expired lease, is recovered by
+    the provider's own retries. If a provider exhausts its retry schedule first, the row waits
+    for a human. `idx_payment_webhook_retryable` exists for the worker that should claim them.
+  - An `unmatched` delivery whose order is never created stays `unmatched` indefinitely. That is
+    deliberate — it is the operator-visible record of money that arrived for nothing we know
+    about — but nothing alerts on it yet.
+  - The 409 on a leased delivery assumes the provider retries non-2xx. Every major processor
+    does, but a provider that treats 409 as terminal would need that response changed to 5xx.
+  - Whether any of this path is live in production depends on `VOIID_PAYMENT_PROVIDER`; with it
+    unset, paid events are refused at creation and no webhook is accepted.
+- **Rollback:** revert the code; leave migration 058 in place (additive columns, indexes, and a
+  transition function that only widens what is legal). Do NOT roll back by restoring the
+  claim-then-settle ordering. If 058's transition function must be reverted, revert the refund
+  handler with it, or a refund arriving before its payment will raise instead of being lost —
+  louder, but still not applied.

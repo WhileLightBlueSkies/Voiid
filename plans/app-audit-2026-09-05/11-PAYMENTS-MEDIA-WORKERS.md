@@ -1,6 +1,6 @@
 # 11 — Payments, media and workers
 
-Baseline: `a2e24e5` · 2026-09-05 · All tasks TODO; fixes specified, not implemented.
+Baseline: `a2e24e5` · 2026-09-06 · C01 completed locally; C02-C04 TODO. The issue register is the status authority.
 
 ## C01 — Resume failed payment webhook processing
 

@@ -203,11 +203,14 @@ jobs:
       # concurrently in one database race and one loses with a duplicate-key error on
       # pg_extension. Sequential CI steps would not hit it, but `npm test` locally runs the
       # files in parallel, so the isolation belongs in the setup rather than in the ordering.
-      - name: Create the session-suite database
+      - name: Create the per-suite databases
         run: >-
           node -e "const {Client}=require('pg');
           const c=new Client({connectionString:'postgres://postgres:postgres@localhost:5432/postgres'});
-          c.connect().then(()=>c.query('create database voiid_test_sessions')).then(()=>c.end())"
+          c.connect()
+           .then(()=>c.query('create database voiid_test_sessions'))
+           .then(()=>c.query('create database voiid_test_payments'))
+           .then(()=>c.end())"
 
       # S03. Both suites run HERE rather than in the node job because they need a real
       # database: device revocation is only meaningful against the durable session record,
@@ -221,6 +224,14 @@ jobs:
         env:
           SESSION_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/voiid_test_sessions
         run: npx tsx --test backend/websocket/test/session.test.ts
+
+      # C01. Money that has already moved: a lost delivery means a buyer paid and holds no
+      # ticket, which no retry would ever fix. Needs a real database — the recovery being
+      # tested is a transaction boundary, and a fake would only assert its own model of one.
+      - name: Payment webhook inbox against PostgreSQL
+        env:
+          PAYMENTS_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/voiid_test_payments
+        run: npx tsx --test backend/api/test/paymentInboxPostgres.test.ts
 
   # ── Android ────────────────────────────────────────────────────────────────────────────
   #

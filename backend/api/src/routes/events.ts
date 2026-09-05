@@ -34,6 +34,7 @@ import { rateLimit } from '../security';
 import { asyncHandler } from '../util';
 import { communityAccess } from '../communityRoles';
 import { activeProvider, FREE_PROVIDER } from '../payments/provider';
+import { reconcileUnmatched } from '../payments/inbox';
 import {
   newTicketNonce,
   signTicketCode,
@@ -533,8 +534,26 @@ router.post(
            returning id, status`,
           [orderId, event.id, userId, quantity, price, amount, event.currency, provider.name, handle.providerRef]
         );
+
+        // ── CLOSE THE WINDOW THE CHECKOUT ABOVE OPENS.
+        //
+        // The checkout exists at the provider BEFORE this row does — it has to, because
+        // provider_ref is NOT NULL and the provider mints it. A buyer who pays instantly
+        // lands a webhook in that gap, naming a reference no order has yet. That delivery is
+        // held as 'unmatched' (058) rather than discarded, and this is where it gets applied.
+        //
+        // Never throws, so a held delivery that cannot be applied does not fail an order that
+        // was just created successfully.
+        const applied = await reconcileUnmatched(provider.name, handle.providerRef, orderId);
+        // Re-read rather than reporting the 'pending' the insert returned: if a payment was
+        // waiting, this order is already paid and telling the client otherwise would send it
+        // to a checkout for money that has moved.
+        const settled = applied
+          ? (await query<{ status: string }>(`select status from event_orders where id = $1`, [orderId]))[0]
+          : undefined;
+
         return res.status(201).json({
-          order: { id: rows[0].id, status: rows[0].status, quantity, provider: provider.name },
+          order: { id: rows[0].id, status: settled?.status ?? rows[0].status, quantity, provider: provider.name },
           checkout: handle.clientPayload,
           existed: false,
         });

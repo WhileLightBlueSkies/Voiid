@@ -34,10 +34,10 @@
 // which is the correct answer: there is no integration, so there is no webhook.
 import { Router } from 'express';
 import express from 'express';
-import { pool, query } from '../db';
+import { query } from '../db';
 import { asyncHandler } from '../util';
 import { providerByName } from '../payments/provider';
-import { newTicketNonce } from '../payments/tickets';
+import { applyDelivery, claimDelivery, holdUnmatched, markFailed } from '../payments/inbox';
 
 const router = Router();
 
@@ -121,163 +121,62 @@ router.post(
         )[0]
       : undefined;
 
-    // ── CLAIM THE DELIVERY. This insert is the lock.
+    // ── CLAIM THE DELIVERY. The claim is exclusive and, crucially, RELEASABLE.
     //
-    // Insert-then-check, never check-then-insert: two concurrent retries both pass a SELECT and
-    // both proceed, which is precisely the double-mint this whole design exists to prevent. The
-    // unique index on (provider, provider_event_id) is NULL-free, so the conflict target
-    // actually fires — a NULL in a unique key makes ON CONFLICT never match and turns this into
-    // a plain insert, which is the 027_receipt_null_device.sql bug with money attached.
-    const claimed = (
-      await query<{ id: string }>(
-        `insert into payment_webhook_events
-           (provider, provider_event_id, event_type, order_id, payload)
-         values ($1, $2, $3, $4, $5::jsonb)
-         on conflict (provider, provider_event_id) do nothing
-         returning id`,
-        [
-          provider.name,
-          verdict.eventId,
-          verdict.eventType,
-          order?.id ?? null,
-          verdict.payload === undefined ? null : JSON.stringify(verdict.payload),
-        ]
-      )
-    )[0];
+    // See payments/inbox.ts. The claim used to be a bare insert whose only outcome was
+    // "conflict = already handled", which meant a delivery that failed after being claimed
+    // could never be retried — the buyer's money had moved and no ticket existed. A claim now
+    // carries a lease and a status, so a failure leaves the delivery retryable.
+    const claim = await claimDelivery({
+      provider: provider.name,
+      providerEventId: verdict.eventId,
+      eventType: verdict.eventType,
+      providerRef: verdict.providerRef,
+      orderId: order?.id,
+      payload: verdict.payload,
+      outcome: verdict.outcome,
+      reason: verdict.reason,
+      amountMinor: verdict.amountMinor,
+      currency: verdict.currency,
+    });
 
-    if (!claimed) {
-      // Seen before. 200 so the provider stops retrying: the work was done the first time.
+    if (claim.state === 'duplicate') {
+      // Genuinely finished the first time. 200 so the provider stops retrying.
       return res.json({ ok: true, duplicate: true });
     }
+    if (claim.state === 'leased') {
+      // Another handler is on it right now. NOT 200: if that handler fails, this delivery
+      // still needs to come back, and a 2xx here would tell the provider never to send it
+      // again. 409 rather than 5xx because nothing is broken.
+      return res.status(409).json({ error: 'delivery in progress' });
+    }
 
-    // An event about an order we have never heard of. The delivery row is kept — "we received
-    // something we could not place" is exactly the fact an operator needs and exactly the fact
-    // that is otherwise lost — but nothing is acted on.
+    // An event about an order we have never heard of — most often one that arrived before its
+    // order row was committed (routes/events.ts opens the checkout before it inserts). HELD,
+    // not marked processed: reconcileUnmatched replays it the moment that order appears.
     if (!order) {
-      await markProcessed(claimed.id);
+      await holdUnmatched(claim.id);
       return res.json({ ok: true, unmatched: true });
     }
 
     try {
-      if (verdict.outcome === 'paid') {
-        await settleOrder(order, verdict.amountMinor, verdict.currency);
-      } else if (verdict.outcome === 'refunded') {
-        await refundOrder(order.id);
-      } else if (verdict.outcome === 'failed') {
-        await query(
-          `update event_orders set status = 'failed', failure_reason = $2
-            where id = $1 and status = 'pending'`,
-          [order.id, verdict.reason ?? null]
-        );
-      }
-      await markProcessed(claimed.id);
+      // The settlement and the ledger transition commit together. That is the whole fix.
+      await applyDelivery(claim.id, order.id, {
+        outcome: verdict.outcome,
+        amountMinor: verdict.amountMinor,
+        currency: verdict.currency,
+        reason: verdict.reason,
+      });
       return res.json({ ok: true });
     } catch (e) {
-      // The delivery row stays with a NULL processed_at, which is the alerting signal: a
-      // delivery that was claimed and never completed. Re-raising gives the provider a 5xx and
-      // therefore a retry — but the claim will now conflict, so the retry will be treated as a
-      // duplicate. That is the deliberate trade: at-most-once ticket minting, with a visible
-      // row when something needs a human, rather than a chance of minting twice.
-      console.error('[payments] failed to apply webhook', claimed.id, e);
+      // Retryable, and recorded as such. Re-raising gives the provider a 5xx and therefore a
+      // retry, and that retry will now RE-CLAIM this row rather than being dismissed as a
+      // duplicate. A sweep can pick it up too if the provider gives up first.
+      console.error('[payments] failed to apply webhook', claim.id, e);
+      await markFailed(claim.id, e);
       throw e;
     }
   })
 );
-
-async function markProcessed(deliveryId: string): Promise<void> {
-  await query(`update payment_webhook_events set processed_at = now() where id = $1`, [deliveryId]);
-}
-
-/**
- * pending -> paid, and mint the tickets, in ONE transaction.
- *
- * The `where status = 'pending'` predicate on the UPDATE is what makes minting safe: only the
- * statement that actually performs the transition proceeds to insert tickets. A second path
- * arriving later updates zero rows and mints nothing, even if it somehow got past the delivery
- * ledger.
- */
-async function settleOrder(
-  order: { id: string; event_id: string; buyer_id: string; quantity: number; amount_minor: string; currency: string },
-  paidMinor: number | undefined,
-  paidCurrency: string | undefined
-): Promise<void> {
-  const owed = Number(order.amount_minor);
-
-  // AN UNDERPAYMENT IS NOT A PAYMENT. If the provider tells us what settled and it is less than
-  // what was owed — or in a different currency — no ticket is minted. Trusting the event's
-  // "paid" label over its amount is how a manipulated or mis-configured integration hands out
-  // free tickets. Recorded as failed with a reason so it is visible rather than silent.
-  if (paidMinor !== undefined && paidMinor < owed) {
-    await query(
-      `update event_orders set status = 'failed', failure_reason = $2
-        where id = $1 and status = 'pending'`,
-      [order.id, `underpaid: ${paidMinor} of ${owed}`]
-    );
-    return;
-  }
-  if (paidCurrency !== undefined && paidCurrency.toUpperCase() !== order.currency) {
-    await query(
-      `update event_orders set status = 'failed', failure_reason = $2
-        where id = $1 and status = 'pending'`,
-      [order.id, `currency mismatch: ${paidCurrency} for a ${order.currency} order`]
-    );
-    return;
-  }
-
-  const client = await pool.connect();
-  try {
-    await client.query('begin');
-
-    const moved = await client.query(
-      `update event_orders set status = 'paid', settled_at = now()
-        where id = $1 and status = 'pending'`,
-      [order.id]
-    );
-    if (moved.rowCount === 0) {
-      // Already settled, or cancelled/failed before the money arrived. Either way this delivery
-      // has nothing to do. Not an error — an out-of-order delivery is Tuesday.
-      await client.query('rollback');
-      return;
-    }
-
-    for (let i = 0; i < order.quantity; i++) {
-      await client.query(
-        `insert into event_tickets (order_id, event_id, holder_id, qr_nonce)
-         values ($1, $2, $3, $4)`,
-        [order.id, order.event_id, order.buyer_id, newTicketNonce()]
-      );
-    }
-
-    await client.query('commit');
-  } catch (e) {
-    await client.query('rollback');
-    throw e;
-  } finally {
-    client.release();
-  }
-}
-
-/** paid -> refunded, and the tickets die with it. Voided, never deleted: the row is the record. */
-async function refundOrder(orderId: string): Promise<void> {
-  const client = await pool.connect();
-  try {
-    await client.query('begin');
-    const moved = await client.query(
-      `update event_orders set status = 'refunded' where id = $1 and status = 'paid'`,
-      [orderId]
-    );
-    if (moved.rowCount === 0) {
-      await client.query('rollback');
-      return;
-    }
-    await client.query(`update event_tickets set state = 'void' where order_id = $1`, [orderId]);
-    await client.query('commit');
-  } catch (e) {
-    await client.query('rollback');
-    throw e;
-  } finally {
-    client.release();
-  }
-}
 
 export default router;
