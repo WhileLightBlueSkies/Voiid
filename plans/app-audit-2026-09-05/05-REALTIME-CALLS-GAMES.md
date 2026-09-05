@@ -1,6 +1,6 @@
 # 05 — Realtime, calls, and games
 
-Baseline: `a2e24e5` · 2026-09-05 · All tasks TODO; fixes specified, not implemented.
+Baseline: `a2e24e5` · 2026-09-06 · R02 completed locally; R01/R03-R06 TODO. The issue register is the status authority.
 
 ## R01 — Use the conference grant format in the actual relay
 

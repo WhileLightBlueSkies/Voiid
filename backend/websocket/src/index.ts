@@ -5,6 +5,8 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import Redis from 'ioredis';
 import { authorizeConnection, useSessionCache, WS_CLOSE_REVOKED } from './session';
+import { conversationRecipients, narrow, shareRecipients, useRecipientCache } from './recipients';
+import { BoundedRateMap, SocketBudget } from './budget';
 
 const port = Number(process.env.WS_PORT) || 4001;
 
@@ -203,6 +205,33 @@ const GAME_RATE_WINDOW_MS = 60_000;
 // A move is tiny (a cell index, an angle/power pair). Generous, but bounded.
 const GAME_MAX_PAYLOAD_CHARS = 2048;
 
+// --- The socket-wide budget (R02) -----------------------------------------------------
+//
+// Every limiter above is per-TYPE or per-KEY, and nothing counted the socket as a whole.
+// `typing`, `session_reset`, `loc_stop` and `heartbeat` had no limit at all, so a client
+// could spend indefinitely across them while staying under every ceiling that existed.
+//
+// Sized to clear the sum of the legitimate maxima with headroom: games alone are allowed
+// 1800/min, calls 600/min, plus location and typing. 3000 frames/min cannot throttle an
+// honest client doing all of those at once. The byte ceiling is the one that matters against
+// a client that has come loose: `ws` accepts frames up to WS_MAX_PAYLOAD (256 KB), so without
+// it a socket could push ~150 MB/min through this process at the frame limit.
+const SOCKET_MAX_FRAMES_PER_WINDOW = Number(process.env.VOIID_WS_MAX_FRAMES_PER_MIN) || 3000;
+const SOCKET_MAX_BYTES_PER_WINDOW = Number(process.env.VOIID_WS_MAX_BYTES_PER_MIN) || 16 * 1024 * 1024;
+const SOCKET_RATE_WINDOW_MS = 60_000;
+
+// Ceilings on the per-key limiter maps. Both were plain Maps keyed by a CLIENT-SUPPLIED id
+// (share, match) and neither was capped or pruned, so a client could grow them for the life
+// of the socket one invented id at a time. Sized well above any honest simultaneous count.
+const LOC_RATE_MAX_KEYS = Number(process.env.VOIID_WS_MAX_SHARE_KEYS) || 64;
+const GAME_RATE_MAX_KEYS = Number(process.env.VOIID_WS_MAX_MATCH_KEYS) || 64;
+
+// Sockets one account may hold on THIS instance. A phone, a tablet, a web companion and
+// some reconnect churn is a handful; hundreds is a client in a loop or someone using a
+// stolen token to pin resources. The OLDEST is closed rather than the newest refused, so a
+// reconnecting client always wins and a stale socket is what gets cleaned up.
+const MAX_SOCKETS_PER_USER = Number(process.env.VOIID_WS_MAX_SOCKETS_PER_USER) || 8;
+
 /**
  * Deliver any buffered latest-fix frames to a user whose socket just attached.
  *
@@ -353,9 +382,10 @@ const WS_MAX_PAYLOAD_BYTES = Number(process.env.VOIID_WS_MAX_PAYLOAD) || 256 * 1
 
 const wss = new WebSocketServer({ port, maxPayload: WS_MAX_PAYLOAD_BYTES });
 
-// The relay shares its existing Redis connection with the session check rather than
-// opening another one; Postgres is consulted only on a cache miss.
+// The relay shares its existing Redis connection with the session and recipient lookups
+// rather than opening more; Postgres is consulted only on a cache miss.
 useSessionCache(presence);
+useRecipientCache(presence);
 
 wss.on('connection', async (ws, req) => {
   // PAUSED FOR THE DURATION OF THE AUTH ROUND-TRIP.
@@ -388,7 +418,18 @@ wss.on('connection', async (ws, req) => {
 
   socketDevice.set(ws, auth.deviceId);
   if (!socketMap.has(userId)) socketMap.set(userId, new Set());
-  socketMap.get(userId)!.add(ws);
+  const userSockets = socketMap.get(userId)!;
+
+  // Close the oldest rather than refuse the newest: a client reconnecting after a network
+  // change must always get in, and the socket most likely to be dead is the one that has
+  // been open longest. Set iteration is insertion order, so the first entry is the oldest.
+  while (userSockets.size >= MAX_SOCKETS_PER_USER) {
+    const oldest = userSockets.values().next().value as WebSocket | undefined;
+    if (!oldest) break;
+    userSockets.delete(oldest);
+    if (oldest.readyState === WebSocket.OPEN) oldest.close(4429, 'too many connections');
+  }
+  userSockets.add(ws);
 
   // presence: user online with heartbeat TTL. Also stamp last_seen now, and on
   // every heartbeat, so "last seen" stays fresh even on an UNCLEAN disconnect
@@ -408,7 +449,9 @@ wss.on('connection', async (ws, req) => {
 
   // loc_update rate state for THIS socket, keyed by share_id. Socket-local so it dies
   // with the connection — no cross-socket map to leak.
-  const locRate = new Map<string, { count: number; windowStart: number }>();
+  const locRate = new BoundedRateMap({
+    max: LOC_RATE_MAX_KEYS, limit: LOC_MAX_FRAMES_PER_WINDOW, windowMs: LOC_RATE_WINDOW_MS,
+  });
 
   // game_input rate state for THIS socket, keyed by match_id. Socket-local for the same
   // reason as locRate — it dies with the connection, so there is no cross-socket map to
@@ -419,12 +462,28 @@ wss.on('connection', async (ws, req) => {
   // handshake and auth for each attempt — which is its own throttle.
   const callRate = new Map<string, { count: number; windowStart: number; warned: boolean }>();
 
-  const gameRate = new Map<
-    string,
-    { count: number; windowStart: number; warned: boolean }
-  >();
+  const gameRate = new BoundedRateMap({
+    max: GAME_RATE_MAX_KEYS, limit: GAME_MAX_FRAMES_PER_WINDOW, windowMs: GAME_RATE_WINDOW_MS,
+  });
 
-  ws.on('message', (raw) => {
+  // ONE BUDGET FOR THE WHOLE SOCKET, checked before parsing or any Redis call. See the
+  // constants for why the per-type limits above were not enough on their own.
+  const socketBudget = new SocketBudget({
+    frames: SOCKET_MAX_FRAMES_PER_WINDOW,
+    bytes: SOCKET_MAX_BYTES_PER_WINDOW,
+    windowMs: SOCKET_RATE_WINDOW_MS,
+  });
+
+  ws.on('message', async (raw) => {
+    // BEFORE ANYTHING ELSE, including the JSON parse: a frame that is over budget must not
+    // cost this process a parse, a database lookup or a Redis round-trip. Silent drop, for
+    // the same reason the location limiter drops silently — a client flooding is a bug or an
+    // attack, and answering it is just more work.
+    const size = Buffer.isBuffer(raw) ? raw.length
+      : Array.isArray(raw) ? raw.reduce((n, part) => n + part.length, 0)
+      : Buffer.byteLength(String(raw));
+    if (!socketBudget.admit(size)) return;
+
     // Realtime control frames: heartbeat (presence) and typing (Section 10 Redis keys).
     try {
       const msg = JSON.parse(raw.toString());
@@ -435,9 +494,21 @@ wss.on('connection', async (ws, req) => {
         return;
       }
 
-      // typing: { type:'typing', conversation_id, recipient_ids:[...], state:'start'|'stop' }
-      // Client supplies recipient_ids (it knows members from its local DB); WS has no DB.
-      if (msg.type === 'typing' && msg.conversation_id && Array.isArray(msg.recipient_ids)) {
+      // typing: { type:'typing', conversation_id, state:'start'|'stop' }
+      //
+      // THE RECIPIENTS ARE DERIVED, NOT SUPPLIED. This used to take `recipient_ids` from the
+      // frame and publish to whatever it named, because the relay had no database — so any
+      // authenticated client could push a typing indicator at any user, in any conversation
+      // id it cared to guess. S03 gave this process a database; recipients.ts uses it.
+      //
+      // A `recipient_ids` array is still honoured if present, but only to NARROW the derived
+      // audience — a client may address fewer people than it is entitled to, never more.
+      // Blocking is applied inside the same query rather than through the `block:a:b` mirror,
+      // so it is answered by the same authority that answers membership.
+      if (msg.type === 'typing' && msg.conversation_id) {
+        const audience = await conversationRecipients(userId, msg.conversation_id);
+        if (!audience.length) return;
+
         const typingKey = `conversation:${msg.conversation_id}:typing:${userId}`;
         if (msg.state === 'stop') {
           presence.del(typingKey);
@@ -450,19 +521,8 @@ wss.on('connection', async (ws, req) => {
           user_id: userId,
           state: msg.state === 'stop' ? 'stop' : 'start',
         });
-        // Blocking (043). This process holds no database connection by design, so the API
-        // mirrors each block pair into the Redis both share (`block:a:b`, written in both
-        // directions) exactly as account deletion does with `auth:revoked:` above.
-        //
-        // Fail OPEN on a Redis error, unlike the revocation check. The harm of a leaked
-        // typing indicator is small and bounded; the harm of silently dropping every
-        // typing frame during a Redis blip is a feature that looks broken for everyone.
-        // Postgres remains the authority for every path that actually carries content.
-        for (const rid of msg.recipient_ids) {
-          if (rid === userId) continue;
-          presence.get(`block:${userId}:${rid}`).then((blocked) => {
-            if (!blocked) pub.publish(`channel:user:${rid}`, out);
-          }).catch(() => { pub.publish(`channel:user:${rid}`, out); });
+        for (const rid of narrow(audience, msg.recipient_ids)) {
+          pub.publish(`channel:user:${rid}`, out);
         }
         return;
       }
@@ -484,10 +544,25 @@ wss.on('connection', async (ws, req) => {
       // IS NOT IN ITS LOCAL INBOUND-SHARE TABLE. That check is the real authorization.
       if (
         (msg.type === 'loc_update' || msg.type === 'loc_stop') &&
-        typeof msg.share_id === 'string' &&
-        Array.isArray(msg.recipient_ids)
+        typeof msg.share_id === 'string'
       ) {
-        const recipients = msg.recipient_ids.slice(0, LOC_MAX_RECIPIENTS);
+        // DERIVED FROM THE SHARE, not from the frame. A share id is not a capability: this
+        // resolves only for the share's OWNER, and only to targets that are still live —
+        // not revoked, not expired, not ended, not blocked.
+        //
+        // That is what makes an invented share id inert rather than merely rate-limited. The
+        // old code relayed to whatever `recipient_ids` named and then wrote the frame into
+        // each recipient's buffer with `hset`, so a stranger could put entries into another
+        // user's location buffer and remove them again with `loc_stop`. Both now resolve to
+        // an empty audience and do nothing at all.
+        const audience = await shareRecipients(userId, msg.share_id);
+        if (!audience.length) {
+          // Nothing to do, and nothing to say: a client that has just had a share revoked
+          // looks exactly like one probing for share ids.
+          if (msg.type === 'loc_stop') locRate.delete(msg.share_id);
+          return;
+        }
+        const recipients = narrow(audience, msg.recipient_ids).slice(0, LOC_MAX_RECIPIENTS);
 
         if (msg.type === 'loc_update') {
           // Opaque-payload gate: base64 only, bounded length. A raw-coordinate JSON body
@@ -500,16 +575,9 @@ wss.on('connection', async (ws, req) => {
           ) {
             return;
           }
-          // Token bucket per share, per socket. Silent drop by design.
-          const now = Date.now();
-          const bucket = locRate.get(msg.share_id);
-          if (!bucket || now - bucket.windowStart >= LOC_RATE_WINDOW_MS) {
-            locRate.set(msg.share_id, { count: 1, windowStart: now });
-          } else if (bucket.count >= LOC_MAX_FRAMES_PER_WINDOW) {
-            return;
-          } else {
-            bucket.count += 1;
-          }
+          // Token bucket per share, per socket. Silent drop by design. Bounded now (see
+          // budget.ts): the key is client-supplied, so the map it lives in must have a ceiling.
+          if (!locRate.admit(msg.share_id)) return;
         }
 
         // Rebuild from a fixed field list — client extras are never echoed.
@@ -531,6 +599,8 @@ wss.on('connection', async (ws, req) => {
         );
 
         for (const rid of recipients) {
+          // The derived audience already excludes the sender and anything non-string; kept
+          // as a cheap assertion rather than a load-bearing filter.
           if (typeof rid !== 'string' || rid === userId) continue;
           pub.publish(`channel:user:${rid}`, out);
           const key = lastFixKey(rid);
@@ -584,13 +654,8 @@ wss.on('connection', async (ws, req) => {
         // service simply never heard from the player. One line per match on the first drop
         // is what turns that into a nameable failure, and it cannot become a log flood
         // because it fires once per bucket.
-        const now = Date.now();
-        const bucket = gameRate.get(msg.match_id);
-        if (!bucket || now - bucket.windowStart >= GAME_RATE_WINDOW_MS) {
-          gameRate.set(msg.match_id, { count: 1, windowStart: now, warned: false });
-        } else if (bucket.count >= GAME_MAX_FRAMES_PER_WINDOW) {
-          if (!bucket.warned) {
-            bucket.warned = true;
+        if (!gameRate.admit(msg.match_id)) {
+          if (gameRate.warnOnce(msg.match_id)) {
             console.warn(
               `[ws] game_input rate limit hit: match=${msg.match_id} user=${userId} ` +
                 `limit=${GAME_MAX_FRAMES_PER_WINDOW}/${GAME_RATE_WINDOW_MS}ms — ` +
@@ -598,8 +663,6 @@ wss.on('connection', async (ws, req) => {
             );
           }
           return;
-        } else {
-          bucket.count += 1;
         }
 
         // Rebuilt from a fixed field list — client extras are never forwarded.
@@ -837,12 +900,19 @@ wss.on('connection', async (ws, req) => {
       // E2E session, e.g. after a reinstall). Relay to the original sender so they
       // drop the stale session and re-establish a fresh one on the next message.
       // { type:'session_reset', conversation_id, recipient_ids:[senderUserId] }
-      if (msg.type === 'session_reset' && msg.conversation_id && Array.isArray(msg.recipient_ids)) {
+      if (msg.type === 'session_reset' && msg.conversation_id) {
+        // Same rule as typing: derived audience, and the client's list may only narrow it.
+        // Narrowing matters more here than it does for typing — the frame is meant for ONE
+        // person, the original sender, and telling a whole group to tear down their sessions
+        // would cause a burst of unnecessary re-establishment. Unauthorised ids simply fall
+        // out of the intersection.
+        const audience = await conversationRecipients(userId, msg.conversation_id);
+        if (!audience.length) return;
         const out = JSON.stringify({
           type: 'session_reset', conversation_id: msg.conversation_id, from_user: userId,
         });
-        for (const rid of msg.recipient_ids) {
-          if (rid !== userId) pub.publish(`channel:user:${rid}`, out);
+        for (const rid of narrow(audience, msg.recipient_ids)) {
+          pub.publish(`channel:user:${rid}`, out);
         }
         return;
       }

@@ -210,6 +210,7 @@ jobs:
           c.connect()
            .then(()=>c.query('create database voiid_test_sessions'))
            .then(()=>c.query('create database voiid_test_payments'))
+           .then(()=>c.query('create database voiid_test_relay'))
            .then(()=>c.end())"
 
       # S03. Both suites run HERE rather than in the node job because they need a real
@@ -228,6 +229,13 @@ jobs:
       # C01. Money that has already moved: a lost delivery means a buyer paid and holds no
       # ticket, which no retry would ever fix. Needs a real database — the recovery being
       # tested is a transaction boundary, and a fake would only assert its own model of one.
+      # R02. The relay derives its recipients from the database now, so the check that an
+      # outsider resolves to nobody has to run against a real one.
+      - name: Relay recipient authorization against PostgreSQL
+        env:
+          RELAY_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/voiid_test_relay
+        run: npx tsx --test backend/websocket/test/recipients.test.ts
+
       - name: Payment webhook inbox against PostgreSQL
         env:
           PAYMENTS_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/voiid_test_payments

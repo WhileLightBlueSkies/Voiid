@@ -1,6 +1,6 @@
 # 01 — Issue register
 
-Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 5 DONE (Q01, S01, S02, S03, C01), 1 IMPLEMENTED_UNVERIFIED (Q02), 44 TODO.
+Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 6 DONE (Q01, S01, S02, S03, C01, R02), 1 IMPLEMENTED_UNVERIFIED (Q02), 43 TODO.
 
 Each ID belongs to exactly one implementation part. Read its dependency and acceptance sections before editing. Priority includes source-confirmed defects, runtime risks, and requested capability gaps; see the evidence column and task text.
 
@@ -12,7 +12,7 @@ Each ID belongs to exactly one implementation part. Read its dependency and acce
 | I03 | P0 | Retain dirty state when local persistence fails | Confirmed failure path | [07](07-IOS-AND-STORAGE.md) | TODO |
 | M01 | P0 | Make message acceptance atomic and retry-safe | Confirmed | [03](03-MESSAGE-RELIABILITY.md) | TODO |
 | M02 | P0 | Acknowledge only after durable client persistence | Confirmed | [03](03-MESSAGE-RELIABILITY.md) | TODO |
-| R02 | P0 | Authorize and bound typing, reset, and location frames | Confirmed | [05](05-REALTIME-CALLS-GAMES.md) | TODO |
+| R02 | P0 | Authorize and bound typing, reset, and location frames | Confirmed | [05](05-REALTIME-CALLS-GAMES.md) | DONE |
 | S01 | P0 | Authorize receipt reads and writes | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | DONE |
 | S02 | P0 | Validate sender and recipient devices on all message paths | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | DONE |
 | S03 | P0 | Make revocation persistent and device-bound | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | DONE |
@@ -450,3 +450,67 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
   claim-then-settle ordering. If 058's transition function must be reverted, revert the refund
   handler with it, or a refund arriving before its payment will raise instead of being lost —
   louder, but still not applied.
+
+
+## R02 — relay frame authorization completed (2026-09-06)
+
+- **Status:** DONE for recipient authorization, aggregate budgets and bounded limiter maps.
+  Dependent on S03, which supplied the relay's database handle — without it none of this was
+  expressible. Connection/frame budgets are enforced per INSTANCE, not per cluster; see limits.
+- **Source/fix commit:** commit containing this record, parent `88f5449`.
+- **Files:** `backend/websocket/src/recipients.ts` (new), `src/budget.ts` (new), `src/index.ts`;
+  `backend/websocket/test/recipients.test.ts` and `test/budget.test.ts` (both new);
+  `.github/workflows/ci.yml`; `.env.example`.
+- **Failure reproduced:** yes. Against the committed source, `conversationRecipients` and
+  `shareRecipients` did not exist — the relay published to whatever `recipient_ids` named. The
+  new suites fail on the pre-fix behaviour by construction, and both anti-vacuity reverts below
+  confirm they bite.
+- **Implementation:**
+  1. **Recipients are derived, not supplied.** `typing`, `session_reset`, `loc_update` and
+     `loc_stop` now resolve their audience from the database: active conversation membership
+     (with the SENDER's membership checked in the same statement), or a location share's live
+     targets resolved for its OWNER only. A client's `recipient_ids` is still honoured, but only
+     to NARROW that audience — it can address fewer people than it is entitled to, never more.
+     Existing clients send peer user ids, so the intersection is unchanged and no client edit
+     was needed.
+  2. Blocking moved into the same query, in both directions, replacing the `block:a:b` Redis
+     mirror on these paths — membership and blocking are now answered by one authority.
+  3. **An aggregate socket budget**, in frames AND bytes, checked before the JSON parse and
+     before any Redis call. `typing`, `session_reset`, `loc_stop` and `heartbeat` previously had
+     no limit at all, so a client could spend indefinitely across them while staying under every
+     per-type ceiling.
+  4. **Bounded limiter maps.** The location and game limiters were plain Maps keyed by
+     client-supplied ids, never capped or pruned: a client got a fresh allowance per invented key
+     AND grew the map for the life of the socket. `BoundedRateMap` prunes only EXPIRED buckets
+     and refuses new keys when full — never evicting a live bucket, because that would hand the
+     evicted key a fresh allowance and reopen the bypass in a new shape.
+  5. **Per-user connection cap**, closing the OLDEST socket rather than refusing the newest, so a
+     reconnecting client always gets in.
+  6. `loc_stop` for an unowned or invented share now resolves to an empty audience, so the
+     buffered-fix deletion it used to perform against other users' buffers does nothing.
+- **Regression evidence:** removing the sender-membership clause fails 4 of 7 recipient
+  scenarios; removing the share-ownership clause fails 2. Both return to green when restored.
+- **Validation:** PostgreSQL 16.15 on a disposable loopback cluster, replaying all 65 migrations
+  into a unique schema. Full `npm test` with all four database suites enabled: exit 0, API
+  247/247, games 6/6 suites, websocket 27/27. Typecheck clean across all five projects. No
+  Supabase database or live account touched.
+- **Logging:** audited. The only two log sites on these paths carry ids and limits — no
+  coordinates, no ciphertext, no key material.
+- **Remaining limitations:**
+  - **The audience cache is 10 seconds.** For up to that long after leaving a conversation or
+    blocking someone, a typing indicator or session-reset hint may still arrive. Neither carries
+    content, and every path that moves a message reads the database uncached. Resolving typing
+    against Postgres per keystroke was not an acceptable alternative.
+  - **Budgets are per relay instance.** A client that opens sockets against several instances
+    multiplies its allowance; the connection cap has the same limit. A cluster-wide budget needs
+    shared counters and belongs with R04's multi-instance work.
+  - `callRate` is still a plain Map, deliberately — it is keyed by the socket's own user id, so
+    it holds exactly one entry and cannot grow.
+  - The relay's frame handler is now `async`, so two location fixes for one share can in
+    principle be published out of order. Each frame carries its own `ts` and the buffer is
+    latest-only; the pre-existing typing path was already async for its block check.
+  - No load measurement. The budgets are sized by argument from the existing per-type limits,
+    not from production traffic — R02 asks that legitimate traffic "still work at measured
+    rates" and the measurement has NOT been done.
+- **Rollback:** revert the code. No schema change. Do NOT roll back by restoring
+  client-supplied `recipient_ids` — disable the affected frame types instead.
