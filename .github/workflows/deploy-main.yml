@@ -31,7 +31,14 @@ concurrency:
   cancel-in-progress: false   # never interrupt a deploy mid-build
 
 jobs:
+  # Same gate as dev, and for the stronger reason: this is the branch that reaches users.
+  # See the note in deploy-dev.yml on why the checks are re-run here rather than looked up.
+  verify:
+    name: Quality gate
+    uses: ./.github/workflows/ci.yml
+
   deploy:
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - name: Add SSH key
@@ -46,4 +53,4 @@ jobs:
           ssh -i ~/.ssh/id_ed25519 \
             -o StrictHostKeyChecking=yes \
             "${{ secrets.VULTR_MAIN_USER }}@${{ secrets.VULTR_MAIN_HOST }}" \
-            'VOIID_BRANCH=main bash /opt/voiid/infrastructure/deployment/deploy-dev.sh'
+            'VOIID_BRANCH=main VOIID_DEPLOY_SHA=${{ github.sha }} bash /opt/voiid/infrastructure/deployment/deploy-dev.sh'

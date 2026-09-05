@@ -1,6 +1,6 @@
 # 01 — Issue register
 
-Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 1 DONE (Q01), 49 TODO.
+Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 1 DONE (Q01), 1 IMPLEMENTED_UNVERIFIED (Q02), 48 TODO.
 
 Each ID belongs to exactly one implementation part. Read its dependency and acceptance sections before editing. Priority includes source-confirmed defects, runtime risks, and requested capability gaps; see the evidence column and task text.
 
@@ -28,7 +28,7 @@ Each ID belongs to exactly one implementation part. Read its dependency and acce
 | P01 | P1 | Stop unrelated routes sharing the host-thread throttle | Confirmed | [04](04-API-PERFORMANCE.md) | TODO |
 | P03 | P1 | Handle every Express 4 async rejection and input error | Confirmed | [04](04-API-PERFORMANCE.md) | TODO |
 | Q01 | P1 | Repair the test baseline without hiding regressions | Observed failures | [13](13-RELEASE-AND-OPERATIONS.md) | DONE |
-| Q02 | P1 | Add quality gates before deployment | Confirmed gap | [13](13-RELEASE-AND-OPERATIONS.md) | TODO |
+| Q02 | P1 | Add quality gates before deployment | Confirmed gap | [13](13-RELEASE-AND-OPERATIONS.md) | IMPLEMENTED_UNVERIFIED |
 | Q03 | P1 | Separate native development and release service configuration | Confirmed configuration gap | [13](13-RELEASE-AND-OPERATIONS.md) | TODO |
 | Q04 | P1 | Deploy verified artifacts with readiness, draining and rollback | Confirmed gap | [13](13-RELEASE-AND-OPERATIONS.md) | TODO |
 | R01 | P1 | Use the conference grant format in the actual relay | Confirmed | [05](05-REALTIME-CALLS-GAMES.md) | TODO |
@@ -159,4 +159,114 @@ Rollback/migration notes: test/tooling/doc only; no production code, schema, or 
   touched. Revert the five files to restore prior behaviour. No migration.
 
 Reviewer/date: implemented 2026-09-05; awaiting review.
+```
+
+```text
+Issue ID:            Q02
+Status:              IMPLEMENTED_UNVERIFIED
+Source/fix commit:   working tree on a90e089
+Changed files:       .github/workflows/ci.yml (new)
+                     .github/workflows/nightly.yml (new)
+                     .github/workflows/deploy-dev.yml
+                     .github/workflows/deploy-main.yml
+                     infrastructure/deployment/deploy-dev.sh
+                     tools/android-lint-ratchet.mjs (new)
+                     tools/android-lint-baseline.json (new)
+                     apps/admin-web/package.json
+                     apps/ios/Voiid/Voiid/Main/ChatDetailView.swift
+                     packages/e2e-core/tests/regress_fallback_restore.rs
+                     packages/e2e-core/tests/pin_brute_force.rs
+Failure reproduced:  Yes. deploy-dev.yml:25 and deploy-main.yml:33 opened an SSH session to
+                     the box with no test, typecheck, or native check anywhere in the path —
+                     a commit breaking authorization deployed as fast as one fixing it. The
+                     deploy script also reset to origin/$BRANCH, so the deployed commit was
+                     the branch tip at SSH time, not any verified commit.
+
+Implementation summary:
+  1. ci.yml — six jobs on every push/PR: node (typecheck all 5 backend/shared projects + web
+     + admin, `npm test`, web/admin builds), rust (cargo test/clippy/fmt on the encryption
+     core), advisories (cargo audit + npm audit high+), migrations (replay all 63 migrations
+     against a disposable Postgres 16 service, twice, to prove idempotence), android (unit
+     tests, lint, debug build), ios (unsigned simulator build). Toolchains pinned (node
+     20.18.1, rust 1.96.0); `npm ci` not `npm install`, so the lockfile is the input.
+  2. Deploy gating. Both deploy workflows now have a `verify` job that CALLS ci.yml
+     (workflow_call) and a `deploy` job with `needs: verify`. The checks are re-run against
+     the deploying SHA rather than looked up, because "did CI pass on this branch?" can be
+     answered by a run against a different commit.
+  3. Exact-artifact deploy. Workflows pass VOIID_DEPLOY_SHA=${{ github.sha }}; deploy-dev.sh
+     checks out that exact commit after verifying it is an ancestor of the branch, and
+     refuses otherwise. Hand-run deploys with no SHA keep the previous branch-tip behaviour.
+  4. nightly.yml — the expensive work on a 02:00 UTC schedule: crypto soak tests (release,
+     --ignored; these had NEVER run in CI), daily advisory re-check, unsigned Android release
+     compile. Nothing here blocks a deploy.
+  5. Android lint ratchet. lintDebug currently reports 116 errors, so gating on zero would
+     make the job red forever and train people to ignore it. tools/android-lint-ratchet.mjs
+     fails the build only when the count GROWS, and asks for the baseline to be lowered when
+     it drops. 36 of the 116 are java.time NewApi errors — that is A03's API 24/25 crash risk,
+     which lint has been reporting to nobody.
+  6. Fixed what the new gates found (see below).
+
+Tests and artifacts:
+  - Locally verified, all exit 0: `npm test`; typecheck of backend/api, backend/websocket,
+    backend/games, backend/workers, packages/common-utils, @voiid/web, @voiid/admin-web;
+    `npm run build` for web and admin; `npm ci` against the committed lockfile.
+  - Rust: `cargo test --locked` 100 passed / 0 failed / 4 ignored; `cargo clippy --locked
+    --all-targets -- -D warnings` clean; `cargo fmt --check` clean. Soak suite verified with
+    `cargo test --locked --release -- --ignored`: 4 passed.
+  - Android: `./gradlew testDebugUnitTest` BUILD SUCCESSFUL. Ratchet verified on all four
+    paths — at baseline (exit 0), count up (exit 1, names the regression), count down (exit 0
+    + asks to lower), missing report (exit 2, so lint not running never reads as zero errors).
+  - iOS: `xcodebuild build -scheme Voiid -destination 'generic/platform=iOS Simulator'`
+    BUILD SUCCEEDED, exit 0, after the fix below.
+  - ACCEPTANCE CHECK (Q02's stated criterion — a deliberate failing authorization test must
+    block deployment): disabling the canReachForCall guard in routes/calls.ts made `npm test`
+    exit 1 with 3 authorization failures. Since `deploy` needs `verify`, that blocks the
+    deploy. Guard restored.
+  - SHA-pinning logic tested against a purpose-built git repo: pinned SHA is deployed even
+    when the branch tip has moved past it; no pin falls back to the tip; a SHA that is not an
+    ancestor is refused before the working tree is touched.
+
+Defects found BY these gates and fixed here:
+  - iOS did not compile at all on main. ChatDetailView.swift:2595 "ambiguous use of operator
+    '-'": `.opacity(1 - dismissProgress * 0.85)` mixes a CGFloat with Double literals. The
+    file was unmodified and committed in 7102665 — it reached main precisely because no CI
+    built it. Fixed with an explicit Double() conversion; dismissProgress is already clamped
+    to 0...1 so values and appearance are unchanged.
+  - packages/e2e-core clippy `bool_assert_comparison`: assert_ne!(x, true) rewritten as
+    assert!(!x) preserving the invariant and its message. Two rustfmt diffs formatted.
+  - apps/admin-web had no `typecheck` script (apps/web did); added `tsc --noEmit`.
+  - CI initially used `cargo test --all-features`, which fails by design: `pq-1to1-activate`
+    is behind a compile_error! because that 1:1 PQ handshake combiner is a bespoke
+    construction no cryptographer has reviewed (src/pqxdh.rs, SPEC_NOTES.md). Removed — CI
+    must not switch on the exact feature the crate refuses to ship.
+
+Device/staging checks: none run. No deployment was performed and no workflow has executed on
+  GitHub Actions.
+
+Remaining limitations — WHY THIS IS NOT `DONE`:
+  - No job in ci.yml or nightly.yml has ever executed on a GitHub runner. Every step was
+    verified locally by running its command, but runner images differ: the `migrations` job
+    (no Docker or Postgres available locally), `cargo audit` and `npm audit` (never run —
+    they may fail immediately on an existing advisory), and the Android/iOS jobs on
+    ubuntu/macos-15 images are all UNVERIFIED IN CI. Expect a first-run shakeout.
+  - The iOS job clones firebase-ios-sdk at tag 12.15.0 because apps/ios/vendor/ is gitignored
+    and the project references Firebase as an XCLocalSwiftPackageReference to that path. That
+    tag is a second place the Firebase version is written down and will drift; a Firebase bump
+    must update ci.yml too. A committed manifest or a submodule would be a better answer.
+  - `npm audit --audit-level=high` and `cargo audit --deny warnings` can fail on an advisory
+    published upstream with no commit of ours, which makes the gate non-deterministic across
+    time. That is intended for a security gate but will need a triage path.
+  - The Android lint ratchet accepts 116 existing errors. It stops regressions; it does not
+    fix the debt. A03 and Q06 own burning it down.
+  - Q02 also asks for accessibility and performance checks in CI. NOT implemented — those
+    need the device/measurement work in parts 09 and 16 to define a pass/fail threshold first.
+  - Migration replay proves migrations apply to an EMPTY database. Upgrade-from-deployed-schema
+    replay is Q05.
+
+Rollback/migration notes: delete ci.yml and nightly.yml and revert the two deploy workflows to
+  restore the previous ungated behaviour. deploy-dev.sh is backward compatible — with no
+  VOIID_DEPLOY_SHA it behaves exactly as before. No schema, wire format, or runtime code
+  changed except the one-line iOS compile fix.
+
+Reviewer/date: implemented 2026-09-05; awaiting review and a first CI run.
 ```

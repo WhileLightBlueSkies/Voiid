@@ -1,0 +1,301 @@
+name: CI
+
+# The quality gate that has to pass BEFORE anything reaches a box.
+#
+# Until this existed, deploy-dev.yml and deploy-main.yml went straight from a push to an SSH
+# session on the server: no test run, no typecheck, no crypto suite. A commit that broke
+# authorization deployed exactly as fast as one that fixed it.
+#
+# Jobs here are deliberately separate so a failure names the thing that broke rather than
+# "CI failed". Everything in this file must be cheap enough to run on every PR; the expensive
+# device, soak and performance work belongs on a schedule (see nightly.yml).
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch: {}
+  # Called by the deploy workflows so the gate runs against the exact commit being
+  # deployed, rather than trusting that some earlier run of CI covered it.
+  workflow_call: {}
+
+concurrency:
+  # Per ref, and DO cancel superseded runs — unlike a deploy, an obsolete CI run has no value
+  # and only delays the one the author is waiting on.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned rather than floating: a toolchain that moves on its own turns a green history into
+  # an unreproducible one, and "works on the runner today" is not a property we can ship on.
+  NODE_VERSION: '20.18.1'
+  RUST_TOOLCHAIN: '1.96.0'
+
+jobs:
+  # ── Node: types and unit tests across every workspace ──────────────────────────────────
+  node:
+    name: Node types and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      # `npm ci` and not `npm install`: the lockfile is the input, and a gate that silently
+      # resolves a different dependency tree than the one committed is not verifying the
+      # commit. This also installs React/Next for apps/web and apps/admin-web — their
+      # typecheck failures in the 2026-09-05 audit were a missing local install, not source
+      # errors, and CI must not reproduce that confusion.
+      - name: Install (locked)
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck backend and shared packages
+        run: |
+          for p in backend/api backend/websocket backend/games backend/workers packages/common-utils; do
+            echo "── $p"
+            node node_modules/typescript/bin/tsc --noEmit --incremental false -p "$p/tsconfig.json"
+          done
+
+      - name: Typecheck web and admin
+        run: |
+          npm run typecheck -w @voiid/web
+          npm run typecheck -w @voiid/admin-web
+
+      # The full workspace suite, including tools/check-ludo-assets.js. backend/games runs
+      # through tools/run-suites.mjs, so one failing suite still reports the other five.
+      - name: Unit tests
+        run: npm test
+
+      - name: Build web and admin
+        run: |
+          npm run build -w @voiid/web
+          npm run build -w @voiid/admin-web
+
+  # ── Rust: the encryption core ──────────────────────────────────────────────────────────
+  #
+  # Separate job because this is the one suite whose failure must never be interpreted as a
+  # flake. 100 tests covering PQXDH, prekeys, group membership, recovery, ordering and
+  # multidevice were passing locally and gating nothing.
+  rust:
+    name: Encryption core
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: packages/e2e-core
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt,clippy
+          rustup default "$RUST_TOOLCHAIN"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/e2e-core
+
+      # --locked, so a dependency cannot drift underneath the crypto core between the commit
+      # that was reviewed and the artifact that ships.
+      #
+      # NOT --all-features, deliberately. The `pq-1to1-activate` feature is gated behind a
+      # compile_error! because the 1:1 PQ handshake combiner is a bespoke construction that
+      # no cryptographer has reviewed (src/pqxdh.rs, SPEC_NOTES.md). Enabling every feature
+      # in CI would switch on exactly the thing the crate is refusing to ship.
+      - name: Test (locked, default features)
+        run: cargo test --locked
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings   # default features, same reason as above
+
+      - name: Formatting
+        run: cargo fmt --check
+
+  # ── Dependency advisories ──────────────────────────────────────────────────────────────
+  #
+  # Reports, and fails, on a known-vulnerable dependency. Kept out of the `rust` job so a new
+  # advisory published upstream does not make it look like the crypto tests broke.
+  advisories:
+    name: Dependency advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/e2e-core
+
+      - name: cargo audit
+        working-directory: packages/e2e-core
+        run: |
+          cargo install cargo-audit --locked --version ^0.21
+          cargo audit --deny warnings
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      # High and critical only. A gate that fires on every low-severity transitive advisory
+      # gets routed around within a week, and a gate people route around protects nothing.
+      - name: npm audit (high and above)
+        run: npm audit --audit-level=high
+
+  # ── Migrations: replay against a real Postgres ─────────────────────────────────────────
+  #
+  # Runs the actual runner against a disposable database. Catches a migration that is invalid
+  # SQL, out of order, or dependent on a hand-applied change that only exists on the box.
+  migrations:
+    name: Migration replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: voiid_migration_replay
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+        ports: ['5432:5432']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install (locked)
+        run: npm ci --no-audit --no-fund
+
+      # A disposable container, never a shared or production database.
+      - name: Replay every migration from empty
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/voiid_migration_replay
+        run: node infrastructure/deployment/migrate.mjs
+
+      # Applying twice must be a no-op. If the second run tries to re-apply anything, the
+      # tracking is not doing its job and a redeploy would corrupt a live schema.
+      - name: Replay is idempotent
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/voiid_migration_replay
+        run: node infrastructure/deployment/migrate.mjs
+
+  # ── Android ────────────────────────────────────────────────────────────────────────────
+  #
+  # Signing-independent: assembleDebug and unit tests only. Release signing needs secrets that
+  # must not be exposed to pull requests from forks.
+  android:
+    name: Android lint, tests, debug build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Explicit, for the lint-ratchet step below. The runner image happens to ship a Node,
+      # but "whatever the image has today" is exactly the unpinned dependency this workflow
+      # is meant to stop relying on.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Unit tests
+        working-directory: apps/android
+        run: ./gradlew testDebugUnitTest --stacktrace
+
+      # `|| true`, then the ratchet decides.
+      #
+      # lintDebug exits non-zero on ANY error, and there are 116 pre-existing ones. Gating on
+      # its exit status directly would make this job red on its first run and every run after,
+      # which trains people to ignore it. The ratchet fails the build only when the count
+      # GROWS, so new errors block while the existing debt stays visible and shrinking.
+      - name: Lint
+        working-directory: apps/android
+        run: ./gradlew lintDebug --stacktrace || true
+
+      - name: Lint must not regress
+        run: |
+          node tools/android-lint-ratchet.mjs \
+            apps/android/app/build/intermediates/lint_intermediate_text_report/debug/lintReportDebug/lint-results-debug.txt \
+            tools/android-lint-baseline.json
+
+      - name: Debug build
+        working-directory: apps/android
+        run: ./gradlew assembleDebug --stacktrace
+
+      # Kept regardless of outcome: a lint report is most useful precisely when the job failed.
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-reports
+          path: |
+            apps/android/app/build/reports/**
+            apps/android/app/build/test-results/**
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # ── iOS ────────────────────────────────────────────────────────────────────────────────
+  #
+  # Simulator build only, CODE_SIGNING_ALLOWED=NO, so this needs no signing identity.
+  ios:
+    name: iOS simulator build
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # apps/ios/vendor/ is gitignored, and the Xcode project references Firebase as an
+      # XCLocalSwiftPackageReference to "../vendor/firebase-ios-sdk". A fresh checkout
+      # therefore has no Firebase at all and cannot resolve the package graph — the build
+      # would fail on missing infrastructure rather than on anything a commit did.
+      #
+      # It is vendored in the first place because xcodebuild's libgit2 hangs resolving
+      # firebase-ios-sdk's very large history; cloning with the git CLI sidesteps that.
+      # --depth 1 on an exact tag keeps this to seconds rather than minutes.
+      #
+      # The tag MUST match what the working copy uses (currently 12.15.0). If iOS starts
+      # failing here right after a Firebase bump, this pin is the thing to update.
+      - name: Restore vendored Firebase SDK
+        run: |
+          set -euxo pipefail
+          mkdir -p apps/ios/vendor
+          git clone --depth 1 --branch 12.15.0 \
+            https://github.com/firebase/firebase-ios-sdk.git \
+            apps/ios/vendor/firebase-ios-sdk
+
+      - uses: actions/cache@v4
+        with:
+          path: apps/ios/Voiid/build/SourcePackages
+          key: spm-${{ runner.os }}-${{ hashFiles('apps/ios/Voiid/Voiid.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      - name: Build for simulator (unsigned)
+        working-directory: apps/ios/Voiid
+        run: |
+          set -euo pipefail
+          xcodebuild build \
+            -project Voiid.xcodeproj \
+            -scheme Voiid \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build \
+            -clonedSourcePackagesDirPath build/SourcePackages \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO

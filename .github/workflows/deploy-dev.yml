@@ -23,7 +23,18 @@ concurrency:
   cancel-in-progress: false   # never interrupt a deploy mid-build
 
 jobs:
+  # THE GATE. Before this job existed, a push went straight to an SSH session on the box:
+  # a commit that broke authorization deployed exactly as fast as one that fixed it.
+  #
+  # This re-runs the same jobs ci.yml runs, pinned to THIS workflow's SHA, rather than
+  # querying whether some run of CI passed. Asking "did CI pass for this branch?" is
+  # answerable by a run against a different commit; running the checks here is not.
+  verify:
+    name: Quality gate
+    uses: ./.github/workflows/ci.yml
+
   deploy:
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - name: Add SSH key
@@ -67,9 +78,14 @@ jobs:
              printf "VOIID_SECRETBOX_KEY=%s\n" "$key" >> "$f"
              echo "secretbox key written to $f ($(grep -c "^VOIID_SECRETBOX_KEY=" "$f") line)"'
 
+      # VOIID_DEPLOY_SHA pins the deploy to the EXACT commit this run verified.
+      #
+      # Without it the script resets to whatever origin/dev points at when the SSH session
+      # opens, so a green run on commit X could deploy commit Y that landed thirty seconds
+      # later and was never checked. The gate above is only worth as much as this pin.
       - name: Deploy over SSH
         run: |
           ssh -i ~/.ssh/id_ed25519 \
             -o StrictHostKeyChecking=yes \
             "${{ secrets.VULTR_USER }}@${{ secrets.VULTR_HOST }}" \
-            'bash /opt/voiid/infrastructure/deployment/deploy-dev.sh'
+            'VOIID_DEPLOY_SHA=${{ github.sha }} bash /opt/voiid/infrastructure/deployment/deploy-dev.sh'

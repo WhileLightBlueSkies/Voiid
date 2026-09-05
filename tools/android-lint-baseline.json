@@ -1,0 +1,5 @@
+{
+  "maxErrors": 116,
+  "recorded": "2026-09-05",
+  "note": "Android lintDebug error count at the time CI gating was introduced (Q02). This number may only DECREASE. 36 of these are java.time NewApi errors on minSdk 24/25, tracked as A03; the rest are largely media3 UnstableApi opt-ins and Compose state/remember errors. Lower this line whenever the count drops."
+}

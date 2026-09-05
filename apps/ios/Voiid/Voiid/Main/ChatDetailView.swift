@@ -2592,7 +2592,7 @@ struct MediaGallery: View {
         ZStack {
             // Fades as you pull down, so the photo lifts off the page rather than the whole
             // screen going with it.
-            Color.black.opacity(1 - dismissProgress * 0.85).ignoresSafeArea()
+            Color.black.opacity(1 - Double(dismissProgress) * 0.85).ignoresSafeArea()
 
             TabView(selection: $index) {
                 ForEach(refs.indices, id: \.self) { i in
