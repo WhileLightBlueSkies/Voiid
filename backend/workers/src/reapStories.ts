@@ -33,6 +33,9 @@ export interface ReapResult {
   rowsDeleted: number;
   failed: number;
   abandoned: number;
+  /** Object keys we could not delete and have written down instead (C04). Counted here so
+   *  health can report a growing backlog rather than a silent one. */
+  objectsQueued: number;
 }
 
 /**
@@ -45,8 +48,35 @@ export interface ReapResult {
  * two instances claiming the same row in successive transactions — is harmless: both
  * DeleteObject and `delete from stories where id = $1` are idempotent.
  */
+
+/**
+ * Remember an object we did not delete (C04).
+ *
+ * Reuses `erasure_pending_objects` rather than inventing a second queue: it is already the
+ * table for "an object that still needs deleting", it is already drained by the erasure pass,
+ * and it is already reported on /health. Two queues would mean two drains and two things to
+ * forget about.
+ *
+ * Never throws — a pass must not die because the retry queue is unwritable — and never logs
+ * the key, which names a user's media.
+ */
+async function queueObject(key: string | null, why: string, result: ReapResult): Promise<void> {
+  // An empty or missing key is not a file to chase. Stories predating object storage have one.
+  if (!key) return;
+  await query(
+    `insert into erasure_pending_objects (r2_key, attempts, last_attempt_at, last_error)
+     values ($1, 1, now(), $2)
+     on conflict (r2_key) do update
+        set attempts = erasure_pending_objects.attempts + 1,
+            last_attempt_at = now(),
+            last_error = excluded.last_error`,
+    [key, why.slice(0, 500)]
+  ).then(() => { result.objectsQueued++; })
+   .catch(() => { /* the pass must not die because the retry queue is unwritable */ });
+}
+
 export async function reapStories(): Promise<ReapResult> {
-  const result: ReapResult = { claimed: 0, objectsDeleted: 0, rowsDeleted: 0, failed: 0, abandoned: 0 };
+  const result: ReapResult = { claimed: 0, objectsDeleted: 0, rowsDeleted: 0, failed: 0, abandoned: 0, objectsQueued: 0 };
 
   const client = await pool.connect();
   let batch: { id: string; r2_key: string }[];
@@ -76,9 +106,16 @@ export async function reapStories(): Promise<ReapResult> {
     try {
       // No R2 configured (a normal dev state) => skip the object and still drop the
       // row. Leaving rows forever because a dev box has no bucket would be worse.
+      //
+      // BUT THE KEY IS KEPT (C04). The story row is the only thing that knows this object's
+      // key, so dropping the row without recording it leaves a file in the bucket that
+      // nothing in the system can name any more. That was justified by a lifecycle rule the
+      // audit could not verify — and an unverified lifecycle rule is not evidence of deletion.
       if (r2Configured()) {
         await deleteObject(row.r2_key);
         result.objectsDeleted++;
+      } else {
+        await queueObject(row.r2_key, 'storage not configured', result);
       }
       // Cascades story_keys + story_receipts.
       await query(`delete from stories where id = $1`, [row.id]);
@@ -97,18 +134,27 @@ export async function reapStories(): Promise<ReapResult> {
   // Second pass: rows that have failed MAX_REAP_ATTEMPTS times are deleted anyway. The
   // bucket lifecycle rule reaps their objects. A single stuck row must NEVER block the
   // whole queue — otherwise one unreachable key freezes expiry for every user.
-  const abandoned = await query<{ id: string }>(
+  //
+  // THE KEYS ARE RETURNED TOO, and queued before the rows are gone (C04). This used to
+  // `returning id` and point at a bucket lifecycle rule for the objects — a rule this audit
+  // could not verify, which makes it a hope rather than a mechanism. The key now moves into
+  // the same durable queue erasure uses, so a restored bucket drains it and a persistent
+  // outage leaves a visible backlog instead of silence.
+  const abandoned = await query<{ id: string; r2_key: string }>(
     `delete from stories
       where expires_at < now() - ${GRACE}
         and reap_attempts >= $1
-      returning id`,
+      returning id, r2_key`,
     [MAX_REAP_ATTEMPTS]
   );
   result.abandoned = abandoned.length;
+  for (const row of abandoned) {
+    await queueObject(row.r2_key, `abandoned after ${MAX_REAP_ATTEMPTS} failed deletes`, result);
+  }
   if (result.abandoned) {
     console.warn(
       `[workers] abandoned ${result.abandoned} story row(s) after ${MAX_REAP_ATTEMPTS} failed R2 deletes; ` +
-        'the media/stories/ lifecycle rule will reap the objects'
+        `${result.objectsQueued} object key(s) queued for a later pass`
     );
   }
 

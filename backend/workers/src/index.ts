@@ -22,6 +22,7 @@
 import http from 'http';
 import Redis from 'ioredis';
 import { flushOutbox } from './outbox';
+import { classifyJob, type JobHealthInput } from './health';
 import { reapStories } from './reapStories';
 import { runErasure } from './erasure';
 import { runRetentionSweep } from './retention';
@@ -68,6 +69,9 @@ const JOBS = [
 ] as const;
 
 interface JobState {
+  /** Set while a pass is in flight (C02), so a hung job is distinguishable from an idle one.
+   *  Cleared in `finally`, including on the error path. */
+  startedAt: number | null;
   lastRunAt: string | null;
   lastOkAt: string | null;
   lastError: string | null;
@@ -82,7 +86,7 @@ interface JobState {
 let running = false;
 const jobs: Record<string, JobState> = Object.fromEntries(
   [...JOBS.map((j) => j.name), 'outbox'].map((name) => [
-    name, { lastRunAt: null, lastOkAt: null, lastError: null, lastResult: null },
+    name, { startedAt: null, lastRunAt: null, lastOkAt: null, lastError: null, lastResult: null },
   ])
 );
 
@@ -94,6 +98,7 @@ async function outboxTick(): Promise<void> {
   sweeping = true;
   const state = jobs.outbox;
   state.lastRunAt = new Date().toISOString();
+  state.startedAt = Date.now();
   try {
     const result = await flushOutbox((channel, payload) => publisher.publish(channel, payload));
     state.lastResult = result;
@@ -110,6 +115,7 @@ async function outboxTick(): Promise<void> {
     // the process down and stop every future sweep.
     console.error('[workers] outbox sweep failed:', state.lastError);
   } finally {
+    state.startedAt = null;
     sweeping = false;
   }
 }
@@ -126,6 +132,7 @@ async function tick(): Promise<void> {
     for (const job of JOBS) {
       const state = jobs[job.name];
       state.lastRunAt = new Date().toISOString();
+      state.startedAt = Date.now();
       try {
         const result = await job.run();
         state.lastResult = result;
@@ -137,6 +144,8 @@ async function tick(): Promise<void> {
         // NEVER rethrow: an unhandled rejection here would kill the process and stop every
         // future pass of every job because one DB blip failed one query.
         console.error(`[workers] ${job.name} pass failed:`, state.lastError);
+      } finally {
+        state.startedAt = null;
       }
     }
   } finally {
@@ -169,13 +178,36 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(404, { 'content-type': 'application/json' });
     return res.end(JSON.stringify({ error: 'not found' }));
   }
-  const errored = Object.keys(jobs).filter((name) => jobs[name].lastError);
+  // C02: the status is derived from what the jobs RETURNED, not only from what they threw.
+  //
+  // Each job catches its own errors and reports counts — failed, abandoned, stuck,
+  // objectsPending. This used to read only `lastError`, so retention could fail its SQL every
+  // pass, or the reaper abandon rows every pass, and health stayed green: the process was up,
+  // nothing escaped, and the numbers describing the failure sat unread in `lastResult`.
+  const now = Date.now();
+  const inputs: JobHealthInput[] = Object.entries(jobs).map(([name, state]) => ({
+    name,
+    // The outbox has its own, much faster clock; measuring its staleness against the reaper
+    // interval would make a five-minute stall invisible.
+    intervalMs: name === 'outbox' ? OUTBOX_INTERVAL_MS : INTERVAL_MS,
+    now,
+    lastRunAt: state.lastRunAt ? Date.parse(state.lastRunAt) : null,
+    lastOkAt: state.lastOkAt ? Date.parse(state.lastOkAt) : null,
+    lastError: state.lastError,
+    lastResult: state.lastResult as Record<string, unknown> | null,
+    startedAt: state.startedAt,
+  }));
+  const verdict = classifyJob.service(inputs);
+
   const out: Record<string, unknown> = {
     service: 'workers',
-    status: 'ok',
+    status: verdict.status,
     interval_ms: INTERVAL_MS,
     outbox_interval_ms: OUTBOX_INTERVAL_MS,
     jobs,
+    // Per-job status and the reasons behind it, so an operator is told WHICH job and WHY
+    // rather than being handed five raw result objects to compare.
+    health: verdict.jobs,
     media: { configured: r2Configured() },
   };
   try {
@@ -183,22 +215,10 @@ const server = http.createServer(async (req, res) => {
     out.db = 'up';
   } catch {
     out.db = 'down';
-    out.status = 'degraded';
+    out.status = 'failed';
   }
-  // A pass that has never succeeded, or that failed most recently, is degraded even
-  // when the DB answers — expired ciphertext is piling up at rest, and an erasure that
-  // is not running means personal data is being retained past the period we published.
-  if (errored.length) {
-    out.status = 'degraded';
-    out.failing_jobs = errored;
-  }
-  // An account that asked to be erased and could not be is a standing alarm, not a
-  // transient one: the last pass "succeeded" precisely by skipping it.
-  const erasure = jobs.erasure.lastResult as { stuck?: number } | null;
-  if (erasure?.stuck) {
-    out.status = 'degraded';
-    out.stuck_erasures = erasure.stuck;
-  }
+  // Anything other than ok is a 503: 'degraded' means work is not getting done, and a
+  // monitor that only alerts on total failure will not notice a reaper that abandons every row.
   res.writeHead(out.status === 'ok' ? 200 : 503, { 'content-type': 'application/json' });
   res.end(JSON.stringify(out));
 });

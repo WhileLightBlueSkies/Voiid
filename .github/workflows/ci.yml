@@ -222,6 +222,7 @@ jobs:
            .then(()=>c.query('create database voiid_test_ack'))
            .then(()=>c.query('create database voiid_test_pending'))
            .then(()=>c.query('create database voiid_test_linking'))
+           .then(()=>c.query('create database voiid_test_reap'))
            .then(()=>c.end())"
 
       # S03. Both suites run HERE rather than in the node job because they need a real
@@ -258,6 +259,12 @@ jobs:
         env:
           SEND_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/voiid_test_send
         run: npx tsx --test backend/api/test/sendIdempotencyPostgres.test.ts
+
+      # C02/C04. The reaper keeping keys it could not delete, against real rows.
+      - name: Story reaping and worker health against PostgreSQL
+        env:
+          REAP_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/voiid_test_reap
+        run: npx tsx --test backend/workers/test/reapHealth.test.ts
 
       - name: Outbox sweep against PostgreSQL
         env:

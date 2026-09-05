@@ -1,6 +1,6 @@
 # 01 — Issue register
 
-Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 16 DONE (Q01, S01, S02, S03, C01, R02, M01, M02, A02, S05, P03, A03, M03, W01, W02, S06), 4 IMPLEMENTED_UNVERIFIED (Q02, A01, I03, W03), 32 TODO.
+Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 18 DONE (Q01, S01, S02, S03, C01, R02, M01, M02, A02, S05, P03, A03, M03, W01, W02, S06, C02, C04), 4 IMPLEMENTED_UNVERIFIED (Q02, A01, I03, W03), 30 TODO.
 
 Each ID belongs to exactly one implementation part. Read its dependency and acceptance sections before editing. Priority includes source-confirmed defects, runtime risks, and requested capability gaps; see the evidence column and task text.
 
@@ -19,8 +19,8 @@ Each ID belongs to exactly one implementation part. Read its dependency and acce
 | S04 | P0 | Replace the false recovery lockout security boundary | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | TODO |
 | A03 | P1 | Support java.time on API 24/25 | Confirmed configuration gap | [06](06-ANDROID-DURABILITY.md) | DONE |
 | A04 | P1 | Remove destructive Room upgrade fallback | Confirmed policy risk | [06](06-ANDROID-DURABILITY.md) | TODO |
-| C02 | P1 | Make worker health reflect returned failures and staleness | Confirmed | [11](11-PAYMENTS-MEDIA-WORKERS.md) | TODO |
-| C04 | P1 | Keep a durable record of story objects still requiring deletion | Confirmed dependency risk | [11](11-PAYMENTS-MEDIA-WORKERS.md) | TODO |
+| C02 | P1 | Make worker health reflect returned failures and staleness | Confirmed | [11](11-PAYMENTS-MEDIA-WORKERS.md) | DONE |
+| C04 | P1 | Keep a durable record of story objects still requiring deletion | Confirmed dependency risk | [11](11-PAYMENTS-MEDIA-WORKERS.md) | DONE |
 | E01 | P1 | Reconcile crypto assurances with current code and executable gates | Confirmed assurance gap; exploitability unverified | [12](12-CRYPTO-ASSURANCE.md) | TODO |
 | G01 | P1 | Build a shared material contract and capability-based Android renderer | Requested capability gap | [08](08-LIQUID-GLASS.md) | TODO |
 | I01 | P1 | Move chat persistence off the main actor and page history | Confirmed synchronous work; frame impact unmeasured | [07](07-IOS-AND-STORAGE.md) | TODO |
@@ -1078,3 +1078,48 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
     verified end to end only by the test.
   - Approval binds to whichever account approves first, which is the intended rule, but there is
     no rate limit on `/linking/request` — an unauthenticated caller can still mint tokens.
+
+## C02/C04 — workers that report what they actually did (2026-09-06)
+
+- **Status:** both DONE. C03 (durable claim ownership) remains TODO and is P2; see limitations.
+- **Source/fix commit:** commit containing this record, parent `bb6af0e`.
+- **Files:** `backend/workers/src/health.ts` (new), `src/index.ts`, `src/reapStories.ts`;
+  `backend/workers/test/reapHealth.test.ts` (new); `.github/workflows/ci.yml`.
+- **C02 — failures were returned, and nobody was reading them.** Every job catches its own
+  errors and reports counts (`failed`, `abandoned`, `stuck`, `objectsPending`). The supervisor
+  recorded `lastError` only when a job THREW, so retention could fail its SQL every pass, or the
+  reaper abandon rows every pass, and /health stayed green: the process was up, nothing escaped,
+  and the numbers describing the failure sat unread in `lastResult`. There was also no freshness
+  gate — a hung job and an idle one looked identical. Health is now derived from the returned
+  counts, from last-success age against each job's OWN interval (the outbox runs on a
+  five-second clock; measuring it against the reaper's five minutes would hide a stall), and
+  from in-flight duration. The service takes its worst job's status, never an average, and
+  anything other than ok is a 503.
+- **C04 — the reaper deleted the only record of what it had not deleted.** In two paths — R2
+  not configured, and a row past `MAX_REAP_ATTEMPTS` — the story row was deleted while the
+  object remained in the bucket. The row is the only thing that knows the key, so the file
+  became unnameable by anything in the system. The comment justifying it pointed at a bucket
+  lifecycle rule the audit could not verify, and an unverified lifecycle rule is a hope rather
+  than a mechanism. Both paths now write the key into `erasure_pending_objects` first — the
+  table that already exists for "an object still needing deletion", is already drained by the
+  erasure pass, and is already reported on /health. A second queue would have meant a second
+  drain and a second thing to forget.
+- **Regression evidence:** emptying the failure-count list fails four health scenarios; making
+  the reaper drop keys again fails three reaper scenarios. Both return to green.
+- **Validation:** 15 tests — 11 pure health classifications and 4 against real PostgreSQL rows;
+  typecheck clean.
+- **Remaining limitations:**
+  - **C03 is not done** (P2): `for update skip locked` still selects rows and commits before the
+    slow I/O, so two workers can claim the same rows in successive transactions. Deletion is
+    idempotent so the effect is duplicate work and inaccurate counts rather than damage, but
+    ownership is still undefined and the issue's "do not scale workers until ownership is
+    defined" stands.
+  - **The lifecycle rule is still unverified.** C04 asks for prefix/retention evidence for the
+    bucket policy as a secondary net. No bucket was inspected; the fix removes the DEPENDENCE on
+    that rule rather than confirming it.
+  - **Nothing was demonstrated against real object storage.** No synthetic object was uploaded,
+    failed to delete, and drained. R2 behaviour is simulated by "not configured" in the tests.
+  - **Deployment readiness is unchanged.** C02 also asks that deployment treat required-worker
+    readiness as required rather than a printed warning; the health endpoint now tells the truth,
+    but `deploy-dev.sh` still only prints. That is Q04's territory and is not done here.
+  - Thumbnails and renditions are not enumerated — only the story's single `r2_key` is queued.

@@ -8,7 +8,7 @@ This is the plain-language view. The
 authority and holds the full completion record for each item — files changed, how the failure was
 reproduced, what was verified and what was not.
 
-**Status: 16 fixed · 4 implemented but unverified · 32 open**
+**Status: 18 fixed · 4 implemented but unverified · 30 open**
 Baseline `a2e24e5` · 50 findings · last updated 2026-09-06
 
 **Every P0 is now closed except S04**, which its own spec calls a release gate needing a
@@ -19,6 +19,24 @@ cryptographic reviewer rather than an implementation.
 ## Fixed
 
 Newest first.
+
+### C02 / C04 — Workers that report what they actually did
+`pending` · P1 · workers
+
+**C04:** when the story reaper could not delete a file — no storage configured, or after
+repeated failures — it deleted the database row anyway. That row was the only thing that knew
+the file's key, so the media stayed in the bucket with **nothing left able to name it**. The
+code justified this by pointing at a storage lifecycle rule that the audit could not verify.
+Keys are now written to the existing retry queue before the row goes.
+
+**C02:** every job catches its own errors and *returns* counts. Health only looked at whether a
+job threw — so retention could fail every pass, or the reaper abandon rows every pass, and the
+health check stayed green. It now reads what the jobs actually reported, plus how long since
+each last succeeded and whether one is hung.
+
+**Still open:** two workers can still claim the same rows (C03, P2) — duplicate work rather than
+damage. The bucket lifecycle rule remains unverified; this removes the *dependence* on it rather
+than confirming it.
 
 ### S06 — Linking a companion device happens once
 `4eafc6d` · P1 · API
