@@ -1,6 +1,6 @@
 # Voiid — whole-app audit and execution plan
 
-**Audit date:** 2026-09-05 · **Source baseline:** `a2e24e5` · **Status:** audit and fix specifications delivered; application fixes are **not implemented** by this document set.
+**Audit date:** 2026-09-05 · **Source baseline:** `a2e24e5` · **Status:** execution underway; see the issue register for current implementation and validation status.
 
 ## Outcome
 

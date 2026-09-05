@@ -1,100 +1,143 @@
-// Read-receipt routes (Section 4.8). Delivery/read state is metadata, not content.
-// Marking a message read clears its 'is_pending' so it stops appearing in offline pending fetch.
+// Receipts are private metadata. Authorization and writes share one transaction.
 import { Router } from 'express';
-import { query } from '../db';
+import { pool } from '../db';
 import { publisher } from '../redis';
 import { requireAuth } from '../auth';
+import { asyncHandler } from '../util';
+import { resolveActiveDevice, UUID_RE } from '../deviceAuthorization';
 
 const router = Router();
 
-// POST /receipts/mark — { message_ids:[...], status:'delivered'|'read' }
-// Records receipts for the caller and notifies senders over their Redis channel.
-/**
- * The caller's device, from the token OR the request.
- *
- * IT IS ALMOST NEVER IN THE TOKEN. POST /auth/firebase issues `{ user_id }` with no device
- * claim — only device LINKING (routes/linking.ts) includes one — so on every normally
- * logged-in device `req.auth.device_id` is undefined. Reading it alone meant every receipt
- * was written against a NULL device, which is the NULL-upsert path 027 had to repair.
- *
- * Same shape as `callerDeviceId` in messages.ts and stories.ts, which already solved this.
- */
-function callerDeviceId(req: any): string | null {
-  const fromAuth = req.auth?.device_id;
-  if (typeof fromAuth === 'string' && fromAuth) return fromAuth;
-  const fromBody = req.body?.device_id;
-  if (typeof fromBody === 'string' && fromBody) return fromBody;
-  const fromQuery = req.query?.device_id;
-  return typeof fromQuery === 'string' && fromQuery ? fromQuery : null;
-}
-
-router.post('/mark', requireAuth, async (req, res) => {
+router.post('/mark', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
-  const device_id = callerDeviceId(req);
   const { message_ids, status = 'delivered' } = req.body ?? {};
-  if (!Array.isArray(message_ids) || !message_ids.length) {
-    return res.status(400).json({ error: 'message_ids array required' });
+  if (!Array.isArray(message_ids) || !message_ids.length || message_ids.length > 500) {
+    return res.status(400).json({ error: 'message_ids must contain 1 to 500 uuids' });
   }
   if (!['delivered', 'read'].includes(status)) {
     return res.status(400).json({ error: "status must be 'delivered' or 'read'" });
   }
-
-  const tsCol = status === 'read' ? 'read_at' : 'delivered_at';
-
-  // TWO conflict targets, chosen by whether we have a device id.
-  //
-  // `on conflict (message_id, user_id, device_id)` CANNOT match when device_id is null:
-  // Postgres treats NULLs as distinct, so the row never collides and every mark inserted a
-  // duplicate instead of updating — silently bypassing the never-downgrade guard below and
-  // accumulating one row per call. 027 adds the matching partial indexes; this names them.
-  const conflictTarget = device_id
-    ? '(message_id, user_id, device_id) where device_id is not null'
-    : '(message_id, user_id) where device_id is null';
-
-  for (const mid of message_ids) {
-    await query(
-      `insert into message_read_receipts (message_id, user_id, device_id, status, ${tsCol})
-         values ($1, $2, $3, $4, now())
-         on conflict ${conflictTarget}
-         do update set status = excluded.status, ${tsCol} = now()
-         -- NEVER downgrade: once 'read', a later out-of-order 'delivered' must not
-         -- revert it (status only ever advances delivered → read).
-         where message_read_receipts.status is distinct from 'read'`,
-      [mid, user_id, device_id ?? null, status]
+  if (!message_ids.every((id: unknown) => typeof id === 'string' && UUID_RE.test(id))) {
+    return res.status(400).json({ error: 'message_ids must be uuids' });
+  }
+  const ids = [...new Set<string>(message_ids.map((id: string) => id.toLowerCase()))].sort();
+  const client = await pool.connect();
+  let notifications: { id: string; sender_id: string; status: string }[] = [];
+  try {
+    await client.query('begin');
+    const deviceId = await resolveActiveDevice(
+      req, user_id, client.query.bind(client), req.body?.device_id ?? req.query.device_id, true,
     );
-  }
+    if (deviceId === undefined) {
+      await client.query('rollback');
+      return res.status(403).json({ error: 'forbidden' });
+    }
 
-  // Once read, the message is no longer pending for this user's offline fetch.
-  if (status === 'read') {
-    await query(
-      `update messages set is_pending = false, delivered_at = coalesce(delivered_at, now())
-         where id = any($1::uuid[])`,
-      [message_ids]
+    // Membership alone does not entitle a device to a fanout message. Its ciphertext
+    // must actually be addressed to that device. Device-less clients retain legacy access.
+    // Share locks serialize membership removal/device revocation with this receipt batch.
+    const { rows: allowed } = await client.query<{ id: string; sender_id: string }>(
+      `select m.id, m.sender_id from messages m
+         join conversation_members cm on cm.conversation_id = m.conversation_id
+        where m.id = any($1::uuid[]) and cm.user_id = $2 and cm.left_at is null
+          and (m.ciphertext is not null or exists (
+            select 1 from message_ciphertexts mc
+             where mc.message_id = m.id and mc.recipient_device_id = $3::uuid
+          ))
+        order by m.id for share of m, cm`,
+      [ids, user_id, deviceId],
     );
+    if (allowed.length !== ids.length) {
+      await client.query('rollback');
+      return res.status(403).json({ error: 'forbidden' });
+    }
+
+    // 027 supplies separate partial unique indexes for real-device and NULL-device rows.
+    const conflictTarget = deviceId
+      ? '(message_id, user_id, device_id) where device_id is not null'
+      : '(message_id, user_id) where device_id is null';
+    const { rows: changed } = await client.query<{ message_id: string; status: string }>(
+      `insert into message_read_receipts
+         (message_id, user_id, device_id, status, delivered_at, read_at)
+       select id, $2::uuid, $3::uuid, $4, now(), case when $4 = 'read' then now() end
+         from unnest($1::uuid[]) as batch(id)
+       on conflict ${conflictTarget} do update
+         set status = excluded.status,
+             delivered_at = coalesce(message_read_receipts.delivered_at, excluded.delivered_at),
+             read_at = coalesce(message_read_receipts.read_at, excluded.read_at)
+       where message_read_receipts.status is distinct from 'read'
+       returning message_id, status`,
+      [ids, user_id, deviceId, status],
+    );
+    const senders = new Map(allowed.map((m) => [m.id, m.sender_id]));
+    notifications = changed
+      .filter((r) => senders.get(r.message_id) !== user_id)
+      .map((r) => ({ id: r.message_id, sender_id: senders.get(r.message_id)!, status: r.status }));
+    // Do not clear messages.is_pending: it is shared by every recipient. Legacy fetch
+    // excludes this caller's read receipts; durable device acknowledgements belong to M02.
+    await client.query('commit');
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
   }
 
-  // Notify each original sender so their UI can update ticks.
-  const senders = await query<{ sender_id: string; id: string }>(
-    `select id, sender_id from messages where id = any($1::uuid[]) and sender_id <> $2`,
-    [message_ids, user_id]
-  );
-  for (const s of senders) {
-    await publisher.publish(`channel:user:${s.sender_id}`, JSON.stringify({
-      type: 'receipt', message_id: s.id, by_user: user_id, status,
-    }));
+  for (const receipt of notifications) {
+    try {
+      await publisher.publish(`channel:user:${receipt.sender_id}`, JSON.stringify({
+        type: 'receipt', message_id: receipt.id, by_user: user_id, status: receipt.status,
+      }));
+    } catch {
+      // Database state is committed; history polling recovers the tick. A relay outage
+      // must not turn successful persistence into an ambiguous HTTP failure.
+      console.warn('[receipts] relay notification failed');
+    }
   }
+  res.json({ marked: ids.length, status });
+}));
 
-  res.json({ marked: message_ids.length, status });
-});
-
-// GET /receipts/:message_id — receipts for a message (sender checks who delivered/read).
-router.get('/:message_id', requireAuth, async (req, res) => {
-  const rows = await query(
-    `select user_id, device_id, status, delivered_at, read_at
-       from message_read_receipts where message_id = $1`,
-    [req.params.message_id]
-  );
-  res.json({ receipts: rows });
-});
+router.get('/:message_id', requireAuth, asyncHandler(async (req, res) => {
+  const { user_id } = (req as any).auth;
+  if (!UUID_RE.test(req.params.message_id)) return res.status(403).json({ error: 'forbidden' });
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    const deviceId = await resolveActiveDevice(
+      req, user_id, client.query.bind(client), req.query.device_id, true,
+    );
+    if (deviceId === undefined) {
+      await client.query('rollback');
+      return res.status(403).json({ error: 'forbidden' });
+    }
+    const { rows: allowed } = await client.query(
+      `select m.id, m.sender_id from messages m
+         join conversation_members cm on cm.conversation_id = m.conversation_id
+        where m.id = any($1::uuid[]) and cm.user_id = $2 and cm.left_at is null
+          and (m.sender_id = $2 or m.ciphertext is not null or exists (
+            select 1 from message_ciphertexts mc
+             where mc.message_id = m.id and mc.recipient_device_id = $3::uuid
+          ))
+        for share of m, cm`,
+      [[req.params.message_id.toLowerCase()], user_id, deviceId],
+    );
+    if (!allowed.length) {
+      await client.query('rollback');
+      return res.status(403).json({ error: 'forbidden' });
+    }
+    const { rows } = await client.query(
+      `select user_id, device_id, status, delivered_at, read_at
+         from message_read_receipts where message_id = $1`,
+      [req.params.message_id],
+    );
+    await client.query('commit');
+    res.json({ receipts: rows });
+  } catch (error) {
+    await client.query('rollback');
+    throw error;
+  } finally {
+    client.release();
+  }
+}));
 
 export default router;

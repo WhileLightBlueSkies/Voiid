@@ -996,49 +996,52 @@ final class ChatEngine {
         return nil
     }
 
-    private func markReceipts(_ ids: [String], status: String) async {
-        guard !ids.isEmpty else { return }
-        NSLog("[VOIID] 📤 receipt \(status) x\(ids.count)")
-        // SEND THE DEVICE ID. The login token carries only user_id (POST /auth/firebase
-        // issues no device claim), so without this the server records every receipt against a
-        // NULL device — see the callerDeviceId note in routes/receipts.ts.
-        struct Body: Encodable {
-            let message_ids: [String]
-            let status: String
-            let device_id: String?
-        }
-        // DETACHED, not awaited on the caller's task. `markRead` is called from the chat
-        // screen's 4-second polling Task, which is cancelled the moment the user navigates
-        // away — that cancellation propagated into this request and killed it mid-flight.
-        // The catch then released the ids, but nothing retried them, because the thing that
-        // would have retried was the task that just died. Opening a chat and backing out
-        // promptly meant the read receipt was never delivered at all.
-        //
-        // A detached task outlives the screen, so a receipt that has STARTED will finish.
-        let body = Body(message_ids: ids, status: status, device_id: E2EManager.shared.deviceId)
-        let api = self.api
-        Task.detached {
-        do {
-            _ = try await api.request("POST", "receipts/mark", body: body) as EmptyResponse
-        } catch {
-            // PUT THEM BACK. `markRead` records an id as reported BEFORE the POST, so a
-            // dropped request would otherwise strand it forever — the sender stuck on
-            // Delivered with nothing to retry it. Re-marking on the next sync is cheap;
-            // never re-marking is unrecoverable.
-            if status == "read" {
-                await MainActor.run {
-                    Self.readReported.subtract(ids)
-                    // AND QUEUE THEM FOR RETRY. Releasing the ids only helps if something
-                    // calls `markRead` again — and the only caller is gated on the chat
-                    // being open. A user who reads a message, loses signal for a moment and
-                    // then leaves the chat had their receipt dropped with nothing to
-                    // re-send it, so the sender sat on Delivered until they happened to
-                    // re-open that conversation. `flushPendingReceipts` drains this.
-                    Self.pendingReadReceipts.formUnion(ids)
-                }
+    private func markReceipts(_ messageIds: [String], status: String) async {
+        guard !messageIds.isEmpty else { return }
+        for start in stride(from: 0, to: messageIds.count, by: 500) {
+            let ids = Array(messageIds[start..<min(start + 500, messageIds.count)])
+            NSLog("[VOIID] 📤 receipt \(status) x\(ids.count)")
+            // SEND THE DEVICE ID. The login token carries only user_id (POST /auth/firebase
+            // issues no device claim), so without this the server records every receipt against a
+            // NULL device — see the callerDeviceId note in routes/receipts.ts.
+            struct Body: Encodable {
+                let message_ids: [String]
+                let status: String
+                let device_id: String?
             }
-            NSLog("[VOIID] receipt \(status) failed, will retry: \(error.localizedDescription)")
-        }
+            // DETACHED, not awaited on the caller's task. `markRead` is called from the chat
+            // screen's 4-second polling Task, which is cancelled the moment the user navigates
+            // away — that cancellation propagated into this request and killed it mid-flight.
+            // The catch then released the ids, but nothing retried them, because the thing that
+            // would have retried was the task that just died. Opening a chat and backing out
+            // promptly meant the read receipt was never delivered at all.
+            //
+            // A detached task outlives the screen, so a receipt that has STARTED will finish.
+            let body = Body(message_ids: ids, status: status, device_id: E2EManager.shared.deviceId)
+            let api = self.api
+            Task.detached {
+            do {
+                _ = try await api.request("POST", "receipts/mark", body: body) as EmptyResponse
+            } catch {
+                // PUT THEM BACK. `markRead` records an id as reported BEFORE the POST, so a
+                // dropped request would otherwise strand it forever — the sender stuck on
+                // Delivered with nothing to retry it. Re-marking on the next sync is cheap;
+                // never re-marking is unrecoverable.
+                if status == "read" {
+                    await MainActor.run {
+                        Self.readReported.subtract(ids)
+                        // AND QUEUE THEM FOR RETRY. Releasing the ids only helps if something
+                        // calls `markRead` again — and the only caller is gated on the chat
+                        // being open. A user who reads a message, loses signal for a moment and
+                        // then leaves the chat had their receipt dropped with nothing to
+                        // re-send it, so the sender sat on Delivered until they happened to
+                        // re-open that conversation. `flushPendingReceipts` drains this.
+                        Self.pendingReadReceipts.formUnion(ids)
+                    }
+                }
+                NSLog("[VOIID] receipt \(status) failed, will retry: \(error.localizedDescription)")
+            }
+            }
         }
     }
 

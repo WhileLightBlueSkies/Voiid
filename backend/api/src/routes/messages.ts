@@ -517,8 +517,13 @@ router.get('/pending/:user_id', requireAuth, asyncHandler(async (req, res) => {
        join conversation_members cm on cm.conversation_id = m.conversation_id
        where cm.user_id = $1 and cm.left_at is null
          and m.is_pending = true and m.ciphertext is not null
+         and not exists (
+           select 1 from message_read_receipts r
+            where r.message_id = m.id and r.user_id = $1 and r.status = 'read'
+              and r.device_id is not distinct from $2::uuid
+         )
        order by m.created_at asc`,
-    [req.params.user_id]
+    [req.params.user_id, deviceId]
   );
 
   const merged = [...perDevice, ...legacy].sort(

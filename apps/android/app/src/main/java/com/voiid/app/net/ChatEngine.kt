@@ -470,35 +470,37 @@ class ChatEngine private constructor(context: Context) {
         if (ids.isNotEmpty()) markReceipts(ids, "delivered")
     }
 
-    private suspend fun markReceipts(ids: List<String>, status: String) {
-        if (ids.isEmpty()) return
-        android.util.Log.i("VOIID", "📤 receipt $status x${ids.size}")
-        // SEND THE DEVICE ID. The login token carries only user_id (POST /auth/firebase
-        // issues no device claim), so without this the server records every receipt against a
-        // NULL device — see the callerDeviceId note in routes/receipts.ts.
-        val body = ApiClient.json.encodeToString(
-            MarkReadBody.serializer(), MarkReadBody(ids, status, e2e.deviceId),
-        )
-        android.util.Log.i("VOIIDReceipt", "POST receipts/mark status=$status n=${ids.size} device=${e2e.deviceId}")
-        // NOT the caller's coroutine. The 4-second poll that calls markRead lives on the CHAT
-        // SCREEN's scope, so navigating away — or that loop being cancelled — killed the POST
-        // mid-flight. `runCatching` then caught the CancellationException, released the ids,
-        // and nothing retried them, because the thing that would have retried was the
-        // coroutine that just died. Opening a chat and backing out promptly meant the read
-        // receipt was never delivered at all.
-        //
-        // `receiptScope` outlives the screen, so a receipt that has STARTED will finish.
-        receiptScope.launch {
-            runCatching { api.request("POST", "receipts/mark", jsonBody = body) }
-                .onSuccess { android.util.Log.i("VOIIDReceipt", "receipt $status OK for ${ids.size}") }
-                .onFailure {
-                    // PUT THEM BACK. `markRead` records an id as reported BEFORE the POST, so
-                    // a dropped request would otherwise strand it forever — the sender stuck
-                    // on Delivered with nothing to retry it. Re-marking on the next sync is
-                    // cheap; never re-marking is unrecoverable.
-                    if (status == "read") readReported.removeAll(ids.toSet())
-                    android.util.Log.w("VOIIDReceipt", "receipt $status failed, will retry", it)
-                }
+    private suspend fun markReceipts(messageIds: List<String>, status: String) {
+        if (messageIds.isEmpty()) return
+        for (ids in messageIds.chunked(500)) {
+            android.util.Log.i("VOIID", "📤 receipt $status x${ids.size}")
+            // SEND THE DEVICE ID. The login token carries only user_id (POST /auth/firebase
+            // issues no device claim), so without this the server records every receipt against a
+            // NULL device — see the callerDeviceId note in routes/receipts.ts.
+            val body = ApiClient.json.encodeToString(
+                MarkReadBody.serializer(), MarkReadBody(ids, status, e2e.deviceId),
+            )
+            android.util.Log.i("VOIIDReceipt", "POST receipts/mark status=$status n=${ids.size} device=${e2e.deviceId}")
+            // NOT the caller's coroutine. The 4-second poll that calls markRead lives on the CHAT
+            // SCREEN's scope, so navigating away — or that loop being cancelled — killed the POST
+            // mid-flight. `runCatching` then caught the CancellationException, released the ids,
+            // and nothing retried them, because the thing that would have retried was the
+            // coroutine that just died. Opening a chat and backing out promptly meant the read
+            // receipt was never delivered at all.
+            //
+            // `receiptScope` outlives the screen, so a receipt that has STARTED will finish.
+            receiptScope.launch {
+                runCatching { api.request("POST", "receipts/mark", jsonBody = body) }
+                    .onSuccess { android.util.Log.i("VOIIDReceipt", "receipt $status OK for ${ids.size}") }
+                    .onFailure {
+                        // PUT THEM BACK. `markRead` records an id as reported BEFORE the POST, so
+                        // a dropped request would otherwise strand it forever — the sender stuck
+                        // on Delivered with nothing to retry it. Re-marking on the next sync is
+                        // cheap; never re-marking is unrecoverable.
+                        if (status == "read") readReported.removeAll(ids.toSet())
+                        android.util.Log.w("VOIIDReceipt", "receipt $status failed, will retry", it)
+                    }
+            }
         }
     }
 

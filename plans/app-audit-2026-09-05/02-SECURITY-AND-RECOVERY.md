@@ -1,6 +1,6 @@
 # 02 — Security and recovery
 
-Baseline: `a2e24e5` · 2026-09-05 · All tasks TODO; fixes specified, not implemented.
+Baseline: `a2e24e5` · 2026-09-05 · Execution underway; S01 completed locally. The issue register is the status authority.
 
 Execute one issue per change. Test with synthetic accounts and disposable Postgres/Redis. Preserve ciphertext-only private payloads and the existing reachability model. Do not weaken checks for legacy clients; provide a compatible upgrade path.
 

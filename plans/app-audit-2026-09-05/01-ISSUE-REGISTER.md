@@ -1,6 +1,6 @@
 # 01 — Issue register
 
-Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 1 DONE (Q01), 1 IMPLEMENTED_UNVERIFIED (Q02), 48 TODO.
+Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 2 DONE (Q01, S01), 1 IMPLEMENTED_UNVERIFIED (Q02), 47 TODO.
 
 Each ID belongs to exactly one implementation part. Read its dependency and acceptance sections before editing. Priority includes source-confirmed defects, runtime risks, and requested capability gaps; see the evidence column and task text.
 
@@ -13,7 +13,7 @@ Each ID belongs to exactly one implementation part. Read its dependency and acce
 | M01 | P0 | Make message acceptance atomic and retry-safe | Confirmed | [03](03-MESSAGE-RELIABILITY.md) | TODO |
 | M02 | P0 | Acknowledge only after durable client persistence | Confirmed | [03](03-MESSAGE-RELIABILITY.md) | TODO |
 | R02 | P0 | Authorize and bound typing, reset, and location frames | Confirmed | [05](05-REALTIME-CALLS-GAMES.md) | TODO |
-| S01 | P0 | Authorize receipt reads and writes | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | TODO |
+| S01 | P0 | Authorize receipt reads and writes | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | DONE |
 | S02 | P0 | Validate sender and recipient devices on all message paths | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | TODO |
 | S03 | P0 | Make revocation persistent and device-bound | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | TODO |
 | S04 | P0 | Replace the false recovery lockout security boundary | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | TODO |
@@ -270,3 +270,18 @@ Rollback/migration notes: delete ci.yml and nightly.yml and revert the two deplo
 
 Reviewer/date: implemented 2026-09-05; awaiting review and a first CI run.
 ```
+
+
+## S01 — receipt authorization completed (2026-09-05)
+
+- **Status:** DONE for the receipt authorization contract. Device-bound sessions and durable acknowledgement remain S03/M02.
+- **Source/fix commit:** commit containing this record, parent `f0e116a`; continues the supplied uncommitted receipt patch.
+- **Files:** API `deviceAuthorization.ts`, `routes/receipts.ts`, legacy pending selection in `routes/messages.ts`; `test/receiptAuthorization.test.ts` and `test/receiptPostgres.test.ts`; Android/iOS `ChatEngine` receipt batching; PostgreSQL CI step.
+- **Fix:** verify active owned devices even for signed claims; reject unknown/malformed claims without falling back to NULL. Require active membership and the exact addressed envelope for fanout receipt writes. Sender access to receipt rosters remains supported. Device-less legacy ciphertext remains supported. Lock device/membership rows, validate the whole batch, and bulk-upsert in a transaction using 027's actual partial indexes. Preserve receipt timestamps and read status; publish only committed changes and exclude sender-owned progress. Database failures reach Express error middleware.
+- **Pending compatibility:** receipts no longer change the shared `messages.is_pending` flag. Legacy pending fetch excludes only the caller's read receipt for the selected device, so another device/member is not suppressed. This is not the durable-storage ACK required by M02 and does not repair previously cleared flags.
+- **Native compatibility:** both E2E managers store the ID returned by `/devices/register` (iOS `register`, Android `register`). Both bootstrap paths register before uploading prekeys. Persisted IDs can be used before bootstrap completes and can be stale after revocation/restoration; those claims correctly fail 403. There is no provable ownership of an unknown row. Do not silently map it to NULL. S03 must supply the explicit session/registration recovery UX. Both clients now split receipt requests into at most 500 IDs.
+- **Failure reproduction:** real PostgreSQL tests against the original committed receipt route failed authorization, fanout entitlement, pending isolation, transaction failure, and revocation scenarios. The old async handler also left the test process alive after an injected failure; the comparison run was terminated after 8 seconds and the fixed source restored.
+- **Validation:** PostgreSQL 16.15 on a dedicated loopback cluster, synthetic accounts and unique disposable schemas; seven real-router subtests plus parent pass (8/8), including concurrent retries, injected insert failure/rollback, and revocation while waiting on a row lock. The fake-router suite passes 17/17. Full `npm test` with the PostgreSQL test enabled: API 222/222, games 6/6 suites, Ludo asset guard pass. API typecheck passes. Android `:app:compileDebugKotlin` and unsigned iOS simulator build both succeed. No live accounts/database used. PostgreSQL tooling was installed locally; no login/background service was enabled.
+- **CI:** the real database suite is wired into the existing disposable migration job. GitHub execution remains unverified under Q02.
+- **Limits:** no physical-device network run, production load measurement, or distributed notification ordering proof. Redis failure preserves committed receipts and polling can recover; durable realtime notifications are part of M01. User-only legacy JWTs cannot establish which physical device sent a request when no device claim is provided; S03 remains mandatory. M02 still owns premature fanout fetch acknowledgement and disk durability.
+- **Rollback:** no schema migration. Preserve authorization if rolling back; disable the endpoint rather than restoring the hole. Keep the legacy pending filter with removal of the shared pending mutation. Reverting client batching requires preserving compatible server request limits.
