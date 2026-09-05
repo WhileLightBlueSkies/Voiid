@@ -21,7 +21,7 @@ cryptographic reviewer rather than an implementation.
 Newest first.
 
 ### W01 / W02 / W03 — Console and site-header correctness
-`pending` · P1 · admin console + marketing site
+`2803a92` · P1 · admin console + marketing site
 
 **W01:** cancelling the "add a note" dialog when resolving a report still **resolved the
 report**. Cancel and an empty note were the same empty string to the code. There is no undo on

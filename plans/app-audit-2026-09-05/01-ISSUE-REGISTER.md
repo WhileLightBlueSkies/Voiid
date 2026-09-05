@@ -991,7 +991,7 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
 
 - **Status:** W01 and W02 DONE. W03 IMPLEMENTED_UNVERIFIED — its acceptance requires browser
   accessibility inspection and an automated navigation interaction test, and neither exists here.
-- **Source/fix commit:** commit containing this record, parent `7b0a5c6`.
+- **Source/fix commit:** `2803a92`, parent `7b0a5c6`.
 - **Files:** `apps/admin-web/lib/latestOnly.ts` (new), `components/useList.ts`,
   `app/reports/page.tsx`, `package.json`, `test/list.test.ts` (new);
   `apps/web/components/SiteHeader.tsx`, `SiteHeader.module.css`.
