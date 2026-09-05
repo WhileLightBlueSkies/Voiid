@@ -10,6 +10,7 @@
     "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
+    "@voiid/common-utils": "*",
     "ioredis": "^5.4.1",
     "jsonwebtoken": "^9.0.2",
     "pg": "^8.12.0",

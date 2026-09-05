@@ -1,6 +1,6 @@
 # 01 — Issue register
 
-Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 9 DONE (Q01, S01, S02, S03, C01, R02, M01, M02, A02), 3 IMPLEMENTED_UNVERIFIED (Q02, A01, I03), 39 TODO.
+Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 10 DONE (Q01, S01, S02, S03, C01, R02, M01, M02, A02, S05), 3 IMPLEMENTED_UNVERIFIED (Q02, A01, I03), 38 TODO.
 
 Each ID belongs to exactly one implementation part. Read its dependency and acceptance sections before editing. Priority includes source-confirmed defects, runtime risks, and requested capability gaps; see the evidence column and task text.
 
@@ -34,7 +34,7 @@ Each ID belongs to exactly one implementation part. Read its dependency and acce
 | R01 | P1 | Use the conference grant format in the actual relay | Confirmed | [05](05-REALTIME-CALLS-GAMES.md) | TODO |
 | R03 | P1 | Authenticate before registering sockets; handle slow consumers | Confirmed sequence and resource gap | [05](05-REALTIME-CALLS-GAMES.md) | TODO |
 | R05 | P1 | Serialize conference admission under the participant cap | Static concurrency risk | [05](05-REALTIME-CALLS-GAMES.md) | TODO |
-| S05 | P1 | Verify database TLS identity | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | TODO |
+| S05 | P1 | Verify database TLS identity | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | DONE |
 | S06 | P1 | Make device linking claims atomic | Confirmed race risk | [02](02-SECURITY-AND-RECOVERY.md) | TODO |
 | U01 | P1 | Await Android sheet dismissal before removing it | Confirmed | [09](09-MOTION-ACCESSIBILITY.md) | TODO |
 | U02 | P1 | Correct sheet initial detents and entrance position | Confirmed | [09](09-MOTION-ACCESSIBILITY.md) | TODO |
@@ -802,3 +802,54 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
     for does not exist.
 - **Rollback:** revert the code. No schema or wire change. Do NOT roll back the ack gating alone —
   without it a failed write again tells the server the message is stored.
+
+
+## S05 — database TLS is verified, not merely enabled (2026-09-06)
+
+- **Status:** DONE in code. **The rollout is an operator step and has not been performed** —
+  the enforcement this ships is only real once `VOIID_DB_TLS_INSECURE` is absent on the box.
+- **Source/fix commit:** commit containing this record, parent `fd6b4a1`.
+- **Files:** `packages/common-utils/src/databaseTls.ts` (new), `src/index.ts`; `backend/api/src/db.ts`,
+  `backend/games/src/db.ts`, `backend/workers/src/db.ts`, `infrastructure/deployment/migrate.mjs`;
+  `backend/games/package.json`, `backend/workers/package.json`;
+  `backend/api/test/databaseTls.test.ts` (new); `.github/workflows/ci.yml`; `.env.example`.
+- **Failure reproduced:** yes, by reading all four sites. Each carried the same two lines:
+  `rejectUnauthorized: false` for every remote host, and a local exemption decided by
+  `url.includes('localhost') || url.includes('127.0.0.1')` over the WHOLE connection string.
+  `rejectUnauthorized: false` is not weaker verification, it is none: the traffic is encrypted
+  to whoever answers, so anyone positioned between the box and Supabase could present any
+  certificate and read or rewrite the entire database. The substring test additionally
+  disabled TLS for a remote host when the PASSWORD, the database name, or a hostname such as
+  `localhost.attacker.example` contained the word.
+- **Implementation:** one shared, tested policy. The hostname is parsed (not searched) and only
+  true loopback hosts skip TLS; everything else verifies, with an optional CA from
+  `VOIID_DB_CA_CERT` / `VOIID_DB_CA_CERT_PATH`. A connection string that would weaken the policy
+  (`sslmode=disable|allow|prefer|no-verify`, `ssl=false`) is REFUSED rather than silently
+  honoured, since node-postgres does read those. `VOIID_DB_TLS_INSECURE` must be exactly `1` — a
+  stray `false` in a deploy env must not read as consent — and every service prints the policy in
+  force at boot, so it is visible without reading the env file.
+- **Why one module instead of four copies:** the bug WAS four copies. games and workers now depend
+  on `@voiid/common-utils` (no transitive deps, already built first by the deploy script), and
+  migrate.mjs requires the same built module. CI's migrations job gained the build step to match.
+- **Regression evidence:** restoring the substring check in one db.ts fails the guard by file
+  name. The guard scans all four files for `rejectUnauthorized: false`, for the substring test,
+  and for use of the shared resolver.
+- **Validation:** 9 policy tests including every mis-parse case; full `npm test` exit 0 with all
+  seven database suites (API 276/276, games 6/6, relay 27/27, workers 8/8); typecheck clean across
+  all five projects; `npm ci` accepts the lockfile; the migration runner replays all 67 migrations
+  against loopback and logs `database TLS: off (loopback)`.
+- **Remaining limitations:**
+  - **Nothing was verified against a real remote database.** The acceptance asks that a trusted
+    certificate connects and that unknown-CA, expired and hostname-mismatch cases fail. Those were
+    NOT exercised — no connection to Supabase or any TLS server was made, and the correct CA has
+    not been provisioned. The policy is proven; its effect against a live server is not.
+  - **This will break the deployed box unless step 1 is done first.** Verification is the default,
+    so a trust store lacking the database's CA now fails to connect. `.env.example` documents the
+    three-step rollout (set `VOIID_DB_TLS_INSECURE=1`, provision the CA, remove the flag). Nothing
+    enforces that an operator completes step 3, and until they do, the hole is open — explicitly
+    and loudly now, rather than silently.
+  - Supabase's pooler and direct connections may need different CA material. Which one this
+    deployment uses was not determined.
+  - The websocket relay's own pool (added in S03) carried the same unverified form and IS
+    migrated here; the guard test covers all five sites. It was found by writing this record,
+    which is an argument for writing them.

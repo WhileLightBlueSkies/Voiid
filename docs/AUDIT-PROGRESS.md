@@ -8,7 +8,7 @@ This is the plain-language view. The
 authority and holds the full completion record for each item — files changed, how the failure was
 reproduced, what was verified and what was not.
 
-**Status: 9 fixed · 3 implemented but unverified · 39 open**
+**Status: 10 fixed · 3 implemented but unverified · 38 open**
 Baseline `a2e24e5` · 50 findings · last updated 2026-09-06
 
 **Every P0 is now closed except S04**, which its own spec calls a release gate needing a
@@ -19,6 +19,25 @@ cryptographic reviewer rather than an implementation.
 ## Fixed
 
 Newest first.
+
+### S05 — The database connection checks who it is talking to
+`pending` · P1 · every service
+
+Every service connected to the database with certificate verification **off**. The traffic was
+encrypted, and nothing checked who it was encrypted *to* — anyone able to sit between the server
+and Supabase could present any certificate and read or rewrite the whole database.
+
+The local-development exemption made it worse: it searched the entire connection string for the
+word "localhost", so a password containing it, a database named it, or a host called
+`localhost.attacker.example` silently turned verification off for a remote database.
+
+One shared, tested policy now. The hostname is parsed, remote connections are verified, and a
+connection string that would quietly weaken the policy is refused rather than honoured.
+
+**Action needed on the server.** Verification is the default, so a machine whose trust store
+lacks the database's CA will now fail to connect. The rollout is: set `VOIID_DB_TLS_INSECURE=1`
+(today's behaviour, made explicit), provision the CA, then remove the flag. **Until that last
+step, the hole is still open** — loudly now, and logged at every boot, rather than silently.
 
 ### I03 — Persistence that reports whether it persisted
 `d39a9e9` · P0 · both clients · **implemented, not verified**

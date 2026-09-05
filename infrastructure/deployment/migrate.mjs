@@ -20,6 +20,8 @@ import { createRequire } from 'node:module';
 // pg lives in the workspace node_modules (api dependency); resolve from there.
 const require = createRequire(import.meta.url);
 const { Client } = require('pg');
+// The SAME policy the services use, rather than a fourth copy of it (S05).
+const { resolveDatabaseSsl, describeDatabaseTls } = require('@voiid/common-utils');
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = join(__dirname, '..', '..', 'database', 'migrations');
@@ -29,11 +31,12 @@ if (!url) {
   console.error('[migrate] DATABASE_URL is not set');
   process.exit(1);
 }
-const isLocal = url.includes('localhost') || url.includes('127.0.0.1');
+const ssl = resolveDatabaseSsl(url);
+console.log(`[migrate] ${describeDatabaseTls(ssl)}`);
 
 const client = new Client({
   connectionString: url,
-  ssl: isLocal ? undefined : { rejectUnauthorized: false },
+  ssl,
 });
 
 async function main() {

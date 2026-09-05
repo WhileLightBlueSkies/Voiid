@@ -20,6 +20,7 @@
 // Connection budget matters because staging and production are Supabase; two is a rounding
 // error against its pooler, and the queries are simple enough for transaction-mode pooling.
 import { Pool } from 'pg';
+import { resolveDatabaseSsl, describeDatabaseTls } from '@voiid/common-utils';
 import jwt from 'jsonwebtoken';
 
 /** Close codes. 4401/4403 mean stop; 4503 means the answer is unknown — retry. */
@@ -40,10 +41,13 @@ let pool: Pool | null = null;
 export function sessionPool(): Pool {
   if (pool) return pool;
   const url = process.env.DATABASE_URL ?? '';
-  const isLocal = url.includes('localhost') || url.includes('127.0.0.1');
+  // S05: the same verified-TLS policy every other service uses. This pool was added in S03 and
+  // copied the unverified form along with everything else.
+  const ssl = resolveDatabaseSsl(url);
+  console.log(`[voiid:ws] ${describeDatabaseTls(ssl)}`);
   pool = new Pool({
     connectionString: url,
-    ssl: isLocal ? undefined : { rejectUnauthorized: false },
+    ssl,
     // Deliberately tiny: this pool answers one question at connect time and nothing else.
     max: Number(process.env.WS_DB_POOL_MAX) || 2,
     idleTimeoutMillis: 30_000,

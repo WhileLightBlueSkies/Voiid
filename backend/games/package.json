@@ -10,6 +10,7 @@
     "test": "node ../../tools/run-suites.mjs src/engine/registry.test.ts src/engine/snake/snake.test.ts src/engine/cricket/cricket.test.ts src/engine/seabattle/seabattle.test.ts src/queue.test.ts src/engine/ludo/ludo.test.ts"
   },
   "dependencies": {
+    "@voiid/common-utils": "*",
     "ioredis": "^5.4.1",
     "pg": "^8.12.0"
   },

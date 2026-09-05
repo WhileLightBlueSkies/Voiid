@@ -180,6 +180,12 @@ jobs:
       - name: Install (locked)
         run: npm ci --no-audit --no-fund
 
+      # migrate.mjs reads the shared database-TLS policy (S05) rather than carrying a fourth
+      # copy of it, and that package ships as built JS. The deploy script already builds it
+      # before running migrations; this is the same ordering.
+      - name: Build the shared package
+        run: npm run build -w @voiid/common-utils
+
       # A disposable container, never a shared or production database.
       - name: Replay every migration from empty
         env:

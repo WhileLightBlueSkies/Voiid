@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1072.0",
+    "@voiid/common-utils": "*",
     "ioredis": "^5.4.1",
     "pg": "^8.12.0"
   },
