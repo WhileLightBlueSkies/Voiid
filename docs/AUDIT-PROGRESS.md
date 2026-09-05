@@ -8,7 +8,7 @@ This is the plain-language view. The
 authority and holds the full completion record for each item — files changed, how the failure was
 reproduced, what was verified and what was not.
 
-**Status: 10 fixed · 3 implemented but unverified · 38 open**
+**Status: 11 fixed · 3 implemented but unverified · 37 open**
 Baseline `a2e24e5` · 50 findings · last updated 2026-09-06
 
 **Every P0 is now closed except S04**, which its own spec calls a release gate needing a
@@ -19,6 +19,21 @@ cryptographic reviewer rather than an implementation.
 ## Fixed
 
 Newest first.
+
+### P03 — A failing request now answers instead of hanging
+`pending` · P1 · API
+
+Express 4 does not catch a rejected promise from a route handler, so a handler that threw sent
+**no response at all** — the client waited until it timed out and the socket stayed open. The
+audit named four such handlers; a full inventory found **67 across 12 files**.
+
+The error handler also guessed the status from the error's text. A body that was too large came
+back as 500 instead of 413, telling clients to retry something that could never work; and any
+internal failure whose message happened to contain "invalid input" — which is what Postgres says
+for a bad id — was reported to the caller as their mistake.
+
+Every handler is wrapped now, errors carry a stable code and a request id, and nothing is
+inferred from prose.
 
 ### S05 — The database connection checks who it is talking to
 `3f5416a` · P1 · every service

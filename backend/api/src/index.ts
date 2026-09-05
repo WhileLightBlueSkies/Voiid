@@ -1,5 +1,6 @@
 // VOIID API service (Phase 0/1). HTTPS-only in prod; JWT validation; rate limiting (Section 4.6/4.9).
 import { secretboxAvailable } from './secretbox';
+import { installErrorHandler } from './errors';
 import express from 'express';
 import { pool } from './db';
 import { redis } from './redis';
@@ -282,17 +283,11 @@ app.use('/admin', rateLimit({ max: 60, windowSeconds: 60, bucket: 'admin' }), ad
 app.use('/v1', api);
 app.use(api);   // legacy unversioned alias (migration safety) — remove once all clients send /v1
 
-// Global error handler — turns thrown errors (incl. malformed JSON and bad
-// base64 in inputs) into a clean 400/500 instead of crashing the socket. No
-// secrets in the response. (Express 4: this catches sync throws + next(err);
-// async route rejections reach here via the asyncHandler wrapper in util.ts.)
-app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  const status = err?.type === 'entity.parse.failed' || /base64|invalid input/i.test(err?.message ?? '')
-    ? 400
-    : 500;
-  if (status === 500) console.error('[voiid:api] unhandled error:', err?.message);
-  if (!res.headersSent) res.status(status).json({ error: status === 400 ? 'bad request' : 'internal error' });
-});
+// Global error handler. See src/errors.ts for why the status is never inferred from the
+// error's MESSAGE: a body-too-large arrives carrying its own 413 and was answered 500, and any
+// internal failure whose text mentioned "invalid input" — which is what Postgres says for a bad
+// uuid cast — was reported to the caller as their mistake.
+installErrorHandler(app);
 
 // Surface unhandled async rejections instead of letting them tear down sockets.
 process.on('unhandledRejection', (reason) => {

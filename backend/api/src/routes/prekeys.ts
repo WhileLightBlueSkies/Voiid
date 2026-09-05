@@ -144,7 +144,7 @@ router.get('/count', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // GET /prekeys/:user_id — returns a bundle per active device, consuming one one-time prekey transactionally.
-router.get('/:user_id', requireAuth, async (req, res) => {
+router.get('/:user_id', requireAuth, asyncHandler(async (req, res) => {
   // Fetch guard (see security.ts guardKeyMaterialFetch): every call CONSUMES one
   // one-time prekey per device, so an unthrottled loop from any authenticated
   // account could keep a victim permanently unable to receive new-session mail.
@@ -225,7 +225,7 @@ router.get('/:user_id', requireAuth, async (req, res) => {
     }
   }
   res.json({ bundles });
-});
+}));
 
 // POST /prekeys/refresh — client replenishes one-time prekeys (same shape as upload's one_time_prekeys)
 router.post('/refresh', requireAuth, asyncHandler(async (req, res) => {

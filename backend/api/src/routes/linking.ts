@@ -23,7 +23,7 @@ const key = (t: string) => `linking:${t}`;
 
 // POST /linking/request — { platform:'web', registration_id, identity_public_key(b64), device_name? }
 // Unauthenticated: the new device has no session yet. Returns a link_token to render as a QR.
-router.post('/request', async (req, res) => {
+router.post('/request', asyncHandler(async (req, res) => {
   const { platform = 'web', registration_id, identity_public_key, device_name } = req.body ?? {};
   if (registration_id == null || !identity_public_key) {
     return res.status(400).json({ error: 'registration_id and identity_public_key required' });
@@ -35,7 +35,7 @@ router.post('/request', async (req, res) => {
     'EX', LINK_TTL_SECONDS
   );
   res.json({ link_token, expires_in: LINK_TTL_SECONDS });
-});
+}));
 
 // POST /linking/approve — { link_token }  (authed by an existing trusted device)
 // Registers the pending device under the approving user and mints its session JWT.
@@ -77,7 +77,7 @@ router.post('/approve', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // GET /linking/poll/:link_token — the web device polls until approved, then receives its JWT.
-router.get('/poll/:link_token', async (req, res) => {
+router.get('/poll/:link_token', asyncHandler(async (req, res) => {
   const raw = await redis.get(key(req.params.link_token));
   if (!raw) return res.status(404).json({ error: 'link token expired or invalid' });
   const state = JSON.parse(raw);
@@ -86,6 +86,6 @@ router.get('/poll/:link_token', async (req, res) => {
     return res.json({ status: 'approved', token: state.token, user_id: state.user_id, device_id: state.device_id });
   }
   res.json({ status: 'pending' });
-});
+}));
 
 export default router;

@@ -49,7 +49,7 @@ function usernameError(u: unknown): string | null {
 
 // GET /users/username-available?username=foo — check format + availability.
 // Registered BEFORE /:id so it isn't swallowed by the id route.
-router.get('/username-available', requireAuth, async (req, res) => {
+router.get('/username-available', requireAuth, asyncHandler(async (req, res) => {
   const u = String(req.query.username ?? '').toLowerCase();
   const err = usernameError(u);
   if (err) return res.json({ available: false, reason: err });
@@ -58,7 +58,7 @@ router.get('/username-available', requireAuth, async (req, res) => {
     [u]
   );
   res.json({ available: rows.length === 0 });
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // User game preferences — first-run walkthrough markers (LUDO_GAME_SPEC.md §10).
@@ -113,7 +113,7 @@ router.get('/me/preferences/ludo-walkthrough', requireAuth, asyncHandler(async (
 //   photo_privacy / about_privacy ∈ everyone | contacts | nobody. A 'contacts'-scoped
 //   field is returned only when the VIEWER is someone the OWNER has saved (a contact_sync
 //   row: owner = :id, contact = viewer). 'nobody' hides it from everyone but the owner.
-router.get('/:id', requireAuth, async (req, res) => {
+router.get('/:id', requireAuth, asyncHandler(async (req, res) => {
   const viewerId = (req as any).auth.user_id;
   const targetId = req.params.id;
   const rows = await query<{
@@ -205,10 +205,10 @@ router.get('/:id', requireAuth, async (req, res) => {
       contact_pin_set_at: isOwner ? u.contact_pin_set_at : undefined,
     },
   });
-});
+}));
 
 // POST /users/profile/update — { full_name?, email?, photo_url?, bio?, status_text?, username? }
-router.post('/profile/update', requireAuth, async (req, res) => {
+router.post('/profile/update', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const { full_name, email, photo_url, bio, status_text, username,
           photo_privacy, about_privacy, last_seen_privacy } = req.body ?? {};
@@ -277,7 +277,7 @@ router.post('/profile/update', requireAuth, async (req, res) => {
     if (e?.code === '23505') return res.status(409).json({ error: 'username already taken' });
     throw e;
   }
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // Presence — online + last_seen, with users.last_seen_privacy enforced.
@@ -380,16 +380,16 @@ router.post('/presence', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // POST /users/consent — DPDP lawful consent capture at signup (Section 4.13).
-router.post('/consent', requireAuth, async (req, res) => {
+router.post('/consent', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   await query(`update users set consent_given_at = now() where id = $1`, [user_id]);
   res.json({ consent_recorded: true });
-});
+}));
 
 // DELETE /users/me — account deletion (DPDP true purge, Section 4.13).
 // Soft-delete immediately; the erasure worker performs the hard purge. Device trust is
 // revoked now, because that is what stops the account being USED while it waits.
-router.delete('/me', requireAuth, async (req, res) => {
+router.delete('/me', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   // photo_url and encrypted_photo_url are deliberately NOT nulled here.
   //
@@ -427,6 +427,6 @@ router.delete('/me', requireAuth, async (req, res) => {
   // this user's token for the life of the JWT on the service that carries the actual traffic.
   await revokeAccountSessions(user_id);
   res.json({ deleted: true, note: 'soft-deleted; hard purge runs via erasure job (DPDP)' });
-});
+}));
 
 export default router;

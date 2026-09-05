@@ -26,6 +26,7 @@
 // is a new privileged endpoint nobody remembered to gate, and a missing middleware in a
 // route definition is visible in review in a way a missing branch is not.
 import { Router } from 'express';
+import { asyncHandler } from '../util';
 import type { Request, Response, NextFunction } from 'express';
 import bcrypt from 'bcryptjs';
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
@@ -146,7 +147,7 @@ function maskPhone(phone: string | null): string | null {
 // ─────────────────────────────────────────────────────────────────────────────────
 // POST /admin/login  { email, password }
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/login', async (req, res) => {
+router.post('/login', asyncHandler(async (req, res) => {
   const email = String(req.body?.email ?? '').trim().toLowerCase();
   const password = String(req.body?.password ?? '');
   if (!email || !password) return res.status(400).json({ error: 'email and password required' });
@@ -183,14 +184,14 @@ router.post('/login', async (req, res) => {
   await audit(admin.id, 'admin.login', 'admin', admin.id, { ip: clientIp(req) });
 
   res.json({ token, expires_in: SESSION_TTL_SECONDS, name: admin.name, email });
-});
+}));
 
 // POST /admin/logout — delete THIS session (not every session for the admin).
-router.post('/logout', requireAdmin, async (req, res) => {
+router.post('/logout', requireAdmin, asyncHandler(async (req, res) => {
   const header = req.headers.authorization!;
   await query(`delete from admin_sessions where token_hash = $1`, [hashToken(header.slice(7))]);
   res.json({ ok: true });
-});
+}));
 
 /**
  * GET /admin/me — who am I, for the panel's header. Also the session-validity probe.
@@ -207,7 +208,7 @@ router.get('/me', requireAdmin, (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────────
 // GET /admin/stats — the dashboard's top row.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/stats', requireAdmin, async (_req, res) => {
+router.get('/stats', requireAdmin, asyncHandler(async (_req, res) => {
   const rows = await query<Record<string, number>>(`
     select
       (select count(*) from users where deleted_at is null)::int          as users,
@@ -258,7 +259,7 @@ router.get('/stats', requireAdmin, async (_req, res) => {
       (select count(*) from user_blocks)::int                                as blocks
   `);
   res.json(rows[0] ?? {});
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // GET /admin/geo — where accounts registered, by phone dialling prefix.
@@ -462,7 +463,7 @@ const DIAL_PREFIXES: [string, string][] = [
   ['7', 'RU']
 ];
 
-router.get('/geo', requireAdmin, async (_req, res) => {
+router.get('/geo', requireAdmin, asyncHandler(async (_req, res) => {
   // Grouped in SQL by the longest matching prefix. The values are a fixed, code-side
   // table — not user input — so they are inlined as a VALUES list rather than parameterised
   // into 183 placeholders, and every entry is asserted to be digits-only below.
@@ -526,7 +527,7 @@ router.get('/geo', requireAdmin, async (_req, res) => {
     basis: 'phone_country_code',
     note: 'Where accounts registered, by phone dialling prefix. Not current location.',
   });
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // GET /admin/series?days=30   — the last N days, or
@@ -544,7 +545,7 @@ router.get('/geo', requireAdmin, async (_req, res) => {
 // One query, not six: six round trips to draw one screen is how a dashboard becomes the
 // slowest page in a tool people are supposed to keep open.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/series', requireAdmin, async (req, res) => {
+router.get('/series', requireAdmin, asyncHandler(async (req, res) => {
   // A strict shape check, not a Date parse. `new Date('2026-02-31')` and
   // `new Date('banana')` both produce something, and neither belongs in a SQL cast — the
   // value is parameterised either way, but a malformed date should be a 400 with a reason
@@ -618,7 +619,7 @@ router.get('/series', requireAdmin, async (req, res) => {
     days: rows.length,
     series: rows,
   });
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // GET /admin/clips?cursor=&limit=&removed=
@@ -627,7 +628,7 @@ router.get('/series', requireAdmin, async (req, res) => {
 // offset pagination re-scans and, worse, SKIPS rows when something is removed mid-scroll —
 // which on a moderation queue means missing the clip you were looking for.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/clips', requireAdmin, async (req, res) => {
+router.get('/clips', requireAdmin, asyncHandler(async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 30, 100);
   const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
   const removed = req.query.removed === 'true';
@@ -662,10 +663,10 @@ router.get('/clips', requireAdmin, async (req, res) => {
     // one more request that returns nothing.
     next_cursor: rows.length === limit ? rows[rows.length - 1].created_at : null,
   });
-});
+}));
 
 /** GET /admin/clips/:id/playback — a signed URL for the actual video, to review it. */
-router.get('/clips/:id/playback', requireAdmin, async (req, res) => {
+router.get('/clips/:id/playback', requireAdmin, asyncHandler(async (req, res) => {
   const rows = await query<{ r2_key: string; r2_key_sd: string | null }>(
     `select r2_key, r2_key_sd from clips where id = $1 limit 1`, [req.params.id]);
   const clip = rows[0];
@@ -675,7 +676,7 @@ router.get('/clips/:id/playback', requireAdmin, async (req, res) => {
   // smaller rendition loads faster on a queue you are scrolling through.
   const key = clip.r2_key_sd ?? clip.r2_key;
   res.json({ url: await presignGet(key) });
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // POST /admin/clips/:id/remove  { reason }
@@ -684,7 +685,7 @@ router.get('/clips/:id/playback', requireAdmin, async (req, res) => {
 // recoverable, and a disputed one has a record — a hard DELETE destroys the evidence of why
 // something was removed, which is exactly what you need when the author asks.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/clips/:id/remove', requireAdmin, async (req, res) => {
+router.post('/clips/:id/remove', requireAdmin, asyncHandler(async (req, res) => {
   const a = (req as any).admin as AdminAuth;
   const reason = String(req.body?.reason ?? '').trim() || null;
 
@@ -700,10 +701,10 @@ router.post('/clips/:id/remove', requireAdmin, async (req, res) => {
   await audit(a.adminId, 'clip.remove', 'clip', req.params.id,
               { reason, author_id: rows[0].author_id });
   res.json({ ok: true });
-});
+}));
 
 /** POST /admin/clips/:id/restore — undo a takedown. */
-router.post('/clips/:id/restore', requireAdmin, async (req, res) => {
+router.post('/clips/:id/restore', requireAdmin, asyncHandler(async (req, res) => {
   const a = (req as any).admin as AdminAuth;
   const rows = await query<{ id: string }>(
     `update clips set removed_at = null, removed_by = null, removed_reason = null
@@ -714,7 +715,7 @@ router.post('/clips/:id/restore', requireAdmin, async (req, res) => {
   if (!rows[0]) return res.status(404).json({ error: 'not found or not removed' });
   await audit(a.adminId, 'clip.restore', 'clip', req.params.id);
   res.json({ ok: true });
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // DELETE /admin/clips/:id — PERMANENT: the row and every R2 object.
@@ -726,7 +727,7 @@ router.post('/clips/:id/restore', requireAdmin, async (req, res) => {
 // reversible, and a moderator's whole job is performed with those. Handing the one
 // irreversible action to everyone who can log in was the pre-role default, not a decision.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.delete('/clips/:id', requireAdmin, requireRole('admin'), async (req, res) => {
+router.delete('/clips/:id', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
   const a = (req as any).admin as AdminAuth;
   const rows = await query<{ r2_key: string; thumb_r2_key: string; r2_key_sd: string | null; r2_key_hd: string | null; author_id: string }>(
     `select r2_key, thumb_r2_key, r2_key_sd, r2_key_hd, author_id from clips where id = $1 limit 1`,
@@ -744,7 +745,7 @@ router.delete('/clips/:id', requireAdmin, requireRole('admin'), async (req, res)
 
   await audit(a.adminId, 'clip.purge', 'clip', req.params.id, { author_id: clip.author_id });
   res.json({ ok: true });
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // GET /admin/reports?status=open|resolved&cursor=&limit=
@@ -758,7 +759,7 @@ router.delete('/clips/:id', requireAdmin, requireRole('admin'), async (req, res)
 // key on target_id (every FK action destroys the record of why something was removed), so
 // a dangling target renders as "deleted" rather than dropping the report.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/reports', requireAdmin, async (req, res) => {
+router.get('/reports', requireAdmin, asyncHandler(async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 30, 100);
   const cursor = typeof req.query.cursor === 'string' && req.query.cursor ? req.query.cursor : null;
   const resolved = req.query.status === 'resolved';
@@ -803,14 +804,14 @@ router.get('/reports', requireAdmin, async (req, res) => {
     reports: rows,
     next_cursor: rows.length === limit ? rows[rows.length - 1].created_at : null,
   });
-});
+}));
 
 // POST /admin/reports/:id/resolve  { resolution, note? }
 //
 // ONE conditional UPDATE, not select-then-update: two moderators working the queue at once
 // would otherwise both "resolve" the same row and the second would overwrite the first's
 // verdict. `where status = 'open'` makes the loser's update affect zero rows and say so.
-router.post('/reports/:id/resolve', requireAdmin, async (req, res) => {
+router.post('/reports/:id/resolve', requireAdmin, asyncHandler(async (req, res) => {
   const a = (req as any).admin as AdminAuth;
   const resolution = String(req.body?.resolution ?? '');
   const note = String(req.body?.note ?? '').trim() || null;
@@ -833,7 +834,7 @@ router.post('/reports/:id/resolve', requireAdmin, async (req, res) => {
     resolution, target_type: rows[0].target_type, target_id: rows[0].target_id,
   });
   res.json({ resolved: true });
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // GET /admin/audit?action=&target_type=&target_id=&admin_id=&cursor=&limit=
@@ -852,7 +853,7 @@ router.post('/reports/:id/resolve', requireAdmin, async (req, res) => {
 // low-cardinality column; there is deliberately no free-text search over `detail`, which
 // would be a full scan over jsonb on a table that only grows.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/audit', requireAdmin, async (req, res) => {
+router.get('/audit', requireAdmin, asyncHandler(async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 50, 200);
   const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);
 
@@ -891,7 +892,7 @@ router.get('/audit', requireAdmin, async (req, res) => {
     // request that returns nothing.
     next_cursor: rows.length === limit ? rows[rows.length - 1].id : null,
   });
-});
+}));
 
 // ═════════════════════════════════════════════════════════════════════════════════
 // PEOPLE
@@ -918,7 +919,7 @@ router.get('/audit', requireAdmin, async (req, res) => {
 // prefix, because that is enumeration rather than lookup, and this list is the one place in
 // the product where enumeration would be cheap.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/users', requireAdmin, async (req, res) => {
+router.get('/users', requireAdmin, asyncHandler(async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 30, 100);
   const cursor = typeof req.query.cursor === 'string' && req.query.cursor ? req.query.cursor : null;
   const deleted = req.query.deleted === 'true';
@@ -970,7 +971,7 @@ router.get('/users', requireAdmin, async (req, res) => {
     users: rows.map(({ phone_number, ...u }) => ({ ...u, phone_masked: maskPhone(phone_number) })),
     next_cursor: rows.length === limit ? rows[rows.length - 1].created_at : null,
   });
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // GET /admin/users/:id — one person: devices, recent security events, consent, requests.
@@ -987,7 +988,7 @@ router.get('/users', requireAdmin, async (req, res) => {
 // maintain is worse than omitting it. Writing it on every authenticated request is the fix,
 // and it belongs in the auth path, not here.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/users/:id', requireAdmin, requireRole('admin'), async (req, res) => {
+router.get('/users/:id', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
   const a = (req as any).admin as AdminAuth;
   const id = req.params.id;
 
@@ -1041,7 +1042,7 @@ router.get('/users/:id', requireAdmin, requireRole('admin'), async (req, res) =>
     consent_records: consents,
     dpdp_requests: requests,
   });
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // POST /admin/users/:id/revoke-devices  { reason }
@@ -1060,7 +1061,7 @@ router.get('/users/:id', requireAdmin, requireRole('admin'), async (req, res) =>
 // A reason is required. "Why was this account cut off" is the question that arrives later,
 // and an audit entry that cannot answer it is decoration.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/users/:id/revoke-devices', requireAdmin, requireRole('admin'), async (req, res) => {
+router.post('/users/:id/revoke-devices', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
   const a = (req as any).admin as AdminAuth;
   const reason = String(req.body?.reason ?? '').trim();
   if (!reason) return res.status(400).json({ error: 'a reason is required' });
@@ -1084,7 +1085,7 @@ router.post('/users/:id/revoke-devices', requireAdmin, requireRole('admin'), asy
     devices_revoked: revoked.length,
     note: 'Inbound sessions stopped. The user\'s existing API token remains valid until it expires — user sessions are not yet revocable server-side.',
   });
-});
+}));
 
 // ═════════════════════════════════════════════════════════════════════════════════
 // THE DATA-PRINCIPAL REQUEST CONSOLE (repair plan 3.27; 034_dpdp_requests.sql)
@@ -1126,7 +1127,7 @@ const DPDP_TERMINAL = new Set(['done', 'rejected']);
 // its period while sitting behind newer work. Closed requests order by closure, newest
 // first, which is how anyone reads a history.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/dpdp', requireAdmin, requireRole('admin'), async (req, res) => {
+router.get('/dpdp', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 50, 200);
   const status = req.query.status === 'closed' ? 'closed' : req.query.status === 'all' ? 'all' : 'open';
   const kind = typeof req.query.kind === 'string' && req.query.kind ? req.query.kind : null;
@@ -1162,7 +1163,7 @@ router.get('/dpdp', requireAdmin, requireRole('admin'), async (req, res) => {
       ? (status === 'open' ? rows[rows.length - 1].due_at : rows[rows.length - 1].closed_at)
       : null,
   });
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // POST /admin/dpdp/:id/status  { status, resolution?, notes? }
@@ -1173,7 +1174,7 @@ router.get('/dpdp', requireAdmin, requireRole('admin'), async (req, res) => {
 // timestamp the row exists to record. The allowed source statuses go into the predicate, so
 // a losing writer matches no row and is told so.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/dpdp/:id/status', requireAdmin, requireRole('admin'), async (req, res) => {
+router.post('/dpdp/:id/status', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
   const a = (req as any).admin as AdminAuth;
   const status = String(req.body?.status ?? '');
   const from = DPDP_TRANSITIONS[status];
@@ -1215,7 +1216,7 @@ router.post('/dpdp/:id/status', requireAdmin, requireRole('admin'), async (req, 
   await audit(a.adminId, 'dpdp.status', 'dpdp_request', req.params.id,
               { to: status, from_allowed: from, kind: rows[0].kind });
   res.json({ request: rows[0] });
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // POST /admin/dpdp/:id/start-erasure  { confirm: true }
@@ -1238,7 +1239,7 @@ router.post('/dpdp/:id/status', requireAdmin, requireRole('admin'), async (req, 
 // chooses reinstatement, the change is a deliberate audited un-delete elsewhere, not a
 // behaviour change here.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/dpdp/:id/start-erasure', requireAdmin, requireRole('admin'), async (req, res) => {
+router.post('/dpdp/:id/start-erasure', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
   const a = (req as any).admin as AdminAuth;
   // A typed confirmation, because a misclick here is not recoverable.
   if (req.body?.confirm !== true) {
@@ -1313,7 +1314,7 @@ router.post('/dpdp/:id/start-erasure', requireAdmin, requireRole('admin'), async
   } finally {
     client.release();
   }
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // POST /admin/users/:id/reveal-phone   { reason }
@@ -1333,7 +1334,7 @@ router.post('/dpdp/:id/start-erasure', requireAdmin, requireRole('admin'), async
 // admin-role only, and a reason is required — "why did you look at this person's number"
 // is the question a DPDP audit asks, and an entry that cannot answer it is decoration.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/users/:id/reveal-phone', requireAdmin, requireRole('admin'), async (req, res) => {
+router.post('/users/:id/reveal-phone', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
   const a = (req as any).admin as AdminAuth;
   const reason = String(req.body?.reason ?? '').trim();
   if (!reason) return res.status(400).json({ error: 'a reason is required' });
@@ -1351,7 +1352,7 @@ router.post('/users/:id/reveal-phone', requireAdmin, requireRole('admin'), async
               { reason, username: rows[0].username });
 
   res.json({ phone: rows[0].phone_number });
-});
+}));
 
 // ═════════════════════════════════════════════════════════════════════════════════
 // COMMUNITIES
@@ -1375,7 +1376,7 @@ router.post('/users/:id/reveal-phone', requireAdmin, requireRole('admin'), async
 // when the set shifts under a scroll, and a moderation list that silently omits an entry is
 // worse than one that pages slowly.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/communities', requireAdmin, async (req, res) => {
+router.get('/communities', requireAdmin, asyncHandler(async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 30, 100);
   const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
   const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
@@ -1415,12 +1416,12 @@ router.get('/communities', requireAdmin, async (req, res) => {
     // on presence cannot then loop forever on the last page.
     next_cursor: rows.length === limit ? rows[rows.length - 1].created_at : null,
   });
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // GET /admin/communities/:id — one community, with its roster split by state.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/communities/:id', requireAdmin, async (req, res) => {
+router.get('/communities/:id', requireAdmin, asyncHandler(async (req, res) => {
   const id = String(req.params.id);
   if (!/^[0-9a-f-]{36}$/i.test(id)) {
     return res.status(400).json({ error: 'community id must be a uuid' });
@@ -1479,7 +1480,7 @@ router.get('/communities/:id', requireAdmin, async (req, res) => {
     // Said plainly so nobody reads the roster cap as the roster.
     members_truncated: members.length === 200,
   });
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // POST /admin/communities/:id/suspend   { reason }
@@ -1490,7 +1491,7 @@ router.get('/communities/:id', requireAdmin, async (req, res) => {
 // Suspend is REVERSIBLE and destroys nothing. It is deliberately not a delete: an operator
 // acting on a report needs to stop the harm now and be able to be wrong later.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/communities/:id/suspend', requireAdmin, requireRole('admin'), async (req, res) => {
+router.post('/communities/:id/suspend', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
   const a = (req as any).admin as AdminAuth;
   const id = String(req.params.id);
   const reason = String(req.body?.reason ?? '').trim();
@@ -1516,12 +1517,12 @@ router.post('/communities/:id/suspend', requireAdmin, requireRole('admin'), asyn
   await audit(a.adminId, 'community.suspend', 'community', id,
               { reason, name: r[0].name, handle: r[0].handle });
   res.json({ ok: true, community: r[0] });
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // POST /admin/communities/:id/restore   { reason }
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/communities/:id/restore', requireAdmin, requireRole('admin'), async (req, res) => {
+router.post('/communities/:id/restore', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
   const a = (req as any).admin as AdminAuth;
   const id = String(req.params.id);
   const reason = String(req.body?.reason ?? '').trim();
@@ -1542,7 +1543,7 @@ router.post('/communities/:id/restore', requireAdmin, requireRole('admin'), asyn
   await audit(a.adminId, 'community.restore', 'community', id,
               { reason: reason || null, name: r[0].name, handle: r[0].handle });
   res.json({ ok: true, community: r[0] });
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // GET  /admin/communities/:id/entitlements
@@ -1556,7 +1557,7 @@ router.post('/communities/:id/restore', requireAdmin, requireRole('admin'), asyn
 // have e-commerce" is the question a dispute asks, and a grant nobody can explain later is a
 // grant nobody can defend.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/communities/:id/entitlements', requireAdmin, async (req, res) => {
+router.get('/communities/:id/entitlements', requireAdmin, asyncHandler(async (req, res) => {
   const id = String(req.params.id);
   if (!/^[0-9a-f-]{36}$/i.test(id)) {
     return res.status(400).json({ error: 'community id must be a uuid' });
@@ -1576,9 +1577,9 @@ router.get('/communities/:id/entitlements', requireAdmin, async (req, res) => {
   );
 
   res.json({ entitlements: rows, available: CAPABILITIES });
-});
+}));
 
-router.post('/communities/:id/entitlements', requireAdmin, requireRole('admin'), async (req, res) => {
+router.post('/communities/:id/entitlements', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
   const a = (req as any).admin as AdminAuth;
   const id = String(req.params.id);
   const capability = String(req.body?.capability ?? '');
@@ -1619,10 +1620,10 @@ router.post('/communities/:id/entitlements', requireAdmin, requireRole('admin'),
     }
     throw err;
   }
-});
+}));
 
 router.post('/communities/:id/entitlements/:cap/revoke',
-            requireAdmin, requireRole('admin'), async (req, res) => {
+            requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
   const a = (req as any).admin as AdminAuth;
   const id = String(req.params.id);
   const capability = String(req.params.cap);
@@ -1648,7 +1649,7 @@ router.post('/communities/:id/entitlements/:cap/revoke',
   await audit(a.adminId, 'community.entitlement_revoked', 'community', id,
               { capability, note });
   res.json({ ok: true });
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // GET /admin/communities/:id/analytics?days=30
@@ -1665,7 +1666,7 @@ router.post('/communities/:id/entitlements/:cap/revoke',
 // tool people are meant to keep open, and its tiles disagree with each other whenever a write
 // lands mid-render.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/communities/:id/analytics', requireAdmin, async (req, res) => {
+router.get('/communities/:id/analytics', requireAdmin, asyncHandler(async (req, res) => {
   const id = String(req.params.id);
   if (!/^[0-9a-f-]{36}$/i.test(id)) {
     return res.status(400).json({ error: 'community id must be a uuid' });
@@ -1779,14 +1780,14 @@ router.get('/communities/:id/analytics', requireAdmin, async (req, res) => {
     // Stated in the payload, not only in the UI, so any future caller inherits the caveat.
     note: 'Message figures count envelopes only. Space content is end-to-end encrypted and unreadable.',
   });
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // GET /admin/communities/:id/posts?cursor=&limit=
 //
 // The feed as an operator sees it. Non-E2EE by design — this is the public wall, not chat.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/communities/:id/posts', requireAdmin, async (req, res) => {
+router.get('/communities/:id/posts', requireAdmin, asyncHandler(async (req, res) => {
   const id = String(req.params.id);
   const limit = Math.min(Number(req.query.limit) || 30, 100);
   const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
@@ -1815,7 +1816,7 @@ router.get('/communities/:id/posts', requireAdmin, async (req, res) => {
     posts: rows,
     next_cursor: rows.length === limit ? rows[rows.length - 1].created_at : null,
   });
-});
+}));
 
 // ---------------------------------------------------------------------------
 // Events and money.
@@ -1830,7 +1831,7 @@ router.get('/communities/:id/posts', requireAdmin, async (req, res) => {
 // ---------------------------------------------------------------------------
 
 // GET /admin/events — every event, newest first, with what it has actually taken.
-router.get('/events', requireAdmin, async (req, res) => {
+router.get('/events', requireAdmin, asyncHandler(async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 30, 100);
   const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
   const status = typeof req.query.status === 'string' ? req.query.status : null;
@@ -1873,10 +1874,10 @@ router.get('/events', requireAdmin, async (req, res) => {
     events: rows,
     next_cursor: rows.length === limit ? rows[rows.length - 1].created_at : null,
   });
-});
+}));
 
 // GET /admin/events/:id — one event, its orders, and the totals that reconcile against them.
-router.get('/events/:id', requireAdmin, async (req, res) => {
+router.get('/events/:id', requireAdmin, asyncHandler(async (req, res) => {
   const { id } = req.params;
 
   const [event] = await query<any>(
@@ -1926,7 +1927,7 @@ router.get('/events/:id', requireAdmin, async (req, res) => {
   ]);
 
   res.json({ event, orders, totals, tickets: tickets[0] });
-});
+}));
 
 // POST /admin/events/:id/suspend — take a reported listing off sale, reversibly.
 //
@@ -1939,7 +1940,7 @@ router.get('/events/:id', requireAdmin, async (req, res) => {
 // report — which at this point is an unreviewed allegation — is not grounds to invalidate
 // what they bought. Suspension stops NEW orders. Refunding or voiding is a separate decision
 // made after the review, by someone who has looked at it.
-router.post('/events/:id/suspend', requireAdmin, requireRole('admin'), async (req, res) => {
+router.post('/events/:id/suspend', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
   const a = (req as any).admin as AdminAuth;
   const id = String(req.params.id);
   const reason = String(req.body?.reason ?? '').trim();
@@ -1959,14 +1960,14 @@ router.post('/events/:id/suspend', requireAdmin, requireRole('admin'), async (re
   await audit(a.adminId, 'event.suspend', 'event', id,
               { reason, title: r[0].title, community_id: r[0].community_id });
   res.json({ ok: true, event: r[0] });
-});
+}));
 
 // POST /admin/events/:id/restore — put it back on sale.
 //
 // The host's status was never touched, so there is nothing to reconstruct: an event that was
 // 'published' before is published again, and one the host cancelled while it was suspended
 // stays cancelled. That is the whole reason suspension is its own column.
-router.post('/events/:id/restore', requireAdmin, requireRole('admin'), async (req, res) => {
+router.post('/events/:id/restore', requireAdmin, requireRole('admin'), asyncHandler(async (req, res) => {
   const a = (req as any).admin as AdminAuth;
   const id = String(req.params.id);
   if (!/^[0-9a-f-]{36}$/i.test(id)) {
@@ -1984,7 +1985,7 @@ router.post('/events/:id/restore', requireAdmin, requireRole('admin'), async (re
   await audit(a.adminId, 'event.restore', 'event', id,
               { title: r[0].title, community_id: r[0].community_id });
   res.json({ ok: true, event: r[0] });
-});
+}));
 
 export default router;
 export { requireAdmin, requireRole };

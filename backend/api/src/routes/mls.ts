@@ -300,7 +300,7 @@ router.post('/group-events', requireAuth, asyncHandler(async (req, res) => {
 }));
 
 // GET /mls/group-events — undelivered Welcome/Commit events for the caller; marks delivered.
-router.get('/group-events', requireAuth, async (req, res) => {
+router.get('/group-events', requireAuth, asyncHandler(async (req, res) => {
   const { user_id, device_id: authDeviceId } = (req as any).auth;
   // The device asks for its OWN backlog. Taken from the query string when the JWT does not
   // carry one (older tokens predate device-scoped claims), and validated against the caller
@@ -339,6 +339,6 @@ router.get('/group-events', requireAuth, async (req, res) => {
     );
   }
   res.json({ events: rows });
-});
+}));
 
 export default router;

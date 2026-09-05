@@ -11,6 +11,7 @@
 // conversation row; key exchange and the ratchet are unchanged. A pending request holds
 // ordinary ciphertext the server cannot read — it is simply not surfaced as a normal chat yet.
 import { Router } from 'express';
+import { asyncHandler } from '../util';
 import bcrypt from 'bcryptjs';
 import { randomInt, timingSafeEqual } from 'crypto';
 import { pool, query } from '../db';
@@ -92,7 +93,7 @@ async function hasSavedContact(owner: string, other: string): Promise<boolean> {
 // that could be joined back to it — recreates the enumeration attack that has repeatedly hit
 // other platforms.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/by-username', requireAuth, async (req, res) => {
+router.get('/by-username', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const u = String(req.query.username ?? '').trim().toLowerCase();
   if (!u) return res.status(400).json({ error: 'username required' });
@@ -128,7 +129,7 @@ router.get('/by-username', requireAuth, async (req, res) => {
     // request route. Told plainly so the UI can say so rather than failing at send time.
     reachable_by_username: mutual || hasPin(target),
   });
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // POST /reachability/request  { username, pin? }
@@ -136,7 +137,7 @@ router.get('/by-username', requireAuth, async (req, res) => {
 // Open a 1:1 by handle. Returns the conversation id on success; the recipient's membership is
 // left 'pending' unless the two are mutual contacts.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/request', requireAuth, async (req, res) => {
+router.post('/request', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const username = String(req.body?.username ?? '').trim().toLowerCase();
   const pin = req.body?.pin == null ? null : String(req.body.pin).trim();
@@ -235,12 +236,12 @@ router.post('/request', requireAuth, async (req, res) => {
   } finally {
     client.release();
   }
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // POST /reachability/:id/accept  — recipient accepts a pending request.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/:id/accept', requireAuth, async (req, res) => {
+router.post('/:id/accept', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const updated = await query(
     `update conversation_members set request_state = 'accepted'
@@ -250,7 +251,7 @@ router.post('/:id/accept', requireAuth, async (req, res) => {
   );
   if (!updated[0]) return res.status(404).json({ error: 'no pending request here' });
   res.json({ ok: true });
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // POST /reachability/:id/decline — recipient declines.
@@ -259,7 +260,7 @@ router.post('/:id/accept', requireAuth, async (req, res) => {
 // request would become a presence oracle: send one, learn whether the account is live and
 // attended. From the sender's side both states look identical — message shows Sent, forever.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/:id/decline', requireAuth, async (req, res) => {
+router.post('/:id/decline', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const updated = await query(
     `update conversation_members set request_state = 'declined'
@@ -269,12 +270,12 @@ router.post('/:id/decline', requireAuth, async (req, res) => {
   );
   if (!updated[0]) return res.status(404).json({ error: 'not a member of this conversation' });
   res.json({ ok: true });
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // GET /reachability/pending — the caller's inbound requests, for a Requests inbox.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/pending', requireAuth, async (req, res) => {
+router.get('/pending', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const rows = await query(
     `select c.id as conversation_id,
@@ -292,7 +293,7 @@ router.get('/pending', requireAuth, async (req, res) => {
     [user_id]
   );
   res.json({ requests: rows });
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // GET /reachability/contact-pin — the caller's OWN pin, in the clear.
@@ -309,7 +310,7 @@ router.get('/pending', requireAuth, async (req, res) => {
 // as an unreversible hash. The client reads that combination as "set, but not viewable" and
 // offers a rotation to gain a readable one. Same shape when the server has no secretbox key.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/contact-pin', requireAuth, async (req, res) => {
+router.get('/contact-pin', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const rows = await query<{
     contact_pin_hash: string | null;
@@ -333,7 +334,7 @@ router.get('/contact-pin', requireAuth, async (req, res) => {
     // operator reading their own logs already knows whether they configured the key.
     storage_configured: secretboxAvailable(),
   });
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // POST /reachability/contact-pin/rotate — mint a new PIN, replacing any existing one.
@@ -347,7 +348,7 @@ router.get('/contact-pin', requireAuth, async (req, res) => {
 // longer the user's only chance to see it. That makes rotation a genuine revocation tool
 // rather than the only way to recover a forgotten PIN.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.post('/contact-pin/rotate', requireAuth, async (req, res) => {
+router.post('/contact-pin/rotate', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const pin = generatePin();
 
@@ -381,6 +382,6 @@ router.post('/contact-pin/rotate', requireAuth, async (req, res) => {
   // `viewable` tells the client whether GET /contact-pin will return this again, so the UI
   // can stop promising a permanent PIN on a deployment that cannot actually store one.
   res.json({ pin, viewable: enc !== null });
-});
+}));
 
 export default router;

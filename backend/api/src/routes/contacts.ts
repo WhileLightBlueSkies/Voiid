@@ -1,6 +1,7 @@
 // Contact sync routes (Section 2.3 / 4.8). Matching is LOCAL on-device; the raw contact book is NEVER uploaded.
 // The client resolves phone numbers to VOIID users on-device and submits ONLY the resolved user_id links here.
 import { Router } from 'express';
+import { asyncHandler } from '../util';
 import { query } from '../db';
 import { requireAuth } from '../auth';
 
@@ -12,7 +13,7 @@ const router = Router();
 // matches them against SHA-256(phone_number) of existing users and returns the
 // hits — so the request never carries raw numbers and the server never learns
 // the contacts that AREN'T on VOIID. (Full enclave-based CDS is a later step.)
-router.post('/discover', requireAuth, async (req, res) => {
+router.post('/discover', requireAuth, asyncHandler(async (req, res) => {
   const { phone_hashes } = req.body ?? {};
   if (!Array.isArray(phone_hashes) || phone_hashes.length === 0) {
     return res.status(400).json({ error: 'phone_hashes array required' });
@@ -39,11 +40,11 @@ router.post('/discover', requireAuth, async (req, res) => {
     [hashes]
   );
   res.json({ matches: rows });
-});
+}));
 
 // POST /contacts/sync — { contacts: [{ contact_user_id, saved_name? }] }
 // Body must contain resolved VOIID user_ids only — never raw phone numbers from the address book.
-router.post('/sync', requireAuth, async (req, res) => {
+router.post('/sync', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const { contacts } = req.body ?? {};
   if (!Array.isArray(contacts)) return res.status(400).json({ error: 'contacts array required' });
@@ -69,10 +70,10 @@ router.post('/sync', requireAuth, async (req, res) => {
     upserted++;
   }
   res.json({ synced: upserted });
-});
+}));
 
 // GET /contacts — the caller's matched VOIID contacts (saved_name overrides full_name, Section 2.3).
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const rows = await query(
     `select cs.contact_user_id as user_id,
@@ -85,6 +86,6 @@ router.get('/', requireAuth, async (req, res) => {
     [user_id]
   );
   res.json({ contacts: rows });
-});
+}));
 
 export default router;

@@ -13,7 +13,7 @@ const router = Router();
 // POST /auth/firebase  { id_token }  -> verify with Firebase, upsert our user, issue our JWT.
 // `id_token` is the Firebase ID token the app gets after completing Phone Auth.
 // In dev (AUTH_DEV_BYPASS=1) a token "dev:<phone>" is accepted without Firebase.
-router.post('/firebase', async (req, res) => {
+router.post('/firebase', asyncHandler(async (req, res) => {
   const { id_token } = req.body ?? {};
   if (!id_token) return res.status(400).json({ error: 'id_token required' });
 
@@ -72,7 +72,7 @@ router.post('/firebase', async (req, res) => {
   // trade itself for a device-bound session (POST /devices/register returns that token).
   // Everything else is refused once VOIID_SESSION_CUTOFF has passed.
   res.json({ token: issueBootstrapToken(user.id), user_id: user.id, profile_complete });
-});
+}));
 
 // POST /auth/logout — end THIS device's session, server-side.
 //

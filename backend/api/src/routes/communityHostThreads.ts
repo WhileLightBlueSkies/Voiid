@@ -52,6 +52,7 @@
 // communities router (a one-segment `/:handle` route can never match a two-segment
 // `/:id/host-thread` path).
 import { Router } from 'express';
+import { asyncHandler } from '../util';
 import { pool, query } from '../db';
 import { requireAuth } from '../auth';
 import { rateLimit } from '../security';
@@ -168,7 +169,7 @@ router.post(
   '/communities/:id/host-thread',
   requireAuth,
   rateLimit({ max: 20, windowSeconds: 60, bucket: 'community-host-thread' }),
-  async (req, res) => {
+  asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const communityId = String(req.params.id ?? '');
     // Validate before touching the database: an uncast non-uuid reaches Postgres as a type
@@ -293,8 +294,7 @@ router.post(
     } finally {
       client.release();
     }
-  }
-);
+  }));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // GET /communities/:id/host-thread
@@ -306,7 +306,7 @@ router.post(
 // Returns { conversation_id: null } rather than 404 when there is none: "no thread yet" is
 // the normal state, not an error.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/communities/:id/host-thread', requireAuth, async (req, res) => {
+router.get('/communities/:id/host-thread', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const communityId = String(req.params.id ?? '');
   if (!UUID_RE.test(communityId)) return res.status(400).json({ error: 'community id must be a uuid' });
@@ -324,7 +324,7 @@ router.get('/communities/:id/host-thread', requireAuth, async (req, res) => {
     conversation_id: row?.conversation_id ?? null,
     host_user_id: target.ownerId,
   });
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // GET /community-host-threads
@@ -344,7 +344,7 @@ router.get('/communities/:id/host-thread', requireAuth, async (req, res) => {
 // `GET /communities/:handle` route — 'community-host-threads' is not a legal handle, but not
 // relying on that is cheaper than relying on it.
 // ─────────────────────────────────────────────────────────────────────────────────
-router.get('/community-host-threads', requireAuth, async (req, res) => {
+router.get('/community-host-threads', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const rows = await query(
     `select t.conversation_id,
@@ -365,7 +365,7 @@ router.get('/community-host-threads', requireAuth, async (req, res) => {
     [user_id]
   );
   res.json({ threads: rows });
-});
+}));
 
 // ─────────────────────────────────────────────────────────────────────────────────
 // PATCH /communities/:id/host-thread/:memberId/status  { status }
@@ -386,7 +386,7 @@ router.patch(
   '/communities/:id/host-thread/:memberId/status',
   requireAuth,
   rateLimit({ max: 60, windowSeconds: 60, bucket: 'community-host-thread-status' }),
-  async (req, res) => {
+  asyncHandler(async (req, res) => {
     const { user_id } = (req as any).auth;
     const communityId = String(req.params.id ?? '');
     const memberId = String(req.params.memberId ?? '');
@@ -418,7 +418,6 @@ router.patch(
     if (!updated.length) return res.status(404).json({ error: 'no such thread' });
 
     res.json({ status, conversation_id: updated[0].conversation_id });
-  }
-);
+  }));
 
 export default router;

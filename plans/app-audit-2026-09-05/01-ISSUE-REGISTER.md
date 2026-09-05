@@ -1,6 +1,6 @@
 # 01 — Issue register
 
-Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 10 DONE (Q01, S01, S02, S03, C01, R02, M01, M02, A02, S05), 3 IMPLEMENTED_UNVERIFIED (Q02, A01, I03), 38 TODO.
+Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 11 DONE (Q01, S01, S02, S03, C01, R02, M01, M02, A02, S05, P03), 3 IMPLEMENTED_UNVERIFIED (Q02, A01, I03), 37 TODO.
 
 Each ID belongs to exactly one implementation part. Read its dependency and acceptance sections before editing. Priority includes source-confirmed defects, runtime risks, and requested capability gaps; see the evidence column and task text.
 
@@ -26,7 +26,7 @@ Each ID belongs to exactly one implementation part. Read its dependency and acce
 | I01 | P1 | Move chat persistence off the main actor and page history | Confirmed synchronous work; frame impact unmeasured | [07](07-IOS-AND-STORAGE.md) | TODO |
 | M03 | P1 | Bound and authorize reconnect backlogs | Confirmed | [03](03-MESSAGE-RELIABILITY.md) | TODO |
 | P01 | P1 | Stop unrelated routes sharing the host-thread throttle | Confirmed | [04](04-API-PERFORMANCE.md) | TODO |
-| P03 | P1 | Handle every Express 4 async rejection and input error | Confirmed | [04](04-API-PERFORMANCE.md) | TODO |
+| P03 | P1 | Handle every Express 4 async rejection and input error | Confirmed | [04](04-API-PERFORMANCE.md) | DONE |
 | Q01 | P1 | Repair the test baseline without hiding regressions | Observed failures | [13](13-RELEASE-AND-OPERATIONS.md) | DONE |
 | Q02 | P1 | Add quality gates before deployment | Confirmed gap | [13](13-RELEASE-AND-OPERATIONS.md) | IMPLEMENTED_UNVERIFIED |
 | Q03 | P1 | Separate native development and release service configuration | Confirmed configuration gap | [13](13-RELEASE-AND-OPERATIONS.md) | TODO |
@@ -853,3 +853,43 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
   - The websocket relay's own pool (added in S03) carried the same unverified form and IS
     migrated here; the guard test covers all five sites. It was found by writing this record,
     which is an argument for writing them.
+
+## P03 — every rejection reaches the handler (2026-09-06)
+
+- **Status:** DONE for rejection handling and error mapping. The request-schema half of the fix
+  (bounded arrays, enums, limits per route) is NOT done — see limitations.
+- **Source/fix commit:** commit containing this record, parent `d73c04f`.
+- **Files:** `backend/api/src/errors.ts` (new), `src/index.ts`, and 12 routers under `src/routes/`;
+  `backend/api/test/errorHandling.test.ts` (new).
+- **Failure reproduced:** yes. The audit named four bare handlers; a route inventory found **67
+  across 12 files**, admin.ts alone holding 33. Express 4 does not catch a rejected promise from
+  a route handler, so each of those sent NO response at all: the client waited until it timed
+  out, the socket stayed open, and the only trace was a process-level unhandledRejection that
+  cannot finish the request it belongs to.
+- **Implementation:** every handler wrapped in the existing `asyncHandler`, done by a
+  paren-aware transformer rather than a regex (one site still needed a manual fix, found by
+  typecheck). The error middleware no longer guesses: it believes an error that carries its own
+  status, maps body-parser's `type` values to real codes, and treats everything else as 500.
+  Every error response now carries a stable `code` and a `request_id` echoed in `x-request-id`.
+- **What the old middleware got wrong, specifically:** it ran `/base64|invalid input/i` over the
+  error MESSAGE. A body-too-large arrives from body-parser carrying `status: 413` and was
+  answered 500 — telling a client to retry something that can never succeed. And Postgres says
+  "invalid input syntax for type uuid" for a bad cast, which is our bug and was being reported to
+  the caller as theirs.
+- **Regression evidence:** unwrapping a single handler fails the guard by file name. The guard
+  scans every router for an async function passed straight to Express, so this cannot come back
+  one route at a time.
+- **Validation:** 8 error-handling tests; full `npm test` exit 0 (API 284/284, games 6/6, relay
+  27/27, workers 8/8); typecheck clean.
+- **Remaining limitations:**
+  - **No request schemas.** P03 also asks for UUID/enum/bounded-array/positive-limit validation
+    per route. Not done — that is per-endpoint work across ~90 routes and is not covered here.
+    Routes still validate ad hoc, and several do it well (messages, receipts, ack), but there is
+    no shared schema layer.
+  - **No timeout policy.** "timeout → defined retryable response" is not implemented; a slow
+    upstream still holds the request until the client gives up.
+  - The transformer was mechanical. Typecheck and the full suite pass, but the 67 rewrites were
+    not each read individually; a handler whose behaviour depended on Express seeing a raw async
+    function would not be caught by either.
+  - The raw payment-webhook body ordering was preserved (that router mounts before
+    `express.json()` and was not touched), but no test asserts the ordering survives a future edit.
