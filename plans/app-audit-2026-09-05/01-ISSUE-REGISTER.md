@@ -387,7 +387,7 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
   ordering. No recovery sweep worker ships with it — recovery relies on provider retries, which
   is what the issue's acceptance asks for; a sweep belongs with C02/C03 and the index it needs
   is in place.
-- **Source/fix commit:** commit containing this record, parent `6c2ab92`.
+- **Source/fix commit:** `e568dfc`, parent `6c2ab92`.
 - **Files:** `database/migrations/058_payment_webhook_inbox.sql` (new);
   `backend/api/src/payments/inbox.ts` (new); `backend/api/src/routes/payments.ts`,
   `backend/api/src/routes/events.ts`; `backend/api/test/paymentInboxPostgres.test.ts` (new);
