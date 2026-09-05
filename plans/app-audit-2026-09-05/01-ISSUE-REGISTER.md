@@ -1,6 +1,6 @@
 # 01 — Issue register
 
-Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 3 DONE (Q01, S01, S02), 1 IMPLEMENTED_UNVERIFIED (Q02), 46 TODO.
+Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 4 DONE (Q01, S01, S02, S03), 1 IMPLEMENTED_UNVERIFIED (Q02), 45 TODO.
 
 Each ID belongs to exactly one implementation part. Read its dependency and acceptance sections before editing. Priority includes source-confirmed defects, runtime risks, and requested capability gaps; see the evidence column and task text.
 
@@ -15,7 +15,7 @@ Each ID belongs to exactly one implementation part. Read its dependency and acce
 | R02 | P0 | Authorize and bound typing, reset, and location frames | Confirmed | [05](05-REALTIME-CALLS-GAMES.md) | TODO |
 | S01 | P0 | Authorize receipt reads and writes | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | DONE |
 | S02 | P0 | Validate sender and recipient devices on all message paths | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | DONE |
-| S03 | P0 | Make revocation persistent and device-bound | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | TODO |
+| S03 | P0 | Make revocation persistent and device-bound | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | DONE |
 | S04 | P0 | Replace the false recovery lockout security boundary | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | TODO |
 | A03 | P1 | Support java.time on API 24/25 | Confirmed configuration gap | [06](06-ANDROID-DURABILITY.md) | TODO |
 | A04 | P1 | Remove destructive Room upgrade fallback | Confirmed policy risk | [06](06-ANDROID-DURABILITY.md) | TODO |
@@ -302,3 +302,80 @@ Reviewer/date: implemented 2026-09-05; awaiting review and a first CI run.
 ## Q02 — additional local migration evidence (2026-09-05)
 
 The actual migration runner applied all 63 migrations to an empty, dedicated loopback PostgreSQL 16.15 database. A second run reported all 63 already applied and performed no work. The security integration suite also replays the complete migration set into disposable schemas. Q02 remains IMPLEMENTED_UNVERIFIED: these are local results, not GitHub-runner results; advisory gates and GitHub native jobs still need their required evidence. S01's native builds passed locally. The temporary test database server was stopped after validation; no system service was enabled.
+
+
+## S03 — device-bound sessions completed (2026-09-06)
+
+- **Status:** DONE for persistent, device-bound revocation. The compatibility window is open by
+  default and closes only when an operator sets `VOIID_SESSION_CUTOFF`; until then an unbound
+  legacy credential still bypasses device binding. That is the migration cost the issue asks for,
+  not an unfinished part of it. S04 (recovery lockout) is now unblocked.
+- **Source/fix commit:** commit containing this record, parent `fb058cf`.
+- **Files:** `database/migrations/057_device_sessions.sql` (new); API `auth.ts`, `security.ts`,
+  `routes/auth.ts`, `routes/devices.ts`, `routes/prekeys.ts`, `routes/linking.ts`; websocket
+  `src/session.ts` (new), `src/index.ts`, `package.json`; tests
+  `backend/api/test/sessionPostgres.test.ts` and `backend/websocket/test/session.test.ts` (both new);
+  `.github/workflows/ci.yml`; `.env.example`; iOS `APIClient.swift`, `AuthService.swift`,
+  `E2EManager.swift`; Android `ApiClient.kt`, `AuthService.kt`, `E2EManager.kt`.
+- **Failure reproduced:** yes, before any edit. Seven new database scenarios failed against the
+  committed source: login returned no scope, registration returned no session token, there was no
+  `revoked_reason` column, and a legacy token was accepted with the cutoff in the past. The relay
+  module did not exist.
+- **Implementation:**
+  1. `device_sessions` is the durable authority — one row per device sign-in, carried in the JWT as
+     `sid`. Authorization is a row lookup a revoke can invalidate, not a signature check nothing can.
+     Redis is a 10-second cache in front of it, so cache loss costs a round-trip, never a resurrected
+     session.
+  2. `POST /auth/firebase` now issues a short-lived **bootstrap** credential (scope `bootstrap`,
+     1h). `POST /devices/register` is the only route that spends it, and it returns the device-bound
+     session token in the same response, minted in the same transaction as the device row.
+  3. `POST /auth/logout` stopped being a no-op: it revokes the session, marks the device
+     `user_revoked`, and closes that device's socket.
+  4. `devices.revoked_reason` separates 'superseded' from 'user_revoked'. Prekey upload still
+     reinstates a superseded device (the raced-upload recovery) but can no longer un-revoke a device
+     the user revoked — that was a self-service reactivation of an explicitly signed-out device.
+  5. The relay verifies the session at connect against Postgres, awaited **before** the socket joins
+     `socketMap`. The previous check was a floating promise, so every connect granted a window of
+     live relay access before the close landed. `force_signout` is now device-targeted, so logging
+     out of one device no longer signs out a sibling.
+  6. Both clients store the token registration returns, revoke server-side on logout using the
+     credential captured by value, and no longer discard a bootstrap token on a
+     `device_session_required` 401 — which would have destroyed the only credential able to finish
+     registration.
+- **Regression evidence:** disabling the session check in `requireAuth` fails 12 assertions across
+  the API suite; removing the `user_revoked` guard in `ownsDevice` fails precisely the
+  DELETE-then-upload scenario; disabling it in the relay fails 5 of its 7 scenarios. Restoring each
+  returns the suites to green.
+- **Validation:** PostgreSQL 16.15 on a disposable loopback cluster (TCP only, no login service,
+  stopped afterwards), every suite replaying all 64 migrations into unique schemas. Full `npm test`
+  with both database suites enabled: exit 0, API 238/238, games 6/6 suites, websocket 8/8. Typecheck
+  clean for api, websocket, games, workers, common-utils. Migration runner applied all 64 to an empty
+  database and reported the second run a no-op. Backfill verified separately on a
+  deployed-shaped schema (001–056 + a pre-revoked device): the revoked row becomes 'superseded', the
+  active row is untouched. Android `:app:compileDebugKotlin` and an unsigned iOS simulator build both
+  exit 0. No Supabase database, live account, or deployment was touched.
+- **Behaviour changes to expect:**
+  - The relay now needs `DATABASE_URL` and refuses to boot in production without it. Its pool is
+    capped at `WS_DB_POOL_MAX` (default 2) and read only at connect, to stay light on Supabase's
+    pooler. This gives up the relay's DB-free property deliberately: a cache-only deny-list fails
+    OPEN on a flush, which is the exact failure S03 exists to remove.
+  - Registering a device now ends the superseded same-platform device's session, so that device is
+    signed out and recovers only through a fresh registration. That is the issue's "reinstall
+    recovery must use explicit fresh authorization", and it is stricter than the previous silent
+    un-revoke.
+- **Remaining limitations:**
+  - `VOIID_SESSION_CUTOFF` is unset, so the boundary is not yet enforced for unbound credentials.
+    Set it at least one `JWT_EXPIRY` after the release carrying the session-aware clients, or the
+    hole stays open indefinitely. Nothing enforces that an operator does this.
+  - Neither client handles the `force_signout` frame explicitly; a revoked device signs out on its
+    next 401 rather than immediately on the socket frame. The socket is closed server-side either way.
+  - A legacy unbound credential has no device, so a device-targeted sign-out cannot single it out —
+    one more reason the window should be short.
+  - Native verification is compile-only. No physical-device run, no production load measurement, and
+    no GitHub-runner execution (Q02's caveat is unchanged).
+  - The admin web app authenticates through its own `requireAdmin` session and is untouched;
+    `apps/web` is the marketing site and holds no credential.
+- **Rollback:** revert the code; leave migration 057 in place (additive — a new table and a nullable
+  column, both harmless to unused code). Do NOT roll back by restoring the un-revoke in
+  `routes/prekeys.ts` or the unbound `requireAuth`; disable the affected routes instead. If the relay
+  must go back to being DB-free, revert it together with the API or revoked devices keep their sockets.

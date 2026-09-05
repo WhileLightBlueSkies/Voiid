@@ -359,7 +359,14 @@ final class E2EManager {
         let push_token: String?
         let push_provider: String?
     }
-    private struct DeviceResponse: Decodable { let device_id: String }
+    /// `token` is the DEVICE-BOUND session minted by POST /devices/register (S03). The
+    /// credential used to make that call — the bootstrap token from /auth/firebase, or a
+    /// previous session being replaced by a reinstall — stops working at the server's
+    /// migration cutoff, so this must be stored the moment it arrives.
+    ///
+    /// Optional so this build still runs against a backend deployed before S03, which
+    /// answers with `device_id` alone.
+    private struct DeviceResponse: Decodable { let device_id: String; let token: String? }
     private struct OTK: Encodable { let key_id: Int; let public_key: String }
     /// The fallback key, in the shape POST /prekeys/upload expects for `signed_prekey`.
     ///
@@ -394,6 +401,9 @@ final class E2EManager {
                                      push_provider: token == nil ? nil : "apns"))
         _deviceId = dev.device_id
         kc.set(dev.device_id, deviceIdName)
+        // Swap the credential BEFORE anything else runs: ensurePrekeys() is next in
+        // bootstrap(), and past the cutoff it would be refused on the old one.
+        if let session = dev.token { api.tokenStore.jwt = session }
         lastUploadedPushToken = token
         return dev.device_id
     }

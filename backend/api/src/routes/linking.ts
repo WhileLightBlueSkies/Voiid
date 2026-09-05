@@ -13,7 +13,7 @@ import { Router } from 'express';
 import { randomBytes } from 'crypto';
 import { redis } from '../redis';
 import { query } from '../db';
-import { requireAuth, issueToken } from '../auth';
+import { requireAuth, createDeviceSession } from '../auth';
 import { b64, asyncHandler } from '../util';
 
 const router = Router();
@@ -54,12 +54,15 @@ router.post('/approve', requireAuth, asyncHandler(async (req, res) => {
     `insert into devices (user_id, platform, registration_id, identity_public_key, device_name)
        values ($1, $2, $3, $4, $5)
        on conflict (user_id, registration_id)
-       do update set identity_public_key = excluded.identity_public_key, revoked_at = null, updated_at = now()
+       do update set identity_public_key = excluded.identity_public_key,
+                     revoked_at = null, revoked_reason = null, updated_at = now()
        returning id`,
     [user_id, pending.platform, pending.registration_id, b64(pending.identity_public_key), pending.device_name]
   );
   const device_id = rows[0].id;
-  const token = issueToken({ user_id, device_id });
+  // A linked companion gets a real session row like any other device, so the
+  // linked-devices screen can revoke it and have that mean something.
+  const { token } = await createDeviceSession(user_id, device_id);
 
   await redis.set(key(link_token), JSON.stringify({ status: 'approved', user_id, device_id, token }), 'EX', LINK_TTL_SECONDS);
 

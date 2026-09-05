@@ -3,10 +3,9 @@
 // On Redis message for a user, push the wake/ciphertext-ref down their live socket.
 // Unauthenticated sockets are rejected (Section 4.6).
 import { WebSocketServer, WebSocket } from 'ws';
-import jwt from 'jsonwebtoken';
 import Redis from 'ioredis';
+import { authorizeConnection, useSessionCache, WS_CLOSE_REVOKED } from './session';
 
-const JWT_SECRET = process.env.JWT_SECRET ?? 'dev-only-change-me';
 const port = Number(process.env.WS_PORT) || 4001;
 
 // ── FAIL-CLOSED BOOT GUARD ────────────────────────────────────────────────────
@@ -23,6 +22,12 @@ const port = Number(process.env.WS_PORT) || 4001;
   if (process.env.AUTH_DEV_BYPASS === '1') {
     fatal.push('AUTH_DEV_BYPASS=1 is an API-side switch but must never be set in a production env');
   }
+  // New in S03: device-session revocation is authoritative in Postgres, not in Redis. Without
+  // this the relay would answer every connect with 4503 and carry no traffic at all — better
+  // to say why at boot than to look like a total outage with a healthy-looking process.
+  if (!process.env.DATABASE_URL) {
+    fatal.push('DATABASE_URL is missing — the relay verifies device sessions against it on connect');
+  }
   if (fatal.length) {
     console.error('[voiid:ws] REFUSING TO START in production:\n - ' + fatal.join('\n - '));
     process.exit(1);
@@ -31,6 +36,12 @@ const port = Number(process.env.WS_PORT) || 4001;
 
 // socket_map: user_id -> set of live sockets on THIS instance.
 const socketMap = new Map<string, Set<WebSocket>>();
+
+// Which device each socket belongs to, so a sign-out can name ONE of a user's devices.
+// A WeakMap because the entry must die with the socket: keeping a device id alive in a
+// Map keyed by socket would retain every connection this process ever accepted.
+// Undefined for a legacy unbound credential, which no device-targeted frame can single out.
+const socketDevice = new WeakMap<WebSocket, string | undefined>();
 
 // Subscriber connection: one shared sub, pattern-subscribe to user channels routed here.
 const sub = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
@@ -299,17 +310,31 @@ sub.on('pmessage', (_pattern, channel, payload) => {
   // this a user who is already connected keeps their live session — on the service carrying
   // the traffic — until they happen to reconnect. Deliver it (so the client can clear local
   // state and show why) and then close.
-  let isSignout = false;
-  try { isSignout = JSON.parse(payload)?.type === 'force_signout'; } catch { /* not JSON: relay it */ }
+  let signout: { device_id?: string; reason?: string } | null = null;
+  try {
+    const frame = JSON.parse(payload);
+    if (frame?.type === 'force_signout') signout = frame;
+  } catch { /* not JSON: relay it */ }
 
-  for (const ws of sockets) {
+  // A device-scoped sign-out (logout, revoke, superseded) names its device and must reach
+  // ONLY that device's sockets. Account deletion names none and still closes everything.
+  // Getting this wrong in the permissive direction would sign a user out of their other
+  // phone every time they logged out of one — so an unidentified socket is never closed by
+  // a targeted frame, and never shown one either.
+  const targeted = signout?.device_id;
+  const affected = targeted
+    ? [...sockets].filter((ws) => socketDevice.get(ws) === targeted)
+    : [...sockets];
+
+  for (const ws of affected) {
     if (ws.readyState === WebSocket.OPEN) ws.send(payload);
   }
-  if (isSignout) {
-    for (const ws of sockets) {
-      if (ws.readyState === WebSocket.OPEN) ws.close(4403, 'account deleted');
+  if (signout) {
+    for (const ws of affected) {
+      if (ws.readyState === WebSocket.OPEN) ws.close(WS_CLOSE_REVOKED, signout.reason ?? 'account deleted');
     }
-    socketMap.delete(userId);
+    for (const ws of affected) sockets.delete(ws);
+    if (!sockets.size) socketMap.delete(userId);
   }
 });
 
@@ -328,32 +353,40 @@ const WS_MAX_PAYLOAD_BYTES = Number(process.env.VOIID_WS_MAX_PAYLOAD) || 256 * 1
 
 const wss = new WebSocketServer({ port, maxPayload: WS_MAX_PAYLOAD_BYTES });
 
-wss.on('connection', (ws, req) => {
-  // JWT via ?token= or Sec-WebSocket-Protocol; reject if absent/invalid.
+// The relay shares its existing Redis connection with the session check rather than
+// opening another one; Postgres is consulted only on a cache miss.
+useSessionCache(presence);
+
+wss.on('connection', async (ws, req) => {
+  // PAUSED FOR THE DURATION OF THE AUTH ROUND-TRIP.
+  //
+  // The session check below is awaited, so this handler yields to the event loop before the
+  // 'message' listener is attached. A client that sends immediately on open — a heartbeat, a
+  // game input, a call frame — would have that frame parsed and emitted to nobody, and
+  // silently dropped. `pause()` holds the bytes in the socket's own buffer until `resume()`
+  // at the end of this handler, by which time every listener is registered. The previous
+  // code needed none of this because it attached listeners in the same tick.
+  ws.pause();
+
+  // JWT via ?token=; reject if absent, unverifiable, or naming a revoked session.
   const url = new URL(req.url ?? '', 'http://localhost');
   const token = url.searchParams.get('token');
-  let userId: string;
-  try {
-    userId = (jwt.verify(token ?? '', JWT_SECRET) as { user_id: string }).user_id;
-  } catch {
-    ws.close(4401, 'unauthorized');
+
+  // AWAITED BEFORE THE SOCKET IS REGISTERED. The previous check was a floating promise: the
+  // socket joined socketMap and began receiving traffic immediately, and the close (if any)
+  // landed a round-trip later. A revoked client got a window of live relay access on every
+  // connect, which is exactly the access this is meant to deny.
+  const auth = await authorizeConnection(token);
+  if (!auth.ok) {
+    ws.close(auth.code, auth.reason);
     return;
   }
+  const userId = auth.userId;
 
-  // A VALID SIGNATURE IS NOT A LIVE ACCOUNT. Tokens run to 30 days with no server-side
-  // session, so a deleted user kept opening sockets here — on the service that carries the
-  // messages, calls and locations — long after every API read path had stopped returning
-  // their row. This process holds no database connection by design, so the API writes a
-  // revocation tombstone into the Redis both share and this reads it.
-  //
-  // Deliberately keyed on `auth:revoked:` rather than the API's `auth:active:` cache: that
-  // one has a 10-second TTL, so absence is its normal state and denying on absence would
-  // disconnect every user within ten seconds. Presence of THIS key is written only by
-  // account deletion, so it is safe to fail closed on and open on everything else.
-  presence.get(`auth:revoked:${userId}`).then((revoked) => {
-    if (revoked) ws.close(4403, 'account deleted');
-  }).catch(() => { /* Redis down: the API remains the authority and still fails closed there */ });
+  // The client may have closed or the server shut down during the round-trip above.
+  if (ws.readyState !== WebSocket.OPEN) return;
 
+  socketDevice.set(ws, auth.deviceId);
   if (!socketMap.has(userId)) socketMap.set(userId, new Set());
   socketMap.get(userId)!.add(ws);
 
@@ -827,6 +860,9 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.send(JSON.stringify({ type: 'connected', user_id: userId }));
+
+  // Every listener is attached; release anything the client sent while we were checking.
+  ws.resume();
 });
 
 console.log(`[voiid:ws] listening on :${port}`);

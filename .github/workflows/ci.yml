@@ -198,6 +198,30 @@ jobs:
           RECEIPT_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/voiid_migration_replay
         run: npx tsx --test backend/api/test/receiptPostgres.test.ts
 
+      # A SEPARATE database, not just a separate schema. Each of these suites replays the
+      # full migration set, and `create extension` is database-scoped: two suites doing that
+      # concurrently in one database race and one loses with a duplicate-key error on
+      # pg_extension. Sequential CI steps would not hit it, but `npm test` locally runs the
+      # files in parallel, so the isolation belongs in the setup rather than in the ordering.
+      - name: Create the session-suite database
+        run: >-
+          node -e "const {Client}=require('pg');
+          const c=new Client({connectionString:'postgres://postgres:postgres@localhost:5432/postgres'});
+          c.connect().then(()=>c.query('create database voiid_test_sessions')).then(()=>c.end())"
+
+      # S03. Both suites run HERE rather than in the node job because they need a real
+      # database: device revocation is only meaningful against the durable session record,
+      # and a fake would be asserting its own model of it.
+      - name: Device session revocation against PostgreSQL
+        env:
+          SESSION_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/voiid_test_sessions
+        run: npx tsx --test backend/api/test/sessionPostgres.test.ts
+
+      - name: Relay connect authorization against PostgreSQL
+        env:
+          SESSION_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/voiid_test_sessions
+        run: npx tsx --test backend/websocket/test/session.test.ts
+
   # ── Android ────────────────────────────────────────────────────────────────────────────
   #
   # Signing-independent: assembleDebug and unit tests only. Release signing needs secrets that

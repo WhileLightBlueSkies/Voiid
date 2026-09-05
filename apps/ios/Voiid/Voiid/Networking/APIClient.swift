@@ -107,12 +107,16 @@ struct APIClient {
 
     /// GET/POST/etc. returning a decoded `Response`. `auth` controls whether the
     /// bearer token is attached (false for /auth/firebase).
+    /// `bearer` overrides the stored token. Exactly one caller needs this: logout revokes
+    /// the session server-side while the local token is being cleared, so the credential has
+    /// to be carried by value rather than read back from a store that is already empty.
     func request<Response: Decodable>(
         _ method: String,
         _ path: String,
         body: Encodable? = nil,
         auth: Bool = true,
         versioned: Bool = true,
+        bearer: String? = nil,
         as: Response.Type = Response.self
     ) async throws -> Response {
         // Build the URL from a string so query strings (e.g. "?username=foo")
@@ -137,7 +141,7 @@ struct APIClient {
         req.setValue(APIConfig.apiVersion, forHTTPHeaderField: "X-Voiid-Api-Version")
 
         if auth {
-            guard let token = tokenStore.jwt else { throw APIError.notAuthenticated }
+            guard let token = bearer ?? tokenStore.jwt else { throw APIError.notAuthenticated }
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         if let body {
@@ -165,7 +169,13 @@ struct APIClient {
         guard (200..<300).contains(status) else {
             let parsed = try? JSONDecoder().decode(ErrorBody.self, from: data)
             let message = parsed?.error ?? "Request failed (\(status))."
-            if status == 401 { tokenStore.clear() }
+            // A 401 normally means the credential is finished — clear it and the app returns
+            // to sign-in. `device_session_required` is the one exception: the token is a
+            // VALID bootstrap credential that simply has not been traded for a device
+            // session yet, and POST /devices/register still accepts it. Clearing here would
+            // destroy the only credential that can complete registration, turning a
+            // recoverable state into a forced re-verification of the phone number.
+            if status == 401, parsed?.code != "device_session_required" { tokenStore.clear() }
             throw APIError.http(status: status, message: message, code: parsed?.code)
         }
 

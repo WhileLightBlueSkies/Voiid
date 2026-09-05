@@ -114,12 +114,18 @@ class ApiClient(
     }
 
     /** Perform a request and return the raw JSON body string (caller deserializes). */
+    /**
+     * [bearer] overrides the stored token. Exactly one caller needs it: logout revokes the
+     * session server-side while the local token is being cleared, so the credential has to
+     * be carried by value rather than read back from a store that is already empty.
+     */
     suspend fun request(
         method: String,
         path: String,
         jsonBody: String? = null,
         auth: Boolean = true,
         versioned: Boolean = true,
+        bearer: String? = null,
     ): String = withContext(Dispatchers.IO) {
         // Versioned calls go under /v1; pass versioned=false for /config etc.
         val prefix = if (versioned) ApiConfig.apiVersion + "/" else ""
@@ -130,7 +136,7 @@ class ApiClient(
             .header("X-Voiid-Api-Version", ApiConfig.apiVersion)
 
         if (auth) {
-            val token = tokens.jwt ?: throw ApiError.NotAuthenticated
+            val token = bearer ?: tokens.jwt ?: throw ApiError.NotAuthenticated
             builder.header("Authorization", "Bearer $token")
         }
         val reqBody = jsonBody?.toRequestBody(JSON_MEDIA)
@@ -150,7 +156,15 @@ class ApiClient(
                 throw ApiError.Http(426, "update required")
             }
             if (!it.isSuccessful) {
-                if (it.code == 401) tokens.clear()
+                // Parsed BEFORE the token is cleared: the decision depends on the body.
+                val parsed = runCatching { json.decodeFromString<ErrorBody>(text) }.getOrNull()
+                // A 401 normally means the credential is finished, so drop it and the app
+                // returns to sign-in. `device_session_required` is the one exception: the
+                // token is a VALID bootstrap credential that has not been traded for a
+                // device session yet, and POST /devices/register still accepts it. Clearing
+                // here would destroy the only credential able to finish registration and
+                // force the user through phone verification again.
+                if (it.code == 401 && parsed?.code != "device_session_required") tokens.clear()
                 // Log the WHOLE body on a server error. Only the `error` field survives into the
                 // exception, so any diagnostic the server adds alongside it (a pg code, a hint)
                 // was being thrown away at exactly the moment it was needed. 5xx only: a 401 body
@@ -158,7 +172,6 @@ class ApiClient(
                 if (it.code >= 500) {
                     android.util.Log.w("ApiClient", "HTTP ${it.code} on $path: ${text.take(600)}")
                 }
-                val parsed = runCatching { json.decodeFromString<ErrorBody>(text) }.getOrNull()
                 val msg = parsed?.error ?: "Request failed (${it.code})."
                 throw ApiError.Http(it.code, msg, parsed?.code)
             }

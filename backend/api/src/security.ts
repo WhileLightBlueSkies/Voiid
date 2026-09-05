@@ -16,7 +16,10 @@ export function clientIp(req: Request): string | null {
 
 type SecurityEventType =
   | 'failed_login' | 'otp_abuse' | 'api_abuse'
-  | 'device_link' | 'suspicious_session' | 'anomalous_traffic';
+  | 'device_link' | 'suspicious_session' | 'anomalous_traffic'
+  // Who signed a device out, and how — the counterpart to 'device_link'. Without it a
+  // revocation leaves no trail, so "why did my other phone stop working" is unanswerable.
+  | 'device_revoked';
 
 /** Record a security event (stored separately from app data, Section 4.9). Best-effort: never throws. */
 export async function logSecurityEvent(

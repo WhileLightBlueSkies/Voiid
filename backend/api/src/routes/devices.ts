@@ -1,61 +1,97 @@
 // Device routes (Section 4.3). Server stores PUBLIC identity key only; private keys never leave device.
 import { Router } from 'express';
-import { query } from '../db';
-import { requireAuth } from '../auth';
+import { query, withTransaction } from '../db';
+import { requireAuth, requireAuthForRegistration, createDeviceSession, revokeDeviceSessions } from '../auth';
+import { logSecurityEvent } from '../security';
 import { b64, asyncHandler } from '../util';
 
 const router = Router();
 
 // POST /devices/register  { platform, registration_id, identity_public_key(base64), device_name?, push_token?, push_provider? }
-router.post('/register', requireAuth, asyncHandler(async (req, res) => {
+//
+// THE ONE ROUTE A BOOTSTRAP CREDENTIAL CAN SPEND. POST /auth/firebase proves a phone
+// number and nothing more; this is where that proof becomes a device-bound session, so it
+// must keep accepting an unbound credential even after the cutoff — it is the only way
+// across. It also accepts an existing session (a reinstall re-registering itself), in
+// which case the caller is handed a fresh token and its old session is ended below.
+router.post('/register', requireAuthForRegistration, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const { platform, registration_id, identity_public_key, device_name, push_token, push_provider } = req.body ?? {};
   if (!platform || registration_id == null || !identity_public_key) {
     return res.status(400).json({ error: 'platform, registration_id, identity_public_key required' });
   }
-  const rows = await query<{ id: string }>(
-    `insert into devices (user_id, platform, registration_id, identity_public_key, device_name, push_token, push_provider)
-       values ($1, $2, $3, $4, $5, $6, $7)
-       on conflict (user_id, registration_id)
-       do update set identity_public_key = excluded.identity_public_key,
-                     -- Coalesced for the SAME reason as the provider below, which was
-                     -- already guarded while this line was not. A register sent before
-                     -- FCM/APNs has issued a token carries push_token = null, and
-                     -- assigning that over a live token makes the device ring-deaf until
-                     -- something happens to re-register it with a real one.
-                     push_token = coalesce(excluded.push_token, devices.push_token),
-                     -- Every push query requires BOTH token and provider to be non-null.
-                     -- A row first registered before its push token existed has a null
-                     -- provider forever if this only ever runs on insert, so the device
-                     -- stays unreachable no matter how often it re-registers. Coalesced
-                     -- so a later token-less register cannot blank a live provider.
-                     push_provider = coalesce(excluded.push_provider, devices.push_provider),
-                     revoked_at = null, updated_at = now()
-       returning id`,
-    [user_id, platform, registration_id, b64(identity_public_key), device_name, push_token, push_provider]
-  );
-  const deviceId = rows[0].id;
-
-  // Single active device per (user, platform): a reinstall regenerates the
-  // registration_id, so the upsert above creates a NEW row and the OLD device
-  // lingers as "active" with a stale identity key + exhausted one-time prekeys.
-  // Peers fetch one bundle (firstOrNull) and could land on that dead device →
-  // "peer has no available prekeys". Revoke the superseded same-platform devices
-  // and drop their now-useless one-time prekeys so resolution is unambiguous.
-  const stale = await query<{ id: string }>(
-    `update devices set revoked_at = now()
-       where user_id = $1 and platform = $2 and id <> $3 and revoked_at is null
-       returning id`,
-    [user_id, platform, deviceId]
-  );
-  if (stale.length) {
-    await query(
-      `delete from one_time_prekeys where device_id = any($1::uuid[])`,
-      [stale.map((d) => d.id)]
+  const { deviceId, token, superseded } = await withTransaction(async (execute) => {
+    const rows = await execute<{ id: string }>(
+      `insert into devices (user_id, platform, registration_id, identity_public_key, device_name, push_token, push_provider)
+         values ($1, $2, $3, $4, $5, $6, $7)
+         on conflict (user_id, registration_id)
+         do update set identity_public_key = excluded.identity_public_key,
+                       -- Coalesced for the SAME reason as the provider below, which was
+                       -- already guarded while this line was not. A register sent before
+                       -- FCM/APNs has issued a token carries push_token = null, and
+                       -- assigning that over a live token makes the device ring-deaf until
+                       -- something happens to re-register it with a real one.
+                       push_token = coalesce(excluded.push_token, devices.push_token),
+                       -- Every push query requires BOTH token and provider to be non-null.
+                       -- A row first registered before its push token existed has a null
+                       -- provider forever if this only ever runs on insert, so the device
+                       -- stays unreachable no matter how often it re-registers. Coalesced
+                       -- so a later token-less register cannot blank a live provider.
+                       push_provider = coalesce(excluded.push_provider, devices.push_provider),
+                       -- Re-registering IS the explicit fresh authorization that reinstates a
+                       -- device, including one the user revoked: the caller had to present a
+                       -- live credential to get here. The reason is cleared with the flag so a
+                       -- stale 'user_revoked' cannot keep refusing the device's own uploads.
+                       revoked_at = null, revoked_reason = null, updated_at = now()
+         returning id`,
+      [user_id, platform, registration_id, b64(identity_public_key), device_name, push_token, push_provider]
     );
+    const deviceId = rows[0].id;
+
+    // Single active device per (user, platform): a reinstall regenerates the
+    // registration_id, so the upsert above creates a NEW row and the OLD device
+    // lingers as "active" with a stale identity key + exhausted one-time prekeys.
+    // Peers fetch one bundle (firstOrNull) and could land on that dead device →
+    // "peer has no available prekeys". Revoke the superseded same-platform devices
+    // and drop their now-useless one-time prekeys so resolution is unambiguous.
+    //
+    // 'superseded', not 'user_revoked': the distinction is load-bearing. A superseded row is
+    // still reinstatable by its owner's prekey upload (that is how a device whose upload
+    // raced this registration recovers), while a device the user revoked on purpose is not.
+    const stale = await execute<{ id: string }>(
+      `update devices set revoked_at = now(), revoked_reason = 'superseded'
+         where user_id = $1 and platform = $2 and id <> $3 and revoked_at is null
+         returning id`,
+      [user_id, platform, deviceId]
+    );
+    if (stale.length) {
+      await execute(
+        `delete from one_time_prekeys where device_id = any($1::uuid[])`,
+        [stale.map((d) => d.id)]
+      );
+    }
+
+    // Minted in the same transaction as the device row: a session pointing at a device
+    // that rolled back would authorize nothing, and a device with no session would leave
+    // the client holding a token it cannot use.
+    const session = await createDeviceSession(user_id, deviceId, execute);
+    return { deviceId, token: session.token, superseded: stale.map((d) => d.id) };
+  });
+
+  // AFTER COMMIT. The superseded device's credential dies with its row, so recovering that
+  // device needs a fresh registration — explicit authorization, not a silent un-revoke.
+  // Published outside the transaction so a rollback cannot sign a device out of a
+  // registration that never happened.
+  if (superseded.length) {
+    await revokeDeviceSessions(superseded, 'superseded');
+    for (const id of superseded) {
+      await logSecurityEvent('device_revoked', { user_id, device_id: id, metadata: { via: 'superseded', by: deviceId } });
+    }
   }
 
-  res.json({ device_id: deviceId });
+  // `token` is the device-bound session. Clients MUST replace the credential they used to
+  // call this with the one returned here; the old one stops working at the cutoff.
+  res.json({ device_id: deviceId, token });
 }));
 
 // POST /devices/voip-token  { device_id, voip_token }
@@ -141,7 +177,7 @@ router.get('/:user_id', requireAuth, asyncHandler(async (req, res) => {
 router.delete('/:device_id', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const rows = await query<{ id: string }>(
-    `update devices set revoked_at = now()
+    `update devices set revoked_at = now(), revoked_reason = 'user_revoked', updated_at = now()
        where id = $1 and user_id = $2
        returning id`,
     [req.params.device_id, user_id]
@@ -150,6 +186,11 @@ router.delete('/:device_id', requireAuth, asyncHandler(async (req, res) => {
   // prekeys cascade-cleaned by removing the device's keys — only once the revoke matched,
   // so a miss never touches another user's prekeys.
   await query(`delete from one_time_prekeys where device_id = $1`, [req.params.device_id]);
+  // The row alone never stopped anything: the revoked device still held a valid 30-day JWT
+  // and kept sending, fetching and uploading keys. End the credential too, and close the
+  // socket it is holding right now.
+  await revokeDeviceSessions([rows[0].id], 'user_revoked');
+  await logSecurityEvent('device_revoked', { user_id, device_id: rows[0].id, metadata: { via: 'user_request' } });
   res.json({ revoked: true });
 }));
 
