@@ -21,7 +21,7 @@ cryptographic reviewer rather than an implementation.
 Newest first.
 
 ### S06 — Linking a companion device happens once
-`pending` · P1 · API
+`4eafc6d` · P1 · API
 
 The QR linking handshake lived in a cache, and every step was read-then-write across three
 separate round trips. Two people approving the same QR at once could both register a device —

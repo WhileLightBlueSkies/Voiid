@@ -1038,7 +1038,7 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
 
 - **Status:** DONE. The handshake moved from Redis to Postgres, which the issue explicitly
   permits ("or durable database transaction") and which is what made it testable here.
-- **Source/fix commit:** commit containing this record, parent `a0cf3ea`.
+- **Source/fix commit:** `4eafc6d`, parent `a0cf3ea`.
 - **Files:** `database/migrations/061_device_link_requests.sql` (new);
   `backend/api/src/routes/linking.ts` (rewritten);
   `backend/api/test/linkingPostgres.test.ts` (new); `.github/workflows/ci.yml`.
