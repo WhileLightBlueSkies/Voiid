@@ -21,7 +21,7 @@ cryptographic reviewer rather than an implementation.
 Newest first.
 
 ### A03 — Dates on Android 7 were silently all "now"
-`pending` · P1 · Android
+`f18d8f9` · P1 · Android
 
 The app supports Android 7 (API 24) and uses `java.time`, which arrived in API 26, without the
 build setting that makes it work there. On those devices every date parse threw — and because

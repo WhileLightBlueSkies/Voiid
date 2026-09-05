@@ -898,7 +898,7 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
 
 - **Status:** DONE for the configuration and the silent-substitution bug. NOT run on an API 24/25
   device or emulator — see limitations.
-- **Source/fix commit:** commit containing this record, parent `77de85a`.
+- **Source/fix commit:** `f18d8f9`, parent `77de85a`.
 - **Files:** `apps/android/app/build.gradle.kts`, `gradle/libs.versions.toml`;
   `app/src/main/java/com/voiid/app/util/IsoTime.kt` (new); `net/ChatEngine.kt`,
   `net/LocationShareEngine.kt`, `net/GroupEngine.kt`;
