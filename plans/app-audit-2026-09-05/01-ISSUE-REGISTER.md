@@ -663,7 +663,7 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
   are correct and enforced by a test against the SHIPPED files; NO backup archive was inspected
   and no restore was performed on a device. A01's own acceptance says not to infer safety from
   the presence of backup XML, and this record does not.
-- **Source/fix commit:** commit containing this record, parent `86dda65`.
+- **Source/fix commit:** `537dcf5`, parent `86dda65`.
 - **Files:** `res/xml/backup_rules.xml`, `res/xml/data_extraction_rules.xml`,
   `app/build.gradle.kts`; `app/src/test/java/com/voiid/app/BackupRulesTest.kt` (new).
 - **Failure reproduced:** yes. The shipped rules named 3 encrypted preference files plus one
@@ -703,7 +703,7 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
 ## A02 — SecurePrefs no longer destroys what it cannot read (2026-09-06)
 
 - **Status:** DONE. No code path deletes the shared master key or a preference file any more.
-- **Source/fix commit:** commit containing this record, parent `86dda65`.
+- **Source/fix commit:** `537dcf5`, parent `86dda65`.
 - **Files:** `net/SecurePrefs.kt` (rewritten), `net/SecurePrefsPolicy.kt` (new);
   `app/src/test/java/com/voiid/app/SecurePrefsRecoveryTest.kt` (new).
 - **Failure reproduced:** yes, by reading the shipped handler. ANY exception deleted the
