@@ -522,7 +522,7 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
   fix — clients persisting the prepared ENVELOPE so a retry does not re-encrypt — is NOT done;
   see limitations. M02 (acknowledge only after durable client persistence) remains open and is
   the other half of delivery.
-- **Source/fix commit:** commit containing this record, parent `78270df`.
+- **Source/fix commit:** `deacbd8`, parent `78270df`.
 - **Files:** `database/migrations/059_message_idempotency_outbox.sql` (new); API
   `src/messageIdempotency.ts` and `src/messageOutbox.ts` (new), `src/routes/messages.ts`;
   workers `src/outbox.ts` (new), `src/index.ts`, `package.json`; tests
