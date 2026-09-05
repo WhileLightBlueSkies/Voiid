@@ -45,6 +45,16 @@ sealed class ApiError(message: String) : Exception(message) {
      * off the status alone would fire the handle picker for an unrelated precondition.
      */
     class Http(val status: Int, message: String, val code: String? = null) : ApiError(message)
+
+    /**
+     * A 409 the caller can RESOLVE rather than report.
+     *
+     * Sent by POST /messages/send when a `client_message_id` already produced a message with
+     * different bytes — which is what a legitimate retry looks like, because re-encrypting
+     * advances the Olm ratchet. Carries the message the key already produced, so the caller
+     * can reconcile instead of showing a failure for something the recipient already has.
+     */
+    class AlreadySent(val messageId: String) : ApiError("Already sent.")
     class Transport(val underlying: Throwable) : ApiError(underlying.message ?: "Network error")
     object NotAuthenticated : ApiError("Please sign in again.")
 
@@ -82,6 +92,9 @@ sealed class ApiError(message: String) : Exception(message) {
                     else -> "Something went wrong. Please try again."
                 }
                 is NotAuthenticated -> "Please sign in again."
+                // Not a user-facing failure: the caller resolves it. If it ever reaches a
+                // screen, saying "sent" is the truthful thing, because it was.
+                is AlreadySent -> "Already sent."
             }
         }
 }
@@ -173,6 +186,12 @@ class ApiClient(
                     android.util.Log.w("ApiClient", "HTTP ${it.code} on $path: ${text.take(600)}")
                 }
                 val msg = parsed?.error ?: "Request failed (${it.code})."
+                // Raised as its own type so the send path can reconcile it without matching on
+                // an error string. Only when the server named the message — a conflict with
+                // nothing to point at is an ordinary error.
+                if (it.code == 409 && parsed?.code == "idempotency_key_reuse" && parsed.message_id != null) {
+                    throw ApiError.AlreadySent(parsed.message_id)
+                }
                 throw ApiError.Http(it.code, msg, parsed?.code)
             }
             text
@@ -237,7 +256,12 @@ data class RawResponse(val code: Int, val retryAfter: String?, val body: ByteArr
 
 /** `code` is optional — most endpoints send only `error`. */
 @kotlinx.serialization.Serializable
-private data class ErrorBody(val error: String = "error", val code: String? = null)
+private data class ErrorBody(
+    val error: String = "error",
+    val code: String? = null,
+    /** Present on the send conflict above; absent everywhere else. */
+    val message_id: String? = null,
+)
 
 @kotlinx.serialization.Serializable
 data class UpdateBody(val update_url: String? = null)

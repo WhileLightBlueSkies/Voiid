@@ -20,6 +20,8 @@
 // each job separately for exactly that reason, and the deploy script's health gate is not
 // decoration.
 import http from 'http';
+import Redis from 'ioredis';
+import { flushOutbox } from './outbox';
 import { reapStories } from './reapStories';
 import { runErasure } from './erasure';
 import { runRetentionSweep } from './retention';
@@ -28,6 +30,26 @@ import { r2Configured } from './r2';
 
 const INTERVAL_MS = Number(process.env.WORKERS_INTERVAL_MS) || 5 * 60 * 1000; // 5 min
 const PORT = Number(process.env.WORKERS_PORT) || 3003;
+
+// ── THE OUTBOX SWEEP RUNS ON ITS OWN, MUCH FASTER CLOCK ───────────────────────────
+//
+// The header above says none of these jobs is schedule-sensitive, and for the reapers that
+// is true: a pass that never ran yesterday deletes yesterday's rows today. THIS ONE IS
+// DIFFERENT, and the deviation is deliberate. A `message_outbox` row is a wake notification
+// somebody is waiting on — the API's inline publish failed, so until this runs, a message
+// exists that its recipient has not been told about. Five minutes of that is a message that
+// looks lost. Seconds is the right order of magnitude, and the sweep is cheap when there is
+// nothing owed: one indexed query against a partial index that is empty in the normal case.
+const OUTBOX_INTERVAL_MS = Number(process.env.VOIID_OUTBOX_INTERVAL_MS) || 5_000;
+
+// A publisher connection, used only by the sweep. The reapers need no Redis.
+const publisher = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
+  // A worker that cannot reach Redis must keep sweeping (and keep failing visibly) rather
+  // than queue commands forever and report success it never achieved.
+  maxRetriesPerRequest: 2,
+  enableOfflineQueue: false,
+});
+publisher.on('error', (e) => console.error('[workers] redis error:', e.message));
 
 // ── THE JOBS ──────────────────────────────────────────────────────────────────────
 // Each runs on every tick, in this order, each in its own try/catch: erasure and
@@ -59,8 +81,38 @@ interface JobState {
 // not just the process.
 let running = false;
 const jobs: Record<string, JobState> = Object.fromEntries(
-  JOBS.map((j) => [j.name, { lastRunAt: null, lastOkAt: null, lastError: null, lastResult: null }])
+  [...JOBS.map((j) => j.name), 'outbox'].map((name) => [
+    name, { lastRunAt: null, lastOkAt: null, lastError: null, lastResult: null },
+  ])
 );
+
+// Its own overlap guard, because it has its own clock: a sweep that takes longer than the
+// interval must not stack passes and multiply the publishes in flight.
+let sweeping = false;
+async function outboxTick(): Promise<void> {
+  if (sweeping) return;
+  sweeping = true;
+  const state = jobs.outbox;
+  state.lastRunAt = new Date().toISOString();
+  try {
+    const result = await flushOutbox((channel, payload) => publisher.publish(channel, payload));
+    state.lastResult = result;
+    state.lastOkAt = new Date().toISOString();
+    state.lastError = null;
+    // Silent when there is nothing owed, which is the normal case — a line every five seconds
+    // is a log nobody reads. COUNTS ONLY: never a channel, a user id or a payload.
+    if (result.claimed) {
+      console.log(`[workers] outbox claimed=${result.claimed} published=${result.published} failed=${result.failed}`);
+    }
+  } catch (e) {
+    state.lastError = (e as Error).message;
+    // NEVER rethrow, for the same reason the main tick does not: one bad pass must not take
+    // the process down and stop every future sweep.
+    console.error('[workers] outbox sweep failed:', state.lastError);
+  } finally {
+    sweeping = false;
+  }
+}
 
 async function tick(): Promise<void> {
   // Overlap guard: a slow pass (large batch, slow R2) must not stack passes on top of
@@ -117,11 +169,12 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(404, { 'content-type': 'application/json' });
     return res.end(JSON.stringify({ error: 'not found' }));
   }
-  const errored = JOBS.filter((j) => jobs[j.name].lastError).map((j) => j.name);
+  const errored = Object.keys(jobs).filter((name) => jobs[name].lastError);
   const out: Record<string, unknown> = {
     service: 'workers',
     status: 'ok',
     interval_ms: INTERVAL_MS,
+    outbox_interval_ms: OUTBOX_INTERVAL_MS,
     jobs,
     media: { configured: r2Configured() },
   };
@@ -157,6 +210,12 @@ void tick();
 const timer = setInterval(() => void tick(), INTERVAL_MS);
 timer.unref?.(); // never hold the process open on the timer alone; the HTTP server does that
 
+// The outbox debt is the one thing a restart should clear immediately: those are wakes
+// somebody is already waiting on.
+void outboxTick();
+const outboxTimer = setInterval(() => void outboxTick(), OUTBOX_INTERVAL_MS);
+outboxTimer.unref?.();
+
 process.on('unhandledRejection', (reason) => {
   console.error('[voiid:workers] unhandledRejection:', (reason as Error)?.message ?? reason);
 });
@@ -165,8 +224,9 @@ for (const sig of ['SIGTERM', 'SIGINT'] as const) {
   process.on(sig, () => {
     console.log(`[voiid:workers] ${sig} — shutting down`);
     clearInterval(timer);
+    clearInterval(outboxTimer);
     server.close(() => {
-      void pool.end().finally(() => process.exit(0));
+      void Promise.allSettled([pool.end(), publisher.quit()]).finally(() => process.exit(0));
     });
   });
 }

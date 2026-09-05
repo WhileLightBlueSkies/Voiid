@@ -10,6 +10,10 @@ import { Router } from 'express';
 import { assertOpaque } from '@voiid/common-utils';
 import { query, withTransaction } from '../db';
 import { resolveActiveDevice, UUID_RE } from '../deviceAuthorization';
+import {
+  MAX_CLIENT_MESSAGE_ID, PG_UNIQUE_VIOLATION, findByClientId, payloadFingerprint, samePayload,
+} from '../messageIdempotency';
+import { enqueueOutbox, publishOutbox, type OutboxEntry } from '../messageOutbox';
 import { publisher } from '../redis';
 import { requireAuth } from '../auth';
 import { announcementPostDeniedReason } from '../communityGuard';
@@ -160,8 +164,17 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
   const { user_id } = (req as any).auth;
   const {
     conversation_id, ciphertext, content_type, media_url, media_mime,
-    messages, sender_device_id, device_id: bodyDeviceId,
+    messages, sender_device_id, device_id: bodyDeviceId, client_message_id,
   } = req.body ?? {};
+
+  // The client's stable id for this message, minted before transmission and reused by every
+  // retry of it. Optional: clients that predate M01 send none and keep their old behaviour,
+  // which is a duplicate on retry rather than a rejection.
+  if (client_message_id != null &&
+      (typeof client_message_id !== 'string' || !client_message_id ||
+       client_message_id.length > MAX_CLIENT_MESSAGE_ID)) {
+    return res.status(400).json({ error: 'client_message_id must be a short non-empty string' });
+  }
 
   // Golden rule (Section 4.14): the server only ever relays opaque ciphertext — reject plaintext-ish payloads.
   try { assertOpaque(req.body ?? {}); } catch (e) {
@@ -169,11 +182,57 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
   }
 
   const postCommit: (() => Promise<unknown> | void)[] = [];
-  const result = await withTransaction<{ status: number; body: any }>(async (query) => {
+  // Announcements owed by this message. Written inside the transaction, published straight
+  // after it — see messageOutbox.ts for why both halves exist.
+  let owed: { id: string; channel: string; payload: unknown }[] = [];
+  const send = () => withTransaction<{ status: number; body: any }>(async (query) => {
     const device_id = await resolveActiveDevice(req, user_id,
       async (sql, params) => ({ rows: await query(sql, params) }),
       sender_device_id ?? bodyDeviceId, true);
     if (device_id === undefined) return { status: 403, body: { error: 'forbidden' } };
+
+    /**
+     * Has this exact send already been accepted?
+     *
+     * Checked BEFORE doing the work, so an ordinary retry costs one indexed lookup instead of
+     * re-validating a whole fan-out. The insert below still carries the unique index, which is
+     * what makes two SIMULTANEOUS retries safe — this probe is the fast path, not the guarantee.
+     */
+    const already = client_message_id
+      ? await findByClientId(query, user_id, device_id, client_message_id)
+      : undefined;
+    if (already) {
+      const fingerprint = payloadFingerprint({
+        conversationId: String(conversation_id ?? ''), contentType: content_type,
+        mediaUrl: media_url, mediaMime: media_mime, ciphertext,
+        fanout: Array.isArray(messages) ? messages : undefined,
+      });
+      if (!samePayload(already, fingerprint)) {
+        // SAME KEY, DIFFERENT BYTES. Refused rather than absorbed: silently storing nothing
+        // and reporting success would be a worse and quieter failure than the duplicate this
+        // mechanism prevents.
+        //
+        // But it is NOT necessarily an error, and the client needs to be able to tell. A
+        // client mints one id per logical message and never reuses it, and it re-encrypts
+        // when it retries — Olm advances its ratchet, so the ciphertext differs even though
+        // the message does not. That legitimate retry lands here. So the conflict carries the
+        // message the key already produced, which is what the client is actually asking for:
+        // "did my send land?" A client that gets this marks the message sent against
+        // `message_id`. A client that reuses ids for genuinely different content gets a
+        // conflict instead of a silent swallow, which is the case worth being loud about.
+        return { status: 409, body: {
+          error: 'client_message_id already used for a different payload',
+          code: 'idempotency_key_reuse',
+          message_id: already.id,
+          created_at: already.created_at,
+          delivered_devices: already.delivered_devices,
+        } };
+      }
+      return { status: 200, body: {
+        message_id: already.id, created_at: already.created_at,
+        delivered_devices: already.delivered_devices, duplicate: true,
+      } };
+    }
 
     // ── Fan-out path: one opaque ciphertext per target device ──────────────────
     // PRESENCE, not non-emptiness. A single-device NOTE TO SELF legitimately produces an
@@ -230,13 +289,33 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
       }
 
       // ONE canonical metadata row; ciphertext is NULL (the per-device blobs live below).
-      const rows = await query<{ id: string; created_at: string }>(
-        `insert into messages (conversation_id, sender_id, sender_device_id, ciphertext, content_type, media_url, media_mime)
-           values ($1, $2, $3, null, coalesce($4,'text'), $5, $6)
-           returning id, created_at`,
-        [conversation_id, user_id, device_id, content_type, media_url, media_mime]
-      );
-      const message = rows[0];
+      //
+      // The unique index on (sender, device, client_message_id) is what makes two retries
+      // arriving at once safe: one wins the insert, the other raises and is answered with the
+      // winner below. The probe above only saves the losing retry from doing the work twice.
+      let message: { id: string; created_at: string };
+      try {
+        const rows = await query<{ id: string; created_at: string }>(
+          `insert into messages (conversation_id, sender_id, sender_device_id, ciphertext,
+                                 content_type, media_url, media_mime,
+                                 client_message_id, payload_fingerprint)
+             values ($1, $2, $3, null, coalesce($4,'text'), $5, $6, $7, $8)
+             returning id, created_at`,
+          [conversation_id, user_id, device_id, content_type, media_url, media_mime,
+           client_message_id ?? null,
+           client_message_id
+             ? payloadFingerprint({ conversationId: conversation_id, contentType: content_type,
+                                    mediaUrl: media_url, mediaMime: media_mime, fanout: messages })
+             : null]
+        );
+        message = rows[0];
+      } catch (e) {
+        if ((e as { code?: string }).code !== PG_UNIQUE_VIOLATION || !client_message_id) throw e;
+        // Lost the race to a concurrent retry of the same send. The transaction is now
+        // aborted, so the winner cannot be read here — rethrow a marker the caller retries
+        // outside this transaction.
+        throw Object.assign(new Error('idempotent retry raced'), { voiidIdempotentRace: true });
+      }
 
       // One opaque ciphertext per target device, inserted in ONE statement.
       //
@@ -306,14 +385,20 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
         list.push(o.id);
         byUser.set(o.user_id, list);
       }
-      for (const [uid, devIds] of byUser) {
-        postCommit.push(() => publisher.publish(`channel:user:${uid}`, JSON.stringify({
+      // The announcement is written down before it is attempted. A publish that fails after
+      // this transaction commits leaves a row the sweep will keep, instead of a stored message
+      // nobody was ever told about.
+      const entries: OutboxEntry[] = [...byUser].map(([uid, devIds]) => ({
+        channel: `channel:user:${uid}`,
+        payload: {
           type: 'message',
           message_id: message.id,
           conversation_id,
           recipient_device_ids: devIds,
-        })));
-      }
+        },
+      }));
+      const ids = await enqueueOutbox(query, message.id, entries);
+      owed = entries.map((entry, i) => ({ id: ids[i], ...entry }));
 
       // Wake offline/backgrounded TARGET devices (content-free push + non-secret routing).
       if (deviceIds.length) {
@@ -341,13 +426,26 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
     // Blocking (043) — same guard as the fan-out path, for the same reason as the line above.
     const legacyBlocked = await blockGuardForSend(conversation_id, user_id);
     if (legacyBlocked) return legacyBlocked;
-    const rows = await query<{ id: string; created_at: string }>(
-      `insert into messages (conversation_id, sender_id, sender_device_id, ciphertext, content_type, media_url, media_mime)
-         values ($1, $2, $3, $4, coalesce($5,'text'), $6, $7)
-         returning id, created_at`,
-      [conversation_id, user_id, device_id, b64(ciphertext), content_type, media_url, media_mime]
-    );
-    const message = rows[0];
+    let message: { id: string; created_at: string };
+    try {
+      const rows = await query<{ id: string; created_at: string }>(
+        `insert into messages (conversation_id, sender_id, sender_device_id, ciphertext,
+                               content_type, media_url, media_mime,
+                               client_message_id, payload_fingerprint)
+           values ($1, $2, $3, $4, coalesce($5,'text'), $6, $7, $8, $9)
+           returning id, created_at`,
+        [conversation_id, user_id, device_id, b64(ciphertext), content_type, media_url, media_mime,
+         client_message_id ?? null,
+         client_message_id
+           ? payloadFingerprint({ conversationId: conversation_id, contentType: content_type,
+                                  mediaUrl: media_url, mediaMime: media_mime, ciphertext })
+           : null]
+      );
+      message = rows[0];
+    } catch (e) {
+      if ((e as { code?: string }).code !== PG_UNIQUE_VIOLATION || !client_message_id) throw e;
+      throw Object.assign(new Error('idempotent retry raced'), { voiidIdempotentRace: true });
+    }
 
     // Route to each active member's user channel; WS instance with the live socket delivers it.
     //
@@ -365,13 +463,12 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
            )`,
       [conversation_id, user_id]
     );
-    for (const m of members) {
-      postCommit.push(() => publisher.publish(`channel:user:${m.user_id}`, JSON.stringify({
-        type: 'message',
-        message_id: message.id,
-        conversation_id,
-      })));
-    }
+    const legacyEntries: OutboxEntry[] = members.map((m) => ({
+      channel: `channel:user:${m.user_id}`,
+      payload: { type: 'message', message_id: message.id, conversation_id },
+    }));
+    const legacyIds = await enqueueOutbox(query, message.id, legacyEntries);
+    owed = legacyEntries.map((entry, i) => ({ id: legacyIds[i], ...entry }));
 
     // Wake offline/backgrounded recipient devices with a CONTENT-FREE push. The Redis
     // relay above only reaches devices holding a live socket; a silent, data-only "wake"
@@ -387,6 +484,29 @@ router.post('/send', requireAuth, asyncHandler(async (req, res) => {
 
     return { status: 200, body: { message_id: message.id, created_at: message.created_at } };
   });
+  let result: { status: number; body: any };
+  try {
+    result = await send();
+  } catch (e) {
+    // Two retries of the same send reached the insert together. The loser's transaction is
+    // aborted, so the winner could not be read from inside it; read it now that the winner has
+    // committed and answer with the same message, which is what the client is asking for.
+    if (!(e as { voiidIdempotentRace?: boolean }).voiidIdempotentRace || !client_message_id) throw e;
+    const device_id = await resolveActiveDevice(req, user_id,
+      async (sql, params) => ({ rows: await query(sql, params) }), sender_device_id ?? bodyDeviceId);
+    const winner = device_id === undefined
+      ? undefined
+      : await findByClientId(query, user_id, device_id, client_message_id);
+    if (!winner) throw e;
+    result = { status: 200, body: {
+      message_id: winner.id, created_at: winner.created_at,
+      delivered_devices: winner.delivered_devices, duplicate: true,
+    } };
+  }
+
+  // AFTER COMMIT, and never fatal: the message is stored and its announcements are durable, so
+  // a Redis outage here must not turn a successful send into a 500 the client would retry.
+  await publishOutbox(query, owed);
   for (const notify of postCommit) await notify();
   res.status(result.status).json(result.body);
 }));

@@ -308,6 +308,7 @@ struct CommunityJoinSheet: View {
         case .http(let status, let message, _):
             return message.isEmpty ? "Request failed (\(status))." : message
         case .notAuthenticated: return "Sign in to open this link."
+        case .alreadySent: return "Already sent."
         case .transport: return "Couldn’t reach Voiid. Check your connection and try again."
         case .decoding: return "Unexpected server response."
         }

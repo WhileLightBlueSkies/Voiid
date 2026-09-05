@@ -384,9 +384,17 @@ final class ChatEngine {
                     "POST", "messages/send",
                     body: SendBundleBody(conversation_id: conversationId,
                                          sender_device_id: E2EManager.shared.deviceId,
-                                         messages: messages, content_type: "text"))
+                                         messages: messages, content_type: "text",
+                                         client_message_id: p.id))
                 markSent(localId: p.id, conversationId: conversationId, serverId: res.message_id)
-                NSLog("[VOIID] ✅ sent text id=\(res.message_id) conv=\(conversationId) devices=\(messages.count)")
+                NSLog("[VOIID] ✅ sent text id=\(res.message_id) conv=\(conversationId) devices=\(messages.count) dup=\(res.duplicate)")
+            } catch APIError.alreadySent(let serverId) {
+                // An earlier attempt of THIS message already landed; this retry only differed
+                // because re-encrypting advanced the ratchet. Reconcile rather than showing a
+                // failure for something the recipient already has.
+                markSent(localId: p.id, conversationId: conversationId, serverId: serverId)
+                NSLog("[VOIID] ✅ send reconciled as already-delivered id=\(serverId) conv=\(conversationId)")
+                continue
             } catch {
                 // "peer has no available prekeys" means the recipient hasn't published keys
                 // yet (not registered / logged out / momentary race). Olm REQUIRES a
@@ -1626,12 +1634,22 @@ final class ChatEngine {
         var content_type: String? = nil
         var media_url: String? = nil
         var media_mime: String? = nil
+        /// THE LOCAL MESSAGE ID, unchanged across every retry of this message (M01).
+        ///
+        /// Without it a retry was a NEW message: the client cannot tell "not delivered" from
+        /// "delivered, reply lost", so it retries, and the recipient sees the same thing twice.
+        /// This is the local row's own UUID — minted once at enqueue, persisted with it, and
+        /// never reused for different content.
+        var client_message_id: String? = nil
     }
     private struct SendResponse: Decodable {
         let message_id: String
         var created_at: String? = nil
         var delivered_devices: Int = 0
+        /// True when the server recognised this as a retry of a send it already accepted.
+        var duplicate: Bool = false
     }
+
     private struct MessageDTO: Decodable {
         let id: String; let sender_id: String; let ciphertext: String?; let created_at: String
         var sender_device_id: String? = nil   // which of the SENDER's devices encrypted it

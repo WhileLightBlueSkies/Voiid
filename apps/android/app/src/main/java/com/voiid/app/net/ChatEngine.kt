@@ -222,10 +222,18 @@ class ChatEngine private constructor(context: Context) {
 
                 val body = ApiClient.json.encodeToString(
                     SendBundleBody.serializer(),
-                    SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "text"))
+                    SendBundleBody(conversationId, e2e.deviceId, messages, content_type = "text",
+                                   client_message_id = p.id))
                 val res: SendResponse = api.requestAs("POST", "messages/send", jsonBody = body)
                 markSent(p.id, conversationId, res.message_id)
-                android.util.Log.i("VOIID", "✅ sent text id=${res.message_id} conv=$conversationId devices=${messages.size}")
+                android.util.Log.i("VOIID", "✅ sent text id=${res.message_id} conv=$conversationId devices=${messages.size} dup=${res.duplicate}")
+            } catch (e: ApiError.AlreadySent) {
+                // An earlier attempt of THIS message already landed; this retry only differed
+                // because re-encrypting advanced the ratchet. Reconcile rather than showing a
+                // failure for something the recipient already has.
+                markSent(p.id, conversationId, e.messageId)
+                android.util.Log.i("VOIID", "✅ send reconciled as already-delivered id=${e.messageId} conv=$conversationId")
+                continue
             } catch (e: Exception) {
                 // "peer has no available prekeys" means the recipient hasn't published
                 // keys yet (not registered / logged out / momentary race). Olm REQUIRES
@@ -1460,11 +1468,22 @@ class ChatEngine private constructor(context: Context) {
         val content_type: String? = null,
         val media_url: String? = null,
         val media_mime: String? = null,
+        /**
+         * THE LOCAL MESSAGE ID, unchanged across every retry of this message (M01).
+         *
+         * Without it a retry was a NEW message: the client cannot tell "not delivered" from
+         * "delivered, reply lost", so it retries, and the recipient sees the same thing
+         * twice. This is the local row's own id — minted once at enqueue, persisted with it,
+         * and never reused for different content.
+         */
+        val client_message_id: String? = null,
     )
     @Serializable private data class SendResponse(
         val message_id: String,
         val created_at: String? = null,
         val delivered_devices: Int = 0,
+        /** True when the server recognised this as a retry of a send it already accepted. */
+        val duplicate: Boolean = false,
     )
     @Serializable private data class MessageDTO(
         val id: String,

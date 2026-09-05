@@ -31,6 +31,13 @@ enum APIError: Error, LocalizedError {
     /// generic "precondition required" that any future endpoint may reuse, so a client keying
     /// off the status alone would fire the handle picker for an unrelated precondition.
     case http(status: Int, message: String, code: String? = nil)
+    /// A 409 the caller can RESOLVE rather than report.
+    ///
+    /// Sent by POST /messages/send when a `client_message_id` already produced a message with
+    /// different bytes — which is what a legitimate retry looks like, because re-encrypting
+    /// advances the Olm ratchet. Carries the message the key already produced, so the caller
+    /// can reconcile instead of showing a failure for something the recipient already has.
+    case alreadySent(messageId: String)
     case transport(Error)
     case decoding(Error)
     case notAuthenticated
@@ -90,6 +97,9 @@ enum APIError: Error, LocalizedError {
             return "Something went wrong. Please try again."
             #endif
         case .notAuthenticated: return "Please sign in again."
+        // Not a user-facing failure: the caller resolves it. If it ever reaches a screen,
+        // saying "sent" is the truthful thing, because it was.
+        case .alreadySent: return "Already sent."
         }
     }
 
@@ -194,8 +204,10 @@ struct APIClient {
     private struct ErrorBody: Decodable {
         let error: String
         var code: String?
+        /// Present on the send conflict above; absent everywhere else.
+        var messageId: String?
 
-        private enum CodingKeys: String, CodingKey { case error, reason, code }
+        private enum CodingKeys: String, CodingKey { case error, reason, code, message_id }
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -207,6 +219,7 @@ struct APIClient {
             }
             error = message
             code = try c.decodeIfPresent(String.self, forKey: .code)
+            messageId = try c.decodeIfPresent(String.self, forKey: .message_id)
         }
     }
     private struct UpdateBody: Decodable { let update_url: String? }

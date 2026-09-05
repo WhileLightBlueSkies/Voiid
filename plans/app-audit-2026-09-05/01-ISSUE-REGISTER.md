@@ -1,6 +1,6 @@
 # 01 — Issue register
 
-Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 6 DONE (Q01, S01, S02, S03, C01, R02), 1 IMPLEMENTED_UNVERIFIED (Q02), 43 TODO.
+Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 7 DONE (Q01, S01, S02, S03, C01, R02, M01), 1 IMPLEMENTED_UNVERIFIED (Q02), 42 TODO.
 
 Each ID belongs to exactly one implementation part. Read its dependency and acceptance sections before editing. Priority includes source-confirmed defects, runtime risks, and requested capability gaps; see the evidence column and task text.
 
@@ -10,7 +10,7 @@ Each ID belongs to exactly one implementation part. Read its dependency and acce
 | A02 | P0 | Stop automatically deleting shared encryption keys | Confirmed failure path | [06](06-ANDROID-DURABILITY.md) | TODO |
 | C01 | P0 | Resume failed payment webhook processing | Confirmed | [11](11-PAYMENTS-MEDIA-WORKERS.md) | DONE |
 | I03 | P0 | Retain dirty state when local persistence fails | Confirmed failure path | [07](07-IOS-AND-STORAGE.md) | TODO |
-| M01 | P0 | Make message acceptance atomic and retry-safe | Confirmed | [03](03-MESSAGE-RELIABILITY.md) | TODO |
+| M01 | P0 | Make message acceptance atomic and retry-safe | Confirmed | [03](03-MESSAGE-RELIABILITY.md) | DONE |
 | M02 | P0 | Acknowledge only after durable client persistence | Confirmed | [03](03-MESSAGE-RELIABILITY.md) | TODO |
 | R02 | P0 | Authorize and bound typing, reset, and location frames | Confirmed | [05](05-REALTIME-CALLS-GAMES.md) | DONE |
 | S01 | P0 | Authorize receipt reads and writes | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | DONE |
@@ -514,3 +514,75 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
     rates" and the measurement has NOT been done.
 - **Rollback:** revert the code. No schema change. Do NOT roll back by restoring
   client-supplied `recipient_ids` — disable the affected frame types instead.
+
+
+## M01 — retry-safe message acceptance completed (2026-09-06)
+
+- **Status:** DONE for idempotent acceptance, atomicity and durable notification. Point 3 of the
+  fix — clients persisting the prepared ENVELOPE so a retry does not re-encrypt — is NOT done;
+  see limitations. M02 (acknowledge only after durable client persistence) remains open and is
+  the other half of delivery.
+- **Source/fix commit:** commit containing this record, parent `78270df`.
+- **Files:** `database/migrations/059_message_idempotency_outbox.sql` (new); API
+  `src/messageIdempotency.ts` and `src/messageOutbox.ts` (new), `src/routes/messages.ts`;
+  workers `src/outbox.ts` (new), `src/index.ts`, `package.json`; tests
+  `backend/api/test/sendIdempotencyPostgres.test.ts` and `backend/workers/test/outbox.test.ts`
+  (both new); iOS `APIClient.swift`, `ChatEngine.swift`, `CommunityJoinSheet.swift`; Android
+  `ApiClient.kt`, `ChatEngine.kt`; `.github/workflows/ci.yml`; `.env.example`.
+- **Failure reproduced:** yes. All 10 scenarios failed against the committed source — there was
+  no `client_message_id`, no fingerprint, no `message_outbox`, and a retry produced a second
+  message.
+- **Implementation:**
+  1. `client_message_id` + `payload_fingerprint` on `messages`, with a NULL-FREE partial unique
+     index on (sender, coalesced device, client id). The coalesce matters: `sender_device_id` is
+     nullable, and a NULL in a unique key makes it never match — the 027 bug with a worse blast
+     radius, since it would turn every retry back into a new message while looking correct.
+  2. An identical retry is answered with the original message (`duplicate: true`). The fast path
+     is a probe before the work; the unique index is what makes two SIMULTANEOUS retries safe,
+     with the loser reading the winner outside its aborted transaction.
+  3. Same key, DIFFERENT bytes returns 409 — and carries the message the key already produced.
+     This case is not hypothetical: a client re-encrypts when it retries (Olm advances its
+     ratchet), so a legitimate retry has different bytes. Without the id in the conflict body a
+     client would be stuck retrying forever and showing a failure for a delivered message.
+  4. `message_outbox` rows are written in the SAME transaction as the message, so a committed
+     message always carries its unsent announcements. The route still publishes inline right
+     after commit (the latency path) and settles them; anything left `pending` is a debt.
+  5. A sweep in @voiid/workers pays those debts, on its OWN 5-second clock rather than the
+     reapers' 5-minute tick — an outbox row is a notification somebody is already waiting on.
+     Lease + `for update skip locked`, bounded batch and concurrency, and a retry ceiling after
+     which a row is left `failed` and visible rather than retried forever.
+  6. Both clients now send the local message's own id as `client_message_id` and reconcile the
+     conflict via a dedicated `alreadySent` / `AlreadySent` error rather than string-matching.
+- **Regression evidence:** dropping the client id fails 3 of the acceptance scenarios; publishing
+  directly instead of through the outbox fails the 2 durability scenarios; making the sweep stop
+  releasing failed rows fails its 2 retry scenarios. All return to green when restored.
+- **Validation:** PostgreSQL 16.15 on a disposable loopback cluster, replaying all 66 migrations
+  into unique schemas. Full `npm test` with all six database suites enabled: exit 0, API 257/257,
+  games 6/6 suites, websocket 27/27, workers 8/8. Typecheck clean across all five projects.
+  Migration runner applied all 66 to an empty database and reported the second run a no-op.
+  Android `:app:compileDebugKotlin` and an unsigned iOS simulator build both exit 0. No Supabase
+  database, live account or real device was touched.
+- **Fan-out cost:** asserted rather than assumed. Statements are counted on the send's OWN
+  connection and compared between a 5-device and a 40-device send: identical, and the ciphertext
+  bundle is a single insert. That is the "no per-device SQL round trips" half of M01's load
+  requirement.
+- **Remaining limitations:**
+  - **Clients still re-encrypt on retry** (fix point 3). The envelope is not persisted, so every
+    retry advances the Olm ratchet and produces different bytes — which is why the 409 path
+    exists and is exercised. It is wasteful rather than incorrect, but a client that retries
+    many times burns skipped-key window on the recipient. Persisting the prepared envelope needs
+    a durable outgoing-envelope store on both platforms and is its own piece of work.
+  - **No load test.** M01 asks for a 1,000-member/2-device group. The per-device round trip is
+    disproven by statement counting, but no throughput or latency measurement was taken at that
+    size, and none is claimed.
+  - The inline publish and the sweep can both deliver the same wake, and a publish that succeeds
+    while its "mark published" fails will be re-published. That is at-least-once by design;
+    clients dedupe by message id. Exactly-once is NOT provided and must not be advertised.
+  - Only the text-send path carries a client id so far. The media, reaction, reply, forward,
+    delete-for-everyone and location send paths still send none, so they keep the old
+    duplicate-on-retry behaviour. The server supports them the moment they pass one.
+  - No client-side migration gate: an older client simply sends no id and behaves as before.
+- **Rollback:** revert the code; leave migration 059 in place (additive columns, a partial index
+  and a new table). Do NOT roll back by dropping the client id while keeping the fingerprint
+  check. If the outbox is reverted, revert the worker with it or it will sweep a table nothing
+  writes to.

@@ -1,6 +1,6 @@
 # 03 — Durable messaging and synchronization
 
-Baseline: `a2e24e5` · 2026-09-05 · All tasks TODO; fixes specified, not implemented.
+Baseline: `a2e24e5` · 2026-09-06 · M01 completed locally; M02-M04 TODO. The issue register is the status authority.
 
 ## M01 — Make message acceptance atomic and retry-safe
 
