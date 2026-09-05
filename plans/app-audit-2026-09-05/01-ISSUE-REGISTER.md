@@ -808,7 +808,7 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
 
 - **Status:** DONE in code. **The rollout is an operator step and has not been performed** —
   the enforcement this ships is only real once `VOIID_DB_TLS_INSECURE` is absent on the box.
-- **Source/fix commit:** commit containing this record, parent `fd6b4a1`.
+- **Source/fix commit:** `3f5416a`, parent `fd6b4a1`.
 - **Files:** `packages/common-utils/src/databaseTls.ts` (new), `src/index.ts`; `backend/api/src/db.ts`,
   `backend/games/src/db.ts`, `backend/workers/src/db.ts`, `infrastructure/deployment/migrate.mjs`;
   `backend/games/package.json`, `backend/workers/package.json`;

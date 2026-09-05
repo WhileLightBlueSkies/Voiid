@@ -21,7 +21,7 @@ cryptographic reviewer rather than an implementation.
 Newest first.
 
 ### S05 — The database connection checks who it is talking to
-`pending` · P1 · every service
+`3f5416a` · P1 · every service
 
 Every service connected to the database with certificate verification **off**. The traffic was
 encrypted, and nothing checked who it was encrypted *to* — anyone able to sit between the server
