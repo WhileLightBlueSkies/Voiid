@@ -1,6 +1,6 @@
 # 01 — Issue register
 
-Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 11 DONE (Q01, S01, S02, S03, C01, R02, M01, M02, A02, S05, P03), 3 IMPLEMENTED_UNVERIFIED (Q02, A01, I03), 37 TODO.
+Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 12 DONE (Q01, S01, S02, S03, C01, R02, M01, M02, A02, S05, P03, A03), 3 IMPLEMENTED_UNVERIFIED (Q02, A01, I03), 36 TODO.
 
 Each ID belongs to exactly one implementation part. Read its dependency and acceptance sections before editing. Priority includes source-confirmed defects, runtime risks, and requested capability gaps; see the evidence column and task text.
 
@@ -17,7 +17,7 @@ Each ID belongs to exactly one implementation part. Read its dependency and acce
 | S02 | P0 | Validate sender and recipient devices on all message paths | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | DONE |
 | S03 | P0 | Make revocation persistent and device-bound | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | DONE |
 | S04 | P0 | Replace the false recovery lockout security boundary | Confirmed | [02](02-SECURITY-AND-RECOVERY.md) | TODO |
-| A03 | P1 | Support java.time on API 24/25 | Confirmed configuration gap | [06](06-ANDROID-DURABILITY.md) | TODO |
+| A03 | P1 | Support java.time on API 24/25 | Confirmed configuration gap | [06](06-ANDROID-DURABILITY.md) | DONE |
 | A04 | P1 | Remove destructive Room upgrade fallback | Confirmed policy risk | [06](06-ANDROID-DURABILITY.md) | TODO |
 | C02 | P1 | Make worker health reflect returned failures and staleness | Confirmed | [11](11-PAYMENTS-MEDIA-WORKERS.md) | TODO |
 | C04 | P1 | Keep a durable record of story objects still requiring deletion | Confirmed dependency risk | [11](11-PAYMENTS-MEDIA-WORKERS.md) | TODO |
@@ -893,3 +893,49 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
     function would not be caught by either.
   - The raw payment-webhook body ordering was preserved (that router mounts before
     `express.json()` and was not touched), but no test asserts the ordering survives a future edit.
+
+## A03 — java.time works on API 24, and a bad date stops looking like a good one (2026-09-06)
+
+- **Status:** DONE for the configuration and the silent-substitution bug. NOT run on an API 24/25
+  device or emulator — see limitations.
+- **Source/fix commit:** commit containing this record, parent `77de85a`.
+- **Files:** `apps/android/app/build.gradle.kts`, `gradle/libs.versions.toml`;
+  `app/src/main/java/com/voiid/app/util/IsoTime.kt` (new); `net/ChatEngine.kt`,
+  `net/LocationShareEngine.kt`, `net/GroupEngine.kt`;
+  `app/src/test/java/com/voiid/app/IsoTimeTest.kt` (new); `tools/android-lint-baseline.json`.
+- **Failure reproduced:** yes, and it is worse than a crash. Lint reported 26 `java.time` NewApi
+  errors against minSdk 24 with no desugaring configured. Every call site was
+  `runCatching { Instant.parse(s) }.getOrDefault(System.currentTimeMillis())` — and `runCatching`
+  catches Throwable, so on API 24/25 the NoClassDefFoundError was SWALLOWED and every timestamp
+  became the current time. Not a crash, not a log line: messages silently out of order, story and
+  location expiry silently wrong, on every device running Android 7. The same substitution turned
+  a malformed server date into a plausible current one on every API level.
+- **Implementation:** core-library desugaring enabled with a pinned `desugar_jdk_libs` in the
+  version catalog, which is what makes `java.time` real on API 24. `IsoTime.parseOrNull` returns
+  null for anything unreadable and handles the shapes the backend actually sends (ISO-8601 with
+  Z or a numeric offset, and Postgres's space-separated `timestamptz` including its `+00`
+  whole-hour offset). The three parsers now fall back to **0**, not to now: 0 sorts to 1970 where
+  somebody will see it, and for an expiry it means "already expired", which is the safe
+  direction. Each logs the unreadable value.
+- **A third copy was found by the guard.** The audit named ChatEngine and LocationShareEngine;
+  `GroupEngine.kt` had the same line and was only caught because the test scans the whole source
+  tree rather than the two files the issue mentions.
+- **Regression evidence:** the guard fails on any file that substitutes `System.currentTimeMillis()`
+  for an unreadable date, and a separate test fails if desugaring is turned off — that one matters
+  because the JVM the unit tests run on HAS java.time, so every parsing test would keep passing on
+  a build that crashes on a real API 24 device.
+- **Validation:** 84 Android unit tests pass; `assembleDebug` exit 0; lint dropped 116 → 90 errors
+  and the ratchet baseline is lowered to lock it in.
+- **Remaining limitations:**
+  - **Nothing ran on API 24 or 25.** A03 asks for fixtures executed on those levels and again on
+    API 36. The unit tests run on the host JVM, which has `java.time` regardless — so they prove
+    the parsing rules and prove nothing about desugaring actually working on an old device. The
+    config test is a proxy for that, not a substitute. An instrumented test on an API 24 emulator
+    is the missing evidence.
+  - **The fallback is still a fallback.** 0 is visible rather than plausible, which is the point,
+    but a message with an unreadable date still renders at 1970 rather than being surfaced as an
+    error to the user.
+  - 11 NewApi errors remain and are NOT java.time: `Vibrator`/`VibrationEffect` (API 26/30) and
+    `java.lang.ref.Cleaner` (API 33). Those are unguarded-platform-API questions of their own,
+    no issue tracks them, and the Cleaner one would throw on anything below API 33. Recorded in
+    the lint baseline note so they are not lost.

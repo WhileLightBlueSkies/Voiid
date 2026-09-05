@@ -78,6 +78,11 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // minSdk is 24 and the app uses java.time, which arrived in API 26 (A03). Without this
+        // every java.time call throws NoClassDefFoundError on API 24/25 — and because the call
+        // sites wrapped it in runCatching, the error was swallowed and every timestamp silently
+        // became the current time. Lint had been reporting 37 of these to nobody.
+        isCoreLibraryDesugaringEnabled = true
     }
     kotlinOptions {
         jvmTarget = "17"
@@ -125,6 +130,8 @@ tasks.withType<Test>().configureEach {
 }
 
 dependencies {
+    coreLibraryDesugaring(libs.desugar.jdk.libs)
+
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)

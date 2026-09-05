@@ -8,7 +8,7 @@ This is the plain-language view. The
 authority and holds the full completion record for each item — files changed, how the failure was
 reproduced, what was verified and what was not.
 
-**Status: 11 fixed · 3 implemented but unverified · 37 open**
+**Status: 12 fixed · 3 implemented but unverified · 36 open**
 Baseline `a2e24e5` · 50 findings · last updated 2026-09-06
 
 **Every P0 is now closed except S04**, which its own spec calls a release gate needing a
@@ -19,6 +19,26 @@ cryptographic reviewer rather than an implementation.
 ## Fixed
 
 Newest first.
+
+### A03 — Dates on Android 7 were silently all "now"
+`pending` · P1 · Android
+
+The app supports Android 7 (API 24) and uses `java.time`, which arrived in API 26, without the
+build setting that makes it work there. On those devices every date parse threw — and because
+each call site wrapped it in `runCatching`, the error was **swallowed and the timestamp became
+the current time**. No crash, no log: messages silently out of order, story and location expiry
+silently wrong, for every user on Android 7. The same substitution turned any malformed server
+date into a plausible one on every Android version.
+
+Desugaring is enabled now, and an unreadable date returns nothing rather than "now" — callers
+fall back to 1970, which is wrong somewhere a person will notice, and for an expiry means
+"already expired", which is the safe direction. A third copy of the bug turned up in group
+messaging that the audit had not spotted.
+
+Lint errors dropped from 116 to 90.
+
+**Not verified:** nothing was run on an API 24 device or emulator. The unit tests run on a JVM
+that has `java.time` regardless, so they prove the parsing rules and not the desugaring.
 
 ### P03 — A failing request now answers instead of hanging
 `bd03787` · P1 · API
