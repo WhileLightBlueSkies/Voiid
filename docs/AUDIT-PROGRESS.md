@@ -21,7 +21,7 @@ cryptographic reviewer rather than an implementation.
 Newest first.
 
 ### M03 — A long-offline device gets its backlog in pages
-`pending` · P1 · API
+`4d02fd9` · P1 · API
 
 Fetching undelivered messages had no page limit at all: a phone returning after two weeks asked
 the server to load, sort and serialise its entire backlog in memory. **My own M02 change made

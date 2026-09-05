@@ -944,7 +944,7 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
 
 - **Status:** DONE for bounding, keyset pagination and read-time authorization. No memory or
   latency measurement was taken — see limitations.
-- **Source/fix commit:** commit containing this record, parent `e255b14`.
+- **Source/fix commit:** `4d02fd9`, parent `e255b14`.
 - **Files:** `backend/api/src/routes/messages.ts`;
   `backend/api/test/pendingPaginationPostgres.test.ts` (new); `.github/workflows/ci.yml`.
 - **Failure reproduced:** yes, and **M02 made it worse rather than revealing it**. Fetching used
