@@ -113,6 +113,17 @@ androidComponents {
     }
 }
 
+// BackupRulesTest reads the SHIPPED res/xml rules and the SHIPPED sources off disk, because
+// the thing it is checking is the policy that actually ships, not a copy of it in a fixture.
+// Gradle cannot see those reads, so without declaring them the task stays UP-TO-DATE when the
+// rules change — the guard would pass forever while the policy rotted underneath it. This was
+// caught by changing a rule and watching the test not run.
+tasks.withType<Test>().configureEach {
+    inputs.dir("src/main/res/xml")
+        .withPropertyName("backupRuleFiles")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)

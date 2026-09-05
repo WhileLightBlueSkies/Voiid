@@ -1,6 +1,6 @@
 # 06 — Android durability and compatibility
 
-Baseline: `a2e24e5` · 2026-09-05 · All tasks TODO; fixes specified, not implemented.
+Baseline: `a2e24e5` · 2026-09-06 · A02 completed and A01 implemented-unverified locally; A03-A05 TODO. The issue register is the status authority.
 
 Source root: `apps/android/app/src/main/java/com/voiid/app/`. Keep minSdk 24 unless product explicitly changes supported devices. Run release as well as debug checks.
 

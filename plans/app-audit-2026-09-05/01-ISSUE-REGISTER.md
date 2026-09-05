@@ -1,13 +1,13 @@
 # 01 — Issue register
 
-Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 8 DONE (Q01, S01, S02, S03, C01, R02, M01, M02), 1 IMPLEMENTED_UNVERIFIED (Q02), 41 TODO.
+Baseline: `a2e24e5` · 50 actionable findings/capability gaps · 9 DONE (Q01, S01, S02, S03, C01, R02, M01, M02, A02), 2 IMPLEMENTED_UNVERIFIED (Q02, A01), 40 TODO.
 
 Each ID belongs to exactly one implementation part. Read its dependency and acceptance sections before editing. Priority includes source-confirmed defects, runtime risks, and requested capability gaps; see the evidence column and task text.
 
 | ID | Priority | Issue / required improvement | Evidence | Part | Status |
 |---|---|---|---|---|---|
-| A01 | P0 | Exclude current private stores from Android backup/transfer | Confirmed rules gap | [06](06-ANDROID-DURABILITY.md) | TODO |
-| A02 | P0 | Stop automatically deleting shared encryption keys | Confirmed failure path | [06](06-ANDROID-DURABILITY.md) | TODO |
+| A01 | P0 | Exclude current private stores from Android backup/transfer | Confirmed rules gap | [06](06-ANDROID-DURABILITY.md) | IMPLEMENTED_UNVERIFIED |
+| A02 | P0 | Stop automatically deleting shared encryption keys | Confirmed failure path | [06](06-ANDROID-DURABILITY.md) | DONE |
 | C01 | P0 | Resume failed payment webhook processing | Confirmed | [11](11-PAYMENTS-MEDIA-WORKERS.md) | DONE |
 | I03 | P0 | Retain dirty state when local persistence fails | Confirmed failure path | [07](07-IOS-AND-STORAGE.md) | TODO |
 | M01 | P0 | Make message acceptance atomic and retry-safe | Confirmed | [03](03-MESSAGE-RELIABILITY.md) | DONE |
@@ -655,3 +655,92 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
   Do NOT roll back the server alone once session-aware clients are shipping — a client that acks
   against a server that also marks on fetch is harmless, but a server that marks on fetch with
   clients that rely on the queue is the original data-loss bug.
+
+
+## A01 — Android backup policy (2026-09-06)
+
+- **Status:** IMPLEMENTED_UNVERIFIED, and the gap is exactly the one A01 warns about. The rules
+  are correct and enforced by a test against the SHIPPED files; NO backup archive was inspected
+  and no restore was performed on a device. A01's own acceptance says not to infer safety from
+  the presence of backup XML, and this record does not.
+- **Source/fix commit:** commit containing this record, parent `86dda65`.
+- **Files:** `res/xml/backup_rules.xml`, `res/xml/data_extraction_rules.xml`,
+  `app/build.gradle.kts`; `app/src/test/java/com/voiid/app/BackupRulesTest.kt` (new).
+- **Failure reproduced:** yes. The shipped rules named 3 encrypted preference files plus one
+  JSON file. The inventory below found 20 stores, of which 16 were being copied — including
+  `voiid_recovery`, which holds the base64 master secret for the encrypted account backup, and
+  `voiid_e2e`, which holds the Olm identity. The Room database (`voiid.db`), the current message
+  shards (`files/messages/`), decrypted media (`files/media/`) and `voiid_messages.json.tmp`
+  were all uncovered too.
+- **Implementation:** both rule files switched from denylist to ALLOWLIST. Only four cosmetic
+  preference files may leave the device (theme, chat layout, game settings, game audio);
+  everything else — every EncryptedSharedPreferences store, the Room database, every file
+  domain — is excluded by construction. `<device-transfer>` is allowlisted separately, which it
+  was not before: it moves the same bytes to the same place, just over a cable.
+- **The durable part.** The bug was never a wrong rule, it was a store added without anyone
+  thinking about the rules — invisible in the diff that adds the store. `BackupRulesTest` scans
+  the actual sources for every `SecurePrefs.open` / `getSharedPreferences` name and fails the
+  build when one is not classified as portable or private, and asserts no private store and no
+  non-sharedpref domain is ever allowlisted. `app/build.gradle.kts` declares `res/xml` as a test
+  input, because without it Gradle kept the task UP-TO-DATE when a rule changed and the guard
+  would have rotted silently — found by changing a rule and watching the test not run.
+- **Validation:** 64 Android unit tests pass; `assembleDebug` succeeds; lint holds at its 116
+  baseline. Anti-vacuity: allowlisting `voiid_recovery` fails two assertions by name, and adding
+  an unclassified store to the source fails the guard.
+- **Remaining limitations — WHY THIS IS NOT `DONE`:**
+  - **No archive was inspected and no device restore was performed.** `adb backup` is
+    non-functional for apps on current Android, and device transfer needs two physical handsets.
+    A01 asks for synthetic content in a real archive and a clean sign-in on a fresh device; that
+    evidence does not exist and nothing here substitutes for it.
+  - Allowlist semantics are taken from Android's documented behaviour (an `<include>` makes the
+    rule set exclusive) and are NOT confirmed observationally on any API level.
+  - The four portable files are asserted to be cosmetic by reading their writers. If any of them
+    later carries something personal, this test will not notice — it checks the classification,
+    not the contents.
+  - `allowBackup` remains `true` so the cosmetic transfer still works. Whether the product wants
+    even that is a decision nobody has made.
+
+## A02 — SecurePrefs no longer destroys what it cannot read (2026-09-06)
+
+- **Status:** DONE. No code path deletes the shared master key or a preference file any more.
+- **Source/fix commit:** commit containing this record, parent `86dda65`.
+- **Files:** `net/SecurePrefs.kt` (rewritten), `net/SecurePrefsPolicy.kt` (new);
+  `app/src/test/java/com/voiid/app/SecurePrefsRecoveryTest.kt` (new).
+- **Failure reproduced:** yes, by reading the shipped handler. ANY exception deleted the
+  preference file; if the rebuild then failed it deleted `MasterKey.DEFAULT_MASTER_KEY_ALIAS`,
+  the Keystore key shared by every encrypted store in the app. So one unreadable file could
+  destroy the E2E identity, the session token, the message history and the account-backup master
+  secret together, on launch. Its own comment explained why deleting that key causes a reset
+  cascade across sibling stores, and then did it as a fallback.
+- **Implementation:** failures are classified (device locked / key invalidated / corrupted /
+  unknown) and answered from a pure, unit-tested decision table. Locked is retried and then
+  REPORTED. Invalidated is reported — regenerating an identity is the user's decision. Corrupted
+  moves that ONE file aside into a quarantine directory (a rename, never a delete: unreadable is
+  not worthless, and it is the evidence). Unknown is reported, because the old code guessed and
+  its guess was to delete everything. `SecurePrefsUnavailableException` is the typed state A02
+  asks for, and `discardQuarantined` is the only destructive call, reachable only from an
+  explicit user-initiated reset.
+- **Regression evidence:** reintroducing the master-key deletion fails the guard test by name.
+  The guard is a source scan for `deleteEntry` and `deleteSharedPreferences` in SecurePrefs.kt,
+  which is the cheapest way to keep a future edit from quietly restoring the behaviour.
+- **Validation:** 64 Android unit tests pass, `:app:compileDebugKotlin` and `assembleDebug`
+  succeed, lint holds at baseline. No device run.
+- **Behaviour change to expect:** `SecurePrefs.open` can now THROW where it previously wiped and
+  returned. Callers propagate it. That is deliberate — an app that says "not right now" is
+  recoverable and one that has deleted the master secret is not — and the exposure is small in
+  practice: the master key is not auth-bound (no `setUserAuthenticationRequired`) and no
+  component is `directBootAware`, so the locked-device path is close to unreachable. It is still
+  a real change in failure mode and should be watched after release.
+- **Remaining limitations:**
+  - **The failure scenarios were exercised against the CLASSIFIER, not against a device.** A
+    genuinely locked device, a real disk failure, a real corrupted preference file and a real
+    missing-key restore were not produced on hardware. The exception shapes the classifier
+    matches on are taken from androidx/Keystore documentation and naming, not from captured
+    stack traces, so a vendor that throws something differently worded lands in UNKNOWN — which
+    reports rather than destroys, so the failure is safe, but it is not the intended branch.
+  - No UI offers the explicit reset yet. `quarantined()` and `discardQuarantined()` exist and
+    nothing calls them, so a quarantined store currently stays on disk until the app is
+    reinstalled. That is the safe direction, but the recovery journey A02 describes is not
+    finished until something surfaces it.
+  - Key-alias isolation per store (A02's "isolate future key aliases where justified") is NOT
+    done. All stores still share one master key; the fix here is that nothing deletes it.
