@@ -457,7 +457,7 @@ The actual migration runner applied all 63 migrations to an empty, dedicated loo
 - **Status:** DONE for recipient authorization, aggregate budgets and bounded limiter maps.
   Dependent on S03, which supplied the relay's database handle — without it none of this was
   expressible. Connection/frame budgets are enforced per INSTANCE, not per cluster; see limits.
-- **Source/fix commit:** commit containing this record, parent `88f5449`.
+- **Source/fix commit:** `2c27dd9`, parent `88f5449`.
 - **Files:** `backend/websocket/src/recipients.ts` (new), `src/budget.ts` (new), `src/index.ts`;
   `backend/websocket/test/recipients.test.ts` and `test/budget.test.ts` (both new);
   `.github/workflows/ci.yml`; `.env.example`.
